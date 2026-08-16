@@ -31,6 +31,7 @@ fi
 
 install -m 0755 "$project_root/deploy/scripts/deploy-release.sh" /usr/local/sbin/cloud-harness-deploy
 install -m 0755 "$project_root/deploy/scripts/rollback-release.sh" /usr/local/sbin/cloud-harness-rollback
+install -m 0755 "$project_root/deploy/scripts/deploy-ssh-wrapper.sh" /usr/local/sbin/cloud-harness-deploy-ssh
 install -m 0644 "$project_root/deploy/systemd/cloud-harness-mcp.service" /etc/systemd/system/cloud-harness-mcp.service
 install -m 0644 "$project_root/deploy/nginx/cloud-harness-mcp.conf" /etc/nginx/sites-available/cloud-harness-mcp.conf
 ln -sfn /etc/nginx/sites-available/cloud-harness-mcp.conf /etc/nginx/sites-enabled/cloud-harness-mcp.conf

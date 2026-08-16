@@ -57,7 +57,18 @@ private-key file only if private clone is required; see
 The current bootstrap sudoers rule grants the fixed deploy commands to the
 `dev` account. Verify that this is the intended `VPS_USER`; if not, change the
 root-owned rule deliberately and validate it with `visudo -cf` before adding
-the GitHub environment secret.
+the GitHub environment secret. Install the dedicated Actions public key in
+`~dev/.ssh/authorized_keys` with both `restrict` and the root-owned forced
+command; do not install it as an unrestricted login key:
+
+```text
+restrict,command="/usr/local/sbin/cloud-harness-deploy-ssh" ssh-ed25519 PUBLIC_KEY_MATERIAL cloud-harness-github-actions
+```
+
+[`deploy/scripts/deploy-ssh-wrapper.sh`](../deploy/scripts/deploy-ssh-wrapper.sh)
+rejects an interactive shell, forwarding, and every command except the exact
+quoted deploy command with one 40-character lowercase commit SHA. This remains
+required even when the host's operator account has broader interactive sudo.
 
 ## Obtain HTTPS with the existing nginx
 
@@ -136,7 +147,7 @@ The production environment used by
 
 The workflow deploys only after successful CI on `main` (or a manual dispatch),
 pins the SSH host key, passes an exact commit SHA to the fixed sudo command,
-and removes ephemeral SSH files. Protect the `production` environment and
+uses a forced-command deployment key, and removes ephemeral SSH files. Protect the `production` environment and
 restrict who may approve or modify these secrets.
 
 ## Rollback or disable the route

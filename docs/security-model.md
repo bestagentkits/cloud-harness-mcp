@@ -99,6 +99,12 @@ risk, but a process can still fill the shared filesystem between checks.
 Monitor the host and use a dedicated quota-backed filesystem before accepting
 untrusted workloads.
 
+The GitHub Actions SSH identity is separate from the operator's normal key and
+must be installed with OpenSSH `restrict` plus the root-owned deploy forced
+command. The wrapper accepts only the fixed deploy action and one exact commit
+SHA, so broader privileges on the interactive operator account are not exposed
+through the automation key.
+
 Close/TTL removes the executor and workspace directory. Shell/task state is
 in-memory and disappears on runner restart. Startup restarts surviving
 executors to stop processes whose handles were lost; this remains a durability
