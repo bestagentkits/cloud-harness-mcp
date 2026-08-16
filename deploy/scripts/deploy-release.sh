@@ -83,14 +83,14 @@ wait_ready
 
 set +x
 source "$env_file"
-curl --fail --silent --show-error --max-time 10 --config - >/dev/null <<EOF
+smoke_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy-smoke","version":"1.0.0"}}}'
+curl --fail --silent --show-error --max-time 10 --data-binary "$smoke_payload" --config - >/dev/null <<EOF
 url = "http://127.0.0.1:3100/mcp"
 request = "POST"
 header = "Host: 127.0.0.1"
 header = "Authorization: Bearer $MCP_BEARER_TOKEN"
 header = "Content-Type: application/json"
 header = "Accept: application/json, text/event-stream"
-data = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy-smoke","version":"1.0.0"}}}'
 EOF
 
 CLOUD_HARNESS_ENV_FILE="$env_file" HOST_JOBS_ROOT="$state/jobs" HOST_STATE_ROOT="$state/state" docker compose -f compose.yaml -f compose.production.yaml exec -T api node /app/scripts/deploy-canary.mjs
