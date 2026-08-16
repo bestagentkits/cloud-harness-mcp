@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+.cloud-harness-state/
+deploy/.generated/
