@@ -1,0 +1,20 @@
+services:
+  api:
+    env_file: ${CLOUD_HARNESS_ENV_FILE:-/etc/cloud-harness-mcp/runtime.env}
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "0.50", memory: 512M, pids: 128 }
+
+  runner:
+    env_file: ${CLOUD_HARNESS_ENV_FILE:-/etc/cloud-harness-mcp/runtime.env}
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "1.00", memory: 1G, pids: 256 }
+    volumes:
+      - /etc/cloud-harness-mcp:/run/cloud-harness-secrets:ro
