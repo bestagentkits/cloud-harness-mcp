@@ -16,8 +16,6 @@ services:
       GITHUB_APP_INSTALLATION_ID: ""
       GITHUB_APP_PRIVATE_KEY: ""
       GITHUB_APP_PRIVATE_KEY_FILE: ""
-    ports:
-      - "127.0.0.1:${API_HOST_PORT:-3100}:3000"
     depends_on:
       runner:
         condition: service_healthy
@@ -26,9 +24,35 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=32m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    networks: [control]
+    networks: [frontend, control]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  ingress:
+    image: cloud-harness-api:local
+    restart: unless-stopped
+    command: ["node", "/app/deploy/ingress-proxy.mjs"]
+    environment:
+      INGRESS_HOST: 0.0.0.0
+      INGRESS_PORT: 3100
+      API_UPSTREAM_HOST: api
+      API_UPSTREAM_PORT: 3000
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-3100}:3100"
+    depends_on:
+      api:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=8m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [frontend, ingress]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3100/readyz').then(r=>{if(!r.ok)process.exit(1)})"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -64,7 +88,11 @@ services:
     command: ["true"]
 
 networks:
+  frontend:
+    internal: true
   control:
     internal: true
+  ingress:
+    driver: bridge
   runner-egress:
     driver: bridge

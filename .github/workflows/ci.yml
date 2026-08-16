@@ -25,9 +25,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh
-      - run: docker compose -f compose.yaml -f compose.production.yaml config --quiet
-        env:
-          CLOUD_HARNESS_ENV_FILE: .env.example
+      - run: npm run verify:compose
       - run: npm run verify
 
   docker-integration:

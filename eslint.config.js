@@ -13,7 +13,7 @@ export default tseslint.config(
     }
   },
   {
-    files: ['worker/**/*.mjs', 'scripts/**/*.mjs'],
+    files: ['worker/**/*.mjs', 'scripts/**/*.mjs', 'deploy/**/*.mjs'],
     languageOptions: {
       globals: {
         Buffer: 'readonly',

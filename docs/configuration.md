@@ -87,5 +87,5 @@ changes the loopback host port. `HOST_JOBS_ROOT` and `HOST_STATE_ROOT` select
 the host persistence paths. `LOG_LEVEL` is read by API and runner logging.
 
 `API_HOST`/`RUNNER_HOST`, service ports, and the private `RUNNER_URL` are wired
-by Compose. Avoid publishing the runner or changing the API bind from loopback
+by Compose. Avoid publishing the API or runner, or changing the ingress proxy from loopback
 on an Internet-facing host.

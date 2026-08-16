@@ -58,12 +58,13 @@ npm ci
 cp .env.example .env
 # Replace every change-me value in .env with an independent random secret.
 docker compose --profile images build executor-image api runner
-docker compose up -d api runner
+docker compose up -d runner api ingress
 curl --fail http://127.0.0.1:3100/readyz
 ```
 
-Local Compose publishes only the API on host loopback. It does not configure
-TLS. Stop it with:
+Local Compose publishes only a credential-free TCP ingress proxy on host
+loopback. The API and runner remain on separate internal networks; only the
+runner has Docker authority. Local Compose does not configure TLS. Stop it with:
 
 ```bash
 docker compose down

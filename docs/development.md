@@ -74,7 +74,7 @@ topology:
 
 ```bash
 docker compose --profile images build
-docker compose up -d api runner
+docker compose up -d runner api ingress
 docker compose ps
 docker compose down
 ```

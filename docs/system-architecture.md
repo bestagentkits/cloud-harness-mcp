@@ -5,19 +5,30 @@
 ```text
 MCP client
   -> existing nginx (public TLS)
-  -> API (loopback-published, bearer + Host + Origin policy)
+  -> credential-free TCP ingress proxy (loopback-published)
+  -> API (private network, bearer + Host + Origin policy)
   -> runner (internal Compose network, service bearer)
   -> rootful Docker socket
   -> clone helper, then one executor for the workspace
 ```
 
-The split is deliberate. The API owns public HTTP, MCP negotiation, request
+The split is deliberate. The ingress proxy owns no secret or application
+logic; it only bridges host loopback to an internal frontend network. The API owns public HTTP, MCP negotiation, request
 security, and translation to a versioned private runner request. It has no
-Docker socket or host job mount. The runner owns workspace lifecycle, SQLite
+published port, external network, Docker socket, or host job mount. The proxy
+cannot join the API/runner control network. The runner owns workspace lifecycle, SQLite
 metadata, repository materialization, Docker policy, and cleanup. Only the
 runner receives the Docker socket and job/state mounts. The API and runner
 share an internal control network; the trusted runner also has a separate
 egress network for repository DNS validation and optional GitHub App calls.
+
+The extra byte-proxy hop is required because Docker does not activate a host
+port mapping for a service attached only to an `internal` network on the target
+Linux engine. Docker documents internal networks as having no connection to
+host network interfaces or external gateway in its
+[Compose networking guide](https://docs.docker.com/compose/how-tos/networking/#internal-networks).
+Publishing from a separate, secret-free proxy preserves the loopback listener
+without granting the API an external gateway.
 
 The executor is where repository-controlled code runs. It is non-root, has a
 read-only root filesystem, receives one writable repository mount, and has no
@@ -27,6 +38,8 @@ shares the host kernel.
 
 Executable owners:
 
+- Loopback-to-frontend byte proxy:
+  [`deploy/ingress-proxy.mjs`](../deploy/ingress-proxy.mjs)
 - Public HTTP and MCP assembly:
   [`apps/api/src/app.ts`](../apps/api/src/app.ts) and
   [`apps/api/src/mcp-server.ts`](../apps/api/src/mcp-server.ts)
@@ -71,8 +84,9 @@ cleanup authority.
 
 ## Deployment topology
 
-Production Compose binds the API to `127.0.0.1:3100`; the runner has no
-published host port. Runner egress does not expose an ingress port. Existing
+Production Compose binds the credential-free ingress proxy to
+`127.0.0.1:3100`; the API and runner have no published host ports. Runner
+egress does not expose an ingress port. Existing
 nginx is the only intended public listener and
 proxies `/mcp`, `/healthz`, and `/readyz` to loopback. The
 [deployment guide](deployment.md) explains the safe install order and the TLS
