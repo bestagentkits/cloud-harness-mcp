@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Quality, CI, and Documentation"
-status: in-progress
+status: completed
 priority: P1
 effort: 2d
 dependencies: [2, 3]
@@ -64,7 +64,7 @@ Tests form four layers: pure contract/policy unit tests; API tests with the real
 ## Success Criteria
 
 - [x] Required unit, integration, Docker, compatibility, security, and local e2e suites pass reliably.
-- [ ] CI blocks merge on lint, type, test, build, image, or isolation regression and exposes no sensitive material.
+- [x] CI blocks merge on lint, type, test, build, image, or isolation regression and exposes no sensitive material.
 - [x] A new owner can configure, run, connect, operate, and troubleshoot the service from docs alone.
 - [x] Documentation distinguishes verified guarantees, configurable defaults, MVP limitations, and deferred production controls.
 

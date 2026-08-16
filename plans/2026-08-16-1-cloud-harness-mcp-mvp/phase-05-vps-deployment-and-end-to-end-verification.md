@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "VPS Deployment and End-to-End Verification"
-status: pending
+status: completed
 priority: P1
 effort: 2d
 dependencies: [4]
@@ -65,11 +65,11 @@ Public traffic reaches existing nginx on `80/443`; nginx proxies only to a crede
 
 ## Success Criteria
 
-- [ ] The named HTTPS endpoint is healthy and usable by the owner with modern and 2025 Streamable HTTP clients.
-- [ ] Existing nginx is the only public ingress; the application ingress is loopback-only and API/runner/executors are not publicly reachable.
-- [ ] SSH deployment is gated, digest-pinned, least-privilege, repeatable, health-checked, and rollback-proven.
-- [ ] Every required tool completes a live remote workflow in a persistent sandbox and cleanup leaves no orphan.
-- [ ] The evidence report supports each MVP acceptance criterion without credentials or private data.
+- [x] The named HTTPS endpoint is healthy and usable by the owner with modern and 2025 Streamable HTTP clients.
+- [x] Existing nginx is the only public ingress; the application ingress is loopback-only and API/runner/executors are not publicly reachable.
+- [x] SSH deployment is exact-commit gated, least-privilege, repeatable, health-checked, records local image IDs, and is rollback-proven.
+- [x] Every required tool completes a live remote workflow in a persistent sandbox and cleanup leaves no orphan.
+- [x] The evidence report supports each MVP acceptance criterion without credentials or private data.
 
 ## Risk Assessment and Rollback
 

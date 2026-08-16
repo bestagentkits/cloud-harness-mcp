@@ -1,7 +1,7 @@
 ---
 title: "Cloud Harness MCP MVP"
 description: "Deliver a private single-owner remote coding harness over authenticated Streamable HTTP MCP."
-status: in-progress
+status: completed
 priority: P1
 effort: 12d
 issue: 1
@@ -51,8 +51,8 @@ A deployable TypeScript MCP service at `https://cloud-harness-mcp.46-250-239-227
 | 1 | [Foundation and Contracts](./phase-01-start.md) | Completed |
 | 2 | [MCP Core and Tool Surface](./phase-02-mcp-core-and-tool-surface.md) | Completed |
 | 3 | [Sandbox and Workspace Runtime](./phase-03-sandbox-and-workspace-runtime.md) | Completed |
-| 4 | [Quality, CI, and Documentation](./phase-04-quality-ci-and-documentation.md) | In Progress |
-| 5 | [VPS Deployment and End-to-End Verification](./phase-05-vps-deployment-and-end-to-end-verification.md) | Pending |
+| 4 | [Quality, CI, and Documentation](./phase-04-quality-ci-and-documentation.md) | Completed |
+| 5 | [VPS Deployment and End-to-End Verification](./phase-05-vps-deployment-and-end-to-end-verification.md) | Completed |
 
 ## Acceptance Criteria
 
@@ -61,10 +61,10 @@ A deployable TypeScript MCP service at `https://cloud-harness-mcp.46-250-239-227
 - [x] Workspaces survive calls, recover lost create responses through idempotency/listing, expire under one cleanup authority, and execute only in CPU/memory/PID/file/output-limited non-root containers with no default egress or credentials.
 - [x] Public clone works without persisted credentials. Optional GitHub App support is contract- and leak-tested, and is live-verified only when owner-supplied App credentials are available.
 - [x] Every required tool has validated input/output schemas, truthful annotations, structured errors, cursor pagination, and enforced output/time caps.
-- [ ] Unit, real-SDK HTTP integration, Docker isolation, compatibility, cancellation, and production HTTPS end-to-end tests pass.
+- [x] Unit, real-SDK HTTP integration, Docker isolation, compatibility, cancellation, and production HTTPS end-to-end tests pass.
 - [x] Docker/Compose, CI, SSH deployment, rollback, operations, security, configuration, API, and user documentation are complete.
-- [ ] Codex CLI bearer configuration and the official MCP SDK client are documented; the official client completes live interoperability verification.
-- [ ] The live endpoint passes evidence-backed verification recorded in `plans/2026-08-16-1-cloud-harness-mcp-mvp/reports/mvp-verification.md`.
+- [x] Codex CLI bearer configuration and the official MCP SDK client are documented; the official client completes live interoperability verification.
+- [x] The live endpoint passes evidence-backed verification recorded in `plans/2026-08-16-1-cloud-harness-mcp-mvp/reports/mvp-verification.md`.
 
 ## Resolved Design Decisions
 
