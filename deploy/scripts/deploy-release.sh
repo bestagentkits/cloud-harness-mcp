@@ -48,7 +48,7 @@ rollback() {
     git checkout --detach --force "$previous_sha" || rollback_failed=1
     if [[ -n $backup && -f $backup ]]; then cp --reflink=auto "$backup" "$state/state/cloud-harness.db" || rollback_failed=1; fi
     CLOUD_HARNESS_ENV_FILE="$env_file" HOST_JOBS_ROOT="$state/jobs" HOST_STATE_ROOT="$state/state" docker compose --profile images -f compose.yaml -f compose.production.yaml build executor-image api runner || rollback_failed=1
-    systemctl start cloud-harness-mcp.service || rollback_failed=1
+    systemctl enable --now cloud-harness-mcp.service || rollback_failed=1
     wait_ready || rollback_failed=1
     if [[ $rollback_failed -eq 0 ]]; then
       record_images release || rollback_failed=1
@@ -78,7 +78,7 @@ fi
 git checkout --detach --force "$release_sha"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
 CLOUD_HARNESS_ENV_FILE="$env_file" HOST_JOBS_ROOT="$state/jobs" HOST_STATE_ROOT="$state/state" docker compose --profile images -f compose.yaml -f compose.production.yaml build executor-image api runner
-systemctl start cloud-harness-mcp.service
+systemctl enable --now cloud-harness-mcp.service
 wait_ready
 
 set +x
