@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-umask 077
+umask 022
 
 repository_url=$1
 destination=$2

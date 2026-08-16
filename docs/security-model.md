@@ -93,6 +93,12 @@ Workspace paths are server-generated and checked beneath the configured jobs
 root. Worker paths reject absolute/traversal paths and symlink escapes. SQLite
 stores workspace metadata, not a credential cache.
 
+Repository files may be host-readable so the trusted runner can meter them,
+but the jobs-root parent is private and non-traversable to unrelated host
+users. If a host UID cannot remove executor-owned files, cleanup uses a fixed
+no-network, capability-free helper mounted only on the already-canonicalized
+workspace path; startup reaps any interrupted ephemeral helper.
+
 The current storage ceiling is not a hard quota. One-workspace admission, a
 host free-space floor, operation-boundary checks, and periodic reaping reduce
 risk, but a process can still fill the shared filesystem between checks.

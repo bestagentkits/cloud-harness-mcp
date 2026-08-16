@@ -78,7 +78,7 @@ export class WorkspaceService {
     }
 
     const helpers = await runDocker([
-      'ps', '-a', '--filter', 'label=cloud-harness.role=clone-helper',
+      'ps', '-a', '--filter', 'label=cloud-harness.ephemeral=true',
       '--filter', `label=cloud-harness.instance=${this.instanceId}`, '--format', '{{.Names}}'
     ], { timeoutMs: 30_000, maxBytes: 1_048_576 });
     if (helpers.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'Docker clone-helper inventory failed', 503, true);
@@ -150,7 +150,8 @@ export class WorkspaceService {
     await chmod(jobPath, 0o777);
     const args = [
       'run', '--rm', '--pull', 'never', '--name', helperName,
-      '--label', 'cloud-harness.role=clone-helper', '--label', `cloud-harness.instance=${this.instanceId}`,
+      '--label', 'cloud-harness.role=clone-helper', '--label', 'cloud-harness.ephemeral=true',
+      '--label', `cloud-harness.instance=${this.instanceId}`,
       '--label', `cloud-harness.workspace=${record.id}`, '--network', 'bridge', '--user', '10001:10001',
       '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', '--cap-drop', 'ALL',
       '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
@@ -360,7 +361,24 @@ export class WorkspaceService {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
-    await rm(target, { recursive: true, force: true, maxRetries: 3 });
+    try {
+      await rm(target, { recursive: true, force: true, maxRetries: 3 });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EACCES' && code !== 'EPERM') throw error;
+      const helperName = `chm-clean-${randomBytes(8).toString('hex')}`;
+      const cleaned = await runDocker([
+        'run', '--rm', '--pull', 'never', '--name', helperName,
+        '--label', 'cloud-harness.role=cleanup-helper', '--label', 'cloud-harness.ephemeral=true',
+        '--label', `cloud-harness.instance=${this.instanceId}`, '--network', 'none', '--user', '10001:10001',
+        '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m', '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25',
+        '--volume', `${target}:/target:rw`, '--entrypoint', '/usr/bin/find', this.config.executorImage,
+        '/target', '-mindepth', '1', '-delete'
+      ], { timeoutMs: 30_000, maxBytes: 65_536 });
+      if (cleaned.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'workspace permissions could not be normalized for cleanup', 503, true);
+      await rm(target, { recursive: true, force: true, maxRetries: 3 });
+    }
   }
 
   private async closeRecord(record: WorkspaceRecord, reason: string): Promise<void> {
