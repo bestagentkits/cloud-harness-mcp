@@ -25,6 +25,7 @@
     "pretest:e2e": "npm run build -w @cloud-harness/contracts",
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
     "verify:production": "node scripts/verify-production.mjs",
+    "verify:compose": "node scripts/verify-compose-boundaries.mjs",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {

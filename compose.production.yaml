@@ -8,6 +8,14 @@ services:
       resources:
         limits: { cpus: "0.50", memory: 512M, pids: 128 }
 
+  ingress:
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M, pids: 64 }
+
   runner:
     env_file: ${CLOUD_HARNESS_ENV_FILE:-/etc/cloud-harness-mcp/runtime.env}
     logging:

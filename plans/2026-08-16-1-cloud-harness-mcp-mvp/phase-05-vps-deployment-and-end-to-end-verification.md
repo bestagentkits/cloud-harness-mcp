@@ -22,7 +22,7 @@ Deploy the verified images to the VPS through a gated SSH workflow, reuse existi
 
 ## Requirements
 
-- Functional: production Compose keeps API on host loopback, runner on an internal network, and Docker socket/job root on runner only.
+- Functional: production Compose keeps a credential-free ingress proxy on host loopback, API and runner on private networks, and Docker socket/job root on runner only.
 - Functional: existing nginx terminates TLS and proxies `/mcp` plus health endpoints with streaming/cancellation semantics preserved.
 - Functional: GitHub Actions deploys an immutable tested image digest over SSH, health-checks it, and automatically restores the prior digest on failure.
 - Operational: host preflight verifies Ubuntu/Docker/cgroup/storage capacity, AppArmor/seccomp, firewall/listeners, nginx/certificate state, jobs root, service accounts, and reaper behavior.
@@ -30,7 +30,7 @@ Deploy the verified images to the VPS through a gated SSH workflow, reuse existi
 
 ## Architecture
 
-Public traffic reaches existing nginx on `80/443`; nginx proxies only to API at `127.0.0.1:3100`. Compose exposes no runner port and gives the runner an internal service network, the Docker socket, and the configured jobs root. A dedicated deploy identity may invoke only a fixed root-owned deployment script whose repository/origin are hardcoded and whose only release input is an exact approved commit SHA; runtime bearer and GitHub App material come from root-owned files/Compose secrets.
+Public traffic reaches existing nginx on `80/443`; nginx proxies only to a credential-free TCP ingress at `127.0.0.1:3100`. The proxy reaches API on an internal frontend network but cannot join the API/runner control network. Compose exposes no API or runner port and gives the runner the Docker socket and configured jobs root. A dedicated deploy identity may invoke only a fixed root-owned deployment script whose repository/origin are hardcoded and whose only release input is an exact approved commit SHA; runtime bearer and GitHub App material come from root-owned files/Compose secrets.
 
 ## Related Code Files
 
@@ -66,7 +66,7 @@ Public traffic reaches existing nginx on `80/443`; nginx proxies only to API at 
 ## Success Criteria
 
 - [ ] The named HTTPS endpoint is healthy and usable by the owner with modern and 2025 Streamable HTTP clients.
-- [ ] Existing nginx is the only public ingress; API is loopback-only and runner/executors are not publicly reachable.
+- [ ] Existing nginx is the only public ingress; the application ingress is loopback-only and API/runner/executors are not publicly reachable.
 - [ ] SSH deployment is gated, digest-pinned, least-privilege, repeatable, health-checked, and rollback-proven.
 - [ ] Every required tool completes a live remote workflow in a persistent sandbox and cleanup leaves no orphan.
 - [ ] The evidence report supports each MVP acceptance criterion without credentials or private data.

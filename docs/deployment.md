@@ -1,8 +1,9 @@
 # VPS deployment
 
 This route installs the private single-owner service behind an existing nginx
-instance. Compose publishes the API only on `127.0.0.1:3100`; nginx remains the
-only public ingress. The bootstrap script installs an HTTP server block but
+instance. Compose publishes a credential-free TCP ingress proxy only on
+`127.0.0.1:3100`; the API and runner remain on private networks and nginx
+remains the only public ingress. The bootstrap script installs an HTTP server block but
 does not obtain a certificate. Certbot is a separate required step.
 
 ## Prerequisites and safe preflight
@@ -117,7 +118,8 @@ sudo ss -ltnp
 ```
 
 The unauthenticated MCP request should be rejected; readiness should succeed.
-Confirm `3100` is loopback-only and that no runner/executor port is public.
+Confirm `3100` is loopback-only, the ingress container has no runtime secrets,
+and no API, runner, or executor port is public.
 
 From a trusted operator checkout, run the authenticated production workflow
 with the bearer supplied only through the environment:
