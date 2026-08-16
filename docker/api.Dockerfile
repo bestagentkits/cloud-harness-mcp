@@ -18,8 +18,8 @@ COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
-COPY scripts/deploy-canary.mjs ./scripts/deploy-canary.mjs
-COPY deploy/ingress-proxy.mjs ./deploy/ingress-proxy.mjs
+COPY --chown=node:node --chmod=0555 scripts/deploy-canary.mjs ./scripts/deploy-canary.mjs
+COPY --chown=node:node --chmod=0555 deploy/ingress-proxy.mjs ./deploy/ingress-proxy.mjs
 USER node
 EXPOSE 3000
 CMD ["node", "apps/api/dist/index.js"]
