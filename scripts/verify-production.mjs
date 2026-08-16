@@ -4,6 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 const endpoint = new URL(process.env.MCP_URL ?? '');
 const token = process.env.MCP_BEARER_TOKEN;
 const repositoryUrl = process.env.VERIFY_REPOSITORY_URL ?? 'https://github.com/bestagentkits/cloud-harness-mcp.git';
+const repositoryRef = process.env.VERIFY_REPOSITORY_REF ?? (process.env.VERIFY_REPOSITORY_URL ? undefined : 'test-fixture-v1');
 
 if (!endpoint.href || !token) throw new Error('MCP_URL and MCP_BEARER_TOKEN are required');
 
@@ -79,12 +80,12 @@ try {
   const suffix = randomUUID();
   const opened = data(await modern.callTool({
     name: 'workspace_open',
-    arguments: { repositoryUrl, idempotencyKey: `production-${suffix}`, networkMode: 'none' }
+    arguments: { repositoryUrl, ...(repositoryRef ? { ref: repositoryRef } : {}), idempotencyKey: `production-${suffix}`, networkMode: 'none' }
   }), 'workspace_open');
   workspaceId = opened.workspaceId;
   const replayed = data(await modern.callTool({
     name: 'workspace_open',
-    arguments: { repositoryUrl, idempotencyKey: `production-${suffix}`, networkMode: 'none' }
+    arguments: { repositoryUrl, ...(repositoryRef ? { ref: repositoryRef } : {}), idempotencyKey: `production-${suffix}`, networkMode: 'none' }
   }), 'workspace_open replay');
   ensure(replayed.workspaceId === workspaceId, 'workspace idempotency replay changed the handle');
 

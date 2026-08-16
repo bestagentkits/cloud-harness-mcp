@@ -13,6 +13,7 @@ import { WorkspaceService } from '../../apps/runner/src/workspace-service.js';
 
 const bearer = 'e2e-bearer-token-that-is-longer-than-32-characters';
 const serviceToken = 'e2e-runner-token-that-is-longer-than-32-characters';
+const fixtureRef = 'test-fixture-v1';
 let directory: string;
 let store: StateStore;
 let service: WorkspaceService;
@@ -30,7 +31,7 @@ async function listen(server: Server): Promise<number> {
 }
 
 function structured(result: CallToolResult): Record<string, any> {
-  expect(result.isError).toBe(false);
+  expect(result.isError, JSON.stringify(result.structuredContent)).toBe(false);
   return result.structuredContent as Record<string, any>;
 }
 
@@ -76,9 +77,9 @@ afterAll(async () => {
 
 describe('complete coding workflow through MCP', () => {
   it('uses every required coding domain in a persistent sandbox', async () => {
-    const opened = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', idempotencyKey: 'e2e-workspace-1', networkMode: 'none' });
+    const opened = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-1', networkMode: 'none' });
     workspaceId = opened.data.workspaceId;
-    const replayed = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', idempotencyKey: 'e2e-workspace-1', networkMode: 'none' });
+    const replayed = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-1', networkMode: 'none' });
     expect(replayed.data.workspaceId).toBe(workspaceId);
     expect(JSON.stringify((await call('workspace_list')).data)).toContain(workspaceId);
     expect((await call('workspace_status', { workspaceId })).data.status).toBe('ACTIVE');
@@ -144,11 +145,12 @@ describe('complete coding workflow through MCP', () => {
     expect(JSON.stringify((await call('git_diff', { workspaceId, staged: false })).data)).toContain('Verified remote coding harness');
     await call('git_commit', { workspaceId, message: 'test: verify harness workflow', authorName: 'Harness Test', authorEmail: 'harness@example.invalid', all: true });
     expect(JSON.stringify((await call('git_log', { workspaceId, limit: 5 })).data)).toContain('verify harness workflow');
+    await call('git_checkout', { workspaceId, ref: 'e2e-base', create: true });
     const branches = await call('git_branch', { workspaceId, action: 'list', force: false });
-    const initialBranch = branches.data.output.trim().split('\n')[0];
+    expect(branches.data.output).toContain('e2e-base');
     await call('git_branch', { workspaceId, action: 'create', name: 'e2e-branch', startPoint: 'HEAD', force: false });
     await call('git_checkout', { workspaceId, ref: 'e2e-branch', create: false });
-    await call('git_checkout', { workspaceId, ref: initialBranch, create: false });
+    await call('git_checkout', { workspaceId, ref: 'e2e-base', create: false });
     await call('git_branch', { workspaceId, action: 'delete', name: 'e2e-branch', force: false });
     const fetchResult = await client.callTool({ name: 'git_fetch', arguments: { workspaceId, remote: 'origin' } });
     expect(fetchResult.isError).toBe(true);
@@ -160,7 +162,7 @@ describe('complete coding workflow through MCP', () => {
     await call('workspace_close', { workspaceId });
     workspaceId = undefined;
 
-    const expiring = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', idempotencyKey: 'e2e-workspace-ttl', networkMode: 'none' });
+    const expiring = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-ttl', networkMode: 'none' });
     workspaceId = expiring.data.workspaceId;
     const expiringRecord = store.byId(workspaceId)!;
     store.update(workspaceId, { expiresAt: Date.now() - 1 });
