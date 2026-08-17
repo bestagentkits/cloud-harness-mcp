@@ -30,10 +30,12 @@
     "pages:list": "wrangler pages deployment list --project-name cloud-harness-mcp --environment production --json",
     "pages:links": "node scripts/verify-pages-links.mjs",
     "pages:smoke": "node scripts/verify-pages-url.mjs",
+    "plugin:check": "node scripts/sync-cloudharness-plugin-skill.mjs --check",
+    "plugin:sync": "node scripts/sync-cloudharness-plugin-skill.mjs",
     "release:dry-run": "semantic-release --dry-run --no-ci",
     "verify:production": "node scripts/verify-production.mjs",
     "verify:compose": "node scripts/verify-compose-boundaries.mjs",
-    "verify": "npm run lint && npm run typecheck && npm test && npm run build"
+    "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
     "@semantic-release/changelog": "7.0.0",

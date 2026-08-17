@@ -117,15 +117,70 @@ const titles: Record<RunnerOperation, string> = {
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target'
 };
 
+const descriptions: Record<RunnerOperation, string> = {
+  workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace.',
+  workspace_list: 'List owner-visible workspace records with bounded cursor pagination.',
+  workspace_status: 'Read the lifecycle state and metadata for one workspace.',
+  workspace_close: 'Stop a workspace executor and permanently remove all workspace files, including unpushed commits.',
+  files_list: 'List one workspace directory with bounded cursor pagination.',
+  files_read: 'Read a bounded byte range from a workspace file with its size and SHA-256.',
+  files_write: 'Atomically create or replace a workspace file, optionally guarded by its current SHA-256.',
+  files_apply_patch: 'Replace one unique exact text occurrence, optionally guarded by the file SHA-256.',
+  files_delete: 'Delete one workspace file or directory, with explicit recursion and optional file hash guard.',
+  files_move: 'Move or rename one workspace entry, optionally overwriting an existing file.',
+  files_mkdir: 'Create one workspace directory, including missing parents by default.',
+  grep_search: 'Search workspace text with a bounded regular expression and optional path or glob filter.',
+  symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring.',
+  symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text.',
+  exec_run: 'Run one bounded shell command in the workspace and return captured output.',
+  shell_open: 'Open an idempotent ephemeral interactive shell in the workspace.',
+  shell_io: 'Send input to or poll bounded output from an open interactive shell.',
+  shell_close: 'Terminate an interactive shell and release its in-memory state.',
+  sessions_list: 'List named coding sessions in a workspace with bounded cursor pagination.',
+  sessions_open: 'Open an idempotent named coding session in the workspace.',
+  sessions_io: 'Send input to or poll bounded output from a named coding session.',
+  sessions_close: 'Terminate a coding session and release its in-memory state.',
+  tasks_list: 'List managed background task records with bounded cursor pagination.',
+  tasks_run: 'Start an idempotent managed command task with optional task dependencies.',
+  tasks_status: 'Read one managed task state and its next bounded output chunk.',
+  tasks_cancel: 'Terminate a managed task process group without rolling back completed effects.',
+  tasks_graph: 'Read the current managed-task dependency graph for a workspace.',
+  git_status: 'Read branch, index, and working-tree status for the workspace repository.',
+  git_diff: 'Read a bounded staged or unstaged Git diff, optionally narrowed to one path.',
+  git_log: 'Read bounded recent commit metadata from the workspace repository.',
+  git_branch: 'List, create, or delete a local Git branch with constrained ref arguments.',
+  git_checkout: 'Check out an existing Git ref or create and check out a local branch.',
+  git_add: 'Stage either explicit workspace paths or all tracked and untracked changes.',
+  git_commit: 'Create an unsigned local Git commit with an explicit author and message.',
+  git_fetch: 'Fetch a constrained source ref from origin through the trusted repository broker.',
+  git_pull: 'Integrate an origin branch using ff-only, merge, or rebase strategy.',
+  git_push: 'Push a constrained branch refspec to origin, with optional explicit force-with-lease.',
+  git_merge: 'Merge a Git ref with an explicit fast-forward policy and optional message.',
+  git_rebase: 'Start, continue, or abort a local Git rebase with constrained ref arguments.',
+  worktrees_list: 'List managed Git worktrees and their current branch or HEAD state.',
+  worktrees_create: 'Create a named managed worktree, optionally with a new local branch.',
+  worktrees_remove: 'Remove one named managed worktree, optionally discarding dirty state.',
+  skills_list: 'List repository-provided agent skills discovered in the workspace.',
+  skills_read: 'Read bounded instructions for one repository-provided agent skill.',
+  skills_run: 'Execute one reviewed script packaged by a repository-provided skill.',
+  hooks_list: 'List repository-defined Cloud Harness automation hooks without running them.',
+  hooks_run: 'Execute one named repository-defined hook as a bounded shell command.',
+  memories_list: 'List repository-local Cloud Harness memory note names.',
+  memories_read: 'Read one bounded repository-local Cloud Harness memory note.',
+  memories_write: 'Create or replace one repository-local Cloud Harness memory note.',
+  deployments_list: 'List repository-defined deployment targets without running them.',
+  deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.'
+};
+
 const readOnly = new Set<RunnerOperation>(['workspace_list', 'workspace_status', 'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references', 'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list']);
-const destructive = new Set<RunnerOperation>(['workspace_close', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'exec_run', 'shell_open', 'shell_io', 'shell_close', 'sessions_open', 'sessions_io', 'sessions_close', 'tasks_run', 'tasks_cancel', 'git_branch', 'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_create', 'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run']);
+const destructive = new Set<RunnerOperation>(['workspace_close', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close', 'tasks_run', 'tasks_cancel', 'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run']);
 const idempotent = new Set<RunnerOperation>(['workspace_open', 'workspace_list', 'workspace_status', 'workspace_close', 'files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references', 'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close', 'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'git_add', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list']);
-const openWorld = new Set<RunnerOperation>(['workspace_open', 'git_fetch', 'git_pull', 'git_push', 'deployments_run']);
+const openWorld = new Set<RunnerOperation>(['workspace_open', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run', 'git_fetch', 'git_pull', 'git_push', 'skills_run', 'hooks_run', 'deployments_run']);
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({
   name,
   title: titles[name],
-  description: `${titles[name]} inside an owner-bound, TTL-limited cloud coding workspace.`,
+  description: descriptions[name],
   inputSchema: schemas[name],
   readOnly: readOnly.has(name),
   destructive: destructive.has(name),

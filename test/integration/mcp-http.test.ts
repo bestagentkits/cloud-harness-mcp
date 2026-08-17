@@ -45,6 +45,8 @@ describe('official SDK interoperability', () => {
     const listed = await client.listTools();
     expect(listed.tools.length).toBeGreaterThanOrEqual(35);
     expect(listed.tools.find((tool) => tool.name === 'workspace_close')?.annotations?.destructiveHint).toBe(true);
+    expect(listed.tools.find((tool) => tool.name === 'shell_close')?.annotations?.destructiveHint).toBe(true);
+    expect(listed.tools.find((tool) => tool.name === 'sessions_close')?.annotations?.destructiveHint).toBe(true);
     const result = await client.callTool({ name: 'workspace_list', arguments: {} });
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toMatchObject({ ok: true });

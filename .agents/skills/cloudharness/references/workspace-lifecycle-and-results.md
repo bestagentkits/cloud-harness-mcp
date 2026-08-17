@@ -1,0 +1,124 @@
+# Workspace lifecycle, results, and recovery
+
+Every operation outside workspace listing/opening requires the exact opaque
+`workspaceId` returned by Cloud Harness. A workspace is owner-bound, limited to
+one active workspace in the current service, and removed by close or TTL expiry.
+
+## Result envelope
+
+Read `structuredContent`, not only the text message:
+
+| Field | Meaning |
+| --- | --- |
+| `ok` | `true` only when the operation succeeded |
+| `message` | Bounded human summary; never the complete machine result |
+| `data` | Operation-specific JSON payload when available |
+| `error.code` | Stable failure category |
+| `error.message` | Bounded failure detail |
+| `error.retryable` | Whether retry may be appropriate after checking state |
+| `truncated` | Output was cut at a configured or operation bound |
+| `cursor` | Continuation handle only for the operation that returned it |
+
+`message` and error messages are at most 2,000 characters. A cursor is at most
+256 characters. Not every truncated operation supports continuation; if no
+cursor is returned, narrow the request rather than inventing one.
+
+## Error codes
+
+| Code | Response |
+| --- | --- |
+| `AUTHENTICATION_FAILED` | Stop; correct or rotate client credentials outside the workspace. |
+| `FORBIDDEN` | Stop; target or action is outside owner policy. |
+| `INVALID_INPUT` | Correct fields, bounds, paths, or invalid state transition. |
+| `NOT_FOUND` | Re-list or re-read; do not guess an ID/name/path. |
+| `CONFLICT` | Re-read current state and rebuild the intended mutation. |
+| `EXPIRED` | The workspace/resource is gone; open a new workspace if authorized. |
+| `LIMIT_EXCEEDED` | Close/reduce resources or wait when explicitly retryable. |
+| `TIMEOUT` | Inspect current state before rerunning; work may have partially changed state. |
+| `CANCELLED` | Inspect current files/Git/process state before deciding next action. |
+| `UNAVAILABLE` | Retry only when marked retryable and after checking external prerequisites. |
+| `INTERNAL_ERROR` | Preserve bounded evidence and stop repeated retries. |
+
+## Idempotency keys
+
+Keys are 8–128 characters and may contain ASCII letters, digits, `.`, `_`, `:`,
+and `-`. Use a fresh semantic key for a new resource. Reuse the same key only to
+recover a lost response from `workspace_open`, `shell_open`, `sessions_open`, or
+`tasks_run`. Reuse returns the previously created resource in that workspace;
+it does not create a replacement.
+
+## Workspace operations
+
+<!-- cloudharness-tool:workspace_open -->
+### `workspace_open`
+
+Clone an approved repository and start its bounded executor.
+
+- Required: `repositoryUrl` (credential-free HTTPS URL), `idempotencyKey`.
+- Optional: `ref` (1–255 characters, cannot start with `-`), `networkMode`
+  (`none` or `bridge`; service default when omitted).
+- Returns workspace metadata including opaque `workspaceId`, status, network
+  mode, timestamps, and expiry.
+- Side effects: clone, state record, workspace directory, executor creation;
+  may contact the approved repository host through the trusted clone broker.
+- Recovery: after a lost response, retry with the same key. A different key is
+  a new open request and may hit the one-active-workspace limit.
+
+<!-- cloudharness-example:workspace_open
+{"repositoryUrl":"https://github.com/example/project.git","ref":"main","idempotencyKey":"open-project-20260817","networkMode":"none"}
+-->
+
+<!-- cloudharness-tool:workspace_list -->
+### `workspace_list`
+
+List owner-visible workspace records, including inactive records.
+
+- Optional: `cursor`; `limit` defaults to 100 and permits 1–500.
+- Returns `data.workspaces`; a next cursor is returned when another page exists.
+- Read-only and safe to repeat.
+
+<!-- cloudharness-tool:workspace_status -->
+### `workspace_status`
+
+Read one workspace record by opaque ID.
+
+- Required: `workspaceId`.
+- Returns current lifecycle state and metadata. It can inspect a closed or failed
+  record, unlike tools that require an active executor.
+- Read-only and safe to repeat.
+
+<!-- cloudharness-tool:workspace_close -->
+### `workspace_close`
+
+Terminate the executor and remove the workspace directory.
+
+- Required: `workspaceId`.
+- Returns the final closed record. Closing an already closed workspace succeeds.
+- Destructive and irreversible for uncommitted changes and unpushed commits.
+  Review Git status, close managed processes, and preserve authorized results
+  before calling.
+
+<!-- cloudharness-example:workspace_close
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
+## Lifecycle details
+
+- Active workspace calls refresh idle expiry but cannot extend beyond the
+  configured absolute lifetime.
+- Workspace metadata is durable; executor files exist only until close/expiry.
+- Shell, session, task handles and buffered output are in runner memory. After a
+  runner restart, surviving executors are restarted so lost processes do not
+  continue invisibly; old process handles are not recoverable.
+- Closing a workspace evicts every shell/session/task record for that workspace.
+- If a workspace is `EXPIRED`, never reuse its handle. Open a new authorized
+  workspace and reconstruct state from durable repository history.
+
+## Interrupted mutation checklist
+
+1. Read the structured error and `retryable` flag.
+2. Recheck workspace status.
+3. Inspect the affected file, Git state, task list, or external result.
+4. Retry only when the desired effect is absent and the operation is safe.
+5. For create operations with an idempotency key, reuse the original key.
+6. Report any outcome that remains unverifiable.

@@ -85,7 +85,9 @@ describe('complete coding workflow through MCP', () => {
     expect((await call('workspace_status', { workspaceId })).data.status).toBe('ACTIVE');
 
     const read = await call('files_read', { workspaceId, path: 'README.md', offset: 0, limit: 65_536 });
-    await call('files_apply_patch', { workspaceId, path: 'README.md', oldText: 'Remote coding harness', newText: 'Verified remote coding harness', expectedSha256: read.data.sha256 });
+    const patched = await call('files_apply_patch', { workspaceId, path: 'README.md', oldText: 'Remote coding harness', newText: 'Verified remote coding harness', expectedSha256: read.data.sha256 });
+    expect(patched.data).toMatchObject({ path: 'README.md', sha256: expect.any(String) });
+    expect(patched.data.bytes).toBeUndefined();
     await call('files_write', { workspaceId, path: 'verification.txt', content: 'cloud harness verified\n' });
     await call('files_mkdir', { workspaceId, path: 'scratch/nested', recursive: true });
     const directoryMode = await call('exec_run', { workspaceId, command: 'stat -c %a scratch', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 });
@@ -103,6 +105,8 @@ describe('complete coding workflow through MCP', () => {
 
     const shell = await call('shell_open', { workspaceId, cwd: '.', idempotencyKey: 'e2e-shell-1' });
     const shellId = shell.data.id;
+    expect(shell.data).toMatchObject({ id: expect.any(String), status: expect.any(String), output: expect.any(String) });
+    expect(shell.cursor).toBeUndefined();
     const shellOutput = await call('shell_io', { workspaceId, shellId, input: 'echo shell-ok\n', waitMs: 300 });
     expect(JSON.stringify(shellOutput.data)).toContain('shell-ok');
     const shellDelta = await call('shell_io', { workspaceId, shellId, cursor: shellOutput.cursor, waitMs: 0 });
@@ -120,6 +124,8 @@ describe('complete coding workflow through MCP', () => {
 
     const session = await call('sessions_open', { workspaceId, name: 'review', cwd: '.', idempotencyKey: 'e2e-session-1' });
     const sessionId = session.data.id;
+    expect(session.data).toMatchObject({ id: expect.any(String), name: 'review', status: expect.any(String), output: expect.any(String) });
+    expect(session.cursor).toBeUndefined();
     expect(JSON.stringify((await call('sessions_list', { workspaceId, limit: 100 })).data)).toContain(sessionId);
     expect(JSON.stringify((await call('sessions_io', { workspaceId, sessionId, input: 'echo session-ok\n', waitMs: 300 })).data)).toContain('session-ok');
     await call('sessions_close', { workspaceId, sessionId });
@@ -165,7 +171,10 @@ describe('complete coding workflow through MCP', () => {
     expect(JSON.stringify((await call('skills_run', { workspaceId, name: 'demo', script: 'run.sh', args: [], timeoutMs: 10_000 })).data)).toContain('skill-ok');
     expect(JSON.stringify((await call('hooks_list', { workspaceId })).data)).toContain('verify');
     expect(JSON.stringify((await call('hooks_run', { workspaceId, name: 'verify', timeoutMs: 10_000 })).data)).toContain('hook-ok');
-    expect(JSON.stringify((await call('deployments_list', { workspaceId })).data)).toContain('preview');
+    const deployments = await call('deployments_list', { workspaceId });
+    expect(deployments.data.deployments).toHaveLength(2);
+    expect(deployments.data.deployments).toEqual(expect.arrayContaining([{ name: 'preview', cwd: '.' }, { name: 'broken', cwd: '.' }]));
+    expect(deployments.data.deployments.every((entry: Record<string, unknown>) => entry.command === undefined && entry.description === undefined)).toBe(true);
     expect(JSON.stringify((await call('deployments_run', { workspaceId, name: 'preview', timeoutMs: 10_000 })).data)).toContain('deploy-ok');
     const failedDeployment = await client.callTool({ name: 'deployments_run', arguments: { workspaceId, name: 'broken', timeoutMs: 10_000 } });
     expect(failedDeployment.isError).toBe(true);
@@ -186,6 +195,10 @@ describe('complete coding workflow through MCP', () => {
     await call('git_add', { workspaceId, all: true, paths: [] });
     await call('git_commit', { workspaceId, message: 'test: verify harness workflow', authorName: 'Harness Test', authorEmail: 'harness@example.invalid', all: false });
     expect(JSON.stringify((await call('git_log', { workspaceId, limit: 5 })).data)).toContain('verify harness workflow');
+    await call('files_write', { workspaceId, path: 'commit-all-untracked.txt', content: 'included by git add --all\n' });
+    await call('git_commit', { workspaceId, message: 'test: verify commit all', authorName: 'Harness Test', authorEmail: 'harness@example.invalid', all: true });
+    const commitAll = await call('exec_run', { workspaceId, command: 'git show --name-only --format= HEAD', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 });
+    expect(commitAll.data.output).toContain('commit-all-untracked.txt');
     await call('git_checkout', { workspaceId, ref: 'e2e-base', create: true });
     const branches = await call('git_branch', { workspaceId, action: 'list', force: false });
     expect(branches.data.output).toContain('e2e-base');
