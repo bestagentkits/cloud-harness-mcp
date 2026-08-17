@@ -44,16 +44,21 @@
       <section class="hero" id="top" aria-labelledby="hero-title">
         <div class="hero-copy">
           <p class="overline">Remote coding, under one owner</p>
-          <h1 id="hero-title">Keep the controls close.</h1>
+          <h1 id="hero-title">
+            <span class="hero-title-lead">Keep the</span>
+            <span class="hero-title-command">controls close.</span>
+          </h1>
           <p class="hero-lede">
             Cloud Harness MCP gives one trusted owner a narrow, observable route
             into a time-limited repository workspace.
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="#getting-started"
-              >Start safely <span aria-hidden="true">↓</span></a
+              >Start safely
+              <span class="button-arrow" aria-hidden="true">↓</span></a
             ><a class="button button-quiet" href="#connect"
-              >Choose a client <span aria-hidden="true">↓</span></a
+              >Choose a client
+              <span class="button-arrow" aria-hidden="true">↓</span></a
             >
           </div>
         </div>
@@ -80,7 +85,7 @@
                 id="hero-arrow"
                 markerWidth="9"
                 markerHeight="9"
-                refX="8"
+                refX="9"
                 refY="4.5"
                 orient="auto"
               >
@@ -105,36 +110,38 @@
             <text class="svg-kicker" x="368" y="106">EXECUTION</text>
             <path
               class="hero-wire"
-              d="M96 208 H170 H252 H392"
+              data-edge="hero-request"
+              data-source="hero-owner"
+              data-source-side="right"
+              data-target="hero-workspace"
+              data-target-side="left"
+              data-via="hero-runner"
+              d="M144 205 H360"
               marker-end="url(#hero-arrow)"
             />
             <path
               class="hero-wire hero-return"
-              d="M392 262 H252 H170 H96"
+              data-edge="hero-result"
+              data-source="hero-workspace"
+              data-source-side="bottom"
+              data-target="hero-owner"
+              data-target-side="bottom"
+              data-via="hero-runner"
+              d="M415 244 V268 H272 V236 H176 V268 H96 V244"
               marker-end="url(#hero-arrow)"
             />
-            <g class="hero-node">
-              <rect x="48" y="166" width="96" height="78" />
-              <text x="66" y="196">OWNER</text>
-              <text class="svg-muted" x="66" y="220">MCP client</text>
-            </g>
-            <g class="hero-node">
-              <rect x="176" y="166" width="96" height="78" />
-              <text x="194" y="196">RUNNER</text>
-              <text class="svg-muted" x="194" y="220">policy</text>
-            </g>
-            <g class="hero-node hero-node-active">
-              <rect x="360" y="166" width="110" height="78" />
-              <text x="378" y="196">WORKSPACE</text>
-              <text class="svg-muted" x="378" y="220">non-root · TTL</text>
-            </g>
-            <circle class="hero-packet" r="7" visibility="hidden">
+            <circle
+              class="hero-packet"
+              data-motion-for="hero-request"
+              r="7"
+              visibility="hidden"
+            >
               <set attributeName="visibility" to="visible" begin="0s" />
               <animateMotion
                 dur="5.6s"
                 additive="replace"
                 repeatCount="indefinite"
-                path="M96 208 H170 H252 H392"
+                path="M144 205 H360"
                 keyPoints="0;0;1;1"
                 keyTimes="0;0.14;0.72;1"
                 calcMode="linear"
@@ -142,21 +149,40 @@
             </circle>
             <circle
               class="hero-packet hero-packet-return"
+              data-motion-for="hero-result"
               r="5"
               visibility="hidden"
             >
-              <set attributeName="visibility" to="visible" begin="0s" />
+              <set attributeName="visibility" to="visible" begin="2.8s" />
               <animateMotion
                 dur="5.6s"
                 additive="replace"
                 begin="2.8s"
                 repeatCount="indefinite"
-                path="M392 262 H252 H170 H96"
+                path="M415 244 V268 H272 V236 H176 V268 H96 V244"
                 keyPoints="0;0;1;1"
                 keyTimes="0;0.14;0.72;1"
                 calcMode="linear"
               />
             </circle>
+            <g class="hero-node" data-node="hero-owner">
+              <rect x="48" y="166" width="96" height="78" />
+              <text x="66" y="196">OWNER</text>
+              <text class="svg-muted" x="66" y="220">MCP client</text>
+            </g>
+            <g class="hero-node" data-node="hero-runner">
+              <rect x="176" y="166" width="96" height="78" />
+              <text x="194" y="196">RUNNER</text>
+              <text class="svg-muted" x="194" y="220">policy</text>
+            </g>
+            <g
+              class="hero-node hero-node-active"
+              data-node="hero-workspace"
+            >
+              <rect x="360" y="166" width="110" height="78" />
+              <text x="378" y="196">WORKSPACE</text>
+              <text class="svg-muted" x="378" y="220">non-root · TTL</text>
+            </g>
             <text class="hero-trace-label" x="50" y="306">
               AUTHENTICATED REQUEST
             </text>
@@ -278,7 +304,7 @@
                   id="process-request-arrow"
                   markerWidth="10"
                   markerHeight="10"
-                  refX="9"
+                  refX="10"
                   refY="5"
                   orient="auto"
                 >
@@ -288,7 +314,7 @@
                   id="process-result-arrow"
                   markerWidth="10"
                   markerHeight="10"
-                  refX="9"
+                  refX="10"
                   refY="5"
                   orient="auto"
                 >
@@ -309,42 +335,118 @@
               </g>
               <path
                 class="diagram-lane request-lane"
-                d="M130 246 H270 H492 H694"
+                data-edge="process-request"
+                data-source="process-owner"
+                data-source-side="right"
+                data-target="process-runner"
+                data-target-side="left"
+                data-via="process-ingress process-api"
+                d="M192 234 H622"
                 marker-end="url(#process-request-arrow)"
               />
               <path
                 class="diagram-lane result-lane"
-                d="M1002 220 V368 H694 H492 H270 H130"
+                data-edge="process-result"
+                data-source="process-executor"
+                data-source-side="bottom"
+                data-target="process-owner"
+                data-target-side="bottom"
+                data-via="process-runner process-api process-ingress"
+                d="M1002 220 V232 H794 V266 H218 V320 H131 V288"
                 marker-end="url(#process-result-arrow)"
               />
               <path
                 class="diagram-branch"
-                d="M694 246 V178 H992"
+                data-edge="process-execute"
+                data-source="process-runner"
+                data-source-side="top"
+                data-target="process-executor"
+                data-target-side="left"
+                d="M694 204 V178 H920"
                 marker-end="url(#process-request-arrow)"
               />
-              <g class="diagram-node client-node">
+              <circle
+                class="diagram-packet packet-request"
+                data-motion-for="process-request"
+                r="5"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="0s" />
+                <animateMotion
+                  dur="6.2s"
+                  additive="replace"
+                  repeatCount="indefinite"
+                  path="M192 234 H622"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.16;0.72;1"
+                  calcMode="linear"
+                />
+              </circle>
+              <circle
+                class="diagram-packet packet-result"
+                data-motion-for="process-result"
+                r="4"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="3.1s" />
+                <animateMotion
+                  dur="6.2s"
+                  additive="replace"
+                  begin="3.1s"
+                  repeatCount="indefinite"
+                  path="M1002 220 V232 H794 V266 H218 V320 H131 V288"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.16;0.72;1"
+                  calcMode="linear"
+                />
+              </circle>
+              <circle
+                class="diagram-packet packet-branch"
+                data-motion-for="process-execute"
+                r="4"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="1.65s" />
+                <animateMotion
+                  dur="6.2s"
+                  additive="replace"
+                  begin="1.65s"
+                  repeatCount="indefinite"
+                  path="M694 204 V178 H920"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.16;0.72;1"
+                  calcMode="linear"
+                />
+              </circle>
+              <g
+                class="diagram-node client-node"
+                data-node="process-owner"
+              >
                 <rect x="70" y="204" width="122" height="84" />
                 <text x="94" y="238">OWNER</text>
                 <text x="94" y="264" class="svg-muted">MCP client</text>
               </g>
-              <g class="diagram-node">
+              <g class="diagram-node" data-node="process-ingress">
                 <rect x="218" y="204" width="104" height="84" />
                 <text x="240" y="238">INGRESS</text>
                 <text x="240" y="264" class="svg-muted">no secret</text>
               </g>
-              <g class="diagram-node">
+              <g class="diagram-node" data-node="process-api">
                 <rect x="438" y="204" width="110" height="84" />
                 <text x="464" y="238">MCP API</text>
                 <text x="464" y="264" class="svg-muted">stateless</text>
               </g>
-              <g class="diagram-node runner-node">
+              <g class="diagram-node runner-node" data-node="process-runner">
                 <rect x="622" y="204" width="144" height="84" />
                 <text x="650" y="238">RUNNER</text>
                 <text x="650" y="264" class="svg-muted">
                   policy + lifecycle
                 </text>
               </g>
-              <g class="diagram-node executor-node">
+              <g
+                class="diagram-node executor-node"
+                data-node="process-executor"
+              >
                 <rect x="920" y="136" width="164" height="84" />
                 <text x="946" y="170">EXECUTOR</text>
                 <text x="946" y="196" class="svg-muted">non-root · TTL</text>
@@ -355,56 +457,6 @@
                 <text x="880" y="310">NO DOCKER SOCKET</text>
                 <text x="880" y="338">NO CONTROL CREDENTIALS</text>
               </g>
-              <circle
-                class="diagram-packet packet-request"
-                r="5"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="0s" />
-                <animateMotion
-                  dur="6.2s"
-                  additive="replace"
-                  repeatCount="indefinite"
-                  path="M130 246 H270 H492 H694"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.16;0.72;1"
-                  calcMode="linear"
-                />
-              </circle>
-              <circle
-                class="diagram-packet packet-result"
-                r="4"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="0s" />
-                <animateMotion
-                  dur="6.2s"
-                  additive="replace"
-                  begin="3.1s"
-                  repeatCount="indefinite"
-                  path="M1002 220 V368 H694 H492 H270 H130"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.16;0.72;1"
-                  calcMode="linear"
-                />
-              </circle>
-              <circle
-                class="diagram-packet packet-branch"
-                r="4"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="0s" />
-                <animateMotion
-                  dur="6.2s"
-                  additive="replace"
-                  begin="1.65s"
-                  repeatCount="indefinite"
-                  path="M694 246 V178 H992"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.16;0.72;1"
-                  calcMode="linear"
-                />
-              </circle>
             </svg>
           </div>
           <figcaption>
@@ -496,7 +548,7 @@
                     id="workflow-arrow"
                     markerWidth="10"
                     markerHeight="10"
-                    refX="9"
+                    refX="10"
                     refY="5"
                     orient="auto"
                   >
@@ -523,54 +575,143 @@
                 </g>
                 <path
                   class="diagram-lane lifecycle-lane"
-                  d="M134 244 H500"
+                  data-edge="workflow-open"
+                  data-source="workflow-open-node"
+                  data-source-side="right"
+                  data-target="workflow-work"
+                  data-target-side="left"
+                  d="M224 232 H460"
                   marker-end="url(#workflow-arrow)"
                 />
                 <path
                   class="diagram-lane lifecycle-return"
-                  d="M500 404 H134"
+                  data-edge="workflow-close"
+                  data-source="workflow-work"
+                  data-source-side="left"
+                  data-target="workflow-close-node"
+                  data-target-side="right"
+                  d="M460 264 H380 V404 H224"
                   marker-end="url(#workflow-arrow)"
                 />
                 <path
                   class="diagram-loop"
-                  d="M490 308 C548 266 632 266 684 308 C724 340 718 420 656 432 C592 446 514 430 494 378"
+                  data-edge="workflow-loop"
+                  data-source="workflow-work"
+                  data-source-side="bottom"
+                  data-target="workflow-work"
+                  data-target-side="bottom"
+                  d="M615 286 C700 304 700 408 615 426 C530 444 482 370 512 286"
                   marker-end="url(#workflow-arrow)"
                 />
                 <path
                   class="diagram-transfer-line"
-                  d="M694 244 H836 V182 H1058"
+                  data-edge="workflow-transfer"
+                  data-source="workflow-work"
+                  data-source-side="right"
+                  data-target="workflow-origin"
+                  data-target-side="top"
+                  data-via="workflow-helper"
+                  d="M666 234 H836 V182 H1016 V116 H1070 V140"
                   marker-end="url(#workflow-arrow)"
                 />
                 <path
                   class="diagram-transfer-line transfer-return"
-                  d="M1058 312 H836 V404 H694"
+                  data-edge="workflow-transfer-result"
+                  data-source="workflow-origin"
+                  data-source-side="bottom"
+                  data-target="workflow-work"
+                  data-target-side="bottom"
+                  data-via="workflow-helper"
+                  d="M1070 224 V254 H1040 V240 H1016 V200 H852 V320 H563 V286"
                   marker-end="url(#workflow-arrow)"
                 />
-                <g class="diagram-node">
+                <circle
+                  class="diagram-packet packet-request"
+                  data-motion-for="workflow-open"
+                  r="5"
+                  visibility="hidden"
+                >
+                  <set attributeName="visibility" to="visible" begin="0s" />
+                  <animateMotion
+                    dur="6.8s"
+                    additive="replace"
+                    repeatCount="indefinite"
+                    path="M224 232 H460"
+                    keyPoints="0;0;1;1"
+                    keyTimes="0;0.12;0.68;1"
+                    calcMode="linear"
+                  />
+                </circle>
+                <circle
+                  class="diagram-packet packet-copper"
+                  data-motion-for="workflow-transfer"
+                  r="5"
+                  visibility="hidden"
+                >
+                  <set attributeName="visibility" to="visible" begin="1.9s" />
+                  <animateMotion
+                    dur="6.8s"
+                    additive="replace"
+                    begin="1.9s"
+                    repeatCount="indefinite"
+                    path="M666 234 H836 V182 H1016 V116 H1070 V140"
+                    keyPoints="0;0;1;1"
+                    keyTimes="0;0.16;0.72;1"
+                    calcMode="linear"
+                  />
+                </circle>
+                <circle
+                  class="diagram-packet packet-result"
+                  data-motion-for="workflow-close"
+                  r="4"
+                  visibility="hidden"
+                >
+                  <set attributeName="visibility" to="visible" begin="3.6s" />
+                  <animateMotion
+                    dur="6.8s"
+                    additive="replace"
+                    begin="3.6s"
+                    repeatCount="indefinite"
+                    path="M460 264 H380 V404 H224"
+                    keyPoints="0;0;1;1"
+                    keyTimes="0;0.16;0.72;1"
+                    calcMode="linear"
+                  />
+                </circle>
+                <g class="diagram-node" data-node="workflow-open-node">
                   <rect x="80" y="202" width="144" height="84" />
                   <text x="106" y="236">OPEN</text>
                   <text x="106" y="262" class="svg-muted">workspace_open</text>
                 </g>
-                <g class="diagram-node executor-node">
+                <g
+                  class="diagram-node executor-node"
+                  data-node="workflow-work"
+                >
                   <rect x="460" y="202" width="206" height="84" />
                   <text x="488" y="236">WORK</text>
                   <text x="488" y="262" class="svg-muted">
                     files · code · commands
                   </text>
                 </g>
-                <g class="diagram-node transfer-node">
+                <g
+                  class="diagram-node transfer-node"
+                  data-node="workflow-helper"
+                >
                   <rect x="852" y="140" width="164" height="84" />
                   <text x="880" y="174">HELPER</text>
                   <text x="880" y="200" class="svg-muted">
                     short-lived token
                   </text>
                 </g>
-                <g class="diagram-node">
+                <g class="diagram-node" data-node="workflow-origin">
                   <rect x="1018" y="140" width="104" height="84" />
                   <text x="1038" y="174">ORIGIN</text>
                   <text x="1038" y="200" class="svg-muted">GitHub</text>
                 </g>
-                <g class="diagram-node close-node">
+                <g
+                  class="diagram-node close-node"
+                  data-node="workflow-close-node"
+                >
                   <rect x="80" y="362" width="144" height="84" />
                   <text x="106" y="396">CLOSE</text>
                   <text x="106" y="422" class="svg-muted">workspace_close</text>
@@ -579,56 +720,6 @@
                   <rect x="416" y="450" width="288" height="40" />
                   <text x="438" y="477">NO TOKEN · NETWORK DEFAULT: NONE</text>
                 </g>
-                <circle
-                  class="diagram-packet packet-request"
-                  r="5"
-                  visibility="hidden"
-                >
-                  <set attributeName="visibility" to="visible" begin="0s" />
-                  <animateMotion
-                    dur="6.8s"
-                    additive="replace"
-                    repeatCount="indefinite"
-                    path="M134 244 H500"
-                    keyPoints="0;0;1;1"
-                    keyTimes="0;0.12;0.68;1"
-                    calcMode="linear"
-                  />
-                </circle>
-                <circle
-                  class="diagram-packet packet-copper"
-                  r="5"
-                  visibility="hidden"
-                >
-                  <set attributeName="visibility" to="visible" begin="0s" />
-                  <animateMotion
-                    dur="6.8s"
-                    additive="replace"
-                    begin="1.9s"
-                    repeatCount="indefinite"
-                    path="M694 244 H836 V182 H1058"
-                    keyPoints="0;0;1;1"
-                    keyTimes="0;0.16;0.72;1"
-                    calcMode="linear"
-                  />
-                </circle>
-                <circle
-                  class="diagram-packet packet-result"
-                  r="4"
-                  visibility="hidden"
-                >
-                  <set attributeName="visibility" to="visible" begin="0s" />
-                  <animateMotion
-                    dur="6.8s"
-                    additive="replace"
-                    begin="3.6s"
-                    repeatCount="indefinite"
-                    path="M500 404 H134"
-                    keyPoints="0;0;1;1"
-                    keyTimes="0;0.16;0.72;1"
-                    calcMode="linear"
-                  />
-                </circle>
               </svg>
             </div>
             <figcaption>
@@ -779,7 +870,7 @@
                   id="architecture-arrow"
                   markerWidth="10"
                   markerHeight="10"
-                  refX="9"
+                  refX="10"
                   refY="5"
                   orient="auto"
                 >
@@ -802,84 +893,190 @@
               </g>
               <path
                 class="diagram-lane request-lane"
-                d="M84 258 H222 H322 H526 H962"
+                data-edge="architecture-request"
+                data-source="architecture-owner"
+                data-source-side="right"
+                data-target="architecture-executor"
+                data-target-side="left"
+                data-via="architecture-ingress architecture-api architecture-runner"
+                d="M136 244 H892"
                 marker-end="url(#architecture-arrow)"
               />
               <path
                 class="diagram-lane result-lane"
-                d="M962 370 H526 H322 H222 H84"
+                data-edge="architecture-result"
+                data-source="architecture-executor"
+                data-source-side="bottom"
+                data-target="architecture-owner"
+                data-target-side="bottom"
+                data-via="architecture-runner architecture-api architecture-ingress"
+                d="M975 300 V334 H816 V274 H182 V334 H84 V300"
                 marker-end="url(#architecture-arrow)"
               />
               <path
                 class="diagram-control-line"
-                d="M618 294 V358 H508"
+                data-edge="architecture-state"
+                data-source="architecture-runner"
+                data-source-side="bottom"
+                data-target="architecture-state-node"
+                data-target-side="top"
+                d="M584 300 V350 H511 V382"
                 marker-end="url(#architecture-arrow)"
               />
               <path
                 class="diagram-control-line"
-                d="M618 294 V358 H720"
+                data-edge="architecture-docker"
+                data-source="architecture-runner"
+                data-source-side="bottom"
+                data-target="architecture-docker-node"
+                data-target-side="top"
+                d="M620 300 V350 H722 V382"
                 marker-end="url(#architecture-arrow)"
               />
               <path
                 class="diagram-transfer-line"
-                d="M620 300 V430 H695 V466"
+                data-edge="architecture-helper"
+                data-source="architecture-runner"
+                data-source-side="bottom"
+                data-target="architecture-helper-node"
+                data-target-side="top"
+                d="M656 300 V350 H640 V466"
                 marker-end="url(#architecture-arrow)"
               />
               <path
                 class="diagram-transfer-line"
-                d="M695 540 V610 H1041"
+                data-edge="architecture-github"
+                data-source="architecture-helper-node"
+                data-source-side="bottom"
+                data-target="architecture-github-node"
+                data-target-side="left"
+                d="M695 540 V618 H978"
                 marker-end="url(#architecture-arrow)"
               />
-              <g class="diagram-node client-node">
+              <circle
+                class="diagram-packet packet-request"
+                data-motion-for="architecture-request"
+                r="5"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="0s" />
+                <animateMotion
+                  dur="7s"
+                  additive="replace"
+                  repeatCount="indefinite"
+                  path="M136 244 H892"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.14;0.68;1"
+                  calcMode="linear"
+                />
+              </circle>
+              <circle
+                class="diagram-packet packet-result"
+                data-motion-for="architecture-result"
+                r="4"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="3.5s" />
+                <animateMotion
+                  dur="7s"
+                  additive="replace"
+                  begin="3.5s"
+                  repeatCount="indefinite"
+                  path="M975 300 V334 H816 V274 H182 V334 H84 V300"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.14;0.68;1"
+                  calcMode="linear"
+                />
+              </circle>
+              <circle
+                class="diagram-packet packet-copper"
+                data-motion-for="architecture-helper"
+                r="5"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="1.9s" />
+                <animateMotion
+                  dur="7s"
+                  additive="replace"
+                  begin="1.9s"
+                  repeatCount="indefinite"
+                  path="M656 300 V350 H640 V466"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.18;0.72;1"
+                  calcMode="linear"
+                />
+              </circle>
+              <g
+                class="diagram-node client-node"
+                data-node="architecture-owner"
+              >
                 <rect x="32" y="216" width="104" height="84" />
                 <text x="52" y="250">OWNER</text>
                 <text x="52" y="276" class="svg-muted">client</text>
               </g>
-              <g class="diagram-node">
+              <g class="diagram-node" data-node="architecture-ingress">
                 <rect x="182" y="216" width="90" height="84" />
                 <text x="198" y="250">INGRESS</text>
                 <text x="198" y="276" class="svg-muted">loopback</text>
               </g>
-              <g class="diagram-node">
+              <g class="diagram-node" data-node="architecture-api">
                 <rect x="292" y="216" width="90" height="84" />
                 <text x="318" y="250">API</text>
                 <text x="310" y="276" class="svg-muted">MCP</text>
               </g>
-              <g class="diagram-node runner-node">
+              <g
+                class="diagram-node runner-node"
+                data-node="architecture-runner"
+              >
                 <rect x="548" y="216" width="144" height="84" />
                 <text x="574" y="250">RUNNER</text>
                 <text x="574" y="276" class="svg-muted">lifecycle</text>
               </g>
-              <g class="diagram-node">
+              <g class="diagram-node" data-node="architecture-state-node">
                 <rect x="458" y="382" width="106" height="74" />
                 <text x="482" y="414">STATE</text>
                 <text x="476" y="438" class="svg-muted">SQLite</text>
               </g>
-              <g class="diagram-node">
+              <g class="diagram-node" data-node="architecture-docker-node">
                 <rect x="664" y="382" width="116" height="74" />
                 <text x="690" y="414">DOCKER</text>
                 <text x="682" y="438" class="svg-muted">runner only</text>
               </g>
-              <g class="diagram-node executor-node">
+              <g
+                class="diagram-node executor-node"
+                data-node="architecture-executor"
+              >
                 <rect x="892" y="216" width="166" height="84" />
                 <text x="920" y="250">EXECUTOR</text>
                 <text x="920" y="276" class="svg-muted">
                   non-root workspace
                 </text>
               </g>
-              <g class="diagram-node transfer-node">
+              <g
+                class="diagram-node transfer-node"
+                data-node="architecture-helper-node"
+              >
                 <rect x="610" y="466" width="170" height="74" />
                 <text x="634" y="498">GIT HELPER</text>
                 <text x="634" y="522" class="svg-muted">short-lived token</text>
               </g>
-              <g class="diagram-node github-node">
+              <g
+                class="diagram-node github-node"
+                data-node="architecture-github-node"
+              >
                 <rect x="978" y="586" width="126" height="64" />
                 <text x="1000" y="616">GITHUB</text>
                 <text x="1000" y="638" class="svg-muted">origin</text>
               </g>
               <g class="blocked-route">
-                <path d="M1030 330 h84" />
-                <path d="M1060 314 l24 32 M1084 314 l-24 32" />
+                <path
+                  data-edge="architecture-blocked-egress"
+                  data-source="architecture-executor"
+                  data-source-side="right"
+                  data-blocked-stub
+                  d="M1058 258 H1114"
+                />
+                <path d="M1080 242 l16 32 M1096 242 l-16 32" />
               </g>
               <g class="diagram-note-box">
                 <rect x="866" y="402" width="240" height="76" />
@@ -890,56 +1087,6 @@
                 REQUEST
               </text>
               <text class="lane-label result-label" x="44" y="344">RESULT</text>
-              <circle
-                class="diagram-packet packet-request"
-                r="5"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="0s" />
-                <animateMotion
-                  dur="7s"
-                  additive="replace"
-                  repeatCount="indefinite"
-                  path="M84 258 H222 H322 H526 H962"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.14;0.68;1"
-                  calcMode="linear"
-                />
-              </circle>
-              <circle
-                class="diagram-packet packet-result"
-                r="4"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="0s" />
-                <animateMotion
-                  dur="7s"
-                  additive="replace"
-                  begin="3.5s"
-                  repeatCount="indefinite"
-                  path="M962 370 H526 H322 H222 H84"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.14;0.68;1"
-                  calcMode="linear"
-                />
-              </circle>
-              <circle
-                class="diagram-packet packet-copper"
-                r="5"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="0s" />
-                <animateMotion
-                  dur="7s"
-                  additive="replace"
-                  begin="1.9s"
-                  repeatCount="indefinite"
-                  path="M620 300 V430 H695 V466"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.18;0.72;1"
-                  calcMode="linear"
-                />
-              </circle>
             </svg>
           </div>
           <figcaption>
