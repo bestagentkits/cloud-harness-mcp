@@ -43,7 +43,9 @@ must still be large enough for the intended operation.
 `ALLOWED_GIT_HOSTS` is a host allowlist, not permission to use arbitrary URL
 schemes or private addresses. `WORKSPACE_NETWORK_MODE=none` is the safe
 baseline. `bridge` enables ordinary container egress and should be an explicit
-owner choice for a workspace that needs dependency downloads or `git_fetch`.
+owner choice for a workspace that needs dependency downloads, arbitrary
+networked commands, or networked repository-defined deployments. Runner-owned
+remote Git helpers do not depend on executor network mode.
 
 `WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`, and
 `REAPER_INTERVAL_SECONDS` define lifecycle timing. `MAX_OUTPUT_BYTES` bounds
@@ -62,6 +64,8 @@ cannot select an image.
 
 ## Optional private GitHub clone
 
+The same GitHub App settings also govern authenticated fetch, pull, and push.
+
 All three settings are required together:
 
 - `GITHUB_APP_ID`
@@ -73,12 +77,17 @@ Prefer the file form. Production Compose mounts the root-owned
 in the runner, so the maintained key path is
 `/run/cloud-harness-secrets/github-app-private-key.pem`. The API explicitly
 clears all GitHub App variables inherited from the common environment file.
-These credentials belong to the trusted runner only. They are used to mint a
-short-lived repository-scoped token for initial clone and must never be added
-to the executor environment.
+These credentials belong to the trusted runner only. They are used to mint
+short-lived repository-scoped tokens for clone, fetch, pull, and push and must
+never be added to the executor environment. Public clone/fetch/pull do not need
+an App token. A private repository needs Contents read permission for
+clone/fetch/pull; push always requires a configured installation with Contents
+read and write permission.
 
-Private cloning is optional. Do not report it as live-verified until an owner
-has supplied valid credentials and completed a sanitized clone/leak check.
+Private repository access is optional. Do not report it as live-verified until
+an owner has supplied valid credentials and completed a sanitized clone and
+transfer leak check. The broker and transfer boundary are described in
+[`mcp-api.md`](mcp-api.md#repository-opening-policy).
 
 ## Compose and logging overrides
 
