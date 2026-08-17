@@ -18,12 +18,51 @@ The public MCP URL is:
 https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
 ```
 
-## Connect from Codex
+## Connect from AI clients
 
-Keep the bearer token in the environment, not in `config.toml`:
+This server exposes a remote Streamable HTTP MCP endpoint:
+
+```text
+https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+```
+
+All direct integrations below use the owner-provided `CLOUD_HARNESS_MCP_TOKEN`.
+Keep it in a local environment variable or client-local configuration; never
+put it in a repository, prompt, or shared project configuration. This is a
+single-owner execution service: granting a client access grants it the ability
+to ask the executor to run commands. Read the [security model](docs/security-model.md)
+before connecting it.
+
+<details>
+<summary>ChatGPT</summary>
+
+ChatGPT custom MCP apps are configured in the web app and must be reachable
+from OpenAI's infrastructure. Enable Developer mode, then go to **Settings or
+Workspace settings → Apps → Create**, enter the endpoint above, scan its tools,
+and create the app. The exact availability and controls depend on the ChatGPT
+plan and workspace role; follow [OpenAI's current Developer mode guide](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
+
+This deployment uses a static bearer token. ChatGPT's custom-app flow is
+intended for supported authentication flows such as OAuth and does not provide
+a documented place to supply an arbitrary `Authorization` header. Put an
+OAuth-capable MCP gateway in front of the service before connecting it to
+ChatGPT; do not place the owner bearer token in an app definition or a chat.
+
+</details>
+
+<details>
+<summary>Codex</summary>
+
+Set the token in your shell before starting Codex:
 
 ```bash
 export CLOUD_HARNESS_MCP_TOKEN="<owner-provided-token>"
+```
+
+On PowerShell, use:
+
+```powershell
+$env:CLOUD_HARNESS_MCP_TOKEN = "<owner-provided-token>"
 ```
 
 Add this to `~/.codex/config.toml` (or a trusted project's
@@ -39,15 +78,149 @@ default_tools_approval_mode = "writes"
 ```
 
 Restart Codex, then use `/mcp` or `codex mcp list` to confirm the connection.
-The fields above follow the
-[official OpenAI MCP configuration documentation](https://developers.openai.com/codex/mcp).
-The `writes` policy prompts for tools not marked read-only; it does not make
-the executor safe for untrusted users.
+The fields follow the [Codex MCP configuration documentation](https://developers.openai.com/codex/mcp).
 
-Start by asking Codex to call `workspace_open` with a credential-free HTTPS
-repository URL and a new idempotency key. Reuse the returned opaque
-`workspaceId` for later calls and finish with `workspace_close`. See
-[MCP usage](docs/mcp-api.md) for the workflow and important semantics.
+</details>
+
+<details>
+<summary>Claude Desktop app</summary>
+
+Claude's remote custom connectors are set up from the Claude app and are called
+from Anthropic's cloud, rather than from your computer. In **Settings →
+Connectors**, add the public endpoint and complete the connector's supported
+authentication flow. The current workflow and plan availability are documented
+by [Anthropic](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp).
+
+The hosted connector flow is OAuth-oriented and has no documented static-header
+field. Therefore this bearer-token deployment cannot be connected directly to
+Claude Desktop. Use an OAuth-capable gateway in front of it, or use Claude Code
+below, which supports a local `Authorization` header.
+
+</details>
+
+<details>
+<summary>Claude Code</summary>
+
+Set the token, then register the server for your user account:
+
+```bash
+export CLOUD_HARNESS_MCP_TOKEN="<owner-provided-token>"
+claude mcp add --transport http --scope user \
+  --header "Authorization: Bearer $CLOUD_HARNESS_MCP_TOKEN" \
+  cloud-harness https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+```
+
+Use `claude mcp get cloud-harness` to inspect the entry, then `/mcp` in a
+Claude Code session to confirm that it is available. Claude Code documents
+remote HTTP registration and static headers in its [MCP guide](https://code.claude.com/docs/en/mcp).
+
+</details>
+
+<details>
+<summary>Gemini CLI</summary>
+
+Set the token, then add a remote HTTP MCP server:
+
+```bash
+export CLOUD_HARNESS_MCP_TOKEN="<owner-provided-token>"
+gemini mcp add --transport http \
+  --header "Authorization: Bearer $CLOUD_HARNESS_MCP_TOKEN" \
+  cloud-harness https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+```
+
+Restart Gemini CLI if it is already running and use its MCP management command
+to confirm the server. See the [Gemini CLI MCP-server reference](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md)
+for the supported transports and header syntax.
+
+</details>
+
+<details>
+<summary>Cursor</summary>
+
+Open **Customize → MCP** and add a remote Streamable HTTP server, or add the
+following to the global `~/.cursor/mcp.json` (use `.cursor/mcp.json` for a
+trusted project only):
+
+```json
+{
+  "mcpServers": {
+    "cloud-harness": {
+      "url": "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:CLOUD_HARNESS_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Restart Cursor, approve the server, and check that `cloud-harness` appears in
+the chat's available tools. Cursor documents the configuration locations and
+remote MCP support in its [MCP guide](https://cursor.com/docs/mcp).
+The global file is user-local; do not copy the token-bearing project file into
+source control.
+
+</details>
+
+<details>
+<summary>Google Antigravity</summary>
+
+In the agent side panel, choose **… → MCP Servers → Manage MCP Servers → View
+raw config**. This opens the global `~/.gemini/config/mcp_config.json`; add a
+remote server entry:
+
+```json
+{
+  "mcpServers": {
+    "cloud-harness": {
+      "serverUrl": "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp",
+      "headers": {
+        "Authorization": "Bearer <owner-provided-token>"
+      }
+    }
+  }
+}
+```
+
+Save the file and confirm that the server is enabled in the MCP Servers panel.
+Antigravity's [MCP reference](https://antigravity.google/docs/mcp) defines the
+global path, `serverUrl`, and `headers` for remote MCP servers. Keep this local
+configuration private.
+
+</details>
+
+<details>
+<summary>Grok</summary>
+
+In Grok web, open the **+** menu, choose **Connectors**, then select **Add
+connector** to create a custom MCP connection. It must use a public URL; see
+xAI's [connector overview](https://x.ai/news/grok-connectors). The consumer
+connector UI may require an OAuth flow, so it is not a documented direct path
+for this static bearer-token service.
+
+For the xAI API, Remote MCP Tools support an explicit authorization token. Add
+this object to a Responses API request's `tools` array:
+
+```json
+{
+  "type": "mcp",
+  "server_url": "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp",
+  "server_label": "cloud-harness",
+  "authorization": "Bearer <owner-provided-token>"
+}
+```
+
+Limit `allowed_tools` when the request needs only a subset. The [xAI Remote MCP
+Tools reference](https://docs.x.ai/developers/tools/remote-mcp) documents
+Streamable HTTP support, authorization, and tool allowlisting.
+
+</details>
+
+Start by asking a connected client to call `workspace_open` with a
+credential-free HTTPS repository URL and a new idempotency key. Reuse the
+returned opaque `workspaceId` for later calls and finish with
+`workspace_close`. See [MCP usage](docs/mcp-api.md) for the workflow and
+important semantics.
 
 ## Run locally
 
