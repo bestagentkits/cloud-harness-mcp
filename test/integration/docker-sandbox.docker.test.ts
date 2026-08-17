@@ -30,7 +30,7 @@ beforeAll(async () => {
 }, 20_000);
 
 afterAll(async () => {
-  if (workspaceId) await service.close('owner', workspaceId).catch(() => undefined);
+  if (workspaceId) await service.execute('owner', 'workspace_close', { workspaceId }).catch(() => undefined);
   if (orphanContainer) await removeContainer(orphanContainer).catch(() => undefined);
   if (foreignOrphanContainer) await removeContainer(foreignOrphanContainer).catch(() => undefined);
   await service.stop();
@@ -155,7 +155,7 @@ describe('real Docker sandbox', () => {
     expect(store.byId(workspaceId)?.status).toBe('ACTIVE');
     expect(existsSync(cancellableRecord.workspacePath)).toBe(true);
     expect(JSON.stringify((await service.execute('owner', 'files_list', { workspaceId, path: '.', limit: 100 })).data)).not.toContain('aborted-command.txt');
-    await service.close('owner', workspaceId);
+    await service.execute('owner', 'workspace_close', { workspaceId });
     workspaceId = undefined;
   }, 120_000);
 });

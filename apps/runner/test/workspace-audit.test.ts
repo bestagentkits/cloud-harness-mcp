@@ -81,6 +81,24 @@ const mutations: Array<[RunnerOperation, Record<string, unknown>]> = [
 ];
 
 describe('workspace mutation audit', () => {
+  it('records owner-bearer mutations against a durable principal', async () => {
+    const { metadata, record, service, store } = fixture('o');
+    const legacyOwner = 'owner-bearer-canary';
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: legacyOwner });
+    store.database.prepare('UPDATE workspaces SET owner_id = ? WHERE id = ?').run(ownerId, record.id);
+    try {
+      await expect(service.execute(legacyOwner, 'files_write', {
+        workspaceId: record.id, path: 'deploy-canary.txt', content: 'canary-ok'
+      })).resolves.toMatchObject({ ok: true });
+      expect(metadata.listAudit(ownerId, 100).map((event) => event.action)).toEqual([
+        'workspace.file_mutation.succeeded', 'workspace.file_mutation.requested'
+      ]);
+    } finally {
+      metadata.close();
+      store.close();
+    }
+  });
+
   it('audits every file mutation without persisting paths or content', async () => {
     const { metadata, ownerId, record, service, store } = fixture();
     try {

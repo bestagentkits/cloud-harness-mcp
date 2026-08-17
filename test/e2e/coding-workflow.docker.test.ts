@@ -63,7 +63,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  if (workspaceId) await service.close('owner', workspaceId).catch(() => undefined);
+  if (workspaceId) await service.execute('owner', 'workspace_close', { workspaceId }).catch(() => undefined);
   await client.close().catch(() => undefined);
   await apiRuntime.close();
   await service.stop();
