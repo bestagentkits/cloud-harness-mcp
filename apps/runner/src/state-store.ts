@@ -2,6 +2,28 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { RunnerPrincipalSelectorSchema } from '@cloud-harness/contracts';
+import {
+  applyLegacyPrincipalMapping,
+  applyPrincipalRelinks,
+  migratePrincipalSchema,
+  principalByExternalIdentity,
+  principalByLegacyOwnerId,
+  resolveExternalPrincipal,
+  type ExternalPrincipalSelector,
+  type PrincipalRecord,
+  type PrincipalRelinkMapping,
+  type PrincipalRelinkResult,
+  type PrincipalSelector
+} from './principal-store.js';
+
+export type {
+  ExternalPrincipalSelector,
+  PrincipalRecord,
+  PrincipalRelinkMapping,
+  PrincipalRelinkResult,
+  PrincipalSelector
+} from './principal-store.js';
 
 export type WorkspaceRecord = {
   id: string;
@@ -55,8 +77,7 @@ export class StateStore {
         ON workspaces(owner_id)
         WHERE status IN ('CREATING','ACTIVE','REAPING');
     `);
-    const meta = this.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-    if (meta.version !== 1) throw new Error(`unsupported state schema version ${meta.version}`);
+    migratePrincipalSchema(this.database);
     this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
       .run('runner_instance_id', randomBytes(18).toString('hex'));
   }
@@ -77,6 +98,46 @@ export class StateStore {
   byId(id: string): WorkspaceRecord | undefined {
     const row = this.database.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as Row | undefined;
     return row ? fromRow(row) : undefined;
+  }
+
+  byOwnerAndId(ownerId: string, id: string): WorkspaceRecord | undefined {
+    const row = this.database.prepare('SELECT * FROM workspaces WHERE owner_id = ? AND id = ?').get(ownerId, id) as Row | undefined;
+    return row ? fromRow(row) : undefined;
+  }
+
+  resolvePrincipal(selector: PrincipalSelector): string {
+    const parsed = RunnerPrincipalSelectorSchema.parse(selector);
+    if (parsed.kind === 'owner') {
+      return principalByLegacyOwnerId(this.database, parsed.ownerId)?.id ?? parsed.ownerId;
+    }
+    return this.resolveExternalPrincipal(parsed);
+  }
+
+  resolveExternalPrincipal(selector: ExternalPrincipalSelector, options: { legacyOwnerId?: string } = {}): string {
+    return resolveExternalPrincipal(this.database, selector, options);
+  }
+
+  principalByExternalIdentity(selector: Pick<ExternalPrincipalSelector, 'issuer' | 'subject'>): PrincipalRecord | undefined {
+    return principalByExternalIdentity(this.database, selector);
+  }
+
+  legacyWorkspaceOwnerIds(): string[] {
+    return (this.database.prepare(`SELECT DISTINCT workspaces.owner_id AS owner_id
+      FROM workspaces
+      LEFT JOIN principals ON principals.id = workspaces.owner_id
+      WHERE principals.id IS NULL
+      ORDER BY workspaces.owner_id`).all() as { owner_id: string }[]).map((row) => row.owner_id);
+  }
+
+  applyLegacyPrincipalMapping(mapping: { legacyOwnerId: string; issuer: string; subject: string }): string {
+    return applyLegacyPrincipalMapping(this.database, mapping);
+  }
+
+  applyPrincipalRelinks(
+    mappings: PrincipalRelinkMapping[],
+    onApplied?: (database: DatabaseSync, result: PrincipalRelinkResult) => void
+  ): PrincipalRelinkResult[] {
+    return applyPrincipalRelinks(this.database, mappings, onApplied);
   }
 
   byIdempotency(ownerId: string, key: string): WorkspaceRecord | undefined {

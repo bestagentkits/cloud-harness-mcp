@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workspaces | Cloud Harness</title>
+  <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <div class="mobile-bar"><button id="menu-button" type="button" aria-controls="product-nav" aria-expanded="false">Menu</button><strong>Cloud Harness</strong></div>
+  <div class="app-shell">
+    <aside id="product-nav" class="sidebar" aria-label="Product navigation">
+      <div class="brand">Cloud Harness</div>
+      <nav aria-label="Primary">
+        <a href="/dashboard" data-section="workspaces">Workspaces</a>
+        <a href="/dashboard/projects" data-section="projects">Projects</a>
+        <a href="/dashboard/artifacts" data-section="artifacts">Artifacts</a>
+        <a href="/dashboard/audit" data-section="audit">Audit</a>
+        <a href="/dashboard/github" data-section="github">GitHub</a>
+        <div id="context-nav"></div>
+      </nav>
+      <button id="nav-toggle" type="button" aria-expanded="true">Collapse navigation</button>
+    </aside>
+    <main id="main" tabindex="-1">
+      <header class="page-header"><p class="eyebrow">CONTROL PLANE</p><h1 id="page-title">Workspaces</h1><p id="page-help">TTL-limited coding environments available to your signed-in identity.</p></header>
+      <div id="command-surface" class="command-surface">
+        <form role="search" aria-label="Filter workspaces" id="workspace-filter">
+          <label for="search">Search</label><input id="search" name="q" placeholder="Filter by repository or workspace ID">
+          <label for="status">State</label><select id="status" name="status"><option value="">All</option><option>CREATING</option><option>ACTIVE</option><option>REAPING</option><option>CLOSED</option><option>FAILED</option></select>
+          <button type="submit">Apply filters</button>
+        </form>
+        <button id="refresh" type="button">Refresh</button><span id="last-updated"></span>
+      </div>
+      <section id="content" aria-labelledby="workspace-list-heading" aria-busy="true"><h2 id="workspace-list-heading">Workspace list</h2><p>Loading workspaces…</p></section>
+      <div id="alert" role="alert" hidden></div>
+    </main>
+    <aside id="detail" class="detail" aria-labelledby="workspace-detail-title" hidden></aside>
+  </div>
+  <div id="announcer" class="sr-only" aria-live="polite"></div>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+    <h2 id="confirm-title">Confirm action</h2><p id="confirm-description"></p><p id="confirm-target" class="mono"></p>
+    <p id="confirm-status" class="status-message" aria-live="polite"></p>
+    <div class="dialog-actions"><button type="button" data-cancel autofocus>Cancel</button><button id="confirm-action" class="danger" type="button">Confirm</button></div>
+  </dialog>
+  <dialog id="file-conflict-dialog" aria-labelledby="file-conflict-title" aria-describedby="file-conflict-description">
+    <h2 id="file-conflict-title">This file changed</h2>
+    <p id="file-conflict-description">This item changed after you opened it. Your unsaved content is still in the editor.</p>
+    <p id="file-conflict-status" class="status-message" aria-live="polite"></p>
+    <div class="dialog-actions"><button id="cancel-conflict" type="button">Cancel</button><button id="copy-changes" type="button">Copy my changes</button><button id="review-latest" type="button">Review latest</button></div>
+  </dialog>
+  <script type="module" src="/dashboard/assets/dashboard.js"></script>
+</body>
+</html>

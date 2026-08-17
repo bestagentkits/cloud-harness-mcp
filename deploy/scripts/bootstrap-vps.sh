@@ -10,7 +10,7 @@ fi
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 install -d -m 0755 /opt/cloud-harness-mcp
 install -d -m 0700 /etc/cloud-harness-mcp /var/lib/cloud-harness/state /var/lib/cloud-harness/backups
-install -d -m 0750 /var/lib/cloud-harness/jobs
+install -d -m 0750 /var/lib/cloud-harness/jobs /var/lib/cloud-harness/artifacts
 
 if [[ ! -f /etc/cloud-harness-mcp/runtime.env ]]; then
   mcp_token=$(openssl rand -base64 48 | tr -d '\n')

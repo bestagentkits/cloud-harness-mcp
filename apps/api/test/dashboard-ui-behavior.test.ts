@@ -1,0 +1,202 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  conflictRecovery, createAsyncDialogController, createModalController, githubCallbackParameters,
+  renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm
+} from '../dashboard/dashboard.js';
+import { renderProjectDetail } from '../dashboard/dashboard-render.js';
+
+class FakeElement {
+  hidden = false;
+  inert = false;
+  disabled = false;
+  open = false;
+  textContent = '';
+  items: FakeElement[] = [];
+  focus = vi.fn();
+  private readonly attributes = new Map<string, string>();
+  private readonly listeners = new Map<string, Set<(event: any) => void>>();
+
+  setAttribute(name: string, value: string) { this.attributes.set(name, value); }
+  getAttribute(name: string) { return this.attributes.get(name); }
+  removeAttribute(name: string) { this.attributes.delete(name); }
+  querySelectorAll() { return this.items; }
+  addEventListener(name: string, listener: (event: any) => void) {
+    const listeners = this.listeners.get(name) ?? new Set(); listeners.add(listener); this.listeners.set(name, listeners);
+  }
+  removeEventListener(name: string, listener: (event: any) => void) { this.listeners.get(name)?.delete(listener); }
+  dispatch(name: string, event: any) { for (const listener of this.listeners.get(name) ?? []) listener(event); }
+  showModal() { this.open = true; }
+  close() { this.open = false; }
+}
+
+describe('dashboard UI behavior', () => {
+  it('traps modal focus, inerts the background, and restores its invoking control', () => {
+    const panel = new FakeElement(); const first = new FakeElement(); const last = new FakeElement();
+    const background = new FakeElement(); const trigger = new FakeElement(); panel.items = [first, last];
+    const modal = createModalController({ panel, backgrounds: [background], trigger, initialFocus: () => first });
+
+    modal.open();
+    expect(background.inert).toBe(true);
+    expect(panel.getAttribute('aria-modal')).toBe('true');
+    expect(first.focus).toHaveBeenCalledOnce();
+
+    const tab = { key: 'Tab', shiftKey: false, target: last, preventDefault: vi.fn() };
+    panel.dispatch('keydown', tab);
+    expect(tab.preventDefault).toHaveBeenCalledOnce();
+    expect(first.focus).toHaveBeenCalledTimes(2);
+
+    panel.dispatch('keydown', { key: 'Escape', preventDefault: vi.fn() });
+    expect(background.inert).toBe(false);
+    expect(panel.hidden).toBe(true);
+    expect(trigger.focus).toHaveBeenCalledOnce();
+  });
+
+  it('keeps confirmation open and non-dismissible until the mutation settles', async () => {
+    const dialog = new FakeElement(); const cancel = new FakeElement(); const action = new FakeElement();
+    const status = new FakeElement(); const invoker = new FakeElement();
+    let finish!: () => void; const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const controller = createAsyncDialogController({ dialog, cancelButton: cancel, actionButton: action, status, reportError: vi.fn() });
+    controller.open({ label: 'Close workspace', pendingLabel: 'Closing…', action: () => pending }, invoker);
+
+    const submission = controller.submit();
+    expect(dialog.open).toBe(true);
+    expect(dialog.getAttribute('aria-busy')).toBe('true');
+    expect(cancel.disabled).toBe(true);
+    expect(action.disabled).toBe(true);
+    expect(action.textContent).toBe('Closing…');
+    controller.cancel();
+    expect(dialog.open).toBe(true);
+
+    finish(); await submission;
+    expect(dialog.open).toBe(false);
+    expect(controller.submitting).toBe(false);
+  });
+
+  it('restores focus after a failed destructive mutation', async () => {
+    const dialog = new FakeElement(); const cancel = new FakeElement(); const action = new FakeElement();
+    const status = new FakeElement(); const invoker = new FakeElement(); const reportError = vi.fn();
+    const controller = createAsyncDialogController({ dialog, cancelButton: cancel, actionButton: action, status, reportError });
+    const failure = new Error('conflict');
+    controller.open({ label: 'Delete file', pendingLabel: 'Deleting…', action: async () => { throw failure; } }, invoker);
+    await controller.submit();
+    expect(reportError).toHaveBeenCalledWith(failure);
+    expect(invoker.focus).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the exact local edit for conflict copy and waits for an explicit recovery choice', async () => {
+    const actions = { reviewLatest: vi.fn(), copyChanges: vi.fn(), cancel: vi.fn() };
+    const recovery = conflictRecovery('unsaved\nlocal\ncontent', actions);
+    expect(actions.copyChanges).not.toHaveBeenCalled();
+    await recovery.copyChanges();
+    expect(actions.copyChanges).toHaveBeenCalledWith('unsaved\nlocal\ncontent');
+    recovery.reviewLatest(); recovery.cancel();
+    expect(actions.reviewLatest).toHaveBeenCalledOnce();
+    expect(actions.cancel).toHaveBeenCalledOnce();
+  });
+
+  it('routes a PATCH 409 with both unsaved fields into conflict recovery', async () => {
+    const request = vi.fn().mockRejectedValue(Object.assign(new Error('changed'), { status: 409 }));
+    const onSaved = vi.fn(); const onConflict = vi.fn(); const onError = vi.fn();
+    await submitPatchEdit({
+      workspaceId: `ws_${'a'.repeat(24)}`,
+      file: { path: 'README.md', sha256: 'b'.repeat(64) },
+      oldText: 'original target', newText: 'unsaved replacement', request, onSaved, onConflict, onError
+    });
+
+    expect(request).toHaveBeenCalledWith(`/workspaces/ws_${'a'.repeat(24)}/files/content`, {
+      method: 'PATCH',
+      body: JSON.stringify({ path: 'README.md', oldText: 'original target', newText: 'unsaved replacement', expectedSha256: 'b'.repeat(64) })
+    });
+    expect(onConflict).toHaveBeenCalledWith({
+      oldText: 'original target', newText: 'unsaved replacement',
+      copyText: 'Text to replace:\noriginal target\n\nReplacement text:\nunsaved replacement'
+    });
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('keeps the PATCH form and focus target across an async conflict response', async () => {
+    const invoker = new FakeElement();
+    const form = { querySelector: vi.fn().mockReturnValue(invoker) };
+    const event = { currentTarget: form as typeof form | null };
+    class FakeFormData {
+      get(name: string) { return name === 'oldText' ? 'target kept' : 'replacement kept'; }
+    }
+    vi.stubGlobal('FormData', FakeFormData);
+    let rejectRequest!: (error: Error) => void;
+    const request = vi.fn(() => new Promise((_resolve, reject) => { rejectRequest = reject; }));
+    const onConflict = vi.fn();
+    try {
+      const submission = submitPatchForm({
+        form: event.currentTarget, workspaceId: `ws_${'a'.repeat(24)}`,
+        file: { path: 'README.md', sha256: 'b'.repeat(64) }, request,
+        onSaved: vi.fn(), onConflict, onError: vi.fn()
+      });
+      event.currentTarget = null;
+      rejectRequest(Object.assign(new Error('changed'), { status: 409 }));
+      await submission;
+    } finally { vi.unstubAllGlobals(); }
+
+    expect(event.currentTarget).toBeNull();
+    expect(onConflict).toHaveBeenCalledWith({
+      oldText: 'target kept', newText: 'replacement kept',
+      copyText: 'Text to replace:\ntarget kept\n\nReplacement text:\nreplacement kept'
+    }, invoker);
+  });
+
+  it('keeps the clicked link across an async drawer fetch and renders its required heading', async () => {
+    const heading = new FakeElement();
+    const detail = Object.assign(new FakeElement(), {
+      _html: '',
+      set innerHTML(value: string) { this._html = value; },
+      get innerHTML() { return this._html; },
+      querySelector: (selector: string) => selector === '#workspace-detail-title' && detail.innerHTML.includes('workspace-detail-title') ? heading : null
+    });
+    const trigger = Object.assign(new FakeElement(), { href: `https://dashboard.example/dashboard/workspaces/ws_${'a'.repeat(24)}` });
+    const event = { currentTarget: trigger as FakeElement | null };
+    const content = { querySelector: vi.fn().mockReturnValue(null) };
+    const fetchWorkspace = vi.fn(async () => {
+      event.currentTarget = null;
+      return {
+        workspaceId: `ws_${'a'.repeat(24)}`, repositoryUrl: 'https://github.com/acme/control-plane.git', status: 'ACTIVE',
+        networkMode: 'none', createdAt: '2026-08-17T00:00:00Z', lastActivityAt: '2026-08-17T00:01:00Z', expiresAt: '2026-08-17T01:00:00Z', version: 3
+      };
+    });
+
+    const result = await renderWorkspaceDrawer({ trigger: event.currentTarget, detail, content, fetchWorkspace, modal: true });
+    expect(event.currentTarget).toBeNull();
+    expect(trigger.getAttribute('aria-current')).toBe('true');
+    expect(result.heading).toBe(heading);
+    expect(heading.getAttribute('tabindex')).toBe('-1');
+    expect(detail.innerHTML).toContain('acme/control-plane');
+  });
+
+  it('parses only a complete GitHub App callback pair', () => {
+    expect(githubCallbackParameters('?state=state-value&installation_id=12345')).toEqual({ state: 'state-value', installationId: '12345' });
+    expect(githubCallbackParameters('?state=state-value')).toBeUndefined();
+    expect(githubCallbackParameters('?installation_id=12345')).toBeUndefined();
+  });
+
+  it('clears write-only inputs after secret submission', () => {
+    const secret = { value: 'submitted-secret' };
+    const ordinary = { value: 'visible-name' };
+    const form = { querySelectorAll: (selector: string) => selector === 'input[data-write-only]' ? [secret] : [] };
+    resetWriteOnlyFields(form);
+    expect(secret.value).toBe('');
+    expect(ordinary.value).toBe('visible-name');
+  });
+
+  it('never renders secret values returned by a hostile response', () => {
+    const html = renderProjectDetail(
+      { id: `prj_${'a'.repeat(24)}`, name: 'Application', generation: 2 },
+      [{
+        id: `env_${'b'.repeat(24)}`, projectId: `prj_${'a'.repeat(24)}`, name: 'Production', generation: 3,
+        secrets: [{ name: 'DEPLOY_TOKEN', state: 'active', generation: 4, value: 'must-not-render' }]
+      }]
+    );
+    expect(html).toContain('DEPLOY_TOKEN');
+    expect(html).toContain('Write-only');
+    expect(html).not.toContain('must-not-render');
+    expect(html).not.toContain('value="DEPLOY_TOKEN"');
+  });
+});

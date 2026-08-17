@@ -1,0 +1,47 @@
+import type { NextFunction, Response, Router } from 'express';
+import type { MetadataRunnerOperation, RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { z } from 'zod';
+import { sendRunnerResponse } from './dashboard-response.js';
+import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
+
+const internalId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9_-]{20,80}$`));
+const generation = z.object({ expectedGeneration: z.number().int().positive() }).strict();
+const createName = z.object({ name: z.string().trim().min(1).max(100), expectedGeneration: z.literal(0) }).strict();
+
+export function registerDashboardControlRoutes(
+  router: Router,
+  runner: DashboardRunnerClient,
+  principal: (request: DashboardRequest, response: Response) => RunnerPrincipalSelector | undefined
+): void {
+  router.get('/api/v1/projects', endpoint('project_list', () => ({})));
+  router.post('/api/v1/projects', endpoint('project_create', (request) => createName.parse(request.body)));
+  router.patch('/api/v1/projects/:projectId', endpoint('project_update', (request) => ({ projectId: internalId('prj').parse(request.params.projectId), ...createName.omit({ expectedGeneration: true }).extend({ expectedGeneration: z.number().int().positive() }).parse(request.body) })));
+  router.delete('/api/v1/projects/:projectId', endpoint('project_delete', (request) => ({ projectId: internalId('prj').parse(request.params.projectId), ...generation.parse(request.body) })));
+  router.get('/api/v1/projects/:projectId/environments', endpoint('environment_list', (request) => ({ projectId: internalId('prj').parse(request.params.projectId) })));
+  router.post('/api/v1/projects/:projectId/environments', endpoint('environment_create', (request) => ({ projectId: internalId('prj').parse(request.params.projectId), ...createName.parse(request.body) })));
+  router.patch('/api/v1/environments/:environmentId', endpoint('environment_update', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...createName.omit({ expectedGeneration: true }).extend({ expectedGeneration: z.number().int().positive() }).parse(request.body) })));
+  router.delete('/api/v1/environments/:environmentId', endpoint('environment_delete', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...generation.parse(request.body) })));
+  router.get('/api/v1/environments/:environmentId/secrets', endpoint('secret_list', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId) })));
+  router.post('/api/v1/environments/:environmentId/secrets', endpoint('secret_create', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...request.body as object })));
+  router.put('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_rotate', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name, ...request.body as object })));
+  router.delete('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_delete', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name, ...request.body as object })));
+  router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
+  router.get('/api/v1/artifacts', endpoint('artifact_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
+  router.post('/api/v1/artifacts', endpoint('artifact_snapshot', (request) => request.body as Record<string, unknown>));
+  router.delete('/api/v1/artifacts/:artifactId', endpoint('artifact_delete', (request) => ({ artifactId: internalId('art').parse(request.params.artifactId), ...generation.parse(request.body) })));
+  router.get('/api/v1/github', endpoint('github_status', () => ({})));
+  router.post('/api/v1/github/setup', endpoint('github_setup_begin', (request) => request.body as Record<string, unknown>));
+  router.post('/api/v1/github/complete', endpoint('github_setup_complete', (request) => request.body as Record<string, unknown>));
+  router.post('/api/v1/github/reconcile', endpoint('github_reconcile', () => ({})));
+
+  function endpoint(operation: MetadataRunnerOperation, input: (request: DashboardRequest) => Record<string, unknown>) {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      try {
+        const selected = principal(request, response);
+        if (!selected) return;
+        if (!runner.callInternal) throw new Error('dashboard controls are unavailable');
+        sendRunnerResponse(response, operation, await runner.callInternal(operation, input(request), selected));
+      } catch (error) { next(error); }
+    };
+  }
+}

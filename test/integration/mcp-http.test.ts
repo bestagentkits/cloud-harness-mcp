@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import express from 'express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import type { ApiConfig } from '@cloud-harness/contracts';
+import { TOOL_SPECS, type ApiConfig } from '@cloud-harness/contracts';
 import { createApiApp, type ApiRuntime } from '../../apps/api/src/app.js';
 
 const token = 'integration-bearer-token-longer-than-32-characters';
@@ -43,7 +43,7 @@ describe('official SDK interoperability', () => {
     const client = new Client({ name: 'cloud-harness-test', version: '1.0.0' }, { versionNegotiation: { mode: { pin: '2026-07-28' } } });
     await client.connect(transport);
     const listed = await client.listTools();
-    expect(listed.tools.length).toBeGreaterThanOrEqual(35);
+    expect(listed.tools).toHaveLength(TOOL_SPECS.length);
     expect(listed.tools.find((tool) => tool.name === 'workspace_close')?.annotations?.destructiveHint).toBe(true);
     expect(listed.tools.find((tool) => tool.name === 'shell_close')?.annotations?.destructiveHint).toBe(true);
     expect(listed.tools.find((tool) => tool.name === 'sessions_close')?.annotations?.destructiveHint).toBe(true);
@@ -51,10 +51,12 @@ describe('official SDK interoperability', () => {
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toMatchObject({ ok: true });
     await client.close();
+  });
 
+  it('retains legacy MCP interoperability for the complete tool surface', async () => {
     const legacy = new Client({ name: 'cloud-harness-legacy-test', version: '1.0.0' }, { versionNegotiation: { mode: 'legacy' } });
     await legacy.connect(new StreamableHTTPClientTransport(endpoint, { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
-    expect((await legacy.listTools()).tools.length).toBe(listed.tools.length);
+    expect((await legacy.listTools()).tools).toHaveLength(TOOL_SPECS.length);
     expect((await legacy.callTool({ name: 'workspace_list', arguments: {} })).isError).toBe(false);
     await legacy.close();
   });

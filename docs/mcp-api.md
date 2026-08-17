@@ -3,10 +3,14 @@
 ## Connection
 
 The Streamable HTTP endpoint is
-`https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp`. Every request must
-carry the owner's bearer token. The recommended Codex configuration is in the
-[README](../README.md#connect-from-codex); the supported fields are documented
-by [OpenAI](https://developers.openai.com/codex/mcp).
+`https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp` for the current
+operator deployment. `owner-bearer` is the default authentication contract.
+An opt-in `cloudflare-access` deployment instead requires the client to
+complete the Access Managed OAuth flow through an eligible owner-controlled
+hostname; the origin also verifies the forwarded Access assertion. The
+recommended client routes are in the
+[README](../README.md#connect-from-ai-clients). Do not treat implementation or
+configuration as proof that a specific client has completed live OAuth.
 
 The canonical public tool names are the `RunnerOperationSchema` values in
 [`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts).
@@ -20,7 +24,9 @@ inspect `structuredContent` for `ok`, `data`, `error`, `truncated`, and
 ## Normal workflow
 
 1. Call `workspace_open` with a credential-free HTTPS repository URL, an
-   optional ref, and a fresh idempotency key.
+   optional ref, and a fresh idempotency key. To inject a retained dashboard
+   environment, select its opaque ID and explicitly confirm the injection in
+   the same request; omitting either injects nothing.
 2. Keep the returned opaque `workspaceId` and pass it to workspace-scoped
    tools. Do not derive IDs or use filesystem paths as handles.
 3. Use bounded file and code-intelligence tools for inspection and edits. Use
@@ -68,6 +74,12 @@ makes a lost response recoverable without duplicating work.
   [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
 - Workspace metadata is durable in SQLite; executor files persist only until
   workspace close or TTL cleanup.
+- Dashboard project/environment, encrypted-secret reference, GitHub binding,
+  artifact, and audit operations use the distinct internal runner contract in
+  [`packages/contracts/src/internal-runner-api.ts`](../packages/contracts/src/internal-runner-api.ts).
+  They are not public MCP tools. Retained artifact snapshots are bounded
+  control-plane records, not durable task/session output or a source-control
+  replacement.
 - Executors have no network by default. Dependency installation, arbitrary
   commands, and repository-defined deployments that need network access require
   an explicitly requested/configured `bridge` workspace, which is a weaker
@@ -110,6 +122,9 @@ stored remote URL to the credential-free URL.
 
 Optional GitHub App settings let the trusted runner mint a short-lived,
 repository-scoped installation token for clone and later remote Git transfers.
+In Access mode the installation and repository grants are bound to the exact
+authenticated principal; GitHub SSO alone grants nothing. In owner-bearer mode
+the fixed configured installation remains the compatibility path.
 The token is passed over stdin only to the ephemeral helper that needs it; it
 is absent from Docker arguments, the checkout remote, result envelopes, and the
 long-lived executor. Public clone/fetch/pull can proceed without an App token.

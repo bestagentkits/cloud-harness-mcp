@@ -17,7 +17,7 @@
     "dev:runner": "npm run dev -w @cloud-harness/runner",
     "lint": "eslint .",
     "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner",
-    "test": "vitest run --exclude '**/*.docker.test.ts'",
+    "test": "vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism",
     "test:unit": "vitest run packages apps --exclude '**/*.docker.test.ts'",
     "test:integration": "vitest run test/integration --exclude '**/*.docker.test.ts'",
     "pretest:docker": "npm run build -w @cloud-harness/contracts",

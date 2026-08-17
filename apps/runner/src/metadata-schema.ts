@@ -1,0 +1,100 @@
+import type { DatabaseSync } from 'node:sqlite';
+
+export function migrateMetadataSchema(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS metadata_schema_meta (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      version INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO metadata_schema_meta(singleton, version) VALUES (1, 0);
+  `);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number };
+    if (row.version === 1) {
+      database.exec('COMMIT');
+      return;
+    }
+    if (row.version !== 0) throw new Error(`unsupported metadata schema version ${row.version}`);
+    database.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'DELETED')),
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(principal_id, id),
+        UNIQUE(principal_id, name)
+      );
+      CREATE INDEX projects_principal_updated ON projects(principal_id, updated_at DESC, id);
+
+      CREATE TABLE environments (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'DELETED')),
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(principal_id, id),
+        UNIQUE(principal_id, project_id, name),
+        FOREIGN KEY(principal_id, project_id) REFERENCES projects(principal_id, id) ON DELETE RESTRICT
+      );
+      CREATE INDEX environments_principal_project ON environments(principal_id, project_id, updated_at DESC, id);
+
+      CREATE TABLE secret_references (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL,
+        environment_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'DELETED')),
+        current_version INTEGER NOT NULL CHECK (current_version > 0),
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(principal_id, id),
+        UNIQUE(principal_id, environment_id, name),
+        FOREIGN KEY(principal_id, environment_id) REFERENCES environments(principal_id, id) ON DELETE RESTRICT
+      );
+      CREATE INDEX secret_refs_principal_environment ON secret_references(principal_id, environment_id, updated_at DESC, id);
+
+      CREATE TABLE secret_versions (
+        principal_id TEXT NOT NULL,
+        secret_reference_id TEXT NOT NULL,
+        version INTEGER NOT NULL CHECK (version > 0),
+        key_version INTEGER NOT NULL CHECK (key_version > 0),
+        nonce BLOB NOT NULL,
+        ciphertext BLOB NOT NULL,
+        auth_tag BLOB NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(principal_id, secret_reference_id, version),
+        FOREIGN KEY(principal_id, secret_reference_id) REFERENCES secret_references(principal_id, id) ON DELETE RESTRICT
+      );
+      CREATE INDEX secret_versions_key ON secret_versions(key_version, principal_id, secret_reference_id, version);
+
+      CREATE TABLE audit_events (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+        action TEXT NOT NULL,
+        subject_type TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        subject_generation INTEGER NOT NULL CHECK (subject_generation > 0),
+        details_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(principal_id, id)
+      );
+      CREATE INDEX audit_principal_created ON audit_events(principal_id, created_at DESC, id DESC);
+      UPDATE metadata_schema_meta SET version = 1 WHERE singleton = 1;
+    `);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}

@@ -2,13 +2,16 @@
 
 ## Intended use
 
-Cloud Harness MCP is for one authenticated, trusted owner operating
-owner-approved repositories. It is not an anonymous service, a shared team
-sandbox, or a hostile multi-tenant platform.
+Cloud Harness MCP is for one authenticated trusted owner, or a named set of
+mutually trusted operators in one security domain, operating owner-approved
+repositories. It is not an anonymous service, a general team sandbox, or a
+hostile multi-tenant platform. Principal-qualified authorization prevents
+accidental cross-operator access; it does not strengthen the shared-kernel
+executor boundary.
 
 `exec_run`, interactive shells and sessions, detached tasks, repository hooks,
 skill scripts, and repository-defined deployments are intentional remote code
-execution inside the executor. Bearer authentication controls who may request
+execution inside the executor. Public authentication controls who may request
 that execution; it does not make the repository code trustworthy.
 
 ## Trust boundaries
@@ -44,15 +47,30 @@ boundary. Do not expose this design to mutually distrustful tenants. That
 requires a separate execution host or VM/microVM-grade boundary, quota-backed
 storage, per-tenant identity/authorization, and stronger abuse controls.
 
-## Public request controls
+## Public authentication and request controls
 
-The API checks, in order, the request hostname policy, an Origin allowlist when
-`Origin` is present, and the bearer token before applying owner rate limits or
-dispatching MCP. The bearer is a
-long-lived replayable secret for this private MVP, not OAuth or a general
-authorization server. The API also applies bounded request size, a
-process-local request/concurrency limit, no-store/nosniff headers, and a runner
-deadline.
+The default `owner-bearer` mode authenticates one long-lived replayable owner
+secret and exposes MCP only. The opt-in `cloudflare-access` mode delegates
+login, OAuth discovery/token issuance, and coarse admission to Cloudflare
+Access. The origin derives identity only from the verified forwarded Access
+assertion; the opaque client bearer is not interpreted as identity. The two
+modes cannot be enabled ambiguously.
+
+Access policies may offer GitHub and Google login, but Cloud Harness keys
+authorization only on Access-normalized `(issuer, subject)`. Email and display
+name are metadata, not linking signals. Subject recovery is an explicit,
+collision-checked operator mapping with a redacted audit record; there is no
+first-login or same-email takeover path. Cloudflare hostname ownership, Zero
+Trust policy, IdP setup, revocation, and client compatibility remain external
+operator controls that code and unit tests cannot prove.
+
+The API checks hostname policy and an Origin allowlist before dispatch. In
+Access mode, `/dashboard` additionally requires the Access assertion and
+same-origin CSRF session for mutations. Browser responses use a strict
+allowlist and must not contain the MCP/runner token, Access assertion, raw
+secret, GitHub App credential, or minted provider token. The API also applies
+bounded request size, process-local request/concurrency limits,
+no-store/nosniff headers, and a runner deadline.
 
 These controls are implemented in
 [`apps/api/src/request-security.ts`](../apps/api/src/request-security.ts),
@@ -60,10 +78,12 @@ These controls are implemented in
 [`apps/api/src/app.ts`](../apps/api/src/app.ts). Process-local limits reset on
 API restart and are not a distributed denial-of-service control.
 
-Rotate `MCP_BEARER_TOKEN` after suspected disclosure and restart the API.
-Rotate `RUNNER_TOKEN` independently and restart both control services. Review
-logs for exposure before resuming service; tokens must not appear in URLs,
-commands, documentation, or source control.
+In owner-bearer mode, rotate `MCP_BEARER_TOKEN` after suspected disclosure and
+restart the API. In Access mode, revoke at Access/IdP and verify the edge no
+longer forwards an accepted assertion. Rotate `RUNNER_TOKEN` independently and
+restart both control services. Review logs for exposure before resuming
+service; tokens must not appear in URLs, commands, documentation, or source
+control.
 
 ## Executor and repository controls
 
@@ -83,7 +103,9 @@ hosts and rejects private/link-local resolutions. The clone helper disables
 hooks, recursive submodules, tag downloads, redirects, and LFS smudging.
 Repository code is never evaluated by the runner during clone.
 
-Optional GitHub App credentials remain in the runner. Short-lived,
+Optional GitHub App credentials remain in the runner. Access GitHub SSO never
+grants repository access. A separate principal-bound App installation and
+verified repository grant authorize private Git operations. Short-lived,
 repository-scoped tokens are supplied over stdin only to ephemeral clone,
 fetch, or push helpers; the stored remote stays credential-free and the
 executor never receives a token. Remote fetch/pull first stage outside the
@@ -113,7 +135,15 @@ credentials. Their manifest parsing and execution owner is
 
 Workspace paths are server-generated and checked beneath the configured jobs
 root. Worker paths reject absolute/traversal paths and symlink escapes. SQLite
-stores workspace metadata, not a credential cache.
+stores workspace/principal, project/environment, encrypted-secret reference,
+GitHub installation, artifact metadata, and redacted audit state. Artifact
+payloads use a separate runner-confined bounded root. Raw secret values are
+encrypted with a versioned runner-held keyring and are never returned to the
+browser; the keyring and GitHub App private key never cross into API, ingress,
+or executor surfaces. Their executable owners are
+[`apps/runner/src/metadata-store.ts`](../apps/runner/src/metadata-store.ts),
+[`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts), and
+[`apps/runner/src/secret-keyring.ts`](../apps/runner/src/secret-keyring.ts).
 
 Repository files may remain private to executor UID 10001. The runner meters
 an active workspace with a fixed command inside its executor and checks a

@@ -2,9 +2,11 @@ import express, { type Express, type Request, type Response } from 'express';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { ApiConfig } from '@cloud-harness/contracts';
-import { bearerAuth } from './auth.js';
-import { createCloudHarnessServer } from './mcp-server.js';
-import { requestLimits, requestSecurity } from './request-security.js';
+import { accessAssertionAuth, bearerAuth } from './auth.js';
+import { createDashboardAssetsRouter } from './dashboard-assets.js';
+import { createDashboardRouter } from './dashboard-router.js';
+import { createCloudHarnessServerFactory } from './mcp-server.js';
+import { preAuthRequestLimits, principalRequestLimits, requestSecurity } from './request-security.js';
 import { RunnerClient } from './runner-client.js';
 
 export type ApiRuntime = { app: Express; close: () => Promise<void>; runnerClient: RunnerClient };
@@ -12,7 +14,7 @@ export type ApiRuntime = { app: Express; close: () => Promise<void>; runnerClien
 export function createApiApp(config: ApiConfig): ApiRuntime {
   const app = express();
   const runnerClient = new RunnerClient(config);
-  const handler = createMcpHandler(() => createCloudHarnessServer(runnerClient), { legacy: 'stateless', responseMode: 'auto' });
+  const handler = createMcpHandler(createCloudHarnessServerFactory(runnerClient), { legacy: 'stateless', responseMode: 'auto' });
   const nodeHandler = toNodeHandler(handler);
   app.disable('x-powered-by');
   app.get('/healthz', (_request, response) => response.json({ status: 'ok' }));
@@ -20,7 +22,7 @@ export function createApiApp(config: ApiConfig): ApiRuntime {
     const ready = await runnerClient.ready();
     response.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable' });
   });
-  app.use('/mcp', requestSecurity(config), bearerAuth(config), requestLimits());
+  app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config), principalRequestLimits());
   app.use('/mcp', express.json({ limit: config.maxBodyBytes, strict: true }));
   app.all('/mcp', async (request: Request, response: Response) => {
     if (request.method === 'POST' && !request.is('application/json')) {
@@ -29,5 +31,10 @@ export function createApiApp(config: ApiConfig): ApiRuntime {
     }
     await nodeHandler(request, response, request.body);
   });
+  if (config.authMode === 'cloudflare-access') {
+    app.use('/dashboard', requestSecurity(config), preAuthRequestLimits(), accessAssertionAuth(config), principalRequestLimits());
+    app.use('/dashboard', createDashboardRouter(config, runnerClient));
+    app.use('/dashboard', createDashboardAssetsRouter());
+  }
   return { app, close: () => handler.close(), runnerClient };
 }

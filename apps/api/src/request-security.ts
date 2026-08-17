@@ -1,5 +1,10 @@
 import type { NextFunction, Request, Response } from 'express';
+import type { AuthInfo } from '@modelcontextprotocol/server';
 import type { ApiConfig } from '@cloud-harness/contracts';
+
+type AuthenticatedRequest = Request & { auth?: AuthInfo };
+
+type LimitWindow = { startedAt: number; requests: number; active: number; lastSeenAt: number };
 
 function hostnameFromHost(raw: string): string {
   if (raw.startsWith('[')) return raw.slice(1, raw.indexOf(']')).toLowerCase();
@@ -29,29 +34,59 @@ export function requestSecurity(config: ApiConfig) {
   };
 }
 
-export function requestLimits() {
-  let windowStarted = Date.now();
-  let requests = 0;
-  let active = 0;
+function enforceLimit(window: LimitWindow, response: Response, next: NextFunction, maxRequests: number, maxActive: number): void {
+  const now = Date.now();
+  if (now - window.startedAt >= 60_000) {
+    window.startedAt = now;
+    window.requests = 0;
+  }
+  window.requests += 1;
+  window.lastSeenAt = now;
+  if (window.requests > maxRequests || window.active >= maxActive) {
+    response.setHeader('Retry-After', '1');
+    response.status(429).json({ error: 'rate_limited' });
+    return;
+  }
+  window.active += 1;
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    window.active = Math.max(0, window.active - 1);
+  };
+  response.once('finish', release);
+  response.once('close', release);
+  next();
+}
+
+export function preAuthRequestLimits() {
+  const window: LimitWindow = { startedAt: Date.now(), requests: 0, active: 0, lastSeenAt: Date.now() };
 
   return (_request: Request, response: Response, next: NextFunction): void => {
-    const now = Date.now();
-    if (now - windowStarted >= 60_000) { windowStarted = now; requests = 0; }
-    requests += 1;
-    if (requests > 120 || active >= 8) {
-      response.setHeader('Retry-After', '1');
-      response.status(429).json({ error: 'rate_limited' });
-      return;
-    }
-    active += 1;
-    let released = false;
-    const release = (): void => {
-      if (released) return;
-      released = true;
-      active = Math.max(0, active - 1);
-    };
-    response.once('finish', release);
-    response.once('close', release);
-    next();
+    enforceLimit(window, response, next, 1_000, 32);
   };
 }
+
+export function principalRequestLimits(maxPrincipals = 1_000) {
+  const windows = new Map<string, LimitWindow>();
+
+  return (request: AuthenticatedRequest, response: Response, next: NextFunction): void => {
+    const key = request.auth?.clientId;
+    if (!key) {
+      response.status(401).json({ error: 'authentication_required' });
+      return;
+    }
+    let window = windows.get(key);
+    if (!window) {
+      if (windows.size >= maxPrincipals) {
+        const oldest = [...windows].sort((left, right) => left[1].lastSeenAt - right[1].lastSeenAt)[0];
+        if (oldest) windows.delete(oldest[0]);
+      }
+      window = { startedAt: Date.now(), requests: 0, active: 0, lastSeenAt: Date.now() };
+      windows.set(key, window);
+    }
+    enforceLimit(window, response, next, 120, 8);
+  };
+}
+
+export const requestLimits = principalRequestLimits;

@@ -4,14 +4,16 @@
 
 Cloud Harness MCP is an MIT-licensed remote coding harness exposed through
 authenticated Streamable HTTP MCP. It opens an isolated clone in a
-TTL-limited Docker executor and gives one trusted owner structured workspace,
+TTL-limited Docker executor and gives a trusted owner or named mutually trusted
+operators structured workspace,
 file, code-intelligence, command, shell, session, dependency-task, Git,
 worktree, skill, hook, memory, and repository-defined deployment tools.
 
 > [!WARNING]
-> This is a private, single-owner service. It is intentionally capable of
-> arbitrary command execution inside an executor and is not a hostile
-> multi-tenant sandbox. Read the [security model](docs/security-model.md)
+> This is a private service for one security domain. Its operators must trust
+> one another because it is intentionally capable of arbitrary command
+> execution inside a shared-kernel executor. Principal isolation is not a
+> hostile multi-tenant sandbox. Read the [security model](docs/security-model.md)
 > before operating it.
 
 The public MCP URL is:
@@ -28,7 +30,7 @@ keeps repository credentials out of long-lived executors.
 
 ```mermaid
 flowchart LR
-  Client["AI coding client"] -->|"HTTPS · MCP bearer"| Nginx["nginx + loopback ingress"]
+  Client["AI coding client"] -->|"HTTPS · bearer or Access OAuth"| Nginx["nginx + loopback ingress"]
 
   subgraph Control["Trusted control plane"]
     Nginx --> API["Stateless MCP API"]
@@ -84,7 +86,7 @@ sequenceDiagram
 Remote fetch, pull, and push use a sibling transfer repository that the
 executor cannot see. Push requires a GitHub App installation with repository
 write access; clone/fetch/pull need read access. See
-[configuration](docs/configuration.md#optional-private-github-clone) and
+[configuration](docs/configuration.md#optional-github-app-repository-access) and
 [MCP semantics](docs/mcp-api.md).
 
 ## Getting started
@@ -202,12 +204,22 @@ This server exposes a remote Streamable HTTP MCP endpoint:
 https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
 ```
 
-All direct integrations below use the owner-provided `CLOUD_HARNESS_MCP_TOKEN`.
-Keep it in a local environment variable or client-local configuration; never
-put it in a repository, prompt, or shared project configuration. This is a
-single-owner execution service: granting a client access grants it the ability
-to ask the executor to run commands. Read the [security model](docs/security-model.md)
-before connecting it.
+`owner-bearer` is the default, and the direct-header examples below use the
+owner-provided `CLOUD_HARNESS_MCP_TOKEN`. Keep it in a local environment
+variable or client-local configuration; never put it in a repository, prompt,
+or shared project configuration.
+
+An operator may instead deploy `cloudflare-access` on an eligible hostname in
+an owned Cloudflare zone. Access provides Managed OAuth and GitHub/Google SSO;
+Cloud Harness verifies the forwarded assertion and exposes the dashboard at
+`/dashboard`. Treat client login as supported only after the exact client,
+Access policy, discovery, refresh, and revocation flow has been verified live.
+Implementation, merge, and Cloudflare configuration are separate evidence
+states. See [configuration](docs/configuration.md#authentication-and-request-policy)
+and [deployment](docs/deployment.md#cloudflare-access-rollout).
+
+Granting either form of access grants remote execution authority. Read the
+[security model](docs/security-model.md) before connecting it.
 
 <details>
 <summary>ChatGPT</summary>
@@ -218,11 +230,11 @@ Workspace settings → Apps → Create**, enter the endpoint above, scan its too
 and create the app. The exact availability and controls depend on the ChatGPT
 plan and workspace role; follow [OpenAI's current Developer mode guide](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
 
-This deployment uses a static bearer token. ChatGPT's custom-app flow is
-intended for supported authentication flows such as OAuth and does not provide
-a documented place to supply an arbitrary `Authorization` header. Put an
-OAuth-capable MCP gateway in front of the service before connecting it to
-ChatGPT; do not place the owner bearer token in an app definition or a chat.
+The `owner-bearer` mode is not a documented direct path because the custom-app
+flow has no arbitrary-header field. In `cloudflare-access` mode, use the
+owner-controlled Access URL and complete its OAuth flow; keep the connection
+provisional until the live compatibility checklist passes. Never place the
+owner bearer in an app definition or a chat.
 
 </details>
 
@@ -267,10 +279,10 @@ Connectors**, add the public endpoint and complete the connector's supported
 authentication flow. The current workflow and plan availability are documented
 by [Anthropic](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp).
 
-The hosted connector flow is OAuth-oriented and has no documented static-header
-field. Therefore this bearer-token deployment cannot be connected directly to
-Claude Desktop. Use an OAuth-capable gateway in front of it, or use Claude Code
-below, which supports a local `Authorization` header.
+The hosted connector flow is OAuth-oriented and has no documented
+static-header field. Use `cloudflare-access` and complete its OAuth flow for a
+hosted connector, subject to live compatibility verification, or use Claude
+Code below with the default owner bearer.
 
 </details>
 
@@ -371,8 +383,9 @@ configuration private.
 In Grok web, open the **+** menu, choose **Connectors**, then select **Add
 connector** to create a custom MCP connection. It must use a public URL; see
 xAI's [connector overview](https://x.ai/news/grok-connectors). The consumer
-connector UI may require an OAuth flow, so it is not a documented direct path
-for this static bearer-token service.
+connector UI may require an OAuth flow, so use the Access-mode endpoint and
+verify that flow live. It is not a documented direct path for owner-bearer
+mode.
 
 For the xAI API, Remote MCP Tools support an explicit authorization token. Add
 this object to a Responses API request's `tools` array:

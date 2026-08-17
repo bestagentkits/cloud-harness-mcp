@@ -7,12 +7,14 @@
     "build": "tsc -p tsconfig.json",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "node --watch --experimental-strip-types src/index.ts",
+    "secrets:rekey": "node dist/rekey-secrets.js",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@cloud-harness/contracts": "0.5.1",
     "@octokit/auth-app": "8.3.0",
+    "@octokit/request": "10.0.13",
     "express": "5.2.1",
     "pino": "10.3.1",
     "zod": "4.4.3"
