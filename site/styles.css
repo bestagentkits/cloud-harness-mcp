@@ -386,9 +386,17 @@ nav a,
 .diagram {
   min-width: 0;
   margin: 0 0 var(--s8);
+  overflow-x: clip;
   border-top: var(--stroke) solid var(--line);
   border-bottom: var(--stroke) solid var(--line);
   background: var(--ink-900);
+}
+.diagram-canvas {
+  overflow-x: clip;
+}
+.diagram-canvas:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: -2px;
 }
 .diagram-meta {
   align-items: center;
@@ -429,7 +437,7 @@ nav a,
 
 .diagram marker path,
 .hero-trace marker path {
-  fill: var(--lime);
+  fill: context-stroke;
 }
 .diagram-zone rect,
 .hero-zone {
@@ -475,6 +483,13 @@ nav a,
   font-weight: 600;
   letter-spacing: 1px;
 }
+.diagram-node text,
+.hero-node text {
+  paint-order: stroke;
+  stroke: var(--ink-800);
+  stroke-width: 8px;
+  stroke-linejoin: round;
+}
 .client-node rect {
   stroke: var(--ice-300);
 }
@@ -514,6 +529,8 @@ nav a,
 .hero-packet,
 .diagram-packet {
   fill: var(--lime);
+  stroke: var(--ink-950);
+  stroke-width: 3;
 }
 .hero-packet-return,
 .packet-result {
@@ -566,12 +583,31 @@ nav a,
   font-weight: 600;
   letter-spacing: 1.2px;
 }
+.diagram-note-box rect {
+  fill: var(--ink-800);
+  stroke: var(--line-soft);
+  stroke-width: 2;
+}
+.diagram-note-box text {
+  fill: var(--lime);
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.compact-note-box text {
+  font-size: 16px;
+}
 .lane-label {
   fill: var(--lime);
   font-family: var(--display);
   font-size: 16px;
   font-weight: 600;
   letter-spacing: 1.6px;
+  paint-order: stroke;
+  stroke: var(--ink-950);
+  stroke-width: 10px;
+  stroke-linejoin: round;
 }
 .result-label {
   fill: var(--ice-300);
@@ -919,18 +955,31 @@ nav a,
   .start {
     padding-block: var(--s16);
   }
-  .diagram {
+  .diagram-canvas {
     overflow-x: auto;
   }
   .diagram svg {
-    min-width: 760px;
-    min-height: 400px;
+    min-width: 700px;
+    min-height: 0;
   }
   .architecture-diagram svg {
-    min-height: 476px;
+    min-height: 0;
   }
   .diagram figcaption {
     padding: var(--s3) var(--s4);
+  }
+  .diagram-scroll-description {
+    position: static;
+    display: block;
+    width: auto;
+    height: auto;
+    padding: var(--s2) var(--s4);
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+    border-top: var(--stroke) solid var(--line-soft);
+    color: var(--slate-500);
+    font-size: 0.875rem;
   }
   .start-rail li {
     min-height: 0;
