@@ -1,3 +1,15 @@
+# [0.6.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.5.1...v0.6.0) (2026-08-17)
+
+
+### Bug Fixes
+
+* **security:** harden artifact and rollback boundaries ([5b8d9f6](https://github.com/bestagentkits/cloud-harness-mcp/commit/5b8d9f6a72510e1fb0987d8bf5294b6cefbad507))
+
+
+### Features
+
+* **auth:** add Cloudflare Access dashboard ([3b1b455](https://github.com/bestagentkits/cloud-harness-mcp/commit/3b1b4554233f81c543a8d919247591709e6b40b3))
+
 ## [0.5.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.5.0...v0.5.1) (2026-08-17)
 
 
