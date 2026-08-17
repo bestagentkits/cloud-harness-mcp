@@ -40,8 +40,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: docker compose --profile images build executor-image api runner
-      - name: Verify runtime scripts are readable by the non-root API user
-        run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK)"
+      - name: Verify non-root API runtime dependencies
+        run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/package.json','/app/apps/api/package.json','/app/packages/contracts/package.json','/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK); import('@cloud-harness/contracts')"
       - run: npm run test:docker
       - run: npm run test:e2e
       - name: Assert managed-container cleanup

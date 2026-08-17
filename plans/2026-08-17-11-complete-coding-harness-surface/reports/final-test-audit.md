@@ -44,6 +44,14 @@ After the final Docker and E2E runs:
 
 ## Observation
 
+The first production rollout after merge exposed a deploy-host umask boundary:
+the release script intentionally uses `umask 077`, Docker preserved `0600` on
+workspace package metadata, and the non-root API could not read the contracts
+package `exports` map. Runtime Docker stages now copy all package metadata with
+explicit mode `0444`, and CI launches the image as its configured non-root user
+to read those files and import `@cloud-harness/contracts` before integration
+tests. This makes the image independent of checkout umask.
+
 The first post-merge `main` run cloned the newly merged repository, whose 2.86
 MiB architecture banner exceeded the Docker integration fixture's historical
 1 MiB workspace ceiling before the quota assertion could create its own test

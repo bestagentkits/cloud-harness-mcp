@@ -13,11 +13,13 @@ FROM node:24.11.0-alpine3.22
 RUN apk add --no-cache docker-cli tini
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=build /app/package.json /app/package-lock.json ./
+RUN mkdir -p /app/apps/runner /app/packages/contracts \
+  && chmod 0755 /app/apps /app/apps/runner /app/packages /app/packages/contracts
+COPY --from=build --chmod=0444 /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/apps/runner/package.json ./apps/runner/package.json
+COPY --from=build --chmod=0444 /app/apps/runner/package.json ./apps/runner/package.json
 COPY --from=build /app/apps/runner/dist ./apps/runner/dist
-COPY --from=build /app/packages/contracts/package.json ./packages/contracts/package.json
+COPY --from=build --chmod=0444 /app/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 EXPOSE 3001
 ENTRYPOINT ["/sbin/tini", "--"]
