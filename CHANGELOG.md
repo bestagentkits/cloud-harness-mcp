@@ -1,3 +1,10 @@
+## [0.6.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.0...v0.6.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* **auth:** materialize owner bearer principal ([c923793](https://github.com/bestagentkits/cloud-harness-mcp/commit/c9237934ae4b87f7b4d65548406abae258109ed7))
+
 # [0.6.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.5.1...v0.6.0) (2026-08-17)
 
 
