@@ -15,15 +15,26 @@
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header">
       <a class="brand" href="#top" aria-label="Cloud Harness MCP home"><svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M6 6h12v4h-8v20h8v4H6zM22 6h12v28H22v-4h8V10h-8zM16 16h8v8h-8z"/></svg><span>Cloud Harness <b>MCP</b></span></a>
-      <nav aria-label="Primary navigation"><a href="#how-it-works">How it works</a><a href="#architecture">Architecture</a><a href="#connect">Connect</a></nav>
+      <nav aria-label="Primary navigation"><a href="#getting-started">Start</a><a href="#how-it-works">How it works</a><a href="#mcp-tools">Tools</a><a href="#architecture">Architecture</a><a href="#connect">Connect</a></nav>
       <a class="header-link" href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">Repository <span aria-hidden="true">↗</span></a>
     </header>
     <main id="main-content">
       <section class="hero" id="top" aria-labelledby="hero-title">
-        <div class="hero-copy"><p class="overline">Remote coding, under one owner</p><h1 id="hero-title">Keep the controls close.</h1><p class="hero-lede">Cloud Harness MCP gives one trusted owner a narrow, observable route into a time-limited repository workspace.</p><div class="hero-actions"><a class="button button-primary" href="#how-it-works">Trace the flow <span aria-hidden="true">↓</span></a><a class="button button-quiet" href="#connect">Choose a client <span aria-hidden="true">↓</span></a></div></div>
+        <div class="hero-copy"><p class="overline">Remote coding, under one owner</p><h1 id="hero-title">Keep the controls close.</h1><p class="hero-lede">Cloud Harness MCP gives one trusted owner a narrow, observable route into a time-limited repository workspace.</p><div class="hero-actions"><a class="button button-primary" href="#getting-started">Start safely <span aria-hidden="true">↓</span></a><a class="button button-quiet" href="#connect">Choose a client <span aria-hidden="true">↓</span></a></div></div>
         <div class="hero-plate" aria-label="Abstract control panel showing a trusted owner, bounded policy, and isolated executor"><div class="plate-rule top" aria-hidden="true"></div><p class="plate-label">Trusted control plane</p><div class="operator-symbol" aria-hidden="true"><span></span><span></span><span></span></div><p class="plate-state">Owner request</p><div class="plate-signal" aria-hidden="true"><i></i></div><p class="plate-label lower">Bounded execution plane</p><div class="executor-symbol" aria-hidden="true"><i></i><i></i><i></i><i></i></div><p class="plate-state final">TTL-bound workspace</p><div class="plate-rule bottom" aria-hidden="true"></div></div>
       </section>
       <section class="statement" aria-labelledby="statement-title"><div><h2 id="statement-title">Repository code is an input, not a peer.</h2><p>Commands, dependencies, hooks, skills, and Git metadata execute only in the executor. The control plane stays separate from Docker authority and repository credentials.</p></div></section>
+
+      <section class="getting-started section" id="getting-started" aria-labelledby="getting-started-title">
+        <div class="section-heading"><h2 id="getting-started-title">Getting started</h2><p>Set up one approved client, open one bounded workspace, then keep every later operation scoped to its opaque ID.</p></div>
+        <ol class="start-rail" aria-label="Getting started steps">
+          <li><span>Connect</span><h3>Keep the token local</h3><p>Choose a supported client path. Cloud-hosted connectors need the documented OAuth gateway.</p></li>
+          <li><span>Open</span><h3>Use a clean repository URL</h3><p>Call <code>workspace_open</code> with a credential-free HTTPS URL and fresh idempotency key.</p></li>
+          <li><span>Work</span><h3>Keep the workspace ID</h3><p>Use the returned opaque <code>workspaceId</code> for files, code, commands, and Git.</p></li>
+          <li><span>Close</span><h3>End the execution window</h3><p>Close shells, sessions, and unwanted tasks before <code>workspace_close</code>.</p></li>
+        </ol>
+        <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp#getting-started" target="_blank" rel="noreferrer">Read the full start guide <span aria-hidden="true">↗</span></a>
+      </section>
 
       <section class="section" id="how-it-works" aria-labelledby="how-title">
         <div class="section-heading"><h2 id="how-title">How it works</h2><p>A request moves through a deliberately narrow lane. The animation traces direction; the labels describe the real boundary.</p></div>
@@ -39,6 +50,19 @@
       <section class="workflow section" id="coding-workflow" aria-labelledby="workflow-title">
         <div class="workflow-intro"><p class="overline">A bounded coding loop</p><h2 id="workflow-title">Coding workflow</h2><p>Open a workspace with intent, do the work inside it, then end the execution window cleanly.</p></div>
         <div><ol class="coding-rail" aria-label="Coding workflow steps"><li><span>Open</span><h3>Open with intent</h3><p>Use a credential-free HTTPS repository URL and a fresh idempotency key.</p></li><li><span>Work</span><h3>Inspect, edit, test</h3><p>Use bounded workspace tools in the existing executor.</p></li><li class="transfer"><span>Transfer</span><h3>Use origin-only Git</h3><p>Optional remote Git transfer is staged outside the executor with short-lived credentials.</p></li><li><span>Close</span><h3>Close or let TTL clean up</h3><p>Workspace files are removed when the executor lifecycle ends.</p></li></ol><p class="workflow-note">The executor has no network by default and never receives GitHub App or deployment credentials.</p></div>
+      </section>
+
+      <section class="tools section" id="mcp-tools" aria-labelledby="tools-title">
+        <div class="section-heading"><h2 id="tools-title">MCP tools</h2><p>Every public tool stays inside the owner-bound workspace. Inputs, limits, and approval hints live in the contract source.</p></div>
+        <div class="tool-catalog">
+          <article><h3>Workspace lifecycle</h3><p><code>workspace_open</code><code>workspace_list</code><code>workspace_status</code><code>workspace_close</code></p></article>
+          <article><h3>Files and code intelligence</h3><p><code>files_list</code><code>files_read</code><code>files_write</code><code>files_apply_patch</code><code>files_delete</code><code>files_move</code><code>files_mkdir</code><code>grep_search</code><code>symbols_search</code><code>symbols_references</code></p></article>
+          <article><h3>Commands and shells</h3><p><code>exec_run</code><code>shell_open</code><code>shell_io</code><code>shell_close</code></p></article>
+          <article><h3>Sessions and tasks</h3><p><code>sessions_list</code><code>sessions_open</code><code>sessions_io</code><code>sessions_close</code><code>tasks_list</code><code>tasks_run</code><code>tasks_status</code><code>tasks_cancel</code><code>tasks_graph</code></p></article>
+          <article><h3>Git and worktrees</h3><p><code>git_status</code><code>git_diff</code><code>git_log</code><code>git_branch</code><code>git_checkout</code><code>git_add</code><code>git_commit</code><code>git_fetch</code><code>git_pull</code><code>git_push</code><code>git_merge</code><code>git_rebase</code><code>worktrees_list</code><code>worktrees_create</code><code>worktrees_remove</code></p></article>
+          <article><h3>Repository extensions</h3><p><code>skills_list</code><code>skills_read</code><code>skills_run</code><code>hooks_list</code><code>hooks_run</code><code>memories_list</code><code>memories_read</code><code>memories_write</code><code>deployments_list</code><code>deployments_run</code></p></article>
+        </div>
+        <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md" target="_blank" rel="noreferrer">Read tool semantics <span aria-hidden="true">↗</span></a>
       </section>
 
       <section class="section" id="architecture" aria-labelledby="architecture-title">

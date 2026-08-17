@@ -87,6 +87,56 @@ write access; clone/fetch/pull need read access. See
 [configuration](docs/configuration.md#optional-private-github-clone) and
 [MCP semantics](docs/mcp-api.md).
 
+## Getting started
+
+1. Read the [security model](docs/security-model.md), then configure one of the
+   supported clients below with the owner token kept in local private
+   configuration.
+2. Ask the client to call `workspace_open` with a credential-free HTTPS
+   repository URL and a fresh idempotency key. Keep the returned opaque
+   `workspaceId`; do not derive it from a path or repository name.
+3. Use the bounded tools in the existing workspace, then close shells,
+   sessions, and unwanted tasks before calling `workspace_close`.
+
+Start with the normal workflow in [MCP usage](docs/mcp-api.md#normal-workflow)
+for lifecycle, cursor, network, and Git-transfer semantics.
+
+## MCP tools
+
+The public tool names are owned by
+[`RunnerOperationSchema`](packages/contracts/src/runner-api.ts). Inputs,
+bounds, and approval annotations are owned by
+[`TOOL_SPECS`](packages/contracts/src/tool-schemas.ts); the API registers each
+of those specs in [`mcp-server.ts`](apps/api/src/mcp-server.ts).
+
+### Workspace lifecycle
+
+`workspace_open`, `workspace_list`, `workspace_status`, `workspace_close`
+
+### Files and code intelligence
+
+`files_list`, `files_read`, `files_write`, `files_apply_patch`, `files_delete`,
+`files_move`, `files_mkdir`, `grep_search`, `symbols_search`,
+`symbols_references`
+
+### Commands, shells, sessions, and tasks
+
+`exec_run`, `shell_open`, `shell_io`, `shell_close`, `sessions_list`,
+`sessions_open`, `sessions_io`, `sessions_close`, `tasks_list`, `tasks_run`,
+`tasks_status`, `tasks_cancel`, `tasks_graph`
+
+### Git and worktrees
+
+`git_status`, `git_diff`, `git_log`, `git_branch`, `git_checkout`, `git_add`,
+`git_commit`, `git_fetch`, `git_pull`, `git_push`, `git_merge`, `git_rebase`,
+`worktrees_list`, `worktrees_create`, `worktrees_remove`
+
+### Repository extensions
+
+`skills_list`, `skills_read`, `skills_run`, `hooks_list`, `hooks_run`,
+`memories_list`, `memories_read`, `memories_write`, `deployments_list`,
+`deployments_run`
+
 ## Connect from AI clients
 
 This server exposes a remote Streamable HTTP MCP endpoint:
