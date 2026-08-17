@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Cloud Harness MCP is a private remote coding harness for one trusted owner.">
+    <meta name="theme-color" content="oklch(13% 0.02 252)">
+    <title>Cloud Harness MCP | One trusted operator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Cloud Harness MCP home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M6 6h12v4h-8v20h8v4H6zM22 6h12v28H22v-4h8V10h-8zM16 16h8v8h-8z"/></svg>
+        <span>Cloud Harness <b>MCP</b></span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#operation-lane">Architecture</a>
+        <a href="#boundaries">Boundaries</a>
+        <a href="#start">Start</a>
+      </nav>
+      <a class="header-link" href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">Repository <span aria-hidden="true">↗</span></a>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="overline">Remote coding, under one owner</p>
+          <h1 id="hero-title">Keep the controls close.</h1>
+          <p class="hero-lede">Cloud Harness MCP opens an isolated repository workspace in a time-limited Docker executor for one trusted operator.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#start">See the workflow <span aria-hidden="true">↓</span></a>
+            <a class="button button-quiet" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md" target="_blank" rel="noreferrer">Read MCP usage <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+        <div class="hero-plate" aria-label="An abstract control panel showing a trusted owner, contained executor, and bounded workspace">
+          <div class="plate-line plate-line-top"></div>
+          <div class="plate-line plate-line-bottom"></div>
+          <p class="plate-label">Control plane</p>
+          <div class="operator-symbol" aria-hidden="true"><span></span><span></span><span></span></div>
+          <p class="plate-state">Trusted owner</p>
+          <div class="plate-divider" aria-hidden="true"></div>
+          <p class="plate-label plate-label-lower">Execution plane</p>
+          <div class="executor-symbol" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <p class="plate-state plate-state-lower">TTL-bound workspace</p>
+        </div>
+      </section>
+
+      <section class="statement" aria-labelledby="statement-title">
+        <div class="statement-grid">
+          <h2 id="statement-title">Repository code is an input, not a peer.</h2>
+          <p>Commands, dependencies, hooks, skills, and Git metadata from a repository can execute inside the executor. The control plane stays separate from Docker authority and repository credentials.</p>
+        </div>
+      </section>
+
+      <section class="lane-section" id="operation-lane" aria-labelledby="lane-title">
+        <div class="section-heading">
+          <h2 id="lane-title">A narrow route to execution.</h2>
+          <p>Each service has a job. Authority moves forward only where it is required.</p>
+        </div>
+        <ol class="operation-lane">
+          <li class="lane-node client">
+            <span class="lane-index">01</span>
+            <div><h3>MCP client</h3><p>The owner begins with an authenticated request.</p></div>
+          </li>
+          <li class="lane-node ingress">
+            <span class="lane-index">02</span>
+            <div><h3>Ingress</h3><p>A credential-free proxy accepts the loopback route.</p></div>
+          </li>
+          <li class="lane-node api">
+            <span class="lane-index">03</span>
+            <div><h3>API</h3><p>Request policy and MCP translation stay off the Docker socket.</p></div>
+          </li>
+          <li class="lane-node runner">
+            <span class="lane-index">04</span>
+            <div><h3>Runner</h3><p>Lifecycle, repository materialization, and cleanup live here.</p></div>
+          </li>
+          <li class="lane-node executor">
+            <span class="lane-index">05</span>
+            <div><h3>Docker executor</h3><p>Repository-controlled work runs non-root in a bounded workspace.</p></div>
+          </li>
+        </ol>
+        <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/system-architecture.md" target="_blank" rel="noreferrer">Inspect the architecture documentation <span aria-hidden="true">↗</span></a>
+      </section>
+
+      <section class="capabilities" aria-labelledby="capability-title">
+        <div class="capability-intro">
+          <h2 id="capability-title">Useful controls. Bounded handles.</h2>
+        </div>
+        <div class="capability-list">
+          <article>
+            <span class="capability-number">A</span>
+            <h3>Open with intent</h3>
+            <p>Open a credential-free HTTPS repository URL with an idempotency key. Keep the opaque workspace ID for later calls.</p>
+          </article>
+          <article>
+            <span class="capability-number">B</span>
+            <h3>Inspect and change</h3>
+            <p>Use bounded file, search, command, shell, task, Git, worktree, skill, hook, and memory tools within that workspace.</p>
+          </article>
+          <article>
+            <span class="capability-number">C</span>
+            <h3>Close the lane</h3>
+            <p>Close when the work is complete. Workspace files expire after close or TTL cleanup, while durable metadata records the outcome.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="boundary-section" id="boundaries" aria-labelledby="boundary-title">
+        <div class="boundary-copy">
+          <p class="overline">Read this before use</p>
+          <h2 id="boundary-title">A private harness, not a tenant boundary.</h2>
+          <p>Cloud Harness MCP is for one authenticated, trusted owner using owner-approved repositories. It is not an anonymous service, shared team sandbox, or hostile multi-tenant platform.</p>
+          <a class="button button-copper" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/security-model.md" target="_blank" rel="noreferrer">Read the security model <span aria-hidden="true">↗</span></a>
+        </div>
+        <dl class="limit-list">
+          <div><dt>Untrusted input</dt><dd>Repository content and supplied commands may execute inside the executor.</dd></div>
+          <div><dt>Network</dt><dd>Executor networking is <strong>none</strong> by default. Bridge mode is an explicit weakening.</dd></div>
+          <div><dt>Git credentials</dt><dd>Executors have no GitHub App token, deployment credential, SSH key, or Git push tool.</dd></div>
+          <div><dt>Lifetime</dt><dd>Close or TTL cleanup removes the executor and workspace directory.</dd></div>
+        </dl>
+      </section>
+
+      <section class="start-section" id="start" aria-labelledby="start-title">
+        <div>
+          <h2 id="start-title">Open. Work. Close.</h2>
+        </div>
+        <div class="start-content">
+          <p>Connect Codex with an owner-provided bearer token kept in the environment, then call <code>workspace_open</code> with a credential-free HTTPS repository URL and fresh idempotency key.</p>
+          <div class="start-actions">
+            <a class="button button-primary" href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-codex" target="_blank" rel="noreferrer">Connect from Codex <span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md" target="_blank" rel="noreferrer">Tool semantics <span aria-hidden="true">↗</span></a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Cloud Harness MCP. Remote execution, operated with intent.</p>
+      <div>
+        <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -24,6 +24,12 @@
     "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts --testTimeout=120000",
     "pretest:e2e": "npm run build -w @cloud-harness/contracts",
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
+    "pages:check": "node scripts/verify-pages-artifact.mjs",
+    "pages:preflight": "npm run pages:check && node scripts/verify-pages-project.mjs && npm run pages:links",
+    "pages:deploy": "npm run pages:preflight && wrangler pages deploy site --project-name cloud-harness-mcp && npm run pages:smoke",
+    "pages:list": "wrangler pages deployment list --project-name cloud-harness-mcp --environment production --json",
+    "pages:links": "node scripts/verify-pages-links.mjs",
+    "pages:smoke": "node scripts/verify-pages-url.mjs",
     "verify:production": "node scripts/verify-production.mjs",
     "verify:compose": "node scripts/verify-compose-boundaries.mjs",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build"
@@ -36,6 +42,7 @@
     "eslint": "9.39.5",
     "typescript": "5.9.3",
     "typescript-eslint": "8.67.0",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "wrangler": "4.123.0"
   }
 }

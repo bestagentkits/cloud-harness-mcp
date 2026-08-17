@@ -79,6 +79,7 @@ docker compose down
 - [Development and testing](docs/development.md)
 - [Operations, backup, rollback, and cleanup](docs/operations.md)
 - [VPS deployment with nginx and Certbot](docs/deployment.md)
+- [Cloudflare Pages landing page](docs/cloudflare-pages.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
 The repository is public at
