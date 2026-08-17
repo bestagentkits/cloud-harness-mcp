@@ -9,14 +9,17 @@ Production URL: <https://cloud-harness-mcp.pages.dev>
 
 ## First-time setup
 
-1. Authenticate the intended Cloudflare account with `npx wrangler login`.
-2. Create the direct-upload Pages project with
+1. Create the direct-upload Pages project with an owner-authenticated Wrangler
+   session:
    `npx wrangler pages project create cloud-harness-mcp --production-branch main`.
    Use the generated `cloud-harness-mcp.pages.dev` hostname until an owner
    explicitly approves a different custom domain.
-3. Do not add Pages secrets, environment variables, Functions, API tokens,
-   MCP bearer tokens, runner tokens, or GitHub App credentials. The page has no
-   runtime configuration.
+2. Add `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` as repository
+   **GitHub Actions secrets**. They are deployment credentials, not Cloudflare
+   Pages runtime settings.
+3. Do not add Pages secrets, environment variables, Functions, MCP bearer
+   tokens, runner tokens, or GitHub App credentials. The page has no runtime
+   configuration.
 
 The authenticated account must have access to that exact project. The preflight
 does not create a project, which prevents uploading the page to an unintended
@@ -24,7 +27,17 @@ account or project.
 
 ## Deploy
 
-Install the repository dependencies, then run:
+After the `CI` workflow succeeds on `main`,
+[`deploy-pages.yml`](../.github/workflows/deploy-pages.yml) checks out that
+exact tested commit and deploys `site/` to the production Pages project. Pull
+requests do not run this deployment workflow or receive Cloudflare credentials.
+Deployments do not overlap; GitHub may supersede an older queued deployment
+when a newer successful main commit is ready. Open the matching **Deploy
+Cloudflare Pages** run in GitHub Actions to inspect its preflight, upload, and
+smoke-test receipt.
+
+For an owner-authorized manual deployment, authenticate the intended Cloudflare
+account and run:
 
 ```bash
 npm run pages:deploy
@@ -58,6 +71,9 @@ Preview deployments are not valid rollback targets. Confirm the restored
 
 - If `npm run pages:preflight` says Wrangler is unauthenticated, run
   `npx wrangler login` in the owner-controlled browser session.
+- If the GitHub Actions deployment cannot list the Pages project, confirm that
+  its `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` repository secrets are
+  present and that the token can manage the intended account's Pages projects.
 - If the named project is absent, create it in the intended account before
   deploying. Do not change the repository's project name to match a different
   account.
