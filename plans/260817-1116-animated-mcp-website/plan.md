@@ -5,6 +5,7 @@ status: completed
 priority: P1
 effort: "1d"
 branch: feat/animated-mcp-website
+linked_pr: 27
 tags: [landing-page, static-site, mcp, accessibility]
 created: 2026-08-17
 ---
