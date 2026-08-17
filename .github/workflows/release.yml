@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.head_branch == 'dev' || github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Confirm CI tested the current release-branch tip
+        shell: bash
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          case "$BRANCH" in dev|main) ;; *) exit 1 ;; esac
+          current_sha="$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
+          test "$current_sha" = "$RELEASE_SHA"
+          git switch --force-create "$BRANCH" "$RELEASE_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.11.0
+          cache: npm
+      - run: npm ci
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          test "$(git branch --show-current)" = "$RELEASE_BRANCH"
+          env -u GITHUB_ACTIONS npm exec semantic-release

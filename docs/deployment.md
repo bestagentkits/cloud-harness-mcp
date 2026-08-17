@@ -152,6 +152,13 @@ pins the SSH host key, passes an exact commit SHA to the fixed sudo command,
 uses a forced-command deployment key, and removes ephemeral SSH files. Protect the `production` environment and
 restrict who may approve or modify these secrets.
 
+GitHub release automation is separate from deployment. After successful CI,
+`dev` produces beta releases and `main` produces stable releases from
+Conventional Commit history; it requires `contents: write` for the workflow
+token and branch protection that permits its generated version/changelog
+commit. Production deployment remains tied to successful `main` CI, so a
+release tag is not itself production-deployment evidence.
+
 ## Rollback or disable the route
 
 For a compatible previous commit:

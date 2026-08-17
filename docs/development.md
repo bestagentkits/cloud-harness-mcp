@@ -89,3 +89,20 @@ tests; keep docs focused on decisions and navigation to executable owners.
 Never add runtime `.env` files, tokens, private keys, deployment identities,
 database contents, private repository URLs, or user data to commits or test
 fixtures.
+
+## Automated releases
+
+Conventional Commit messages determine release versions: `fix` and `perf`
+produce patches, `feat` produces a minor version, and a `BREAKING CHANGE`
+footer or `!` produces a major version. A successful push CI run on `dev`
+creates a `-beta.N` GitHub release; a successful push CI run on `main` creates
+the stable release. Pull-request runs never release.
+
+The release workflow commits the generated [`CHANGELOG.md`](../CHANGELOG.md)
+and synchronized workspace/runtime versions, then tags that metadata-only
+release commit. CI proves the preceding source commit; the tag is derived from
+that exact tested source plus the generated metadata. Before enabling the first
+automated release, create and protect `dev`, and either seed the intended
+`v0.2.0` baseline tag or accept `1.0.0` as the first generated version. Branch
+rules must allow the repository's `GITHUB_TOKEN` to write these generated
+release commits.
