@@ -1,6 +1,6 @@
 {
   "name": "cloud-harness-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -30,16 +30,25 @@
     "pages:list": "wrangler pages deployment list --project-name cloud-harness-mcp --environment production --json",
     "pages:links": "node scripts/verify-pages-links.mjs",
     "pages:smoke": "node scripts/verify-pages-url.mjs",
+    "release:dry-run": "semantic-release --dry-run --no-ci",
     "verify:production": "node scripts/verify-production.mjs",
     "verify:compose": "node scripts/verify-compose-boundaries.mjs",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
+    "@semantic-release/changelog": "7.0.0",
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/exec": "7.1.0",
+    "@semantic-release/git": "11.0.1",
+    "@semantic-release/github": "12.0.9",
+    "@semantic-release/release-notes-generator": "14.1.1",
     "@eslint/js": "9.39.5",
     "@modelcontextprotocol/client": "2.0.0",
     "@types/express": "5.0.6",
     "@types/node": "24.13.3",
     "eslint": "9.39.5",
+    "conventional-changelog-conventionalcommits": "10.3.0",
+    "semantic-release": "25.0.9",
     "typescript": "5.9.3",
     "typescript-eslint": "8.67.0",
     "vitest": "4.1.10",

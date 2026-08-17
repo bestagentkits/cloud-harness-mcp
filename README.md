@@ -364,6 +364,7 @@ docker compose down
 
 ## Documentation
 
+- [Project-local cloudharness agent skill](.agents/skills/cloudharness/SKILL.md)
 - [System architecture](docs/system-architecture.md)
 - [MCP usage and tool semantics](docs/mcp-api.md)
 - [Configuration](docs/configuration.md)
