@@ -1,99 +1,1216 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Cloud Harness MCP is a private remote coding harness for one trusted owner.">
-    <meta name="theme-color" content="oklch(13% 0.02 252)">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Cloud Harness MCP is a private remote coding harness for one trusted owner."
+    />
+    <meta name="theme-color" content="oklch(13% 0.02 252)" />
     <title>Cloud Harness MCP | One trusted operator</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header">
-      <a class="brand" href="#top" aria-label="Cloud Harness MCP home"><svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M6 6h12v4h-8v20h8v4H6zM22 6h12v28H22v-4h8V10h-8zM16 16h8v8h-8z"/></svg><span>Cloud Harness <b>MCP</b></span></a>
-      <nav aria-label="Primary navigation"><a href="#getting-started">Start</a><a href="#how-it-works">How it works</a><a href="#mcp-tools">Tools</a><a href="#architecture">Architecture</a><a href="#connect">Connect</a></nav>
-      <a class="header-link" href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">Repository <span aria-hidden="true">↗</span></a>
+      <a class="brand" href="#top" aria-label="Cloud Harness MCP home"
+        ><svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+          <path
+            d="M6 6h12v4h-8v20h8v4H6zM22 6h12v28H22v-4h8V10h-8zM16 16h8v8h-8z"
+          /></svg
+        ><span>Cloud Harness <b>MCP</b></span></a
+      >
+      <nav aria-label="Primary navigation">
+        <a href="#getting-started">Start</a
+        ><a href="#how-it-works">How it works</a><a href="#mcp-tools">Tools</a
+        ><a href="#architecture">Architecture</a><a href="#connect">Connect</a>
+      </nav>
+      <a
+        class="header-link"
+        href="https://github.com/bestagentkits/cloud-harness-mcp"
+        target="_blank"
+        rel="noreferrer"
+        >Repository <span aria-hidden="true">↗</span></a
+      >
     </header>
     <main id="main-content">
       <section class="hero" id="top" aria-labelledby="hero-title">
-        <div class="hero-copy"><p class="overline">Remote coding, under one owner</p><h1 id="hero-title">Keep the controls close.</h1><p class="hero-lede">Cloud Harness MCP gives one trusted owner a narrow, observable route into a time-limited repository workspace.</p><div class="hero-actions"><a class="button button-primary" href="#getting-started">Start safely <span aria-hidden="true">↓</span></a><a class="button button-quiet" href="#connect">Choose a client <span aria-hidden="true">↓</span></a></div></div>
-        <div class="hero-plate" aria-label="Abstract control panel showing a trusted owner, bounded policy, and isolated executor"><div class="plate-rule top" aria-hidden="true"></div><p class="plate-label">Trusted control plane</p><div class="operator-symbol" aria-hidden="true"><span></span><span></span><span></span></div><p class="plate-state">Owner request</p><div class="plate-signal" aria-hidden="true"><i></i></div><p class="plate-label lower">Bounded execution plane</p><div class="executor-symbol" aria-hidden="true"><i></i><i></i><i></i><i></i></div><p class="plate-state final">TTL-bound workspace</p><div class="plate-rule bottom" aria-hidden="true"></div></div>
+        <div class="hero-copy">
+          <p class="overline">Remote coding, under one owner</p>
+          <h1 id="hero-title">Keep the controls close.</h1>
+          <p class="hero-lede">
+            Cloud Harness MCP gives one trusted owner a narrow, observable route
+            into a time-limited repository workspace.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#getting-started"
+              >Start safely <span aria-hidden="true">↓</span></a
+            ><a class="button button-quiet" href="#connect"
+              >Choose a client <span aria-hidden="true">↓</span></a
+            >
+          </div>
+        </div>
+        <figure class="hero-trace" aria-labelledby="hero-trace-title">
+          <figcaption>
+            <span id="hero-trace-title">Live boundary trace</span
+            ><span>One owner. One bounded workspace.</span>
+          </figcaption>
+          <svg
+            viewBox="0 0 520 410"
+            role="img"
+            aria-labelledby="hero-svg-title hero-svg-description"
+          >
+            <title id="hero-svg-title">
+              Owner request enters a bounded Cloud Harness workspace
+            </title>
+            <desc id="hero-svg-description">
+              A request moves from the owner client through the control plane
+              into a non-root executor. The animated packet represents an
+              authenticated operation, not a credential flow.
+            </desc>
+            <defs>
+              <marker
+                id="hero-arrow"
+                markerWidth="9"
+                markerHeight="9"
+                refX="8"
+                refY="4.5"
+                orient="auto"
+              >
+                <path d="M0,0 L9,4.5 L0,9 z" />
+              </marker>
+            </defs>
+            <rect
+              class="hero-zone hero-zone-control"
+              x="28"
+              y="76"
+              width="294"
+              height="272"
+            />
+            <rect
+              class="hero-zone hero-zone-execution"
+              x="348"
+              y="76"
+              width="144"
+              height="272"
+            />
+            <text class="svg-kicker" x="48" y="106">TRUSTED CONTROL</text>
+            <text class="svg-kicker" x="368" y="106">EXECUTION</text>
+            <path
+              class="hero-wire"
+              d="M96 208 H170 H252 H392"
+              marker-end="url(#hero-arrow)"
+            />
+            <path
+              class="hero-wire hero-return"
+              d="M392 262 H252 H170 H96"
+              marker-end="url(#hero-arrow)"
+            />
+            <g class="hero-node">
+              <rect x="48" y="166" width="96" height="78" />
+              <text x="66" y="196">OWNER</text>
+              <text class="svg-muted" x="66" y="220">MCP client</text>
+            </g>
+            <g class="hero-node">
+              <rect x="176" y="166" width="96" height="78" />
+              <text x="194" y="196">RUNNER</text>
+              <text class="svg-muted" x="194" y="220">policy</text>
+            </g>
+            <g class="hero-node hero-node-active">
+              <rect x="360" y="166" width="110" height="78" />
+              <text x="378" y="196">WORKSPACE</text>
+              <text class="svg-muted" x="378" y="220">non-root · TTL</text>
+            </g>
+            <circle class="hero-packet" r="7" visibility="hidden">
+              <set attributeName="visibility" to="visible" begin="0s" />
+              <animateMotion
+                dur="5.6s"
+                additive="replace"
+                repeatCount="indefinite"
+                path="M96 208 H170 H252 H392"
+                keyPoints="0;0;1;1"
+                keyTimes="0;0.14;0.72;1"
+                calcMode="linear"
+              />
+            </circle>
+            <circle
+              class="hero-packet hero-packet-return"
+              r="5"
+              visibility="hidden"
+            >
+              <set attributeName="visibility" to="visible" begin="0s" />
+              <animateMotion
+                dur="5.6s"
+                additive="replace"
+                begin="2.8s"
+                repeatCount="indefinite"
+                path="M392 262 H252 H170 H96"
+                keyPoints="0;0;1;1"
+                keyTimes="0;0.14;0.72;1"
+                calcMode="linear"
+              />
+            </circle>
+            <text class="hero-trace-label" x="50" y="306">
+              AUTHENTICATED REQUEST
+            </text>
+            <text class="hero-trace-label" x="300" y="306">
+              STRUCTURED RESULT
+            </text>
+          </svg>
+        </figure>
       </section>
-      <section class="statement" aria-labelledby="statement-title"><div><h2 id="statement-title">Repository code is an input, not a peer.</h2><p>Commands, dependencies, hooks, skills, and Git metadata execute only in the executor. The control plane stays separate from Docker authority and repository credentials.</p></div></section>
+      <section class="statement" aria-labelledby="statement-title">
+        <div>
+          <h2 id="statement-title">Repository code is an input, not a peer.</h2>
+          <p>
+            Commands, dependencies, hooks, skills, and Git metadata execute only
+            in the executor. The control plane stays separate from Docker
+            authority and repository credentials.
+          </p>
+        </div>
+      </section>
 
-      <section class="getting-started section" id="getting-started" aria-labelledby="getting-started-title">
-        <div class="section-heading"><h2 id="getting-started-title">Getting started</h2><p>Set up one approved client, open one bounded workspace, then keep every later operation scoped to its opaque ID.</p></div>
+      <section
+        class="getting-started section"
+        id="getting-started"
+        aria-labelledby="getting-started-title"
+      >
+        <div class="section-heading">
+          <h2 id="getting-started-title">Getting started</h2>
+          <p>
+            Set up one approved client, open one bounded workspace, then keep
+            every later operation scoped to its opaque ID.
+          </p>
+        </div>
         <ol class="start-rail" aria-label="Getting started steps">
-          <li><span>Connect</span><h3>Keep the token local</h3><p>Choose a supported client path. Cloud-hosted connectors need the documented OAuth gateway.</p></li>
-          <li><span>Open</span><h3>Use a clean repository URL</h3><p>Call <code>workspace_open</code> with a credential-free HTTPS URL and fresh idempotency key.</p></li>
-          <li><span>Work</span><h3>Keep the workspace ID</h3><p>Use the returned opaque <code>workspaceId</code> for files, code, commands, and Git.</p></li>
-          <li><span>Close</span><h3>End the execution window</h3><p>Close shells, sessions, and unwanted tasks before <code>workspace_close</code>.</p></li>
+          <li>
+            <span>Connect</span>
+            <h3>Keep the token local</h3>
+            <p>
+              Choose a supported client path. Cloud-hosted connectors need the
+              documented OAuth gateway.
+            </p>
+          </li>
+          <li>
+            <span>Open</span>
+            <h3>Use a clean repository URL</h3>
+            <p>
+              Call <code>workspace_open</code> with a credential-free HTTPS URL
+              and fresh idempotency key.
+            </p>
+          </li>
+          <li>
+            <span>Work</span>
+            <h3>Keep the workspace ID</h3>
+            <p>
+              Use the returned opaque <code>workspaceId</code> for files, code,
+              commands, and Git.
+            </p>
+          </li>
+          <li>
+            <span>Close</span>
+            <h3>End the execution window</h3>
+            <p>
+              Close shells, sessions, and unwanted tasks before
+              <code>workspace_close</code>.
+            </p>
+          </li>
         </ol>
-        <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp#getting-started" target="_blank" rel="noreferrer">Read the full start guide <span aria-hidden="true">↗</span></a>
+        <a
+          class="text-link"
+          href="https://github.com/bestagentkits/cloud-harness-mcp#getting-started"
+          target="_blank"
+          rel="noreferrer"
+          >Read the full start guide <span aria-hidden="true">↗</span></a
+        >
       </section>
 
       <section class="section" id="how-it-works" aria-labelledby="how-title">
-        <div class="section-heading"><h2 id="how-title">How it works</h2><p>A request moves through a deliberately narrow lane. The animation traces direction; the labels describe the real boundary.</p></div>
-        <ol class="signal-flow" aria-label="How Cloud Harness handles a request">
-          <li class="owner"><span>01</span><div><h3>Trusted owner</h3><p>Start from an MCP client using the owner-controlled bearer token.</p></div></li>
-          <li><span>02</span><div><h3>Authenticated MCP</h3><p>The ingress and API validate the request without holding Docker authority.</p></div></li>
-          <li class="runner"><span>03</span><div><h3>Runner policy</h3><p>The runner owns lifecycle, repository materialization, and cleanup.</p></div></li>
-          <li class="executor"><span>04</span><div><h3>Bounded executor</h3><p>Repository-controlled work runs non-root, then closes or expires by TTL.</p></div></li>
+        <div class="section-heading">
+          <h2 id="how-title">How it works</h2>
+          <p>
+            A request moves through a deliberately narrow lane. The animation
+            traces direction; the labels describe the real boundary.
+          </p>
+        </div>
+        <figure
+          class="diagram process-diagram"
+          aria-labelledby="process-diagram-title"
+          aria-describedby="process-diagram-scroll-description"
+          tabindex="0"
+        >
+          <div class="diagram-meta">
+            <span id="process-diagram-title">Request and result trace</span
+            ><span
+              ><i class="legend-request"></i> authenticated operation
+              <i class="legend-result"></i> structured result</span
+            >
+          </div>
+          <svg
+            viewBox="0 0 1200 570"
+            role="img"
+            aria-labelledby="process-svg-title process-svg-description"
+          >
+            <title id="process-svg-title">
+              Cloud Harness request lifecycle
+            </title>
+            <desc id="process-svg-description">
+              An owner client sends an authenticated operation through the
+              credential-free ingress and stateless API to the runner. The
+              runner manages a non-root time-limited executor. The result
+              returns through the same trusted request path.
+            </desc>
+            <defs>
+              <marker
+                id="process-request-arrow"
+                markerWidth="10"
+                markerHeight="10"
+                refX="9"
+                refY="5"
+                orient="auto"
+              >
+                <path d="M0,0 L10,5 L0,10 z" />
+              </marker>
+              <marker
+                id="process-result-arrow"
+                markerWidth="10"
+                markerHeight="10"
+                refX="9"
+                refY="5"
+                orient="auto"
+              >
+                <path d="M0,0 L10,5 L0,10 z" />
+              </marker>
+            </defs>
+            <g class="diagram-zone zone-public">
+              <rect x="34" y="62" width="346" height="438" />
+              <text class="svg-kicker" x="62" y="96">PUBLIC EDGE</text>
+            </g>
+            <g class="diagram-zone zone-control">
+              <rect x="404" y="62" width="398" height="438" />
+              <text class="svg-kicker" x="432" y="96">TRUSTED CONTROL</text>
+            </g>
+            <g class="diagram-zone zone-execution">
+              <rect x="826" y="62" width="338" height="438" />
+              <text class="svg-kicker" x="854" y="96">EXECUTION PLANE</text>
+            </g>
+            <path
+              class="diagram-lane request-lane"
+              d="M130 246 H270 H492 H694"
+              marker-end="url(#process-request-arrow)"
+            />
+            <path
+              class="diagram-lane result-lane"
+              d="M1002 220 V368 H694 H492 H270 H130"
+              marker-end="url(#process-result-arrow)"
+            />
+            <path
+              class="diagram-branch"
+              d="M694 246 V178 H992"
+              marker-end="url(#process-request-arrow)"
+            />
+            <g class="diagram-node client-node">
+              <rect x="70" y="204" width="122" height="84" />
+              <text x="94" y="238">OWNER</text>
+              <text x="94" y="264" class="svg-muted">MCP client</text>
+            </g>
+            <g class="diagram-node">
+              <rect x="218" y="204" width="104" height="84" />
+              <text x="240" y="238">INGRESS</text>
+              <text x="240" y="264" class="svg-muted">no secret</text>
+            </g>
+            <g class="diagram-node">
+              <rect x="438" y="204" width="110" height="84" />
+              <text x="464" y="238">MCP API</text>
+              <text x="464" y="264" class="svg-muted">stateless</text>
+            </g>
+            <g class="diagram-node runner-node">
+              <rect x="622" y="204" width="144" height="84" />
+              <text x="650" y="238">RUNNER</text>
+              <text x="650" y="264" class="svg-muted">policy + lifecycle</text>
+            </g>
+            <g class="diagram-node executor-node">
+              <rect x="920" y="136" width="164" height="84" />
+              <text x="946" y="170">EXECUTOR</text>
+              <text x="946" y="196" class="svg-muted">non-root · TTL</text>
+            </g>
+            <g class="diagram-callout">
+              <path d="M970 316 h122" />
+              <text x="854" y="344">DEFAULT NETWORK: NONE</text>
+              <text x="854" y="372" class="svg-muted">no Docker socket</text>
+              <text x="854" y="398" class="svg-muted">
+                no control credentials
+              </text>
+            </g>
+            <circle
+              class="diagram-packet packet-request"
+              r="8"
+              visibility="hidden"
+            >
+              <set attributeName="visibility" to="visible" begin="0s" />
+              <animateMotion
+                dur="6.2s"
+                additive="replace"
+                repeatCount="indefinite"
+                path="M130 246 H270 H492 H694"
+                keyPoints="0;0;1;1"
+                keyTimes="0;0.16;0.72;1"
+                calcMode="linear"
+              />
+            </circle>
+            <circle
+              class="diagram-packet packet-result"
+              r="6"
+              visibility="hidden"
+            >
+              <set attributeName="visibility" to="visible" begin="0s" />
+              <animateMotion
+                dur="6.2s"
+                additive="replace"
+                begin="3.1s"
+                repeatCount="indefinite"
+                path="M1002 220 V368 H694 H492 H270 H130"
+                keyPoints="0;0;1;1"
+                keyTimes="0;0.16;0.72;1"
+                calcMode="linear"
+              />
+            </circle>
+            <circle
+              class="diagram-packet packet-branch"
+              r="6"
+              visibility="hidden"
+            >
+              <set attributeName="visibility" to="visible" begin="0s" />
+              <animateMotion
+                dur="6.2s"
+                additive="replace"
+                begin="1.65s"
+                repeatCount="indefinite"
+                path="M694 246 V178 H992"
+                keyPoints="0;0;1;1"
+                keyTimes="0;0.16;0.72;1"
+                calcMode="linear"
+              />
+            </circle>
+          </svg>
+          <figcaption>
+            Ingress bridges and forwards. The API validates requests. Runner
+            alone owns policy and lifecycle. The executor only receives the
+            bounded workspace.
+          </figcaption>
+          <span id="process-diagram-scroll-description" class="sr-only"
+            >On narrow screens, use the arrow keys to pan this diagram
+            horizontally.</span
+          >
+        </figure>
+        <ol class="sr-only">
+          <li>
+            The owner client sends an authenticated operation through
+            credential-free ingress and the stateless MCP API.
+          </li>
+          <li>
+            The runner applies policy and manages the workspace lifecycle.
+          </li>
+          <li>
+            The non-root executor performs repository work until close or TTL
+            cleanup.
+          </li>
+          <li>
+            A structured result returns to the owner through the same trusted
+            path.
+          </li>
         </ol>
-        <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md" target="_blank" rel="noreferrer">Read the MCP lifecycle <span aria-hidden="true">↗</span></a>
+        <a
+          class="text-link"
+          href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md"
+          target="_blank"
+          rel="noreferrer"
+          >Read the MCP lifecycle <span aria-hidden="true">↗</span></a
+        >
       </section>
 
-      <section class="workflow section" id="coding-workflow" aria-labelledby="workflow-title">
-        <div class="workflow-intro"><p class="overline">A bounded coding loop</p><h2 id="workflow-title">Coding workflow</h2><p>Open a workspace with intent, do the work inside it, then end the execution window cleanly.</p></div>
-        <div><ol class="coding-rail" aria-label="Coding workflow steps"><li><span>Open</span><h3>Open with intent</h3><p>Use a credential-free HTTPS repository URL and a fresh idempotency key.</p></li><li><span>Work</span><h3>Inspect, edit, test</h3><p>Use bounded workspace tools in the existing executor.</p></li><li class="transfer"><span>Transfer</span><h3>Use origin-only Git</h3><p>Optional remote Git transfer is staged outside the executor with short-lived credentials.</p></li><li><span>Close</span><h3>Close or let TTL clean up</h3><p>Workspace files are removed when the executor lifecycle ends.</p></li></ol><p class="workflow-note">The executor has no network by default and never receives GitHub App or deployment credentials.</p></div>
+      <section
+        class="workflow section"
+        id="coding-workflow"
+        aria-labelledby="workflow-title"
+      >
+        <div class="workflow-intro">
+          <h2 id="workflow-title">Coding workflow</h2>
+          <p>
+            Open a workspace with intent, do the work inside it, then end the
+            execution window cleanly.
+          </p>
+        </div>
+        <div>
+          <figure
+            class="diagram workflow-diagram"
+            aria-labelledby="workflow-diagram-title"
+            aria-describedby="workflow-diagram-scroll-description"
+            tabindex="0"
+          >
+            <div class="diagram-meta">
+              <span id="workflow-diagram-title">Bounded coding loop</span
+              ><span
+                >Optional origin-only transfer stays outside execution.</span
+              >
+            </div>
+            <svg
+              viewBox="0 0 1200 590"
+              role="img"
+              aria-labelledby="workflow-svg-title workflow-svg-description"
+            >
+              <title id="workflow-svg-title">
+                Cloud Harness coding workflow
+              </title>
+              <desc id="workflow-svg-description">
+                workspace_open creates an opaque workspace identity. File, code,
+                command, shell, session, and task operations run in the
+                executor. Optional remote Git transfer pauses the executor and
+                uses a separate helper with a short-lived token. workspace_close
+                removes the executor and workspace.
+              </desc>
+              <defs>
+                <marker
+                  id="workflow-arrow"
+                  markerWidth="10"
+                  markerHeight="10"
+                  refX="9"
+                  refY="5"
+                  orient="auto"
+                >
+                  <path d="M0,0 L10,5 L0,10 z" />
+                </marker>
+              </defs>
+              <g class="diagram-zone zone-control">
+                <rect x="44" y="76" width="312" height="430" />
+                <text class="svg-kicker" x="72" y="110">CONTROL LIFECYCLE</text>
+              </g>
+              <g class="diagram-zone zone-execution">
+                <rect x="388" y="76" width="344" height="430" />
+                <text class="svg-kicker" x="416" y="110">
+                  EXECUTION WORKSPACE
+                </text>
+              </g>
+              <g class="diagram-zone zone-transfer">
+                <rect x="764" y="76" width="392" height="430" />
+                <text class="svg-kicker" x="792" y="110">
+                  ORIGIN-ONLY TRANSFER
+                </text>
+              </g>
+              <path
+                class="diagram-lane lifecycle-lane"
+                d="M134 244 H500"
+                marker-end="url(#workflow-arrow)"
+              />
+              <path
+                class="diagram-lane lifecycle-return"
+                d="M500 404 H134"
+                marker-end="url(#workflow-arrow)"
+              />
+              <path
+                class="diagram-loop"
+                d="M490 308 C548 266 632 266 684 308 C724 340 718 420 656 432 C592 446 514 430 494 378"
+                marker-end="url(#workflow-arrow)"
+              />
+              <path
+                class="diagram-transfer-line"
+                d="M694 244 H836 V182 H1058"
+                marker-end="url(#workflow-arrow)"
+              />
+              <path
+                class="diagram-transfer-line transfer-return"
+                d="M1058 312 H836 V404 H694"
+                marker-end="url(#workflow-arrow)"
+              />
+              <g class="diagram-node">
+                <rect x="80" y="202" width="144" height="84" />
+                <text x="106" y="236">OPEN</text>
+                <text x="106" y="262" class="svg-muted">workspace_open</text>
+              </g>
+              <g class="diagram-node executor-node">
+                <rect x="460" y="202" width="206" height="84" />
+                <text x="488" y="236">WORK</text>
+                <text x="488" y="262" class="svg-muted">
+                  files · code · commands
+                </text>
+              </g>
+              <g class="diagram-node transfer-node">
+                <rect x="852" y="140" width="164" height="84" />
+                <text x="880" y="174">HELPER</text>
+                <text x="880" y="200" class="svg-muted">short-lived token</text>
+              </g>
+              <g class="diagram-node">
+                <rect x="1018" y="140" width="104" height="84" />
+                <text x="1038" y="174">ORIGIN</text>
+                <text x="1038" y="200" class="svg-muted">GitHub</text>
+              </g>
+              <g class="diagram-node close-node">
+                <rect x="80" y="362" width="144" height="84" />
+                <text x="106" y="396">CLOSE</text>
+                <text x="106" y="422" class="svg-muted">workspace_close</text>
+              </g>
+              <g class="diagram-callout">
+                <path d="M484 478 h204" />
+                <text x="434" y="476">NO TOKEN. DEFAULT NETWORK: NONE</text>
+              </g>
+              <circle
+                class="diagram-packet packet-request"
+                r="8"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="0s" />
+                <animateMotion
+                  dur="6.8s"
+                  additive="replace"
+                  repeatCount="indefinite"
+                  path="M134 244 H500"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.12;0.68;1"
+                  calcMode="linear"
+                />
+              </circle>
+              <circle
+                class="diagram-packet packet-copper"
+                r="7"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="0s" />
+                <animateMotion
+                  dur="6.8s"
+                  additive="replace"
+                  begin="1.9s"
+                  repeatCount="indefinite"
+                  path="M694 244 H836 V182 H1058"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.16;0.72;1"
+                  calcMode="linear"
+                />
+              </circle>
+              <circle
+                class="diagram-packet packet-result"
+                r="6"
+                visibility="hidden"
+              >
+                <set attributeName="visibility" to="visible" begin="0s" />
+                <animateMotion
+                  dur="6.8s"
+                  additive="replace"
+                  begin="3.6s"
+                  repeatCount="indefinite"
+                  path="M500 404 H134"
+                  keyPoints="0;0;1;1"
+                  keyTimes="0;0.16;0.72;1"
+                  calcMode="linear"
+                />
+              </circle>
+            </svg>
+            <figcaption>
+              The executor works locally. Remote Git becomes a deliberate
+              handoff through a sibling helper, not executor egress.
+            </figcaption>
+            <span id="workflow-diagram-scroll-description" class="sr-only"
+              >On narrow screens, use the arrow keys to pan this diagram
+              horizontally.</span
+            >
+          </figure>
+          <p class="workflow-note">
+            The executor has no network by default and never receives GitHub App
+            or deployment credentials.
+          </p>
+        </div>
       </section>
 
-      <section class="tools section" id="mcp-tools" aria-labelledby="tools-title">
-        <div class="section-heading"><h2 id="tools-title">MCP tools</h2><p>Every public tool stays inside the owner-bound workspace. Inputs, limits, and approval hints live in the contract source.</p></div>
+      <section
+        class="tools section"
+        id="mcp-tools"
+        aria-labelledby="tools-title"
+      >
+        <div class="section-heading">
+          <h2 id="tools-title">MCP tools</h2>
+          <p>
+            Every public tool stays inside the owner-bound workspace. Inputs,
+            limits, and approval hints live in the contract source.
+          </p>
+        </div>
         <div class="tool-catalog">
-          <article><h3>Workspace lifecycle</h3><p><code>workspace_open</code><code>workspace_list</code><code>workspace_status</code><code>workspace_close</code></p></article>
-          <article><h3>Files and code intelligence</h3><p><code>files_list</code><code>files_read</code><code>files_write</code><code>files_apply_patch</code><code>files_delete</code><code>files_move</code><code>files_mkdir</code><code>grep_search</code><code>symbols_search</code><code>symbols_references</code></p></article>
-          <article><h3>Commands and shells</h3><p><code>exec_run</code><code>shell_open</code><code>shell_io</code><code>shell_close</code></p></article>
-          <article><h3>Sessions and tasks</h3><p><code>sessions_list</code><code>sessions_open</code><code>sessions_io</code><code>sessions_close</code><code>tasks_list</code><code>tasks_run</code><code>tasks_status</code><code>tasks_cancel</code><code>tasks_graph</code></p></article>
-          <article><h3>Git and worktrees</h3><p><code>git_status</code><code>git_diff</code><code>git_log</code><code>git_branch</code><code>git_checkout</code><code>git_add</code><code>git_commit</code><code>git_fetch</code><code>git_pull</code><code>git_push</code><code>git_merge</code><code>git_rebase</code><code>worktrees_list</code><code>worktrees_create</code><code>worktrees_remove</code></p></article>
-          <article><h3>Repository extensions</h3><p><code>skills_list</code><code>skills_read</code><code>skills_run</code><code>hooks_list</code><code>hooks_run</code><code>memories_list</code><code>memories_read</code><code>memories_write</code><code>deployments_list</code><code>deployments_run</code></p></article>
+          <article>
+            <h3>Workspace lifecycle</h3>
+            <p>
+              <code>workspace_open</code><code>workspace_list</code
+              ><code>workspace_status</code><code>workspace_close</code>
+            </p>
+          </article>
+          <article>
+            <h3>Files and code intelligence</h3>
+            <p>
+              <code>files_list</code><code>files_read</code
+              ><code>files_write</code><code>files_apply_patch</code
+              ><code>files_delete</code><code>files_move</code
+              ><code>files_mkdir</code><code>grep_search</code
+              ><code>symbols_search</code><code>symbols_references</code>
+            </p>
+          </article>
+          <article>
+            <h3>Commands and shells</h3>
+            <p>
+              <code>exec_run</code><code>shell_open</code><code>shell_io</code
+              ><code>shell_close</code>
+            </p>
+          </article>
+          <article>
+            <h3>Sessions and tasks</h3>
+            <p>
+              <code>sessions_list</code><code>sessions_open</code
+              ><code>sessions_io</code><code>sessions_close</code
+              ><code>tasks_list</code><code>tasks_run</code
+              ><code>tasks_status</code><code>tasks_cancel</code
+              ><code>tasks_graph</code>
+            </p>
+          </article>
+          <article>
+            <h3>Git and worktrees</h3>
+            <p>
+              <code>git_status</code><code>git_diff</code><code>git_log</code
+              ><code>git_branch</code><code>git_checkout</code
+              ><code>git_add</code><code>git_commit</code><code>git_fetch</code
+              ><code>git_pull</code><code>git_push</code><code>git_merge</code
+              ><code>git_rebase</code><code>worktrees_list</code
+              ><code>worktrees_create</code><code>worktrees_remove</code>
+            </p>
+          </article>
+          <article>
+            <h3>Repository extensions</h3>
+            <p>
+              <code>skills_list</code><code>skills_read</code
+              ><code>skills_run</code><code>hooks_list</code
+              ><code>hooks_run</code><code>memories_list</code
+              ><code>memories_read</code><code>memories_write</code
+              ><code>deployments_list</code><code>deployments_run</code>
+            </p>
+          </article>
         </div>
-        <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md" target="_blank" rel="noreferrer">Read tool semantics <span aria-hidden="true">↗</span></a>
+        <a
+          class="text-link"
+          href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md"
+          target="_blank"
+          rel="noreferrer"
+          >Read tool semantics <span aria-hidden="true">↗</span></a
+        >
       </section>
 
-      <section class="section" id="architecture" aria-labelledby="architecture-title">
-        <div class="section-heading"><h2 id="architecture-title">Architecture</h2><p>Authority is separated by role. The motion marks the request path, not a permission path into the executor.</p></div>
-        <div class="architecture-map" aria-label="Cloud Harness trust-boundary map">
-          <section><p class="zone-label">Public edge</p><h3>Ingress and API</h3><p>Credential-free ingress forwards authenticated MCP requests. The API has no Docker socket or host mount.</p></section>
-          <section class="control"><p class="zone-label">Trusted control</p><h3>Runner authority</h3><p>Policy, state, Docker authority, and optional ephemeral Git transfer helpers stay here.</p></section>
-          <section class="execution"><p class="zone-label">Execution plane</p><h3>Isolated executor</h3><p>Non-root repository code runs without the Docker socket, control-plane credentials, or network by default.</p></section>
-          <ol class="architecture-route" aria-label="Request route"><li>Owner client</li><li>Ingress</li><li>API</li><li>Runner</li><li>Executor</li></ol>
+      <section
+        class="section"
+        id="architecture"
+        aria-labelledby="architecture-title"
+      >
+        <div class="section-heading">
+          <h2 id="architecture-title">Architecture</h2>
+          <p>
+            Authority is separated by role. The motion marks the request path,
+            not a permission path into the executor.
+          </p>
         </div>
-        <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/system-architecture.md" target="_blank" rel="noreferrer">Inspect the system architecture <span aria-hidden="true">↗</span></a>
+        <figure
+          class="diagram architecture-diagram"
+          aria-labelledby="architecture-diagram-title"
+          aria-describedby="architecture-diagram-scroll-description"
+          tabindex="0"
+        >
+          <div class="diagram-meta">
+            <span id="architecture-diagram-title">Trust boundary map</span
+            ><span
+              ><i class="legend-request"></i> request path
+              <i class="legend-transfer"></i> isolated Git handoff</span
+            >
+          </div>
+          <svg
+            viewBox="0 0 1200 690"
+            role="img"
+            aria-labelledby="architecture-svg-title architecture-svg-description"
+          >
+            <title id="architecture-svg-title">
+              Cloud Harness architecture and authority boundaries
+            </title>
+            <desc id="architecture-svg-description">
+              Credential-free ingress bridges the public loopback edge to the
+              private MCP API. Trusted control holds the API, runner, state,
+              Docker authority, and optional Git helper. The execution plane
+              holds the non-root executor. The optional Git helper, not the
+              executor, can use temporary network access and a short-lived
+              GitHub App token.
+            </desc>
+            <defs>
+              <marker
+                id="architecture-arrow"
+                markerWidth="10"
+                markerHeight="10"
+                refX="9"
+                refY="5"
+                orient="auto"
+              >
+                <path d="M0,0 L10,5 L0,10 z" />
+              </marker>
+            </defs>
+            <g class="diagram-zone zone-public">
+              <rect x="154" y="68" width="122" height="492" />
+              <text class="svg-kicker public-zone-label" x="166" y="102">
+                PUBLIC EDGE
+              </text>
+            </g>
+            <g class="diagram-zone zone-control">
+              <rect x="284" y="68" width="532" height="492" />
+              <text class="svg-kicker" x="312" y="102">TRUSTED CONTROL</text>
+            </g>
+            <g class="diagram-zone zone-execution">
+              <rect x="842" y="68" width="272" height="492" />
+              <text class="svg-kicker" x="870" y="102">EXECUTION PLANE</text>
+            </g>
+            <path
+              class="diagram-lane request-lane"
+              d="M84 258 H222 H322 H526 H962"
+              marker-end="url(#architecture-arrow)"
+            />
+            <path
+              class="diagram-lane result-lane"
+              d="M962 370 H526 H322 H222 H84"
+              marker-end="url(#architecture-arrow)"
+            />
+            <path
+              class="diagram-control-line"
+              d="M618 294 V358 H508"
+              marker-end="url(#architecture-arrow)"
+            />
+            <path
+              class="diagram-control-line"
+              d="M618 294 V358 H720"
+              marker-end="url(#architecture-arrow)"
+            />
+            <path
+              class="diagram-transfer-line"
+              d="M620 300 V430 H695 V466"
+              marker-end="url(#architecture-arrow)"
+            />
+            <path
+              class="diagram-transfer-line"
+              d="M695 540 V610 H1041"
+              marker-end="url(#architecture-arrow)"
+            />
+            <g class="diagram-node client-node">
+              <rect x="32" y="216" width="104" height="84" />
+              <text x="52" y="250">OWNER</text>
+              <text x="52" y="276" class="svg-muted">client</text>
+            </g>
+            <g class="diagram-node">
+              <rect x="182" y="216" width="90" height="84" />
+              <text x="198" y="250">INGRESS</text>
+              <text x="198" y="276" class="svg-muted">loopback</text>
+            </g>
+            <g class="diagram-node">
+              <rect x="292" y="216" width="90" height="84" />
+              <text x="318" y="250">API</text>
+              <text x="310" y="276" class="svg-muted">MCP</text>
+            </g>
+            <g class="diagram-node runner-node">
+              <rect x="548" y="216" width="144" height="84" />
+              <text x="574" y="250">RUNNER</text>
+              <text x="574" y="276" class="svg-muted">lifecycle</text>
+            </g>
+            <g class="diagram-node">
+              <rect x="458" y="382" width="106" height="74" />
+              <text x="482" y="414">STATE</text>
+              <text x="476" y="438" class="svg-muted">SQLite</text>
+            </g>
+            <g class="diagram-node">
+              <rect x="664" y="382" width="116" height="74" />
+              <text x="690" y="414">DOCKER</text>
+              <text x="682" y="438" class="svg-muted">runner only</text>
+            </g>
+            <g class="diagram-node executor-node">
+              <rect x="892" y="216" width="166" height="84" />
+              <text x="920" y="250">EXECUTOR</text>
+              <text x="920" y="276" class="svg-muted">non-root workspace</text>
+            </g>
+            <g class="diagram-node transfer-node">
+              <rect x="610" y="466" width="170" height="74" />
+              <text x="634" y="498">GIT HELPER</text>
+              <text x="634" y="522" class="svg-muted">ephemeral</text>
+            </g>
+            <g class="diagram-node github-node">
+              <rect x="978" y="586" width="126" height="64" />
+              <text x="1000" y="616">GITHUB</text>
+              <text x="1000" y="638" class="svg-muted">origin</text>
+            </g>
+            <g class="blocked-route">
+              <path d="M1030 330 h84" />
+              <path d="M1060 314 l24 32 M1084 314 l-24 32" />
+              <text x="882" y="354">DEFAULT EXECUTOR NETWORK: NONE</text>
+            </g>
+            <text class="lane-label request-label" x="182" y="188">
+              AUTHENTICATED REQUEST
+            </text>
+            <text class="lane-label result-label" x="182" y="340">
+              STRUCTURED RESULT
+            </text>
+            <text class="lane-label transfer-label" x="454" y="464">
+              SHORT-LIVED TOKEN
+            </text>
+            <circle
+              class="diagram-packet packet-request"
+              r="8"
+              visibility="hidden"
+            >
+              <set attributeName="visibility" to="visible" begin="0s" />
+              <animateMotion
+                dur="7s"
+                additive="replace"
+                repeatCount="indefinite"
+                path="M84 258 H222 H322 H526 H962"
+                keyPoints="0;0;1;1"
+                keyTimes="0;0.14;0.68;1"
+                calcMode="linear"
+              />
+            </circle>
+            <circle
+              class="diagram-packet packet-result"
+              r="6"
+              visibility="hidden"
+            >
+              <set attributeName="visibility" to="visible" begin="0s" />
+              <animateMotion
+                dur="7s"
+                additive="replace"
+                begin="3.5s"
+                repeatCount="indefinite"
+                path="M962 370 H526 H322 H222 H84"
+                keyPoints="0;0;1;1"
+                keyTimes="0;0.14;0.68;1"
+                calcMode="linear"
+              />
+            </circle>
+            <circle
+              class="diagram-packet packet-copper"
+              r="7"
+              visibility="hidden"
+            >
+              <set attributeName="visibility" to="visible" begin="0s" />
+              <animateMotion
+                dur="7s"
+                additive="replace"
+                begin="1.9s"
+                repeatCount="indefinite"
+                path="M620 300 V430 H695 V466"
+                keyPoints="0;0;1;1"
+                keyTimes="0;0.18;0.72;1"
+                calcMode="linear"
+              />
+            </circle>
+          </svg>
+          <figcaption>
+            Authority stays separated by role. The runner can reach Docker and
+            an ephemeral helper. The executor cannot.
+          </figcaption>
+          <span id="architecture-diagram-scroll-description" class="sr-only"
+            >On narrow screens, use the arrow keys to pan this diagram
+            horizontally.</span
+          >
+        </figure>
+        <ol class="sr-only">
+          <li>
+            The owner connects to credential-free ingress, then the private
+            stateless MCP API.
+          </li>
+          <li>
+            The trusted runner owns workspace state, Docker authority, and
+            optional Git helpers.
+          </li>
+          <li>
+            The non-root executor has no Docker socket, control-plane
+            credentials, or default network.
+          </li>
+          <li>
+            Optional remote Git transfer uses the helper and never gives
+            credentials to the executor.
+          </li>
+        </ol>
+        <a
+          class="text-link"
+          href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/system-architecture.md"
+          target="_blank"
+          rel="noreferrer"
+          >Inspect the system architecture <span aria-hidden="true">↗</span></a
+        >
       </section>
 
-      <section class="connection section" id="connect" aria-labelledby="connect-title">
-        <div class="connection-intro"><div><p class="overline">Choose the safe path</p><h2 id="connect-title">Connect your MCP client</h2></div><p>Keep the owner token in local private configuration. Cloud-hosted connector flows need an OAuth-capable gateway for this static-bearer deployment.</p></div>
-        <div class="connection-legend"><span class="direct">Local or API path</span><span class="gateway">OAuth gateway required</span></div>
+      <section
+        class="connection section"
+        id="connect"
+        aria-labelledby="connect-title"
+      >
+        <div class="connection-intro">
+          <div>
+            <p class="overline">Choose the safe path</p>
+            <h2 id="connect-title">Connect your MCP client</h2>
+          </div>
+          <p>
+            Keep the owner token in local private configuration. Cloud-hosted
+            connector flows need an OAuth-capable gateway for this static-bearer
+            deployment.
+          </p>
+        </div>
+        <div class="connection-legend">
+          <span class="direct">Local or API path</span
+          ><span class="gateway">OAuth gateway required</span>
+        </div>
         <div class="connection-guide">
-          <details><summary><span>ChatGPT</span><b class="gateway">OAuth gateway required</b></summary><div><p>Create a custom MCP app only after an OAuth-capable gateway fronts this service. Do not place the owner bearer token in an app definition or chat.</p><a href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients" target="_blank" rel="noreferrer">Full ChatGPT guidance ↗</a></div></details>
-          <details><summary><span>Codex</span><b class="direct">Local bearer configuration</b></summary><div><p>Store <code>CLOUD_HARNESS_MCP_TOKEN</code> in your local environment, then add the remote MCP server in a private Codex configuration. Verify with <code>/mcp</code> or <code>codex mcp list</code>.</p><a href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients" target="_blank" rel="noreferrer">Full Codex guidance ↗</a></div></details>
-          <details><summary><span>Claude Desktop app</span><b class="gateway">OAuth gateway required</b></summary><div><p>The hosted connector flow cannot directly use this static bearer deployment. Put an OAuth-capable gateway in front, or use Claude Code with a local authorization header.</p><a href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients" target="_blank" rel="noreferrer">Full Claude Desktop guidance ↗</a></div></details>
-          <details><summary><span>Claude Code</span><b class="direct">Local authorization header</b></summary><div><p>Keep the token in your shell and register the remote HTTP server in user scope with a local Authorization header. Confirm availability from <code>/mcp</code>.</p><a href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients" target="_blank" rel="noreferrer">Full Claude Code guidance ↗</a></div></details>
-          <details><summary><span>Gemini CLI</span><b class="direct">Local authorization header</b></summary><div><p>Register the remote HTTP server with a header that reads the local environment token. Restart the CLI or use its MCP management command to verify the entry.</p><a href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients" target="_blank" rel="noreferrer">Full Gemini CLI guidance ↗</a></div></details>
-          <details><summary><span>Cursor</span><b class="direct">Local private configuration</b></summary><div><p>Add the remote server to the global Cursor MCP configuration, or a trusted project only. Restart Cursor and confirm the server appears in the available tools.</p><a href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients" target="_blank" rel="noreferrer">Full Cursor guidance ↗</a></div></details>
-          <details><summary><span>Google Antigravity</span><b class="direct">Local private configuration</b></summary><div><p>Use the MCP Servers panel to open the global configuration, then add the remote endpoint and a local private header. Confirm the server is enabled before using it.</p><a href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients" target="_blank" rel="noreferrer">Full Antigravity guidance ↗</a></div></details>
-          <details><summary><span>Grok</span><b class="gateway">Web: gateway. API: supported.</b></summary><div><p>Grok web is not a documented direct static-bearer route. The xAI Responses API can provide authorization for a remote MCP tool; allowlist only the tools the request needs.</p><a href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients" target="_blank" rel="noreferrer">Full Grok guidance ↗</a></div></details>
+          <details>
+            <summary>
+              <span>ChatGPT</span><b class="gateway">OAuth gateway required</b>
+            </summary>
+            <div>
+              <p>
+                Create a custom MCP app only after an OAuth-capable gateway
+                fronts this service. Do not place the owner bearer token in an
+                app definition or chat.
+              </p>
+              <a
+                href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients"
+                target="_blank"
+                rel="noreferrer"
+                >Full ChatGPT guidance ↗</a
+              >
+            </div>
+          </details>
+          <details>
+            <summary>
+              <span>Codex</span><b class="direct">Local bearer configuration</b>
+            </summary>
+            <div>
+              <p>
+                Store <code>CLOUD_HARNESS_MCP_TOKEN</code> in your local
+                environment, then add the remote MCP server in a private Codex
+                configuration. Verify with <code>/mcp</code> or
+                <code>codex mcp list</code>.
+              </p>
+              <a
+                href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients"
+                target="_blank"
+                rel="noreferrer"
+                >Full Codex guidance ↗</a
+              >
+            </div>
+          </details>
+          <details>
+            <summary>
+              <span>Claude Desktop app</span
+              ><b class="gateway">OAuth gateway required</b>
+            </summary>
+            <div>
+              <p>
+                The hosted connector flow cannot directly use this static bearer
+                deployment. Put an OAuth-capable gateway in front, or use Claude
+                Code with a local authorization header.
+              </p>
+              <a
+                href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients"
+                target="_blank"
+                rel="noreferrer"
+                >Full Claude Desktop guidance ↗</a
+              >
+            </div>
+          </details>
+          <details>
+            <summary>
+              <span>Claude Code</span
+              ><b class="direct">Local authorization header</b>
+            </summary>
+            <div>
+              <p>
+                Keep the token in your shell and register the remote HTTP server
+                in user scope with a local Authorization header. Confirm
+                availability from <code>/mcp</code>.
+              </p>
+              <a
+                href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients"
+                target="_blank"
+                rel="noreferrer"
+                >Full Claude Code guidance ↗</a
+              >
+            </div>
+          </details>
+          <details>
+            <summary>
+              <span>Gemini CLI</span
+              ><b class="direct">Local authorization header</b>
+            </summary>
+            <div>
+              <p>
+                Register the remote HTTP server with a header that reads the
+                local environment token. Restart the CLI or use its MCP
+                management command to verify the entry.
+              </p>
+              <a
+                href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients"
+                target="_blank"
+                rel="noreferrer"
+                >Full Gemini CLI guidance ↗</a
+              >
+            </div>
+          </details>
+          <details>
+            <summary>
+              <span>Cursor</span
+              ><b class="direct">Local private configuration</b>
+            </summary>
+            <div>
+              <p>
+                Add the remote server to the global Cursor MCP configuration, or
+                a trusted project only. Restart Cursor and confirm the server
+                appears in the available tools.
+              </p>
+              <a
+                href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients"
+                target="_blank"
+                rel="noreferrer"
+                >Full Cursor guidance ↗</a
+              >
+            </div>
+          </details>
+          <details>
+            <summary>
+              <span>Google Antigravity</span
+              ><b class="direct">Local private configuration</b>
+            </summary>
+            <div>
+              <p>
+                Use the MCP Servers panel to open the global configuration, then
+                add the remote endpoint and a local private header. Confirm the
+                server is enabled before using it.
+              </p>
+              <a
+                href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients"
+                target="_blank"
+                rel="noreferrer"
+                >Full Antigravity guidance ↗</a
+              >
+            </div>
+          </details>
+          <details>
+            <summary>
+              <span>Grok</span
+              ><b class="gateway">Web: gateway. API: supported.</b>
+            </summary>
+            <div>
+              <p>
+                Grok web is not a documented direct static-bearer route. The xAI
+                Responses API can provide authorization for a remote MCP tool;
+                allowlist only the tools the request needs.
+              </p>
+              <a
+                href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-ai-clients"
+                target="_blank"
+                rel="noreferrer"
+                >Full Grok guidance ↗</a
+              >
+            </div>
+          </details>
         </div>
       </section>
 
-      <section class="boundary section" id="boundaries" aria-labelledby="boundary-title"><div><p class="overline">Read this before use</p><h2 id="boundary-title">A private harness, not a tenant boundary.</h2><p>Cloud Harness MCP is for one authenticated, trusted owner using owner-approved repositories. It is not an anonymous service, shared team sandbox, or hostile multi-tenant platform.</p><a class="button button-copper" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/security-model.md" target="_blank" rel="noreferrer">Read the security model <span aria-hidden="true">↗</span></a></div><dl><div><dt>Untrusted input</dt><dd>Repository content and supplied commands may execute inside the executor.</dd></div><div><dt>Network</dt><dd>Executor networking is <strong>none</strong> by default. Bridge mode is an explicit weakening.</dd></div><div><dt>Git credentials</dt><dd>Executors have no GitHub App token, deployment credential, SSH key, or Git push tool.</dd></div><div><dt>Lifetime</dt><dd>Close or TTL cleanup removes the executor and workspace directory.</dd></div></dl></section>
-      <section class="start section" id="start" aria-labelledby="start-title"><h2 id="start-title">Open. Work. Close.</h2><div><p>Choose the client path that matches its authentication model, then start with a credential-free HTTPS repository URL and a fresh idempotency key.</p><div class="start-actions"><a class="button button-primary" href="#connect">Choose a client <span aria-hidden="true">↑</span></a><a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md" target="_blank" rel="noreferrer">Tool semantics <span aria-hidden="true">↗</span></a></div></div></section>
+      <section
+        class="boundary section"
+        id="boundaries"
+        aria-labelledby="boundary-title"
+      >
+        <div>
+          <p class="overline">Read this before use</p>
+          <h2 id="boundary-title">A private harness, not a tenant boundary.</h2>
+          <p>
+            Cloud Harness MCP is for one authenticated, trusted owner using
+            owner-approved repositories. It is not an anonymous service, shared
+            team sandbox, or hostile multi-tenant platform.
+          </p>
+          <a
+            class="button button-copper"
+            href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/security-model.md"
+            target="_blank"
+            rel="noreferrer"
+            >Read the security model <span aria-hidden="true">↗</span></a
+          >
+        </div>
+        <dl>
+          <div>
+            <dt>Untrusted input</dt>
+            <dd>
+              Repository content and supplied commands may execute inside the
+              executor.
+            </dd>
+          </div>
+          <div>
+            <dt>Network</dt>
+            <dd>
+              Executor networking is <strong>none</strong> by default. Bridge
+              mode is an explicit weakening.
+            </dd>
+          </div>
+          <div>
+            <dt>Git credentials</dt>
+            <dd>
+              Executors have no GitHub App token, deployment credential, SSH
+              key, or Git push tool.
+            </dd>
+          </div>
+          <div>
+            <dt>Lifetime</dt>
+            <dd>
+              Close or TTL cleanup removes the executor and workspace directory.
+            </dd>
+          </div>
+        </dl>
+      </section>
+      <section class="start section" id="start" aria-labelledby="start-title">
+        <h2 id="start-title">Open. Work. Close.</h2>
+        <div>
+          <p>
+            Choose the client path that matches its authentication model, then
+            start with a credential-free HTTPS repository URL and a fresh
+            idempotency key.
+          </p>
+          <div class="start-actions">
+            <a class="button button-primary" href="#connect"
+              >Choose a client <span aria-hidden="true">↑</span></a
+            ><a
+              class="text-link"
+              href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md"
+              target="_blank"
+              rel="noreferrer"
+              >Tool semantics <span aria-hidden="true">↗</span></a
+            >
+          </div>
+        </div>
+      </section>
     </main>
-    <footer class="site-footer"><p>Cloud Harness MCP. Remote execution, operated with intent.</p><div><a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">GitHub</a><a href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a></div></footer>
+    <footer class="site-footer">
+      <p>Cloud Harness MCP. Remote execution, operated with intent.</p>
+      <div>
+        <a
+          href="https://github.com/bestagentkits/cloud-harness-mcp"
+          target="_blank"
+          rel="noreferrer"
+          >GitHub</a
+        ><a
+          href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/LICENSE"
+          target="_blank"
+          rel="noreferrer"
+          >MIT License</a
+        >
+      </div>
+    </footer>
   </body>
 </html>
