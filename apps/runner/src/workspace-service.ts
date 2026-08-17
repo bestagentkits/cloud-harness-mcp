@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, lstat, mkdir, opendir, readdir, realpath, rm, statfs } from 'node:fs/promises';
+import { chmod, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
@@ -38,6 +38,7 @@ export class WorkspaceService {
   private readonly operations = new OperationManager();
   private readonly instanceId: string;
   private reaper?: NodeJS.Timeout;
+  private reaperRunning = false;
 
   constructor(private readonly config: RunnerConfig, private readonly store: StateStore) {
     this.instanceId = store.instanceId();
@@ -55,7 +56,11 @@ export class WorkspaceService {
     }
     await this.reconcileContainers();
     await this.reconcileJobDirectories();
-    this.reaper = setInterval(() => void this.reapExpired(), this.config.reaperIntervalSeconds * 1_000);
+    this.reaper = setInterval(() => {
+      if (this.reaperRunning) return;
+      this.reaperRunning = true;
+      void this.reapExpired().catch(() => undefined).finally(() => { this.reaperRunning = false; });
+    }, this.config.reaperIntervalSeconds * 1_000);
     this.reaper.unref();
   }
 
@@ -100,33 +105,40 @@ export class WorkspaceService {
     if (freeBytes < this.config.minFreeBytes) throw new HarnessError('LIMIT_EXCEEDED', 'host free-space reserve would be violated', 507, true);
   }
 
-  private async workspaceBytes(path: string): Promise<number> {
-    const pending = [path];
-    let total = 0;
-    while (pending.length > 0) {
-      const current = pending.pop()!;
+  private async workspaceBytes(record: WorkspaceRecord): Promise<number | undefined> {
+    let result;
+    if (record.containerName) {
+      result = await runDocker(
+        ['exec', record.containerName, '/usr/bin/du', '-sb', '--apparent-size', '/workspace'],
+        { timeoutMs: 30_000, maxBytes: 8_192 }
+      );
+    } else {
+      const helperName = `chm-size-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
       try {
-        const directory = await opendir(current);
-        for await (const entry of directory) {
-          const child = join(current, entry.name);
-          if (entry.isSymbolicLink()) continue;
-          if (entry.isDirectory()) pending.push(child);
-          else if (entry.isFile()) {
-            try { total += (await lstat(child)).size; } catch (error) {
-              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-            }
-          }
-          if (total > this.config.maxWorkspaceBytes) return total;
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        result = await runDocker([
+          'run', '--rm', '--pull', 'never', '--name', helperName,
+          '--label', 'cloud-harness.role=size-helper', '--label', 'cloud-harness.ephemeral=true',
+          '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
+          '--network', 'none', '--user', '10001:10001', '--read-only', '--cap-drop', 'ALL',
+          '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25',
+          '--volume', `${record.workspacePath}:/target:ro`, '--entrypoint', '/usr/bin/du', this.config.executorImage,
+          '-sb', '--apparent-size', '/target'
+        ], { timeoutMs: 30_000, maxBytes: 8_192 });
+      } finally {
+        await removeContainer(helperName);
       }
     }
-    return total;
+    if (result.exitCode !== 0) return undefined;
+    const bytes = Number(result.stdout.trim().split(/\s+/, 1)[0]);
+    return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : undefined;
   }
 
   private async resourceViolation(record: WorkspaceRecord): Promise<string | undefined> {
-    if (await this.workspaceBytes(record.workspacePath) > this.config.maxWorkspaceBytes) return 'workspace soft size ceiling exceeded';
+    const bytes = await this.workspaceBytes(record);
+    if (bytes === undefined) {
+      throw new HarnessError('UNAVAILABLE', 'workspace size could not be measured safely', 503, true);
+    }
+    if (bytes > this.config.maxWorkspaceBytes) return 'workspace soft size ceiling exceeded';
     const info = await statfs(this.config.jobsRoot);
     const freeBytes = Number(info.bavail) * Number(info.bsize);
     return freeBytes < this.config.minFreeBytes ? 'host free-space reserve violated' : undefined;
@@ -278,9 +290,10 @@ export class WorkspaceService {
     let result;
     try {
       result = await runDocker([
-        'exec', '-i', record.containerName, '/usr/bin/setsid', '/opt/harness/worker-runner.sh', operationId
+        'exec', '-i', record.containerName, '/usr/bin/setsid', '--wait', '/opt/harness/worker-runner.sh', operationId
       ], {
         stdin: JSON.stringify({ operation, input }), timeoutMs: Math.min(timeout, 305_000), maxBytes: jsonMaxBytes,
+        abortKillGraceMs: 2_000,
         ...(signal ? { signal } : {})
       });
     } catch (error) {

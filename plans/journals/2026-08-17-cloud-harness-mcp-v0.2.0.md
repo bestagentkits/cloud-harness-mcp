@@ -64,10 +64,16 @@ consistent `0.2.0` release metadata.
   reaching worker validation. The fixture was changed to create the large file
   through bounded executor-side execution, after which the intended manifest
   guard was reached and passed. Product behavior did not need to change.
-- Post-PR Linux CI found that `files_mkdir` created directories with mode
-  `0700`, preventing the host-side quota scan from traversing them on GitHub
-  runners. The mode was changed to `0755`, an explicit mode assertion was
-  added, and the executor was rebuilt without cache before the E2E rerun.
+- Post-PR Linux CI proved the host-side quota scanner invalid when runner and
+  executor UIDs differ. The final design retains private `0700` directories and
+  moves measurement into the execution plane: active workspaces use a fixed
+  executor command, and clone-time checks use a read-only, no-network helper.
+  Transient measurements no longer close workspaces, and reaper passes cannot
+  overlap.
+- The final E2E pass also exposed that `setsid` can fork away from Docker's
+  attached process. Adding `--wait` preserves shell/worker streams; aborts give
+  the runner a short grace window to terminate the recorded in-container
+  process group before force-killing the Docker CLI.
 
 ## Follow-up roadmap
 

@@ -89,7 +89,7 @@ describe('complete coding workflow through MCP', () => {
     await call('files_write', { workspaceId, path: 'verification.txt', content: 'cloud harness verified\n' });
     await call('files_mkdir', { workspaceId, path: 'scratch/nested', recursive: true });
     const directoryMode = await call('exec_run', { workspaceId, command: 'stat -c %a scratch', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 });
-    expect(directoryMode.data.output.trim()).toBe('755');
+    expect(directoryMode.data.output.trim()).toBe('700');
     const disposable = await call('files_write', { workspaceId, path: 'scratch/nested/original.txt', content: 'move and delete\n' });
     await call('files_move', { workspaceId, source: 'scratch/nested/original.txt', destination: 'scratch/nested/moved.txt', overwrite: false });
     await call('files_delete', { workspaceId, path: 'scratch/nested/moved.txt', recursive: false, expectedSha256: disposable.data.sha256 });

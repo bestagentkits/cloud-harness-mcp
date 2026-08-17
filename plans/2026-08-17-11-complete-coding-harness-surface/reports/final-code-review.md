@@ -20,9 +20,13 @@ The first mediated fetch implementation imported only `FETCH_HEAD`. The final he
 
 `deployments_run` now returns `ok: false`, `CONFLICT`, the bounded command result, and `isError` for a non-zero exit (`worker/harness-worker.mjs:407-416`); E2E coverage exercises exit 7 (`test/e2e/coding-workflow.docker.test.ts:168-170`). Manifest parsing now rejects files above 256 KiB, more than 100 targets, invalid/overlong names or commands, and unsafe/overlong `cwd` values (`worker/harness-worker.mjs:9-10,125-149`); E2E coverage verifies the byte ceiling (`test/e2e/coding-workflow.docker.test.ts:171-173`).
 
-### Linux host quota traversal for created directories
+### UID-independent quota enforcement and private directories
 
-Post-PR Linux E2E showed that executor-created `0700` directories could not be traversed by the host-side runner process when its UID differs from executor UID 10001, causing the workspace-size scanner to fail. `files_mkdir` now requests `0755` for newly created directories (`worker/harness-worker.mjs:218-224`), and the Docker E2E asserts the outer recursively-created directory is mode `755` before using it (`test/e2e/coding-workflow.docker.test.ts:90-92`). This is correct for the current boundary: the trusted runner needs directory read/traverse permission for quota scanning, while `jobsRoot` remains `0700` (`apps/runner/src/workspace-service.ts:47`) and prevents unrelated host users from reaching repository entries. The change adds no write permission and does not broaden the executor's existing repository authority.
+Post-PR Linux E2E showed that a host-side recursive scanner is not a valid boundary when the runner and executor UIDs differ: executor- and Git-created `0700` paths can be healthy while remaining unreadable to the host process. The final design keeps `files_mkdir` at mode `0700` and measures active workspaces through a fixed `du` invocation inside their executor. Clone-time measurement uses a short-lived, capability-free, no-network helper with a read-only bind mount. Only a successful measurement over the configured ceiling closes the workspace; transient scan failure is retryable, and overlapping reaper passes are suppressed. The 50 ms reaper E2E completes file mutations and mediated Git fetch without broadening repository permissions.
+
+### Interactive process attachment and cancellation
+
+Interactive shells and synchronous worker invocations now use `setsid --wait`. This preserves Docker's attached stdin/stdout when `setsid` must fork, while retaining a dedicated in-container process group for cancellation. Aborted worker calls delay force-killing the Docker CLI briefly so the runner can terminate the recorded process group first; the Docker integration test verifies the delayed command does not create its output file and the workspace remains active.
 
 ## Boundary and parity assessment
 
@@ -39,7 +43,7 @@ Post-PR Linux E2E showed that executor-created `0700` directories could not be t
 - `git diff --check` — passed.
 - `npx vitest run packages/contracts/test/contracts.test.ts apps/runner/test/git-transfer-leak.test.ts` — 2 files, 6 tests passed.
 - The Docker-backed fetch/tracking, competing-writer lease, and deployment E2E assertions were inspected for failure-sensitive expectations; the independent test pass remains the shipping gate authority.
-- The post-PR `0700` to `0755` directory-mode delta and its Linux E2E assertion were reviewed against the jobs-root access boundary; no security or correctness regression was found.
+- The final private-directory quota path, non-overlapping reaper, `setsid --wait` stream lifecycle, and abort grace behavior were reviewed against the single-owner executor boundary; no security or correctness regression was found.
 
 ## Landing assessment
 

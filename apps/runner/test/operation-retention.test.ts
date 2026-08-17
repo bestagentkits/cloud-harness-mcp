@@ -82,6 +82,9 @@ describe('operation retention', () => {
 
     const session = operations.openSession('workspace', 'container', 'review', '.', 'session-key', 1_024);
     expect(session.id).toMatch(/^sess_/);
+    expect(docker.spawnDocker.mock.calls.at(-1)?.[0]).toEqual([
+      'exec', '-i', '-w', '/workspace/', 'container', '/usr/bin/setsid', '--wait', '/opt/harness/shell-runner.sh', session.id
+    ]);
     expect(operations.listSessions('workspace').map((entry) => operations.summary(entry))).toContainEqual(expect.objectContaining({ id: session.id, name: 'review', status: 'running' }));
     await operations.closeSession('workspace', session.id);
     expect(operations.summary(session).status).toBe('cancelled');

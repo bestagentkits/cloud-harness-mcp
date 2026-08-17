@@ -114,7 +114,10 @@ export class OperationManager {
       idempotencyKey: mapKey,
       ...(name ? { name } : {})
     };
-    const child = spawnDocker(['exec', '-i', '-w', `/workspace/${cwd === '.' ? '' : cwd}`, container, '/usr/bin/setsid', '/opt/harness/shell-runner.sh', recordId]);
+    const child = spawnDocker([
+      'exec', '-i', '-w', `/workspace/${cwd === '.' ? '' : cwd}`,
+      container, '/usr/bin/setsid', '--wait', '/opt/harness/shell-runner.sh', recordId
+    ]);
     map.set(record.id, record);
     this.idempotency.set(mapKey, record.id);
     this.track(record, child, maxBytes);
