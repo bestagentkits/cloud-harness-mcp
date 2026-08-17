@@ -56,13 +56,23 @@ a lost response; do not create a second key until the first result is resolved.
   unified diff.
 - `EXPIRED` or a closed workspace: open a new workspace. The old job directory
   is intentionally removed.
-- Missing shell/task after a runner restart: these handles are in-memory and
-  cannot be recovered. The workspace and its files may still be active.
-- `git_fetch` or dependency download fails in a `none` workspace: open a new
-  owner-approved `bridge` workspace if egress is necessary and accept the
-  weaker boundary.
-- Git push/authenticated fetch is unavailable by design: the executor has no
-  credentials and there is no push tool.
+- Missing shell/session/task after a runner restart: these handles, buffered
+  output, and task dependency state are in memory and cannot be recovered. The
+  workspace and its files may still be active.
+- A dependency download, arbitrary network command, or networked deployment
+  fails in a `none` workspace: open a new owner-approved `bridge` workspace if
+  egress is necessary and accept the weaker boundary. Remote Git fetch/pull/push
+  use runner-owned helpers and do not require executor bridge networking.
+- Private fetch/pull failure: verify GitHub App installation access and Contents
+  read permission. Push additionally requires Contents read and write
+  permission; only `origin`, branch refspecs, and optional force-with-lease are
+  accepted. The executor intentionally has no credential to inspect or repair.
+- A dependent task remains `queued` while prerequisites are unfinished and
+  becomes `blocked` if one fails or is cancelled. Inspect the task graph rather
+  than rerunning it with a new idempotency key.
+- A repository-defined deployment is missing or cannot authenticate: inspect
+  `.cloud-harness/deployments.json`, executor network mode, and the repository's
+  own setup. The harness does not inject deployment secrets.
 - A command times out earlier than Codex's tool timeout: compare
   `REQUEST_TIMEOUT_MS`, the tool's `timeoutMs`, and Codex
   `tool_timeout_sec`. Raising one does not raise the others.

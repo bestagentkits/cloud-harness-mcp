@@ -6,10 +6,10 @@ Cloud Harness MCP is for one authenticated, trusted owner operating
 owner-approved repositories. It is not an anonymous service, a shared team
 sandbox, or a hostile multi-tenant platform.
 
-`exec_run`, interactive shells, detached tasks, repository hooks, and skill
-scripts are intentional remote code execution inside the executor. Bearer
-authentication controls who may request that execution; it does not make the
-repository code trustworthy.
+`exec_run`, interactive shells and sessions, detached tasks, repository hooks,
+skill scripts, and repository-defined deployments are intentional remote code
+execution inside the executor. Bearer authentication controls who may request
+that execution; it does not make the repository code trustworthy.
 
 ## Trust boundaries
 
@@ -22,8 +22,8 @@ Trusted control plane:
 
 Untrusted execution input:
 
-- repository content, dependencies, Git metadata, hook definitions, skills,
-  memories, and commands supplied through tools.
+- repository content, dependencies, Git metadata, hook and deployment
+  manifests, skills, memories, and commands supplied through tools.
 
 The API is deliberately separated from Docker authority. A credential-free
 TCP proxy is the only Compose service with a loopback-published port. It joins
@@ -73,22 +73,41 @@ bounded per-operation and aggregate retained output, bounded operation-handle
 counts, and TTL cleanup. Only the workspace repository mount is writable.
 
 Network mode is `none` by default. This blocks ordinary executor egress,
-including dependency installation and `git_fetch`. Owner opt-in `bridge`
-networking enables broad container egress and weakens protection against
-exfiltration, SSRF, callbacks, and dependency-script behavior. It is not an
-allowlisted proxy.
+including dependency installation and networked repository commands. Owner
+opt-in `bridge` networking enables broad container egress and weakens
+protection against exfiltration, SSRF, callbacks, dependency scripts, and
+repository-defined deployment commands. It is not an allowlisted proxy.
 
 Repository opening accepts only credential-free HTTPS URLs on configured
 hosts and rejects private/link-local resolutions. The clone helper disables
 hooks, recursive submodules, tag downloads, redirects, and LFS smudging.
 Repository code is never evaluated by the runner during clone.
 
-Optional GitHub App credentials remain in the runner. A short-lived token may
-be supplied to the clone helper over stdin and the remote is rewritten to its
-credential-free URL. The executor has no clone token and no push credential.
-The repository-policy tests verify the unconfigured and malformed-path cases;
-live private cloning is unverified unless the owner supplies credentials and
-records a sanitized leak check.
+Optional GitHub App credentials remain in the runner. Short-lived,
+repository-scoped tokens are supplied over stdin only to ephemeral clone,
+fetch, or push helpers; the stored remote stays credential-free and the
+executor never receives a token. Remote fetch/pull first stage outside the
+executor and import without network or credentials. Push first stages a bare
+snapshot without credentials, then uses a separate networked helper. Transfer
+directories and helper containers are removed after the operation.
+
+The public contract fixes remote transfers to `origin`, permits only branch
+push refspecs, rejects deletion refspecs, and permits force only through
+force-with-lease. Private clone/fetch/pull require GitHub App Contents read
+access; push requires Contents read and write access. The executable boundary
+and its evidence are
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
+[`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
+[`apps/runner/test/git-transfer-leak.test.ts`](../apps/runner/test/git-transfer-leak.test.ts),
+and
+[`test/integration/git-transfer-helper.docker.test.ts`](../test/integration/git-transfer-helper.docker.test.ts).
+Live private-repository verification remains owner-supplied evidence.
+
+Repository-manifest deployments are named commands, not a secret broker. They
+execute with the same unprivileged executor environment and network mode as
+other repository commands; the harness does not inject host or deployment
+credentials. Their manifest parsing and execution owner is
+[`worker/harness-worker.mjs`](../worker/harness-worker.mjs).
 
 ## Storage and state limits
 
@@ -96,11 +115,14 @@ Workspace paths are server-generated and checked beneath the configured jobs
 root. Worker paths reject absolute/traversal paths and symlink escapes. SQLite
 stores workspace metadata, not a credential cache.
 
-Repository files may be host-readable so the trusted runner can meter them,
-but the jobs-root parent is private and non-traversable to unrelated host
-users. If a host UID cannot remove executor-owned files, cleanup uses a fixed
-no-network, capability-free helper mounted only on the already-canonicalized
-workspace path; startup reaps any interrupted ephemeral helper.
+Repository files may remain private to executor UID 10001. The runner meters
+an active workspace with a fixed command inside its executor and checks a
+newly cloned workspace with a no-network, capability-free helper mounted
+read-only on the generated workspace path. A transient measurement failure is
+retryable and does not close the workspace; only a successful measurement over
+the ceiling triggers cleanup. If the host UID cannot remove executor-owned
+files, cleanup uses a separate fixed no-network, capability-free helper;
+startup reaps interrupted ephemeral helpers.
 
 The current storage ceiling is not a hard quota. One-workspace admission, a
 host free-space floor, operation-boundary checks, and periodic reaping reduce
@@ -114,7 +136,7 @@ command. The wrapper accepts only the fixed deploy action and one exact commit
 SHA, so broader privileges on the interactive operator account are not exposed
 through the automation key.
 
-Close/TTL removes the executor and workspace directory. Shell/task state is
-in-memory and disappears on runner restart. Startup restarts surviving
+Close/TTL removes the executor and workspace directory. Shell/session/task
+state is in-memory and disappears on runner restart. Startup restarts surviving
 executors to stop processes whose handles were lost; this remains a durability
 limitation, not a security guarantee.

@@ -32,9 +32,10 @@ The production defaults place:
 - release-time database copies below `/var/lib/cloud-harness/backups`;
 - runtime secrets in `/etc/cloud-harness-mcp/runtime.env`.
 
-The database persists workspace metadata across runner restarts. Shell/task
-handles and their output buffers do not. Startup restarts surviving executors,
-which preserves repository files but stops any process whose handle was lost.
+The database persists workspace metadata across runner restarts.
+Shell/session/task handles, dependency graphs, and their output buffers do not.
+Startup restarts surviving executors, which preserves repository files but
+stops any process whose handle was lost.
 Workspace clones are operational, TTL-bound data and are deleted on
 close/expiry; they are not a durable source control remote or a backup.
 The same state database also owns the stable random runner-instance identity
@@ -68,18 +69,20 @@ backup into the configured `STATE_DB`, start the same or a schema-compatible
 release, and check readiness. The state store intentionally refuses an
 unsupported schema version.
 
-If workspace content must be retained, commit changes inside the workspace and
-export the required files before close. There is no Git push tool and no
-executor credential. Host-side archival should be exceptional, performed only
-after stopping the exact verified executor, and scoped to its opaque job
-directory.
+If workspace content must be retained, commit changes and use `git_push` only
+when the configured GitHub App has repository write access; verify the remote
+result before closing. Otherwise export the required files before close. The
+executor itself never receives a repository credential. Host-side archival
+should be exceptional, performed only after stopping the exact verified
+executor, and scoped to its opaque job directory.
 
 ## Cleanup
 
-Normal cleanup is `workspace_close` or TTL expiry. It stops known shell/task
-children, removes the named executor, deletes only the verified job directory,
-and records the workspace as closed. Startup also reconciles database,
-filesystem, and Docker inventories, scoped to the configured runner instance.
+Normal cleanup is `workspace_close` or TTL expiry. It stops known
+shell/session/task children, removes the named executor, deletes only the
+verified job directory, and records the workspace as closed. Startup also
+reconciles database, filesystem, and Docker inventories, scoped to the
+configured runner instance.
 
 Inspect managed containers before any manual action:
 

@@ -3,7 +3,13 @@ import { HarnessError } from '@cloud-harness/contracts';
 
 export type CommandResult = { stdout: string; stderr: string; exitCode: number; truncated: boolean };
 
-export async function runDocker(args: string[], options: { stdin?: string; timeoutMs?: number; maxBytes?: number; signal?: AbortSignal } = {}): Promise<CommandResult> {
+export async function runDocker(args: string[], options: {
+  stdin?: string;
+  timeoutMs?: number;
+  maxBytes?: number;
+  signal?: AbortSignal;
+  abortKillGraceMs?: number;
+} = {}): Promise<CommandResult> {
   const timeoutMs = options.timeoutMs ?? 60_000;
   const maxBytes = options.maxBytes ?? 1_048_576;
   return await new Promise((resolve, reject) => {
@@ -26,7 +32,13 @@ export async function runDocker(args: string[], options: { stdin?: string; timeo
       options.signal?.removeEventListener('abort', abort);
       reject(error);
     };
-    const abort = () => { child.kill(); fail(new HarnessError('CANCELLED', 'Docker operation cancelled', 499, false)); };
+    const abort = () => {
+      if ((options.abortKillGraceMs ?? 0) > 0) {
+        const forcedKill = setTimeout(() => child.kill(), options.abortKillGraceMs);
+        forcedKill.unref();
+      } else child.kill();
+      fail(new HarnessError('CANCELLED', 'Docker operation cancelled', 499, false));
+    };
     child.on('error', fail);
     const timer = setTimeout(() => { child.kill(); fail(new HarnessError('TIMEOUT', 'Docker operation timed out', 504, true)); }, timeoutMs);
     if (options.signal?.aborted) abort();

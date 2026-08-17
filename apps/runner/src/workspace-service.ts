@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, lstat, mkdir, opendir, readdir, realpath, rm, statfs } from 'node:fs/promises';
+import { chmod, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
@@ -38,6 +38,7 @@ export class WorkspaceService {
   private readonly operations = new OperationManager();
   private readonly instanceId: string;
   private reaper?: NodeJS.Timeout;
+  private reaperRunning = false;
 
   constructor(private readonly config: RunnerConfig, private readonly store: StateStore) {
     this.instanceId = store.instanceId();
@@ -55,7 +56,11 @@ export class WorkspaceService {
     }
     await this.reconcileContainers();
     await this.reconcileJobDirectories();
-    this.reaper = setInterval(() => void this.reapExpired(), this.config.reaperIntervalSeconds * 1_000);
+    this.reaper = setInterval(() => {
+      if (this.reaperRunning) return;
+      this.reaperRunning = true;
+      void this.reapExpired().catch(() => undefined).finally(() => { this.reaperRunning = false; });
+    }, this.config.reaperIntervalSeconds * 1_000);
     this.reaper.unref();
   }
 
@@ -100,33 +105,40 @@ export class WorkspaceService {
     if (freeBytes < this.config.minFreeBytes) throw new HarnessError('LIMIT_EXCEEDED', 'host free-space reserve would be violated', 507, true);
   }
 
-  private async workspaceBytes(path: string): Promise<number> {
-    const pending = [path];
-    let total = 0;
-    while (pending.length > 0) {
-      const current = pending.pop()!;
+  private async workspaceBytes(record: WorkspaceRecord): Promise<number | undefined> {
+    let result;
+    if (record.containerName) {
+      result = await runDocker(
+        ['exec', record.containerName, '/usr/bin/du', '-sb', '--apparent-size', '/workspace'],
+        { timeoutMs: 30_000, maxBytes: 8_192 }
+      );
+    } else {
+      const helperName = `chm-size-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
       try {
-        const directory = await opendir(current);
-        for await (const entry of directory) {
-          const child = join(current, entry.name);
-          if (entry.isSymbolicLink()) continue;
-          if (entry.isDirectory()) pending.push(child);
-          else if (entry.isFile()) {
-            try { total += (await lstat(child)).size; } catch (error) {
-              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-            }
-          }
-          if (total > this.config.maxWorkspaceBytes) return total;
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        result = await runDocker([
+          'run', '--rm', '--pull', 'never', '--name', helperName,
+          '--label', 'cloud-harness.role=size-helper', '--label', 'cloud-harness.ephemeral=true',
+          '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
+          '--network', 'none', '--user', '10001:10001', '--read-only', '--cap-drop', 'ALL',
+          '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25',
+          '--volume', `${record.workspacePath}:/target:ro`, '--entrypoint', '/usr/bin/du', this.config.executorImage,
+          '-sb', '--apparent-size', '/target'
+        ], { timeoutMs: 30_000, maxBytes: 8_192 });
+      } finally {
+        await removeContainer(helperName);
       }
     }
-    return total;
+    if (result.exitCode !== 0) return undefined;
+    const bytes = Number(result.stdout.trim().split(/\s+/, 1)[0]);
+    return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : undefined;
   }
 
   private async resourceViolation(record: WorkspaceRecord): Promise<string | undefined> {
-    if (await this.workspaceBytes(record.workspacePath) > this.config.maxWorkspaceBytes) return 'workspace soft size ceiling exceeded';
+    const bytes = await this.workspaceBytes(record);
+    if (bytes === undefined) {
+      throw new HarnessError('UNAVAILABLE', 'workspace size could not be measured safely', 503, true);
+    }
+    if (bytes > this.config.maxWorkspaceBytes) return 'workspace soft size ceiling exceeded';
     const info = await statfs(this.config.jobsRoot);
     const freeBytes = Number(info.bavail) * Number(info.bsize);
     return freeBytes < this.config.minFreeBytes ? 'host free-space reserve violated' : undefined;
@@ -278,9 +290,10 @@ export class WorkspaceService {
     let result;
     try {
       result = await runDocker([
-        'exec', '-i', record.containerName, '/usr/bin/setsid', '/opt/harness/worker-runner.sh', operationId
+        'exec', '-i', record.containerName, '/usr/bin/setsid', '--wait', '/opt/harness/worker-runner.sh', operationId
       ], {
         stdin: JSON.stringify({ operation, input }), timeoutMs: Math.min(timeout, 305_000), maxBytes: jsonMaxBytes,
+        abortKillGraceMs: 2_000,
         ...(signal ? { signal } : {})
       });
     } catch (error) {
@@ -293,6 +306,101 @@ export class WorkspaceService {
     if (result.exitCode !== 0) throw new HarnessError('INTERNAL_ERROR', `worker failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 500, true);
     try { return RunnerResponseSchema.parse(JSON.parse(result.stdout)); }
     catch { throw new HarnessError('INTERNAL_ERROR', 'worker returned an invalid bounded result', 500, true); }
+  }
+
+  private async runGitTransferHelper(
+    record: WorkspaceRecord,
+    mode: 'fetch' | 'import' | 'stage-push' | 'push',
+    transferName: string,
+    argument: string,
+    token: string | undefined,
+    expectedRemoteOid: string | undefined,
+    signal?: AbortSignal
+  ) {
+    const helperName = `chm-git-${mode.replaceAll('-', '').slice(0, 5)}-${randomBytes(6).toString('hex')}`;
+    const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
+    try {
+      const result = await runDocker([
+        'run', '--rm', '--pull', 'never', '--name', helperName,
+        '--label', 'cloud-harness.role=git-transfer-helper', '--label', 'cloud-harness.ephemeral=true',
+        '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
+        '--network', network, '--user', '10001:10001', '--read-only',
+        '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
+        '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
+        '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
+        this.config.executorImage, mode, record.repositoryUrl, '/job/repo', `/job/${transferName}`, argument, expectedRemoteOid ?? ''
+      ], {
+        stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
+        ...(signal ? { signal } : {})
+      });
+      if (result.exitCode !== 0) {
+        const action = mode === 'push' ? 'push' : mode === 'fetch' ? 'fetch' : 'transfer';
+        throw new HarnessError('UNAVAILABLE', `Git ${action} failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
+      }
+      return result;
+    } finally {
+      await removeContainer(helperName);
+    }
+  }
+
+  private async withPausedExecutor<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
+    if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
+    const paused = await runDocker(['pause', record.containerName], { timeoutMs: 30_000, maxBytes: 8_192 });
+    if (paused.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor could not be paused for an atomic Git transfer', 503, true);
+    let value: T | undefined;
+    let actionError: unknown;
+    try {
+      value = await action();
+    } catch (error) { actionError = error; }
+    const resumed = await runDocker(['unpause', record.containerName], { timeoutMs: 30_000, maxBytes: 8_192 });
+    if (resumed.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor could not be resumed after Git transfer', 503, true);
+    if (actionError) throw actionError;
+    return value!;
+  }
+
+  private async currentBranch(record: WorkspaceRecord, signal?: AbortSignal): Promise<string> {
+    if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
+    const result = await runDocker([
+      'exec', record.containerName, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', 'branch', '--show-current'
+    ], { timeoutMs: 30_000, maxBytes: 8_192, ...(signal ? { signal } : {}) });
+    if (result.exitCode !== 0) throw new HarnessError('CONFLICT', 'current Git branch could not be determined', 409, false);
+    return result.stdout.trim();
+  }
+
+  private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal) {
+    const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
+    const token = await mintRepositoryToken(this.config, repositoryUrl);
+    const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
+    try {
+      const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal);
+      const imported = await this.withPausedExecutor(record, async () =>
+        await this.runGitTransferHelper(record, 'import', transferName, remoteRef ?? '', undefined, undefined, signal)
+      );
+      return { fetched, imported };
+    } finally {
+      await this.safeRemovePath(join(record.workspacePath, transferName));
+    }
+  }
+
+  private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
+    const token = await mintRepositoryToken(this.config, repositoryUrl);
+    if (!token) throw new HarnessError('UNAVAILABLE', 'Git push requires a configured GitHub App with repository write access', 503, false);
+    const requestedRefspec = input.refspec as string | undefined;
+    const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
+    if (!requestedRefspec && !branch) throw new HarnessError('CONFLICT', 'git_push requires refspec when HEAD is detached', 409, false);
+    const refspec = requestedRefspec ?? `${branch}:refs/heads/${branch}`;
+    const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
+    try {
+      await this.withPausedExecutor(record, async () =>
+        await this.runGitTransferHelper(record, 'stage-push', transferName, '', undefined, undefined, signal)
+      );
+      const pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, input.expectedRemoteOid as string | undefined, signal);
+      return { ok: true, message: 'Git push complete', data: { output: pushed.stdout || pushed.stderr, refspec }, truncated: pushed.truncated };
+    } finally {
+      await this.safeRemovePath(join(record.workspacePath, transferName));
+    }
   }
 
   async execute(ownerId: string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
@@ -320,8 +428,47 @@ export class WorkspaceService {
       const shell = await this.operations.closeShell(record.id, validated.shellId as string);
       return { ok: true, message: 'Shell closed', data: this.operations.view(shell), truncated: false };
     }
+    if (operation === 'sessions_open') {
+      const session = this.operations.openSession(
+        record.id,
+        record.containerName!,
+        validated.name as string,
+        validated.cwd as string,
+        validated.idempotencyKey as string,
+        this.config.maxOutputBytes
+      );
+      return { ok: true, message: 'Coding session opened', data: this.operations.view(session), truncated: false };
+    }
+    if (operation === 'sessions_io') {
+      const session = this.operations.sessionIo(record.id, validated.sessionId as string, validated.input as string | undefined);
+      if ((validated.waitMs as number) > 0) await new Promise((resolvePromise) => setTimeout(resolvePromise, validated.waitMs as number));
+      const page = this.operations.viewSince(session, validated.cursor as string | undefined);
+      return { ok: true, message: 'Coding session output', ...page };
+    }
+    if (operation === 'sessions_close') {
+      const session = await this.operations.closeSession(record.id, validated.sessionId as string);
+      return { ok: true, message: 'Coding session closed', data: this.operations.view(session), truncated: false };
+    }
+    if (operation === 'sessions_list') {
+      const sessions = this.operations.listSessions(record.id);
+      const offset = Number(validated.cursor ?? 0);
+      const limit = validated.limit as number;
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new HarnessError('INVALID_INPUT', 'invalid session cursor');
+      const page = sessions.slice(offset, offset + limit);
+      const next = offset + page.length < sessions.length ? String(offset + page.length) : undefined;
+      return { ok: true, message: 'Coding sessions listed', data: { sessions: page.map((session) => this.operations.summary(session)) }, truncated: false, ...(next ? { cursor: next } : {}) };
+    }
     if (operation === 'tasks_run') {
-      const task = this.operations.runTask(record.id, record.containerName!, validated.cwd as string, validated.command as string, validated.idempotencyKey as string, validated.timeoutMs as number, this.config.maxOutputBytes);
+      const task = this.operations.runTask(
+        record.id,
+        record.containerName!,
+        validated.cwd as string,
+        validated.command as string,
+        validated.idempotencyKey as string,
+        validated.timeoutMs as number,
+        this.config.maxOutputBytes,
+        validated.dependsOn as string[]
+      );
       return { ok: true, message: 'Task started', data: this.operations.view(task), truncated: false };
     }
     if (operation === 'tasks_list') {
@@ -338,6 +485,31 @@ export class WorkspaceService {
       return { ok: true, message: 'Task status', ...page };
     }
     if (operation === 'tasks_cancel') return { ok: true, message: 'Task cancelled', data: this.operations.view(await this.operations.cancelTask(record.id, validated.taskId as string)), truncated: false };
+    if (operation === 'tasks_graph') return { ok: true, message: 'Task dependency graph', data: this.operations.taskGraph(record.id), truncated: false };
+    if (operation === 'git_fetch') {
+      const transfer = await this.remoteFetch(record, validated.refspec as string | undefined, signal);
+      await this.enforceActiveLimits(record);
+      return { ok: true, message: 'Git fetch complete', data: { output: transfer.imported.stdout || transfer.imported.stderr }, truncated: transfer.fetched.truncated || transfer.imported.truncated };
+    }
+    if (operation === 'git_pull') {
+      const branch = (validated.branch as string | undefined) ?? await this.currentBranch(record, signal);
+      if (!branch) throw new HarnessError('CONFLICT', 'git_pull requires branch when HEAD is detached', 409, false);
+      await this.remoteFetch(record, `refs/heads/${branch}`, signal);
+      const result = validated.strategy === 'rebase'
+        ? await this.runWorker(record, 'git_rebase', { workspaceId: record.id, action: 'start', upstream: 'FETCH_HEAD' }, signal)
+        : await this.runWorker(record, 'git_merge', {
+            workspaceId: record.id,
+            ref: 'FETCH_HEAD',
+            fastForward: validated.strategy === 'ff-only' ? 'only' : 'allow'
+          }, signal);
+      await this.enforceActiveLimits(record);
+      return result.ok ? { ...result, message: 'Git pull complete' } : result;
+    }
+    if (operation === 'git_push') {
+      const result = await this.remotePush(record, validated, signal);
+      await this.enforceActiveLimits(record);
+      return result;
+    }
     const result = await this.runWorker(record, operation, validated, signal);
     await this.enforceActiveLimits(record);
     return result;

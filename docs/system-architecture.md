@@ -9,7 +9,7 @@ MCP client
   -> API (private network, bearer + Host + Origin policy)
   -> runner (internal Compose network, service bearer)
   -> rootful Docker socket
-  -> clone helper, then one executor for the workspace
+  -> ephemeral clone/Git transfer helpers and one executor for the workspace
 ```
 
 The split is deliberate. The ingress proxy owns no secret or application
@@ -36,6 +36,13 @@ Docker socket or control-plane credentials. These controls reduce accidental
 impact; they do not create a hostile-tenant boundary because the executor
 shares the host kernel.
 
+Remote Git is a runner-mediated boundary rather than executor egress. The
+runner pauses the executor while a no-network helper stages or imports a
+sibling transfer repository, and only the separate fetch/push helper receives
+temporary network access and an optional token. This split exists so remote
+repository synchronization does not put long-lived credentials in the
+repository executor.
+
 Executable owners:
 
 - Loopback-to-frontend byte proxy:
@@ -49,7 +56,13 @@ Executable owners:
   [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts)
 - Workspace lifecycle and Docker policy:
   [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
-- Executor-side file, command, and Git behavior:
+- In-memory shells, named sessions, and dependency-task scheduling:
+  [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts)
+- Credential-isolated remote Git staging:
+  [`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh) and
+  [`test/integration/git-transfer-helper.docker.test.ts`](../test/integration/git-transfer-helper.docker.test.ts)
+- Executor-side file, code-intelligence, command, repository-local Git, and
+  manifest behavior:
   [`worker/harness-worker.mjs`](../worker/harness-worker.mjs)
 - Runtime topology:
   [`compose.yaml`](../compose.yaml) and
@@ -64,14 +77,15 @@ repository checkout lives under the configured jobs root and persists across
 MCP calls while the workspace is active. Close or TTL cleanup removes the
 executor and its workspace directory; SQLite retains the resulting metadata.
 
-Shell and detached-task handles, output buffers, and idempotency mappings are
-runner memory, not SQLite state. They survive ordinary calls but not a runner
-restart. A restart reconciles persisted workspace records against Docker
-containers and restarts every surviving executor. This preserves repository
-files while terminating processes whose in-memory handles were lost; the
-handles themselves cannot be restored. Docker reconciliation is scoped by a
-random runner-instance identity persisted in SQLite, so another state store or
-Compose stack using the same daemon does not delete this instance's containers.
+Shell, named-session, and dependency-task handles, output buffers, graphs, and
+idempotency mappings are runner memory, not SQLite state. They survive ordinary
+calls but not a runner restart. A restart reconciles persisted workspace
+records against Docker containers and restarts every surviving executor. This
+preserves repository files while terminating processes whose in-memory handles
+were lost; the handles themselves cannot be restored. Docker reconciliation is
+scoped by a random runner-instance identity persisted in SQLite, so another
+state store or Compose stack using the same daemon does not delete this
+instance's containers.
 
 The MCP transport is stateless: the API creates a fresh server for request
 handling while the durable workspace identity lives below the transport. A
