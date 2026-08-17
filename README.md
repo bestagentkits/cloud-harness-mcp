@@ -493,7 +493,10 @@ Contents read and write. Production Compose mounts the root-owned host
 directory `/etc/cloud-harness-mcp` read-only at `/run/cloud-harness-secrets`,
 so the maintained container path is
 `/run/cloud-harness-secrets/github-app-private-key.pem`. Prefer the file form
-instead of placing a private key directly in an environment variable.
+instead of placing a private key directly in an environment variable. Follow
+the [private GitHub repository setup guide](docs/github-app-private-repositories.md)
+for App creation, least-privilege permissions, installation, key handling,
+verification, troubleshooting, and rotation.
 
 ### Compose overrides
 
@@ -525,6 +528,7 @@ with operational rationale in the [configuration guide](docs/configuration.md).
 - [System architecture](docs/system-architecture.md)
 - [MCP usage and tool semantics](docs/mcp-api.md)
 - [Configuration](docs/configuration.md)
+- [GitHub App setup for private repositories](docs/github-app-private-repositories.md)
 - [Security model](docs/security-model.md)
 - [Development and testing](docs/development.md)
 - [Operations, backup, rollback, and cleanup](docs/operations.md)
