@@ -143,7 +143,10 @@ read and write permission.
 Private repository access is optional. Do not report it as live-verified until
 an owner has supplied valid credentials and completed a sanitized clone and
 transfer leak check. The broker and transfer boundary are described in
-[`mcp-api.md`](mcp-api.md#repository-opening-policy).
+[`mcp-api.md`](mcp-api.md#repository-opening-policy). Follow the
+[GitHub App setup guide](github-app-private-repositories.md) to create the App,
+grant least-privilege repository access, install the key, and verify the
+integration.
 
 ## Compose and logging overrides
 

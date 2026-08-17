@@ -1,0 +1,43 @@
+{
+  "name": "cloud-harness",
+  "version": "0.5.1",
+  "description": "Safe operating guidance for private Cloud Harness MCP coding workspaces.",
+  "author": {
+    "name": "Best Agent Kits",
+    "url": "https://github.com/bestagentkits"
+  },
+  "homepage": "https://cloud-harness-mcp.pages.dev",
+  "repository": "https://github.com/bestagentkits/cloud-harness-mcp",
+  "license": "MIT",
+  "keywords": [
+    "cloud-harness",
+    "mcp",
+    "remote-coding",
+    "developer-tools"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Cloud Harness MCP",
+    "shortDescription": "Operate a private remote coding workspace safely.",
+    "longDescription": "Open, inspect, edit, test, version, recover, and close a private Cloud Harness MCP workspace with exact tool contracts and safety guidance.",
+    "developerName": "Best Agent Kits",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Remote coding",
+      "File and code search",
+      "Command and task execution",
+      "Git and worktree operations"
+    ],
+    "websiteURL": "https://cloud-harness-mcp.pages.dev",
+    "privacyPolicyURL": "https://cloud-harness-mcp.pages.dev/privacy.html",
+    "termsOfServiceURL": "https://cloud-harness-mcp.pages.dev/terms.html",
+    "defaultPrompt": [
+      "Open my repository in Cloud Harness and inspect it safely.",
+      "Use Cloud Harness to implement and verify this change.",
+      "Review the workspace state and close all Cloud Harness resources."
+    ],
+    "brandColor": "#C9824B",
+    "composerIcon": "./assets/cloud-harness-logo.svg",
+    "logo": "./assets/cloud-harness-logo.svg"
+  }
+}

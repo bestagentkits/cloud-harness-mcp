@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "cloud-harness",
+  "version": "0.5.1",
+  "description": "Operate a private Cloud Harness MCP coding workspace with safe file, execution, Git, automation, and recovery workflows.",
+  "author": {
+    "name": "Best Agent Kits",
+    "url": "https://github.com/bestagentkits"
+  },
+  "homepage": "https://cloud-harness-mcp.pages.dev",
+  "repository": "https://github.com/bestagentkits/cloud-harness-mcp",
+  "license": "MIT",
+  "keywords": [
+    "cloud-harness",
+    "mcp",
+    "remote-coding",
+    "developer-tools"
+  ],
+  "skills": "./skills/"
+}

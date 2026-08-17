@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Cloud Harness MCP</title>
+  <rect width="512" height="512" rx="96" fill="#111820"/>
+  <path d="M112 96h144v48h-96v224h96v48H112zm144 0h144v320H256v-48h96V144h-96z" fill="#eef4f5"/>
+  <path d="M208 208h96v96h-96z" fill="#c9824b"/>
+  <path d="M232 232h48v48h-48z" fill="#b7d85b"/>
+</svg>

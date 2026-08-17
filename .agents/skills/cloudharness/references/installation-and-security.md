@@ -1,0 +1,138 @@
+# Installation, connection, and security
+
+## Install the skill
+
+Install from the public repository with the open agent-skills CLI:
+
+```bash
+npx skills add bestagentkits/cloud-harness-mcp --skill cloudharness
+```
+
+Choose the agent(s) and project/global scope when prompted. For a global,
+non-interactive install into Claude Code and Codex:
+
+```bash
+npx skills add bestagentkits/cloud-harness-mcp --skill cloudharness \
+  --global --agent claude-code codex --yes
+```
+
+Skill installation provides workflow guidance only. It does not authenticate or
+connect an MCP client.
+
+### Claude Code plugin marketplace
+
+```bash
+claude plugin marketplace add bestagentkits/cloud-harness-mcp
+claude plugin install cloud-harness@bestagentkits
+```
+
+### OpenAI plugin marketplace
+
+After the repository has been added to an available OpenAI marketplace:
+
+```bash
+codex plugin marketplace add bestagentkits/cloud-harness-mcp
+codex plugin add cloud-harness@bestagentkits
+```
+
+Both plugin packages install the same skill guidance. They deliberately omit
+credentials and a public MCP app registration; configure the private connection
+separately below.
+
+## MCP endpoint and bearer
+
+The owner-operated endpoint is:
+
+```text
+https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+```
+
+Direct clients must send the owner-provided bearer token. Keep it in a local
+environment variable or client-private secret store:
+
+```bash
+export CLOUD_HARNESS_MCP_TOKEN="<owner-provided-token>"
+```
+
+Never put the token in a repository, prompt, skill, chat, URL, issue, command
+argument, or shared client configuration.
+
+### Codex
+
+Add this to trusted user configuration:
+
+```toml
+[mcp_servers.cloud_harness]
+url = "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp"
+bearer_token_env_var = "CLOUD_HARNESS_MCP_TOKEN"
+required = true
+tool_timeout_sec = 300
+default_tools_approval_mode = "writes"
+```
+
+Restart Codex and inspect `/mcp` or run `codex mcp list`.
+
+### Claude Code
+
+```bash
+claude mcp add --transport http --scope user \
+  --header "Authorization: Bearer $CLOUD_HARNESS_MCP_TOKEN" \
+  cloud-harness https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+```
+
+Inspect with `claude mcp get cloud-harness`, then confirm it in `/mcp`.
+
+## Marketplace compatibility
+
+- The bundled skill is provider-neutral and can be packaged for Claude,
+  ChatGPT, and Codex.
+- Claude Code and Codex can use the private bearer-backed endpoint from local
+  trusted configuration.
+- A public hosted ChatGPT/Claude connector must use a supported per-user
+  authorization flow. The current deployment is static-bearer, single-owner,
+  and is **not** a public multi-user MCP service. Do not publish the bearer or
+  claim OAuth support.
+- Marketplace installation and marketplace review/publication are different
+  states. Local validation does not prove an approved public listing.
+
+## Intended trust model
+
+Cloud Harness is for one authenticated, trusted owner operating approved
+repositories. It is not an anonymous service, shared tenant sandbox, or hostile
+multi-tenant boundary. Rootful Docker and a shared kernel remain material trust
+limitations even though the executor is constrained.
+
+The trusted control plane owns ingress, authentication, repository validation,
+Docker lifecycle, optional GitHub App brokering, state, and cleanup. Repository
+content and user-supplied commands are untrusted execution input.
+
+## Executor boundary
+
+- Executors run non-root with a read-only root filesystem, dropped capabilities,
+  `no-new-privileges`, resource limits, bounded output, and TTL cleanup.
+- Only the repository workspace is writable.
+- Default `networkMode: "none"` blocks ordinary executor egress.
+- `networkMode: "bridge"` permits broad egress and increases exfiltration,
+  SSRF, callback, dependency-script, and repository-deployment risk.
+- The executor receives no Docker socket, host credential, GitHub App token,
+  deployment secret, or arbitrary host mount.
+
+## Repository and Git credential boundary
+
+- Open only credential-free HTTPS repository URLs on owner-approved hosts.
+- URL userinfo, private/link-local resolutions, and unsupported custom ports are
+  rejected.
+- Clone disables hooks, recursive submodules, redirects, tag downloads, and LFS
+  smudging.
+- Optional private GitHub access is brokered outside the executor with a
+  short-lived repository-scoped token. The stored remote remains credential-free.
+- Fetch, pull, and push use isolated transfer helpers. They do not require
+  executor networking and do not expose the broker credential to repository code.
+
+## Sensitive and personal data
+
+Do not use the harness to collect or expose credentials, personal data, or data
+the owner is not authorized to process. Avoid writing sensitive content to
+repository memories or logs. If output unexpectedly contains a secret, stop,
+redact the response, rotate the credential, and inspect the affected workspace
+and logs before continuing.

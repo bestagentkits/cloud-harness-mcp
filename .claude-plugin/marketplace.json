@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "bestagentkits",
+  "owner": {
+    "name": "Best Agent Kits",
+    "url": "https://github.com/bestagentkits"
+  },
+  "description": "Developer plugins from Best Agent Kits.",
+  "plugins": [
+    {
+      "name": "cloud-harness",
+      "source": "./plugins/cloud-harness",
+      "description": "Operate private Cloud Harness MCP coding workspaces safely.",
+      "version": "0.5.1"
+    }
+  ]
+}

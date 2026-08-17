@@ -57,10 +57,11 @@ before any rerun.
 Review `/etc/cloud-harness-mcp/runtime.env` as root. Do not print or transfer
 its tokens through logs or shell history. Configure the optional GitHub App
 private-key file only if private clone is required; see
-[configuration](configuration.md#optional-github-app-repository-access). In
-Access mode, also install the runner-only secret keyring file and use a durable
-host artifact root. The maintained config template and schema remain the exact
-setting authorities.
+[GitHub App setup for private repositories](github-app-private-repositories.md)
+and the [configuration rationale](configuration.md#optional-private-github-clone).
+In Access mode, also install the runner-only secret keyring file and use a
+durable host artifact root. The maintained config template and schema remain
+the exact setting authorities.
 
 The current bootstrap sudoers rule grants the fixed deploy commands to the
 `dev` account. Verify that this is the intended `VPS_USER`; if not, change the
