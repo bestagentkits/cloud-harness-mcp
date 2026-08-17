@@ -217,7 +217,7 @@ const handlers = {
   },
   async files_mkdir(input) {
     const target = input.recursive ? await safeRecursiveCreatePath(input.path) : await safeEntryPath(input.path, true);
-    try { await mkdir(target, { recursive: input.recursive, mode: 0o700 }); }
+    try { await mkdir(target, { recursive: input.recursive, mode: 0o755 }); }
     catch (error) {
       if (error?.code !== 'EEXIST' || !(await lstat(target)).isDirectory()) throw error;
     }

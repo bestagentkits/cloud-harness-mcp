@@ -64,6 +64,10 @@ consistent `0.2.0` release metadata.
   reaching worker validation. The fixture was changed to create the large file
   through bounded executor-side execution, after which the intended manifest
   guard was reached and passed. Product behavior did not need to change.
+- Post-PR Linux CI found that `files_mkdir` created directories with mode
+  `0700`, preventing the host-side quota scan from traversing them on GitHub
+  runners. The mode was changed to `0755`, an explicit mode assertion was
+  added, and the executor was rebuilt without cache before the E2E rerun.
 
 ## Follow-up roadmap
 

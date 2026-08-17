@@ -20,6 +20,10 @@ The first mediated fetch implementation imported only `FETCH_HEAD`. The final he
 
 `deployments_run` now returns `ok: false`, `CONFLICT`, the bounded command result, and `isError` for a non-zero exit (`worker/harness-worker.mjs:407-416`); E2E coverage exercises exit 7 (`test/e2e/coding-workflow.docker.test.ts:168-170`). Manifest parsing now rejects files above 256 KiB, more than 100 targets, invalid/overlong names or commands, and unsafe/overlong `cwd` values (`worker/harness-worker.mjs:9-10,125-149`); E2E coverage verifies the byte ceiling (`test/e2e/coding-workflow.docker.test.ts:171-173`).
 
+### Linux host quota traversal for created directories
+
+Post-PR Linux E2E showed that executor-created `0700` directories could not be traversed by the host-side runner process when its UID differs from executor UID 10001, causing the workspace-size scanner to fail. `files_mkdir` now requests `0755` for newly created directories (`worker/harness-worker.mjs:218-224`), and the Docker E2E asserts the outer recursively-created directory is mode `755` before using it (`test/e2e/coding-workflow.docker.test.ts:90-92`). This is correct for the current boundary: the trusted runner needs directory read/traverse permission for quota scanning, while `jobsRoot` remains `0700` (`apps/runner/src/workspace-service.ts:47`) and prevents unrelated host users from reaching repository entries. The change adds no write permission and does not broaden the executor's existing repository authority.
+
 ## Boundary and parity assessment
 
 - Credentials remain confined to ephemeral networked helpers. Repository tokens travel over stdin, enter neither Docker arguments nor the long-lived executor, and are cleared with the askpass file. The stored remote remains credential-free; Git system/global configuration, hooks, credential helpers, recursive submodules, tags for explicit transfers, and redirects are constrained.
@@ -35,6 +39,7 @@ The first mediated fetch implementation imported only `FETCH_HEAD`. The final he
 - `git diff --check` — passed.
 - `npx vitest run packages/contracts/test/contracts.test.ts apps/runner/test/git-transfer-leak.test.ts` — 2 files, 6 tests passed.
 - The Docker-backed fetch/tracking, competing-writer lease, and deployment E2E assertions were inspected for failure-sensitive expectations; the independent test pass remains the shipping gate authority.
+- The post-PR `0700` to `0755` directory-mode delta and its Linux E2E assertion were reviewed against the jobs-root access boundary; no security or correctness regression was found.
 
 ## Landing assessment
 

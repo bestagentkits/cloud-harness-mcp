@@ -6,7 +6,7 @@ Version: `0.2.0`
 
 ## Result
 
-PASS. The completed coding-harness tool surface passed static validation, unit and contract tests, Docker integration tests, and the MCP end-to-end workflow. The executor image and Docker suites were rebuilt and rerun after the final `git-transfer-helper.sh` changes, including corrected explicit `force-with-lease` expectations and remote-tracking ref import. The final E2E run also covered deployment command failure and the bounded deployment manifest.
+PASS. The completed coding-harness tool surface passed static validation, unit and contract tests, Docker integration tests, and the MCP end-to-end workflow. The executor image and Docker suites were rebuilt and rerun after the final `git-transfer-helper.sh` changes, including corrected explicit `force-with-lease` expectations and remote-tracking ref import. The final E2E run also covered deployment command failure, the bounded deployment manifest, and host-readable `0755` directories created by `files_mkdir`.
 
 ## Evidence
 
@@ -22,11 +22,14 @@ PASS. The completed coding-harness tool surface passed static validation, unit a
 | `docker compose --profile images build --no-cache executor-image` | PASS on final helper snapshot |
 | `npm run test:docker` | PASS on final image, 2 files / 4 tests, including competing-writer lease rejection |
 | `npm run test:e2e` | PASS on final image, 1 file / 1 workflow test |
+| Post-PR `node --check worker/harness-worker.mjs` and `npm run test:e2e` | PASS; recursive `files_mkdir` produced mode `755` and the full Linux-container workflow completed |
 | `git diff --check` | PASS |
 
 The Docker integration suite exercised executor isolation and the local bare-remote Git transfer helper. The E2E suite exercised the MCP path for file primitives, symbol lookup, named sessions, dependency-aware tasks, deployment manifests, local Git operations, and brokered fetch behavior.
 
 The final review-driven corrections were verified by rebuilding the executor without cache, demonstrating that a competing remote writer is rejected by `force-with-lease`, importing `refs/remotes/origin/*` during fetch, preserving a failing deployment's non-zero result, rejecting a manifest larger than 256 KiB, and then completing the full E2E workflow.
+
+After GitHub's Linux E2E exposed that mode `0700` blocked the host-side quota scanner from traversing executor-created directories, the post-PR snapshot was independently inspected and rerun. `files_mkdir` now requests mode `0755`, the E2E test asserts `stat -c %a scratch` equals `755`, and the complete E2E test passed against the freshly rebuilt executor image.
 
 ## Cleanup
 
