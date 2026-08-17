@@ -26,11 +26,14 @@ The systemd and Compose owners are
 
 The production defaults place:
 
-- SQLite workspace metadata at
+- SQLite workspace, principal, dashboard, GitHub binding, artifact metadata,
+  and audit state at
   `/var/lib/cloud-harness/state/cloud-harness.db`;
 - active workspace clones below `/var/lib/cloud-harness/jobs`;
-- release-time database copies below `/var/lib/cloud-harness/backups`;
-- runtime secrets in `/etc/cloud-harness-mcp/runtime.env`.
+- retained artifact payloads below `/var/lib/cloud-harness/artifacts`;
+- release-time recovery sets below `/var/lib/cloud-harness/backups`; and
+- runtime configuration, GitHub App key, and secret keyring below
+  `/etc/cloud-harness-mcp`.
 
 The database persists workspace metadata across runner restarts.
 Shell/session/task handles, dependency graphs, and their output buffers do not.
@@ -44,30 +47,29 @@ used to scope Docker reconciliation.
 ## Backup and restore
 
 [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
-stops the service before copying an existing SQLite database and restores that
-copy automatically if deployment fails. It does not back up active workspace
-files and does not prune old database copies.
+stops the service before creating a timestamped recovery set containing the
+SQLite database, artifact payload archive, and a root-owned copy of the runtime
+configuration/key directory. On deployment failure it restores the prior
+database and artifact payloads and reuses the unchanged configuration. It does
+not back up active workspace files or prune old recovery sets.
 
-For a manual metadata backup:
+Treat the database, artifact payloads, runtime configuration, GitHub App key,
+and complete secret decrypt keyring as one coherent recovery unit. Stop the
+service before copying it so no dashboard, MCP, reaper, WAL, or artifact write
+can race the snapshot. List and close active workspaces first, or explicitly
+accept that their TTL-bound checkouts and in-memory operations are excluded.
+Use the directory shape created by the deploy script rather than inventing a
+database-only backup.
 
-1. List and close active workspaces through MCP, or explicitly accept that
-   in-flight executor state will not be captured.
-2. Quiesce the database, copy it, and restart:
-
-```bash
-sudo systemctl stop cloud-harness-mcp.service
-sudo cp --reflink=auto \
-  /var/lib/cloud-harness/state/cloud-harness.db \
-  "/var/lib/cloud-harness/backups/manual-$(date -u +%Y%m%dT%H%M%SZ).db"
-sudo systemctl start cloud-harness-mcp.service
-curl --fail http://127.0.0.1:3100/readyz
-```
-
-Do not copy only the main database while the runner is writing its WAL. To
-restore, stop the service, preserve the current database, copy one verified
-backup into the configured `STATE_DB`, start the same or a schema-compatible
-release, and check readiness. The state store intentionally refuses an
-unsupported schema version.
+To restore, keep the service stopped, preserve the current recovery unit, and
+select one verified snapshot. Restore its database and matching artifact
+archive together. If the configuration or keyring changed since that snapshot,
+restore the matching root-owned config copy before starting the same or a
+schema-compatible release. Never combine an old database with newer artifacts
+or a keyring that cannot decrypt its recorded versions. Check readiness,
+dashboard secret readiness, artifact retrieval, and sanitized audit continuity
+before reopening writes. The state store intentionally refuses an unsupported
+schema version.
 
 If workspace content must be retained, commit changes and use `git_push` only
 when the configured GitHub App has repository write access; verify the remote
@@ -75,6 +77,24 @@ result before closing. Otherwise export the required files before close. The
 executor itself never receives a repository credential. Host-side archival
 should be exceptional, performed only after stopping the exact verified
 executor, and scoped to its opaque job directory.
+
+## Secret key rotation
+
+The keyring is versioned so encryption can move to a new active key without
+losing decrypt access to older secret versions. Back up the coherent recovery
+unit first. Add a new unique key version, make it active, retain every old key,
+and restart with the complete runner-only keyring. Quiesce secret mutations,
+keep the service or all write paths quiesced for the operation, then invoke the
+one-off runner re-encryption entry point owned by
+[`apps/runner/src/rekey-secrets.ts`](../apps/runner/src/rekey-secrets.ts) through
+the `secrets:rekey` package script or its compiled runner command.
+
+The command is interruptible and safe to resume; verify that it completes,
+take a new coherent backup, and keep old decrypt keys through the release and
+rollback window. Remove an old key only after source, database inspection, and
+a restore rehearsal prove no retained ciphertext or rollback snapshot needs
+that version. Do not run re-encryption from the API or expose key material in
+command output.
 
 ## Cleanup
 
@@ -107,7 +127,9 @@ sudo du -sh /var/lib/cloud-harness/jobs/*
 ## Release rollback
 
 An automatic deployment failure restores the prior recorded commit, the
-quiesced database copy, and rebuilt service images when a prior release exists.
+quiesced database/artifact state, and rebuilt service images when a prior
+release exists. Runtime configuration is not modified by the deploy script;
+its snapshot copy is retained for coherent manual recovery.
 A manual:
 
 ```bash
@@ -120,6 +142,7 @@ different known-good commit on `origin/main`, pass its exact
 pipeline builds images on the VPS and records local image IDs; it does not pull
 an externally attested image digest.
 
-Always verify loopback readiness, HTTPS, and managed-container cleanup after a
-rollback. Retain at least one known-good compatible database copy; backup
-retention is an operator policy, not an automated service feature.
+Always verify loopback readiness, HTTPS, dashboard secret readiness, artifact
+state, and managed-container cleanup after a rollback. Retain at least one
+known-good coherent recovery set; backup retention is an operator policy, not
+an automated service feature.

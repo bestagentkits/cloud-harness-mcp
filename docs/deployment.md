@@ -1,10 +1,14 @@
 # VPS deployment
 
-This route installs the private single-owner service behind an existing nginx
+This route installs the private trusted-operator service behind an existing nginx
 instance. Compose publishes a credential-free TCP ingress proxy only on
 `127.0.0.1:3100`; the API and runner remain on private networks and nginx
 remains the only public ingress. The bootstrap script installs an HTTP server block but
 does not obtain a certificate. Certbot is a separate required step.
+
+`owner-bearer` remains the default. The optional Cloudflare Access route adds
+an authentication edge to this topology; it does not replace the private
+API/runner boundary or grant Cloudflare any Docker authority.
 
 ## Prerequisites and safe preflight
 
@@ -53,7 +57,10 @@ before any rerun.
 Review `/etc/cloud-harness-mcp/runtime.env` as root. Do not print or transfer
 its tokens through logs or shell history. Configure the optional GitHub App
 private-key file only if private clone is required; see
-[configuration](configuration.md#optional-private-github-clone).
+[configuration](configuration.md#optional-github-app-repository-access). In
+Access mode, also install the runner-only secret keyring file and use a durable
+host artifact root. The maintained config template and schema remain the exact
+setting authorities.
 
 The current bootstrap sudoers rule grants the fixed deploy commands to the
 `dev` account. Verify that this is the intended `VPS_USER`; if not, change the
@@ -90,6 +97,49 @@ unambiguously matched its `server_name`. Re-run `nginx -T` and compare against
 the preflight capture. Do not delete or replace certificates used by other
 sites.
 
+## Cloudflare Access rollout
+
+Access mode is an explicit operator rollout after the code is merged and the
+origin is healthy. It requires a hostname in an owner-controlled
+Cloudflare-managed zone and the matching Zero Trust organization; the current
+`sslip.io` hostname may not satisfy that prerequisite.
+
+In the Cloudflare dashboard, use **Zero Trust → Integrations → Identity
+providers → Add new identity provider** to configure and test
+[GitHub](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/github/)
+and
+[Google](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/google/).
+Then use **Zero Trust → Access controls → Applications → Create new
+application → Self-hosted and private**. Add the selected public hostname
+without a path so the same application protects `/mcp` and `/dashboard`, add
+the trusted-operator Allow policy, and select both IdPs under Authentication.
+Edit the application, then enable **Advanced settings → Managed OAuth** as
+described in Cloudflare's
+[Managed OAuth guide](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/).
+
+Configure the origin from that same application's issuer, audience, and JWKS
+material, remove the owner bearer, and pin any legacy owner mapping to the
+exact observed issuer and subject. Never infer a mapping from email. The mode
+constraints and operator baseline are owned by
+[configuration](configuration.md#authentication-and-request-policy).
+
+Provisioning Cloudflare, DNS, IdPs, Access policy, and credentials is a live
+owner operation and is not performed by this repository. Before promotion,
+collect sanitized evidence for:
+
+- protected-resource and authorization-server discovery from each release-
+  gating client;
+- GitHub and Google login producing the intended Access-normalized subject;
+- refresh plus logout/revocation, followed by rejection at the origin;
+- unknown and cross-principal resource denial;
+- dashboard CSRF rejection and browser response/storage secret absence;
+- per-principal GitHub App installation/repository reconciliation; and
+- Access-mode deployment canary and rollback from the public HTTPS edge.
+
+If a target client cannot complete Managed OAuth, stop and make the separate
+Managed OAuth versus Workers OAuth Provider decision. Do not add a second
+issuer, hidden bearer path, or unprotected hostname as a compatibility fix.
+
 ## Deploy a release
 
 The deploy command accepts only an exact 40-character commit that is an
@@ -101,11 +151,25 @@ sudo /usr/local/sbin/cloud-harness-deploy "$release_sha"
 ```
 
 [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
-checks the hardcoded public origin, quiesces and backs up SQLite, checks out the
-exact commit, builds fixed local images, starts systemd, waits for readiness,
-and performs an authenticated MCP initialization smoke check. On error it
-restores the prior recorded release when available or disables the first
-install.
+checks the hardcoded public origin, stops writes, snapshots the state database,
+artifact store, and root-owned configuration/key files as one recovery set,
+checks out the exact commit, builds fixed local images, starts systemd, waits
+for readiness, and performs an auth-mode-aware canary. On error it restores the
+prior recorded release plus the database and artifacts when available, reusing
+the unchanged live configuration; the config/key copy is retained for coherent
+manual recovery. A failed first install is disabled. Active job checkouts are
+not part of the snapshot.
+
+Owner-bearer canary uses the private bearer path. Access canary requires an
+owner-provisioned Access service-token client ID/secret and the public HTTPS
+endpoint, so the request traverses the Access edge; there is no local bearer
+bypass. This proves the public deployment path, not a GitHub/Google Managed
+OAuth user flow or release-gating client compatibility. Rotate or revoke the
+canary credential separately. Store these three canary-only settings in the
+root-owned `/etc/cloud-harness-mcp/canary-credentials` file, not the shared
+runtime configuration; the deploy script exports them only to the transient
+canary container. The exact environment names and invocation are owned by the deploy script and
+[`scripts/deploy-canary.mjs`](../scripts/deploy-canary.mjs).
 
 Verify locally and externally:
 
@@ -121,8 +185,9 @@ The unauthenticated MCP request should be rejected; readiness should succeed.
 Confirm `3100` is loopback-only, the ingress container has no runtime secrets,
 and no API, runner, or executor port is public.
 
-From a trusted operator checkout, run the authenticated production workflow
-with the bearer supplied only through the environment:
+For an owner-bearer deployment, run the authenticated production workflow from
+a trusted operator checkout with the bearer supplied only through the
+environment:
 
 ```bash
 MCP_URL="https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp" \
@@ -136,6 +201,9 @@ it, exercises modern and legacy MCP negotiation, tests cancellation, closes
 the workspace, and emits sanitized JSON. It intentionally records the optional
 private GitHub App clone as not run; repeat a separate leak check only when the
 owner supplies valid App credentials.
+
+This script is not Access/IdP verification; use the Access rollout checklist
+above for that distinct live claim.
 
 ## GitHub Actions deployment
 
@@ -176,7 +244,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-This leaves the project configuration, state, backups, and any dedicated
+This leaves the project configuration, state, artifact store, backups, and any dedicated
 certificate available for investigation. Remove them only after resolving
 their exact ownership and retention requirements. See
 [operations](operations.md) for backup and cleanup.

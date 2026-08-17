@@ -1,26 +1,113 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { AuthInfo } from '@modelcontextprotocol/server';
-import type { ApiConfig } from '@cloud-harness/contracts';
+import { RunnerPrincipalSelectorSchema, type ApiConfig, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { CloudflareAccessJwtVerifier, type AccessJwtVerifierOptions } from './access-jwt-verifier.js';
 
 type AuthenticatedRequest = Request & { auth?: AuthInfo };
 
-function equal(actual: string, expected: string): boolean {
+function equal(actual: string, expected: string | undefined): boolean {
+  if (!expected) return false;
   const left = Buffer.from(actual);
   const right = Buffer.from(expected);
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function bearerAuth(config: ApiConfig) {
-  return (request: AuthenticatedRequest, response: Response, next: NextFunction): void => {
-    const authorization = request.header('authorization') ?? '';
-    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
-    if (!equal(token, config.bearerToken)) {
-      response.setHeader('WWW-Authenticate', 'Bearer realm="cloud-harness-mcp"');
-      response.status(401).json({ error: 'authentication_failed' });
+const scopes = ['workspace:read', 'workspace:write', 'workspace:execute'];
+
+function reject(response: Response): void {
+  response.setHeader('WWW-Authenticate', 'Bearer realm="cloud-harness-mcp"');
+  response.status(401).json({ error: 'authentication_failed' });
+}
+
+export function principalFromAuthInfo(authInfo: AuthInfo | undefined): RunnerPrincipalSelector | undefined {
+  const parsed = RunnerPrincipalSelectorSchema.safeParse(authInfo?.extra?.principal);
+  return parsed.success ? parsed.data : undefined;
+}
+
+type VerifierOverrides = Omit<Partial<AccessJwtVerifierOptions>, 'issuer' | 'audience' | 'jwksUrl'>;
+
+function accessVerifier(config: ApiConfig, verifierOptions: VerifierOverrides): CloudflareAccessJwtVerifier | undefined {
+  return config.authMode === 'cloudflare-access'
+    ? new CloudflareAccessJwtVerifier({
+        issuer: config.accessIssuer!,
+        audience: config.accessAudience!,
+        jwksUrl: config.accessJwksUrl!,
+        ...verifierOptions
+      })
+    : undefined;
+}
+
+export function accessAssertionAuth(config: ApiConfig, verifierOptions: VerifierOverrides = {}) {
+  const verifier = accessVerifier(config, verifierOptions);
+  let activeVerifications = 0;
+  return async (request: AuthenticatedRequest, response: Response, next: NextFunction): Promise<void> => {
+    if (!verifier) {
+      response.status(404).json({ error: 'not_found' });
       return;
     }
-    request.auth = { token, clientId: config.ownerId, scopes: ['workspace:read', 'workspace:write', 'workspace:execute'] };
-    next();
+    if (activeVerifications >= 32) {
+      response.status(429).json({ error: 'too_many_requests' });
+      return;
+    }
+    activeVerifications += 1;
+    try {
+      const identity = await verifier.verify(request.header('cf-access-jwt-assertion') ?? '');
+      const principal: RunnerPrincipalSelector = { kind: 'external', ...identity.principal };
+      request.auth = {
+        token: 'cloudflare-access',
+        clientId: identity.principal.subject,
+        scopes,
+        expiresAt: identity.expiresAt,
+        extra: { principal, externalPrincipal: identity.principal }
+      };
+      next();
+    } catch {
+      response.status(401).json({ error: 'authentication_failed' });
+    } finally {
+      activeVerifications -= 1;
+    }
+  };
+}
+
+export function bearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides = {}) {
+  const verifier = accessVerifier(config, verifierOptions);
+  let activeVerifications = 0;
+  return async (request: AuthenticatedRequest, response: Response, next: NextFunction): Promise<void> => {
+    const authorization = request.header('authorization') ?? '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    if (!verifier) {
+      if (!token || !equal(token, config.bearerToken)) {
+        reject(response);
+        return;
+      }
+      const principal: RunnerPrincipalSelector = { kind: 'owner', ownerId: config.ownerId };
+      request.auth = { token, clientId: config.ownerId, scopes, extra: { principal } };
+      next();
+      return;
+    }
+
+    if (activeVerifications >= 32) {
+      response.status(429).json({ error: 'too_many_requests' });
+      return;
+    }
+    activeVerifications += 1;
+    try {
+      const assertion = request.header('cf-access-jwt-assertion') ?? '';
+      const identity = await verifier.verify(assertion);
+      const principal: RunnerPrincipalSelector = { kind: 'external', ...identity.principal };
+      request.auth = {
+        token: token || 'cloudflare-access',
+        clientId: identity.principal.subject,
+        scopes,
+        expiresAt: identity.expiresAt,
+        extra: { principal, externalPrincipal: identity.principal }
+      };
+      next();
+    } catch {
+      reject(response);
+    } finally {
+      activeVerifications -= 1;
+    }
   };
 }

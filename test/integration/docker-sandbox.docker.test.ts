@@ -61,7 +61,7 @@ describe('real Docker sandbox', () => {
     expect(hostConfig.PidsLimit).toBe(256);
     expect(hostConfig.Ulimits).toContainEqual({ Name: 'nofile', Hard: 1024, Soft: 1024 });
     expect(hostConfig.Binds.join('\n')).not.toContain('docker.sock');
-    await expect(service.execute('different-owner', 'workspace_status', { workspaceId })).rejects.toThrow('workspace does not belong to this owner');
+    await expect(service.execute('different-owner', 'workspace_status', { workspaceId })).rejects.toThrow('workspace not found');
 
     const read = await service.execute('owner', 'files_read', { workspaceId, path: 'README.md', offset: 0, limit: 65_536 });
     expect((read.data as { content: string }).content).toContain('cloud-harness-mcp');

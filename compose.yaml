@@ -16,6 +16,12 @@ services:
       GITHUB_APP_INSTALLATION_ID: ""
       GITHUB_APP_PRIVATE_KEY: ""
       GITHUB_APP_PRIVATE_KEY_FILE: ""
+      SECRET_KEYRING: ""
+      SECRET_KEYRING_FILE: ""
+      ACCESS_LEGACY_OWNER_ID: ""
+      ACCESS_LEGACY_ISSUER: ""
+      ACCESS_LEGACY_SUBJECT: ""
+      ACCESS_PRINCIPAL_RELINKS: ""
     depends_on:
       runner:
         condition: service_healthy
@@ -72,6 +78,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_JOBS_ROOT:-/var/lib/cloud-harness/jobs}:${JOBS_ROOT:-/var/lib/cloud-harness/jobs}
       - ${HOST_STATE_ROOT:-/var/lib/cloud-harness/state}:/var/lib/cloud-harness/state
+      - ${HOST_ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}:${ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}
     networks: [control, runner-egress]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/healthz').then(r=>{if(!r.ok)process.exit(1)})"]

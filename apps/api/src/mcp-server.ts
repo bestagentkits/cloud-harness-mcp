@@ -1,5 +1,6 @@
-import { McpServer, type CallToolResult } from '@modelcontextprotocol/server';
-import { TOOL_SPECS, ToolResultSchema, type ToolResult } from '@cloud-harness/contracts';
+import { McpServer, type CallToolResult, type McpRequestContext } from '@modelcontextprotocol/server';
+import { TOOL_SPECS, ToolResultSchema, type RunnerPrincipalSelector, type ToolResult } from '@cloud-harness/contracts';
+import { principalFromAuthInfo } from './auth.js';
 import type { RunnerClient } from './runner-client.js';
 
 function resultToMcp(result: ToolResult): CallToolResult {
@@ -10,7 +11,7 @@ function resultToMcp(result: ToolResult): CallToolResult {
   };
 }
 
-export function createCloudHarnessServer(client: RunnerClient): McpServer {
+export function createCloudHarnessServer(client: RunnerClient, principal?: RunnerPrincipalSelector): McpServer {
   const server = new McpServer(
     { name: 'cloud-harness-mcp', version: '0.3.0' },
     { instructions: 'Open an owner-bound workspace first, pass its opaque workspaceId to later tools, and close it when finished.' }
@@ -30,8 +31,15 @@ export function createCloudHarnessServer(client: RunnerClient): McpServer {
           openWorldHint: spec.openWorld
         }
       },
-      async (input, context) => resultToMcp(await client.call(spec.name, input as Record<string, unknown>, context.mcpReq.signal))
+      async (input, context) => {
+        if (!principal) return resultToMcp({ ok: false, message: 'Authentication context unavailable', error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication context unavailable', retryable: false }, truncated: false });
+        return resultToMcp(await client.call(spec.name, input as Record<string, unknown>, principal, context.mcpReq.signal));
+      }
     );
   }
   return server;
+}
+
+export function createCloudHarnessServerFactory(client: RunnerClient): (context: McpRequestContext) => McpServer {
+  return (context) => createCloudHarnessServer(client, principalFromAuthInfo(context.authInfo));
 }

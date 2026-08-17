@@ -6,6 +6,7 @@ COPY apps/runner/package.json apps/runner/tsconfig.json ./apps/runner/
 COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages/contracts/
 RUN npm ci
 COPY apps/api/src ./apps/api/src
+COPY apps/api/dashboard ./apps/api/dashboard
 COPY packages/contracts/src ./packages/contracts/src
 RUN npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm prune --omit=dev
 
@@ -18,6 +19,7 @@ COPY --from=build --chmod=0444 /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build --chmod=0444 /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
+COPY --from=build --chmod=0444 /app/apps/api/dashboard ./apps/api/dashboard
 COPY --from=build --chmod=0444 /app/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --chown=node:node --chmod=0555 scripts/deploy-canary.mjs ./scripts/deploy-canary.mjs

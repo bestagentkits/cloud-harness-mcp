@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
 const endpoint = 'http://127.0.0.1:3000/mcp';
+const canaryEndpoint = process.env['MCP_CANARY_URL'] ?? endpoint;
+const accessClientId = process.env['MCP_CANARY_ACCESS_CLIENT_ID'];
+const accessClientSecret = process.env['MCP_CANARY_ACCESS_CLIENT_SECRET'];
 const token = process.env.MCP_BEARER_TOKEN;
-if (!token) throw new Error('MCP_BEARER_TOKEN is required');
+if (!token && !(accessClientId && accessClientSecret)) throw new Error('canary authentication is required');
 
 let requestId = 0;
 let workspaceId;
@@ -16,13 +19,17 @@ const requestMeta = {
 async function rpc(method, params = {}) {
   const headers = {
     accept: 'application/json',
-    authorization: `Bearer ${token}`,
     'content-type': 'application/json',
     'mcp-method': method,
     'mcp-protocol-version': protocolVersion
   };
+  if (token) headers.authorization = `Bearer ${token}`;
+  if (accessClientId && accessClientSecret) {
+    headers['cf-access-client-id'] = accessClientId;
+    headers['cf-access-client-secret'] = accessClientSecret;
+  }
   if (method === 'tools/call') headers['mcp-name'] = params.name;
-  const response = await fetch(endpoint, {
+  const response = await fetch(canaryEndpoint, {
     method: 'POST',
     headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: ++requestId, method, params: { ...params, _meta: requestMeta } })

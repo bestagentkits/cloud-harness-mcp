@@ -19,9 +19,12 @@ URLs, or raw command content into tickets or shared logs.
 | Symptom | Meaning and next check |
 |---|---|
 | TLS hostname/certificate error | Certbot has not issued/installed the dedicated hostname certificate, nginx is serving another site's default certificate, or DNS points elsewhere. Check `certbot certificates`, `nginx -T`, DNS, and the [TLS install step](deployment.md#obtain-https-with-the-existing-nginx). Do not disable certificate verification. |
-| `401` with `WWW-Authenticate: Bearer` | The MCP bearer is missing or differs from `MCP_BEARER_TOKEN`. Check that the Codex `bearer_token_env_var` names an exported variable, then restart Codex after changing it. |
+| `401` with `WWW-Authenticate: Bearer` in owner-bearer mode | The MCP bearer is missing or differs from `MCP_BEARER_TOKEN`. Check that the client names an exported local variable, then restart it after changing the value. |
+| MCP `401` in Access mode | The public request did not arrive with a valid Access assertion for the configured issuer/audience, or the Access OAuth credential is expired/revoked. Check the Access application, policy, discovery flow, and sanitized edge logs; do not add an origin bearer bypass. |
+| Dashboard login loop or `session_ended` | `/dashboard` did not receive a current Access assertion, or its short-lived CSRF session was lost. Re-authenticate at Access and reload the dashboard; never copy the assertion into browser storage. |
 | `403 forbidden_host` | The request hostname is absent from `API_PUBLIC_HOSTS`, or nginx did not preserve `Host`. Compare the public hostname with the nginx proxy and runtime environment. |
 | `403 forbidden_origin` | A supplied `Origin` is absent from `API_ALLOWED_ORIGINS`. Add only the exact trusted origin; CLI clients normally omit this header. |
+| `403 origin_required` or CSRF rejection on dashboard mutation | The browser request was not same-origin or did not use the current dashboard session token. Fix the trusted origin/session flow; do not relax the mutation check. |
 | `415 unsupported_media_type` | An MCP POST was not JSON. Use an MCP Streamable HTTP client. |
 | `429 rate_limited` | The process-local request window or active-request bound was exceeded. Wait for `Retry-After`; investigate stuck/parallel clients before restarting. |
 | Public `/healthz` works but `/readyz` is 503 | API is up but cannot reach the runner. Inspect the Compose runner health, internal network, and matching `RUNNER_TOKEN`. |
@@ -45,6 +48,10 @@ The request policy is owned by
 - Private clone failure requires all GitHub App settings, installation access
   to the repository, and a valid PEM key. The optional path is not considered
   live-verified merely because configuration loads.
+- In Access mode, GitHub login is not repository authorization. If the
+  dashboard shows no grant, complete the principal-bound GitHub App setup. If
+  reconcile reports removal or suspension, correct the installation at GitHub
+  and reconcile again; do not substitute another principal's installation.
 
 Replay the same `workspace_open` idempotency key or call `workspace_list` after
 a lost response; do not create a second key until the first result is resolved.
@@ -78,6 +85,15 @@ a lost response; do not create a second key until the first result is resolved.
   `tool_timeout_sec`. Raising one does not raise the others.
 - Truncated output: follow the returned cursor where the tool supports it or
   narrow the command/search/read. Do not assume omitted output succeeded.
+- Secret controls report unavailable while other dashboard pages work: the
+  runner could not load a complete decrypt keyring. Compare the configured key
+  versions with the coherent backup without printing key material. Restore the
+  matching keyring or complete the documented re-encryption/rotation process;
+  never delete an old key merely to make readiness green.
+- An artifact is absent after retention: retained snapshots are bounded and
+  reaped independently of TTL workspace files. Inspect redacted audit metadata
+  and the configured artifact root; a database row without its matching
+  payload indicates an incoherent restore.
 
 ## Containers and cleanup
 
@@ -98,8 +114,9 @@ Never remove the jobs root or unrelated Docker resources. Continue with the
 
 Read the service journal and deploy output without enabling shell tracing
 around secrets. The deploy script automatically returns to the recorded prior
-release and database copy on failure when one exists. A first-install failure
-disables the service.
+release and quiesced database/artifact state on failure when one exists. A
+first-install failure disables the service. Configuration/key snapshots are
+retained for coherent manual recovery.
 
 After any failure, check the repository origin/commit, `nginx -t`, loopback
 readiness, available disk, Docker image build, and the state schema error before

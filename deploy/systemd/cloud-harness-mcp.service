@@ -10,6 +10,7 @@ WorkingDirectory=/opt/cloud-harness-mcp/repo
 Environment=CLOUD_HARNESS_ENV_FILE=/etc/cloud-harness-mcp/runtime.env
 Environment=HOST_JOBS_ROOT=/var/lib/cloud-harness/jobs
 Environment=HOST_STATE_ROOT=/var/lib/cloud-harness/state
+Environment=HOST_ARTIFACT_ROOT=/var/lib/cloud-harness/artifacts
 ExecStart=/usr/bin/docker compose -f compose.yaml -f compose.production.yaml up --remove-orphans
 ExecStop=/usr/bin/docker compose -f compose.yaml -f compose.production.yaml down
 Restart=on-failure

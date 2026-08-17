@@ -25,5 +25,22 @@ export default tseslint.config(
         URL: 'readonly'
       }
     }
+  },
+  {
+    files: ['apps/api/dashboard/**/*.js'],
+    languageOptions: {
+      globals: {
+        addEventListener: 'readonly',
+        document: 'readonly',
+        fetch: 'readonly',
+        FormData: 'readonly',
+        history: 'readonly',
+        localStorage: 'readonly',
+        location: 'readonly',
+        matchMedia: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly'
+      }
+    }
   }
 );

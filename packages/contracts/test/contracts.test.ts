@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { ApiConfigSchema, TOOL_SCHEMA_BY_NAME, WorkspaceIdSchema } from '../src/index.js';
+import { ApiConfigSchema, RunnerConfigSchema, RunnerRequestSchema, TOOL_SCHEMA_BY_NAME, WorkspaceIdSchema } from '../src/index.js';
+
+const commonApiConfig = {
+  runnerToken: 'another-token-that-is-long-enough-1234',
+  runnerUrl: 'http://runner:3001',
+  publicHosts: ['localhost']
+};
 
 describe('contracts', () => {
   it('rejects path traversal and malformed handles', () => {
@@ -8,7 +14,86 @@ describe('contracts', () => {
   });
 
   it('rejects placeholder secrets', () => {
-    expect(() => ApiConfigSchema.parse({ bearerToken: 'change-me-at-least-32-random-characters', runnerToken: 'another-token-that-is-long-enough-1234', runnerUrl: 'http://runner:3001', publicHosts: ['localhost'] })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...commonApiConfig, bearerToken: 'change-me-at-least-32-random-characters' })).toThrow();
+  });
+
+  it('defaults to owner bearer mode and rejects mixed or partial Access configuration', () => {
+    const owner = ApiConfigSchema.parse({ ...commonApiConfig, bearerToken: 'owner-token-that-is-long-enough-123456' });
+    expect(owner.authMode ?? 'owner-bearer').toBe('owner-bearer');
+    expect(() => ApiConfigSchema.parse({
+      ...commonApiConfig,
+      authMode: 'owner-bearer',
+      bearerToken: 'owner-token-that-is-long-enough-123456',
+      accessIssuer: 'https://team.cloudflareaccess.com'
+    })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...commonApiConfig, authMode: 'cloudflare-access', accessIssuer: 'https://team.cloudflareaccess.com' })).toThrow();
+  });
+
+  it('accepts a complete Access configuration and requires HTTPS provider URLs', () => {
+    const access = {
+      ...commonApiConfig,
+      authMode: 'cloudflare-access' as const,
+      accessIssuer: 'https://team.cloudflareaccess.com',
+      accessAudience: 'application-audience',
+      accessJwksUrl: 'https://team.cloudflareaccess.com/cdn-cgi/access/certs'
+    };
+    expect(ApiConfigSchema.parse(access).authMode).toBe('cloudflare-access');
+    expect(() => ApiConfigSchema.parse({ ...access, accessIssuer: 'http://team.cloudflareaccess.com' })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...access, bearerToken: 'owner-token-that-is-long-enough-123456' })).toThrow();
+  });
+
+  it('accepts only explicit owner or verified external runner principal selectors', () => {
+    const base = { version: 2, operation: 'workspace_list', input: {} } as const;
+    expect(RunnerRequestSchema.parse({ ...base, principal: { kind: 'owner', ownerId: 'owner' } }).principal.kind).toBe('owner');
+    expect(RunnerRequestSchema.parse({ ...base, principal: { kind: 'external', issuer: 'https://team.cloudflareaccess.com', subject: 'subject' } }).principal.kind).toBe('external');
+    expect(() => RunnerRequestSchema.parse({ ...base, principal: { kind: 'external', principalId: 'principal_caller_chosen' } })).toThrow();
+  });
+
+  it('retains the legacy owner-only runner request during expand-contract rollout', () => {
+    const legacy = RunnerRequestSchema.parse({ version: 1, ownerId: 'owner', operation: 'workspace_list', input: {} });
+    expect(legacy).toMatchObject({ version: 1, ownerId: 'owner' });
+    expect(() => RunnerRequestSchema.parse({ version: 1, ownerId: 'owner', principal: { kind: 'owner', ownerId: 'other' }, operation: 'workspace_list', input: {} })).toThrow();
+  });
+
+  it('validates an optional exact legacy owner mapping in trusted runner config', () => {
+    const runner = {
+      serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
+      executorImage: 'executor:latest', allowedGitHosts: ['github.com']
+    };
+    const mapping = { legacyOwnerId: 'owner', issuer: 'https://team.cloudflareaccess.com', subject: 'owner-subject' };
+    expect(RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', legacyPrincipalMapping: mapping }).legacyPrincipalMapping).toEqual(mapping);
+    expect(() => RunnerConfigSchema.parse({ ...runner, legacyPrincipalMapping: mapping })).toThrow();
+    expect(() => RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', legacyPrincipalMapping: { ...mapping, issuer: 'http://team.cloudflareaccess.com' } })).toThrow();
+  });
+
+  it('accepts only complete, unique Access principal relinks', () => {
+    const runner = {
+      serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
+      executorImage: 'executor:latest', allowedGitHosts: ['github.com'], authMode: 'cloudflare-access' as const
+    };
+    const mapping = {
+      oldIssuer: 'https://old.cloudflareaccess.com', oldSubject: 'old-subject',
+      newIssuer: 'https://new.cloudflareaccess.com', newSubject: 'new-subject'
+    };
+    expect(RunnerConfigSchema.parse({ ...runner, principalRelinks: [mapping] }).principalRelinks).toEqual([mapping]);
+    expect(() => RunnerConfigSchema.parse({ ...runner, principalRelinks: [{ ...mapping, newSubject: undefined }] })).toThrow();
+    expect(() => RunnerConfigSchema.parse({ ...runner, principalRelinks: [mapping, mapping] })).toThrow();
+    expect(() => RunnerConfigSchema.parse({ ...runner, principalRelinks: [{
+      ...mapping, newIssuer: mapping.oldIssuer, newSubject: mapping.oldSubject
+    }] })).toThrow();
+    expect(() => RunnerConfigSchema.parse({ ...runner, authMode: 'owner-bearer', principalRelinks: [mapping] })).toThrow();
+  });
+
+  it('uses a fixed GitHub installation only in owner mode and an App slug in Access mode', () => {
+    const runner = {
+      serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
+      executorImage: 'executor:latest', allowedGitHosts: ['github.com']
+    };
+    const app = { appId: 1, privateKey: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----' };
+    expect(() => RunnerConfigSchema.parse({ ...runner, githubApp: app })).toThrow();
+    expect(RunnerConfigSchema.parse({ ...runner, githubApp: { ...app, installationId: 2 } }).githubApp?.installationId).toBe(2);
+    expect(() => RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', githubApp: app })).toThrow();
+    expect(RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', githubApp: { ...app, appSlug: 'cloud-harness' } }).githubApp?.appSlug).toBe('cloud-harness');
   });
 
   it('rejects option-shaped Git arguments and incomplete branch mutations', () => {

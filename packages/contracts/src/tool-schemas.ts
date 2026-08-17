@@ -19,9 +19,18 @@ const gitRefspec = z.string().min(1).max(512).refine((value) => {
   return destination === undefined || /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(destination);
 }, 'invalid Git branch push refspec');
 const sessionName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
+const EnvironmentIdSchema = z.string().regex(/^env_[A-Za-z0-9_-]{20,80}$/);
 
 const schemas = {
-  workspace_open: z.object({ repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema, networkMode: z.enum(['none', 'bridge']).optional() }),
+  workspace_open: z.object({
+    repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
+    networkMode: z.enum(['none', 'bridge']).optional(), environmentId: EnvironmentIdSchema.optional(),
+    confirmEnvironmentInjection: z.literal(true).optional()
+  }).superRefine((input, context) => {
+    if (Boolean(input.environmentId) !== Boolean(input.confirmEnvironmentInjection)) {
+      context.addIssue({ code: 'custom', path: ['confirmEnvironmentInjection'], message: 'environment injection requires an explicit environment selection and confirmation' });
+    }
+  }),
   workspace_list: z.object(pagination),
   workspace_status: z.object(workspace),
   workspace_close: z.object(workspace),

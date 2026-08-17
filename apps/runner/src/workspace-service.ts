@@ -1,24 +1,31 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rm, statfs } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
+  InternalRunnerRequestSchema,
   RunnerOperationSchema,
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
   type RunnerConfig,
+  type InternalRunnerOperation,
   type RunnerOperation,
   type RunnerResponse
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
-import { mintRepositoryToken } from './github-app-broker.js';
+import { mintPrincipalRepositoryToken, mintRepositoryToken } from './github-app-broker.js';
+import type { GitHubInstallationStore } from './github-installation-store.js';
+import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
-import { assertOwner } from './security.js';
-import type { StateStore, WorkspaceRecord } from './state-store.js';
+import type { PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
+import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 
 const opaqueId = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING']);
+const auditedFileMutations = new Set<RunnerOperation>([
+  'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
+]);
 
 function publicRecord(record: WorkspaceRecord) {
   return {
@@ -34,17 +41,45 @@ function publicRecord(record: WorkspaceRecord) {
   };
 }
 
+function internalWorkspaceDetail(record: WorkspaceRecord) {
+  return { ...publicRecord(record), generation: record.generation };
+}
+
 export class WorkspaceService {
   private readonly operations = new OperationManager();
   private readonly instanceId: string;
   private reaper?: NodeJS.Timeout;
   private reaperRunning = false;
 
-  constructor(private readonly config: RunnerConfig, private readonly store: StateStore) {
+  constructor(
+    private readonly config: RunnerConfig,
+    private readonly store: StateStore,
+    private readonly metadata?: MetadataStore,
+    private readonly githubInstallations?: GitHubInstallationStore
+  ) {
     this.instanceId = store.instanceId();
   }
 
   async start(): Promise<void> {
+    if ((this.config.authMode ?? 'owner-bearer') === 'cloudflare-access') {
+      const legacyOwners = this.store.legacyWorkspaceOwnerIds();
+      if (legacyOwners.length > 0 && !this.config.legacyPrincipalMapping) {
+        throw new Error('cloudflare-access mode requires an exact legacy principal mapping before startup');
+      }
+      if (this.config.legacyPrincipalMapping) this.store.applyLegacyPrincipalMapping(this.config.legacyPrincipalMapping);
+      this.store.applyPrincipalRelinks(this.config.principalRelinks ?? [], (database, result) => {
+        if (!this.metadata) throw new Error('principal relink audit store is unavailable');
+        this.metadata.recordAuditInTransaction(
+          database,
+          result.principalId,
+          'principal.relinked',
+          'principal',
+          result.principalId,
+          1,
+          { oldIssuer: result.oldIssuer, newIssuer: result.newIssuer }
+        );
+      });
+    }
     await mkdir(this.config.jobsRoot, { recursive: true, mode: 0o700 });
     for (const record of this.store.active()) {
       if (record.status === 'CREATING') await this.closeRecord(record, 'runner restarted during workspace creation');
@@ -171,7 +206,7 @@ export class WorkspaceService {
       '--volume', `${jobPath}:/job`, '--entrypoint', '/opt/harness/clone-helper.sh', this.config.executorImage,
       record.repositoryUrl, '/job/repo', ref ?? ''
     ];
-    const repositoryToken = await mintRepositoryToken(this.config, repositoryUrl);
+    const repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
     let result;
     try {
       result = await runDocker(args, { stdin: `${repositoryToken ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
@@ -182,7 +217,7 @@ export class WorkspaceService {
     return join(jobPath, 'repo');
   }
 
-  private async createExecutor(record: WorkspaceRecord, repositoryPath: string): Promise<string> {
+  private async createExecutor(record: WorkspaceRecord, repositoryPath: string, environment: Record<string, string> = {}): Promise<string> {
     const name = `cloud-harness-ws-${record.id.slice(3, 19).toLowerCase()}`;
     const args = [
       'create', '--name', name,
@@ -194,6 +229,7 @@ export class WorkspaceService {
       '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024',
       '--network', record.networkMode, '--volume', `${repositoryPath}:/workspace:rw`,
       '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1',
+      ...Object.entries(environment).flatMap(([name, value]) => ['--env', `${name}=${value}`]),
       this.config.executorImage
     ];
     const created = await runDocker(args, { timeoutMs: 30_000 });
@@ -232,10 +268,17 @@ export class WorkspaceService {
       throw error;
     }
     try {
+      let environment: Record<string, string> | undefined = {};
+      try {
+        environment = parsed.environmentId ? this.metadata?.environmentValues(ownerId, parsed.environmentId) : {};
+      } catch {
+        throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
+      }
+      if (parsed.environmentId && !environment) throw new HarnessError('NOT_FOUND', 'environment not found', 404, false);
       const repositoryPath = await this.clone(record, url, parsed.ref);
       const cloneViolation = await this.resourceViolation(record);
       if (cloneViolation) throw new HarnessError('LIMIT_EXCEEDED', cloneViolation, 507, false);
-      const containerName = await this.createExecutor(record, repositoryPath);
+      const containerName = await this.createExecutor(record, repositoryPath, validatedWorkspaceEnvironment(environment ?? {}));
       const active = this.store.updateFenced(workspaceId, record.generation, ['CREATING'], { containerName, status: 'ACTIVE', lastActivityAt: Date.now(), error: null });
       if (!active) {
         await removeContainer(containerName);
@@ -266,9 +309,8 @@ export class WorkspaceService {
   }
 
   private requireWorkspace(ownerId: string, workspaceId: string, active = true): WorkspaceRecord {
-    const record = this.store.byId(workspaceId);
+    const record = this.store.byOwnerAndId(ownerId, workspaceId);
     if (!record) throw new HarnessError('NOT_FOUND', 'workspace not found', 404);
-    assertOwner(record.ownerId, ownerId);
     if (active && record.status !== 'ACTIVE') throw new HarnessError(record.status === 'CLOSED' ? 'EXPIRED' : 'CONFLICT', `workspace is ${record.status.toLowerCase()}`, 409);
     if (active && record.expiresAt <= Date.now()) throw new HarnessError('EXPIRED', 'workspace expired', 410);
     return record;
@@ -370,7 +412,7 @@ export class WorkspaceService {
 
   private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal) {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const token = await mintRepositoryToken(this.config, repositoryUrl);
+    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
       const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal);
@@ -385,7 +427,7 @@ export class WorkspaceService {
 
   private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const token = await mintRepositoryToken(this.config, repositoryUrl);
+    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
     if (!token) throw new HarnessError('UNAVAILABLE', 'Git push requires a configured GitHub App with repository write access', 503, false);
     const requestedRefspec = input.refspec as string | undefined;
     const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
@@ -403,7 +445,8 @@ export class WorkspaceService {
     }
   }
 
-  async execute(ownerId: string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
     RunnerOperationSchema.parse(operation);
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(input) as Record<string, unknown>;
     if (operation === 'workspace_open') return await this.open(ownerId, validated);
@@ -510,9 +553,125 @@ export class WorkspaceService {
       await this.enforceActiveLimits(record);
       return result;
     }
-    const result = await this.runWorker(record, operation, validated, signal);
-    await this.enforceActiveLimits(record);
-    return result;
+    if (!auditedFileMutations.has(operation)) {
+      const result = await this.runWorker(record, operation, validated, signal);
+      await this.enforceActiveLimits(record);
+      return result;
+    }
+    this.auditWorkspaceMutation(ownerId, 'workspace.file_mutation.requested', record, { operation });
+    try {
+      const result = await this.runWorker(record, operation, validated, signal);
+      await this.enforceActiveLimits(record);
+      this.auditWorkspaceOutcome(
+        ownerId,
+        result.ok ? 'workspace.file_mutation.succeeded' : 'workspace.file_mutation.failed',
+        record,
+        { operation }
+      );
+      return result;
+    } catch (error) {
+      this.auditWorkspaceOutcome(ownerId, 'workspace.file_mutation.failed', record, { operation });
+      throw error;
+    }
+  }
+
+  private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<string | undefined> {
+    if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') {
+      return await mintRepositoryToken(this.config, repositoryUrl);
+    }
+    if (!this.githubInstallations || !this.config.githubApp) return undefined;
+    return await mintPrincipalRepositoryToken({
+      config: this.config, principalId: ownerId, repositoryUrl,
+      installations: this.githubInstallations, requiredPermission: permission
+    });
+  }
+
+  async readArtifactSource(
+    principal: PrincipalSelector,
+    input: { workspaceId: string; path: string }
+  ): Promise<{ ownerId: string; content: Buffer }> {
+    const ownerId = this.store.resolvePrincipal(principal);
+    const record = this.requireWorkspace(ownerId, input.workspaceId);
+    const repositoryRoot = await realpath(join(record.workspacePath, 'repo'));
+    const requested = resolve(repositoryRoot, input.path);
+    if (requested === repositoryRoot || !requested.startsWith(`${repositoryRoot}${sep}`) || relative(repositoryRoot, requested).startsWith('..')) {
+      throw new HarnessError('INVALID_INPUT', 'artifact path must identify a workspace file', 400, false);
+    }
+    const actual = await realpath(requested).catch(() => undefined);
+    if (!actual || !actual.startsWith(`${repositoryRoot}${sep}`)) throw new HarnessError('NOT_FOUND', 'artifact source not found', 404, false);
+    const details = await lstat(actual);
+    if (!details.isFile() || details.isSymbolicLink()) throw new HarnessError('INVALID_INPUT', 'artifact source must be a regular file', 400, false);
+    if (details.size > this.config.maxArtifactBytes) throw new HarnessError('LIMIT_EXCEEDED', 'artifact exceeds per-artifact quota', 413, false);
+    return { ownerId, content: await readFile(actual) };
+  }
+
+  async executeInternal(
+    principal: PrincipalSelector,
+    operation: InternalRunnerOperation,
+    input: { workspaceId: string; expectedGeneration?: number }
+  ): Promise<RunnerResponse> {
+    const parsed = InternalRunnerRequestSchema.parse({ version: 2, principal, operation, input });
+    const ownerId = this.store.resolvePrincipal(parsed.principal);
+    const record = this.requireWorkspace(ownerId, parsed.input.workspaceId, false);
+    if (parsed.operation === 'workspace_detail') {
+      return { ok: true, message: 'Workspace detail', data: internalWorkspaceDetail(record), truncated: false };
+    }
+    return await this.closeFenced(ownerId, parsed.input.workspaceId, parsed.input.expectedGeneration);
+  }
+
+  async closeFenced(ownerId: string, workspaceId: string, expectedGeneration: number): Promise<RunnerResponse> {
+    const record = this.requireWorkspace(ownerId, workspaceId, false);
+    if (record.status === 'CLOSED' || record.expiresAt <= Date.now()) {
+      throw new HarnessError('EXPIRED', 'workspace expired', 410);
+    }
+    if (record.generation !== expectedGeneration) {
+      throw new HarnessError('CONFLICT', 'workspace lifecycle changed', 409);
+    }
+    this.auditWorkspaceMutation(ownerId, 'workspace.close.requested', record, {});
+    if (!this.store.claimForReaping(record.id, expectedGeneration)) {
+      const current = this.store.byOwnerAndId(ownerId, workspaceId);
+      if (!current || current.status === 'CLOSED' || current.expiresAt <= Date.now()) {
+        throw new HarnessError('EXPIRED', 'workspace expired', 410);
+      }
+      throw new HarnessError('CONFLICT', 'workspace lifecycle changed', 409);
+    }
+    const claimed = this.store.byOwnerAndId(ownerId, workspaceId)!;
+    try {
+      await this.closeRecord(claimed, 'closed by owner');
+    } catch (error) {
+      this.auditWorkspaceOutcome(ownerId, 'workspace.close.failed', claimed, {});
+      throw error;
+    }
+    const closed = this.store.byOwnerAndId(ownerId, workspaceId)!;
+    this.auditWorkspaceOutcome(ownerId, 'workspace.close.succeeded', closed, {});
+    return {
+      ok: true,
+      message: 'Workspace closed',
+      data: internalWorkspaceDetail(closed),
+      truncated: false
+    };
+  }
+
+  private auditWorkspaceMutation(
+    principalId: string,
+    action: string,
+    record: WorkspaceRecord,
+    details: Record<string, string | number | boolean>
+  ): void {
+    this.metadata?.recordAudit(principalId, action, 'workspace', record.id, record.generation, details);
+  }
+
+  private auditWorkspaceOutcome(
+    principalId: string,
+    action: string,
+    record: WorkspaceRecord,
+    details: Record<string, string | number | boolean>
+  ): void {
+    try {
+      this.auditWorkspaceMutation(principalId, action, record, details);
+    } catch {
+      process.stderr.write('workspace audit outcome could not be persisted; the durable request event requires reconciliation\n');
+    }
   }
 
   async close(ownerId: string, workspaceId: string): Promise<RunnerResponse> {
