@@ -1,3 +1,10 @@
+## [0.5.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.5.0...v0.5.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* **site:** align diagram connectors and refine hero ([7eb805f](https://github.com/bestagentkits/cloud-harness-mcp/commit/7eb805f3acb66ee7a01034e40c3907756b2b6d8f)), closes [#30](https://github.com/bestagentkits/cloud-harness-mcp/issues/30)
+
 # [0.5.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.4.0...v0.5.0) (2026-08-17)
 
 
