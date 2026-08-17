@@ -25,6 +25,19 @@ describe('SQLite GitHub installation store', () => {
     state.close();
   });
 
+  it('enforces one principal per GitHub installation identity', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-unique-')); roots.push(root);
+    const state = new StateStore(join(root, 'state.db'));
+    const principalA = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'a' });
+    const principalB = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'b' });
+    const store = new SqliteGitHubInstallationStore(state.database);
+    const verified = { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', status: 'active' as const, repositories: [] };
+    store.replaceVerified(principalA, verified, 100);
+    expect(() => store.replaceVerified(principalB, verified, 200)).toThrow('already bound');
+    expect(store.getInstallation(principalB)).toBeUndefined();
+    state.close();
+  });
+
   it('atomically persists uninstall, grant removal, and audit callback across restart', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-uninstall-')); roots.push(root);
     const databasePath = join(root, 'state.db');

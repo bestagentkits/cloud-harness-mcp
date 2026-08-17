@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, readdir, realpath, rm, statfs } from 'node:fs/promises';
+import { chmod, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
@@ -13,6 +13,7 @@ import {
   type RunnerResponse
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
+import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryToken, mintRepositoryToken } from './github-app-broker.js';
 import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
@@ -593,16 +594,8 @@ export class WorkspaceService {
     const ownerId = this.store.resolvePrincipal(principal);
     const record = this.requireWorkspace(ownerId, input.workspaceId);
     const repositoryRoot = await realpath(join(record.workspacePath, 'repo'));
-    const requested = resolve(repositoryRoot, input.path);
-    if (requested === repositoryRoot || !requested.startsWith(`${repositoryRoot}${sep}`) || relative(repositoryRoot, requested).startsWith('..')) {
-      throw new HarnessError('INVALID_INPUT', 'artifact path must identify a workspace file', 400, false);
-    }
-    const actual = await realpath(requested).catch(() => undefined);
-    if (!actual || !actual.startsWith(`${repositoryRoot}${sep}`)) throw new HarnessError('NOT_FOUND', 'artifact source not found', 404, false);
-    const details = await lstat(actual);
-    if (!details.isFile() || details.isSymbolicLink()) throw new HarnessError('INVALID_INPUT', 'artifact source must be a regular file', 400, false);
-    if (details.size > this.config.maxArtifactBytes) throw new HarnessError('LIMIT_EXCEEDED', 'artifact exceeds per-artifact quota', 413, false);
-    return { ownerId, content: await readFile(actual) };
+    const content = await readVerifiedWorkspaceFile(repositoryRoot, input.path, this.config.maxArtifactBytes);
+    return { ownerId, content };
   }
 
   async executeInternal(

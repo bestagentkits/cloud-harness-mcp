@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { HarnessError } from '@cloud-harness/contracts';
 import type {
   GitHubInstallationRecord,
   GitHubInstallationMutationAudit,
@@ -46,6 +47,8 @@ export function migrateGitHubInstallationSchema(database: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS github_repository_grants_principal_status
       ON github_repository_grants(principal_id, status, owner, repository);
+    CREATE UNIQUE INDEX IF NOT EXISTS github_installations_installation_identity
+      ON github_installations(installation_id);
   `);
 }
 
@@ -60,9 +63,14 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
   ): GitHubInstallationRecord {
     this.database.exec('BEGIN IMMEDIATE');
     try {
+      const installationId = String(verified.installationId);
+      const duplicate = this.database.prepare(
+        'SELECT principal_id FROM github_installations WHERE installation_id=? AND principal_id<>?'
+      ).get(installationId, principalId) as { principal_id: string } | undefined;
+      if (duplicate) throw new HarnessError('CONFLICT', 'GitHub installation is already bound', 409, false);
       const prior = this.getInstallation(principalId);
       const record: GitHubInstallationRecord = {
-        principalId, appId: String(verified.appId), installationId: String(verified.installationId),
+        principalId, appId: String(verified.appId), installationId,
         accountId: String(verified.accountId), accountLogin: verified.accountLogin, status: verified.status,
         generation: (prior?.generation ?? 0) + 1, createdAt: prior?.createdAt ?? checkedAt,
         updatedAt: checkedAt, checkedAt

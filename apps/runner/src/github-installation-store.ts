@@ -1,3 +1,5 @@
+import { HarnessError } from '@cloud-harness/contracts';
+
 export type GitHubInstallationStatus = 'active' | 'suspended' | 'uninstalled';
 export type GitHubContentsPermission = 'read' | 'write';
 export type GitHubRepositoryGrantStatus = 'granted' | 'removed';
@@ -106,11 +108,16 @@ export class InMemoryGitHubInstallationStore implements GitHubInstallationStore 
   }
 
   private replace(principalId: string, verified: VerifiedGitHubInstallation, checkedAt: number): GitHubInstallationRecord {
+    const installationId = String(verified.installationId);
+    const duplicate = [...this.#installations.values()].find(
+      (record) => record.principalId !== principalId && record.installationId === installationId
+    );
+    if (duplicate) throw new HarnessError('CONFLICT', 'GitHub installation is already bound', 409, false);
     const previous = this.#installations.get(principalId);
     const installation: GitHubInstallationRecord = {
       principalId,
       appId: String(verified.appId),
-      installationId: String(verified.installationId),
+      installationId,
       accountId: String(verified.accountId),
       accountLogin: verified.accountLogin,
       status: verified.status,

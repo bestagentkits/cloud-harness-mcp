@@ -29,6 +29,7 @@ systemctl() { echo "systemctl:$*" >> "$trace_path"; ! fails start; }
 wait_ready() { echo ready >> "$trace_path"; ! fails ready; }
 verify_running_images() { echo verify >> "$trace_path"; ! fails verify; }
 record_images() { echo "record:$1" >> "$trace_path"; ! fails record; }
+record_release_config() { echo config >> "$trace_path"; ! fails config; }
 ( false; rollback )
 exit $?
 `;
@@ -55,7 +56,32 @@ ${functionName}
   return spawnSync('bash', ['-c', script, 'bash', runtime], { encoding: 'utf8' }).status;
 }
 
+function runConfigRestore() {
+  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-config-restore-'));
+  const script = `
+set -euo pipefail
+source "$1"
+state="$2/state"
+config_root="$2/config"
+snapshot="$2/snapshot"
+mkdir -p "$state" "$config_root" "$snapshot/config"
+printf current > "$config_root/mode"
+printf previous > "$snapshot/config/mode"
+restore_config_snapshot "$snapshot"
+printf '%s|' "$(cat "$config_root/mode")"
+record_release_config
+cat "$state/release-config-current/mode"
+`;
+  return spawnSync('bash', ['-c', script, 'bash', runtime, directory], { encoding: 'utf8' });
+}
+
 describe('release rollback orchestration', () => {
+  it('restores and records the coherent runtime configuration snapshot', () => {
+    const result = runConfigRestore();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('previous|previous');
+  });
+
   it('quiesces the active release before restoring and starts verified previous images', () => {
     const result = runRollback();
     expect(result.status).toBe(1);
@@ -67,6 +93,7 @@ describe('release rollback orchestration', () => {
       'systemctl:enable --now cloud-harness-mcp.service',
       'ready',
       'verify',
+      'config',
       'record:release'
     ]);
   });
@@ -102,7 +129,8 @@ describe('release rollback orchestration', () => {
     ['start', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image api runner', 'systemctl:enable --now cloud-harness-mcp.service', 'contain']],
     ['ready', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image api runner', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'contain']],
     ['verify', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image api runner', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'contain']],
-    ['record', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image api runner', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'record:release', 'contain']]
+    ['config', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image api runner', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'config', 'contain']],
+    ['record', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image api runner', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'config', 'record:release', 'contain']]
   ])('does not advance after a failed %s transition', (step, expectedTrace) => {
     const result = runRollback(step);
     expect(result.status).toBe(70);

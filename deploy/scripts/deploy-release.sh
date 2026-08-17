@@ -11,6 +11,7 @@ install -d -m 0750 "$state/jobs" "$state/artifacts"
 env_file=/etc/cloud-harness-mcp/runtime.env
 
 canary_credentials_file=/etc/cloud-harness-mcp/canary-credentials
+config_root=/etc/cloud-harness-mcp
 
 if grep -Eq '^(MCP_CANARY_URL|MCP_CANARY_ACCESS_CLIENT_ID|MCP_CANARY_ACCESS_CLIENT_SECRET)=' "$env_file"; then
   echo "Access canary credentials must be stored in $canary_credentials_file, not the runtime configuration" >&2
@@ -42,7 +43,18 @@ if [[ -f "$state/state/cloud-harness.db" ]]; then
   cp --reflink=auto "$state/state/cloud-harness.db" "$backup_dir/cloud-harness.db"
 fi
 tar -C "$state/artifacts" -cf "$backup_dir/artifacts.tar" .
-cp -a /etc/cloud-harness-mcp "$backup_dir/config"
+if [[ $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
+  if [[ -d $state/release-config-current ]]; then
+    cp -a "$state/release-config-current" "$backup_dir/config"
+  elif [[ $previous_sha == "$release_sha" ]]; then
+    cp -a "$config_root" "$backup_dir/config"
+  else
+    echo "last-known-good configuration is missing; redeploy the current release before promotion" >&2
+    false
+  fi
+else
+  cp -a "$config_root" "$backup_dir/config"
+fi
 
 git checkout --detach --force "$release_sha"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
@@ -84,6 +96,7 @@ record_images release-new
 mv "$state/release-new-api-image" "$state/release-api-image"
 mv "$state/release-new-runner-image" "$state/release-runner-image"
 mv "$state/release-new-executor-image" "$state/release-executor-image"
+record_release_config
 if [[ $previous_sha =~ ^[0-9a-f]{40}$ && $previous_sha != "$release_sha" ]]; then
   printf '%s\n' "$previous_sha" > "$state/release-previous"
 fi

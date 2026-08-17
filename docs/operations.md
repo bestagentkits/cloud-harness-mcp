@@ -127,9 +127,10 @@ sudo du -sh /var/lib/cloud-harness/jobs/*
 ## Release rollback
 
 An automatic deployment failure restores the prior recorded commit, the
-quiesced database/artifact state, and rebuilt service images when a prior
-release exists. Runtime configuration is not modified by the deploy script;
-its snapshot copy is retained for coherent manual recovery.
+quiesced database/artifact state, the last healthy runtime configuration and
+runner-only key files, and rebuilt service images when a prior release exists.
+The deploy script records the active configuration only after readiness,
+image-identity, and canary checks succeed.
 A manual:
 
 ```bash

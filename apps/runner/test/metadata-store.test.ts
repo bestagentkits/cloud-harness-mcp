@@ -173,6 +173,7 @@ describe('MetadataStore', () => {
     const { owner, foreign, store, keyring } = fixture();
     const { project } = projectEnvironment(store, owner);
     store.updateProject(owner, project.id, project.generation, 'Harness 2');
+    store.database.prepare('UPDATE audit_events SET created_at = ? WHERE principal_id = ?').run(100, owner);
     const all = store.listAudit(owner, 100);
     const first = store.listAudit(owner, 2);
     const rest = store.listAudit(owner, 100, first.at(-1)!.id);

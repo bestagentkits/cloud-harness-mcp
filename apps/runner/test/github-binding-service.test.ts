@@ -58,6 +58,16 @@ describe('GitHub installation binding', () => {
     })).resolves.toMatchObject({ principalId: 'principal-a' });
   });
 
+  it('does not allow two principals to bind the same installation', async () => {
+    const first = service.beginSetup({ principalId: 'principal-a', expectedAppId: '123' });
+    await service.completeSetup({ principalId: 'principal-a', state: first.state, installationId: '456' });
+    const second = service.beginSetup({ principalId: 'principal-b', expectedAppId: '123' });
+    await expect(service.completeSetup({
+      principalId: 'principal-b', state: second.state, installationId: '456'
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(store.getInstallation('principal-b')).toBeUndefined();
+  });
+
   it.each([
     ['callback App', { appId: '999' }, activeInstallation()],
     ['verified App', {}, activeInstallation({ appId: '999' })],

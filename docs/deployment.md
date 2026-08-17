@@ -58,7 +58,7 @@ Review `/etc/cloud-harness-mcp/runtime.env` as root. Do not print or transfer
 its tokens through logs or shell history. Configure the optional GitHub App
 private-key file only if private clone is required; see
 [GitHub App setup for private repositories](github-app-private-repositories.md)
-and the [configuration rationale](configuration.md#optional-private-github-clone).
+and the [configuration rationale](configuration.md#optional-github-app-repository-access).
 In Access mode, also install the runner-only secret keyring file and use a
 durable host artifact root. The maintained config template and schema remain
 the exact setting authorities.
@@ -104,6 +104,16 @@ Access mode is an explicit operator rollout after the code is merged and the
 origin is healthy. It requires a hostname in an owner-controlled
 Cloudflare-managed zone and the matching Zero Trust organization; the current
 `sslip.io` hostname may not satisfy that prerequisite.
+
+Use a compatibility deployment before changing authentication configuration.
+Deploy the release while the existing owner-bearer service is healthy, then
+deploy that exact SHA once more without changing configuration. The second pass
+uses the newly installed deployment tooling and records the last-known-good
+configuration and runner-only key directory. Only then switch to Access mode
+and deploy again. If the Access canary or readiness check fails, automatic
+rollback restores that known-good configuration together with the database,
+artifacts, commit, and images. Do not combine the first code deployment and the
+authentication cutover.
 
 In the Cloudflare dashboard, use **Zero Trust → Integrations → Identity
 providers → Add new identity provider** to configure and test

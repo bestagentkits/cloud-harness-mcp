@@ -83,6 +83,36 @@ restore_snapshot() {
     find "$state/artifacts" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
     tar -C "$state/artifacts" -xf "$snapshot/artifacts.tar"
   fi
+  restore_config_snapshot "$snapshot"
+}
+
+restore_config_snapshot() {
+  local snapshot=$1
+  local root=${config_root:-/etc/cloud-harness-mcp}
+  local staged="${root}.rollback-restore.$$"
+  local failed="${root}.failed-release.$$"
+  [[ -d $snapshot/config && -d $root ]] || return 1
+  [[ ! -e $staged && ! -e $failed ]] || return 1
+  cp -a "$snapshot/config" "$staged" || return 1
+  if ! mv "$root" "$failed"; then
+    rm -rf -- "$staged"
+    return 1
+  fi
+  if ! mv "$staged" "$root"; then
+    mv "$failed" "$root" || true
+    return 1
+  fi
+  rm -rf -- "$failed"
+}
+
+record_release_config() {
+  local root=${config_root:-/etc/cloud-harness-mcp}
+  local staged="$state/release-config-next"
+  [[ -d $root ]] || return 1
+  rm -rf -- "$staged"
+  cp -a "$root" "$staged" || return 1
+  rm -rf -- "$state/release-config-current"
+  mv "$staged" "$state/release-config-current"
 }
 
 rollback() {
@@ -98,6 +128,7 @@ rollback() {
     elif ! systemctl enable --now cloud-harness-mcp.service; then rollback_failed=1
     elif ! wait_ready; then rollback_failed=1
     elif ! verify_running_images; then rollback_failed=1
+    elif ! record_release_config; then rollback_failed=1
     elif ! record_images release; then rollback_failed=1
     elif ! printf '%s\n' "$previous_sha" > "$state/release-current"; then rollback_failed=1
     fi

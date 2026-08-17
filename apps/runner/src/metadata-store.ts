@@ -187,15 +187,15 @@ export class MetadataStore {
   listAudit(principalId: string, limit = 50, cursor?: string): AuditView[] {
     const bounded = Math.max(1, Math.min(100, limit));
     if (!cursor) {
-      const rows = this.database.prepare('SELECT * FROM audit_events WHERE principal_id = ? ORDER BY created_at DESC, id DESC LIMIT ?').all(principalId, bounded);
+      const rows = this.database.prepare('SELECT * FROM audit_events WHERE principal_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?').all(principalId, bounded);
       return (rows as Parameters<typeof auditView>[0][]).map(auditView);
     }
-    const boundary = this.database.prepare('SELECT created_at, id FROM audit_events WHERE principal_id = ? AND id = ?')
-      .get(principalId, cursor) as { created_at: number; id: string } | undefined;
+    const boundary = this.database.prepare('SELECT created_at, rowid AS sequence FROM audit_events WHERE principal_id = ? AND id = ?')
+      .get(principalId, cursor) as { created_at: number; sequence: number } | undefined;
     if (!boundary) return [];
     const rows = this.database.prepare(`SELECT * FROM audit_events WHERE principal_id = ?
-      AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?`)
-      .all(principalId, boundary.created_at, boundary.created_at, boundary.id, bounded);
+      AND (created_at < ? OR (created_at = ? AND rowid < ?)) ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+      .all(principalId, boundary.created_at, boundary.created_at, boundary.sequence, bounded);
     return (rows as Parameters<typeof auditView>[0][]).map(auditView);
   }
 
