@@ -1,7 +1,7 @@
 ---
 title: "Cloud Harness landing page"
 description: ""
-status: in-progress
+status: completed
 priority: P1
 effort: "1d"
 branch: feat/cloud-harness-landing

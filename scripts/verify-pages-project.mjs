@@ -12,7 +12,7 @@ try {
   process.exit(1);
 }
 
-if (!projects.some((project) => project.name === projectName)) {
+if (!projects.some((project) => project.name === projectName || project.project_name === projectName || project['Project Name'] === projectName)) {
   console.error(`Cloudflare Pages project "${projectName}" was not found in the authenticated account.`);
   process.exit(1);
 }

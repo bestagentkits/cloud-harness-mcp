@@ -26,7 +26,7 @@
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
     "pages:check": "node scripts/verify-pages-artifact.mjs",
     "pages:preflight": "npm run pages:check && node scripts/verify-pages-project.mjs && npm run pages:links",
-    "pages:deploy": "npm run pages:preflight && wrangler pages deploy site --project-name cloud-harness-mcp && npm run pages:smoke",
+    "pages:deploy": "npm run pages:preflight && wrangler pages deploy site --project-name cloud-harness-mcp --branch main && npm run pages:smoke",
     "pages:list": "wrangler pages deployment list --project-name cloud-harness-mcp --environment production --json",
     "pages:links": "node scripts/verify-pages-links.mjs",
     "pages:smoke": "node scripts/verify-pages-url.mjs",

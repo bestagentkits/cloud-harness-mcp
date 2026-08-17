@@ -11,10 +11,10 @@ Validate the artifact, document its independent Cloudflare Pages deployment, the
 
 ## Requirements
 
-- [ ] Verify HTML/CSS behavior, artifact inventory, outbound links, and the repository quality gate appropriate to static-file changes.
-- [ ] Pin Wrangler and document the Pages project name, generated/custom hostname decision, deploy command, environment-variable policy, deployment-list command, and Cloudflare dashboard rollback procedure without recording credentials.
-- [ ] Deploy using the authenticated Cloudflare account and smoke-test the returned URL.
-- [ ] Confirm that `site/` contains no environment files, credentials, generated runtime state, bearer tokens, runner tokens, or GitHub App material before upload.
+- [x] Verify HTML/CSS behavior, artifact inventory, outbound links, and the repository quality gate appropriate to static-file changes.
+- [x] Pin Wrangler and document the Pages project name, generated/custom hostname decision, deploy command, environment-variable policy, deployment-list command, and Cloudflare dashboard rollback procedure without recording credentials.
+- [x] Deploy using the authenticated Cloudflare account and smoke-test the returned URL.
+- [x] Confirm that `site/` contains no environment files, credentials, generated runtime state, bearer tokens, runner tokens, or GitHub App material before upload.
 
 ## Implementation Steps
 
@@ -27,8 +27,8 @@ Validate the artifact, document its independent Cloudflare Pages deployment, the
 
 ## Todo
 
-- [ ] Validate the artifact, accessibility, links, and repo integration.
-- [ ] Publish or identify the exact authentication/project-permission blocker.
+- [x] Validate the artifact, accessibility, links, and repo integration.
+- [x] Publish or identify the exact authentication/project-permission blocker.
 
 ## Success Criteria
 

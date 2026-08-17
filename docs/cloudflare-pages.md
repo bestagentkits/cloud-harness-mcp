@@ -5,12 +5,15 @@ public surface from the private MCP service: do not bind, redirect, or proxy
 `cloud-harness-mcp.46-250-239-227.sslip.io` through Pages. That hostname stays
 with the VPS nginx deployment described in [VPS deployment](deployment.md).
 
+Production URL: <https://cloud-harness-mcp.pages.dev>
+
 ## First-time setup
 
 1. Authenticate the intended Cloudflare account with `npx wrangler login`.
-2. In Cloudflare Workers & Pages, create the direct-upload Pages project named
-   `cloud-harness-mcp`. Use the generated `cloud-harness-mcp.pages.dev`
-   hostname until an owner explicitly approves a different custom domain.
+2. Create the direct-upload Pages project with
+   `npx wrangler pages project create cloud-harness-mcp --production-branch main`.
+   Use the generated `cloud-harness-mcp.pages.dev` hostname until an owner
+   explicitly approves a different custom domain.
 3. Do not add Pages secrets, environment variables, Functions, API tokens,
    MCP bearer tokens, runner tokens, or GitHub App credentials. The page has no
    runtime configuration.
@@ -29,8 +32,8 @@ npm run pages:deploy
 
 The command first inventories `site/` for environment files, credential
 markers, and files over the Pages upload limit. It then verifies the active
-Cloudflare identity and project before uploading production assets. Do not
-place generated runtime artifacts beneath `site/`.
+Cloudflare identity and project before uploading assets to the Pages production
+branch, `main`. Do not place generated runtime artifacts beneath `site/`.
 
 After upload, the command verifies
 `https://cloud-harness-mcp.pages.dev`. This expected Pages hostname is separate
