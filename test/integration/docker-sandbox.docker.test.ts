@@ -14,6 +14,7 @@ let workspaceId: string | undefined;
 let runnerConfig: RunnerConfig;
 let orphanContainer: string | undefined;
 let foreignOrphanContainer: string | undefined;
+const workspaceCeilingBytes = 64 * 1_024 * 1_024;
 
 beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), 'cloud-harness-docker-'));
@@ -21,7 +22,7 @@ beforeAll(async () => {
     host: '127.0.0.1', port: 3001, serviceToken: 'runner-test-token-that-is-longer-than-32-characters',
     jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state', 'state.db'), executorImage: 'cloud-harness-executor:local',
     allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300, idleTtlSeconds: 180,
-    maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 1_048_576, reaperIntervalSeconds: 30
+    maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: workspaceCeilingBytes, reaperIntervalSeconds: 30
   };
   store = new StateStore(runnerConfig.stateDb);
   service = new WorkspaceService(runnerConfig, store);
@@ -131,7 +132,7 @@ describe('real Docker sandbox', () => {
 
     const name = record!.containerName!;
     await expect(service.execute('owner', 'exec_run', {
-      workspaceId, command: 'truncate -s 2M soft-ceiling-proof.bin', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536
+      workspaceId, command: `truncate -s ${workspaceCeilingBytes + 1} soft-ceiling-proof.bin`, cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536
     })).rejects.toThrow('workspace soft size ceiling exceeded');
     expect(await inspectContainer(name)).toBeUndefined();
     expect(store.byId(workspaceId)?.status).toBe('CLOSED');

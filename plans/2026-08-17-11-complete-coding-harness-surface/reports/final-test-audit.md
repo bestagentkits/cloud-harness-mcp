@@ -44,6 +44,13 @@ After the final Docker and E2E runs:
 
 ## Observation
 
+The first post-merge `main` run cloned the newly merged repository, whose 2.86
+MiB architecture banner exceeded the Docker integration fixture's historical
+1 MiB workspace ceiling before the quota assertion could create its own test
+file. The fixture now uses a 64 MiB ceiling and creates a sparse file one byte
+over that exact limit. This keeps the test failure-sensitive without coupling
+workspace admission to normal repository growth.
+
 The first incremental executor rebuild after the final helper edit hit a Docker BuildKit snapshot error (`parent snapshot ... does not exist`). Pulling the pinned base image and rebuilding the executor without cache succeeded. Both Docker test suites then passed against that rebuilt image, so this was an environmental cache issue rather than a product failure.
 
 An initial version of the new oversized-manifest E2E fixture attempted to send more than 256 KiB through a single MCP `files_write` request and was rejected first by Express's HTTP body limit. The fixture was corrected to create the bounded test file through executor-side `exec_run`; the rerun then reached the worker-level manifest validation and passed. No product source was changed by this tester.
