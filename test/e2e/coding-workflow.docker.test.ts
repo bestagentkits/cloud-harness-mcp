@@ -87,8 +87,16 @@ describe('complete coding workflow through MCP', () => {
     const read = await call('files_read', { workspaceId, path: 'README.md', offset: 0, limit: 65_536 });
     await call('files_apply_patch', { workspaceId, path: 'README.md', oldText: 'Remote coding harness', newText: 'Verified remote coding harness', expectedSha256: read.data.sha256 });
     await call('files_write', { workspaceId, path: 'verification.txt', content: 'cloud harness verified\n' });
+    await call('files_mkdir', { workspaceId, path: 'scratch/nested', recursive: true });
+    const disposable = await call('files_write', { workspaceId, path: 'scratch/nested/original.txt', content: 'move and delete\n' });
+    await call('files_move', { workspaceId, source: 'scratch/nested/original.txt', destination: 'scratch/nested/moved.txt', overwrite: false });
+    await call('files_delete', { workspaceId, path: 'scratch/nested/moved.txt', recursive: false, expectedSha256: disposable.data.sha256 });
+    await call('files_delete', { workspaceId, path: 'scratch', recursive: true });
+    await call('files_write', { workspaceId, path: 'symbols.ts', content: 'export function harnessSymbol(): string { return "harnessSymbol"; }\n' });
     expect(JSON.stringify((await call('files_list', { workspaceId, path: '.', limit: 100 })).data)).toContain('verification.txt');
     expect(JSON.stringify((await call('grep_search', { workspaceId, pattern: 'cloud harness verified', path: '.', maxResults: 10 })).data)).toContain('verification.txt');
+    expect(JSON.stringify((await call('symbols_search', { workspaceId, query: 'harnessSymbol', path: '.', language: 'TypeScript', maxResults: 10 })).data)).toContain('harnessSymbol');
+    expect(JSON.stringify((await call('symbols_references', { workspaceId, symbol: 'harnessSymbol', path: '.', glob: '*.ts', maxResults: 10 })).data)).toContain('harnessSymbol');
     expect(JSON.stringify((await call('exec_run', { workspaceId, command: 'printf exec-ok && test ! -w /etc', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 })).data)).toContain('exec-ok');
 
     const shell = await call('shell_open', { workspaceId, cwd: '.', idempotencyKey: 'e2e-shell-1' });
@@ -108,10 +116,27 @@ describe('complete coding workflow through MCP', () => {
     await new Promise((resolve) => setTimeout(resolve, 2_250));
     expect(JSON.stringify((await call('files_list', { workspaceId, path: '.', limit: 100 })).data)).not.toContain('shell-close-leak.txt');
 
+    const session = await call('sessions_open', { workspaceId, name: 'review', cwd: '.', idempotencyKey: 'e2e-session-1' });
+    const sessionId = session.data.id;
+    expect(JSON.stringify((await call('sessions_list', { workspaceId, limit: 100 })).data)).toContain(sessionId);
+    expect(JSON.stringify((await call('sessions_io', { workspaceId, sessionId, input: 'echo session-ok\n', waitMs: 300 })).data)).toContain('session-ok');
+    await call('sessions_close', { workspaceId, sessionId });
+
     const task = await call('tasks_run', { workspaceId, command: 'echo task-ok', cwd: '.', idempotencyKey: 'e2e-task-1', timeoutMs: 10_000 });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(JSON.stringify((await call('tasks_status', { workspaceId, taskId: task.data.id })).data)).toContain('task-ok');
     expect((await call('tasks_list', { workspaceId, limit: 100 })).data.tasks.length).toBeGreaterThan(0);
+    const dependent = await call('tasks_run', {
+      workspaceId, command: 'echo dependent-ok', cwd: '.', idempotencyKey: 'e2e-task-dependent-1',
+      timeoutMs: 10_000, dependsOn: [task.data.id]
+    });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const status = await call('tasks_status', { workspaceId, taskId: dependent.data.id });
+      if (status.data.status !== 'queued' && status.data.status !== 'running') break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(JSON.stringify((await call('tasks_status', { workspaceId, taskId: dependent.data.id })).data)).toContain('dependent-ok');
+    expect((await call('tasks_graph', { workspaceId })).data.edges).toContainEqual({ from: task.data.id, to: dependent.data.id });
 
     const cancellable = await call('tasks_run', {
       workspaceId,
@@ -132,29 +157,49 @@ describe('complete coding workflow through MCP', () => {
 
     await call('exec_run', { workspaceId, command: 'mkdir -p .agents/skills/demo/scripts .cloud-harness && printf "# Demo skill\\n" > .agents/skills/demo/SKILL.md && printf "#!/bin/sh\\necho skill-ok\\n" > .agents/skills/demo/scripts/run.sh && chmod +x .agents/skills/demo/scripts/run.sh', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 });
     await call('files_write', { workspaceId, path: '.cloud-harness/hooks.json', content: '{"verify":"echo hook-ok"}' });
+    await call('files_write', { workspaceId, path: '.cloud-harness/deployments.json', content: '{"preview":{"command":"echo deploy-ok","cwd":"."},"broken":{"command":"printf deploy-failed >&2; exit 7","cwd":"."}}' });
     expect(JSON.stringify((await call('skills_list', { workspaceId })).data)).toContain('demo');
     expect(JSON.stringify((await call('skills_read', { workspaceId, name: 'demo' })).data)).toContain('Demo skill');
     expect(JSON.stringify((await call('skills_run', { workspaceId, name: 'demo', script: 'run.sh', args: [], timeoutMs: 10_000 })).data)).toContain('skill-ok');
     expect(JSON.stringify((await call('hooks_list', { workspaceId })).data)).toContain('verify');
     expect(JSON.stringify((await call('hooks_run', { workspaceId, name: 'verify', timeoutMs: 10_000 })).data)).toContain('hook-ok');
+    expect(JSON.stringify((await call('deployments_list', { workspaceId })).data)).toContain('preview');
+    expect(JSON.stringify((await call('deployments_run', { workspaceId, name: 'preview', timeoutMs: 10_000 })).data)).toContain('deploy-ok');
+    const failedDeployment = await client.callTool({ name: 'deployments_run', arguments: { workspaceId, name: 'broken', timeoutMs: 10_000 } });
+    expect(failedDeployment.isError).toBe(true);
+    expect((failedDeployment.structuredContent as Record<string, any>).data.exitCode).toBe(7);
+    await call('exec_run', {
+      workspaceId,
+      command: "head -c 262145 /dev/zero | tr '\\0' x > .cloud-harness/deployments.json",
+      cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536
+    });
+    const oversizedDeployments = await client.callTool({ name: 'deployments_list', arguments: { workspaceId } });
+    expect(oversizedDeployments.isError).toBe(true);
     await call('memories_write', { workspaceId, name: 'e2e', content: 'memory-ok' });
     expect(JSON.stringify((await call('memories_list', { workspaceId })).data)).toContain('e2e');
     expect(JSON.stringify((await call('memories_read', { workspaceId, name: 'e2e' })).data)).toContain('memory-ok');
 
     expect(JSON.stringify((await call('git_status', { workspaceId })).data)).toContain('verification.txt');
     expect(JSON.stringify((await call('git_diff', { workspaceId, staged: false })).data)).toContain('Verified remote coding harness');
-    await call('git_commit', { workspaceId, message: 'test: verify harness workflow', authorName: 'Harness Test', authorEmail: 'harness@example.invalid', all: true });
+    await call('git_add', { workspaceId, all: true, paths: [] });
+    await call('git_commit', { workspaceId, message: 'test: verify harness workflow', authorName: 'Harness Test', authorEmail: 'harness@example.invalid', all: false });
     expect(JSON.stringify((await call('git_log', { workspaceId, limit: 5 })).data)).toContain('verify harness workflow');
     await call('git_checkout', { workspaceId, ref: 'e2e-base', create: true });
     const branches = await call('git_branch', { workspaceId, action: 'list', force: false });
     expect(branches.data.output).toContain('e2e-base');
     await call('git_branch', { workspaceId, action: 'create', name: 'e2e-branch', startPoint: 'HEAD', force: false });
     await call('git_checkout', { workspaceId, ref: 'e2e-branch', create: false });
+    await call('files_write', { workspaceId, path: 'branch-verification.txt', content: 'branch change\n' });
+    await call('git_add', { workspaceId, all: false, paths: ['branch-verification.txt'] });
+    await call('git_commit', { workspaceId, message: 'test: add branch verification', authorName: 'Harness Test', authorEmail: 'harness@example.invalid', all: false });
     await call('git_checkout', { workspaceId, ref: 'e2e-base', create: false });
+    await call('git_merge', { workspaceId, ref: 'e2e-branch', fastForward: 'allow' });
+    await call('git_rebase', { workspaceId, action: 'start', upstream: 'e2e-base' });
     await call('git_branch', { workspaceId, action: 'delete', name: 'e2e-branch', force: false });
     const fetchResult = await client.callTool({ name: 'git_fetch', arguments: { workspaceId, remote: 'origin' } });
-    expect(fetchResult.isError).toBe(true);
-    expect((fetchResult.structuredContent as Record<string, any>).error.code).toBe('UNAVAILABLE');
+    expect(fetchResult.isError, JSON.stringify(fetchResult.structuredContent)).toBe(false);
+    const trackingRef = await call('exec_run', { workspaceId, command: 'git rev-parse refs/remotes/origin/main', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 });
+    expect(trackingRef.data.exitCode).toBe(0);
     await call('worktrees_create', { workspaceId, name: 'verification-tree', ref: 'HEAD', createBranch: false });
     expect(JSON.stringify((await call('worktrees_list', { workspaceId })).data)).toContain('verification-tree');
     await call('worktrees_remove', { workspaceId, name: 'verification-tree', force: true });

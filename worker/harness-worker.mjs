@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const ROOT = '/workspace';
 const MAX_INTERNAL_OUTPUT = 1_048_576;
+const MAX_DEPLOYMENTS_FILE_BYTES = 262_144;
+const MAX_DEPLOYMENTS = 100;
 const gitEnvironment = { ...process.env, HOME: '/tmp/cloud-harness-home', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat', PAGER: 'cat' };
 
 function fail(code, message, retryable = false) {
@@ -29,6 +31,37 @@ async function safePath(input, allowMissing = false) {
   const parent = await realpath(dirname(candidate));
   if (parent !== ROOT && !parent.startsWith(`${ROOT}${sep}`)) throw new Error('parent symlink escapes workspace');
   return candidate;
+}
+
+async function safeEntryPath(input, allowMissing = false) {
+  const normalized = input.replaceAll('\\', '/');
+  if (normalized === '.' || normalized.startsWith('/') || normalized.split('/').includes('..') || /^[A-Za-z]:/.test(normalized) || normalized.includes('\0')) throw new Error('path escapes workspace');
+  const candidate = resolve(ROOT, normalized);
+  if (!candidate.startsWith(`${ROOT}${sep}`)) throw new Error('path escapes workspace');
+  const actualParent = await realpath(dirname(candidate));
+  if (actualParent !== ROOT && !actualParent.startsWith(`${ROOT}${sep}`)) throw new Error('parent symlink escapes workspace');
+  if (!allowMissing) await lstat(candidate);
+  return join(actualParent, basename(candidate));
+}
+
+async function safeRecursiveCreatePath(input) {
+  const normalized = input.replaceAll('\\', '/');
+  if (normalized === '.' || normalized.startsWith('/') || normalized.split('/').includes('..') || /^[A-Za-z]:/.test(normalized) || normalized.includes('\0')) throw new Error('path escapes workspace');
+  const candidate = resolve(ROOT, normalized);
+  if (!candidate.startsWith(`${ROOT}${sep}`)) throw new Error('path escapes workspace');
+  let ancestor = dirname(candidate);
+  while (ancestor.startsWith(ROOT)) {
+    try {
+      const actual = await realpath(ancestor);
+      if (actual !== ROOT && !actual.startsWith(`${ROOT}${sep}`)) throw new Error('ancestor symlink escapes workspace');
+      return candidate;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      if (ancestor === ROOT) break;
+      ancestor = dirname(ancestor);
+    }
+  }
+  throw new Error('directory ancestor is unavailable');
 }
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
@@ -89,6 +122,33 @@ async function skillEntries() {
   return entries;
 }
 
+async function deploymentEntries() {
+  let content;
+  try {
+    const path = await safePath('.cloud-harness/deployments.json');
+    if ((await stat(path)).size > MAX_DEPLOYMENTS_FILE_BYTES) throw new Error('deployments configuration is too large');
+    content = await readFile(path, 'utf8');
+  }
+  catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  const config = JSON.parse(content);
+  if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error('deployments configuration must be an object');
+  const configured = Object.entries(config);
+  if (configured.length > MAX_DEPLOYMENTS) throw new Error('too many deployment targets');
+  return configured.map(([name, value]) => {
+    if (!/^[A-Za-z0-9._-]{1,120}$/.test(name)) throw new Error('invalid deployment name');
+    const entry = typeof value === 'string' ? { command: value, cwd: '.' } : value;
+    if (!entry || typeof entry !== 'object' || typeof entry.command !== 'string' || entry.command.length < 1 || entry.command.length > 32_768) throw new Error(`invalid deployment ${name}`);
+    if (entry.cwd !== undefined && typeof entry.cwd !== 'string') throw new Error(`invalid deployment cwd for ${name}`);
+    const cwd = entry.cwd ?? '.';
+    const normalizedCwd = cwd.replaceAll('\\', '/');
+    if (cwd.length < 1 || cwd.length > 1_024 || normalizedCwd.startsWith('/') || /^[A-Za-z]:/.test(normalizedCwd) || normalizedCwd.split('/').includes('..') || normalizedCwd.includes('\0')) throw new Error(`invalid deployment cwd for ${name}`);
+    return { name, command: entry.command, cwd };
+  }).sort((left, right) => left.name.localeCompare(right.name));
+}
+
 const handlers = {
   async files_list(input) {
     const target = await safePath(input.path ?? '.');
@@ -129,6 +189,42 @@ const handlers = {
     await writeFile(target, next);
     return ok('Patch applied', { path: input.path, sha256: sha256(next) });
   },
+  async files_delete(input) {
+    const target = await safeEntryPath(input.path);
+    const metadata = await lstat(target);
+    if (input.expectedSha256) {
+      if (!metadata.isFile()) return fail('INVALID_INPUT', 'expectedSha256 is valid only for files');
+      if (sha256(await readFile(target)) !== input.expectedSha256) return fail('CONFLICT', 'file changed since it was read');
+    }
+    if (metadata.isDirectory() && !input.recursive) return fail('CONFLICT', 'directory deletion requires recursive=true');
+    await rm(target, { recursive: Boolean(input.recursive), force: false });
+    return ok('Path deleted', { path: input.path, type: metadata.isDirectory() ? 'directory' : metadata.isSymbolicLink() ? 'symlink' : 'file' });
+  },
+  async files_move(input) {
+    const source = await safeEntryPath(input.source);
+    const destination = await safeEntryPath(input.destination, true);
+    if (source === destination) return ok('Path already at destination', { source: input.source, destination: input.destination });
+    try {
+      const destinationMetadata = await lstat(destination);
+      if (!input.overwrite) return fail('CONFLICT', 'destination already exists');
+      if (destinationMetadata.isDirectory()) return fail('CONFLICT', 'overwrite does not replace directories');
+      await rm(destination, { force: false });
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    await rename(source, destination);
+    return ok('Path moved', { source: input.source, destination: input.destination });
+  },
+  async files_mkdir(input) {
+    const target = input.recursive ? await safeRecursiveCreatePath(input.path) : await safeEntryPath(input.path, true);
+    try { await mkdir(target, { recursive: input.recursive, mode: 0o700 }); }
+    catch (error) {
+      if (error?.code !== 'EEXIST' || !(await lstat(target)).isDirectory()) throw error;
+    }
+    const actual = await realpath(target);
+    if (actual !== ROOT && !actual.startsWith(`${ROOT}${sep}`)) throw new Error('directory escapes workspace');
+    return ok('Directory created', { path: input.path });
+  },
   async grep_search(input) {
     const target = await safePath(input.path ?? '.');
     const args = ['--line-number', '--column', '--no-heading', '--color', 'never', '--max-count', String(input.maxResults ?? 100)];
@@ -137,6 +233,39 @@ const handlers = {
     const result = await command('rg', args, { timeoutMs: 30_000, maxBytes: 262_144 });
     if (![0, 1].includes(result.exitCode)) return fail('INTERNAL_ERROR', result.output || 'search failed');
     return ok('Search complete', { matches: result.output.split('\n').filter(Boolean).slice(0, input.maxResults ?? 100) }, { truncated: result.truncated });
+  },
+  async symbols_search(input) {
+    const target = await safePath(input.path ?? '.');
+    const args = ['--output-format=json', '--fields=+nK', '--extras=-F', '--recurse=yes', '--sort=no', '-f', '-'];
+    if (input.language) args.push(`--languages=${input.language}`);
+    args.push(target);
+    const result = await command('ctags', args, { timeoutMs: 60_000, maxBytes: MAX_INTERNAL_OUTPUT });
+    if (result.exitCode !== 0) return fail('INTERNAL_ERROR', result.output || 'symbol indexing failed');
+    const query = input.query.toLocaleLowerCase();
+    const maxResults = input.maxResults ?? 100;
+    const symbols = [];
+    for (const line of result.output.split('\n')) {
+      if (!line.startsWith('{')) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (typeof entry.name !== 'string' || !entry.name.toLocaleLowerCase().includes(query)) continue;
+        const path = typeof entry.path === 'string' && entry.path.startsWith(`${ROOT}/`) ? entry.path.slice(ROOT.length + 1) : entry.path;
+        symbols.push({ name: entry.name, path, line: entry.line, kind: entry.kind, language: entry.language, scope: entry.scope });
+        if (symbols.length >= maxResults) break;
+      } catch { /* ignore non-JSON diagnostic lines */ }
+    }
+    return ok(`Found ${symbols.length} symbol definitions`, { symbols }, { truncated: result.truncated || symbols.length >= maxResults });
+  },
+  async symbols_references(input) {
+    const target = await safePath(input.path ?? '.');
+    const args = ['--line-number', '--column', '--no-heading', '--color', 'never', '--fixed-strings', '--word-regexp'];
+    if (input.glob) args.push('--glob', input.glob);
+    args.push('--', input.symbol, target);
+    const result = await command('rg', args, { timeoutMs: 30_000, maxBytes: 262_144 });
+    if (![0, 1].includes(result.exitCode)) return fail('INTERNAL_ERROR', result.output || 'reference search failed');
+    const maxResults = input.maxResults ?? 100;
+    const references = result.output.split('\n').filter(Boolean).slice(0, maxResults);
+    return ok(`Found ${references.length} lexical references`, { references }, { truncated: result.truncated || result.output.split('\n').filter(Boolean).length > maxResults });
   },
   async exec_run(input) {
     const cwd = await safePath(input.cwd ?? '.');
@@ -170,6 +299,13 @@ const handlers = {
     const result = await git(['checkout', ...(input.create ? ['-b'] : []), input.ref]);
     return result.exitCode === 0 ? ok('Git checkout complete', { output: result.output }) : fail('CONFLICT', result.output || 'Git checkout failed');
   },
+  async git_add(input) {
+    const args = ['add'];
+    if (input.all) args.push('--all');
+    else args.push('--', ...input.paths);
+    const result = await git(args);
+    return result.exitCode === 0 ? ok('Git changes staged', { output: result.output }) : fail('CONFLICT', result.output || 'Git add failed');
+  },
   async git_commit(input) {
     if (input.all) {
       const add = await git(['add', '--all']);
@@ -181,6 +317,23 @@ const handlers = {
   async git_fetch(input) {
     const result = await git(['fetch', '--no-tags', input.remote ?? 'origin', ...(input.refspec ? [input.refspec] : [])], { timeoutMs: 120_000 });
     return result.exitCode === 0 ? ok('Git fetch complete', { output: result.output }) : fail('UNAVAILABLE', result.output || 'Git fetch failed', true);
+  },
+  async git_merge(input) {
+    const args = ['merge', '--no-edit'];
+    if (input.fastForward === 'only') args.push('--ff-only');
+    if (input.fastForward === 'never') args.push('--no-ff');
+    if (input.message) args.push('-m', input.message);
+    args.push(input.ref);
+    const result = await git(args, { timeoutMs: 120_000 });
+    return result.exitCode === 0 ? ok('Git merge complete', { output: result.output }) : fail('CONFLICT', result.output || 'Git merge failed');
+  },
+  async git_rebase(input) {
+    const args = ['rebase'];
+    if (input.action === 'continue') args.push('--continue');
+    else if (input.action === 'abort') args.push('--abort');
+    else args.push(input.upstream);
+    const result = await git(args, { timeoutMs: 120_000, env: { ...gitEnvironment, GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true' } });
+    return result.exitCode === 0 ? ok(`Git rebase ${input.action} complete`, { output: result.output }) : fail('CONFLICT', result.output || `Git rebase ${input.action} failed`);
   },
   async worktrees_list() {
     const result = await git(['worktree', 'list', '--porcelain']);
@@ -246,6 +399,21 @@ const handlers = {
     const target = await safePath(`.cloud-harness/memories/${input.name}.md`, true);
     await writeFile(target, input.content, { mode: 0o600 });
     return ok('Memory written', { name: input.name, bytes: Buffer.byteLength(input.content) });
+  },
+  async deployments_list() {
+    const entries = await deploymentEntries();
+    return ok(`Found ${entries.length} deployment targets`, { deployments: entries.map(({ name, cwd }) => ({ name, cwd })) });
+  },
+  async deployments_run(input) {
+    const entry = (await deploymentEntries()).find((candidate) => candidate.name === input.name);
+    if (!entry) return fail('NOT_FOUND', 'deployment target not found');
+    const cwd = await safePath(entry.cwd);
+    const result = await command('/bin/bash', ['-lc', entry.command], { cwd, timeoutMs: input.timeoutMs, maxBytes: MAX_INTERNAL_OUTPUT });
+    if (result.exitCode !== 0) {
+      const message = `Deployment target exited with ${result.exitCode}`;
+      return { ok: false, message, data: result, error: { code: 'CONFLICT', message, retryable: false }, truncated: result.truncated };
+    }
+    return ok('Deployment target completed', result, { truncated: result.truncated });
   }
 };
 

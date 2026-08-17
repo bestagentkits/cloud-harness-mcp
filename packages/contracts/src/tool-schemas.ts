@@ -1,15 +1,24 @@
 import { z } from 'zod';
-import { IdempotencyKeySchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { IdempotencyKeySchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import type { RunnerOperation } from './runner-api.js';
 
 const relativePath = z.string().min(1).max(1_024).refine((value) => {
   const normalized = value.replaceAll('\\', '/');
   return !normalized.startsWith('/') && !/^[A-Za-z]:/.test(normalized) && !normalized.split('/').includes('..') && !normalized.includes('\0');
 }, 'path must stay workspace-relative');
+const entryPath = relativePath.refine((value) => value.replaceAll('\\', '/') !== '.', 'path must identify an entry below the workspace root');
 const workspace = { workspaceId: WorkspaceIdSchema };
 const pagination = { cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500).default(100) };
 const gitArgument = z.string().min(1).max(255).refine((value) => !value.startsWith('-') && !value.includes('\0'), 'Git argument cannot start with a dash');
-const gitRemote = z.string().regex(/^(?!-)[A-Za-z0-9._-]{1,100}$/, 'invalid Git remote name');
+const gitFetchRef = gitArgument.refine((value) => !value.includes(':'), 'Git fetch ref cannot contain a destination');
+const gitObjectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, 'expected remote object ID must be a lowercase SHA-1 or SHA-256 hash');
+const gitRefspec = z.string().min(1).max(512).refine((value) => {
+  if (value.startsWith('-') || value.startsWith(':') || value.includes('\0') || value.includes('\n') || value.includes('..') || value.includes('@{')) return false;
+  const [source, destination, extra] = value.split(':');
+  if (!source || extra !== undefined || !/^(?:HEAD|[A-Za-z0-9._/-]+)$/.test(source)) return false;
+  return destination === undefined || /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(destination);
+}, 'invalid Git branch push refspec');
+const sessionName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
 
 const schemas = {
   workspace_open: z.object({ repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema, networkMode: z.enum(['none', 'bridge']).optional() }),
@@ -20,15 +29,25 @@ const schemas = {
   files_read: z.object({ ...workspace, path: relativePath, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(262_144).default(65_536) }),
   files_write: z.object({ ...workspace, path: relativePath, content: z.string().max(1_048_576), expectedSha256: z.string().length(64).optional() }),
   files_apply_patch: z.object({ ...workspace, path: relativePath, oldText: z.string().max(262_144), newText: z.string().max(262_144), expectedSha256: z.string().length(64).optional() }),
+  files_delete: z.object({ ...workspace, path: entryPath, recursive: z.boolean().default(false), expectedSha256: z.string().length(64).optional() }),
+  files_move: z.object({ ...workspace, source: entryPath, destination: entryPath, overwrite: z.boolean().default(false) }),
+  files_mkdir: z.object({ ...workspace, path: entryPath, recursive: z.boolean().default(true) }),
   grep_search: z.object({ ...workspace, pattern: z.string().min(1).max(4_096), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
+  symbols_search: z.object({ ...workspace, query: z.string().min(1).max(256), path: relativePath.default('.'), language: z.string().regex(/^[A-Za-z0-9_+#.-]{1,40}$/).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
+  symbols_references: z.object({ ...workspace, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
   exec_run: z.object({ ...workspace, command: z.string().min(1).max(32_768), cwd: relativePath.default('.'), timeoutMs: z.number().int().min(100).max(300_000).default(60_000), maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144) }),
   shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   shell_close: z.object({ ...workspace, shellId: ShellIdSchema }),
+  sessions_list: z.object({ ...workspace, ...pagination }),
+  sessions_open: z.object({ ...workspace, name: sessionName, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
+  sessions_io: z.object({ ...workspace, sessionId: SessionIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
+  sessions_close: z.object({ ...workspace, sessionId: SessionIdSchema }),
   tasks_list: z.object({ ...workspace, ...pagination }),
-  tasks_run: z.object({ ...workspace, command: z.string().min(1).max(32_768), cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema, timeoutMs: z.number().int().min(100).max(86_400_000).default(900_000) }),
+  tasks_run: z.object({ ...workspace, command: z.string().min(1).max(32_768), cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema, timeoutMs: z.number().int().min(100).max(86_400_000).default(900_000), dependsOn: z.array(TaskIdSchema).max(32).default([]) }),
   tasks_status: z.object({ ...workspace, taskId: TaskIdSchema, cursor: z.string().max(256).optional() }),
   tasks_cancel: z.object({ ...workspace, taskId: TaskIdSchema }),
+  tasks_graph: z.object(workspace),
   git_status: z.object(workspace),
   git_diff: z.object({ ...workspace, staged: z.boolean().default(false), path: relativePath.optional() }),
   git_log: z.object({ ...workspace, limit: z.number().int().min(1).max(100).default(20) }),
@@ -36,8 +55,29 @@ const schemas = {
     if (input.action !== 'list' && !input.name) context.addIssue({ code: 'custom', path: ['name'], message: 'name is required for create and delete' });
   }),
   git_checkout: z.object({ ...workspace, ref: gitArgument, create: z.boolean().default(false) }),
+  git_add: z.object({ ...workspace, all: z.boolean().default(false), paths: z.array(relativePath).max(200).default([]) }).superRefine((input, context) => {
+    if (!input.all && input.paths.length === 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths are required unless all is true' });
+    if (input.all && input.paths.length > 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
+  }),
   git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200), authorEmail: z.email(), all: z.boolean().default(false) }),
-  git_fetch: z.object({ ...workspace, remote: gitRemote.default('origin'), refspec: gitArgument.optional() }),
+  git_fetch: z.object({ ...workspace, remote: z.literal('origin').default('origin'), refspec: gitFetchRef.optional() }),
+  git_pull: z.object({ ...workspace, remote: z.literal('origin').default('origin'), branch: gitArgument.optional(), strategy: z.enum(['ff-only', 'merge', 'rebase']).default('ff-only') }),
+  git_push: z.object({
+    ...workspace,
+    remote: z.literal('origin').default('origin'),
+    refspec: gitRefspec.optional(),
+    forceWithLease: z.boolean().default(false),
+    expectedRemoteOid: gitObjectId.optional()
+  }).superRefine((input, context) => {
+    if (input.forceWithLease && !input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid is required with forceWithLease' });
+    if (!input.forceWithLease && input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid is only valid with forceWithLease' });
+    if (input.forceWithLease && input.refspec && !input.refspec.includes(':')) context.addIssue({ code: 'custom', path: ['refspec'], message: 'an explicit destination branch is required with forceWithLease' });
+  }),
+  git_merge: z.object({ ...workspace, ref: gitArgument, fastForward: z.enum(['allow', 'only', 'never']).default('allow'), message: z.string().min(1).max(10_000).optional() }),
+  git_rebase: z.object({ ...workspace, action: z.enum(['start', 'continue', 'abort']), upstream: gitArgument.optional() }).superRefine((input, context) => {
+    if (input.action === 'start' && !input.upstream) context.addIssue({ code: 'custom', path: ['upstream'], message: 'upstream is required when starting a rebase' });
+    if (input.action !== 'start' && input.upstream) context.addIssue({ code: 'custom', path: ['upstream'], message: 'upstream is only valid when starting a rebase' });
+  }),
   worktrees_list: z.object(workspace),
   worktrees_create: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), ref: gitArgument, createBranch: z.boolean().default(false) }),
   worktrees_remove: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), force: z.boolean().default(false) }),
@@ -48,7 +88,9 @@ const schemas = {
   hooks_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
   memories_list: z.object(workspace),
   memories_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/) }),
-  memories_write: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), content: z.string().max(262_144) })
+  memories_write: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), content: z.string().max(262_144) }),
+  deployments_list: z.object(workspace),
+  deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) })
 } satisfies Record<RunnerOperation, z.ZodType>;
 
 export type ToolSpec = {
@@ -64,17 +106,21 @@ export type ToolSpec = {
 
 const titles: Record<RunnerOperation, string> = {
   workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_close: 'Close workspace',
-  files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_apply_patch: 'Apply text patch', grep_search: 'Search workspace',
+  files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
+  symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
   exec_run: 'Run command', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
-  git_status: 'Git status', git_diff: 'Git diff', git_log: 'Git log', git_branch: 'Manage Git branches', git_checkout: 'Checkout Git ref', git_commit: 'Create Git commit', git_fetch: 'Fetch Git refs',
+  sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
+  tasks_graph: 'Read task dependency graph',
+  git_status: 'Git status', git_diff: 'Git diff', git_log: 'Git log', git_branch: 'Manage Git branches', git_checkout: 'Checkout Git ref', git_add: 'Stage Git changes', git_commit: 'Create Git commit', git_fetch: 'Fetch Git refs', git_pull: 'Pull Git changes', git_push: 'Push Git changes', git_merge: 'Merge Git ref', git_rebase: 'Manage Git rebase',
   worktrees_list: 'List worktrees', worktrees_create: 'Create worktree', worktrees_remove: 'Remove worktree',
-  skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory'
+  skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory',
+  deployments_list: 'List deployment targets', deployments_run: 'Run deployment target'
 };
 
-const readOnly = new Set<RunnerOperation>(['workspace_list', 'workspace_status', 'files_list', 'files_read', 'grep_search', 'tasks_list', 'tasks_status', 'git_status', 'git_diff', 'git_log', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read']);
-const destructive = new Set<RunnerOperation>(['workspace_close', 'files_write', 'files_apply_patch', 'exec_run', 'shell_open', 'shell_io', 'shell_close', 'tasks_run', 'tasks_cancel', 'git_branch', 'git_checkout', 'git_commit', 'git_fetch', 'worktrees_create', 'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write']);
-const idempotent = new Set<RunnerOperation>(['workspace_open', 'workspace_list', 'workspace_status', 'workspace_close', 'files_list', 'files_read', 'files_write', 'files_apply_patch', 'grep_search', 'shell_open', 'shell_close', 'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'git_status', 'git_diff', 'git_log', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write']);
-const openWorld = new Set<RunnerOperation>(['workspace_open', 'git_fetch']);
+const readOnly = new Set<RunnerOperation>(['workspace_list', 'workspace_status', 'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references', 'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list']);
+const destructive = new Set<RunnerOperation>(['workspace_close', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'exec_run', 'shell_open', 'shell_io', 'shell_close', 'sessions_open', 'sessions_io', 'sessions_close', 'tasks_run', 'tasks_cancel', 'git_branch', 'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_create', 'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run']);
+const idempotent = new Set<RunnerOperation>(['workspace_open', 'workspace_list', 'workspace_status', 'workspace_close', 'files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references', 'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close', 'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'git_add', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list']);
+const openWorld = new Set<RunnerOperation>(['workspace_open', 'git_fetch', 'git_pull', 'git_push', 'deployments_run']);
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({
   name,

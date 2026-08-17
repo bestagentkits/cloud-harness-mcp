@@ -3,10 +3,24 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { HarnessError } from '@cloud-harness/contracts';
 import { spawnDocker, terminateContainerProcessGroup } from './docker-engine.js';
 
+type ManagedStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'blocked';
 type Managed = {
-  id: string; workspaceId: string; child: ChildProcessWithoutNullStreams; output: Buffer; offset: number;
-  status: 'running' | 'succeeded' | 'failed' | 'cancelled'; exitCode?: number; container?: string;
-  createdAt: number; idempotencyKey: string;
+  id: string;
+  workspaceId: string;
+  output: Buffer;
+  offset: number;
+  status: ManagedStatus;
+  createdAt: number;
+  idempotencyKey: string;
+  child?: ChildProcessWithoutNullStreams;
+  container?: string;
+  exitCode?: number;
+  name?: string;
+  dependsOn?: string[];
+  command?: string;
+  cwd?: string;
+  timeoutMs?: number;
+  maxBytes?: number;
 };
 
 const id = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
@@ -14,11 +28,12 @@ const id = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url'
 export class OperationManager {
   private readonly tasks = new Map<string, Managed>();
   private readonly shells = new Map<string, Managed>();
+  private readonly sessions = new Map<string, Managed>();
   private readonly idempotency = new Map<string, string>();
   private readonly retainedOutputBytes = 67_108_864;
 
   private records(workspaceId: string): Managed[] {
-    return [...this.tasks.values(), ...this.shells.values()]
+    return [...this.tasks.values(), ...this.shells.values(), ...this.sessions.values()]
       .filter((record) => record.workspaceId === workspaceId)
       .sort((left, right) => left.createdAt - right.createdAt);
   }
@@ -38,15 +53,21 @@ export class OperationManager {
   private reserve(map: Map<string, Managed>, workspaceId: string, limit: number): void {
     const matching = [...map.values()].filter((record) => record.workspaceId === workspaceId);
     if (matching.length < limit) return;
+    const dependencies = new Set(
+      [...this.tasks.values()]
+        .filter((record) => record.workspaceId === workspaceId && record.status === 'queued')
+        .flatMap((record) => record.dependsOn ?? [])
+    );
     const evictable = matching
-      .filter((record) => record.status !== 'running')
+      .filter((record) => record.status !== 'running' && record.status !== 'queued' && !dependencies.has(record.id))
       .sort((left, right) => left.createdAt - right.createdAt)[0];
     if (!evictable) throw new HarnessError('LIMIT_EXCEEDED', 'too many live operation handles in this workspace', 429, true);
     map.delete(evictable.id);
     this.idempotency.delete(evictable.idempotencyKey);
   }
 
-  private track(record: Managed, maxBytes: number): void {
+  private track(record: Managed, child: ChildProcessWithoutNullStreams, maxBytes: number): void {
+    record.child = child;
     const append = (chunk: Buffer) => {
       const next = Buffer.concat([record.output, chunk]);
       const removed = Math.max(0, next.length - maxBytes);
@@ -54,110 +75,229 @@ export class OperationManager {
       record.output = next.subarray(removed);
       this.enforceOutputBudget(record.workspaceId);
     };
-    record.child.stdout.on('data', append);
-    record.child.stderr.on('data', append);
-    record.child.on('close', (code) => {
+    child.stdout.on('data', append);
+    child.stderr.on('data', append);
+    child.on('close', (code) => {
       record.exitCode = code ?? 1;
       if (record.status === 'running') record.status = code === 0 ? 'succeeded' : 'failed';
+      this.reconcileQueued(record.workspaceId);
     });
   }
 
-  openShell(workspaceId: string, container: string, cwd: string, key: string, maxBytes: number): Managed {
-    const mapKey = `shell:${workspaceId}:${key}`;
+  private openInteractive(
+    map: Map<string, Managed>,
+    prefix: 'sh' | 'sess',
+    kind: 'shell' | 'session',
+    workspaceId: string,
+    container: string,
+    cwd: string,
+    key: string,
+    maxBytes: number,
+    name?: string
+  ): Managed {
+    const mapKey = `${kind}:${workspaceId}:${key}`;
     const prior = this.idempotency.get(mapKey);
-    if (prior) return this.shells.get(prior)!;
-    this.reserve(this.shells, workspaceId, 32);
-    const shellId = id('sh');
+    if (prior) return map.get(prior)!;
+    this.reserve(map, workspaceId, 32);
+    if (name && [...map.values()].some((record) => record.workspaceId === workspaceId && record.name === name && record.status === 'running')) {
+      throw new HarnessError('CONFLICT', `session ${name} is already running`, 409, false);
+    }
+    const recordId = id(prefix);
     const record: Managed = {
-      id: shellId,
+      id: recordId,
       workspaceId,
-      child: spawnDocker(['exec', '-i', '-w', `/workspace/${cwd === '.' ? '' : cwd}`, container, '/usr/bin/setsid', '/opt/harness/shell-runner.sh', shellId]),
-      output: Buffer.alloc(0), offset: 0, status: 'running', container, createdAt: Date.now(), idempotencyKey: mapKey
+      output: Buffer.alloc(0),
+      offset: 0,
+      status: 'running',
+      container,
+      createdAt: Date.now(),
+      idempotencyKey: mapKey,
+      ...(name ? { name } : {})
     };
-    this.shells.set(record.id, record);
+    const child = spawnDocker(['exec', '-i', '-w', `/workspace/${cwd === '.' ? '' : cwd}`, container, '/usr/bin/setsid', '/opt/harness/shell-runner.sh', recordId]);
+    map.set(record.id, record);
     this.idempotency.set(mapKey, record.id);
-    this.track(record, maxBytes);
+    this.track(record, child, maxBytes);
+    return record;
+  }
+
+  openShell(workspaceId: string, container: string, cwd: string, key: string, maxBytes: number): Managed {
+    return this.openInteractive(this.shells, 'sh', 'shell', workspaceId, container, cwd, key, maxBytes);
+  }
+
+  private interactiveIo(map: Map<string, Managed>, workspaceId: string, recordId: string, input?: string): Managed {
+    const record = map.get(recordId);
+    if (!record || record.workspaceId !== workspaceId) throw new HarnessError('NOT_FOUND', 'interactive session not found', 404, false);
+    if (input && record.status === 'running') record.child?.stdin.write(input);
     return record;
   }
 
   shellIo(workspaceId: string, shellId: string, input?: string): Managed {
-    const record = this.shells.get(shellId);
-    if (!record || record.workspaceId !== workspaceId) throw new Error('shell not found');
-    if (input && record.status === 'running') record.child.stdin.write(input);
-    return record;
+    return this.interactiveIo(this.shells, workspaceId, shellId, input);
   }
 
-  async closeShell(workspaceId: string, shellId: string): Promise<Managed> {
-    const record = this.shellIo(workspaceId, shellId);
+  private async closeInteractive(map: Map<string, Managed>, workspaceId: string, recordId: string): Promise<Managed> {
+    const record = this.interactiveIo(map, workspaceId, recordId);
     if (record.status !== 'running') return record;
     await terminateContainerProcessGroup(record.container!, `/tmp/cloud-harness-shells/${record.id}.pid`);
     record.status = 'cancelled';
-    record.child.stdin.end();
-    record.child.kill();
+    record.child?.stdin.end();
+    record.child?.kill();
     return record;
   }
 
-  runTask(workspaceId: string, container: string, cwd: string, command: string, key: string, timeoutMs: number, maxBytes: number): Managed {
+  closeShell(workspaceId: string, shellId: string): Promise<Managed> {
+    return this.closeInteractive(this.shells, workspaceId, shellId);
+  }
+
+  openSession(workspaceId: string, container: string, name: string, cwd: string, key: string, maxBytes: number): Managed {
+    return this.openInteractive(this.sessions, 'sess', 'session', workspaceId, container, cwd, key, maxBytes, name);
+  }
+
+  sessionIo(workspaceId: string, sessionId: string, input?: string): Managed {
+    return this.interactiveIo(this.sessions, workspaceId, sessionId, input);
+  }
+
+  closeSession(workspaceId: string, sessionId: string): Promise<Managed> {
+    return this.closeInteractive(this.sessions, workspaceId, sessionId);
+  }
+
+  listSessions(workspaceId: string): Managed[] {
+    return [...this.sessions.values()].filter((record) => record.workspaceId === workspaceId).sort((left, right) => left.createdAt - right.createdAt);
+  }
+
+  runTask(
+    workspaceId: string,
+    container: string,
+    cwd: string,
+    command: string,
+    key: string,
+    timeoutMs: number,
+    maxBytes: number,
+    dependsOn: string[] = []
+  ): Managed {
     const mapKey = `task:${workspaceId}:${key}`;
     const prior = this.idempotency.get(mapKey);
     if (prior) return this.tasks.get(prior)!;
     this.reserve(this.tasks, workspaceId, 128);
-    const taskId = id('task');
-    const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1_000));
-    const child = spawnDocker([
-      'exec', '-i', '-w', `/workspace/${cwd === '.' ? '' : cwd}`, '-e', `CH_COMMAND=${command}`,
-      container, '/opt/harness/task-runner.sh', taskId, String(timeoutSeconds)
-    ]);
-    child.stdin.end();
+    if (new Set(dependsOn).size !== dependsOn.length) throw new HarnessError('INVALID_INPUT', 'task dependencies must be unique', 400, false);
+    for (const dependencyId of dependsOn) {
+      const dependency = this.tasks.get(dependencyId);
+      if (!dependency || dependency.workspaceId !== workspaceId) throw new HarnessError('NOT_FOUND', `task dependency ${dependencyId} not found`, 404, false);
+    }
     const record: Managed = {
-      id: taskId, workspaceId, child, output: Buffer.alloc(0), offset: 0, status: 'running', container,
-      createdAt: Date.now(), idempotencyKey: mapKey
+      id: id('task'),
+      workspaceId,
+      output: Buffer.alloc(0),
+      offset: 0,
+      status: 'queued',
+      container,
+      createdAt: Date.now(),
+      idempotencyKey: mapKey,
+      command,
+      cwd,
+      timeoutMs,
+      maxBytes,
+      dependsOn: [...dependsOn]
     };
     this.tasks.set(record.id, record);
     this.idempotency.set(mapKey, record.id);
-    this.track(record, maxBytes);
+    this.reconcileQueued(workspaceId);
     return record;
+  }
+
+  private startTask(record: Managed): void {
+    const timeoutSeconds = Math.max(1, Math.ceil(record.timeoutMs! / 1_000));
+    const child = spawnDocker([
+      'exec', '-i', '-w', `/workspace/${record.cwd === '.' ? '' : record.cwd}`, '-e', `CH_COMMAND=${record.command}`,
+      record.container!, '/opt/harness/task-runner.sh', record.id, String(timeoutSeconds)
+    ]);
+    child.stdin.end();
+    record.status = 'running';
+    this.track(record, child, record.maxBytes!);
+  }
+
+  private reconcileQueued(workspaceId: string): void {
+    for (const record of this.tasks.values()) {
+      if (record.workspaceId !== workspaceId || record.status !== 'queued') continue;
+      const dependencies = (record.dependsOn ?? []).map((dependencyId) => this.tasks.get(dependencyId));
+      if (dependencies.some((dependency) => !dependency || dependency.workspaceId !== workspaceId)) {
+        record.status = 'blocked';
+        continue;
+      }
+      if (dependencies.some((dependency) => ['failed', 'cancelled', 'blocked'].includes(dependency!.status))) {
+        record.status = 'blocked';
+        continue;
+      }
+      if (dependencies.every((dependency) => dependency!.status === 'succeeded')) this.startTask(record);
+    }
   }
 
   task(workspaceId: string, taskId: string): Managed {
     const record = this.tasks.get(taskId);
-    if (!record || record.workspaceId !== workspaceId) throw new Error('task not found');
+    if (!record || record.workspaceId !== workspaceId) throw new HarnessError('NOT_FOUND', 'task not found', 404, false);
     return record;
   }
 
   listTasks(workspaceId: string): Managed[] {
-    return [...this.tasks.values()].filter((record) => record.workspaceId === workspaceId);
+    return [...this.tasks.values()].filter((record) => record.workspaceId === workspaceId).sort((left, right) => left.createdAt - right.createdAt);
+  }
+
+  taskGraph(workspaceId: string) {
+    const tasks = this.listTasks(workspaceId);
+    return {
+      nodes: tasks.map((record) => this.summary(record)),
+      edges: tasks.flatMap((record) => (record.dependsOn ?? []).map((dependencyId) => ({ from: dependencyId, to: record.id })))
+    };
   }
 
   async cancelTask(workspaceId: string, taskId: string): Promise<Managed> {
     const record = this.task(workspaceId, taskId);
-    if (record.status !== 'running') return record;
-    if (record.container) {
-      await terminateContainerProcessGroup(record.container, `/tmp/cloud-harness-tasks/${record.id}.pid`);
+    if (record.status === 'queued') {
+      record.status = 'cancelled';
+      this.reconcileQueued(workspaceId);
+      return record;
     }
+    if (record.status !== 'running') return record;
+    await terminateContainerProcessGroup(record.container!, `/tmp/cloud-harness-tasks/${record.id}.pid`);
     record.status = 'cancelled';
-    record.child.kill();
+    record.child?.kill();
+    this.reconcileQueued(workspaceId);
     return record;
   }
 
   stopWorkspace(workspaceId: string): void {
-    for (const record of [...this.tasks.values(), ...this.shells.values()]) {
-      if (record.workspaceId === workspaceId && record.status === 'running') {
+    for (const record of this.records(workspaceId)) {
+      if (record.status === 'running' || record.status === 'queued') {
         record.status = 'cancelled';
-        record.child.kill();
+        record.child?.kill();
       }
     }
     for (const [recordId, record] of this.tasks) if (record.workspaceId === workspaceId) this.tasks.delete(recordId);
     for (const [recordId, record] of this.shells) if (record.workspaceId === workspaceId) this.shells.delete(recordId);
+    for (const [recordId, record] of this.sessions) if (record.workspaceId === workspaceId) this.sessions.delete(recordId);
     for (const key of this.idempotency.keys()) if (key.includes(`:${workspaceId}:`)) this.idempotency.delete(key);
   }
 
   view(record: Managed) {
-    return { id: record.id, status: record.status, exitCode: record.exitCode, output: record.output.toString('utf8') };
+    return {
+      id: record.id,
+      status: record.status,
+      exitCode: record.exitCode,
+      output: record.output.toString('utf8'),
+      ...(record.name ? { name: record.name } : {}),
+      ...(record.dependsOn ? { dependsOn: record.dependsOn } : {})
+    };
   }
 
   summary(record: Managed) {
-    return { id: record.id, status: record.status, exitCode: record.exitCode };
+    return {
+      id: record.id,
+      status: record.status,
+      exitCode: record.exitCode,
+      ...(record.name ? { name: record.name } : {}),
+      ...(record.dependsOn ? { dependsOn: record.dependsOn } : {})
+    };
   }
 
   viewSince(record: Managed, cursor?: string) {
@@ -169,7 +309,7 @@ export class OperationManager {
     const page = record.output.subarray(start, Math.min(record.output.length, start + 65_536));
     const nextCursor = record.offset + start + page.length;
     return {
-      data: { id: record.id, status: record.status, exitCode: record.exitCode, output: page.toString('utf8') },
+      data: { ...this.view(record), output: page.toString('utf8') },
       cursor: String(nextCursor),
       truncated: missedOutput || nextCursor < end
     };
