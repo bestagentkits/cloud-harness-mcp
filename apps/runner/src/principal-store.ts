@@ -47,6 +47,8 @@ type PrincipalRelinkRow = {
   principal_id: string;
 };
 
+const ownerBearerIssuer = 'https://owner-bearer.invalid';
+
 const fromRow = (row: PrincipalRow): PrincipalRecord => ({
   id: row.id,
   issuer: row.issuer,
@@ -171,6 +173,25 @@ export function principalByLegacyOwnerId(database: DatabaseSync, legacyOwnerId: 
   return row ? fromRow(row) : undefined;
 }
 
+export function resolveOwnerPrincipal(database: DatabaseSync, ownerId: string): string {
+  if (!ownerId || ownerId.length > 100) throw new Error('invalid owner identity');
+  return transaction(database, () => {
+    if (database.prepare('SELECT 1 FROM principals WHERE id = ?').get(ownerId)) return ownerId;
+    const existing = principalByLegacyOwnerId(database, ownerId);
+    if (existing) return existing.id;
+
+    const principalId = `prn_${randomBytes(24).toString('base64url')}`;
+    const now = Date.now();
+    database.prepare(`INSERT INTO principals
+      (id, issuer, subject, email, name, legacy_owner_id, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)`).run(
+      principalId, ownerBearerIssuer, ownerId, ownerId, now, now
+    );
+    database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, ownerId);
+    return principalId;
+  });
+}
+
 export function resolveExternalPrincipal(
   database: DatabaseSync,
   selector: ExternalPrincipalSelector,
@@ -203,6 +224,21 @@ function resolveExternalPrincipalInTransaction(
       database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(existing.id, legacyOwnerId);
     }
     return existing.id;
+  }
+
+  if (legacyOwnerId) {
+    const legacy = principalByLegacyOwnerId(database, legacyOwnerId);
+    if (legacy) {
+      if (legacy.issuer !== ownerBearerIssuer || legacy.subject !== legacyOwnerId) {
+        throw new Error('legacy owner is already mapped to a different external identity');
+      }
+      database.prepare(`UPDATE principals
+        SET issuer = ?, subject = ?, email = ?, name = ?, updated_at = ?
+        WHERE id = ?`).run(
+        selector.issuer, selector.subject, selector.email ?? null, selector.name ?? null, now, legacy.id
+      );
+      return legacy.id;
+    }
   }
 
   const principalId = `prn_${randomBytes(24).toString('base64url')}`;

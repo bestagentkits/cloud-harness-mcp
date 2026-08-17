@@ -121,6 +121,25 @@ describe('StateStore', () => {
     store.close();
   });
 
+  it('materializes owner-bearer identity and preserves it through an explicit Access cutover', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-owner-principal-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    const workspace = record();
+    store.create(workspace);
+
+    const ownerPrincipal = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+    expect(ownerPrincipal).toMatch(/^prn_[A-Za-z0-9_-]{32}$/);
+    expect(store.resolvePrincipal({ kind: 'owner', ownerId: ownerPrincipal })).toBe(ownerPrincipal);
+    expect(store.byOwnerAndId(ownerPrincipal, workspace.id)?.id).toBe(workspace.id);
+
+    const access = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'subject-123' };
+    expect(store.resolveExternalPrincipal(access, { legacyOwnerId: 'owner' })).toBe(ownerPrincipal);
+    expect(store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' })).toBe(ownerPrincipal);
+    expect(store.principalByExternalIdentity(access)?.id).toBe(ownerPrincipal);
+    store.close();
+  });
+
   it('rolls back a legacy claim that would merge two active workspaces', () => {
     const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
     temporaryDirectories.push(directory);

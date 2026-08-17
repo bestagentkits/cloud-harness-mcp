@@ -8,8 +8,8 @@ import {
   applyPrincipalRelinks,
   migratePrincipalSchema,
   principalByExternalIdentity,
-  principalByLegacyOwnerId,
   resolveExternalPrincipal,
+  resolveOwnerPrincipal,
   type ExternalPrincipalSelector,
   type PrincipalRecord,
   type PrincipalRelinkMapping,
@@ -108,7 +108,7 @@ export class StateStore {
   resolvePrincipal(selector: PrincipalSelector): string {
     const parsed = RunnerPrincipalSelectorSchema.parse(selector);
     if (parsed.kind === 'owner') {
-      return principalByLegacyOwnerId(this.database, parsed.ownerId)?.id ?? parsed.ownerId;
+      return resolveOwnerPrincipal(this.database, parsed.ownerId);
     }
     return this.resolveExternalPrincipal(parsed);
   }
