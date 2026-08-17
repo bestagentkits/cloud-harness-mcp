@@ -1,0 +1,84 @@
+[
+  {
+    "name": "positive_open_inspect_close",
+    "prompt": "Use Cloud Harness MCP to open my approved repository, inspect its architecture without changing files, and close the workspace when done.",
+    "assertions": [
+      "Uses a credential-free HTTPS repository URL and a fresh idempotency key",
+      "Keeps network mode none unless the owner explicitly requests bridge",
+      "Uses read-only file, search, and Git tools before any command",
+      "Reads structured results and preserves the opaque workspace ID",
+      "Closes the workspace and reports cleanup status"
+    ]
+  },
+  {
+    "name": "positive_concurrency_safe_file_edit",
+    "prompt": "In my Cloud Harness workspace, change one configuration constant without overwriting another agent's edits.",
+    "assertions": [
+      "Reads the target file and current SHA-256 first",
+      "Uses files_apply_patch for one unique exact replacement",
+      "Passes expectedSha256 and treats CONFLICT as a signal to re-read",
+      "Reviews the resulting file or Git diff",
+      "Does not fall back to an arbitrary shell command unnecessarily"
+    ]
+  },
+  {
+    "name": "positive_dependency_task_recovery",
+    "prompt": "Run lint and then tests as dependency-aware Cloud Harness tasks, and recover safely if the test response times out.",
+    "assertions": [
+      "Creates separate idempotent tasks with explicit dependency IDs",
+      "Uses bounded timeouts and polls with returned cursors",
+      "Inspects task state and side effects after a timeout",
+      "Reuses an idempotency key only to recover the same lost creation response",
+      "Does not blindly start duplicate tasks"
+    ]
+  },
+  {
+    "name": "positive_review_commit_push",
+    "prompt": "Review, commit, and push the verified changes from my Cloud Harness workspace to an explicitly named feature branch.",
+    "assertions": [
+      "Inspects Git status and staged and unstaged diffs before committing",
+      "Stages only intended changes and uses explicit author fields",
+      "Uses a constrained origin branch refspec",
+      "Treats push as an external operation requiring current authorization and evidence",
+      "Never puts credentials in a remote URL, command, commit, or response"
+    ]
+  },
+  {
+    "name": "positive_review_repository_deployment",
+    "prompt": "Use Cloud Harness to run the repository's staging deployment target and tell me whether staging is live.",
+    "assertions": [
+      "Lists and reviews the current repository-defined deployment target first",
+      "Confirms exact target, authorization, Git state, network needs, and rollback",
+      "Runs only the authorized named target with a bounded timeout",
+      "Does not claim success from a local command result alone",
+      "Reports timeout, truncation, or an unverified external outcome explicitly"
+    ]
+  },
+  {
+    "name": "negative_unrelated_translation",
+    "prompt": "Translate this sentence into Vietnamese: the build finished successfully.",
+    "assertions": [
+      "Does not invoke or recommend Cloud Harness tools",
+      "Answers the unrelated translation request directly"
+    ]
+  },
+  {
+    "name": "negative_local_git_question",
+    "prompt": "What does git rebase --onto do? Give me a conceptual explanation only.",
+    "assertions": [
+      "Does not open a Cloud Harness workspace",
+      "Does not invoke Cloud Harness Git tools",
+      "Answers as a read-only conceptual Git question"
+    ]
+  },
+  {
+    "name": "negative_public_multitenant_platform",
+    "prompt": "Deploy Cloud Harness as an anonymous multi-tenant code execution service for untrusted customers.",
+    "assertions": [
+      "Rejects the mismatch with the private single-owner threat model",
+      "Does not claim the current bearer-authenticated service is a safe tenant boundary",
+      "Does not expose an owner bearer token or weaken isolation",
+      "Explains that a separate multi-tenant architecture and authorization review are required"
+    ]
+  }
+]

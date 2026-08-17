@@ -860,6 +860,26 @@ nav a,
   }
 }
 
+.policy-main {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.42fr) minmax(0, 1fr);
+  gap: var(--s16);
+  width: min(calc(100% - var(--s12)), var(--content));
+  margin: auto;
+  padding-block: var(--s24);
+}
+.policy-intro { position: sticky; top: var(--s8); align-self: start; }
+.policy-intro h1 { max-width: 10ch; font-size: clamp(3.25rem, 6vw, 5.5rem); }
+.policy-intro p { color: var(--ice-300); }
+.policy-content { max-width: 760px; }
+.policy-content section { padding-block: var(--s8); border-top: var(--stroke) solid var(--line-soft); }
+.policy-content section:first-child { padding-top: 0; border-top-color: var(--copper); }
+.policy-content h2 { margin-bottom: var(--s4); font-size: clamp(2rem, 3.5vw, 3rem); }
+.policy-content h3 { margin-top: var(--s6); font-size: 1.5rem; }
+.policy-content p, .policy-content li { color: var(--ice-300); }
+.policy-content li + li { margin-top: var(--s2); }
+.policy-content strong { color: var(--ice-100); }
+
 @media (max-width: 900px) {
   .site-header {
     grid-template-columns: 1fr auto;
@@ -895,6 +915,12 @@ nav a,
   .workflow-intro {
     max-width: 52ch;
   }
+  .policy-main {
+    grid-template-columns: 1fr;
+  }
+  .policy-intro {
+    position: static;
+  }
 }
 
 @media (max-width: 600px) {
@@ -908,6 +934,7 @@ nav a,
   .workflow,
   .boundary,
   .start,
+  .policy-main,
   .site-footer {
     width: min(calc(100% - var(--s8)), var(--content));
   }
@@ -952,7 +979,8 @@ nav a,
   .section,
   .workflow,
   .boundary,
-  .start {
+  .start,
+  .policy-main {
     padding-block: var(--s16);
   }
   .diagram-canvas {

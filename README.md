@@ -137,6 +137,63 @@ of those specs in [`mcp-server.ts`](apps/api/src/mcp-server.ts).
 `memories_list`, `memories_read`, `memories_write`, `deployments_list`,
 `deployments_run`
 
+## Install the Cloud Harness skill
+
+Install the self-contained `cloudharness` operating skill directly from this
+repository with the [skills CLI](https://www.npmjs.com/package/skills):
+
+```bash
+npx skills add bestagentkits/cloud-harness-mcp --skill cloudharness
+```
+
+Use `--global` to install it for the current user instead of the current
+project. The skill includes detailed, portable references for every public
+operation, input bound, side effect, recovery path, and security boundary. It
+does not install credentials or connect the MCP endpoint; complete one of the
+client configurations below separately.
+
+This repository also publishes the same skill as a plugin package for both
+Claude Code and OpenAI's plugin format.
+
+<details>
+<summary>Install from the Claude Code marketplace</summary>
+
+```bash
+claude plugin marketplace add bestagentkits/cloud-harness-mcp
+claude plugin install cloud-harness@bestagentkits
+```
+
+The package is skills-only, so register the authenticated MCP connection under
+**Claude Code** below after installation. See Anthropic's
+[plugin marketplace guide](https://code.claude.com/docs/en/plugin-marketplaces)
+for update and uninstall commands.
+
+</details>
+
+<details>
+<summary>Install from the OpenAI plugin marketplace</summary>
+
+Once this repository has been added to an available OpenAI marketplace, install
+the package with:
+
+```bash
+codex plugin marketplace add bestagentkits/cloud-harness-mcp
+codex plugin add cloud-harness@bestagentkits
+```
+
+The OpenAI package contains the portable skill, store metadata, logo, privacy
+policy, and terms. It intentionally does not embed an app registration ID,
+bearer token, or MCP authorization. OpenAI reviews skills-only and MCP-only
+plugins, but a public authenticated remote MCP listing requires a supported
+OAuth flow. This private single-owner deployment still uses an owner bearer
+token, so connect it only through the local Codex configuration below; add an
+OAuth gateway before submitting the hosted MCP server as a public ChatGPT app.
+See OpenAI's [plugin packaging](https://developers.openai.com/plugins/build/plugins),
+[submission](https://developers.openai.com/plugins/deploy/submission), and
+[authentication](https://developers.openai.com/plugins/build/auth) guidance.
+
+</details>
+
 ## Connect from AI clients
 
 This server exposes a remote Streamable HTTP MCP endpoint:
@@ -362,9 +419,109 @@ runner has Docker authority. Local Compose does not configure TLS. Stop it with:
 docker compose down
 ```
 
+## Configure environment variables
+
+The local setup command above creates an ignored runtime environment file from
+the maintained template. Generate two independent secrets, then replace the
+two placeholder values in that runtime file:
+
+```bash
+openssl rand -hex 32 # MCP_BEARER_TOKEN
+openssl rand -hex 32 # RUNNER_TOKEN
+```
+
+Both tokens must contain 32–512 characters. Never commit the runtime file or
+paste either value into prompts, logs, or shared project configuration.
+When a direct secret and its `_FILE` alternative are both set, the file value
+takes precedence.
+
+The server-side `MCP_BEARER_TOKEN` is the owner credential accepted by `/mcp`.
+The client examples above store that same value under the client-local name
+`CLOUD_HARNESS_MCP_TOKEN`. `RUNNER_TOKEN` is a separate, internal API-to-runner
+credential and must never be given to an MCP client.
+
+### Required and common settings
+
+The values below are runtime defaults when a variable is omitted. The
+maintained template may prefill the current public host and browser origin;
+replace those entries with the hostname and origins of your deployment.
+
+| Variable | Runtime default | Description |
+|---|---:|---|
+| `MCP_BEARER_TOKEN` | required | Owner bearer token for MCP requests. Use `MCP_BEARER_TOKEN_FILE` instead when a secret is mounted as a file. |
+| `RUNNER_TOKEN` | required | Independent service token used only between the API and runner. `RUNNER_TOKEN_FILE` is also supported. |
+| `OWNER_ID` | `owner` | Stable identifier attached to the single owner's workspaces. Changing it does not add multi-user isolation. |
+| `API_PUBLIC_HOSTS` | `localhost,127.0.0.1` | Comma-separated `Host` allowlist. Add the public MCP hostname in a deployed environment. |
+| `API_ALLOWED_ORIGINS` | empty | Comma-separated exact browser origins allowed to send requests. CLI clients that omit `Origin` do not need an entry. |
+| `ALLOWED_GIT_HOSTS` | `github.com` | Comma-separated repository-host allowlist. Repository URLs must still use credential-free HTTPS. |
+| `WORKSPACE_NETWORK_MODE` | `none` | Executor networking: `none` is the safe default; `bridge` explicitly allows ordinary container egress. |
+| `WORKSPACE_WALL_TTL_SECONDS` | `900` | Maximum workspace lifetime, from 60 to 86,400 seconds. |
+| `WORKSPACE_IDLE_TTL_SECONDS` | `300` | Maximum idle time, from 30 to 43,200 seconds. |
+| `JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | Runner path for ephemeral workspace directories. |
+| `STATE_DB` | `/var/lib/cloud-harness/state/cloud-harness.db` | Runner SQLite state-file path. |
+| `EXECUTOR_IMAGE` | `cloud-harness-executor:local` | Trusted executor image selected by the operator, never by MCP callers. |
+
+The maintained template contains every setting needed for the normal local
+Compose workflow. The following limits are optional; omit them to use their
+validated defaults.
+
+### Resource and request limits
+
+| Variable | Default | Allowed value / purpose |
+|---|---:|---|
+| `REQUEST_TIMEOUT_MS` | `60000` | API-to-runner timeout; 1,000–300,000 ms. Keep client tool timeouts at least this long. |
+| `MAX_BODY_BYTES` | `1048576` | Maximum API JSON request size; 1,024–4,194,304 bytes. |
+| `MAX_OUTPUT_BYTES` | `262144` | Maximum bounded runner/worker result; 1,024–10,485,760 bytes. |
+| `MIN_FREE_BYTES` | `2147483648` | Minimum free host storage required to admit a workspace; at least 104,857,600 bytes. |
+| `MAX_WORKSPACE_BYTES` | `2147483648` | Soft workspace-size ceiling; at least 104,857,600 bytes. This is checked periodically, not enforced as a filesystem quota. |
+| `REAPER_INTERVAL_SECONDS` | `30` | Interval for lifecycle and storage cleanup checks; 10–3,600 seconds. |
+| `LOG_LEVEL` | `info` | Pino log level for API and runner processes, such as `debug`, `info`, `warn`, or `error`. |
+
+### Optional private GitHub repositories
+
+Public repositories need no additional credential. For private clone, fetch,
+pull, or push, configure all three GitHub App values together:
+
+| Variable | Description |
+|---|---|
+| `GITHUB_APP_ID` | Numeric GitHub App ID. |
+| `GITHUB_APP_INSTALLATION_ID` | Numeric installation ID with access to the target repository. |
+| `GITHUB_APP_PRIVATE_KEY_FILE` | Preferred path to the mounted PEM private key. Use `GITHUB_APP_PRIVATE_KEY` only when a file mount is unavailable. |
+
+The App needs Contents read permission for clone, fetch, and pull; push needs
+Contents read and write. Production Compose mounts the root-owned host
+directory `/etc/cloud-harness-mcp` read-only at `/run/cloud-harness-secrets`,
+so the maintained container path is
+`/run/cloud-harness-secrets/github-app-private-key.pem`. Prefer the file form
+instead of placing a private key directly in an environment variable.
+
+### Compose overrides
+
+| Variable | Default | Description |
+|---|---:|---|
+| `CLOUD_HARNESS_ENV_FILE` | local runtime file | Selects the Compose environment file. Production defaults to `/etc/cloud-harness-mcp/runtime.env`. |
+| `API_HOST_PORT` | `3100` | Loopback host port published by the credential-free ingress proxy. |
+| `HOST_JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | Host directory mounted for workspace data. |
+| `HOST_STATE_ROOT` | `/var/lib/cloud-harness/state` | Host directory mounted for persistent runner state. |
+
+Compose fixes `API_HOST=0.0.0.0`, `API_PORT=3000`,
+`RUNNER_HOST=0.0.0.0`, `RUNNER_PORT=3001`, and
+`RUNNER_URL=http://runner:3001` on its private networks. Those variables are
+available when starting the Node.js processes directly, but changing them in
+the Compose runtime file has no effect because the service definition owns the
+wiring. Keep the API and runner private and publish only the loopback ingress.
+
+For production file ownership, key mounts, and TLS setup, use the
+[deployment guide](docs/deployment.md). Exact validation rules and defaults
+remain owned by [`packages/contracts/src/config.ts`](packages/contracts/src/config.ts),
+with operational rationale in the [configuration guide](docs/configuration.md).
+
 ## Documentation
 
-- [Project-local cloudharness agent skill](.agents/skills/cloudharness/SKILL.md)
+- [Installable cloudharness operating skill](.agents/skills/cloudharness/SKILL.md)
+- [Cloud Harness support](https://cloud-harness-mcp.pages.dev/support.html)
+- [Privacy policy](https://cloud-harness-mcp.pages.dev/privacy.html) and
+  [terms of service](https://cloud-harness-mcp.pages.dev/terms.html)
 - [System architecture](docs/system-architecture.md)
 - [MCP usage and tool semantics](docs/mcp-api.md)
 - [Configuration](docs/configuration.md)
