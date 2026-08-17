@@ -1,3 +1,10 @@
+# [0.5.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.4.0...v0.5.0) (2026-08-17)
+
+
+### Features
+
+* publish portable cloudharness skill plugin ([bc4f5e3](https://github.com/bestagentkits/cloud-harness-mcp/commit/bc4f5e39ab64480ee8e8b355734f180c985d1962))
+
 # [0.4.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.3.0...v0.4.0) (2026-08-17)
 
 
