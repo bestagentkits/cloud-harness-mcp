@@ -59,4 +59,16 @@ for (const directive of ['proxy_http_version 1.1;', 'proxy_buffering off;', 'pro
   requireBoundary(apiKeyMcp.includes(directive), `nginx API-key MCP streaming directive is missing: ${directive}`);
 }
 requireBoundary(apiKeyMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key;'), 'nginx API-key MCP route must preserve its hidden upstream path');
+
+const nginxUpgrade = readFileSync('deploy/scripts/upgrade-nginx-dashboard.sh', 'utf8');
+requireBoundary(
+  nginxUpgrade.includes('dashboard_installed -eq 1 && $api_key_installed -eq 1'),
+  'nginx upgrade must not return early until dashboard and API-key routes are installed'
+);
+requireBoundary(
+  nginxUpgrade.includes('location = /mcp-api-key {') &&
+    nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key;') &&
+    nginxUpgrade.includes('add_api_key="$((1 - api_key_installed))"'),
+  'nginx upgrade must install the hidden API-key route when it is absent'
+);
 console.log('compose-boundaries=pass');
