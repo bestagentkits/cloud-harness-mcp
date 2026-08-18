@@ -16,10 +16,16 @@ worktree, skill, hook, memory, and repository-defined deployment tools.
 > hostile multi-tenant sandbox. Read the [security model](docs/security-model.md)
 > before operating it.
 
-The public MCP URL is:
+The Managed OAuth MCP URL is:
 
 ```text
 https://harness.zuey.me/mcp
+```
+
+Static-header clients use dashboard-managed API keys at the separate gateway:
+
+```text
+https://api.harness.zuey.me/mcp
 ```
 
 ## Architecture
@@ -30,7 +36,9 @@ keeps repository credentials out of long-lived executors.
 
 ```mermaid
 flowchart LR
-  Client["AI coding client"] -->|"HTTPS · bearer or Access OAuth"| Nginx["nginx + loopback ingress"]
+  OAuthClient["Managed OAuth client"] -->|"Access OAuth"| Nginx["nginx + loopback ingress"]
+  StaticClient["Static-header client"] -->|"managed API key"| Gateway["Cloudflare Worker gateway"]
+  Gateway -->|"Access service assertion + API key"| Nginx
 
   subgraph Control["Trusted control plane"]
     Nginx --> API["Stateless MCP API"]
@@ -198,22 +206,38 @@ See OpenAI's [plugin packaging](https://developers.openai.com/plugins/build/plug
 
 ## Connect from AI clients
 
-This server exposes a remote Streamable HTTP MCP endpoint:
+The owner deployment exposes two remote Streamable HTTP MCP lanes:
 
 ```text
-https://harness.zuey.me/mcp
+Managed OAuth: https://harness.zuey.me/mcp
+Static API key: https://api.harness.zuey.me/mcp
 ```
 
 The owner deployment uses `cloudflare-access`: Managed OAuth clients connect to
-the URL above and complete GitHub or Google login in the browser. Its dashboard
-is `https://harness.zuey.me/dashboard`.
+the first URL and complete GitHub or Google login in the browser. Static-header
+clients use only the second URL with `Authorization: Bearer <dashboard-api-key>`.
+Its dashboard is `https://harness.zuey.me/dashboard`.
+
+Create, list, and revoke API keys under **Dashboard → API keys**. A new key is
+shown once and cannot be recovered; store it only in the client's private
+credential store. Keys expire after 1–365 days, and each identity may have at
+most 10 active keys. There are no per-tool scopes or rotation endpoint: replace
+a key by creating a new one and then revoking the old one. Every key has the
+creator's full MCP authority, including arbitrary command execution in the
+executor. Revocation or expiry denies the next request.
+
+The API-key gateway is not an alternate dashboard login and does not accept
+Managed OAuth. Conversely, `https://harness.zuey.me/mcp` does not accept a
+dashboard-managed API key. See the [security model](docs/security-model.md) for
+the independent Worker/Access/key checks.
 
 `owner-bearer` remains the software default for separate private deployments.
-The direct-header examples below use the owner-provided
-`CLOUD_HARNESS_MCP_TOKEN` and the placeholder
-`https://<owner-bearer-hostname>/mcp`. Keep both in client-local private
-configuration; never put the token in a repository, prompt, or shared project
-configuration.
+The direct-header examples below use `CLOUD_HARNESS_MCP_TOKEN`. For this owner
+deployment, set it to a dashboard-managed key and use
+`https://api.harness.zuey.me/mcp`. For a separate `owner-bearer` deployment,
+use the owner-provided token and `https://<owner-bearer-hostname>/mcp`. Keep the
+credential and URL in client-local private configuration; never put the token
+in a repository, prompt, or shared project configuration.
 
 Other operators may deploy `cloudflare-access` on an eligible hostname in an
 owned Cloudflare zone. Access provides Managed OAuth and GitHub/Google SSO;

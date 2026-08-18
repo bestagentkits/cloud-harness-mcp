@@ -21,6 +21,10 @@ URLs, or raw command content into tickets or shared logs.
 | TLS hostname/certificate error | Certbot has not issued/installed the dedicated hostname certificate, nginx is serving another site's default certificate, or DNS points elsewhere. Check `certbot certificates`, `nginx -T`, DNS, and the [TLS install step](deployment.md#obtain-https-with-the-existing-nginx). Do not disable certificate verification. |
 | `401` with `WWW-Authenticate: Bearer` in owner-bearer mode | The MCP bearer is missing or differs from `MCP_BEARER_TOKEN`. Check that the client names an exported local variable, then restart it after changing the value. |
 | MCP `401` in Access mode | The public request did not arrive with a valid Access assertion for the configured issuer/audience, or the Access OAuth credential is expired/revoked. Check the Access application, policy, discovery flow, and sanitized edge logs; do not add an origin bearer bypass. |
+| API-key gateway returns JSON `401 authentication_failed` | The Worker reached the origin, but the path-scoped Access assertion did not match the configured audience/subject or the managed key was malformed, unknown, expired, or revoked. Check the distinct Access application, exact pinned service subject, feature configuration, and dashboard metadata without printing the key. All invalid key classes intentionally share this response. |
+| API-key client receives `text/html` or an Access login page | The client is using the OAuth hostname/path, Cloudflare selected an interactive policy for `/mcp-api-key`, or the Worker is not bound to the requested hostname. Static clients must use `https://api.harness.zuey.me/mcp`; the hidden path must have a separate Service Auth-only Access application. Do not add browser cookies, bypass Access, or point the client at the hidden route. |
+| API-key gateway returns JSON `400`, `404`, or `405` | The request has an invalid/missing Bearer header, query string, path, method, or oversized/ambiguous forwarded header. Use exact `/mcp` with Streamable HTTP `GET`, `POST`, or `DELETE`; do not forward Cloudflare or proxy headers from the client. |
+| API-key gateway returns JSON `502` or `503` | `502` means the fixed upstream failed or redirected; `503` means Worker service-token secrets are unavailable. Check the Worker deployment, exact origin route, Access application, and secret bindings without logging their values. OAuth/dashboard availability is independent. |
 | Dashboard login loop or `session_ended` | `/dashboard` did not receive a current Access assertion, or its short-lived CSRF session was lost. Re-authenticate at Access and reload the dashboard; never copy the assertion into browser storage. |
 | `403 forbidden_host` | The request hostname is absent from `API_PUBLIC_HOSTS`, or nginx did not preserve `Host`. Compare the public hostname with the nginx proxy and runtime environment. |
 | `403 forbidden_origin` | A supplied `Origin` is absent from `API_ALLOWED_ORIGINS`. Add only the exact trusted origin; CLI clients normally omit this header. |
@@ -31,7 +35,9 @@ URLs, or raw command content into tickets or shared logs.
 
 The request policy is owned by
 [`apps/api/src/request-security.ts`](../apps/api/src/request-security.ts) and
-[`apps/api/src/auth.ts`](../apps/api/src/auth.ts).
+[`apps/api/src/auth.ts`](../apps/api/src/auth.ts). Worker error and header
+behavior is owned by
+[`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
 
 ## Workspace opening
 

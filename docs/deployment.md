@@ -167,6 +167,51 @@ If a target client cannot complete Managed OAuth, stop and make the separate
 Managed OAuth versus Workers OAuth Provider decision. Do not add a second
 issuer, hidden bearer path, or unprotected hostname as a compatibility fix.
 
+### API-key gateway rollout
+
+Add the static-client lane only after the existing OAuth and dashboard lane is
+healthy. Create a second Self-hosted Access application scoped exactly to
+`harness.zuey.me/mcp-api-key`, with an audience distinct from the hostname-wide
+application. Its only Allow policy is **Service Auth** for one dedicated Worker
+service token. Do not add users, groups, bypass rules, or that service token to
+the main `/mcp` and `/dashboard` application.
+
+Store the token as `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` Worker
+secrets. Deploy the Worker manifest at
+[`apps/api-key-gateway/wrangler.jsonc`](../apps/api-key-gateway/wrangler.jsonc),
+which binds the custom hostname `api.harness.zuey.me`; do not enable a
+`workers.dev` or preview URL. The same manifest provisions
+`API_KEY_RATE_LIMITER`, an aggregate 600-request/60-second cap per Cloudflare
+location. Confirm the deployed Worker version lists that binding and, in a
+controlled preproduction route, prove exhaustion returns bounded JSON `429`
+with `Retry-After: 60` while a failed/missing binding returns JSON `503` and
+does not reach the origin. Do not weaken the origin's authoritative
+per-credential limiter. Observe the verified service principal at the
+origin, normalize and pin that exact value in
+`API_KEY_GATEWAY_SERVICE_SUBJECT`, and set the separate application audience
+and public URL in `API_KEY_GATEWAY_ACCESS_AUDIENCE` and
+`API_KEY_GATEWAY_PUBLIC_URL`. Enable `API_KEY_AUTH_ENABLED` only after those
+values are complete.
+
+Roll out the schema-capable runner and API with the feature disabled first.
+After the quiesced state backup and v2 migration, prove OAuth, GitHub/Google
+dashboard login, and CSRF behavior before enabling the hidden route and Worker.
+Then create a disposable short-lived key in the dashboard and canary:
+
+1. initialize, list tools, and make one bounded call through
+   `https://api.harness.zuey.me/mcp`;
+2. reject the same key on `https://harness.zuey.me/mcp` and reject direct calls
+   to `/mcp-api-key` without the exact Worker assertion;
+3. revoke the key and prove the next gateway request returns JSON `401`; and
+4. confirm the production Worker version contains the expected rate-limit
+   binding and the sanitized preproduction `429`/fail-closed receipt; and
+5. re-run Managed OAuth discovery/initialize and both IdP dashboard logins.
+
+Record the exact release SHA, Access application identifiers/audiences, Worker
+deployment, hostnames, and sanitized results separately. Never record either
+the key or service-token values. The Worker route can be removed independently;
+the OAuth/dashboard lane remains available.
+
 ## Deploy a release
 
 The deploy command accepts only an exact 40-character commit that is an
@@ -289,3 +334,10 @@ This leaves the project configuration, state, artifact store, backups, and any d
 certificate available for investigation. Remove them only after resolving
 their exact ownership and retention requirements. See
 [operations](operations.md) for backup and cleanup.
+
+For an API-key-gateway rollback, disable the Worker custom route first, set
+`API_KEY_AUTH_ENABLED=false`, confirm the hidden origin route returns 404, and
+revoke the Worker service token. A prior binary that understands only metadata
+schema v1 also requires the quiesced v2→v1 procedure in
+[operations](operations.md#api-key-schema-rollback); that downgrade invalidates
+all managed API keys while preserving unrelated metadata.

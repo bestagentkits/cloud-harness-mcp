@@ -10,6 +10,13 @@ MCP client
   -> runner (internal Compose network, service bearer)
   -> rootful Docker socket
   -> ephemeral clone/Git transfer helpers and one executor for the workspace
+
+Static-header MCP client
+  -> api.harness.zuey.me/mcp (fixed Cloudflare Worker)
+  -> path-scoped Cloudflare Access application (Worker Service Auth only)
+  -> harness.zuey.me/mcp-api-key (exact hidden origin route)
+  -> API (verified gateway subject AND principal-bound API key)
+  -> the same runner and execution path above
 ```
 
 Cloudflare Access is an optional public authentication edge in front of nginx;
@@ -62,12 +69,17 @@ Executable owners:
   [`apps/api/src/auth.ts`](../apps/api/src/auth.ts),
   [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts), and
   [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts)
+- Static API-key Worker and dual-credential origin boundary:
+  [`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts),
+  [`apps/api/src/auth.ts`](../apps/api/src/auth.ts), and
+  [`apps/runner/src/api-key-store.ts`](../apps/runner/src/api-key-store.ts)
 - Versioned API/runner contract and tool schemas:
   [`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts)
   and
   [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts)
-- Versioned dashboard-only runner contract:
+- Versioned dashboard-only runner contracts:
   [`packages/contracts/src/internal-runner-api.ts`](../packages/contracts/src/internal-runner-api.ts)
+  and [`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts)
 - Workspace lifecycle and Docker policy:
   [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
 - In-memory shells, named sessions, and dependency-task scheduling:
@@ -113,7 +125,8 @@ handling while the durable workspace identity lives below the transport. A
 lost `workspace_open` response can therefore be recovered by replaying its
 idempotency key or by listing workspaces.
 
-Principal, project/environment, encrypted secret-reference, GitHub binding,
+Principal, project/environment, encrypted secret-reference, API-key digest,
+GitHub binding,
 artifact metadata, and audit state share the runner-owned SQLite database.
 Artifact payloads persist under the artifact root until deletion or bounded
 retention reaping. Dashboard runtime summaries remain volatile. The exact
@@ -130,8 +143,12 @@ cleanup authority.
 Production Compose binds the credential-free ingress proxy to
 `127.0.0.1:3100`; the API and runner have no published host ports. Runner
 egress does not expose an ingress port. Existing
-nginx is the only intended host listener and proxies `/mcp`, `/dashboard`,
+nginx is the only intended origin host listener and proxies `/mcp`,
+`/mcp-api-key`, `/dashboard`,
 `/healthz`, and `/readyz` to loopback. In Access mode the owned public hostname
-is additionally protected by the external Access application. The
+uses one Access application for `/mcp` and `/dashboard`, plus a separate
+application scoped exactly to `/mcp-api-key`. The external Worker owns the
+public static-key hostname and cannot proxy dashboard or arbitrary origin
+traffic. The
 [deployment guide](deployment.md) explains the safe install order and the TLS
 step that is intentionally outside Compose.

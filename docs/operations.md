@@ -44,6 +44,10 @@ close/expiry; they are not a durable source control remote or a backup.
 The same state database also owns the stable random runner-instance identity
 used to scope Docker reconciliation.
 
+Metadata schema v2 adds principal-bound API-key hashes and safe lifecycle
+metadata. A database backup therefore does not recover plaintext keys; clients
+must keep their one-time value in a private credential store.
+
 ## Backup and restore
 
 [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
@@ -124,6 +128,33 @@ df -h /var/lib/cloud-harness
 sudo du -sh /var/lib/cloud-harness/jobs/*
 ```
 
+## Managed API-key lifecycle
+
+Create, list, and revoke keys through the Access-authenticated dashboard. A key
+cannot be recovered after its creation response. For planned replacement,
+create a new key, update and canary the client against
+`https://api.harness.zuey.me/mcp`, then revoke the old key and verify the next
+request is rejected. For suspected disclosure, revoke first and inspect only
+redacted audit/log metadata. Do not copy a key into shell history, URLs,
+tickets, or shared logs.
+
+### API-key schema rollback
+
+Downgrading from metadata schema v2 to a binary that supports only v1 destroys
+all managed API-key records by design. Quiesce dashboard and MCP writes, stop
+the service, and take a coherent recovery backup before running the runner's
+compiled migration command from the exact release checkout:
+
+```bash
+npm run metadata:down:v1 -w @cloud-harness/runner -- /path/to/db
+```
+
+Keep the database offline for the command. It requires version 2, drops only
+the API-key table, and resets the metadata version to 1. Then deploy the prior
+binary, keep `API_KEY_AUTH_ENABLED=false`, and canary readiness, OAuth,
+dashboard, unrelated metadata, and the absence of the hidden route. Restore
+the backup instead of retrying manually if the downgrade does not complete.
+
 ## Release rollback
 
 An automatic deployment failure restores the prior recorded commit, the
@@ -144,6 +175,7 @@ pipeline builds images on the VPS and records local image IDs; it does not pull
 an externally attested image digest.
 
 Always verify loopback readiness, HTTPS, dashboard secret readiness, artifact
-state, and managed-container cleanup after a rollback. Retain at least one
+state, API-key gateway disablement when applicable, and managed-container
+cleanup after a rollback. Retain at least one
 known-good coherent recovery set; backup retention is an operator policy, not
 an automated service feature.

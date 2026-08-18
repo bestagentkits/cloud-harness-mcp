@@ -2,11 +2,16 @@
 
 ## Connection
 
-The Streamable HTTP endpoint is
-`https://harness.zuey.me/mcp` for the current operator deployment. That
-deployment requires the client to complete the Cloudflare Access Managed OAuth
-flow through GitHub or Google; the origin verifies the forwarded Access
-assertion. `owner-bearer` remains the default authentication contract for
+The current operator deployment has two Streamable HTTP endpoints:
+
+- `https://harness.zuey.me/mcp` for Cloudflare Access Managed OAuth through
+  GitHub or Google; and
+- `https://api.harness.zuey.me/mcp` for static-header clients using a
+  dashboard-managed API key as `Authorization: Bearer <key>`.
+
+The lanes are intentionally non-interchangeable. Managed keys are accepted
+only through the fixed Worker gateway; the hidden origin path is not a client
+endpoint. `owner-bearer` remains the default authentication contract for
 separate private deployments. The
 recommended client routes are in the
 [README](../README.md#connect-from-ai-clients). Do not treat implementation or
@@ -20,6 +25,15 @@ Results use the stable envelope defined in
 [`packages/contracts/src/mcp-results.ts`](../packages/contracts/src/mcp-results.ts):
 inspect `structuredContent` for `ok`, `data`, `error`, `truncated`, and
 `cursor`; the text content is a concise human message.
+
+Create, inspect, and revoke managed keys in `/dashboard/api-keys`. The complete
+key is returned once at creation; later list responses contain only safe
+metadata. Keys grant the same full MCP/RCE authority as their creator, expire
+in 1–365 days, and are limited to 10 active keys per principal. There are no
+scopes, recovery, ownership transfer, or rotation endpoint. Rotate by creating
+a replacement, updating the client, verifying it, then revoking the old key.
+The lifecycle contract is owned by
+[`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts).
 
 ## Normal workflow
 
@@ -80,6 +94,11 @@ makes a lost response recoverable without duplicating work.
   They are not public MCP tools. Retained artifact snapshots are bounded
   control-plane records, not durable task/session output or a source-control
   replacement.
+- Dashboard API-key lifecycle uses a separate internal contract and is not an
+  MCP tool. A key remains bound to the creator's durable principal across an
+  explicitly applied Access subject relink. Expiry and revocation are checked
+  on every request; `lastUsedAt` is coalesced telemetry and never an
+  authorization input.
 - Executors have no network by default. Dependency installation, arbitrary
   commands, and repository-defined deployments that need network access require
   an explicitly requested/configured `bridge` workspace, which is a weaker
