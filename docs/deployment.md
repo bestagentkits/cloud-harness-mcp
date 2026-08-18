@@ -55,7 +55,7 @@ Certbot edits in that file. Back up and deliberately reapply TLS configuration
 before any rerun.
 
 For an existing TLS-enabled installation, the Access-mode release deploy runs
-the dedicated dashboard-route upgrade before its public canary. It can also be
+the dedicated application-route upgrade before its public canary. It can also be
 run idempotently after deploying a release that contains it:
 
 ```bash
@@ -64,11 +64,14 @@ sudo /usr/local/sbin/cloud-harness-upgrade-nginx
 
 This command reads the configured `API_PUBLIC_HOSTS` allowlist without sourcing
 the runtime file, selects the unique matching TLS server block, and refuses
-ambiguous or pre-existing nonstandard dashboard routing. It backs up the live
-site under `/etc/cloud-harness-mcp/nginx-backups/`, changes only the two
-`/dashboard` locations, validates with `nginx -t`, and reloads nginx. A failed
-validation or reload restores the exact backup and attempts to reload it. The
-operation is idempotent. Do not use bootstrap for this upgrade.
+ambiguous or pre-existing nonstandard application routing. It backs up the live
+site under `/etc/cloud-harness-mcp/nginx-backups/`, installs the two
+`/dashboard` locations and the exact streaming `/mcp-api-key` location when
+they are missing, validates with `nginx -t`, and reloads nginx. Existing routes
+must match the managed blocks exactly after comments and blank lines are
+removed; otherwise the command fails closed without changing the site. A
+failed validation or reload restores the exact backup and attempts to reload
+it. The operation is idempotent. Do not use bootstrap for this upgrade.
 
 Review `/etc/cloud-harness-mcp/runtime.env` as root. Do not print or transfer
 its tokens through logs or shell history. Configure the optional GitHub App

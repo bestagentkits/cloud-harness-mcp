@@ -52,8 +52,9 @@ describe('ApiKeyStore', () => {
   it('rejects malformed, unknown, altered, expired, and foreign revocation uniformly', () => {
     const value = fixture();
     const created = value.keys.create(value.principalId, 'Automation', 1);
+    const replacement = created.apiKey.endsWith('A') ? 'B' : 'A';
     expect(value.keys.verify('not-a-key')).toBeUndefined();
-    expect(value.keys.verify(`${created.apiKey.slice(0, -1)}A`)).toBeUndefined();
+    expect(value.keys.verify(`${created.apiKey.slice(0, -1)}${replacement}`)).toBeUndefined();
     expect(value.keys.revoke('prn_foreign', created.key.id, 1)).toBeUndefined();
     value.setNow(created.key.expiresAt);
     expect(value.keys.verify(created.apiKey)).toBeUndefined();
