@@ -187,6 +187,12 @@ the unchanged live configuration; the config/key copy is retained for coherent
 manual recovery. A failed first install is disabled. Active job checkouts are
 not part of the snapshot.
 
+The deploy command takes a nonblocking host lock before reading or mutating the
+shared checkout, service, snapshots, or release metadata. A concurrent manual
+or automated invocation exits with status 75 and performs no rollback; rerun it
+only after the active deployment finishes. This prevents one release from
+rolling back another release's in-progress state.
+
 Release deployment installs the fixed `cloud-harness-upgrade-nginx` command.
 In Access mode it invokes the same fail-closed operation before the public
 canary; owner-bearer deployments do not change nginx. If a later manual
