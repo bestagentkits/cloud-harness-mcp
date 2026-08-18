@@ -31,13 +31,14 @@ fi
 
 install -m 0755 "$project_root/deploy/scripts/deploy-release.sh" /usr/local/sbin/cloud-harness-deploy
 install -m 0755 "$project_root/deploy/scripts/rollback-release.sh" /usr/local/sbin/cloud-harness-rollback
+install -m 0755 "$project_root/deploy/scripts/upgrade-nginx-dashboard.sh" /usr/local/sbin/cloud-harness-upgrade-nginx
 install -m 0755 "$project_root/deploy/scripts/deploy-ssh-wrapper.sh" /usr/local/sbin/cloud-harness-deploy-ssh
 install -m 0644 "$project_root/deploy/systemd/cloud-harness-mcp.service" /etc/systemd/system/cloud-harness-mcp.service
 install -m 0644 "$project_root/deploy/nginx/cloud-harness-mcp.conf" /etc/nginx/sites-available/cloud-harness-mcp.conf
 ln -sfn /etc/nginx/sites-available/cloud-harness-mcp.conf /etc/nginx/sites-enabled/cloud-harness-mcp.conf
 
 cat > /etc/sudoers.d/cloud-harness-mcp-deploy <<'EOF'
-dev ALL=(root) NOPASSWD: /usr/local/sbin/cloud-harness-deploy [0-9a-f]*, /usr/local/sbin/cloud-harness-rollback
+dev ALL=(root) NOPASSWD: /usr/local/sbin/cloud-harness-deploy [0-9a-f]*, /usr/local/sbin/cloud-harness-rollback, /usr/local/sbin/cloud-harness-upgrade-nginx
 EOF
 chmod 0440 /etc/sudoers.d/cloud-harness-mcp-deploy
 visudo -cf /etc/sudoers.d/cloud-harness-mcp-deploy

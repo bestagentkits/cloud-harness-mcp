@@ -30,7 +30,7 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=32m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    networks: [frontend, control]
+    networks: [frontend, control, api-egress]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
       interval: 10s
@@ -100,6 +100,8 @@ networks:
   control:
     internal: true
   ingress:
+    driver: bridge
+  api-egress:
     driver: bridge
   runner-egress:
     driver: bridge
