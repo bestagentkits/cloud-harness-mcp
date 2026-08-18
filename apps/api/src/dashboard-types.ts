@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import type { AuthInfo } from '@modelcontextprotocol/server';
-import type { InternalRunnerOperation, MetadataRunnerOperation, RunnerOperation, RunnerPrincipalSelector, RunnerResponse } from '@cloud-harness/contracts';
+import type { ApiKeyManagementOperation, ApiKeyManagementResponse, InternalRunnerOperation, MetadataRunnerOperation, RunnerOperation, RunnerPrincipalSelector, RunnerResponse } from '@cloud-harness/contracts';
 
 export type DashboardRequest = Request & { auth?: AuthInfo };
 
@@ -23,4 +23,9 @@ export interface DashboardRunnerClient {
     principal: RunnerPrincipalSelector,
     signal?: AbortSignal
   ): Promise<RunnerResponse>;
+  callApiKeys?(
+    operation: ApiKeyManagementOperation,
+    input: Record<string, unknown>,
+    principal: RunnerPrincipalSelector
+  ): Promise<ApiKeyManagementResponse>;
 }

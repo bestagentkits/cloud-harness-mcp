@@ -43,7 +43,7 @@ describe('dashboard static UI contract', () => {
   it('exposes accessible metadata navigation and only existing dashboard BFF controls', () => {
     for (const [path, label] of [
       ['/dashboard/projects', 'Projects'], ['/dashboard/artifacts', 'Artifacts'],
-      ['/dashboard/audit', 'Audit'], ['/dashboard/github', 'GitHub']
+      ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub']
     ]) {
       expect(html).toContain(`href="${path}"`);
       expect(html).toContain(`>${label}</a>`);
@@ -56,5 +56,18 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain('retentionSeconds');
     expect(script).toContain('Write-only');
     for (const forbidden of ['sessionStorage', 'document.cookie', 'secret.value', 'secretValue', 'privateKey', 'accessToken']) expect(script).not.toContain(forbidden);
+  });
+
+  it('keeps API keys transient while exposing create, list, and generation-fenced revoke controls', () => {
+    for (const text of [
+      'id="api-key-reveal-dialog"', 'This is the only time the complete key will be shown',
+      'full MCP access', 'arbitrary command execution', 'I have saved it'
+    ]) expect(html).toContain(text);
+    for (const contract of [
+      "api('/api-keys')", "api('/api-keys', { method: 'POST'", '`/api-keys/${',
+      "method: 'DELETE'", 'expiresInDays', 'expectedGeneration', 'apiKeyReveal.clear()'
+    ]) expect(script).toContain(contract);
+    for (const forbidden of ['localStorage', 'sessionStorage', 'document.cookie', 'console.', 'sendBeacon(', 'analytics']) expect(script).not.toContain(forbidden);
+    expect(html).not.toContain('value="chm_key_');
   });
 });

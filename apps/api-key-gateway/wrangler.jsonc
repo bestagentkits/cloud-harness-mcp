@@ -1,0 +1,28 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cloud-harness-api-key-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-18",
+  "workers_dev": false,
+  "preview_urls": false,
+  "send_metrics": false,
+  "observability": {
+    "enabled": false
+  },
+  "ratelimits": [
+    {
+      "name": "API_KEY_RATE_LIMITER",
+      "namespace_id": "2608181610",
+      "simple": {
+        "limit": 600,
+        "period": 60
+      }
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "api.harness.zuey.me",
+      "custom_domain": true
+    }
+  ]
+}

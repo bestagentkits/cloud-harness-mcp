@@ -41,7 +41,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) sessions.verify(request as DashboardRequest, response, next);
     else next();
   });
-  registerDashboardControlRoutes(router, runner, principal);
+  registerDashboardControlRoutes(router, runner, principal, config);
 
   router.get('/api/v1/workspaces', async (request: DashboardRequest, response, next) => {
     await call(runner, request, response, next, 'workspace_list', pageQuery.parse(request.query));

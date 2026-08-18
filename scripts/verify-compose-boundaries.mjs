@@ -51,9 +51,12 @@ const locationBlock = (pattern) => nginx.match(pattern)?.[0] ?? '';
 const dashboardEntry = locationBlock(/location = \/dashboard \{[^}]+\}/s);
 const dashboardPrefix = locationBlock(/location \^~ \/dashboard\/ \{[^}]+\}/s);
 const mcp = locationBlock(/location = \/mcp \{[^}]+\}/s);
+const apiKeyMcp = locationBlock(/location = \/mcp-api-key \{[^}]+\}/s);
 requireBoundary(dashboardEntry.includes('proxy_pass http://127.0.0.1:3100/dashboard;'), 'nginx dashboard entry point must preserve its upstream path');
 requireBoundary(dashboardPrefix.includes('proxy_pass http://127.0.0.1:3100/dashboard/;'), 'nginx dashboard prefix must preserve asset and BFF paths');
 for (const directive of ['proxy_http_version 1.1;', 'proxy_buffering off;', 'proxy_request_buffering off;', 'proxy_read_timeout 3600s;']) {
   requireBoundary(mcp.includes(directive), `nginx MCP streaming directive is missing: ${directive}`);
+  requireBoundary(apiKeyMcp.includes(directive), `nginx API-key MCP streaming directive is missing: ${directive}`);
 }
+requireBoundary(apiKeyMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key;'), 'nginx API-key MCP route must preserve its hidden upstream path');
 console.log('compose-boundaries=pass');

@@ -49,6 +49,30 @@ export function renderAuditIndex(events, cursor) {
   return `<div class="page-note"><strong>Retained redacted audit history.</strong> Events exclude secret values, provider credentials, and workspace command output.</div><section aria-labelledby="audit-list-heading"><h2 id="audit-list-heading">Audit events</h2><ul class="audit-list">${items}</ul>${cursor ? `<button id="load-more-audit" type="button" data-cursor="${escape(cursor)}">Load more</button>` : ''}</section>`;
 }
 
+export function renderApiKeyIndex(data) {
+  const keys = Array.isArray(data?.keys) ? data.keys : [];
+  const readiness = data?.readiness ?? { ready: true };
+  const activeCount = keys.filter((key) => key?.state === 'ACTIVE').length;
+  const publicUrl = readiness.ready === true ? publicMcpUrl(readiness.publicUrl ?? data?.publicUrl) : undefined;
+  const readinessNote = readiness.ready === false
+    ? '<p class="warning" role="status">API-key connections are not available yet. An operator must finish the dedicated gateway configuration.</p>'
+    : publicUrl ? `<p class="page-note"><strong>Static client endpoint</strong> <code class="mono wrap">${escape(publicUrl)}</code></p>` : '';
+  const items = keys.length ? keys.map((key) => renderApiKey(key)).join('') : '<li class="empty"><h3>No API keys yet.</h3><p>Create one when a client cannot complete the browser-based OAuth flow.</p></li>';
+  const creationDisabled = readiness.ready === false || activeCount >= 10;
+  const disabled = creationDisabled ? ' disabled' : '';
+  const limitNote = activeCount >= 10 ? '<p class="warning" role="status">The 10-active-key limit is reached. Revoke an active key before creating another.</p>' : '';
+  return `${readinessNote}<section class="panel" aria-labelledby="create-api-key-heading"><h2 id="create-api-key-heading">Create API key</h2><p class="warning"><strong>Full remote execution authority.</strong> This key grants full MCP access as your identity, including arbitrary command execution. It expires, cannot be recovered, and must be revoked if exposed.</p>${limitNote}<form id="create-api-key-form" class="stack-form"><label for="api-key-name">Key name</label><input id="api-key-name" name="name" required maxlength="100" autocomplete="off"${disabled}><label for="api-key-expiry">Expires after (days)</label><input id="api-key-expiry" name="expiryDays" type="number" inputmode="numeric" min="1" max="365" step="1" value="30" required${disabled}><label class="checkbox-label"><input name="authorityAcknowledged" type="checkbox" required${disabled}><span>I understand this key permits full MCP and command-execution access and will be shown only once.</span></label><button id="create-api-key-submit" type="submit"${disabled}>Create API key</button><p class="form-status" aria-live="polite"></p></form></section><section aria-labelledby="api-key-list-heading"><div class="record-heading"><div><h2 id="api-key-list-heading">API keys</h2><p>${escape(activeCount)} active of 10 · ${escape(keys.length)} total</p></div></div><ul class="record-list api-key-list">${items}</ul></section>`;
+}
+
+function renderApiKey(key) {
+  const keyId = key?.id;
+  const generation = Number(key?.generation);
+  const state = ['ACTIVE', 'EXPIRED', 'REVOKED'].includes(key?.state) ? key.state : 'UNKNOWN';
+  const action = state === 'ACTIVE' && typeof keyId === 'string' && Number.isSafeInteger(generation) && generation > 0
+    ? `<button class="danger revoke-api-key" type="button" data-key-id="${escape(keyId)}" data-generation="${escape(generation)}" data-key-name="${escape(key?.name)}">Revoke</button>` : '';
+  return `<li class="panel api-key-card"><div class="record-heading"><div><h3>${escape(key?.name)}</h3><p><code class="mono">${escape(key?.displayPrefix)}</code> <span class="status ${state === 'ACTIVE' ? 'active' : state === 'EXPIRED' ? 'expired' : ''}">${escape(stateLabel(state))}</span></p></div>${action}</div><dl class="facts"><dt>Created</dt><dd>${optionalTime(key?.createdAt)}</dd><dt>Expires</dt><dd>${optionalTime(key?.expiresAt)}</dd><dt>Last used</dt><dd>${optionalTime(key?.lastUsedAt)}</dd><dt>Revoked</dt><dd>${optionalTime(key?.revokedAt)}</dd></dl></li>`;
+}
+
 export function renderGitHub(status, callbackPending = false) {
   const installation = status.installation;
   const installationView = installation ? `<dl class="facts"><dt>Account</dt><dd>${escape(installation.accountLogin ?? installation.accountId)}</dd><dt>Status</dt><dd>${escape(installation.status)}</dd><dt>Installation ID</dt><dd class="mono">${escape(installation.installationId)}</dd><dt>Last checked</dt><dd>${installation.checkedAt ? time(installation.checkedAt) : 'Not yet reconciled'}</dd></dl>` : '<p>No GitHub App installation is bound to this identity.</p>';
@@ -75,3 +99,12 @@ export const repositoryName = (url) => { try { return new URL(url).pathname.repl
 const join = (base, name) => base === '.' ? name : `${base}/${name}`;
 const statusLabelRuntime = (status) => ({ queued: 'Queued', running: 'Running', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', blocked: 'Blocked' })[status] ?? 'Unknown';
 const formatBytes = (value) => Number.isFinite(value) ? `${Number(value).toLocaleString()} bytes` : 'Unknown';
+const stateLabel = (state) => ({ ACTIVE: 'Active', EXPIRED: 'Expired', REVOKED: 'Revoked', UNKNOWN: 'Unknown' })[state];
+const optionalTime = (value) => (typeof value === 'string' && value) || (typeof value === 'number' && Number.isFinite(value)) ? time(value) : 'Never';
+const publicMcpUrl = (value) => {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.pathname === '/mcp' && !url.username && !url.password && !url.search && !url.hash ? url.toString() : undefined;
+  } catch { return undefined; }
+};

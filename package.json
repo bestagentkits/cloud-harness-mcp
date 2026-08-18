@@ -11,12 +11,12 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner",
+    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway",
     "clean": "npm run clean --workspaces --if-present",
     "dev:api": "npm run dev -w @cloud-harness/api",
     "dev:runner": "npm run dev -w @cloud-harness/runner",
     "lint": "eslint .",
-    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner",
+    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway",
     "test": "vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism",
     "test:unit": "vitest run packages apps --exclude '**/*.docker.test.ts'",
     "test:integration": "vitest run test/integration --exclude '**/*.docker.test.ts'",

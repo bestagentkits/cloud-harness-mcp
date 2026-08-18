@@ -2,9 +2,16 @@ import {
   InternalRunnerRequestSchema,
   InternalRunnerResponseSchema,
   MetadataRunnerRequestSchema,
+  ApiKeyAuthenticationRequestSchema,
+  ApiKeyAuthenticationResponseSchema,
+  ApiKeyManagementRequestSchema,
+  ApiKeyManagementResponseSchema,
   RunnerRequestSchema,
   RunnerResponseSchema,
   type ApiConfig,
+  type ApiKeyAuthenticationResponse,
+  type ApiKeyManagementOperation,
+  type ApiKeyManagementResponse,
   type InternalRunnerOperation,
   type MetadataRunnerOperation,
   type RunnerOperation,
@@ -31,12 +38,42 @@ export class RunnerClient {
     return await this.callInternal('workspace_close_fenced', { workspaceId, expectedGeneration }, principal, signal);
   }
 
+  async callApiKeys(operation: ApiKeyManagementOperation, input: Record<string, unknown>, principal: RunnerPrincipalSelector): Promise<ApiKeyManagementResponse> {
+    const request = ApiKeyManagementRequestSchema.parse({ version: 1, principal, operation, input });
+    return await this.requestJson('/v1/internal/api-keys', request, ApiKeyManagementResponseSchema, () => ({
+      ok: false, message: 'Runner is unavailable',
+      error: { code: 'UNAVAILABLE', message: 'Runner is unavailable', retryable: true }, truncated: false
+    }));
+  }
+
+  async authenticateApiKey(apiKey: string): Promise<ApiKeyAuthenticationResponse> {
+    const request = ApiKeyAuthenticationRequestSchema.safeParse({ version: 1, apiKey });
+    if (!request.success) return { ok: false, error: 'authentication_failed' };
+    return await this.requestJson('/v1/internal/api-keys', request.data, ApiKeyAuthenticationResponseSchema, () => ({
+      ok: false, error: 'authentication_failed'
+    }));
+  }
+
   private async request(
     path: string,
     body: unknown,
     schema: typeof RunnerResponseSchema,
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
+    return await this.requestJson(path, body, schema, (error) => {
+      const timedOut = error instanceof Error && error.name === 'TimeoutError';
+      const message = timedOut ? 'Runner request timed out' : 'Runner is unavailable';
+      return { ok: false, message, error: { code: timedOut ? 'TIMEOUT' : 'UNAVAILABLE', message, retryable: true }, truncated: false };
+    }, signal);
+  }
+
+  private async requestJson<T>(
+    path: string,
+    body: unknown,
+    schema: { parse(value: unknown): T },
+    fallback: (error: unknown) => T,
+    signal?: AbortSignal
+  ): Promise<T> {
     const timeout = AbortSignal.timeout(this.config.requestTimeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     try {
@@ -49,8 +86,7 @@ export class RunnerClient {
       const responseBody: unknown = await response.json();
       return schema.parse(responseBody);
     } catch (error) {
-      const message = error instanceof Error && error.name === 'TimeoutError' ? 'Runner request timed out' : 'Runner is unavailable';
-      return { ok: false, message, error: { code: error instanceof Error && error.name === 'TimeoutError' ? 'TIMEOUT' : 'UNAVAILABLE', message, retryable: true }, truncated: false };
+      return fallback(error);
     }
   }
 

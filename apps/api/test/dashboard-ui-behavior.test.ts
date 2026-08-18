@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  conflictRecovery, createAsyncDialogController, createModalController, githubCallbackParameters,
+  apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
   renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm
 } from '../dashboard/dashboard.js';
-import { renderProjectDetail } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderProjectDetail } from '../dashboard/dashboard-render.js';
 
 class FakeElement {
   hidden = false;
@@ -11,6 +11,7 @@ class FakeElement {
   disabled = false;
   open = false;
   textContent = '';
+  value = '';
   items: FakeElement[] = [];
   focus = vi.fn();
   private readonly attributes = new Map<string, string>();
@@ -198,5 +199,69 @@ describe('dashboard UI behavior', () => {
     expect(html).toContain('Write-only');
     expect(html).not.toContain('must-not-render');
     expect(html).not.toContain('value="DEPLOY_TOKEN"');
+  });
+
+  it('validates and normalizes API-key creation input without retaining it', () => {
+    class FakeFormData {
+      get(name: string) { return name === 'name' ? '  CI client  ' : '30'; }
+    }
+    vi.stubGlobal('FormData', FakeFormData);
+    try { expect(apiKeyCreateInput({})).toEqual({ name: 'CI client', expiresInDays: 30 }); }
+    finally { vi.unstubAllGlobals(); }
+  });
+
+  it('reveals an API key once, copies it, then clears DOM and JS state on acknowledgement', async () => {
+    const dialog = new FakeElement(); const secretField = new FakeElement(); const copyButton = new FakeElement();
+    const acknowledgeButton = new FakeElement(); const status = new FakeElement(); const invoker = new FakeElement();
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) }; const reportError = vi.fn();
+    const reveal = createApiKeyRevealController({ dialog, secretField, copyButton, acknowledgeButton, status, clipboard, reportError });
+    const key = `chm_key_apk_${'a'.repeat(24)}.${'b'.repeat(43)}`;
+
+    expect(() => reveal.open('not-an-api-key', invoker)).toThrow('unavailable');
+    expect(secretField.value).toBe('');
+    reveal.open(key, invoker); await reveal.copy();
+    expect(secretField.value).toBe(key);
+    expect(clipboard.writeText).toHaveBeenCalledWith(key);
+    expect(status.textContent).toContain('copied');
+    acknowledgeButton.dispatch('click', {});
+    expect(secretField.value).toBe('');
+    expect(dialog.open).toBe(false);
+    expect(invoker.focus).toHaveBeenCalledOnce();
+    await reveal.copy();
+    expect(clipboard.writeText).toHaveBeenCalledOnce();
+    reveal.open(key, invoker); reveal.clear();
+    expect(secretField.value).toBe('');
+    expect(dialog.open).toBe(false);
+  });
+
+  it('clears the only API-key copy after clipboard failure and reports no secret', async () => {
+    const dialog = new FakeElement(); const secretField = new FakeElement(); const copyButton = new FakeElement();
+    const acknowledgeButton = new FakeElement(); const status = new FakeElement(); const invoker = new FakeElement();
+    const clipboard = { writeText: vi.fn().mockRejectedValue(new Error('denied')) }; const reportError = vi.fn();
+    const reveal = createApiKeyRevealController({ dialog, secretField, copyButton, acknowledgeButton, status, clipboard, reportError });
+    const key = `chm_key_apk_${'c'.repeat(24)}.${'d'.repeat(43)}`;
+
+    reveal.open(key, invoker); await reveal.copy();
+    expect(secretField.value).toBe('');
+    expect(dialog.open).toBe(false);
+    expect(reportError).toHaveBeenCalledOnce();
+    expect(reportError.mock.calls[0][0].message).not.toContain(key);
+    await reveal.copy();
+    expect(clipboard.writeText).toHaveBeenCalledOnce();
+  });
+
+  it('renders only safe API-key metadata and a generation-fenced revoke action', () => {
+    const raw = `chm_key_apk_${'e'.repeat(24)}.${'f'.repeat(43)}`;
+    const html = renderApiKeyIndex({ publicUrl: 'https://api.example/mcp', keys: [{
+      id: `apk_${'e'.repeat(24)}`, name: 'Automation', displayPrefix: 'chm_key_apk_eeee…', state: 'ACTIVE', generation: 3,
+      createdAt: 1_786_000_000_000, expiresAt: 1_787_000_000_000, lastUsedAt: null, revokedAt: null,
+      apiKey: raw, secretHash: 'must-not-render'
+    }] });
+    expect(html).toContain('Automation');
+    expect(html).toContain('https://api.example/mcp');
+    expect(html).toContain('chm_key_apk_eeee…');
+    expect(html).toContain('data-generation="3"');
+    expect(html).not.toContain(raw);
+    expect(html).not.toContain('must-not-render');
   });
 });

@@ -7,10 +7,11 @@ import { executeInternalRunnerOperation } from './internal-runner-operations.js'
 import { runnerRequestPrincipal } from './runner-request-principal.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { DashboardControlService } from './dashboard-control-service.js';
+import type { ApiKeyService } from './api-key-service.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.authorization', 'authorization', '*.token', '*.content', '*.command'] });
 
-export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService): Express {
+export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService): Express {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb', strict: true }));
@@ -33,6 +34,23 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
     try {
       const result = await executeInternalRunnerOperation(service, request.body, controls);
       response.status(result.ok ? 200 : 400).json(result);
+    } catch (error) {
+      sendRunnerError(response, error);
+    }
+  });
+  app.post('/v1/internal/api-keys', serviceAuth(config.serviceToken), (request: Request, response: Response) => {
+    if (!apiKeys) {
+      response.status(503).json({ ok: false, message: 'API key service unavailable', error: { code: 'UNAVAILABLE', message: 'API key service unavailable', retryable: true }, truncated: false });
+      return;
+    }
+    try {
+      if (request.body && typeof request.body === 'object' && 'apiKey' in request.body) {
+        const result = apiKeys.authenticate(request.body);
+        response.status(result.ok ? 200 : 401).json(result);
+        return;
+      }
+      const result = apiKeys.manage(request.body);
+      response.status(200).json(result);
     } catch (error) {
       sendRunnerError(response, error);
     }

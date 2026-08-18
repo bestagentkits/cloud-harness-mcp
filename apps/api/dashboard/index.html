@@ -17,6 +17,7 @@
         <a href="/dashboard/projects" data-section="projects">Projects</a>
         <a href="/dashboard/artifacts" data-section="artifacts">Artifacts</a>
         <a href="/dashboard/audit" data-section="audit">Audit</a>
+        <a href="/dashboard/api-keys" data-section="api-keys">API keys</a>
         <a href="/dashboard/github" data-section="github">GitHub</a>
         <div id="context-nav"></div>
       </nav>
@@ -48,6 +49,14 @@
     <p id="file-conflict-description">This item changed after you opened it. Your unsaved content is still in the editor.</p>
     <p id="file-conflict-status" class="status-message" aria-live="polite"></p>
     <div class="dialog-actions"><button id="cancel-conflict" type="button">Cancel</button><button id="copy-changes" type="button">Copy my changes</button><button id="review-latest" type="button">Review latest</button></div>
+  </dialog>
+  <dialog id="api-key-reveal-dialog" aria-labelledby="api-key-reveal-title" aria-describedby="api-key-reveal-description">
+    <h2 id="api-key-reveal-title">Copy this API key now</h2>
+    <p id="api-key-reveal-description">This is the only time the complete key will be shown. It cannot be recovered later. Anyone with it has full MCP access, including arbitrary command execution as your identity.</p>
+    <label for="api-key-secret">New API key</label>
+    <input id="api-key-secret" class="mono api-key-secret" type="text" readonly autocomplete="off" spellcheck="false">
+    <p id="api-key-copy-status" class="status-message" aria-live="polite"></p>
+    <div class="dialog-actions"><button id="copy-api-key" type="button">Copy API key</button><button id="acknowledge-api-key" type="button">I have saved it</button></div>
   </dialog>
   <script type="module" src="/dashboard/assets/dashboard.js"></script>
 </body>
