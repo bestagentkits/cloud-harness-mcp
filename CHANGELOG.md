@@ -1,3 +1,10 @@
+## [0.7.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.7.0...v0.7.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **deploy:** install API key nginx route ([fe85607](https://github.com/bestagentkits/cloud-harness-mcp/commit/fe85607b513f17a76a2f289500e44074149b9158))
+
 # [0.7.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.4...v0.7.0) (2026-08-18)
 
 
