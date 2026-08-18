@@ -1,7 +1,7 @@
 ---
 title: "Dashboard-managed API keys through a Cloudflare Worker gateway"
 description: "Add principal-bound static API keys without weakening Managed OAuth or origin Access."
-status: in_progress
+status: complete
 priority: P1
 effort: "6-9d"
 branch: codex/feat/dashboard-api-keys
@@ -32,8 +32,8 @@ Dashboard users can create, list, and revoke expiring API keys for static MCP cl
 | 2 | [Dual-auth origin](./phase-02-dual-auth-origin-boundary.md) | 1 | Complete |
 | 3 | [Dashboard lifecycle](./phase-03-dashboard-api-key-lifecycle.md) | 1, 2 | Complete |
 | 4 | [Worker gateway](./phase-04-cloudflare-worker-gateway.md) | 2 | Complete |
-| 5 | [Security verification](./phase-05-security-and-regression-verification.md) | 1–4 | In progress |
-| 6 | [Deploy, rollback, docs](./phase-06-deployment-rollback-and-documentation.md) | 1–5 | In progress |
+| 5 | [Security verification](./phase-05-security-and-regression-verification.md) | 1–4 | Complete |
+| 6 | [Deploy, rollback, docs](./phase-06-deployment-rollback-and-documentation.md) | 1–5 | Complete |
 
 ## Observable acceptance gates
 
@@ -49,7 +49,7 @@ Dashboard users can create, list, and revoke expiring API keys for static MCP cl
 - [x] G10 Create/revoke emit redacted principal-scoped audits using immutable key ID/generation.
 - [x] G11 Public runner/tool schemas, `tools/list`, OAuth discovery, and owner-bearer installs stay compatible.
 - [x] G12 v1→v2, restart, v2→v1 rollback, and dormant readiness preserve unrelated state.
-- [ ] G13 live canaries prove path-specific Access app selection, audience separation, both lanes, revoke, direct-origin denial, exact head, and zero secret retention.
+- [x] G13 live canaries prove path-specific Access app selection, audience separation, both lanes, revoke, direct-origin denial, exact head, and zero secret retention.
 
 ## Evidence and decision record
 
@@ -57,5 +57,7 @@ Dashboard users can create, list, and revoke expiring API keys for static MCP cl
 - Research: `../reports/researcher-260818-1610-api-key-auth-security.md`. Its native service-token recommendation is superseded because static clients need ordinary Bearer keys; Worker plus exact service assertion retains no-bypass origin security.
 - Baseline: `../260817-1321-13-cloudflare-oauth-dashboard/`.
 - Review: six phases swept against G1–G13; public MCP schemas remain untouched; rollback is explicit; unresolved decisions: none.
+- Release receipt: PR #42 merged as `c193dd09a8c8fcf1597ea620251dbcd61f51426e`; post-merge CI run `32147300865`, release `v0.7.1`, and production deploy run `32147597077` completed successfully.
+- Live receipt: exact `/mcp-api-key` Access selection returned 403 without a service assertion and JSON 401 with the pinned assertion but no API key. A one-day disposable key initialized through `https://api.harness.zuey.me/mcp`, listed 52 tools, was rejected on `https://harness.zuey.me/mcp`, and failed on the next request after revocation. The plaintext was absent from SQLite and the transient clipboard was cleared.
 
 <!-- slug: dashboard-managed-api-keys -->

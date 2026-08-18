@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "Deployment, rollback, and documentation"
-status: in_progress
+status: complete
 priority: P1
 effort: "1-1.5d"
 dependencies: [1, 2, 3, 4, 5]
@@ -50,10 +50,18 @@ Roll out dormant-first in reversible stages, then prove both public lanes and a 
 
 ## Success criteria
 
-- [ ] G12/G13 receipts record exact SHA, CI, deployments, hosts, revoke, rollback readiness, and secret-free evidence.
-- [ ] OAuth, GitHub/Google dashboard, and static Bearer clients work only on intended lanes.
-- [ ] Direct origin, wrong assertion, and revoked key remain denied.
+- [x] G12/G13 receipts record exact SHA, CI, deployments, hosts, revoke, rollback readiness, and secret-free evidence.
+- [x] OAuth, GitHub/Google dashboard, and static Bearer clients work only on intended lanes.
+- [x] Direct origin, wrong assertion, and revoked key remain denied.
 - [x] Docs state full authority, no scopes, no recovery, no rotation endpoint.
+
+## Live rollout receipt
+
+- Release `v0.7.1` deployed commit `c193dd09a8c8fcf1597ea620251dbcd61f51426e` after post-merge CI run `32147300865`; production run `32147597077` succeeded.
+- `harness.zuey.me/mcp-api-key` is protected by the separate path-scoped Access application and exact Service Auth policy. Without the Worker assertion it returned 403; with the assertion and no key it reached the origin and returned JSON 401.
+- `api.harness.zuey.me/mcp` returned bounded JSON failures for missing and malformed bearer values. A disposable one-day key initialized and listed 52 tools only through this Worker URL.
+- The same key was rejected on the OAuth URL, then rejected by the Worker on the first request after dashboard revocation. The dashboard recorded last use and revocation, the database contained no plaintext match, and the clipboard was cleared.
+- Production service readiness passed, nginx exposed the exact streaming route only to loopback origin, and `/etc/cloud-harness-mcp/runtime.env` remained root-owned mode 0600.
 
 ## Risks and rollback
 

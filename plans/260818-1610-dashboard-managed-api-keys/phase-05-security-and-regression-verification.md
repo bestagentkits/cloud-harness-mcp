@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Security, regression, and leak verification"
-status: in_progress
+status: complete
 priority: P1
 effort: "1d"
 dependencies: [1, 2, 3, 4]
@@ -50,7 +50,7 @@ Prove G1–G13 across contracts, API, runner, dashboard, Worker, migration, and 
 
 - [x] Every G1–G13 row has passing automated evidence or named Phase 6 canary.
 - [x] Compose/full verify pass on the reviewed working tree.
-- [ ] Docker/e2e pass at exact head in hosted CI; local API/runner image builds and Docker/E2E were unavailable due latency/timeouts.
+- [x] Docker/e2e pass at exact PR head and post-merge head in hosted CI; post-merge run `32147300865` completed both jobs successfully.
 - [x] Public MCP/OAuth behavior remains compatible in automated regression coverage.
 
 ## Risks and rollback
