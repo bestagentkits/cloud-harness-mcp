@@ -54,6 +54,22 @@ project's dedicated nginx target with the repository's HTTP template, including
 Certbot edits in that file. Back up and deliberately reapply TLS configuration
 before any rerun.
 
+For an existing TLS-enabled installation, the Access-mode release deploy runs
+the dedicated dashboard-route upgrade before its public canary. It can also be
+run idempotently after deploying a release that contains it:
+
+```bash
+sudo /usr/local/sbin/cloud-harness-upgrade-nginx
+```
+
+This command reads the configured `API_PUBLIC_HOSTS` allowlist without sourcing
+the runtime file, selects the unique matching TLS server block, and refuses
+ambiguous or pre-existing nonstandard dashboard routing. It backs up the live
+site under `/etc/cloud-harness-mcp/nginx-backups/`, changes only the two
+`/dashboard` locations, validates with `nginx -t`, and reloads nginx. A failed
+validation or reload restores the exact backup and attempts to reload it. The
+operation is idempotent. Do not use bootstrap for this upgrade.
+
 Review `/etc/cloud-harness-mcp/runtime.env` as root. Do not print or transfer
 its tokens through logs or shell history. Configure the optional GitHub App
 private-key file only if private clone is required; see
@@ -170,6 +186,14 @@ prior recorded release plus the database and artifacts when available, reusing
 the unchanged live configuration; the config/key copy is retained for coherent
 manual recovery. A failed first install is disabled. Active job checkouts are
 not part of the snapshot.
+
+Release deployment installs the fixed `cloud-harness-upgrade-nginx` command.
+In Access mode it invokes the same fail-closed operation before the public
+canary; owner-bearer deployments do not change nginx. If a later manual
+rollback must remove those routes, restore the printed backup path to
+`/etc/nginx/sites-available/cloud-harness-mcp.conf`, run `nginx -t`, and reload
+nginx; normal application rollback can leave the backward-compatible routes in
+place.
 
 Owner-bearer canary uses the private bearer path. Access canary requires an
 owner-provisioned Access service-token client ID/secret and the public HTTPS

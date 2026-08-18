@@ -78,6 +78,7 @@ header = "Accept: application/json, text/event-stream"
 EOF
   compose exec -T api node /app/scripts/deploy-canary.mjs
 elif [[ $auth_mode == cloudflare-access ]]; then
+  deploy/scripts/upgrade-nginx-dashboard.sh
   [[ -f $canary_credentials_file ]] || { echo "$canary_credentials_file is required for Access canary" >&2; false; }
   set -a
   source "$canary_credentials_file"
@@ -102,6 +103,7 @@ if [[ $previous_sha =~ ^[0-9a-f]{40}$ && $previous_sha != "$release_sha" ]]; the
 fi
 install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-deploy
 install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
+install -m 0755 deploy/scripts/upgrade-nginx-dashboard.sh /usr/local/sbin/cloud-harness-upgrade-nginx
 printf '%s\n' "$release_sha" > "$state/release-current"
 trap - ERR
 echo "deployed $release_sha"

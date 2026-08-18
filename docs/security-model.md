@@ -31,7 +31,10 @@ Untrusted execution input:
 The API is deliberately separated from Docker authority. A credential-free
 TCP proxy is the only Compose service with a loopback-published port. It joins
 the API frontend network but not the API/runner control network, and the API
-itself joins only internal networks. The runner has no
+joins the internal frontend and control networks plus a dedicated egress
+network required to retrieve the configured Cloudflare Access JWKS. JWKS
+fetching remains limited by the verifier's fixed URL, redirect rejection,
+timeouts, response bounds, and key-cache controls. The runner has no
 published port and is the only service with `/var/run/docker.sock`; it uses a
 separate egress network for DNS validation and optional GitHub App calls while
 the API/runner control network remains internal.

@@ -19,7 +19,9 @@ that Access application, not direct API integrations.
 The split is deliberate. The ingress proxy owns no secret or application
 logic; it only bridges host loopback to an internal frontend network. The API owns public HTTP, MCP negotiation, request
 security, and translation to a versioned private runner request. It has no
-published port, external network, Docker socket, or host job mount. The proxy
+published port, Docker socket, or host job mount. It has a dedicated egress
+network so the bounded Access verifier can retrieve the configured JWKS; its
+frontend and runner-control paths remain internal. The proxy
 cannot join the API/runner control network. The runner owns principal
 resolution, workspace lifecycle, SQLite metadata, repository materialization,
 retained artifact snapshots, secret encryption, GitHub App authorization,
