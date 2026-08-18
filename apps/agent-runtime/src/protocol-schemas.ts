@@ -1,11 +1,13 @@
 import { z } from 'zod';
+// Wire limits must remain aligned with apps/runner/src/agent-protocol.ts.
+export const MAX_PROTOCOL_RECORD_BYTES = 8 * 1024 * 1024;
+export const MAX_PROTOCOL_QUEUE_BYTES = 16 * 1024 * 1024;
+export const MAX_TOOL_RESULT_TEXT_BYTES = 2 * 1024 * 1024;
 
-export const MAX_PROTOCOL_RECORD_BYTES = 256 * 1024;
 export const MAX_QUEUED_RECORDS = 64;
-export const MAX_QUEUED_BYTES = 2 * 1024 * 1024;
 
 const RequestIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
-const BoundedTextSchema = z.string().max(128 * 1024);
+const BoundedTextSchema = z.string().max(MAX_TOOL_RESULT_TEXT_BYTES);
 const AgentIdSchema = z.string().regex(/^agent_[A-Za-z0-9_-]{20,80}$/);
 const ProfileIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
 const SafeCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);

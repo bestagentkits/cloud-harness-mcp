@@ -18,8 +18,14 @@ import {
   type AgentTombstone
 } from './agent-state-repository.js';
 import { DockerAgentGatewayControl, type AgentGatewayControl } from './agent-gateway-control.js';
+import {
+  AgentProtocolChannel,
+  MAX_TOOL_RESULT_RECORD_BYTES,
+  MAX_TOOL_RESULT_TEXT_BYTES,
+  type AgentInputRecord,
+  type AgentOutputRecord
+} from './agent-protocol.js';
 import { DockerAgentLauncher, type AgentLaunchSpec, type AgentLauncher, type AgentRuntimeProcess } from './agent-launcher.js';
-import { AgentProtocolChannel, type AgentInputRecord, type AgentOutputRecord } from './agent-protocol.js';
 import type { StateStore, WorkspaceRecord } from './state-store.js';
 
 const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
@@ -448,7 +454,7 @@ export class AgentManager {
         });
         this.requireRunnable(record);
         const serialized = JSON.stringify(result);
-        const text = Buffer.byteLength(serialized, 'utf8') <= 131_072 ? serialized : JSON.stringify({
+        const text = Buffer.byteLength(serialized, 'utf8') <= MAX_TOOL_RESULT_TEXT_BYTES ? serialized : JSON.stringify({
           ok: false, message: 'tool result exceeded the agent protocol bound',
           error: { code: 'LIMIT_EXCEEDED', message: 'tool result exceeded the agent protocol bound', retryable: false }, truncated: true
         });
@@ -757,7 +763,7 @@ export class AgentManager {
         maxEvents: this.config.limits.maxLogEventsPerAgent,
         maxOutputBytes: record.budget.maxOutputBytes,
         maxEventBytes: this.config.limits.maxLogEventBytes,
-        maxToolResultBytes: 262_144
+        maxToolResultBytes: MAX_TOOL_RESULT_RECORD_BYTES
       }
     };
   }

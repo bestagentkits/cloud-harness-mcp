@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -9,6 +9,7 @@ const certificatePath = join(outputRoot, 'server-cert.pem');
 const credentialPath = join(outputRoot, 'provider-api-key');
 
 await mkdir(outputRoot, { recursive: true, mode: 0o700 });
+await Promise.all([rm(keyPath, { force: true }), rm(certificatePath, { force: true }), rm(credentialPath, { force: true })]);
 await writeFile(credentialPath, `${randomBytes(32).toString('base64url')}\n`, { mode: 0o600 });
 const generated = spawnSync('openssl', [
   'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '1',

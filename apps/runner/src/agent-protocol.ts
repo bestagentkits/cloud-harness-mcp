@@ -2,11 +2,17 @@ import type { Readable, Writable } from 'node:stream';
 import { z } from 'zod';
 import { AgentProxyOperationSchema, HarnessError } from '@cloud-harness/contracts';
 
+// Wire limits must remain aligned with apps/agent-runtime/src/protocol-schemas.ts.
+export const MAX_PROTOCOL_RECORD_BYTES = 8 * 1024 * 1024;
+export const MAX_PROTOCOL_QUEUE_BYTES = 16 * 1024 * 1024;
+export const MAX_TOOL_RESULT_TEXT_BYTES = 2 * 1024 * 1024;
+export const MAX_TOOL_RESULT_RECORD_BYTES = 4 * 1024 * 1024;
+
 const requestId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 const boundedJson = z.unknown().refine((value) => {
   try {
     const serialized = JSON.stringify(value);
-    return serialized !== undefined && Buffer.byteLength(serialized, 'utf8') <= 262_144;
+    return serialized !== undefined && Buffer.byteLength(serialized, 'utf8') <= MAX_PROTOCOL_RECORD_BYTES;
   } catch {
     return false;
   }
@@ -91,7 +97,7 @@ export class AgentProtocolChannel {
   send(record: AgentInputRecord): Promise<void> {
     if (this.closed) return Promise.reject(new HarnessError('CONFLICT', 'agent protocol channel is closed', 409, false));
     const encoded = Buffer.from(`${JSON.stringify(record)}\n`);
-    if (encoded.byteLength > 262_144) return Promise.reject(new HarnessError('LIMIT_EXCEEDED', 'agent protocol input exceeds the record limit', 413, false));
+    if (encoded.byteLength > MAX_PROTOCOL_RECORD_BYTES) return Promise.reject(new HarnessError('LIMIT_EXCEEDED', 'agent protocol input exceeds the record limit', 413, false));
     this.writeChain = this.writeChain.then(async () => {
       if (!this.input.write(encoded)) {
         await new Promise<void>((resolve, reject) => {
@@ -130,19 +136,19 @@ export class AgentProtocolChannel {
   private feed(chunk: Buffer): void {
     if (this.closed) return;
     this.pending = Buffer.concat([this.pending, chunk]);
-    if (this.pending.byteLength > 2_097_152) {
+    if (this.pending.byteLength > MAX_PROTOCOL_QUEUE_BYTES) {
       this.fail(new Error('agent protocol receive queue exceeded its bound'));
       return;
     }
     for (;;) {
       const newline = this.pending.indexOf(0x0a);
       if (newline < 0) {
-        if (this.pending.byteLength > 262_144) this.fail(new Error('agent protocol record exceeds its bound'));
+        if (this.pending.byteLength > MAX_PROTOCOL_RECORD_BYTES) this.fail(new Error('agent protocol record exceeds its bound'));
         return;
       }
       const line = this.pending.subarray(0, newline);
       this.pending = this.pending.subarray(newline + 1);
-      if (line.byteLength === 0 || line.byteLength > 262_144) {
+      if (line.byteLength === 0 || line.byteLength > MAX_PROTOCOL_RECORD_BYTES) {
         this.fail(new Error('agent protocol record is invalid'));
         return;
       }

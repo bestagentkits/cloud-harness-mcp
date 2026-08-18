@@ -34,6 +34,33 @@ describe('bounded LF JSONL protocol', () => {
     expect(() => queue.feed(Buffer.from(record + record))).toThrow('queue overflow');
   });
 
+  it('carries the advertised maximum file arguments and results', async () => {
+    const output = new PassThrough();
+    output.resume();
+    const writer = new JsonlWriter(output);
+    await writer.write({
+      type: 'tool_request',
+      requestId: 'request-write',
+      toolCallId: 'call-write',
+      operation: 'files_write',
+      input: { path: 'proof.txt', content: 'a'.repeat(1_048_576) }
+    });
+    await writer.close();
+
+    const content = '\0'.repeat(262_144);
+    const queue = new InputRecordQueue();
+    queue.feed(Buffer.from(`${JSON.stringify({
+      type: 'tool_result',
+      requestId: 'request-read',
+      final: true,
+      isError: false,
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, data: { content } }) }]
+    })}\n`));
+    const record = queue.shift();
+    if (record?.type !== 'tool_result') throw new Error('expected tool result');
+    expect(JSON.parse(record.content[0]!.text)).toMatchObject({ data: { content } });
+  });
+
   it('rejects forbidden operations and caller-supplied gateway URLs', () => {
     const unsafeOperation = { ...createStartRecord(), tools: ['exec_run'] };
     expect(() => new InputRecordQueue().feed(Buffer.from(`${JSON.stringify(unsafeOperation)}\n`))).toThrow('schema');

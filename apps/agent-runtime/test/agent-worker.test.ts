@@ -182,6 +182,26 @@ describe('AgentSession worker lifecycle', () => {
     await expect(execution).resolves.toMatchObject({ content: [{ type: 'text', text: 'complete' }] });
   });
 
+  it('forwards validated tool arguments without redaction or truncation', async () => {
+    const emitted: OutputRecord[] = [];
+    const broker = new ProxyToolBroker((record) => emitted.push(record), createRedactor(), 64 * 1024);
+    const [definition] = broker.createDefinitions(['files_write']);
+    if (!definition) throw new Error('expected proxy tool definition');
+    const content = `export const key = 'sk-abcdefgh';\n${'a'.repeat(150_000)}`;
+    const execution = definition.execute('call-write', { path: 'proof.txt', content }, undefined, undefined, undefined as never);
+    const request = emitted.find((record) => record.type === 'tool_request');
+    if (!request || request.type !== 'tool_request') throw new Error('expected proxy tool request');
+    expect(request.input).toEqual({ path: 'proof.txt', content });
+    broker.acceptResult({
+      type: 'tool_result',
+      requestId: request.requestId,
+      final: true,
+      isError: false,
+      content: [{ type: 'text', text: 'written' }]
+    });
+    await expect(execution).resolves.toMatchObject({ content: [{ type: 'text', text: 'written' }] });
+  });
+
   it('maps a custom tool AbortSignal to request-scoped tool cancellation', async () => {
     const emitted: OutputRecord[] = [];
     const broker = new ProxyToolBroker((record) => emitted.push(record), createRedactor(), 64 * 1024);

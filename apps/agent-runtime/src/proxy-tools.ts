@@ -174,7 +174,7 @@ export class ProxyToolBroker {
       requestId,
       toolCallId: boundedToolCallId(toolCallId),
       operation,
-      input: this.#redactor.value(input, 128 * 1024)
+      input
     });
     return promise;
   }

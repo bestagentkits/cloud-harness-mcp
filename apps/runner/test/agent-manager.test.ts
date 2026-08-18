@@ -228,6 +228,31 @@ describe('AgentManager', () => {
     store.close();
   });
 
+  it('returns a maximum files_read payload without protocol truncation', async () => {
+    const { manager, record, launcher, toolExecutor, store } = setup();
+    const content = '\0'.repeat(262_144);
+    toolExecutor.mockResolvedValueOnce({ ok: true, message: 'read', data: { content }, truncated: false });
+    await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
+    await waitForRunning(manager, record);
+    const chunks: Buffer[] = [];
+    launcher.inputs[0]!.on('data', (chunk: Buffer) => chunks.push(chunk));
+    launcher.outputs[0]!.write(`${JSON.stringify({
+      type: 'tool_request', requestId: 'request-large-read', toolCallId: 'call-large-read',
+      operation: 'files_read', input: { path: 'README.md', limit: 262_144 }
+    })}\n`);
+    await vi.waitFor(() => {
+      const records = Buffer.concat(chunks).toString('utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(records.some((item) => item.type === 'tool_result')).toBe(true);
+    });
+    const records = Buffer.concat(chunks).toString('utf8').trim().split('\n').map((line) => JSON.parse(line) as {
+      type: string;
+      content?: Array<{ text: string }>;
+    });
+    const result = records.find((item) => item.type === 'tool_result');
+    expect(JSON.parse(result?.content?.[0]?.text ?? '{}')).toMatchObject({ data: { content } });
+    store.close();
+  });
+
   it('fences a settled parent and cancels descendants post-order before terminal persistence', async () => {
     const { manager, record, launcher, repository, store } = setup();
     const parentSpawn = await manager.dispatch('owner', record, 'agent_spawn', spawnInput());

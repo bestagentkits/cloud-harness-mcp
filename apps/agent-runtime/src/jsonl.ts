@@ -3,8 +3,8 @@ import type { Writable } from 'node:stream';
 import type { z } from 'zod';
 import {
   InputRecordSchema,
+  MAX_PROTOCOL_QUEUE_BYTES,
   MAX_PROTOCOL_RECORD_BYTES,
-  MAX_QUEUED_BYTES,
   MAX_QUEUED_RECORDS,
   OutputRecordSchema,
   type InputRecord,
@@ -38,7 +38,7 @@ export class JsonlRecordQueue<T> {
     this.#schema = schema;
     this.#maxRecordBytes = options.maxRecordBytes ?? MAX_PROTOCOL_RECORD_BYTES;
     this.#maxQueuedRecords = options.maxQueuedRecords ?? MAX_QUEUED_RECORDS;
-    this.#maxQueuedBytes = options.maxQueuedBytes ?? MAX_QUEUED_BYTES;
+    this.#maxQueuedBytes = options.maxQueuedBytes ?? MAX_PROTOCOL_QUEUE_BYTES;
   }
 
   feed(chunk: Buffer): void {
