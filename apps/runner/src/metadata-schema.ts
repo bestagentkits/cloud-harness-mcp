@@ -11,12 +11,11 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number };
-    if (row.version === 1) {
+    if (row.version === 2) {
       database.exec('COMMIT');
       return;
     }
-    if (row.version !== 0) throw new Error(`unsupported metadata schema version ${row.version}`);
-    database.exec(`
+    if (row.version === 0) database.exec(`
       CREATE TABLE projects (
         id TEXT PRIMARY KEY,
         principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
@@ -90,6 +89,44 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
         UNIQUE(principal_id, id)
       );
       CREATE INDEX audit_principal_created ON audit_events(principal_id, created_at DESC, id DESC);
+      UPDATE metadata_schema_meta SET version = 1 WHERE singleton = 1;
+    `);
+    const current = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
+    if (current === 1) database.exec(`
+      CREATE TABLE api_keys (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+        name TEXT NOT NULL,
+        display_prefix TEXT NOT NULL,
+        secret_hash BLOB NOT NULL UNIQUE,
+        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'REVOKED')),
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        revoked_at INTEGER,
+        UNIQUE(principal_id, id)
+      );
+      CREATE INDEX api_keys_principal_created ON api_keys(principal_id, created_at DESC, id);
+      CREATE INDEX api_keys_active_expiry ON api_keys(principal_id, state, expires_at);
+      UPDATE metadata_schema_meta SET version = 2 WHERE singleton = 1;
+    `);
+    const migrated = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
+    if (migrated !== 2) throw new Error(`unsupported metadata schema version ${migrated}`);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function downgradeMetadataSchemaToV1(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+    if (!row || row.version !== 2) throw new Error('metadata schema must be version 2 before downgrade');
+    database.exec(`
+      DROP TABLE api_keys;
       UPDATE metadata_schema_meta SET version = 1 WHERE singleton = 1;
     `);
     database.exec('COMMIT');

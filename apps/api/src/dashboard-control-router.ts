@@ -1,5 +1,5 @@
 import type { NextFunction, Response, Router } from 'express';
-import type { MetadataRunnerOperation, RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { ApiKeyManagementResponseSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -11,7 +11,8 @@ const createName = z.object({ name: z.string().trim().min(1).max(100), expectedG
 export function registerDashboardControlRoutes(
   router: Router,
   runner: DashboardRunnerClient,
-  principal: (request: DashboardRequest, response: Response) => RunnerPrincipalSelector | undefined
+  principal: (request: DashboardRequest, response: Response) => RunnerPrincipalSelector | undefined,
+  config?: ApiConfig
 ): void {
   router.get('/api/v1/projects', endpoint('project_list', () => ({})));
   router.post('/api/v1/projects', endpoint('project_create', (request) => createName.parse(request.body)));
@@ -33,6 +34,13 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/github/setup', endpoint('github_setup_begin', (request) => request.body as Record<string, unknown>));
   router.post('/api/v1/github/complete', endpoint('github_setup_complete', (request) => request.body as Record<string, unknown>));
   router.post('/api/v1/github/reconcile', endpoint('github_reconcile', () => ({})));
+  router.get('/api/v1/api-keys', apiKeyEndpoint('api_key_list', () => ({})));
+  router.post('/api/v1/api-keys', apiKeyEndpoint('api_key_create', (request) => z.object({
+    name: z.string().trim().min(1).max(100), expiresInDays: z.number().int().min(1).max(365)
+  }).strict().parse(request.body)));
+  router.delete('/api/v1/api-keys/:keyId', apiKeyEndpoint('api_key_revoke', (request) => ({
+    keyId: internalId('apk').parse(request.params.keyId), ...generation.parse(request.body)
+  })));
 
   function endpoint(operation: MetadataRunnerOperation, input: (request: DashboardRequest) => Record<string, unknown>) {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
@@ -41,6 +49,41 @@ export function registerDashboardControlRoutes(
         if (!selected) return;
         if (!runner.callInternal) throw new Error('dashboard controls are unavailable');
         sendRunnerResponse(response, operation, await runner.callInternal(operation, input(request), selected));
+      } catch (error) { next(error); }
+    };
+  }
+
+  function apiKeyEndpoint(operation: ApiKeyManagementOperation, input: (request: DashboardRequest) => Record<string, unknown>) {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      try {
+        const selected = principal(request, response);
+        if (!selected) return;
+        if (!runner.callApiKeys) {
+          response.status(503).json({ error: 'unavailable', message: 'API key authentication is not enabled.' });
+          return;
+        }
+        if (!config?.apiKeyAuthEnabled && operation === 'api_key_create') {
+          response.status(503).json({ error: 'unavailable', message: 'API key authentication is not enabled.' });
+          return;
+        }
+        const result = ApiKeyManagementResponseSchema.parse(await runner.callApiKeys(operation, input(request), selected));
+        if (!result.ok) {
+          const status = result.error.code === 'CONFLICT' ? 409 : result.error.code === 'LIMIT_EXCEEDED' ? 429 : 503;
+          response.status(status).json({ error: result.error.code.toLowerCase(), message: status === 409 ? 'This API key changed after you opened it.' : result.message });
+          return;
+        }
+        if (result.operation === 'api_key_list') {
+          response.json({ data: {
+            keys: result.data.keys,
+            readiness: config?.apiKeyAuthEnabled
+              ? { ready: true, publicUrl: config.apiKeyGatewayPublicUrl }
+              : { ready: false }
+          } });
+        } else if (result.operation === 'api_key_create') {
+          response.json({ data: { key: result.data.key, apiKey: result.data.apiKey } });
+        } else {
+          response.json({ data: { key: result.data.key } });
+        }
       } catch (error) { next(error); }
     };
   }

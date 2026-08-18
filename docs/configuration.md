@@ -47,6 +47,37 @@ paths are [`apps/api/src/auth.ts`](../apps/api/src/auth.ts) and
 only from API to runner. Secret-valued settings accept their documented
 `_FILE` form and must meet schema length/placeholder checks.
 
+### Dashboard-managed API-key gateway
+
+The static-client lane is an opt-in extension of `cloudflare-access`, not a
+third authentication mode. `API_KEY_AUTH_ENABLED=true` requires all of:
+
+- `API_KEY_GATEWAY_ACCESS_AUDIENCE`, the audience of the separate Access
+  application scoped to exact `/mcp-api-key`;
+- `API_KEY_GATEWAY_SERVICE_SUBJECT`, the normalized `cf-service:` subject
+  observed from the dedicated Worker service token; and
+- `API_KEY_GATEWAY_PUBLIC_URL`, the client-facing Worker URL, currently
+  `https://api.harness.zuey.me/mcp`.
+
+The gateway audience must differ from the main `/mcp` and `/dashboard`
+application audience. Partial configuration and enabling this lane in
+`owner-bearer` mode fail validation. The exact combinations and subject shape
+are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
+
+The Worker stores `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` as
+Cloudflare Worker secrets, never in the runtime environment, Wrangler
+manifest, or repository. They belong only to the Service Auth policy of the
+path-scoped gateway application. Its manifest also owns an aggregate
+Cloudflare Rate Limiting binding for the exact gateway route: 600 requests per
+60 seconds in each Cloudflare location. Limiter exhaustion returns JSON `429`;
+a missing or failed binding returns JSON `503`. This eventual, edge-local cap
+is defense in depth; the origin's per-credential limits remain authoritative.
+The secret-free route and proxy contract are owned by
+[`apps/api-key-gateway/wrangler.jsonc`](../apps/api-key-gateway/wrangler.jsonc)
+and
+[`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
+
 Access principals are durable exact `(issuer, subject)` identities. Email and
 display name are never an authorization or account-link key. The first Access
 cutover can bind one legacy owner only through the complete explicit legacy
@@ -114,6 +145,14 @@ keyring, quiescing writes, and using the runner-only re-encryption entry point d
 [operations guide](operations.md#secret-key-rotation). Missing or invalid key
 material disables secret-dependent operations without exposing key details;
 non-secret dashboard reads remain available.
+
+Dashboard-managed MCP API keys use a different write-only contract from
+encrypted environment secrets. The runner stores only a SHA-256 digest and
+safe metadata; the complete random key crosses the authenticated, CSRF-
+protected Dashboard response exactly once. Lifecycle limits and response
+schemas are owned by
+[`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts)
+and [`apps/runner/src/api-key-store.ts`](../apps/runner/src/api-key-store.ts).
 
 ## Optional GitHub App repository access
 

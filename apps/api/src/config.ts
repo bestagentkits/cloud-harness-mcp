@@ -7,6 +7,8 @@ function secret(name: string): string | undefined {
   return process.env[name];
 }
 
+const environment = (name: string): string | undefined => process.env[name];
+
 const csv = (value: string | undefined, fallback = '') => (value ?? fallback).split(',').map((entry) => entry.trim()).filter(Boolean);
 
 export function loadApiConfig(): ApiConfig {
@@ -25,5 +27,9 @@ export function loadApiConfig(): ApiConfig {
     allowedOrigins: csv(process.env.API_ALLOWED_ORIGINS),
     requestTimeoutMs: process.env.REQUEST_TIMEOUT_MS,
     maxBodyBytes: process.env.MAX_BODY_BYTES
+    ,apiKeyAuthEnabled: environment('API_KEY_AUTH_ENABLED'),
+    apiKeyGatewayAccessAudience: environment('API_KEY_GATEWAY_ACCESS_AUDIENCE'),
+    apiKeyGatewayServiceSubject: environment('API_KEY_GATEWAY_SERVICE_SUBJECT'),
+    apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL')
   });
 }

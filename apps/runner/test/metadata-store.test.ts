@@ -33,7 +33,7 @@ describe('MetadataStore', () => {
   it('migrates once, survives restart, and enforces owner-qualified foreign keys', () => {
     const { path, owner, foreign, store, keyring } = fixture();
     const { project, environment } = projectEnvironment(store, owner);
-    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(1);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(2);
     expect(() => store.database.prepare(`INSERT INTO environments
       (id, principal_id, project_id, name, state, generation, created_at, updated_at)
       VALUES (?, ?, ?, 'Foreign', 'ACTIVE', 1, 1, 1)`).run(`env_${'x'.repeat(24)}`, foreign, project.id)).toThrow();

@@ -1,0 +1,11 @@
+{
+  "name": "@cloud-harness/api-key-gateway",
+  "version": "0.6.4",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && wrangler deploy --dry-run --outdir dist/worker",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

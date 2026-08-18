@@ -12,6 +12,8 @@ const config: ApiConfig = {
   host: '127.0.0.1', port: 3000, authMode: 'cloudflare-access', ownerId: 'owner',
   accessIssuer: 'https://team.cloudflareaccess.com', accessAudience: 'audience',
   accessJwksUrl: 'https://team.cloudflareaccess.com/cdn-cgi/access/certs', runnerUrl: 'http://runner:3001',
+  apiKeyAuthEnabled: true, apiKeyGatewayAccessAudience: 'api-key-audience',
+  apiKeyGatewayServiceSubject: 'cf-service:d29ya2Vy', apiKeyGatewayPublicUrl: 'https://api.example/mcp',
   runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['dashboard.example'],
   allowedOrigins: ['https://dashboard.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536
 };
@@ -41,6 +43,12 @@ beforeEach(async () => {
         workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkMode: 'none', generation: 7,
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z'
       } };
+    }),
+    callApiKeys: vi.fn(async (operation) => {
+      const key = { id: `apk_${'k'.repeat(24)}`, name: 'CLI', displayPrefix: 'chm_key_apk_kkkk…', state: 'ACTIVE' as const, generation: 1, createdAt: 1, expiresAt: 2, lastUsedAt: null, revokedAt: null };
+      if (operation === 'api_key_list') return { ok: true as const, operation, data: { keys: [key] }, truncated: false as const };
+      if (operation === 'api_key_create') return { ok: true as const, operation, data: { key, apiKey: `chm_key_apk_${'k'.repeat(24)}.${'s'.repeat(43)}` }, truncated: false as const };
+      return { ok: true as const, operation, data: { key: { ...key, state: 'REVOKED' as const, generation: 2, revokedAt: 2 } }, truncated: false as const };
     })
   };
   const app = express();
@@ -140,5 +148,25 @@ describe('dashboard BFF', () => {
     });
     expect(response.status).toBe(503);
     expect(calls.some((call) => call.operation === 'workspace_close')).toBe(false);
+  });
+
+  it('lists safe key metadata and requires CSRF for one-time create and revoke', async () => {
+    const listed = await send('/api/v1/api-keys');
+    expect(listed.status).toBe(200);
+    expect(listed.json.data.readiness).toEqual({ ready: true, publicUrl: 'https://api.example/mcp' });
+    expect(listed.text).not.toContain('chm_key_apk_kkkkkkkkkkkkkkkkkkkkkkkk.s');
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const created = await send('/api/v1/api-keys', { method: 'POST', headers, body: JSON.stringify({ name: 'CLI', expiresInDays: 30 }) });
+    expect(created.status).toBe(200);
+    expect(created.json.data.apiKey).toMatch(/^chm_key_/);
+    const revokeBody = JSON.stringify({ expectedGeneration: 1 });
+    const revoked = await send(`/api/v1/api-keys/apk_${'k'.repeat(24)}`, {
+      method: 'DELETE', headers: { ...headers, 'content-length': String(Buffer.byteLength(revokeBody)) }, body: revokeBody
+    });
+    expect(revoked.status).toBe(200);
+    expect(revoked.text).not.toContain('.ssss');
   });
 });

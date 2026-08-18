@@ -42,6 +42,23 @@ describe('contracts', () => {
     expect(() => ApiConfigSchema.parse({ ...access, bearerToken: 'owner-token-that-is-long-enough-123456' })).toThrow();
   });
 
+  it('enables the API-key gateway only with a separate complete Access audience', () => {
+    const access = {
+      ...commonApiConfig, authMode: 'cloudflare-access' as const,
+      accessIssuer: 'https://team.cloudflareaccess.com', accessAudience: 'main-audience',
+      accessJwksUrl: 'https://team.cloudflareaccess.com/cdn-cgi/access/certs'
+    };
+    const gateway = {
+      apiKeyAuthEnabled: true, apiKeyGatewayAccessAudience: 'gateway-audience',
+      apiKeyGatewayServiceSubject: 'cf-service:d29ya2Vy', apiKeyGatewayPublicUrl: 'https://api.example/mcp'
+    };
+    expect(ApiConfigSchema.parse({ ...access, ...gateway }).apiKeyAuthEnabled).toBe(true);
+    expect(() => ApiConfigSchema.parse({ ...access, ...gateway, apiKeyGatewayAccessAudience: 'main-audience' })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...access, apiKeyAuthEnabled: true })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...commonApiConfig, bearerToken: 'owner-token-that-is-long-enough-123456', ...gateway })).toThrow();
+    expect(() => ApiConfigSchema.parse({ ...access, apiKeyGatewayPublicUrl: 'https://api.example/mcp' })).toThrow();
+  });
+
   it('accepts only explicit owner or verified external runner principal selectors', () => {
     const base = { version: 2, operation: 'workspace_list', input: {} } as const;
     expect(RunnerRequestSchema.parse({ ...base, principal: { kind: 'owner', ownerId: 'owner' } }).principal.kind).toBe('owner');

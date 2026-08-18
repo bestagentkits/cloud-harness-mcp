@@ -20,6 +20,7 @@ export function createDashboardAssetsRouter(): Router {
     '/artifacts',
     '/audit',
     '/github',
+    '/api-keys',
   ], (_request, response) => response.sendFile('index.html', options));
   return router;
 }

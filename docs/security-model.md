@@ -81,6 +81,34 @@ These controls are implemented in
 [`apps/api/src/app.ts`](../apps/api/src/app.ts). Process-local limits reset on
 API restart and are not a distributed denial-of-service control.
 
+Dashboard-managed API keys add a separate static-client lane without weakening
+the Managed OAuth lane. The public `api.harness.zuey.me/mcp` Worker is a fixed
+streaming proxy to exact `harness.zuey.me/mcp-api-key`: it rebuilds a small
+header allowlist, discards caller-supplied Cloudflare and forwarding identity,
+and injects its own Access service-token headers. The hidden origin path is
+protected by a separate path-scoped Access application and audience. The
+origin requires both a cryptographically verified assertion for the exactly
+pinned gateway service subject and a valid principal-bound API key. Neither
+credential is sufficient alone, and the reserved gateway subject is rejected
+on the normal `/mcp` route. Before forwarding, the Worker enforces the
+manifest-owned aggregate Rate Limiting binding and fails closed if the binding
+cannot answer. That edge-local, eventually consistent cap is defense in depth;
+the origin still enforces authoritative per-credential concurrency and request
+limits. The executable owners are
+[`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts),
+[`apps/api/src/auth.ts`](../apps/api/src/auth.ts), and
+[`apps/runner/src/api-key-store.ts`](../apps/runner/src/api-key-store.ts).
+
+An API key inherits its creator's full MCP authority, including arbitrary
+remote command execution. It is not a fine-grained capability and has no tool
+scopes. The browser can create, list, and revoke keys only through the existing
+Access-authenticated, same-origin CSRF boundary. Plaintext is shown once;
+SQLite retains only the SHA-256 digest and non-secret metadata. Expiry is
+mandatory, revocation takes effect on the next request, and authentication has
+no positive cache. Treat disclosure as full account compromise: revoke the key,
+inspect redacted audit and request metadata, and create a replacement only
+after the leak path is closed.
+
 In owner-bearer mode, rotate `MCP_BEARER_TOKEN` after suspected disclosure and
 restart the API. In Access mode, revoke at Access/IdP and verify the edge no
 longer forwards an accepted assertion. Rotate `RUNNER_TOKEN` independently and
@@ -139,7 +167,8 @@ credentials. Their manifest parsing and execution owner is
 Workspace paths are server-generated and checked beneath the configured jobs
 root. Worker paths reject absolute/traversal paths and symlink escapes. SQLite
 stores workspace/principal, project/environment, encrypted-secret reference,
-GitHub installation, artifact metadata, and redacted audit state. Artifact
+hashed API-key metadata, GitHub installation, artifact metadata, and redacted
+audit state. Artifact
 payloads use a separate runner-confined bounded root. Raw secret values are
 encrypted with a versioned runner-held keyring and are never returned to the
 browser; the keyring and GitHub App private key never cross into API, ingress,

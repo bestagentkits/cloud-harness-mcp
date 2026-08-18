@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import pino from 'pino';
 import { createRunnerApp } from './app.js';
 import { ArtifactStore } from './artifact-store.js';
+import { ApiKeyService } from './api-key-service.js';
+import { ApiKeyStore } from './api-key-store.js';
 import { loadRunnerConfigWithReadiness } from './config.js';
 import { DashboardControlService } from './dashboard-control-service.js';
 import { GitHubApiInstallationVerifier } from './github-api-installation-verifier.js';
@@ -25,6 +27,12 @@ try {
   logger.error('secret operations disabled because the keyring configuration is invalid');
 }
 const metadata = new MetadataStore(config.stateDb, keyring, secretReadinessError);
+const apiKeyStore = new ApiKeyStore(store.database, (database, principalId, action, key) => {
+  metadata.recordAuditInTransaction(database, principalId, action, 'api_key', key.id, key.generation, {
+    expiresAt: key.expiresAt
+  });
+});
+const apiKeys = new ApiKeyService(store, apiKeyStore);
 const githubInstallations = new SqliteGitHubInstallationStore(store.database);
 const githubBinding = config.githubApp
   ? new GitHubBindingService(new GitHubSetupStateStore(store.database), githubInstallations, new GitHubApiInstallationVerifier(config.githubApp))
@@ -50,7 +58,7 @@ artifactReaper.unref();
 const service = new WorkspaceService(config, store, metadata, githubInstallations);
 const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding);
 await service.start();
-const server = createServer(createRunnerApp(config, service, controls));
+const server = createServer(createRunnerApp(config, service, controls, apiKeys));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {

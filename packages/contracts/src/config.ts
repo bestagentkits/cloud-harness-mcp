@@ -3,6 +3,7 @@ import { z } from 'zod';
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
 
 const httpsUrl = z.url().refine((value) => new URL(value).protocol === 'https:', 'HTTPS URL required');
+const enabled = z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false);
 
 const principalRelink = z.object({
   oldIssuer: httpsUrl,
@@ -23,6 +24,10 @@ export const ApiConfigSchema = z.object({
   accessIssuer: httpsUrl.optional(),
   accessAudience: z.string().min(1).max(512).optional(),
   accessJwksUrl: httpsUrl.optional(),
+  apiKeyAuthEnabled: enabled,
+  apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
+  apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
+  apiKeyGatewayPublicUrl: httpsUrl.optional(),
   runnerUrl: z.url(),
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),
@@ -32,9 +37,11 @@ export const ApiConfigSchema = z.object({
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
+  const apiKeyValues = [config.apiKeyGatewayAccessAudience, config.apiKeyGatewayServiceSubject, config.apiKeyGatewayPublicUrl];
   if (mode === 'owner-bearer') {
     if (!config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'bearer token is required in owner-bearer mode' });
     if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: 'Cloudflare Access settings are forbidden in owner-bearer mode' });
+    if (config.apiKeyAuthEnabled || apiKeyValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway is only valid in cloudflare-access mode' });
     return;
   }
   if (config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'owner bearer token is forbidden in cloudflare-access mode' });
@@ -44,6 +51,20 @@ export const ApiConfigSchema = z.object({
     ['accessJwksUrl', config.accessJwksUrl]
   ] as const) {
     if (!value) context.addIssue({ code: 'custom', path: [path], message: `${path} is required in cloudflare-access mode` });
+  }
+  if (config.apiKeyAuthEnabled) {
+    for (const [path, value] of [
+      ['apiKeyGatewayAccessAudience', config.apiKeyGatewayAccessAudience],
+      ['apiKeyGatewayServiceSubject', config.apiKeyGatewayServiceSubject],
+      ['apiKeyGatewayPublicUrl', config.apiKeyGatewayPublicUrl]
+    ] as const) {
+      if (!value) context.addIssue({ code: 'custom', path: [path], message: `${path} is required when API key authentication is enabled` });
+    }
+    if (config.apiKeyGatewayAccessAudience === config.accessAudience) {
+      context.addIssue({ code: 'custom', path: ['apiKeyGatewayAccessAudience'], message: 'API key gateway audience must differ from the main Access audience' });
+    }
+  } else if (apiKeyValues.some((value) => value !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway settings require API key authentication to be enabled' });
   }
 });
 

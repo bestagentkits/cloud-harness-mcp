@@ -1,6 +1,6 @@
 import { api } from './dashboard-api.js';
 import {
-  renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderProjectDetail,
+  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderProjectDetail,
   renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName
 } from './dashboard-render.js';
 
@@ -76,6 +76,49 @@ export function resetWriteOnlyFields(form) {
   for (const field of form.querySelectorAll('input[data-write-only]')) field.value = '';
 }
 
+export function apiKeyCreateInput(form) {
+  const values = new FormData(form);
+  const name = String(values.get('name') ?? '').trim();
+  const expiresInDays = Number(values.get('expiryDays'));
+  if (!name || name.length > 100 || !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 365) {
+    throw new Error('Enter a key name and an expiry from 1 to 365 whole days.');
+  }
+  return { name, expiresInDays };
+}
+
+export function createApiKeyRevealController({ dialog, secretField, copyButton, acknowledgeButton, status, clipboard, reportError }) {
+  let apiKey; let invoker;
+  function clear() { apiKey = undefined; secretField.value = ''; status.textContent = ''; }
+  function dismiss(restoreFocus = true) {
+    clear();
+    if (dialog.open) dialog.close();
+    if (restoreFocus) invoker?.focus({ preventScroll: true });
+    invoker = undefined;
+  }
+  function open(value, source) {
+    if (typeof value !== 'string' || !/^chm_key_apk_[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/.test(value)) {
+      throw new Error('The new API key was unavailable. Create a replacement key.');
+    }
+    clear(); apiKey = value; invoker = source; secretField.value = value;
+    dialog.showModal(); copyButton.focus({ preventScroll: true });
+  }
+  async function copy() {
+    const value = apiKey;
+    if (!value) return;
+    try {
+      await clipboard.writeText(value);
+      if (apiKey === value && dialog.open) status.textContent = 'API key copied. Save it before closing this window.';
+    } catch {
+      dismiss();
+      reportError(new Error('The API key could not be copied and was cleared. Create a replacement key.'));
+    }
+  }
+  dialog.addEventListener('cancel', (event) => { event.preventDefault(); dismiss(); });
+  copyButton.addEventListener('click', () => void copy());
+  acknowledgeButton.addEventListener('click', () => dismiss());
+  return { open, copy, dismiss, clear: () => dismiss(false) };
+}
+
 export async function submitPatchEdit({ workspaceId, file, oldText, newText, request, onSaved, onConflict, onError }) {
   try {
     await request(`/workspaces/${encodeURIComponent(workspaceId)}/files/content`, {
@@ -118,12 +161,19 @@ export function initializeDashboard() {
   const content = document.querySelector('#content'); const detail = document.querySelector('#detail'); const main = document.querySelector('#main');
   const sidebar = document.querySelector('#product-nav'); const alertBox = document.querySelector('#alert'); const announcer = document.querySelector('#announcer');
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
+  const revealDialog = document.querySelector('#api-key-reveal-dialog');
   const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(files|runtime))?$/);
   const projectMatch = location.pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
   if (matchMedia('(max-width: 47.9375rem)').matches) sidebar.hidden = true;
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
+  const apiKeyReveal = createApiKeyRevealController({
+    dialog: revealDialog, secretField: document.querySelector('#api-key-secret'), copyButton: document.querySelector('#copy-api-key'),
+    acknowledgeButton: document.querySelector('#acknowledge-api-key'), status: document.querySelector('#api-key-copy-status'),
+    clipboard: globalThis.navigator.clipboard, reportError: showError
+  });
   const setBusy = (busy) => content.setAttribute('aria-busy', String(busy));
   const announce = (message) => { announcer.textContent = message; };
+  let apiKeyPageData;
   function showError(error) {
     alertBox.hidden = false;
     alertBox.textContent = error.status === 401 ? 'Your dashboard session ended. Sign in again.'
@@ -150,6 +200,7 @@ export function initializeDashboard() {
       else if (projectMatch) await loadProject(projectMatch[1]);
       else if (location.pathname === '/dashboard/artifacts') await loadArtifacts();
       else if (location.pathname === '/dashboard/audit') await loadAudit();
+      else if (location.pathname === '/dashboard/api-keys') await loadApiKeys();
       else if (location.pathname === '/dashboard/github') await loadGitHub();
       else if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
@@ -229,6 +280,37 @@ export function initializeDashboard() {
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
     const result = await api(`/audit?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); content.innerHTML = renderAuditIndex(result.data.events, result.cursor);
     document.querySelector('#load-more-audit')?.addEventListener('click', (event) => { location.href = `/dashboard/audit?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`; });
+  }
+  async function loadApiKeys() {
+    selectNavigation('api-keys'); setTitle('API keys', 'Expiring credentials for static MCP clients that cannot complete browser OAuth.');
+    document.querySelector('#command-surface').hidden = true;
+    const result = await api('/api-keys'); apiKeyPageData = result.data; content.innerHTML = renderApiKeyIndex(apiKeyPageData); bindApiKeyControls();
+  }
+  function bindApiKeyControls() {
+    const form = document.querySelector('#create-api-key-form');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault(); const current = event.currentTarget; const invoker = current.querySelector('button[type="submit"]'); let created;
+      void submitForm(current, 'Creating key…', async () => {
+        created = await api('/api-keys', { method: 'POST', body: requestBody(apiKeyCreateInput(current)) });
+        if (typeof created?.data?.apiKey !== 'string') throw new Error('The new API key was unavailable. Create a replacement key.');
+      }, async () => {
+        const apiKey = created.data.apiKey; const metadata = created.data.key;
+        created = undefined;
+        const previousKeys = Array.isArray(apiKeyPageData?.keys) ? apiKeyPageData.keys : [];
+        current.reset(); apiKeyPageData = { ...apiKeyPageData, keys: [metadata, ...previousKeys.filter((key) => key.id !== metadata.id)] };
+        content.innerHTML = renderApiKeyIndex(apiKeyPageData); bindApiKeyControls();
+        apiKeyReveal.open(apiKey, document.querySelector('#create-api-key-submit') ?? invoker);
+        announce('API key created. Copy it now; it will not be shown again.');
+      });
+    });
+    for (const button of document.querySelectorAll('.revoke-api-key')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Revoke API key?', description: 'This key will stop authenticating on the next request. Revocation cannot be undone.',
+      target: button.dataset.keyName, label: 'Revoke API key', pendingLabel: 'Revoking…',
+      action: async () => {
+        await api(`/api-keys/${encodeURIComponent(button.dataset.keyId)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) });
+        announce('API key revoked.'); await loadApiKeys();
+      }
+    }, event.currentTarget));
   }
   async function loadGitHub() {
     selectNavigation('github'); setTitle('GitHub', 'GitHub App installation and repository authorization status.'); document.querySelector('#command-surface').hidden = true;
@@ -336,7 +418,9 @@ export function initializeDashboard() {
   document.querySelector('#refresh').addEventListener('click', async () => { announce('Refreshing…'); await load(); announce('Workspace data refreshed.'); });
   const menu = createModalController({ panel: sidebar, backgrounds: [main], trigger: menuButton, initialFocus: () => sidebar.querySelector('a'), onOpen: () => { sidebar.classList.add('open'); menuButton.setAttribute('aria-expanded', 'true'); }, onClose: () => { sidebar.classList.remove('open'); menuButton.setAttribute('aria-expanded', 'false'); } });
   menuButton.addEventListener('click', () => menu.active ? menu.close() : menu.open());
-  document.querySelector('#nav-toggle').addEventListener('click', (event) => { const expanded = event.currentTarget.getAttribute('aria-expanded') === 'true'; event.currentTarget.setAttribute('aria-expanded', String(!expanded)); event.currentTarget.textContent = expanded ? 'Expand navigation' : 'Collapse navigation'; localStorage.setItem('dashboard-navigation-expanded', String(!expanded)); });
+  document.querySelector('#nav-toggle').addEventListener('click', (event) => { const expanded = event.currentTarget.getAttribute('aria-expanded') === 'true'; event.currentTarget.setAttribute('aria-expanded', String(!expanded)); event.currentTarget.textContent = expanded ? 'Expand navigation' : 'Collapse navigation'; });
+  document.addEventListener('click', (event) => { if (event.target.closest?.('a[href]')) apiKeyReveal.clear(); }, { capture: true });
+  addEventListener('pagehide', () => apiKeyReveal.clear());
   addEventListener('popstate', () => location.reload()); void load();
 }
 
