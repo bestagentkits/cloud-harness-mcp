@@ -34,6 +34,66 @@ Reusing a `workspace_open`, `shell_open`, `sessions_open`, or `tasks_run`
 idempotency key returns the prior created resource for that workspace. This
 makes a lost response recoverable without duplicating work.
 
+## Coding-agent operations
+
+The six `agent_*` tools run a bounded Pi coding session against an existing
+`networkMode: "none"` workspace. Their exact input limits and result shapes
+are the executable `TOOL_SCHEMA_BY_NAME` and `Agent*DataSchema` definitions in
+[`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts)
+and
+[`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts).
+Agent calls do not refresh the parent workspace idle TTL.
+
+- `agent_spawn` durably reserves the prompt, budgets, profile, parent, and
+  requested proxy-tool subset before launch. Its result is an acknowledgement
+  with an opaque ID, generation, status, and replay flag—not prompt
+  completion.
+- `agent_status` accepts exactly one of the agent ID or spawn idempotency key.
+  While full state is retained, it reports lineage, configured policy and
+  budgets, usage, timestamps, terminal reason, and `outcomeUnknown`.
+  `SPAWNING`, `RUNNING`, and `CANCELLING` are nonterminal; `SUCCEEDED`,
+  `FAILED`, `CANCELLED`, `TIMED_OUT`, `LIMIT_EXCEEDED`, and `INTERRUPTED` are
+  terminal.
+- `agent_logs` uses a nonnegative decimal byte cursor. Continue with
+  `nextCursor` while `hasMore` is true. `truncated` means the requested cursor
+  predates `retainedBaseCursor`; it can also coexist with another bounded page,
+  so neither flag should be treated as the other.
+- `agent_message` accepts a bounded `steer` or `followUp` message and a
+  message-specific idempotency key. `RESERVED` means delivery was durably
+  admitted, `SENT` means it was written to the live worker channel (not that
+  the model acted on it), `REJECTED` means it was not accepted, and `UNKNOWN`
+  means restart or transport loss prevented a trustworthy determination.
+  Replaying the same key returns the recorded state without another send.
+- `agent_cancel` is idempotent and cancels descendants in post-order before the
+  target. Its bounded result identifies the affected agents; terminal agents
+  are not restarted.
+- `agent_list` returns a bounded workspace-scoped page without log payloads.
+  Its cursor is opaque (unlike a log cursor), and optional parent/status
+  filters narrow the page.
+
+Spawn and message idempotency records are durable for the active workspace.
+They are never evicted to admit fresh side effects: once the configured
+workspace lifetime-record cap is full, new spawn/message reservations are
+rejected. After closure and full-state retention, `agent_status` returns a
+bounded `compacted: true` outcome record containing the terminal status,
+generation, compaction time, and expiry. These tombstones preserve status
+and key-collision evidence through the configured lookup horizon; the SQLite
+schema and retention policy are owned by
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) and
+[`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts).
+
+A runner restart never replays prompts, messages, model requests, or proxy
+calls. Admission closes while surviving state is reconciled. If cleanup cannot
+yet prove the agent container, gateway request/lease, and executor proxy work
+are stopped, the agent stays nonterminal and durable cleanup-retry metadata is
+recorded. Only after confirmed drain or removal does reconciliation record
+`INTERRUPTED` with `outcomeUnknown: true`; clients must not interpret that as
+success or failure.
+
+Public dispatch, launch acknowledgement, cancellation ordering, and restart
+reconciliation are owned by
+[`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts).
+
 ## Semantics that are easy to misread
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact

@@ -1,0 +1,25 @@
+[
+  {
+    "id": "openai-default",
+    "displayName": "OpenAI GPT-5.2 Codex",
+    "provider": "openai",
+    "model": "gpt-5.2-codex",
+    "inputMicrosPerMillionTokens": 1750000,
+    "outputMicrosPerMillionTokens": 14000000,
+    "maxInputTokens": 400000,
+    "maxOutputTokens": 128000,
+    "maxCostMicros": 100000000,
+    "maxProxyOperations": [
+      "files_list",
+      "files_read",
+      "files_write",
+      "files_apply_patch",
+      "files_delete",
+      "files_move",
+      "files_mkdir",
+      "grep_search",
+      "symbols_search",
+      "symbols_references"
+    ]
+  }
+]

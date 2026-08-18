@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import pino from 'pino';
-import { createRunnerApp } from './app.js';
+import { createRunnerApp, RunnerHttpLifecycle } from './app.js';
 import { loadRunnerConfig } from './config.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
@@ -10,15 +10,30 @@ const config = loadRunnerConfig();
 const store = new StateStore(config.stateDb);
 const service = new WorkspaceService(config, store);
 await service.start();
-const server = createServer(createRunnerApp(config, service));
+const lifecycle = new RunnerHttpLifecycle();
+const server = createServer(createRunnerApp(config, service, lifecycle));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
-async function shutdown(signal: string) {
-  logger.info({ signal }, 'runner shutting down');
-  server.close();
-  await service.stop();
-  store.close();
-  process.exit(0);
+let shuttingDown: Promise<void> | undefined;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return await shuttingDown;
+  shuttingDown = (async () => {
+    logger.info({ signal }, 'runner shutting down');
+    service.beginShutdown();
+    const drained = lifecycle.shutdown();
+    const closed = new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+    await Promise.all([drained, closed]);
+    await service.stop();
+    store.close();
+  })();
+  try {
+    await shuttingDown;
+  } catch (error) {
+    logger.error({ err: error }, 'runner shutdown failed');
+    process.exitCode = 1;
+  }
 }
 
 process.on('SIGTERM', () => void shutdown('SIGTERM'));

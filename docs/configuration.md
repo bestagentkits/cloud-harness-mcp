@@ -13,6 +13,10 @@ The executable configuration authorities are:
   [`apps/runner/src/config.ts`](../apps/runner/src/config.ts)
 - Types, validation, allowed ranges, and code defaults:
   [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts)
+- Model-gateway profile parsing, production restrictions, and secret-file
+  checks:
+  [`apps/model-gateway/src/config.ts`](../apps/model-gateway/src/config.ts) and
+  [`apps/model-gateway/profiles/production.example.json`](../apps/model-gateway/profiles/production.example.json)
 - Local/production wiring and host overrides:
   [`compose.yaml`](../compose.yaml) and
   [`compose.production.yaml`](../compose.production.yaml)
@@ -62,6 +66,44 @@ untrusted service.
 SQLite metadata. `EXECUTOR_IMAGE` is chosen by the trusted operator; callers
 cannot select an image.
 
+## Coding-agent and model-gateway policy
+
+Coding-agent support is configured as one runner feature. The environment-key
+mapping is owned by
+[`apps/runner/src/config.ts`](../apps/runner/src/config.ts); required fields,
+closed profile shape, proxy-operation policy, cross-limit invariants, and
+defaults are owned by `RunnerAgentsConfigSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
+Keep agent network mode at its required `none` value and the gateway URL at
+the schema's fixed internal service origin. Agent spawn is also rejected when
+the target workspace is not network-none.
+
+The trusted operator selects the agent image and available profiles. Callers
+can choose only among those profiles and request a narrower budget/tool subset;
+they cannot supply an image, upstream, or provider credential.
+
+Runner-visible profiles are public admission policy: model identity, pricing,
+budgets, and the maximum closed proxy-tool subset. Provider transport,
+upstream URL, request path, credential header, and transport limits belong to
+the separate model-gateway profile file. Production parsing rejects test-only
+private upstream and CA controls. Keep corresponding profile IDs and policy
+consistent; do not put provider URLs, credentials, or gateway-only fields in
+runner configuration.
+
+The model gateway receives exactly two read-only production mounts: its
+profile file and one provider credential file. These are service-specific;
+they must not be placed in the shared runtime environment or mounted into the
+API, runner, agent worker, or workspace executor. Compose host-path selectors
+are deployment inputs, while in-container paths are fixed by
+[`compose.yaml`](../compose.yaml) and the gateway parser. The provider
+credential is not a runner secret and must not be stored beside or exposed as
+the GitHub App key.
+
+Agent concurrency, lifetime-record, retention, lookup, log, cancellation, and
+cleanup-retry controls are deliberately bounded. Read their exact accepted
+ranges and defaults from the schemas rather than copying them into an
+operator-maintained list.
+
 ## Optional private GitHub clone
 
 The same GitHub App settings also govern authenticated fetch, pull, and push.
@@ -72,11 +114,11 @@ All three settings are required together:
 - `GITHUB_APP_INSTALLATION_ID`
 - `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE`
 
-Prefer the file form. Production Compose mounts the root-owned
-`/etc/cloud-harness-mcp` directory read-only at `/run/cloud-harness-secrets`
-in the runner, so the maintained key path is
-`/run/cloud-harness-secrets/github-app-private-key.pem`. The API explicitly
-clears all GitHub App variables inherited from the common environment file.
+Prefer the file form. Production Compose mounts only the exact root-owned
+`/etc/cloud-harness-mcp/github-app-private-key.pem` file read-only into the
+runner at `/run/cloud-harness-secrets/github-app-private-key.pem`. The API
+explicitly clears all GitHub App variables inherited from the common
+environment file.
 These credentials belong to the trusted runner only. They are used to mint
 short-lived repository-scoped tokens for clone, fetch, pull, and push and must
 never be added to the executor environment. Public clone/fetch/pull do not need
@@ -96,5 +138,5 @@ changes the loopback host port. `HOST_JOBS_ROOT` and `HOST_STATE_ROOT` select
 the host persistence paths. `LOG_LEVEL` is read by API and runner logging.
 
 `API_HOST`/`RUNNER_HOST`, service ports, and the private `RUNNER_URL` are wired
-by Compose. Avoid publishing the API or runner, or changing the ingress proxy from loopback
-on an Internet-facing host.
+by Compose. Do not publish the API, runner, or model gateway, and do not move
+the ingress proxy off loopback on an Internet-facing host.

@@ -25,4 +25,15 @@ services:
       resources:
         limits: { cpus: "1.00", memory: 1G, pids: 256 }
     volumes:
-      - /etc/cloud-harness-mcp:/run/cloud-harness-secrets:ro
+      - /etc/cloud-harness-mcp/github-app-private-key.pem:/run/cloud-harness-secrets/github-app-private-key.pem:ro
+
+  model-gateway:
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "0.50", memory: 512M, pids: 128 }
+    volumes:
+      - /etc/cloud-harness-mcp/model-gateway-profiles.json:/run/model-gateway-config/profiles.json:ro
+      - /etc/cloud-harness-mcp/provider-api-key:/run/model-gateway-secrets/provider-api-key:ro
