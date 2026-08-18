@@ -2,14 +2,17 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
+  AgentProxyOperationSchema,
   HarnessError,
   RunnerOperationSchema,
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
+  type AgentProxyOperation,
   type RunnerConfig,
   type RunnerOperation,
   type RunnerResponse
 } from '@cloud-harness/contracts';
+import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { mintRepositoryToken } from './github-app-broker.js';
 import { OperationManager } from './operation-manager.js';
@@ -39,15 +42,28 @@ export class WorkspaceService {
   private readonly instanceId: string;
   private reaper?: NodeJS.Timeout;
   private reaperRunning = false;
+  private readonly agentManager: AgentManager | undefined;
 
-  constructor(private readonly config: RunnerConfig, private readonly store: StateStore) {
+  constructor(
+    private readonly config: RunnerConfig,
+    private readonly store: StateStore,
+    agentDependencies?: Omit<AgentManagerDependencies, 'toolExecutor'> & { manager?: AgentManager }
+  ) {
     this.instanceId = store.instanceId();
+    const { manager, ...managerDependencies } = agentDependencies ?? {};
+    this.agentManager = manager ?? (config.agents
+      ? new AgentManager(config.agents, store, {
+          ...managerDependencies,
+          toolExecutor: async (request) => await this.executeAgentProxy(request)
+        })
+      : undefined);
   }
 
   async start(): Promise<void> {
     await mkdir(this.config.jobsRoot, { recursive: true, mode: 0o700 });
     for (const record of this.store.active()) {
       if (record.status === 'CREATING') await this.closeRecord(record, 'runner restarted during workspace creation');
+      else if (record.status === 'REAPING') await this.closeRecord(record, record.error ?? 'runner resumed workspace cleanup');
       else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeRecord(record, 'executor missing during startup reconciliation');
       else {
         const restarted = await runDocker(['restart', record.containerName], { timeoutMs: 30_000, maxBytes: 65_536 });
@@ -56,6 +72,7 @@ export class WorkspaceService {
     }
     await this.reconcileContainers();
     await this.reconcileJobDirectories();
+    await this.agentManager?.start();
     this.reaper = setInterval(() => {
       if (this.reaperRunning) return;
       this.reaperRunning = true;
@@ -64,8 +81,15 @@ export class WorkspaceService {
     this.reaper.unref();
   }
 
+  beginShutdown(): void {
+    this.agentManager?.fence();
+  }
+
   async stop(): Promise<void> {
-    if (this.reaper) clearInterval(this.reaper);
+    this.beginShutdown();
+    clearInterval(this.reaper);
+    await this.agentManager?.stop();
+    for (const workspace of this.store.active()) this.operations.stopWorkspace(workspace.id);
   }
 
   private async reconcileContainers(): Promise<void> {
@@ -307,6 +331,34 @@ export class WorkspaceService {
     try { return RunnerResponseSchema.parse(JSON.parse(result.stdout)); }
     catch { throw new HarnessError('INTERNAL_ERROR', 'worker returned an invalid bounded result', 500, true); }
   }
+  private async executeAgentProxy(request: Parameters<AgentManagerDependencies['toolExecutor']>[0]): Promise<RunnerResponse> {
+    const operation = AgentProxyOperationSchema.parse(request.operation) as AgentProxyOperation;
+    const validated = TOOL_SCHEMA_BY_NAME[operation].parse(request.toolInput) as Record<string, unknown>;
+    const before = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
+    if (before.generation !== request.workspaceGeneration || before.networkMode !== 'none') {
+      throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
+    }
+    const result = await this.runWorker(before, operation, validated, request.signal);
+    const after = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
+    if (after.generation !== request.workspaceGeneration || after.networkMode !== 'none') {
+      throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
+    }
+    const violation = await this.resourceViolation(after);
+    if (violation) {
+      void this.closeRecord(after, violation).catch(() => undefined);
+      throw new HarnessError('LIMIT_EXCEEDED', `${violation}; workspace cleanup started`, 507, false);
+    }
+    return result;
+  }
+
+  private requireWorkspaceForAgent(ownerId: string, workspaceId: string): WorkspaceRecord {
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
+    if (record.status !== 'ACTIVE' || record.expiresAt <= Date.now()) {
+      throw new HarnessError('EXPIRED', 'workspace is not active', 410, false);
+    }
+    return record;
+  }
 
   private async runGitTransferHelper(
     record: WorkspaceRecord,
@@ -411,6 +463,12 @@ export class WorkspaceService {
     const workspaceId = validated.workspaceId as string;
     if (operation === 'workspace_status') return this.status(ownerId, workspaceId);
     if (operation === 'workspace_close') return await this.close(ownerId, workspaceId);
+    if (AgentManager.isPublicOperation(operation)) {
+      if (!this.agentManager) throw new HarnessError('UNAVAILABLE', 'agent execution is not configured', 503, false);
+      const workspace = this.store.byId(workspaceId);
+      if (!workspace || workspace.ownerId !== ownerId) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
+      return await this.agentManager.dispatch(ownerId, workspace, operation, validated);
+    }
     const record = this.touch(this.requireWorkspace(ownerId, workspaceId));
     await this.enforceActiveLimits(record);
     if (operation === 'exec_run') validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
@@ -560,6 +618,7 @@ export class WorkspaceService {
       if (!this.store.claimForReaping(claimed.id, claimed.generation)) return;
       claimed = this.store.byId(claimed.id)!;
     }
+    await this.agentManager?.stopWorkspace(claimed.ownerId, claimed.id, Math.max(1, claimed.generation - 1), reason);
     this.operations.stopWorkspace(claimed.id);
     if (claimed.containerName) await removeContainer(claimed.containerName);
     await this.safeRemovePath(claimed.workspacePath);
@@ -570,8 +629,11 @@ export class WorkspaceService {
   private async reapExpired(): Promise<void> {
     const now = Date.now();
     for (const record of this.store.active()) {
-      if (record.expiresAt <= now) await this.closeRecord(record, 'workspace TTL expired').catch(() => undefined);
-      else if (record.status === 'ACTIVE') {
+      if (record.status === 'REAPING') {
+        await this.closeRecord(record, record.error ?? 'workspace cleanup retry').catch(() => undefined);
+      } else if (record.expiresAt <= now) {
+        await this.closeRecord(record, 'workspace TTL expired').catch(() => undefined);
+      } else if (record.status === 'ACTIVE') {
         const violation = await this.resourceViolation(record).catch(() => undefined);
         if (violation) await this.closeRecord(record, violation).catch(() => undefined);
       }

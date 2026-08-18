@@ -68,22 +68,117 @@ services:
       RUNNER_HOST: 0.0.0.0
       RUNNER_PORT: 3001
       MCP_BEARER_TOKEN: ""
+      AGENT_IMAGE: ${AGENT_IMAGE:-cloud-harness-agent:local}
+      AGENT_GATEWAY_URL: http://model-gateway:3210
+      AGENT_PROFILES_FILE: /run/agent-config/profiles.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_JOBS_ROOT:-/var/lib/cloud-harness/jobs}:${JOBS_ROOT:-/var/lib/cloud-harness/jobs}
       - ${HOST_STATE_ROOT:-/var/lib/cloud-harness/state}:/var/lib/cloud-harness/state
+      - ${AGENT_PROFILES_HOST_FILE:-./config/runner-agent-profiles.json}:/run/agent-config/profiles.json:ro
     networks: [control, runner-egress]
+    depends_on:
+      model-gateway:
+        condition: service_healthy
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
       interval: 10s
       timeout: 3s
       retries: 6
 
+  model-gateway:
+    image: cloud-harness-model-gateway:local
+    build:
+      context: .
+      dockerfile: docker/model-gateway.Dockerfile
+    restart: unless-stopped
+    environment:
+      MODEL_GATEWAY_MODE: production
+      MODEL_GATEWAY_HOST: 0.0.0.0
+      MODEL_GATEWAY_PORT: 3210
+      MODEL_GATEWAY_PROFILES_FILE: /run/model-gateway-config/profiles.json
+      MODEL_GATEWAY_CONTROL_SOCKET: /tmp/model-gateway-control.sock
+    volumes:
+      - ${MODEL_GATEWAY_PROFILES_HOST_FILE:-./apps/model-gateway/profiles/production.example.json}:/run/model-gateway-config/profiles.json:ro
+      - ${MODEL_GATEWAY_PROVIDER_SECRET_FILE:-/etc/cloud-harness-mcp/provider-api-key}:/run/model-gateway-secrets/provider-api-key:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=8m,mode=0700,uid=1000,gid=1000
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [provider-egress]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3210/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  model-gateway-test:
+    image: cloud-harness-model-gateway:local
+    build:
+      context: .
+      dockerfile: docker/model-gateway.Dockerfile
+    profiles: [gateway-test]
+    command: [node, apps/model-gateway/dist/index.js]
+    environment:
+      MODEL_GATEWAY_MODE: test
+      MODEL_GATEWAY_HOST: 0.0.0.0
+      MODEL_GATEWAY_PORT: 3210
+      MODEL_GATEWAY_PROFILES_FILE: /run/model-gateway-test-config/profiles.json
+      MODEL_GATEWAY_CONTROL_SOCKET: /tmp/model-gateway-test-control.sock
+    volumes:
+      - ./apps/model-gateway/profiles/test-only.json:/run/model-gateway-test-config/profiles.json:ro
+      - ./.cloud-harness-test-fixtures/model-gateway/provider-api-key:/run/model-gateway-test-secrets/provider-api-key:ro
+      - ./.cloud-harness-test-fixtures/model-gateway/server-cert.pem:/run/model-gateway-test-tls/server-cert.pem:ro
+    depends_on:
+      fake-provider:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=8m,mode=0700,uid=1000,gid=1000
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [model-gateway-test-agent, provider-egress-test]
+
+  fake-provider:
+    image: cloud-harness-model-gateway:local
+    profiles: [gateway-test]
+    command: [node, apps/model-gateway/dist/fake-provider.js]
+    environment:
+      FAKE_PROVIDER_TEST_ONLY: "true"
+      FAKE_PROVIDER_PORT: 3443
+      FAKE_PROVIDER_TLS_KEY_FILE: /run/model-gateway-test-tls/server-key.pem
+      FAKE_PROVIDER_TLS_CERT_FILE: /run/model-gateway-test-tls/server-cert.pem
+      FAKE_PROVIDER_CREDENTIAL_FILE: /run/model-gateway-test-secrets/provider-api-key
+    volumes:
+      - ./.cloud-harness-test-fixtures/model-gateway/server-key.pem:/run/model-gateway-test-tls/server-key.pem:ro
+      - ./.cloud-harness-test-fixtures/model-gateway/server-cert.pem:/run/model-gateway-test-tls/server-cert.pem:ro
+      - ./.cloud-harness-test-fixtures/model-gateway/provider-api-key:/run/model-gateway-test-secrets/provider-api-key:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=4m,mode=0700,uid=1000,gid=1000
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [provider-egress-test]
+    healthcheck:
+      test: [CMD, node, -e, "const https=require('node:https');const r=https.get({host:'127.0.0.1',port:3443,rejectUnauthorized:false},()=>process.exit(0));r.on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
   executor-image:
     image: cloud-harness-executor:local
     build:
       context: .
       dockerfile: docker/executor.Dockerfile
+    profiles: [images]
+    command: ["true"]
+
+  agent-image:
+    image: cloud-harness-agent:local
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
     profiles: [images]
     command: ["true"]
 
@@ -96,3 +191,9 @@ networks:
     driver: bridge
   runner-egress:
     driver: bridge
+  provider-egress:
+    driver: bridge
+  model-gateway-test-agent:
+    internal: true
+  provider-egress-test:
+    internal: true

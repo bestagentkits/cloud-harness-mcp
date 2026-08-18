@@ -23,7 +23,8 @@ Trusted control plane:
 Untrusted execution input:
 
 - repository content, dependencies, Git metadata, hook and deployment
-  manifests, skills, memories, and commands supplied through tools.
+  manifests, skills, memories, commands supplied through tools, and coding-agent
+  prompts, model output, tool arguments, and logs.
 
 The API is deliberately separated from Docker authority. A credential-free
 TCP proxy is the only Compose service with a loopback-published port. It joins
@@ -43,6 +44,12 @@ compromise can control the host, and a container escape crosses the executor
 boundary. Do not expose this design to mutually distrustful tenants. That
 requires a separate execution host or VM/microVM-grade boundary, quota-backed
 storage, per-tenant identity/authorization, and stronger abuse controls.
+
+Principal IDs fence durable agent records and lookups, but this is a
+single-owner seam—not proof of tenant isolation or a multi-user authorization
+model. The Pi worker and model gateway remain trusted components inside that
+owner boundary. Do not describe separation between them as protection from a
+hostile gateway.
 
 ## Public request controls
 
@@ -78,6 +85,38 @@ opt-in `bridge` networking enables broad container egress and weakens
 protection against exfiltration, SSRF, callbacks, dependency scripts, and
 repository-defined deployment commands. It is not an allowlisted proxy.
 
+Coding-agent admission is stricter: it rejects any workspace whose network
+mode is not `none`. Each Pi worker is a non-root, read-only, no-mount container
+with no Docker socket, repository path, control-plane credential, provider
+credential, or general egress. The runner creates a unique internal network
+for that agent and connects it only to the trusted model gateway for the
+leased session. The gateway alone joins dedicated provider egress and selects
+an operator-configured fixed provider/model profile.
+
+Pi receives no built-in tools, MCP resources, repository extensions, or
+general command tool. Its complete local tool surface is a requested subset of
+the closed schemas in `AgentProxyOperationSchema` and
+[`apps/agent-runtime/src/proxy-tools.ts`](../apps/agent-runtime/src/proxy-tools.ts).
+Those requests are validated again and dispatched without touching workspace
+activity, so an agent cannot keep the parent workspace alive. This proxy exists
+to keep the no-mount worker useful without creating a second writable checkout
+or bypassing executor path, symlink, output, and timeout policy.
+
+Provider credentials and profile configuration are exact, read-only mounts on
+the model-gateway service; the runner, API, Pi worker, and workspace executor
+do not receive them. This limits accidental secret spread, but the gateway
+necessarily sees provider requests and credentials and is therefore trusted.
+Each model request atomically reserves worst-case token and cost budget from
+its in-memory gateway lease before upstream dispatch, then refunds the
+difference after streamed usage reconciliation. A gateway restart invalidates
+all leases instead of recovering or replaying model requests; the runner
+persists reported aggregate usage, not in-flight model reservations.
+The topology and negative checks are owned by
+[`compose.yaml`](../compose.yaml),
+[`scripts/verify-compose-boundaries.mjs`](../scripts/verify-compose-boundaries.mjs),
+and
+[`test/integration/docker-sandbox.docker.test.ts`](../test/integration/docker-sandbox.docker.test.ts).
+
 Repository opening accepts only credential-free HTTPS URLs on configured
 hosts and rejects private/link-local resolutions. The clone helper disables
 hooks, recursive submodules, tag downloads, redirects, and LFS smudging.
@@ -102,6 +141,11 @@ and its evidence are
 and
 [`test/integration/git-transfer-helper.docker.test.ts`](../test/integration/git-transfer-helper.docker.test.ts).
 Live private-repository verification remains owner-supplied evidence.
+
+The repository contains test-only fake-provider coverage for agent/gateway
+flows. It is not evidence that a live provider, private repository, or
+repository-defined deployment was exercised. Such claims require current,
+owner-authorized, sanitized evidence.
 
 Repository-manifest deployments are named commands, not a secret broker. They
 execute with the same unprivileged executor environment and network mode as

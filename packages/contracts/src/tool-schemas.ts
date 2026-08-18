@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { IdempotencyKeySchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
-import type { RunnerOperation } from './runner-api.js';
+import { AgentIdSchema, IdempotencyKeySchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { AgentProxyOperationSchema, AgentStatusSchema, type RunnerOperation } from './runner-api.js';
 
 const relativePath = z.string().min(1).max(1_024).refine((value) => {
   const normalized = value.replaceAll('\\', '/');
@@ -19,6 +19,27 @@ const gitRefspec = z.string().min(1).max(512).refine((value) => {
   return destination === undefined || /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(destination);
 }, 'invalid Git branch push refspec');
 const sessionName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
+const utf8Encoder = new TextEncoder();
+const boundedUtf8Text = (maximumBytes: number) => z.string().min(1).refine(
+  (value) => utf8Encoder.encode(value).byteLength <= maximumBytes,
+  `text must not exceed ${maximumBytes} UTF-8 bytes`
+);
+const decimalCursor = z.string().regex(/^(?:0|[1-9]\d*)$/);
+const positiveDecimalCursor = z.string().regex(/^[1-9]\d*$/);
+const profileId = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
+const uniqueProxyOperations = z.array(AgentProxyOperationSchema)
+  .min(1)
+  .max(AgentProxyOperationSchema.options.length)
+  .refine((operations) => new Set(operations).size === operations.length, 'proxy operations must be unique');
+const agentLookup = z.object({
+  ...workspace,
+  agentId: AgentIdSchema.optional(),
+  idempotencyKey: IdempotencyKeySchema.optional()
+}).strict().superRefine((input, context) => {
+  if ((input.agentId === undefined) === (input.idempotencyKey === undefined)) {
+    context.addIssue({ code: 'custom', message: 'exactly one of agentId or idempotencyKey is required' });
+  }
+});
 
 const schemas = {
   workspace_open: z.object({ repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema, networkMode: z.enum(['none', 'bridge']).optional() }),
@@ -90,7 +111,42 @@ const schemas = {
   memories_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/) }),
   memories_write: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), content: z.string().max(262_144) }),
   deployments_list: z.object(workspace),
-  deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) })
+  deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
+  agent_spawn: z.object({
+    ...workspace,
+    prompt: boundedUtf8Text(131_072),
+    idempotencyKey: IdempotencyKeySchema,
+    profileId,
+    parentAgentId: AgentIdSchema.optional(),
+    proxyOperations: uniqueProxyOperations,
+    ttlSeconds: z.number().int().min(30).max(86_400).default(900),
+    maxOutputBytes: z.number().int().min(1_024).max(10_485_760).default(262_144),
+    maxInputTokens: z.number().int().min(1).max(2_000_000).default(200_000),
+    maxOutputTokens: z.number().int().min(1).max(2_000_000).default(32_000),
+    maxCostMicros: z.number().int().min(0).max(1_000_000_000).default(10_000_000)
+  }).strict(),
+  agent_status: agentLookup,
+  agent_logs: z.object({
+    ...workspace,
+    agentId: AgentIdSchema,
+    cursor: decimalCursor.default('0'),
+    limitBytes: z.number().int().min(1_024).max(262_144).default(65_536)
+  }).strict(),
+  agent_message: z.object({
+    ...workspace,
+    agentId: AgentIdSchema,
+    idempotencyKey: IdempotencyKeySchema,
+    mode: z.enum(['steer', 'followUp']),
+    message: boundedUtf8Text(65_536)
+  }).strict(),
+  agent_cancel: z.object({ ...workspace, agentId: AgentIdSchema }).strict(),
+  agent_list: z.object({
+    ...workspace,
+    parentAgentId: AgentIdSchema.optional(),
+    status: AgentStatusSchema.optional(),
+    cursor: positiveDecimalCursor.optional(),
+    limit: z.number().int().min(1).max(100).default(50)
+  }).strict()
 } satisfies Record<RunnerOperation, z.ZodType>;
 
 export type ToolSpec = {
@@ -114,23 +170,51 @@ const titles: Record<RunnerOperation, string> = {
   git_status: 'Git status', git_diff: 'Git diff', git_log: 'Git log', git_branch: 'Manage Git branches', git_checkout: 'Checkout Git ref', git_add: 'Stage Git changes', git_commit: 'Create Git commit', git_fetch: 'Fetch Git refs', git_pull: 'Pull Git changes', git_push: 'Push Git changes', git_merge: 'Merge Git ref', git_rebase: 'Manage Git rebase',
   worktrees_list: 'List worktrees', worktrees_create: 'Create worktree', worktrees_remove: 'Remove worktree',
   skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory',
-  deployments_list: 'List deployment targets', deployments_run: 'Run deployment target'
+  deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
+  agent_spawn: 'Spawn coding agent', agent_status: 'Read coding agent status', agent_logs: 'Read coding agent logs',
+  agent_message: 'Message coding agent', agent_cancel: 'Cancel coding agent', agent_list: 'List coding agents'
 };
 
-const readOnly = new Set<RunnerOperation>(['workspace_list', 'workspace_status', 'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references', 'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list']);
-const destructive = new Set<RunnerOperation>(['workspace_close', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'exec_run', 'shell_open', 'shell_io', 'shell_close', 'sessions_open', 'sessions_io', 'sessions_close', 'tasks_run', 'tasks_cancel', 'git_branch', 'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_create', 'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run']);
-const idempotent = new Set<RunnerOperation>(['workspace_open', 'workspace_list', 'workspace_status', 'workspace_close', 'files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references', 'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close', 'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'git_add', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list']);
-const openWorld = new Set<RunnerOperation>(['workspace_open', 'git_fetch', 'git_pull', 'git_push', 'deployments_run']);
+const readOnly: Partial<Record<RunnerOperation, true>> = {
+  workspace_list: true, workspace_status: true, files_list: true, files_read: true, grep_search: true,
+  symbols_search: true, symbols_references: true, sessions_list: true, tasks_list: true, tasks_status: true,
+  tasks_graph: true, git_status: true, git_diff: true, git_log: true, worktrees_list: true, skills_list: true,
+  skills_read: true, hooks_list: true, memories_list: true, memories_read: true, deployments_list: true,
+  agent_status: true, agent_logs: true, agent_list: true
+};
+const destructive: Partial<Record<RunnerOperation, true>> = {
+  workspace_close: true, files_write: true, files_apply_patch: true, files_delete: true, files_move: true,
+  files_mkdir: true, exec_run: true, shell_open: true, shell_io: true, shell_close: true, sessions_open: true,
+  sessions_io: true, sessions_close: true, tasks_run: true, tasks_cancel: true, git_branch: true,
+  git_checkout: true, git_add: true, git_commit: true, git_fetch: true, git_pull: true, git_push: true,
+  git_merge: true, git_rebase: true, worktrees_create: true, worktrees_remove: true, skills_run: true,
+  hooks_run: true, memories_write: true, deployments_run: true, agent_spawn: true, agent_message: true,
+  agent_cancel: true
+};
+const idempotent: Partial<Record<RunnerOperation, true>> = {
+  workspace_open: true, workspace_list: true, workspace_status: true, workspace_close: true, files_list: true,
+  files_read: true, files_write: true, files_apply_patch: true, files_mkdir: true, grep_search: true,
+  symbols_search: true, symbols_references: true, shell_open: true, shell_close: true, sessions_list: true,
+  sessions_open: true, sessions_close: true, tasks_list: true, tasks_run: true, tasks_status: true,
+  tasks_cancel: true, tasks_graph: true, git_status: true, git_diff: true, git_log: true, git_add: true,
+  worktrees_list: true, skills_list: true, skills_read: true, hooks_list: true, memories_list: true,
+  memories_read: true, memories_write: true, deployments_list: true, agent_spawn: true, agent_status: true,
+  agent_logs: true, agent_message: true, agent_cancel: true, agent_list: true
+};
+const openWorld: Partial<Record<RunnerOperation, true>> = {
+  workspace_open: true, git_fetch: true, git_pull: true, git_push: true, deployments_run: true,
+  agent_spawn: true, agent_message: true
+};
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({
   name,
   title: titles[name],
   description: `${titles[name]} inside an owner-bound, TTL-limited cloud coding workspace.`,
   inputSchema: schemas[name],
-  readOnly: readOnly.has(name),
-  destructive: destructive.has(name),
-  idempotent: idempotent.has(name),
-  openWorld: openWorld.has(name)
+  readOnly: readOnly[name] === true,
+  destructive: destructive[name] === true,
+  idempotent: idempotent[name] === true,
+  openWorld: openWorld[name] === true
 }));
 
 export const TOOL_SCHEMA_BY_NAME = schemas;

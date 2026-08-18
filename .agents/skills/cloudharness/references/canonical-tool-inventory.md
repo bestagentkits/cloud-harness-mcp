@@ -18,4 +18,5 @@ checked against the runtime registration and must be changed with the contract.
 `hooks_list` `hooks_run`
 `memories_list` `memories_read` `memories_write`
 `deployments_list` `deployments_run`
+`agent_spawn` `agent_status` `agent_logs` `agent_message` `agent_cancel` `agent_list`
 <!-- cloudharness-tool-inventory:end -->

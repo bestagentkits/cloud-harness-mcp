@@ -7,9 +7,13 @@ MCP client
   -> existing nginx (public TLS)
   -> credential-free TCP ingress proxy (loopback-published)
   -> API (private network, bearer + Host + Origin policy)
-  -> runner (internal Compose network, service bearer)
-  -> rootful Docker socket
-  -> ephemeral clone/Git transfer helpers and one executor for the workspace
+  -> runner (internal Compose network, service bearer, Docker authority)
+       -> ephemeral clone/Git transfer helpers
+       -> one network-none workspace executor and writable repository
+       -> no-mount Pi worker
+            -> closed no-touch proxy -> workspace executor
+            -> unique internal agent network -> trusted fixed-profile gateway
+                 -> dedicated provider egress -> configured provider
 ```
 
 The split is deliberate. The ingress proxy owns no secret or application
@@ -36,6 +40,15 @@ Docker socket or control-plane credentials. These controls reduce accidental
 impact; they do not create a hostile-tenant boundary because the executor
 shares the host kernel.
 
+The Pi worker deliberately has no repository mount. A closed custom-tool proxy
+routes only the selected `AgentProxyOperationSchema` operations into the
+existing network-none workspace executor without refreshing workspace
+activity. This preserves one writer and reuses executor path/symlink/output
+policy. A unique internal network connects each worker only to the trusted
+fixed-profile model gateway; only that gateway joins provider egress. The
+gateway is a credential-confinement boundary inside the private single-owner
+system, not an isolation boundary against a hostile gateway.
+
 Remote Git is a runner-mediated boundary rather than executor egress. The
 runner pauses the executor while a no-network helper stages or imports a
 sibling transfer repository, and only the separate fetch/push helper receives
@@ -58,6 +71,17 @@ Executable owners:
   [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
 - In-memory shells, named sessions, and dependency-task scheduling:
   [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts)
+- Coding-agent dispatch, lifecycle, durable spawn/message reservation,
+  lineage, persisted aggregate usage, logs, idempotency, and cleanup:
+  [`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts),
+  [`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts),
+  and [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts)
+- Pi protocol and closed proxy-tool surface:
+  [`apps/agent-runtime/src`](../apps/agent-runtime/src/) and
+  [`docker/agent.Dockerfile`](../docker/agent.Dockerfile)
+- Fixed-profile provider gateway and credential loading:
+  [`apps/model-gateway/src`](../apps/model-gateway/src/) and
+  [`docker/model-gateway.Dockerfile`](../docker/model-gateway.Dockerfile)
 - Credential-isolated remote Git staging:
   [`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh) and
   [`test/integration/git-transfer-helper.docker.test.ts`](../test/integration/git-transfer-helper.docker.test.ts)
@@ -87,6 +111,20 @@ scoped by a random runner-instance identity persisted in SQLite, so another
 state store or Compose stack using the same daemon does not delete this
 instance's containers.
 
+Coding-agent orchestration state is different: spawn/message replay records,
+lineage, budgets, redacted cursorable logs, status, and cleanup retries are
+durable. Active-workspace replay protection is preserved until workspace
+closure and bounded by a lifetime record cap that rejects new reservations
+instead of evicting old keys. Agent activity intentionally does not extend the
+workspace idle TTL.
+
+Pi conversation processes are not resumable after runner restart, and no
+prompt, message, model request, or proxy call is auto-replayed. Reconciliation
+first closes admission and drains or removes correlated containers, gateway
+leases/requests, and proxy work. Cleanup failure leaves the record nonterminal
+with retry metadata; only confirmed drain/removal permits the terminal
+`INTERRUPTED`/`outcomeUnknown` record.
+
 The MCP transport is stateless: the API creates a fresh server for request
 handling while the durable workspace identity lives below the transport. A
 lost `workspace_open` response can therefore be recovered by replaying its
@@ -99,8 +137,8 @@ cleanup authority.
 ## Deployment topology
 
 Production Compose binds the credential-free ingress proxy to
-`127.0.0.1:3100`; the API and runner have no published host ports. Runner
-egress does not expose an ingress port. Existing
+`127.0.0.1:3100`; the API, runner, and model gateway have no published host
+ports. Runner and provider egress do not expose ingress ports. Existing
 nginx is the only intended public listener and
 proxies `/mcp`, `/healthz`, and `/readyz` to loopback. The
 [deployment guide](deployment.md) explains the safe install order and the TLS

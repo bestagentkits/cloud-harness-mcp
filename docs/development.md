@@ -12,46 +12,38 @@ Install the lockfile exactly:
 npm ci
 ```
 
-The root [`package.json`](../package.json) owns the maintained commands. The
-normal local quality gate is:
-
-```bash
-npm run verify
-```
-
-It runs lint, type checking, non-Docker tests, and a production build. Use the
-narrowest relevant command while iterating:
-
-```bash
-npm run lint
-npm run typecheck
-npm run test:unit
-npm run test:integration
-npm test
-npm run build
-```
+The root [`package.json`](../package.json) is the authority for maintained
+commands and their ordering. Use its `verify` script as the normal local
+quality gate and choose the narrowest owned script while iterating; do not
+duplicate the script graph in documentation.
 
 ## Docker-backed verification
 
-Build the fixed executor and service images before Docker tests:
+Docker and network access are prerequisites for the Docker suites. Build the
+fixed images named by the current Compose files, then use the root
+`verify:compose`, `test:docker`, and `test:e2e` scripts as applicable. Their
+executable authorities are:
 
-```bash
-docker compose --profile images build executor-image api runner
-npm run test:docker
-npm run test:e2e
-```
-
-These tests create real containers and clone a public repository, so Docker
-and network access are prerequisites. They verify the MCP workflow and selected
-container boundaries; the current test files, not a hand-maintained checklist,
-are the test authority:
-
-- Contract and policy tests: [`packages/contracts/test`](../packages/contracts/test/)
-  and [`apps`](../apps/)
-- HTTP interoperability: [`test/integration`](../test/integration/)
-- Docker and complete workflow: [`test`](../test/)
-- CI order and trusted-event behavior:
+- Static service, mount, environment, and network invariants:
+  [`scripts/verify-compose-boundaries.mjs`](../scripts/verify-compose-boundaries.mjs)
+- Contract and policy behavior:
+  [`packages/contracts/test`](../packages/contracts/test/) and
+  [`apps`](../apps/)
+- HTTP and real-container isolation:
+  [`test/integration`](../test/integration/)
+- Complete MCP-to-Pi workflow:
+  [`test/e2e/coding-workflow.docker.test.ts`](../test/e2e/coding-workflow.docker.test.ts)
+- CI ordering and trusted-event policy:
   [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+
+The coding-agent E2E uses the `gateway-test` Compose profile, generated local
+TLS fixtures, actual Pi, and a fake provider that is unavailable in production
+mode. It proves the repository's bounded path without spending provider
+credits; it does not verify a live provider, private repository, or
+repository-defined deployment. Fixture generation and profile selection are
+owned by the root package scripts,
+[`scripts/generate-model-gateway-test-fixtures.mjs`](../scripts/generate-model-gateway-test-fixtures.mjs),
+and [`compose.yaml`](../compose.yaml).
 
 After a failed Docker test, inspect managed leftovers without deleting
 unrelated containers:
@@ -78,6 +70,11 @@ docker compose up -d runner api ingress
 docker compose ps
 docker compose down
 ```
+
+Coding-agent service development additionally requires the agent and
+model-gateway images plus a runner profile that matches a gateway profile.
+Use production-mode gateway configuration only with an operator-supplied
+credential; use the fake provider only through the owned E2E profile.
 
 Do not leave watch processes or Compose stacks running after the task that
 started them.
