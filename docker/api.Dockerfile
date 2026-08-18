@@ -19,7 +19,9 @@ COPY --from=build --chmod=0444 /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build --chmod=0444 /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
-COPY --from=build --chmod=0444 /app/apps/api/dashboard ./apps/api/dashboard
+COPY --from=build /app/apps/api/dashboard ./apps/api/dashboard
+RUN find /app/apps/api/dashboard -type d -exec chmod 0555 {} + \
+  && find /app/apps/api/dashboard -type f -exec chmod 0444 {} +
 COPY --from=build --chmod=0444 /app/packages/contracts/package.json ./packages/contracts/package.json
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --chown=node:node --chmod=0555 scripts/deploy-canary.mjs ./scripts/deploy-canary.mjs
