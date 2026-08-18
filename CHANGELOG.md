@@ -1,3 +1,10 @@
+## [0.6.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.2...v0.6.3) (2026-08-18)
+
+
+### Bug Fixes
+
+* **deploy:** serialize production releases ([380317e](https://github.com/bestagentkits/cloud-harness-mcp/commit/380317e757c198bb66ced41e691349f5b2acb8fb))
+
 ## [0.6.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.1...v0.6.2) (2026-08-18)
 
 
