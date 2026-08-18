@@ -1,3 +1,10 @@
+# [0.7.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.4...v0.7.0) (2026-08-18)
+
+
+### Features
+
+* **auth:** add dashboard-managed MCP API keys ([c47429f](https://github.com/bestagentkits/cloud-harness-mcp/commit/c47429fac6124434c1f5dc26cc7578596ea0736d))
+
 ## [0.6.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.3...v0.6.4) (2026-08-18)
 
 
