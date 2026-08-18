@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const runtime = join(process.cwd(), 'deploy/scripts/release-runtime.sh');
+const deployScript = join(process.cwd(), 'deploy/scripts/deploy-release.sh');
 const previousSha = 'a'.repeat(40);
 
 function runRollback(failureStep = 'none') {
@@ -76,6 +77,16 @@ cat "$state/release-config-current/mode"
 }
 
 describe('release rollback orchestration', () => {
+  it('takes a nonblocking host lock before touching the shared deployment checkout', () => {
+    const source = readFileSync(deployScript, 'utf8');
+    const lock = source.indexOf('flock -n 9');
+    expect(source).toContain('install -d -o root -g root -m 0700 "$state"');
+    expect(source).toContain('deploy_lock="$state/deploy.lock"');
+    expect(lock).toBeGreaterThan(source.indexOf('exec 9>"$deploy_lock"'));
+    expect(source.indexOf('exit 75', lock)).toBeGreaterThan(lock);
+    expect(lock).toBeLessThan(source.indexOf('git fetch --force --prune origin main'));
+  });
+
   it('restores and records the coherent runtime configuration snapshot', () => {
     const result = runConfigRestore();
     expect(result.status).toBe(0);

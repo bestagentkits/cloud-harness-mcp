@@ -2,10 +2,18 @@
 set -euo pipefail
 umask 077
 
+state=/var/lib/cloud-harness
+install -d -o root -g root -m 0700 "$state"
+deploy_lock="$state/deploy.lock"
+exec 9>"$deploy_lock"
+if ! flock -n 9; then
+  echo "another Cloud Harness deployment is already running" >&2
+  exit 75
+fi
+
 release_sha=${1:-}
 repo=/opt/cloud-harness-mcp/repo
 origin=https://github.com/bestagentkits/cloud-harness-mcp.git
-state=/var/lib/cloud-harness
 install -d -m 0700 "$state/state" "$state/backups"
 install -d -m 0750 "$state/jobs" "$state/artifacts"
 env_file=/etc/cloud-harness-mcp/runtime.env
