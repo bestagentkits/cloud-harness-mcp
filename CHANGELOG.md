@@ -1,3 +1,10 @@
+## [0.6.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.1...v0.6.2) (2026-08-18)
+
+
+### Bug Fixes
+
+* **deploy:** enable Access JWKS and dashboard routing ([b24c007](https://github.com/bestagentkits/cloud-harness-mcp/commit/b24c0071f3d243295abcbc9e0af46a63e3bf1add))
+
 ## [0.6.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.0...v0.6.1) (2026-08-17)
 
 
