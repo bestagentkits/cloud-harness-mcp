@@ -20,5 +20,6 @@ const generated = spawnSync('openssl', [
 if (generated.status !== 0) {
   throw new Error(`openssl could not generate test-only TLS fixtures: ${generated.stderr.trim()}`);
 }
-await Promise.all([chmod(keyPath, 0o600), chmod(certificatePath, 0o600)]);
+// The parent stays owner-only; mounted files must be readable by the image's non-root UID on Linux CI.
+await Promise.all([chmod(keyPath, 0o444), chmod(certificatePath, 0o444), chmod(credentialPath, 0o444)]);
 console.log(`model-gateway-test-fixtures=${outputRoot}`);
