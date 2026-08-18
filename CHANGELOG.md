@@ -1,3 +1,10 @@
+## [0.6.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.3...v0.6.4) (2026-08-18)
+
+
+### Bug Fixes
+
+* **api:** make dashboard assets readable ([b8c8f96](https://github.com/bestagentkits/cloud-harness-mcp/commit/b8c8f96dd77fca6ef2c6d70a0296c42f3e7880fe))
+
 ## [0.6.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.6.2...v0.6.3) (2026-08-18)
 
 
