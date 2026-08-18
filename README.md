@@ -19,7 +19,7 @@ worktree, skill, hook, memory, and repository-defined deployment tools.
 The public MCP URL is:
 
 ```text
-https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+https://harness.zuey.me/mcp
 ```
 
 ## Architecture
@@ -187,9 +187,9 @@ The OpenAI package contains the portable skill, store metadata, logo, privacy
 policy, and terms. It intentionally does not embed an app registration ID,
 bearer token, or MCP authorization. OpenAI reviews skills-only and MCP-only
 plugins, but a public authenticated remote MCP listing requires a supported
-OAuth flow. This private single-owner deployment still uses an owner bearer
-token, so connect it only through the local Codex configuration below; add an
-OAuth gateway before submitting the hosted MCP server as a public ChatGPT app.
+OAuth flow. The owner deployment uses Cloudflare Access Managed OAuth; the
+package itself still embeds no deployment-specific authorization or app
+registration.
 See OpenAI's [plugin packaging](https://developers.openai.com/plugins/build/plugins),
 [submission](https://developers.openai.com/plugins/deploy/submission), and
 [authentication](https://developers.openai.com/plugins/build/auth) guidance.
@@ -201,16 +201,22 @@ See OpenAI's [plugin packaging](https://developers.openai.com/plugins/build/plug
 This server exposes a remote Streamable HTTP MCP endpoint:
 
 ```text
-https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+https://harness.zuey.me/mcp
 ```
 
-`owner-bearer` is the default, and the direct-header examples below use the
-owner-provided `CLOUD_HARNESS_MCP_TOKEN`. Keep it in a local environment
-variable or client-local configuration; never put it in a repository, prompt,
-or shared project configuration.
+The owner deployment uses `cloudflare-access`: Managed OAuth clients connect to
+the URL above and complete GitHub or Google login in the browser. Its dashboard
+is `https://harness.zuey.me/dashboard`.
 
-An operator may instead deploy `cloudflare-access` on an eligible hostname in
-an owned Cloudflare zone. Access provides Managed OAuth and GitHub/Google SSO;
+`owner-bearer` remains the software default for separate private deployments.
+The direct-header examples below use the owner-provided
+`CLOUD_HARNESS_MCP_TOKEN` and the placeholder
+`https://<owner-bearer-hostname>/mcp`. Keep both in client-local private
+configuration; never put the token in a repository, prompt, or shared project
+configuration.
+
+Other operators may deploy `cloudflare-access` on an eligible hostname in an
+owned Cloudflare zone. Access provides Managed OAuth and GitHub/Google SSO;
 Cloud Harness verifies the forwarded assertion and exposes the dashboard at
 `/dashboard`. Treat client login as supported only after the exact client,
 Access policy, discovery, refresh, and revocation flow has been verified live.
@@ -258,7 +264,7 @@ Add this to `~/.codex/config.toml` (or a trusted project's
 
 ```toml
 [mcp_servers.cloud_harness]
-url = "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp"
+url = "https://<owner-bearer-hostname>/mcp"
 bearer_token_env_var = "CLOUD_HARNESS_MCP_TOKEN"
 required = true
 tool_timeout_sec = 300
@@ -295,7 +301,7 @@ Set the token, then register the server for your user account:
 export CLOUD_HARNESS_MCP_TOKEN="<owner-provided-token>"
 claude mcp add --transport http --scope user \
   --header "Authorization: Bearer $CLOUD_HARNESS_MCP_TOKEN" \
-  cloud-harness https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+  cloud-harness https://<owner-bearer-hostname>/mcp
 ```
 
 Use `claude mcp get cloud-harness` to inspect the entry, then `/mcp` in a
@@ -313,7 +319,7 @@ Set the token, then add a remote HTTP MCP server:
 export CLOUD_HARNESS_MCP_TOKEN="<owner-provided-token>"
 gemini mcp add --transport http \
   --header "Authorization: Bearer $CLOUD_HARNESS_MCP_TOKEN" \
-  cloud-harness https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+  cloud-harness https://<owner-bearer-hostname>/mcp
 ```
 
 Restart Gemini CLI if it is already running and use its MCP management command
@@ -333,7 +339,7 @@ trusted project only):
 {
   "mcpServers": {
     "cloud-harness": {
-      "url": "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp",
+      "url": "https://<owner-bearer-hostname>/mcp",
       "headers": {
         "Authorization": "Bearer ${env:CLOUD_HARNESS_MCP_TOKEN}"
       }
@@ -361,7 +367,7 @@ remote server entry:
 {
   "mcpServers": {
     "cloud-harness": {
-      "serverUrl": "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp",
+      "serverUrl": "https://<owner-bearer-hostname>/mcp",
       "headers": {
         "Authorization": "Bearer <owner-provided-token>"
       }
@@ -393,7 +399,7 @@ this object to a Responses API request's `tools` array:
 ```json
 {
   "type": "mcp",
-  "server_url": "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp",
+  "server_url": "https://<owner-bearer-hostname>/mcp",
   "server_label": "cloud-harness",
   "authorization": "Bearer <owner-provided-token>"
 }

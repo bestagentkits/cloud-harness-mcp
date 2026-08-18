@@ -41,10 +41,10 @@ separately below.
 
 ## MCP endpoint and bearer
 
-The owner-operated endpoint is:
+An owner-bearer deployment uses an owner-controlled endpoint such as:
 
 ```text
-https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+https://<owner-bearer-hostname>/mcp
 ```
 
 Direct clients must send the owner-provided bearer token. Keep it in a local
@@ -63,7 +63,7 @@ Add this to trusted user configuration:
 
 ```toml
 [mcp_servers.cloud_harness]
-url = "https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp"
+url = "https://<owner-bearer-hostname>/mcp"
 bearer_token_env_var = "CLOUD_HARNESS_MCP_TOKEN"
 required = true
 tool_timeout_sec = 300
@@ -77,7 +77,7 @@ Restart Codex and inspect `/mcp` or run `codex mcp list`.
 ```bash
 claude mcp add --transport http --scope user \
   --header "Authorization: Bearer $CLOUD_HARNESS_MCP_TOKEN" \
-  cloud-harness https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp
+  cloud-harness https://<owner-bearer-hostname>/mcp
 ```
 
 Inspect with `claude mcp get cloud-harness`, then confirm it in `/mcp`.
@@ -89,18 +89,19 @@ Inspect with `claude mcp get cloud-harness`, then confirm it in `/mcp`.
 - Claude Code and Codex can use the private bearer-backed endpoint from local
   trusted configuration.
 - A public hosted ChatGPT/Claude connector must use a supported per-user
-  authorization flow. The current deployment is static-bearer, single-owner,
-  and is **not** a public multi-user MCP service. Do not publish the bearer or
-  claim OAuth support.
+  authorization flow. The owner deployment at `https://harness.zuey.me/mcp`
+  uses Cloudflare Access Managed OAuth with allowlisted mutually trusted
+  operators; it is not a hostile multi-tenant service.
 - Marketplace installation and marketplace review/publication are different
   states. Local validation does not prove an approved public listing.
 
 ## Intended trust model
 
-Cloud Harness is for one authenticated, trusted owner operating approved
-repositories. It is not an anonymous service, shared tenant sandbox, or hostile
-multi-tenant boundary. Rootful Docker and a shared kernel remain material trust
-limitations even though the executor is constrained.
+Cloud Harness is for one authenticated owner or named mutually trusted
+operators in one security domain, operating approved repositories. It is not
+an anonymous service, shared tenant sandbox, or hostile multi-tenant boundary.
+Rootful Docker and a shared kernel remain material trust limitations even
+though the executor is constrained.
 
 The trusted control plane owns ingress, authentication, repository validation,
 Docker lifecycle, optional GitHub App brokering, state, and cleanup. Repository

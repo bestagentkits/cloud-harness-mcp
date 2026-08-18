@@ -3,11 +3,11 @@
 ## Connection
 
 The Streamable HTTP endpoint is
-`https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp` for the current
-operator deployment. `owner-bearer` is the default authentication contract.
-An opt-in `cloudflare-access` deployment instead requires the client to
-complete the Access Managed OAuth flow through an eligible owner-controlled
-hostname; the origin also verifies the forwarded Access assertion. The
+`https://harness.zuey.me/mcp` for the current operator deployment. That
+deployment requires the client to complete the Cloudflare Access Managed OAuth
+flow through GitHub or Google; the origin verifies the forwarded Access
+assertion. `owner-bearer` remains the default authentication contract for
+separate private deployments. The
 recommended client routes are in the
 [README](../README.md#connect-from-ai-clients). Do not treat implementation or
 configuration as proof that a specific client has completed live OAuth.

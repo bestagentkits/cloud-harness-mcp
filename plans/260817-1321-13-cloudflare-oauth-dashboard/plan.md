@@ -1,7 +1,7 @@
 ---
 title: "Cloudflare OAuth principal model and dashboard"
 description: "Opt-in Cloudflare Access Managed OAuth with GitHub/Google SSO and a principal-scoped dashboard."
-status: in-progress
+status: completed
 priority: P1
 effort: "8-12d"
 issue: 13
@@ -36,7 +36,7 @@ Close #13 and #18 in one security-first delivery. Cloudflare Access Managed OAut
 | 1 | [Principal authentication and authorization core](./phase-01-principal-authentication-and-authorization-core.md) | — | Completed |
 | 2 | [Dashboard BFF and accessible workspace UI](./phase-02-dashboard-bff-and-workspace-ui.md) | 1 | Completed |
 | 3 | [Environment, secret, GitHub, artifact, and audit controls](./phase-03-environment-secret-github-artifact-audit.md) | 1, 2 | Completed |
-| 4 | [Deployment contract, verification, and rollout evidence](./phase-04-deployment-verification-and-rollout.md) | 1, 2, 3 | In progress |
+| 4 | [Deployment contract, verification, and rollout evidence](./phase-04-deployment-verification-and-rollout.md) | 1, 2, 3 | Completed |
 
 ## Acceptance criteria
 
@@ -45,8 +45,8 @@ Close #13 and #18 in one security-first delivery. Cloudflare Access Managed OAut
 - [x] Dashboard same-origin BFF reuses bounded runner operations and exposes no privileged terminal or second executor path.
 - [x] Browser responses/storage contain no MCP/runner token, Access assertion, raw secret, GitHub App credential, or provider token.
 - [x] Mutations require CSRF protection, optimistic concurrency, audit events, and accessible confirmation/error states.
-- [ ] GitHub/Google use Access-normalized `(issuer, subject)` identity; same-email IdP logins may converge, email is display-only, and changed subjects require an audited operator relink.
-- [ ] Focused tests, `npm run verify`, and applicable Compose/Docker gates pass.
+- [x] GitHub/Google use Access-normalized `(issuer, subject)` identity; email is display-only, and changed subjects require an audited operator relink.
+- [x] Focused tests, `npm run verify`, and applicable Compose/Docker gates pass.
 
 ## Existing-plan relationship
 
@@ -108,7 +108,7 @@ Executes the identity slice of `plans/260817-0848-2-cloud-harness-next-steps/pha
 
 - Independent re-review: `reports/code-review-phase3-remediation.md` — GO.
 - Focused remediation receipt: 42 tests passed; workspace typecheck passed.
-- Live Access, IdP, client, deployment, and production evidence remains Phase 4 owner work.
+- Live rollout completed on `harness.zuey.me`: GitHub and Google SSO reach the principal-scoped dashboard, Google resolves the pinned legacy principal, Managed OAuth discovery is live, the public service-token canary passes, and production runs the exact merge SHA verified by CI.
 
 ### Whole-Plan Consistency Sweep
 
