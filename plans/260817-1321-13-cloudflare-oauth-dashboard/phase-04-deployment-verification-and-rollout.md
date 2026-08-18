@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Deployment contract, verification, and rollout evidence"
-status: in-progress
+status: completed
 priority: P1
 effort: "1-2d plus operator rollout"
 dependencies: [1, 2, 3]
@@ -40,11 +40,20 @@ Wire optional Access mode without weakening topology, update owning docs, run re
 
 ## Success criteria
 
-- [ ] Repository gates pass and security topology changes only at explicit auth/dashboard surfaces.
+- [x] Repository gates pass and security topology changes only at explicit auth/dashboard surfaces.
 - [x] Docs separate implemented code, merged release, configured Cloudflare resources, and live rollout.
 - [x] Sanitized client/IdP/refresh/revocation/rollback checklist exists.
 - [x] No production/Access claim lacks current owner-authorized evidence.
 
 ## Risk and rollback
 
-Current `sslip.io` may be ineligible. Code ships disabled by default until an eligible hostname exists. Rollback follows the tested compatibility matrix; never restore an old DB snapshot while leaving newer jobs/artifacts live. Client incompatibility triggers a separate Managed OAuth vs Workers OAuth Provider decision; never add a second issuer silently.
+The owned-zone hostname resolves the earlier `sslip.io` eligibility risk. Code remains disabled by default for other deployments until an eligible hostname exists. Rollback follows the tested compatibility matrix; never restore an old DB snapshot while leaving newer jobs/artifacts live. Client incompatibility triggers a separate Managed OAuth vs Workers OAuth Provider decision; never add a second issuer silently.
+
+## Production rollout receipt
+
+- `harness.zuey.me` is protected by one Cloudflare Access self-hosted application with GitHub and Google IdPs and Managed OAuth enabled.
+- GitHub SSO and Google SSO both reach `/dashboard`; the pinned Google identity resolves the legacy principal and its existing workspaces.
+- `/dashboard/projects`, `/dashboard/artifacts`, `/dashboard/audit`, and `/dashboard/github` render through the authenticated BFF.
+- The protected-resource and authorization-server discovery documents return JSON from the public edge.
+- CI run `32112530628` and production run `32112756728` passed at merge SHA `06946e8e595a23e9a78e1a73055e43d12391ecab`.
+- The VPS records that exact release, all three long-lived services are healthy, and the root-owned runtime and canary files remain mode `0600`.
