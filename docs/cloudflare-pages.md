@@ -79,3 +79,24 @@ Preview deployments are not valid rollback targets. Confirm the restored
   account.
 - If the artifact check fails, remove the named file or credential marker from
   `site/`; never suppress the check or upload a broader directory.
+
+## Documentation site (`docs.harness.agentkit.best`)
+
+The public documentation site is a static VitePress build in [`docs-site/`](../docs-site/) deployed to a separate Pages project: `cloud-harness-docs`.
+
+Production URL: <https://docs.harness.agentkit.best> (Pages project: `cloud-harness-docs`).
+
+### First-time setup
+
+1. Create the direct-upload Pages project:
+   `npx wrangler pages project create cloud-harness-docs --production-branch main`
+2. In the Cloudflare Dashboard under **Workers & Pages → cloud-harness-docs → Custom Domains**, add `docs.harness.agentkit.best`.
+3. CI uses the same `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` repository secrets.
+
+### Verification and deploy commands
+
+- **Reference generation:** `npm run docs:reference` (builds reference pages from `@cloud-harness/contracts` and `.env.example`).
+- **Drift check:** `npm run docs:check` (fails if reference pages are stale).
+- **Build:** `npm run docs:build` (compiles VitePress site, checks dead links, emits `.md` twins and `llms-full.txt`).
+- **Artifact check:** `npm run docs:artifact` (scans `docs-site/.vitepress/dist` for forbidden files or credential leaks).
+- **Deploy:** `npm run docs:deploy` (runs reference, build, preflight, deploy, and smoke test).

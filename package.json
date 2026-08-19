@@ -8,7 +8,8 @@
   },
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "docs-site"
   ],
   "scripts": {
     "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway",
@@ -30,6 +31,16 @@
     "pages:list": "wrangler pages deployment list --project-name cloud-harness-mcp --environment production --json",
     "pages:links": "node scripts/verify-pages-links.mjs",
     "pages:smoke": "node scripts/verify-pages-url.mjs",
+    "docs:dev": "npm run dev -w @cloud-harness/docs-site",
+    "docs:build": "npm run build -w @cloud-harness/docs-site",
+    "docs:preview": "npm run preview -w @cloud-harness/docs-site",
+    "docs:reference": "npm run build -w @cloud-harness/contracts && node scripts/build-docs-reference.mjs",
+    "docs:check": "node scripts/verify-docs-reference.mjs",
+    "docs:artifact": "node scripts/verify-docs-artifact.mjs",
+    "docs:preflight": "npm run docs:artifact && node scripts/verify-docs-project.mjs && npm run docs:links",
+    "docs:links": "node scripts/verify-docs-links.mjs",
+    "docs:smoke": "node scripts/verify-docs-url.mjs",
+    "docs:deploy": "npm run docs:reference && npm run docs:build && npm run docs:preflight && wrangler pages deploy docs-site/.vitepress/dist --project-name cloud-harness-docs --branch main && npm run docs:smoke",
     "plugin:check": "node scripts/sync-cloudharness-plugin-skill.mjs --check",
     "plugin:sync": "node scripts/sync-cloudharness-plugin-skill.mjs",
     "release:dry-run": "semantic-release --dry-run --no-ci",

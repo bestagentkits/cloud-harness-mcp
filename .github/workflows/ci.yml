@@ -27,7 +27,12 @@ jobs:
       - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh
       - run: npm run verify:compose
       - run: npm run verify
-
+      - name: Verify documentation and reference integrity
+        run: |
+          npm run docs:reference
+          npm run docs:check
+          npm run docs:build
+          npm run docs:artifact
   docker-integration:
     needs: quality
     runs-on: ubuntu-24.04

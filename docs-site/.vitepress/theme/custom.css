@@ -1,0 +1,198 @@
+/**
+ * Cloud Harness brand theme for VitePress
+ * Derived from site/styles.css and docs/design-guidelines.md
+ * OKLCH palette only, no gradients, native font stack, WCAG AA compliant.
+ */
+
+:root {
+  /* Brand palette tokens */
+  --ch-copper: oklch(0.71 0.1 58);
+  --ch-amber: oklch(0.75 0.14 62);
+  --ch-amber-strong: oklch(0.68 0.16 62);
+  --ch-lime: oklch(0.84 0.19 126);
+  --ch-green: oklch(0.72 0.16 155);
+  --ch-red: oklch(0.62 0.22 27);
+  --ch-yellow: oklch(0.82 0.16 100);
+
+  /* Light mode defaults */
+  --vp-c-bg: oklch(0.97 0.008 252);
+  --vp-c-bg-alt: oklch(0.93 0.012 252);
+  --vp-c-bg-elv: oklch(0.99 0.004 252);
+  --vp-c-bg-soft: oklch(0.91 0.014 252);
+
+  --vp-c-text-1: oklch(0.18 0.025 252);
+  --vp-c-text-2: oklch(0.42 0.024 252);
+  --vp-c-text-3: oklch(0.60 0.020 252);
+
+  --vp-c-border: oklch(0.82 0.015 252);
+  --vp-c-divider: oklch(0.86 0.012 252);
+
+  /* Brand accent */
+  --vp-c-brand-1: var(--ch-amber-strong);
+  --vp-c-brand-2: var(--ch-amber);
+  --vp-c-brand-3: var(--ch-copper);
+  --vp-c-brand-soft: oklch(0.92 0.03 62 / 0.3);
+
+  --vp-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --vp-font-family-mono: ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace;
+
+  --vp-code-font-size: 0.9em;
+  --vp-code-line-height: 1.6;
+}
+
+.dark {
+  /* Dark mode overrides matching site/styles.css and mission-control guidelines */
+  --vp-c-bg: oklch(0.13 0.02 252);
+  --vp-c-bg-alt: oklch(0.17 0.025 252);
+  --vp-c-bg-elv: oklch(0.22 0.028 252);
+  --vp-c-bg-soft: oklch(0.19 0.025 252);
+
+  --vp-c-text-1: oklch(0.94 0.012 252);
+  --vp-c-text-2: oklch(0.82 0.018 252);
+  --vp-c-text-3: oklch(0.57 0.025 252);
+
+  --vp-c-border: oklch(0.28 0.026 252);
+  --vp-c-divider: oklch(0.24 0.024 252);
+
+  --vp-c-brand-1: var(--ch-amber);
+  --vp-c-brand-2: var(--ch-copper);
+  --vp-c-brand-3: var(--ch-lime);
+  --vp-c-brand-soft: oklch(0.35 0.05 62 / 0.25);
+}
+
+/* Headings typography: uppercase + letter-spacing for industrial voice */
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+
+.vp-doc h1 {
+  text-transform: uppercase;
+  font-size: 2.2rem;
+  line-height: 1.15;
+  border-bottom: 2px solid var(--vp-c-divider);
+  padding-bottom: 0.4em;
+  margin-bottom: 1rem;
+}
+
+.vp-doc h2 {
+  text-transform: uppercase;
+  font-size: 1.5rem;
+  letter-spacing: 0.04em;
+  margin-top: 2.5rem;
+  border-bottom: 1px solid var(--vp-c-divider);
+  padding-bottom: 0.3em;
+}
+
+.vp-doc h3 {
+  font-size: 1.15rem;
+  letter-spacing: 0.02em;
+}
+
+/* Monospace numerals and code blocks */
+.vp-doc code {
+  font-variant-numeric: tabular-nums;
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+}
+
+/* Inline links: underline with accent shift */
+.vp-doc a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  font-weight: 500;
+}
+
+/* Tables: industrial hairline styling */
+.vp-doc table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+  display: table;
+}
+
+.vp-doc th {
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  background-color: var(--vp-c-bg-alt);
+  font-weight: 600;
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border: 1px solid var(--vp-c-border);
+}
+
+.vp-doc td {
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--vp-c-border);
+  font-size: 0.92rem;
+}
+
+.vp-doc tr:nth-child(2n) {
+  background-color: var(--vp-c-bg-soft);
+}
+
+/* Custom badge helpers */
+.badge-ro {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background-color: oklch(0.72 0.16 155 / 0.15);
+  color: oklch(0.75 0.16 155);
+  border: 1px solid oklch(0.72 0.16 155 / 0.4);
+}
+
+.badge-destructive {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background-color: oklch(0.62 0.22 27 / 0.15);
+  color: oklch(0.68 0.22 27);
+  border: 1px solid oklch(0.62 0.22 27 / 0.4);
+}
+
+.badge-openworld {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background-color: oklch(0.82 0.16 100 / 0.15);
+  color: oklch(0.82 0.16 100);
+  border: 1px solid oklch(0.82 0.16 100 / 0.4);
+}
+
+/* Raw markdown twin hint banner */
+.md-twin-hint {
+  margin: 1.5rem 0;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--ch-amber);
+  background-color: var(--vp-c-bg-alt);
+  font-size: 0.88rem;
+  border-radius: 0 4px 4px 0;
+}
+
+.md-twin-hint code {
+  color: var(--ch-amber);
+}
+
+/* Reduced motion accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
