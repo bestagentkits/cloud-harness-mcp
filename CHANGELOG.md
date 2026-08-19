@@ -1,3 +1,10 @@
+## [0.16.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.3...v0.16.4) (2026-08-19)
+
+
+### Bug Fixes
+
+* **site:** prevent mobile header overflow on viewports under 860px ([#69](https://github.com/bestagentkits/cloud-harness-mcp/issues/69)) ([4caf772](https://github.com/bestagentkits/cloud-harness-mcp/commit/4caf772a79937aa9564d8e111a5b407442cc7a06))
+
 ## [0.16.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.2...v0.16.3) (2026-08-19)
 
 
