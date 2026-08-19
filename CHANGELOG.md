@@ -1,3 +1,10 @@
+## [0.16.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.5...v0.16.6) (2026-08-19)
+
+
+### Bug Fixes
+
+* **site:** add dedicated drawer close button and full-screen mobile menu overlay ([#71](https://github.com/bestagentkits/cloud-harness-mcp/issues/71)) ([5015036](https://github.com/bestagentkits/cloud-harness-mcp/commit/501503634811b448b23a7385891dfbe9df3f93ac))
+
 ## [0.16.5](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.4...v0.16.5) (2026-08-19)
 
 
