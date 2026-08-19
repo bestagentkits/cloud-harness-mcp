@@ -187,27 +187,45 @@ export class GitHubBindingService {
 
   async reconcile(
     principalId: string,
-    audit?: GitHubInstallationMutationAudit
+    audit?: GitHubInstallationMutationAudit,
+    targetInstallationId?: string | number
   ): Promise<GitHubInstallationRecord | undefined> {
-    const installation = this.installations.getInstallation(principalId);
-    if (!installation) return undefined;
-    let verified: VerifiedGitHubInstallation;
-    try {
-      verified = await this.verifier.verifyInstallation(installation.installationId);
-    } catch (error) {
-      if (error instanceof HarnessError && error.code === 'NOT_FOUND') {
-        return this.installations.markUninstalled(principalId, this.now(), audit);
+    const list = targetInstallationId !== undefined
+      ? [this.installations.getInstallation(principalId, targetInstallationId)].filter((x): x is GitHubInstallationRecord => x !== undefined)
+      : this.installations.listInstallations(principalId);
+    if (list.length === 0) return undefined;
+
+    let lastRecord: GitHubInstallationRecord | undefined;
+    for (const installation of list) {
+      if (installation.status === 'uninstalled') continue;
+      let verified: VerifiedGitHubInstallation;
+      try {
+        verified = await this.verifier.verifyInstallation(installation.installationId);
+      } catch (error) {
+        if (error instanceof HarnessError && error.code === 'NOT_FOUND') {
+          lastRecord = this.installations.markUninstalled(principalId, installation.installationId, this.now(), audit);
+          continue;
+        }
+        throw error;
       }
-      throw error;
+      if (
+        !sameId(installation.appId, verified.appId) ||
+        !sameId(installation.accountId, verified.accountId) ||
+        !sameId(installation.installationId, verified.installationId)
+      ) {
+        throw new HarnessError('CONFLICT', 'GitHub installation identity changed during reconciliation', 409);
+      }
+      lastRecord = this.installations.replaceVerified(principalId, verified, this.now(), audit);
     }
-    if (
-      !sameId(installation.appId, verified.appId) ||
-      !sameId(installation.accountId, verified.accountId) ||
-      !sameId(installation.installationId, verified.installationId)
-    ) {
-      throw new HarnessError('CONFLICT', 'GitHub installation identity changed during reconciliation', 409);
-    }
-    return this.installations.replaceVerified(principalId, verified, this.now(), audit);
+    return lastRecord ?? list[0];
+  }
+
+  disconnect(
+    principalId: string,
+    installationId: string | number,
+    audit?: GitHubInstallationMutationAudit
+  ): boolean {
+    return this.installations.removeInstallation(principalId, installationId, this.now(), audit);
   }
 }
 

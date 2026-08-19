@@ -48,7 +48,7 @@ export type DashboardResponseOperation =
   | 'environment_list' | 'environment_create' | 'environment_update' | 'environment_delete'
   | 'secret_list' | 'secret_create' | 'secret_rotate' | 'secret_delete' | 'audit_list'
   | 'artifact_list' | 'artifact_snapshot' | 'artifact_delete'
-  | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile';
+  | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect';
 
 function pick(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -63,10 +63,18 @@ const list = (data: Record<string, unknown>, key: string, keys: readonly string[
   [key]: Array.isArray(data[key]) ? data[key].map((record) => pick(record, keys)) : []
 });
 
+const installationKeys = ['appId', 'installationId', 'accountId', 'accountLogin', 'status', 'generation', 'createdAt', 'updatedAt', 'checkedAt'] as const;
 function githubStatus(data: Record<string, unknown>): Record<string, unknown> {
-  const installation = data.installation && typeof data.installation === 'object'
-    ? pick(data.installation, ['appId', 'installationId', 'accountId', 'accountLogin', 'status', 'generation', 'createdAt', 'updatedAt', 'checkedAt']) : null;
-  return { configured: data.configured === true, installation, ...list(data, 'repositories', ['installationId', 'owner', 'repository', 'contents', 'status', 'generation', 'createdAt', 'updatedAt', 'checkedAt']) };
+  const installations = Array.isArray(data.installations)
+    ? data.installations.map((item) => pick(item, installationKeys))
+    : (data.installation && typeof data.installation === 'object' ? [pick(data.installation, installationKeys)] : []);
+  const installation = installations[0] ?? (data.installation && typeof data.installation === 'object' ? pick(data.installation, installationKeys) : null);
+  return {
+    configured: data.configured === true,
+    installation,
+    installations,
+    ...list(data, 'repositories', ['installationId', 'owner', 'repository', 'contents', 'status', 'generation', 'createdAt', 'updatedAt', 'checkedAt'])
+  };
 }
 
 export function mapDashboardData(operation: DashboardResponseOperation, value: unknown): unknown {
@@ -107,7 +115,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'artifact_list') return list(data, 'artifacts', artifactKeys);
   if (operation === 'artifact_snapshot' || operation === 'artifact_delete') return pick(data, artifactKeys);
   if (operation === 'github_setup_begin') return pick(data, ['url', 'state', 'expiresAt']);
-  if (operation === 'github_status' || operation === 'github_setup_complete' || operation === 'github_reconcile') return githubStatus(data);
+  if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect'].includes(operation)) return githubStatus(data);
   return {};
 }
 

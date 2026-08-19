@@ -59,10 +59,16 @@ From the new App's settings page:
 4. Select only the private repositories Cloud Harness needs, then finish the
    installation.
 
+To operate across multiple accounts or organizations (e.g. a personal account
+and several organization workspaces), install the same GitHub App on each
+target account or organization. A single principal can bind multiple concurrent
+installations in the operator dashboard; the runner automatically selects the
+correct installation matching the repository owner (`owner/repo`) when minting
+tokens.
+
 Use **All repositories** only when that broader and future access is an
 explicit owner decision. GitHub documents this flow in
 [Installing your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app).
-
 ## 3. Collect the App ID, installation ID, and private key
 
 Cloud Harness requires three values together:

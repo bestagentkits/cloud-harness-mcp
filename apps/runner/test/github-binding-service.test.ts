@@ -132,7 +132,8 @@ describe('GitHub installation binding', () => {
       config: { githubApp: { appId: 123, privateKey: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----' } } as RunnerConfig,
       principalId: 'principal-a',
       repositoryUrl: new URL('https://github.com/example/private-repo.git'),
-      installations: store
+      installations: store,
+      requiredPermission: 'write'
     })).rejects.toThrow('not authorized');
   });
 
@@ -166,5 +167,43 @@ describe('GitHub installation binding', () => {
     const persisted = JSON.stringify({ installation: store.getInstallation('principal-a'), grants: store.listRepositoryGrants('principal-a') });
     expect(persisted).not.toContain('provider-secret');
     expect(persisted).not.toContain('private-key-secret');
+  });
+
+  it('supports binding and reconciling multiple concurrent installations per principal', async () => {
+    const setup1 = service.beginSetup({ principalId: 'principal-a', expectedAppId: '123' });
+    await service.completeSetup({
+      principalId: 'principal-a', state: setup1.state, appId: '123', accountId: '789', installationId: '456'
+    });
+
+    verifyInstallation.mockResolvedValueOnce(activeInstallation({
+      installationId: '457', accountId: '790', accountLogin: 'org-two',
+      repositories: [{ owner: 'Org-Two', repository: 'Repo-Two', contents: 'read' }]
+    }));
+    const setup2 = service.beginSetup({ principalId: 'principal-a', expectedAppId: '123' });
+    await service.completeSetup({
+      principalId: 'principal-a', state: setup2.state, appId: '123', accountId: '790', installationId: '457'
+    });
+
+    expect(store.listInstallations('principal-a')).toHaveLength(2);
+    expect(store.getRepositoryGrant('principal-a', 'example', 'private-repo')).toMatchObject({ status: 'granted', installationId: '456' });
+    expect(store.getRepositoryGrant('principal-a', 'org-two', 'repo-two')).toMatchObject({ status: 'granted', installationId: '457' });
+
+    // Reconcile: first installation 404 (uninstalled), second installation still active
+    verifyInstallation.mockRejectedValueOnce(new HarnessError('NOT_FOUND', 'installation deleted', 404));
+    verifyInstallation.mockResolvedValueOnce(activeInstallation({
+      installationId: '457', accountId: '790', accountLogin: 'org-two',
+      repositories: [{ owner: 'Org-Two', repository: 'Repo-Two', contents: 'read' }]
+    }));
+
+    await service.reconcile('principal-a');
+    expect(store.getInstallation('principal-a', '456')).toMatchObject({ status: 'uninstalled' });
+    expect(store.getInstallation('principal-a', '457')).toMatchObject({ status: 'active' });
+    expect(store.getRepositoryGrant('principal-a', 'example', 'private-repo')).toMatchObject({ status: 'removed' });
+    expect(store.getRepositoryGrant('principal-a', 'org-two', 'repo-two')).toMatchObject({ status: 'granted' });
+
+    // Disconnect installation 457
+    expect(service.disconnect('principal-a', '457')).toBe(true);
+    expect(store.getInstallation('principal-a', '457')).toBeUndefined();
+    expect(store.getRepositoryGrant('principal-a', 'org-two', 'repo-two')).toMatchObject({ status: 'removed' });
   });
 });

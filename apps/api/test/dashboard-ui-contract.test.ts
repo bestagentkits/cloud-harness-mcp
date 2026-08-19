@@ -51,7 +51,7 @@ describe('dashboard static UI contract', () => {
     }
     for (const endpoint of [
       "api('/projects')", "api('/artifacts',", '`/audit?limit=50', "api('/github')", "api('/profile')",
-      "'/github/setup'", "'/github/complete'", "'/github/reconcile'", '`/environments/${'
+      "'/github/setup'", "'/github/complete'", "'/github/reconcile'", "'/github/disconnect'", '`/environments/${'
     ]) expect(script).toContain(endpoint);
     expect(script).toContain('expectedGeneration');
     expect(script).toContain('retentionSeconds');

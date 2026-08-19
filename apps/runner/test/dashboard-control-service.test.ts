@@ -6,11 +6,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { MetadataRunnerRequest, RunnerConfig } from '@cloud-harness/contracts';
 import { ArtifactStore } from '../src/artifact-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
+import { GitHubBindingService, GitHubSetupStateStore } from '../src/github-binding-service.js';
+import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
-
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -112,5 +113,51 @@ describe('dashboard control service', () => {
         projectId: `prj_${'x'.repeat(24)}`, name: 'Nope', expectedGeneration: 1
       }, selected))).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
     }
+  });
+
+  it('returns multiple GitHub installations and handles disconnect with audit logging', async () => {
+    const { principals, metadata, artifacts, workspaces } = setup();
+    const store = new InMemoryGitHubInstallationStore();
+    const verifier = { verifyInstallation: async (id: string) => ({ appId: '1', installationId: id, accountId: id, accountLogin: `org-${id}`, status: 'active' as const, repositories: [] }) };
+    const binding = new GitHubBindingService(new GitHubSetupStateStore(principals.database), store, verifier);
+    const githubControls = new DashboardControlService(
+      { artifactRetentionSeconds: 60, githubApp: { appSlug: 'test-app', appId: 1 } } as RunnerConfig,
+      principals, metadata, artifacts, workspaces, store, binding
+    );
+
+    const principalId = principals.resolvePrincipal(principal);
+    store.replaceVerified(principalId, {
+      appId: 1, installationId: 101, accountId: 201, accountLogin: 'org-one', status: 'active',
+      repositories: [{ owner: 'org-one', repository: 'repo1', contents: 'write' }]
+    }, 100);
+    store.replaceVerified(principalId, {
+      appId: 1, installationId: 102, accountId: 202, accountLogin: 'org-two', status: 'active',
+      repositories: [{ owner: 'org-two', repository: 'repo2', contents: 'read' }]
+    }, 110);
+
+    // Status returns both installations
+    const statusResult = await githubControls.execute(request('github_status', {}));
+    expect(statusResult.data).toMatchObject({
+      configured: true,
+      installations: expect.arrayContaining([
+        expect.objectContaining({ installationId: '101', accountLogin: 'org-one' }),
+        expect.objectContaining({ installationId: '102', accountLogin: 'org-two' })
+      ]),
+      repositories: expect.arrayContaining([
+        expect.objectContaining({ repository: 'repo1', installationId: '101' }),
+        expect.objectContaining({ repository: 'repo2', installationId: '102' })
+      ])
+    });
+
+    // Disconnect installation 101
+    const disconnectResult = await githubControls.execute(request('github_disconnect', { installationId: '101' }));
+    expect(disconnectResult.data).toMatchObject({
+      installations: [expect.objectContaining({ installationId: '102' })]
+    });
+
+    const audits = metadata.listAudit(principalId, 10);
+    expect(audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'github.disconnected', subjectId: '101' })
+    ]));
   });
 });
