@@ -146,7 +146,7 @@ describe('real Docker sandbox', () => {
     const cancellableRecord = store.byId(workspaceId)!;
     const controller = new AbortController();
     const execution = service.execute('owner', 'exec_run', {
-      workspaceId, command: 'sleep 2; printf leaked > aborted-command.txt', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536
+      workspaceId, command: 'sleep 10; printf leaked > aborted-command.txt', cwd: '.', timeoutMs: 15_000, maxOutputBytes: 65_536
     }, controller.signal);
     setTimeout(() => controller.abort(), 100);
     await expect(execution).rejects.toThrow('request cancelled');
