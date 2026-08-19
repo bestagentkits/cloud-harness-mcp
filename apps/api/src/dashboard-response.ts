@@ -119,10 +119,21 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   return {};
 }
 
+const descriptiveOperations = new Set<string>([
+  'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
+  'secret_create', 'secret_rotate', 'secret_delete',
+  'project_create', 'project_update', 'project_delete',
+  'environment_create', 'environment_update', 'environment_delete',
+  'artifact_snapshot', 'artifact_delete'
+]);
+
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {
   if (!result.ok) {
     const code = result.error?.code ?? 'INTERNAL_ERROR';
-    response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message: messages[code] ?? messages.INTERNAL_ERROR });
+    const message = result.error?.message && descriptiveOperations.has(operation)
+      ? result.error.message
+      : (messages[code] ?? messages.INTERNAL_ERROR);
+    response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message });
     return;
   }
   response.json({ data: mapDashboardData(operation, result.data), truncated: result.truncated, ...(result.cursor ? { cursor: result.cursor } : {}) });
