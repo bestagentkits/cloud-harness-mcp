@@ -1,3 +1,11 @@
+## [0.16.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.1...v0.16.2) (2026-08-19)
+
+
+### Bug Fixes
+
+* **site:** add SVG marker defs and fix mobile responsive navigation wrapping ([#66](https://github.com/bestagentkits/cloud-harness-mcp/issues/66)) ([d4c5686](https://github.com/bestagentkits/cloud-harness-mcp/commit/d4c568608f78a2a4ffee9b8315034bf0d9ac9aff))
+* **site:** align Bounded Coding Workflow heading and verify test assertions ([#67](https://github.com/bestagentkits/cloud-harness-mcp/issues/67)) ([c644c56](https://github.com/bestagentkits/cloud-harness-mcp/commit/c644c56871292e390fa22201d4881baffbeccaf2))
+
 ## [0.16.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.0...v0.16.1) (2026-08-19)
 
 
