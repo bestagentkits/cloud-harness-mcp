@@ -8,11 +8,25 @@
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to main content</a>
-  <div class="mobile-bar"><button id="menu-button" type="button" aria-controls="product-nav" aria-expanded="false">Menu</button><strong>Cloud Harness</strong></div>
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="menu-button" class="icon-btn topbar-menu" type="button" aria-controls="product-nav" aria-expanded="false" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <button id="nav-toggle" class="icon-btn topbar-collapse" type="button" aria-expanded="true" aria-label="Collapse navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg></button>
+      <span class="brand">Cloud Harness</span>
+      <span class="env-tag">MCP Control Plane</span>
+    </div>
+    <div class="topbar-right">
+      <div class="theme-control" role="group" aria-label="Theme">
+        <button type="button" class="theme-opt" data-theme-value="system" aria-pressed="true">System</button>
+        <button type="button" class="theme-opt" data-theme-value="light" aria-pressed="false">Light</button>
+        <button type="button" class="theme-opt" data-theme-value="dark" aria-pressed="false">Dark</button>
+      </div>
+      <p class="profile-chip" id="profile-chip"><span class="avatar" id="profile-avatar" aria-hidden="true"></span><span class="profile-meta"><strong id="profile-name">Signed in</strong><span id="profile-email" class="wrap"></span></span></p>
+      <a class="signout" href="/cdn-cgi/access/logout">Sign out</a>
+    </div>
+  </header>
   <div class="app-shell">
     <aside id="product-nav" class="sidebar" aria-label="Product navigation">
-      <div class="brand">Cloud Harness</div>
-      <p class="env-tag">MCP Control Plane</p>
       <nav aria-label="Primary">
         <a href="/dashboard/overview" data-section="overview"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Overview</a>
         <p class="nav-group">Runtime</p>
@@ -28,7 +42,6 @@
         <a href="/dashboard/profile" data-section="profile"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/></svg>Profile</a>
         <div id="context-nav"></div>
       </nav>
-      <button id="nav-toggle" type="button" aria-expanded="true">Collapse navigation</button>
     </aside>
     <main id="main" tabindex="-1">
       <header class="page-header"><p class="eyebrow">CONTROL PLANE</p><h1 id="page-title">Workspaces</h1><p id="page-help">TTL-limited coding environments available to your signed-in identity.</p></header>

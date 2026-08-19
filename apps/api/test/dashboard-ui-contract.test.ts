@@ -71,4 +71,17 @@ describe('dashboard static UI contract', () => {
     for (const forbidden of ['localStorage', 'sessionStorage', 'document.cookie', 'console.', 'sendBeacon(', 'analytics']) expect(script).not.toContain(forbidden);
     expect(html).not.toContain('value="chm_key_');
   });
+
+  it('provides a top header with profile, theme control, sign out, an icon collapse, and server status', () => {
+    expect(html).toContain('<header class="topbar">');
+    expect(html).toContain('href="/cdn-cgi/access/logout"');
+    for (const theme of ['data-theme-value="system"', 'data-theme-value="light"', 'data-theme-value="dark"']) expect(html).toContain(theme);
+    expect(html).toContain('id="profile-name"');
+    expect(html).toContain('id="nav-toggle"');
+    expect(html).not.toContain('>Collapse navigation</button>');
+    expect(script).toContain("api('/server')");
+    expect(script).toContain("api('/preferences'");
+    expect(script).toContain("classList.toggle('nav-collapsed')");
+    expect(css).toContain('.app-shell.nav-collapsed');
+  });
 });
