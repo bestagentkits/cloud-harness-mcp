@@ -43,6 +43,23 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   });
   registerDashboardControlRoutes(router, runner, principal, config);
 
+  router.get('/api/v1/profile', (request: DashboardRequest, response) => {
+    const selected = principal(request, response);
+    if (!selected || selected.kind !== 'external') return;
+    response.json({
+      data: {
+        identity: {
+          issuer: selected.issuer,
+          subject: selected.subject,
+          ...(selected.email ? { email: selected.email } : {}),
+          ...(selected.name ? { name: selected.name } : {})
+        },
+        scopes: request.auth?.scopes ?? [],
+        sessionExpiresAt: typeof request.auth?.expiresAt === 'number' ? new Date(request.auth.expiresAt * 1_000).toISOString() : null
+      }
+    });
+  });
+
   router.get('/api/v1/workspaces', async (request: DashboardRequest, response, next) => {
     await call(runner, request, response, next, 'workspace_list', pageQuery.parse(request.query));
   });

@@ -21,6 +21,7 @@ export function createDashboardAssetsRouter(): Router {
     '/audit',
     '/github',
     '/api-keys',
+    '/profile',
   ], (_request, response) => response.sendFile('index.html', options));
   return router;
 }

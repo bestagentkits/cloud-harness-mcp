@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiConfig, RunnerPrincipalSelector, RunnerResponse } from '@cloud-harness/contracts';
 import { createDashboardRouter } from '../src/dashboard-router.js';
 import { mapDashboardData, type DashboardResponseOperation } from '../src/dashboard-response.js';
-import type { DashboardRunnerClient } from '../src/dashboard-types.js';
+import type { AuthInfo } from '@modelcontextprotocol/server';
+import type { DashboardRequest, DashboardRunnerClient } from '../src/dashboard-types.js';
 
 const workspaceId = `ws_${'a'.repeat(24)}`;
 const principal: RunnerPrincipalSelector = { kind: 'external', issuer: 'https://team.cloudflareaccess.com', subject: 'operator' };
@@ -168,5 +169,75 @@ describe('dashboard BFF', () => {
     });
     expect(revoked.status).toBe(200);
     expect(revoked.text).not.toContain('.ssss');
+  });
+});
+
+describe('dashboard profile', () => {
+  let profileServer: Server;
+  let profilePort: number;
+
+  async function serveProfile(auth: AuthInfo): Promise<void> {
+    const app = express();
+    app.use((request, _response, next) => { (request as DashboardRequest).auth = auth; next(); });
+    app.use('/dashboard', createDashboardRouter(config, runner));
+    profileServer = createServer(app);
+    const listening = Promise.withResolvers<void>();
+    profileServer.listen(0, '127.0.0.1', () => listening.resolve());
+    await listening.promise;
+    const address = profileServer.address();
+    if (!address || typeof address === 'string') throw new Error('server unavailable');
+    profilePort = address.port;
+  }
+
+  function get(): Promise<Reply> {
+    const { promise, resolve, reject } = Promise.withResolvers<Reply>();
+    const request = httpRequest({ hostname: '127.0.0.1', port: profilePort, path: '/dashboard/api/v1/profile', method: 'GET', headers: { host: 'dashboard.example' } }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: response.statusCode ?? 0, headers: response.headers as Reply['headers'], text, json: text ? JSON.parse(text) : undefined });
+      });
+    });
+    request.on('error', reject); request.end();
+    return promise;
+  }
+
+  afterEach(async () => {
+    if (!profileServer) return;
+    const closed = Promise.withResolvers<void>();
+    profileServer.close(() => closed.resolve());
+    await closed.promise;
+  });
+
+  it('returns the verified identity, scopes, and session expiry without any runner call', async () => {
+    const expiresAt = 1_800_000_000;
+    await serveProfile({
+      token: 'cloudflare-access', clientId: 'operator', scopes: ['workspace:read', 'workspace:write'], expiresAt,
+      extra: { principal: { kind: 'external', issuer: 'https://team.cloudflareaccess.com', subject: 'operator', email: 'op@example.com', name: 'Op Erator' } }
+    });
+    const before = calls.length;
+    const response = await get();
+    expect(response.status).toBe(200);
+    expect(response.json.data).toEqual({
+      identity: { issuer: 'https://team.cloudflareaccess.com', subject: 'operator', email: 'op@example.com', name: 'Op Erator' },
+      scopes: ['workspace:read', 'workspace:write'],
+      sessionExpiresAt: new Date(expiresAt * 1_000).toISOString()
+    });
+    expect(calls.length).toBe(before);
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('omits absent optional identity fields and reports no expiry', async () => {
+    await serveProfile({ token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal } });
+    const response = await get();
+    expect(response.status).toBe(200);
+    expect(response.json.data.identity).toEqual({ issuer: 'https://team.cloudflareaccess.com', subject: 'operator' });
+    expect(response.json.data.sessionExpiresAt).toBeNull();
+  });
+
+  it('rejects a request that has no verified external principal', async () => {
+    await serveProfile({ token: 'owner', clientId: 'owner', scopes: [], extra: { principal: { kind: 'owner', ownerId: 'owner' } } });
+    expect((await get()).status).toBe(401);
   });
 });
