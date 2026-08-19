@@ -18,17 +18,19 @@ export async function mintPrincipalRepositoryToken(input: {
 }): Promise<string | undefined> {
   if (!input.config.githubApp || input.repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
   const { owner, repository } = parseGitHubRepository(input.repositoryUrl);
-  const installation = input.installations.getInstallation(input.principalId);
   const grant = input.installations.getRepositoryGrant(input.principalId, owner, repository);
   const requiredPermission = input.requiredPermission ?? 'read';
   if (
-    !installation ||
-    installation.status !== 'active' ||
-    String(input.config.githubApp.appId) !== installation.appId ||
     !grant ||
-    grant.installationId !== installation.installationId ||
     grant.status !== 'granted' ||
     (requiredPermission === 'write' && grant.contents !== 'write')
+  ) throw new HarnessError('FORBIDDEN', 'GitHub repository access is not authorized', 403);
+
+  const installation = input.installations.getInstallation(input.principalId, grant.installationId);
+  if (
+    !installation ||
+    installation.status !== 'active' ||
+    String(input.config.githubApp.appId) !== installation.appId
   ) throw new HarnessError('FORBIDDEN', 'GitHub repository access is not authorized', 403);
 
   return mintForInstallation(input.config.githubApp, installation.installationId, repository);

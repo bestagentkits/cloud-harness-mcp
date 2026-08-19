@@ -66,5 +66,17 @@ describe('internal runner API contract', () => {
       version: 2, principal, operation: 'project_create',
       input: { name: 'Harness', expectedGeneration: 1 }
     })).toThrow();
+    expect(MetadataRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'github_disconnect',
+      input: { installationId: 'inst_12345' }
+    })).toMatchObject({ operation: 'github_disconnect', input: { installationId: 'inst_12345' } });
+    expect(MetadataRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'github_reconcile',
+      input: { installationId: 'inst_12345' }
+    })).toMatchObject({ operation: 'github_reconcile', input: { installationId: 'inst_12345' } });
+    expect(MetadataRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'github_reconcile',
+      input: {}
+    })).toMatchObject({ operation: 'github_reconcile', input: {} });
   });
 });

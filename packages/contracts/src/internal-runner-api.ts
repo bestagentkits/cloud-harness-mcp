@@ -42,7 +42,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'environment_list', 'environment_create', 'environment_update', 'environment_delete',
   'secret_list', 'secret_create', 'secret_rotate', 'secret_delete', 'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_delete',
-  'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile'
+  'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect'
 ]);
 
 const metadataInputs = {
@@ -71,7 +71,8 @@ const metadataInputs = {
   github_setup_complete: z.object({
     state: z.string().min(32).max(128), installationId: z.string().min(1).max(100)
   }).strict(),
-  github_reconcile: z.object({}).strict()
+  github_reconcile: z.object({ installationId: z.string().min(1).max(100).optional() }).strict(),
+  github_disconnect: z.object({ installationId: z.string().min(1).max(100) }).strict()
 } as const;
 
 const metadataRequest = <Operation extends keyof typeof metadataInputs>(operation: Operation) => z.object({
@@ -86,7 +87,8 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('environment_list'), metadataRequest('environment_create'), metadataRequest('environment_update'), metadataRequest('environment_delete'),
   metadataRequest('secret_list'), metadataRequest('secret_create'), metadataRequest('secret_rotate'), metadataRequest('secret_delete'),
   metadataRequest('audit_list'), metadataRequest('artifact_list'), metadataRequest('artifact_snapshot'), metadataRequest('artifact_delete'),
-  metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'), metadataRequest('github_reconcile')
+  metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'),
+  metadataRequest('github_reconcile'), metadataRequest('github_disconnect')
 ]);
 
 export type InternalRunnerOperation = z.infer<typeof InternalRunnerOperationSchema>;

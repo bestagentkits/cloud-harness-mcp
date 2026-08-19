@@ -3,7 +3,7 @@ import {
   apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
   renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderOverview, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderGitHub, renderOverview, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
 
 class FakeElement {
   hidden = false;
@@ -176,6 +176,36 @@ describe('dashboard UI behavior', () => {
     expect(githubCallbackParameters('?state=state-value&installation_id=12345')).toEqual({ state: 'state-value', installationId: '12345' });
     expect(githubCallbackParameters('?state=state-value')).toBeUndefined();
     expect(githubCallbackParameters('?installation_id=12345')).toBeUndefined();
+  });
+
+  it('renders multiple GitHub installations with per-installation action controls', () => {
+    const status = {
+      configured: true,
+      installations: [
+        { appId: '1', installationId: '101', accountId: '201', accountLogin: 'mrgoonie', status: 'active', checkedAt: 1_700_000_000_000 },
+        { appId: '1', installationId: '102', accountId: '202', accountLogin: 'bestagentkits', status: 'active', checkedAt: 1_700_000_000_000 }
+      ],
+      repositories: [
+        { installationId: '101', owner: 'mrgoonie', repository: 'repo1', contents: 'write', status: 'granted' },
+        { installationId: '102', owner: 'bestagentkits', repository: 'repo2', contents: 'read', status: 'granted' }
+      ]
+    };
+    const html = renderGitHub(status);
+    expect(html).toContain('mrgoonie');
+    expect(html).toContain('bestagentkits');
+    expect(html).toContain('data-installation-id="101"');
+    expect(html).toContain('data-installation-id="102"');
+    expect(html).toContain('class="reconcile-installation"');
+    expect(html).toContain('class="danger disconnect-installation"');
+    expect(html).toContain('Reconcile all installations');
+    expect(html).toContain('repo1');
+    expect(html).toContain('repo2');
+  });
+
+  it('renders a friendly placeholder when no GitHub installations are bound', () => {
+    const html = renderGitHub({ configured: true, installations: [], repositories: [] });
+    expect(html).toContain('No GitHub App installation is bound to this identity.');
+    expect(html).toContain('disabled');
   });
 
   it('clears write-only inputs after secret submission', () => {
