@@ -5,9 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Cloud Harness MCP is a private remote coding harness for one trusted owner."
+      content="Cloud Harness MCP — The Cyber-Engineering Private Remote Coding Harness for Autonomous AI Agents."
     />
-    <meta name="theme-color" content="#000000" />
     <title>Cloud Harness MCP // Cyber-Engineering HUD Edition</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -358,31 +357,96 @@
         font-family: var(--font-mono);
       }
 
-      /* Hero Trace Container */
-      .hero-trace {
+      /* Live Interactive Terminal HUD */
+      .terminal-hud {
         background: #05070a;
         border: 1px solid var(--border-hud);
         border-radius: 12px;
-        padding: 1.5rem;
+        overflow: hidden;
         box-shadow: 0 24px 64px rgba(0, 0, 0, 0.85), 0 0 24px rgba(0, 240, 255, 0.12);
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
       }
 
-      .hero-trace figcaption {
-        font-family: var(--font-mono);
-        font-size: 0.78rem;
-        color: var(--cyan-glow);
+      .terminal-header {
+        background: #020305;
+        padding: 0.75rem 1.25rem;
         display: flex;
         justify-content: space-between;
+        align-items: center;
         border-bottom: 1px solid var(--border-soft);
-        padding-bottom: 0.75rem;
+        gap: 0.5rem;
       }
 
-      .hero-trace svg {
-        width: 100%;
-        height: auto;
+      .terminal-dots {
+        display: flex;
+        gap: 6px;
+      }
+
+      .terminal-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+      }
+
+      .terminal-tab-group {
+        display: flex;
+        gap: 0.4rem;
+        overflow-x: auto;
+      }
+
+      .term-tab-btn {
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--text-dim);
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        padding: 0.25rem 0.55rem;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        white-space: nowrap;
+      }
+
+      .term-tab-btn.active {
+        background: #0c101a;
+        color: var(--cyan-glow);
+        border-color: var(--border-hud);
+      }
+
+      .terminal-body {
+        padding: 1.5rem;
+        font-family: var(--font-mono);
+        font-size: clamp(0.76rem, 1.8vw, 0.84rem);
+        min-height: 360px;
+        background: #040508;
+        color: #d1d5db;
+        line-height: 1.7;
+        position: relative;
+        overflow-x: auto;
+      }
+
+      .term-prompt { color: var(--green-neon); }
+      .term-keyword { color: var(--cyan-glow); }
+      .term-string { color: #fcd34d; }
+
+      .term-badge {
+        display: inline-block;
+        font-size: 0.68rem;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--green-neon);
+        border: 1px solid rgba(16, 185, 129, 0.35);
+      }
+
+      .coming-soon-badge {
+        display: inline-block;
+        font-size: 0.68rem;
+        font-family: var(--font-mono);
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: rgba(168, 85, 247, 0.18);
+        color: #d8b4fe;
+        border: 1px solid rgba(168, 85, 247, 0.4);
       }
 
       /* Sections with Open Spacing */
@@ -414,17 +478,24 @@
         margin-bottom: 1rem;
       }
 
-      /* Diagram Figures */
-      .diagram {
+      /* Responsive Diagram Scroll Containers */
+      .diagram-container {
         background: #040508;
         border: 1px solid var(--border-soft);
         border-radius: 14px;
         padding: clamp(1.25rem, 3vw, 2.5rem);
         box-shadow: 0 24px 60px rgba(0, 0, 0, 0.9), 0 0 24px rgba(0, 240, 255, 0.08);
-        margin-bottom: 2rem;
+        margin-bottom: 3rem;
+        position: relative;
       }
 
-      .diagram-meta {
+      .diagram-scroll-wrapper {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 0.5rem;
+      }
+
+      .diagram-caption {
         font-family: var(--font-mono);
         font-size: 0.78rem;
         color: var(--cyan-glow);
@@ -438,54 +509,161 @@
         gap: 0.5rem;
       }
 
-      .diagram-canvas {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        padding-bottom: 0.5rem;
-      }
-
-      .diagram-canvas svg {
+      .svg-hud-diagram {
         width: 100%;
         min-width: 760px;
         height: auto;
         display: block;
       }
 
-      .diagram figcaption {
-        font-family: var(--font-mono);
-        font-size: 0.8rem;
-        color: var(--text-dim);
-        margin-top: 1rem;
-        text-align: center;
+      .svg-node-box {
+        fill: #080b12;
+        stroke: var(--border-hud);
+        stroke-width: 1.5;
+        rx: 8;
       }
 
-      /* SVG Core Styles for Geometry Alignment */
-      .hero-zone, .diagram-zone rect { fill: #080b12; stroke: var(--border-hud); stroke-width: 1.2; }
-      .zone-public rect { stroke: rgba(168, 85, 247, 0.35); }
-      .zone-control rect { stroke: rgba(0, 240, 255, 0.35); }
-      .zone-execution rect { stroke: rgba(16, 185, 129, 0.35); }
+      .svg-zone-box {
+        fill: rgba(0, 240, 255, 0.015);
+        stroke: rgba(0, 240, 255, 0.18);
+        stroke-dasharray: 4 4;
+        stroke-width: 1;
+        rx: 12;
+      }
 
-      .hero-wire, .diagram-lane, .diagram-branch, .diagram-control-line, .diagram-transfer-line { fill: none; stroke-width: 2; }
-      .hero-wire, .request-lane, .diagram-control-line { stroke: var(--cyan-glow); }
-      .hero-return, .result-lane { stroke: var(--green-neon); }
-      .diagram-branch { stroke: var(--cyan-glow); }
-      .diagram-transfer-line { stroke: var(--purple-laser); }
-      .blocked-route path { stroke: #ef4444; stroke-width: 2; fill: none; }
+      .svg-zone-exec {
+        fill: rgba(16, 185, 129, 0.015);
+        stroke: rgba(16, 185, 129, 0.22);
+        stroke-dasharray: 4 4;
+        stroke-width: 1;
+        rx: 12;
+      }
 
-      .hero-packet, .diagram-packet, .packet-request, .packet-branch { fill: var(--cyan-glow); filter: drop-shadow(0 0 6px var(--cyan-glow)); }
-      .hero-packet-return, .packet-result { fill: var(--green-neon); filter: drop-shadow(0 0 6px var(--green-neon)); }
-      .packet-copper { fill: var(--purple-laser); filter: drop-shadow(0 0 6px var(--purple-laser)); }
+      .svg-wire {
+        fill: none;
+        stroke: rgba(255, 255, 255, 0.18);
+        stroke-width: 1.8;
+        stroke-dasharray: 5 4;
+      }
 
-      .hero-node rect, .diagram-node rect { fill: #0c101a; stroke: var(--border-soft); stroke-width: 1.5; rx: 6; }
-      .hero-node text, .diagram-node text { fill: #fff; font-family: var(--font-mono); font-size: 13px; font-weight: 700; }
-      .hero-node text.svg-muted, .diagram-node text.svg-muted { fill: var(--text-muted); font-size: 11px; font-weight: 400; }
-      .diagram-note-box rect { fill: #05070a; stroke: var(--border-soft); rx: 4; }
-      .diagram-note-box text { fill: var(--cyan-glow); font-family: var(--font-mono); font-size: 10px; font-weight: 600; }
-      .svg-kicker { fill: var(--cyan-glow); font-family: var(--font-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
-      .hero-trace-label, .lane-label { fill: var(--text-dim); font-family: var(--font-mono); font-size: 10px; }
+      .svg-wire-active {
+        fill: none;
+        stroke: var(--cyan-glow);
+        stroke-width: 2.2;
+      }
 
-      #hero-arrow path, #process-request-arrow path, #architecture-arrow path { fill: var(--cyan-glow); }
-      #process-result-arrow path { fill: var(--green-neon); }
+      .svg-wire-green {
+        fill: none;
+        stroke: var(--green-neon);
+        stroke-width: 2.2;
+      }
+
+      .svg-packet-cyan {
+        fill: var(--cyan-glow);
+        filter: drop-shadow(0 0 8px var(--cyan-glow));
+      }
+
+      .svg-packet-green {
+        fill: var(--green-neon);
+        filter: drop-shadow(0 0 8px var(--green-neon));
+      }
+
+      .svg-text-title {
+        fill: #ffffff;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .svg-text-sub {
+        fill: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 11px;
+      }
+
+      .svg-text-zone {
+        fill: var(--cyan-glow);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+      }
+
+      .swipe-hint {
+        display: none;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        color: var(--text-dim);
+        margin-top: 0.75rem;
+      }
+
+      .arch-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.75rem;
+        position: relative;
+      }
+
+      .arch-card {
+        background: #05070a;
+        border: 1px solid var(--border-soft);
+        border-radius: 10px;
+        padding: 2rem;
+        position: relative;
+        transition: all 0.3s ease;
+      }
+
+      .arch-card:hover {
+        border-color: var(--cyan-glow);
+        transform: translateY(-3px);
+        box-shadow: 0 12px 36px rgba(0, 240, 255, 0.1);
+      }
+
+      .arch-plane-tag {
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        padding: 0.3rem 0.7rem;
+        border-radius: 4px;
+        display: inline-block;
+        margin-bottom: 1.25rem;
+      }
+
+      .plane-ingress { background: rgba(168, 85, 247, 0.15); color: var(--purple-laser); border: 1px solid rgba(168, 85, 247, 0.3); }
+      .plane-control { background: rgba(0, 240, 255, 0.15); color: var(--cyan-glow); border: 1px solid rgba(0, 240, 255, 0.3); }
+      .plane-exec { background: rgba(16, 185, 129, 0.15); color: var(--green-neon); border: 1px solid rgba(16, 185, 129, 0.3); }
+
+      .arch-card h3 {
+        font-size: 1.25rem;
+        margin-bottom: 0.75rem;
+      }
+
+      .arch-card p {
+        color: var(--text-muted);
+        font-size: 0.92rem;
+        line-height: 1.65;
+        margin-bottom: 1.25rem;
+      }
+
+      .arch-specs {
+        list-style: none;
+        border-top: 1px solid var(--border-soft);
+        padding-top: 1rem;
+      }
+
+      .arch-specs li {
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .arch-specs li span {
+        color: var(--cyan-glow);
+      }
 
       /* 52 Tools Section & Expanded Tabs */
       .tools-filter-bar {
@@ -553,27 +731,6 @@
         color: var(--text-muted);
         font-size: 0.84rem;
         line-height: 1.55;
-      }
-
-      .term-badge {
-        display: inline-block;
-        font-size: 0.68rem;
-        padding: 1px 6px;
-        border-radius: 3px;
-        background: rgba(16, 185, 129, 0.15);
-        color: var(--green-neon);
-        border: 1px solid rgba(16, 185, 129, 0.35);
-      }
-
-      .coming-soon-badge {
-        display: inline-block;
-        font-size: 0.68rem;
-        font-family: var(--font-mono);
-        padding: 1px 6px;
-        border-radius: 3px;
-        background: rgba(168, 85, 247, 0.18);
-        color: #d8b4fe;
-        border: 1px solid rgba(168, 85, 247, 0.4);
       }
 
       /* Client Connectors */
@@ -734,39 +891,15 @@
         color: #fff;
       }
 
-      .sr-only {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        overflow: hidden;
-        clip: rect(0, 0, 0, 0);
-        white-space: nowrap;
-        border: 0;
-      }
-
-      .skip-link {
-        position: fixed;
-        z-index: 5;
-        top: -64px;
-        left: 1rem;
-        padding: 0.5rem 1rem;
-        background: var(--cyan-glow);
-        color: var(--bg-void);
-        font-weight: 700;
-        text-decoration: none;
-      }
-
-      .skip-link:focus {
-        top: 1rem;
-      }
-
+      /* Responsive Queries */
       @media (max-width: 960px) {
         .hero-section { grid-template-columns: 1fr; }
+        .arch-grid { grid-template-columns: 1fr; }
         .invariants-grid { grid-template-columns: 1fr; }
         .client-content-panel { grid-template-columns: 1fr; }
         .nav-links { display: none; }
         .mobile-menu-btn { display: block; }
+        .swipe-hint { display: block; }
         .footer-top-row { flex-direction: column; text-align: center; }
         .tools-filter-bar { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.5rem; -webkit-overflow-scrolling: touch; }
       }
@@ -780,8 +913,6 @@
     </style>
   </head>
   <body id="top">
-    <a class="skip-link" href="#main-content">Skip to content</a>
-
     <!-- Top Telemetry HUD -->
     <aside class="telemetry-bar" aria-label="System telemetry">
       <div class="telemetry-group">
@@ -816,12 +947,11 @@
       </div>
 
       <nav class="nav-links" aria-label="Primary">
-        <a href="#how-it-works">How it works</a>
-        <a href="#coding-workflow">Workflows</a>
-        <a href="#mcp-tools">Tools Surface</a>
         <a href="#architecture">Architecture</a>
+        <a href="#workflows">Workflows</a>
+        <a href="#tools">Tools Surface</a>
         <a href="#connect">AI Clients</a>
-        <a href="#boundaries">Security</a>
+        <a href="#security">Security</a>
         <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Docs ↗</a>
       </nav>
 
@@ -851,20 +981,18 @@
 
       <!-- Mobile Navigation Drawer -->
       <nav class="mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
-        <a href="#how-it-works" onclick="toggleMobileMenu()">How it works</a>
-        <a href="#coding-workflow" onclick="toggleMobileMenu()">Workflows</a>
-        <a href="#mcp-tools" onclick="toggleMobileMenu()">Tools Surface</a>
         <a href="#architecture" onclick="toggleMobileMenu()">Architecture</a>
+        <a href="#workflows" onclick="toggleMobileMenu()">Workflows</a>
+        <a href="#tools" onclick="toggleMobileMenu()">Tools Surface</a>
         <a href="#connect" onclick="toggleMobileMenu()">AI Clients</a>
-        <a href="#boundaries" onclick="toggleMobileMenu()">Security Invariants</a>
+        <a href="#security" onclick="toggleMobileMenu()">Security Invariants</a>
         <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Documentation ↗</a>
       </nav>
     </header>
 
-    <!-- Main Content -->
-    <main id="main-content">
-      <!-- Hero Section with Generous Spacing -->
-      <section class="hero-section" id="hero">
+    <!-- Hero Section with Generous Spacing -->
+    <main>
+      <section class="hero-section">
         <div>
           <div class="badge-cyber">
             <span class="pulse-dot"></span>
@@ -902,595 +1030,271 @@
           </div>
         </div>
 
-        <!-- Hero Trace Figure (Matches Geometry Assertion) -->
-        <figure class="hero-trace" aria-labelledby="hero-trace-title">
-          <figcaption>
-            <span id="hero-trace-title">Live boundary trace</span
-            ><span>One owner. One bounded workspace.</span>
-          </figcaption>
-          <svg
-            viewBox="0 0 520 410"
-            role="img"
-            aria-labelledby="hero-svg-title hero-svg-description"
-          >
-            <title id="hero-svg-title">
-              Owner request enters a bounded Cloud Harness workspace
-            </title>
-            <desc id="hero-svg-description">
-              A request moves from the owner client through the control plane
-              into a non-root executor. The animated packet represents an
-              authenticated operation, not a credential flow.
-            </desc>
-            <defs>
-              <marker
-                id="hero-arrow"
-                markerWidth="9"
-                markerHeight="9"
-                refX="9"
-                refY="4.5"
-                orient="auto"
-              >
-                <path d="M0,0 L9,4.5 L0,9 z" />
-              </marker>
-            </defs>
-            <rect
-              class="hero-zone hero-zone-control"
-              x="28"
-              y="76"
-              width="294"
-              height="272"
-            />
-            <rect
-              class="hero-zone hero-zone-execution"
-              x="348"
-              y="76"
-              width="144"
-              height="272"
-            />
-            <text class="svg-kicker" x="48" y="106">TRUSTED CONTROL</text>
-            <text class="svg-kicker" x="368" y="106">EXECUTION</text>
-            <path
-              class="hero-wire"
-              data-edge="hero-request"
-              data-source="hero-owner"
-              data-source-side="right"
-              data-target="hero-workspace"
-              data-target-side="left"
-              data-via="hero-runner"
-              d="M144 205 H360"
-              marker-end="url(#hero-arrow)"
-            />
-            <path
-              class="hero-wire hero-return"
-              data-edge="hero-result"
-              data-source="hero-workspace"
-              data-source-side="bottom"
-              data-target="hero-owner"
-              data-target-side="bottom"
-              data-via="hero-runner"
-              d="M415 244 V268 H272 V236 H176 V268 H96 V244"
-              marker-end="url(#hero-arrow)"
-            />
-            <circle
-              class="hero-packet"
-              data-motion-for="hero-request"
-              r="7"
-              visibility="hidden"
-            >
-              <set attributeName="visibility" to="visible" begin="0s" />
-              <animateMotion
-                dur="5.6s"
-                additive="replace"
-                repeatCount="indefinite"
-                path="M144 205 H360"
-                keyPoints="0;0;1;1"
-                keyTimes="0;0.14;0.72;1"
-                calcMode="linear"
-              />
-            </circle>
-            <circle
-              class="hero-packet hero-packet-return"
-              data-motion-for="hero-result"
-              r="5"
-              visibility="hidden"
-            >
-              <set attributeName="visibility" to="visible" begin="2.8s" />
-              <animateMotion
-                dur="5.6s"
-                additive="replace"
-                begin="2.8s"
-                repeatCount="indefinite"
-                path="M415 244 V268 H272 V236 H176 V268 H96 V244"
-                keyPoints="0;0;1;1"
-                keyTimes="0;0.14;0.72;1"
-                calcMode="linear"
-              />
-            </circle>
-            <g class="hero-node" data-node="hero-owner">
-              <rect x="48" y="166" width="96" height="78" />
-              <text x="66" y="196">OWNER</text>
-              <text class="svg-muted" x="66" y="220">MCP client</text>
-            </g>
-            <g class="hero-node" data-node="hero-runner">
-              <rect x="176" y="166" width="96" height="78" />
-              <text x="194" y="196">RUNNER</text>
-              <text class="svg-muted" x="194" y="220">policy</text>
-            </g>
-            <g
-              class="hero-node hero-node-active"
-              data-node="hero-workspace"
-            >
-              <rect x="360" y="166" width="110" height="78" />
-              <text x="378" y="196">WORKSPACE</text>
-              <text class="svg-muted" x="378" y="220">non-root · TTL</text>
-            </g>
-            <text class="hero-trace-label" x="50" y="306">
-              AUTHENTICATED REQUEST
-            </text>
-            <text class="hero-trace-label" x="300" y="306">
-              STRUCTURED RESULT
-            </text>
-          </svg>
-        </figure>
+        <!-- Live Interactive Terminal HUD -->
+        <div class="terminal-hud">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <div class="terminal-dot" style="background: #ef4444;"></div>
+              <div class="terminal-dot" style="background: #f59e0b;"></div>
+              <div class="terminal-dot" style="background: #10b981;"></div>
+            </div>
+            <div class="terminal-tab-group">
+              <button class="term-tab-btn active" onclick="switchTermDemo('open', this)">workspace_open</button>
+              <button class="term-tab-btn" onclick="switchTermDemo('ast', this)">symbols_search</button>
+              <button class="term-tab-btn" onclick="switchTermDemo('push', this)">git_push</button>
+            </div>
+          </div>
+          <div class="terminal-body" id="termContent">
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.workspace_open({</p>
+            <p style="padding-left: 1.5rem;">"repositoryUrl": <span class="term-string">"https://github.com/org/core-infra"</span>,</p>
+            <p style="padding-left: 1.5rem;">"idempotencyKey": <span class="term-string">"task_448f_09a1"</span></p>
+            <p>})</p>
+            <br/>
+            <p style="color: var(--cyan-glow)">[200 OK] Streamable HTTP Connection Established (14ms)</p>
+            <p style="color: var(--text-muted)">├── Ingress: Cloudflare Access OAuth token validated</p>
+            <p style="color: var(--text-muted)">├── Runner: Ephemeral GitHub broker minted stdin-only push key</p>
+            <p style="color: var(--text-muted)">├── Docker: Spawned non-root executor (TTL: 1800s, net: none)</p>
+            <p style="color: var(--green-neon)">└── Workspace Ready: <span class="term-badge">ws_8f93e120da</span></p>
+            <br/>
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.exec_run({</p>
+            <p style="padding-left: 1.5rem;">"workspaceId": <span class="term-string">"ws_8f93e120da"</span>,</p>
+            <p style="padding-left: 1.5rem;">"command": <span class="term-string">"npm test -- --bail"</span></p>
+            <p>})</p>
+            <p style="color: var(--green-neon)">✓ Test suite completed in 1.42s (0 host leaks, 0 socket mounts)</p>
+          </div>
+        </div>
       </section>
 
-      <!-- Section: How It Works -->
-      <section class="section-wrap" id="how-it-works" aria-labelledby="how-title">
+      <!-- Animated Architecture Topology Section -->
+      <section class="section-wrap" id="architecture">
         <div class="section-header">
-          <div class="section-tag">// Request Flow</div>
-          <h2 class="section-title" id="how-title">How It Works</h2>
+          <div class="section-tag">// Hardened Topology</div>
+          <h2 class="section-title">Live Architecture Signal Matrix</h2>
           <p style="color: var(--text-muted);">
-            A request moves through a deliberately narrow lane. The animation traces direction; the labels describe the real boundary.
+            Explore how authenticated MCP requests navigate the isolated boundary layers with live packet animation.
           </p>
         </div>
 
-        <figure
-          class="diagram process-diagram"
-          aria-labelledby="process-diagram-title"
-          aria-describedby="process-diagram-scroll-description"
-        >
-          <div class="diagram-meta">
-            <span id="process-diagram-title">Request and result trace</span
-            ><span
-              ><i class="legend-request"></i> authenticated operation
-              <i class="legend-result"></i> structured result</span
-            >
+        <!-- Animated SVG Architecture Diagram -->
+        <div class="diagram-container">
+          <div class="diagram-caption">
+            <span>● LIVE BOUNDARY TRACE — AUTHENTICATED CONTROL VS ISOLATED EXECUTION</span>
+            <span style="color: var(--green-neon);">PACKET FLOW: ACTIVE</span>
           </div>
-          <div
-            class="diagram-canvas"
-            role="region"
-            aria-labelledby="process-diagram-title"
-            aria-describedby="process-diagram-scroll-description"
-            tabindex="0"
-          >
-            <svg
-              viewBox="0 0 1200 570"
-              role="img"
-              aria-labelledby="process-svg-title process-svg-description"
-            >
-              <title id="process-svg-title">
-                Cloud Harness request lifecycle
-              </title>
-              <desc id="process-svg-description">
-                An owner client sends an authenticated operation through the
-                credential-free ingress and stateless API to the runner. The
-                runner manages a non-root time-limited executor. The result
-                returns through the same trusted request path.
-              </desc>
+
+          <div class="diagram-scroll-wrapper">
+            <svg class="svg-hud-diagram" viewBox="0 0 1000 480" aria-label="Architecture Diagram">
               <defs>
-                <marker
-                  id="process-request-arrow"
-                  markerWidth="10"
-                  markerHeight="10"
-                  refX="10"
-                  refY="5"
-                  orient="auto"
-                >
-                  <path d="M0,0 L10,5 L0,10 z" />
-                </marker>
-                <marker
-                  id="process-result-arrow"
-                  markerWidth="10"
-                  markerHeight="10"
-                  refX="10"
-                  refY="5"
-                  orient="auto"
-                >
-                  <path d="M0,0 L10,5 L0,10 z" />
+                <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+                <filter id="glow-green" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+                <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--cyan-glow)" />
                 </marker>
               </defs>
-              <g class="diagram-zone zone-public">
-                <rect x="34" y="62" width="346" height="438" />
-                <text class="svg-kicker" x="62" y="96">PUBLIC EDGE</text>
+
+              <!-- Zone 1: Ingress & Client -->
+              <rect class="svg-zone-box" x="20" y="40" width="220" height="400" />
+              <text class="svg-text-zone" x="35" y="70">01 // INGRESS PERIMETER</text>
+
+              <g class="svg-node-group" transform="translate(40, 100)">
+                <rect class="svg-node-box" x="0" y="0" width="180" height="70" />
+                <text class="svg-text-title" x="20" y="30">AI Client / IDE</text>
+                <text class="svg-text-sub" x="20" y="52">Claude • Cursor • Codex</text>
               </g>
-              <g class="diagram-zone zone-control">
-                <rect x="404" y="62" width="398" height="438" />
-                <text class="svg-kicker" x="432" y="96">TRUSTED CONTROL</text>
+
+              <g class="svg-node-group" transform="translate(40, 260)">
+                <rect class="svg-node-box" x="0" y="0" width="180" height="70" />
+                <text class="svg-text-title" x="20" y="30">Ingress Proxy</text>
+                <text class="svg-text-sub" x="20" y="52">Cloudflare Access / SSO</text>
               </g>
-              <g class="diagram-zone zone-execution">
-                <rect x="826" y="62" width="338" height="438" />
-                <text class="svg-kicker" x="854" y="96">EXECUTION PLANE</text>
+
+              <!-- Zone 2: Trusted Control Plane -->
+              <rect class="svg-zone-box" x="270" y="40" width="360" height="400" />
+              <text class="svg-text-zone" x="290" y="70">02 // TRUSTED CONTROL PLANE</text>
+
+              <g class="svg-node-group" transform="translate(290, 100)">
+                <rect class="svg-node-box" x="0" y="0" width="150" height="70" />
+                <text class="svg-text-title" x="15" y="30">Stateless MCP</text>
+                <text class="svg-text-sub" x="15" y="52">Zod Validations</text>
               </g>
-              <path
-                class="diagram-lane request-lane"
-                data-edge="process-request"
-                data-source="process-owner"
-                data-source-side="right"
-                data-target="process-runner"
-                data-target-side="left"
-                data-via="process-ingress process-api"
-                d="M192 234 H622"
-                marker-end="url(#process-request-arrow)"
-              />
-              <path
-                class="diagram-lane result-lane"
-                data-edge="process-result"
-                data-source="process-executor"
-                data-source-side="bottom"
-                data-target="process-owner"
-                data-target-side="bottom"
-                data-via="process-runner process-api process-ingress"
-                d="M1002 220 V232 H794 V266 H218 V320 H131 V288"
-                marker-end="url(#process-result-arrow)"
-              />
-              <path
-                class="diagram-branch"
-                data-edge="process-execute"
-                data-source="process-runner"
-                data-source-side="top"
-                data-target="process-executor"
-                data-target-side="left"
-                d="M694 204 V178 H920"
-                marker-end="url(#process-request-arrow)"
-              />
-              <circle
-                class="diagram-packet packet-request"
-                data-motion-for="process-request"
-                r="5"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="0s" />
-                <animateMotion
-                  dur="6.2s"
-                  additive="replace"
-                  repeatCount="indefinite"
-                  path="M192 234 H622"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.16;0.72;1"
-                  calcMode="linear"
-                />
+
+              <g class="svg-node-group" transform="translate(470, 100)">
+                <rect class="svg-node-box" x="0" y="0" width="140" height="70" />
+                <text class="svg-text-title" x="15" y="30">Trusted Runner</text>
+                <text class="svg-text-sub" x="15" y="52">Policy & Docker Auth</text>
+              </g>
+
+              <g class="svg-node-group" transform="translate(290, 260)">
+                <rect class="svg-node-box" x="0" y="0" width="150" height="70" />
+                <text class="svg-text-title" x="15" y="30">SQLite State</text>
+                <text class="svg-text-sub" x="15" y="52">Encrypted Records</text>
+              </g>
+
+              <g class="svg-node-group" transform="translate(470, 260)">
+                <rect class="svg-node-box" x="0" y="0" width="140" height="70" />
+                <text class="svg-text-title" x="15" y="30">GitHub Broker</text>
+                <text class="svg-text-sub" x="15" y="52">60s Stdin Tokens</text>
+              </g>
+
+              <!-- Zone 3: TTL Execution Plane -->
+              <rect class="svg-zone-exec" x="660" y="40" width="320" height="400" />
+              <text class="svg-text-zone" x="680" y="70" fill="var(--green-neon)">03 // EXECUTION PLANE (TTL SANDBOX)</text>
+
+              <g class="svg-node-group" transform="translate(680, 100)">
+                <rect class="svg-node-box" x="0" y="0" width="280" height="110" style="stroke: var(--green-neon); stroke-width: 1.8;" />
+                <text class="svg-text-title" x="20" y="35" fill="var(--green-neon)">Non-Root Docker Executor</text>
+                <text class="svg-text-sub" x="20" y="60">UID 1000 • Read-Only Root • Net: None</text>
+                <text class="svg-text-sub" x="20" y="82">Isolated Repo Clone & AST Engine</text>
+              </g>
+
+              <g class="svg-node-group" transform="translate(680, 260)">
+                <rect class="svg-node-box" x="0" y="0" width="280" height="70" style="stroke: var(--cyan-glow);" />
+                <text class="svg-text-title" x="20" y="30">Ephemeral Git Helper</text>
+                <text class="svg-text-sub" x="20" y="52">Stdin Auth Push → GitHub Origin</text>
+              </g>
+
+              <!-- Animated Connecting Wire Paths -->
+              <path class="svg-wire" id="path-client-ingress" d="M 130 170 L 130 260" />
+              <path class="svg-wire" id="path-ingress-api" d="M 220 295 L 260 295 L 260 135 L 290 135" />
+              <path class="svg-wire-active" id="path-api-runner" d="M 440 135 L 470 135" />
+              <path class="svg-wire-green" id="path-runner-exec" d="M 610 135 L 680 135" />
+              <path class="svg-wire" id="path-runner-broker" d="M 540 170 L 540 260" />
+              <path class="svg-wire" id="path-broker-helper" d="M 610 295 L 680 295" />
+
+              <!-- Traveling Glowing Packets -->
+              <circle class="svg-packet-cyan" r="5">
+                <animateMotion dur="4.5s" repeatCount="indefinite" path="M 130 170 L 130 260 L 260 260 L 260 135 L 290 135 L 440 135 L 470 135 L 610 135 L 680 135" />
               </circle>
-              <circle
-                class="diagram-packet packet-result"
-                data-motion-for="process-result"
-                r="4"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="3.1s" />
-                <animateMotion
-                  dur="6.2s"
-                  additive="replace"
-                  begin="3.1s"
-                  repeatCount="indefinite"
-                  path="M1002 220 V232 H794 V266 H218 V320 H131 V288"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.16;0.72;1"
-                  calcMode="linear"
-                />
+
+              <circle class="svg-packet-green" r="4.5">
+                <animateMotion dur="4.5s" begin="2.25s" repeatCount="indefinite" path="M 540 170 L 540 260 L 610 295 L 680 295" />
               </circle>
-              <circle
-                class="diagram-packet packet-branch"
-                data-motion-for="process-execute"
-                r="4"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="1.65s" />
-                <animateMotion
-                  dur="6.2s"
-                  additive="replace"
-                  begin="1.65s"
-                  repeatCount="indefinite"
-                  path="M694 204 V178 H920"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.16;0.72;1"
-                  calcMode="linear"
-                />
-              </circle>
-              <g
-                class="diagram-node client-node"
-                data-node="process-owner"
-              >
-                <rect x="70" y="204" width="122" height="84" />
-                <text x="94" y="238">OWNER</text>
-                <text x="94" y="264" class="svg-muted">MCP client</text>
-              </g>
-              <g class="diagram-node" data-node="process-ingress">
-                <rect x="218" y="204" width="104" height="84" />
-                <text x="240" y="238">INGRESS</text>
-                <text x="240" y="264" class="svg-muted">no secret</text>
-              </g>
-              <g class="diagram-node" data-node="process-api">
-                <rect x="438" y="204" width="110" height="84" />
-                <text x="464" y="238">MCP API</text>
-                <text x="464" y="264" class="svg-muted">stateless</text>
-              </g>
-              <g class="diagram-node runner-node" data-node="process-runner">
-                <rect x="622" y="204" width="144" height="84" />
-                <text x="650" y="238">RUNNER</text>
-                <text x="650" y="264" class="svg-muted">
-                  policy + lifecycle
-                </text>
-              </g>
-              <g
-                class="diagram-node executor-node"
-                data-node="process-executor"
-              >
-                <rect x="920" y="136" width="164" height="84" />
-                <text x="946" y="170">EXECUTOR</text>
-                <text x="946" y="196" class="svg-muted">non-root · TTL</text>
-              </g>
-              <g class="diagram-note-box">
-                <rect x="858" y="246" width="276" height="108" />
-                <text x="880" y="280">DEFAULT NETWORK: NONE</text>
-                <text x="880" y="310">NO DOCKER SOCKET</text>
-                <text x="880" y="338">NO CONTROL CREDENTIALS</text>
-              </g>
             </svg>
           </div>
-          <figcaption>
-            Ingress bridges and forwards. The API validates requests. Runner
-            alone owns policy and lifecycle. The executor only receives the
-            bounded workspace.
-          </figcaption>
-          <span
-            id="process-diagram-scroll-description"
-            class="sr-only diagram-scroll-description"
-            >On narrow screens, use the arrow keys to pan this diagram
-            horizontally.</span
-          >
-        </figure>
+          <div class="swipe-hint">← Swipe horizontally to view complete architecture blueprint →</div>
+        </div>
+
+        <!-- 3 Isolation Cards -->
+        <div class="arch-grid">
+          <div class="arch-card">
+            <div class="arch-plane-tag plane-ingress">Plane 01 // Ingress Proxy</div>
+            <h3>Stateless Ingress & SSO</h3>
+            <p>Cloudflare Access OAuth or Gateway API tokens are validated at the perimeter. The ingress proxy has zero secrets and never joins the backend Docker network.</p>
+            <ul class="arch-specs">
+              <li><span>✓</span> Managed OAuth via GitHub/Google SSO</li>
+              <li><span>✓</span> Static Bearer tokens for headless CI</li>
+              <li><span>✓</span> Rate-limited loopback forwarding</li>
+            </ul>
+          </div>
+
+          <div class="arch-card">
+            <div class="arch-plane-tag plane-control">Plane 02 // Trusted Control</div>
+            <h3>Policy & Lifecycle Runner</h3>
+            <p>Maintains SQLite state records, verifies TTL limits, and negotiates short-lived GitHub App tokens piped directly over stdin to temporary git helpers.</p>
+            <ul class="arch-specs">
+              <li><span>✓</span> Idempotent workspace orchestration</li>
+              <li><span>✓</span> Secrets never touch disk or env vars</li>
+              <li><span>✓</span> Principal authorization checks</li>
+            </ul>
+          </div>
+
+          <div class="arch-card">
+            <div class="arch-plane-tag plane-exec">Plane 03 // Execution Plane</div>
+            <h3>Non-Root Docker Sandbox</h3>
+            <p>Every workspace lives in an isolated container. Default network mode is <code>none</code>, root filesystem is read-only, and memory/CPU limits are strictly enforced.</p>
+            <ul class="arch-specs">
+              <li><span>✓</span> Non-root UID execution only</li>
+              <li><span>✓</span> Auto-purged upon workspace_close</li>
+              <li><span>✓</span> No access to host Docker daemon</li>
+            </ul>
+          </div>
+        </div>
       </section>
 
-      <!-- Section: Coding Workflow -->
-      <section class="section-wrap" id="coding-workflow" aria-labelledby="workflow-title">
+      <!-- Animated Sequence Workflows Section -->
+      <section class="section-wrap" id="workflows">
         <div class="section-header">
           <div class="section-tag">// Lifecycle Dynamics</div>
-          <h2 class="section-title" id="workflow-title">Bounded Coding Workflow</h2>
+          <h2 class="section-title">End-to-End Agent Coding Workflow</h2>
           <p style="color: var(--text-muted);">
-            Open a workspace with intent, do the work inside it, then end the execution window cleanly.
+            A high-velocity, deterministic sequence from workspace boot to safe git push and automatic sandbox purging.
           </p>
         </div>
 
-        <figure
-            class="diagram workflow-diagram"
-            aria-labelledby="workflow-diagram-title"
-            aria-describedby="workflow-diagram-scroll-description"
-          >
-            <div class="diagram-meta">
-              <span id="workflow-diagram-title">Bounded coding loop</span
-              ><span
-                >Optional origin-only transfer stays outside execution.</span
-              >
-            </div>
-            <div
-              class="diagram-canvas"
-              role="region"
-              aria-labelledby="workflow-diagram-title"
-              aria-describedby="workflow-diagram-scroll-description"
-              tabindex="0"
-            >
-              <svg
-                viewBox="0 0 1200 590"
-                role="img"
-                aria-labelledby="workflow-svg-title workflow-svg-description"
-              >
-                <title id="workflow-svg-title">
-                  Cloud Harness coding workflow
-                </title>
-                <desc id="workflow-svg-description">
-                  workspace_open creates an opaque workspace identity. File,
-                  code, command, shell, session, and task operations run in the
-                  executor. Optional remote Git transfer pauses the executor and
-                  uses a separate helper with a short-lived token.
-                  workspace_close removes the executor and workspace.
-                </desc>
-                <defs>
-                  <marker
-                    id="workflow-arrow"
-                    markerWidth="10"
-                    markerHeight="10"
-                    refX="10"
-                    refY="5"
-                    orient="auto"
-                  >
-                    <path d="M0,0 L10,5 L0,10 z" />
-                  </marker>
-                </defs>
-                <g class="diagram-zone zone-control">
-                  <rect x="44" y="76" width="312" height="430" />
-                  <text class="svg-kicker" x="72" y="110">
-                    CONTROL LIFECYCLE
-                  </text>
-                </g>
-                <g class="diagram-zone zone-execution">
-                  <rect x="388" y="76" width="344" height="430" />
-                  <text class="svg-kicker" x="416" y="110">
-                    EXECUTION WORKSPACE
-                  </text>
-                </g>
-                <g class="diagram-zone zone-transfer">
-                  <rect x="764" y="76" width="392" height="430" />
-                  <text class="svg-kicker" x="792" y="110">
-                    ORIGIN-ONLY TRANSFER
-                  </text>
-                </g>
-                <path
-                  class="diagram-lane lifecycle-lane"
-                  data-edge="workflow-open"
-                  data-source="workflow-open-node"
-                  data-source-side="right"
-                  data-target="workflow-work"
-                  data-target-side="left"
-                  d="M224 232 H460"
-                  marker-end="url(#workflow-arrow)"
-                />
-                <path
-                  class="diagram-lane lifecycle-return"
-                  data-edge="workflow-close"
-                  data-source="workflow-work"
-                  data-source-side="left"
-                  data-target="workflow-close-node"
-                  data-target-side="right"
-                  d="M460 264 H380 V404 H224"
-                  marker-end="url(#workflow-arrow)"
-                />
-                <path
-                  class="diagram-loop"
-                  data-edge="workflow-loop"
-                  data-source="workflow-work"
-                  data-source-side="bottom"
-                  data-target="workflow-work"
-                  data-target-side="bottom"
-                  d="M615 286 C700 304 700 408 615 426 C530 444 482 370 512 286"
-                  marker-end="url(#workflow-arrow)"
-                />
-                <path
-                  class="diagram-transfer-line"
-                  data-edge="workflow-transfer"
-                  data-source="workflow-work"
-                  data-source-side="right"
-                  data-target="workflow-origin"
-                  data-target-side="top"
-                  data-via="workflow-helper"
-                  d="M666 234 H836 V182 H1016 V116 H1070 V140"
-                  marker-end="url(#workflow-arrow)"
-                />
-                <path
-                  class="diagram-transfer-line transfer-return"
-                  data-edge="workflow-transfer-result"
-                  data-source="workflow-origin"
-                  data-source-side="bottom"
-                  data-target="workflow-work"
-                  data-target-side="bottom"
-                  data-via="workflow-helper"
-                  d="M1070 224 V254 H1040 V240 H1016 V200 H852 V320 H563 V286"
-                  marker-end="url(#workflow-arrow)"
-                />
-                <circle
-                  class="diagram-packet packet-request"
-                  data-motion-for="workflow-open"
-                  r="5"
-                  visibility="hidden"
-                >
-                  <set attributeName="visibility" to="visible" begin="0s" />
-                  <animateMotion
-                    dur="6.8s"
-                    additive="replace"
-                    repeatCount="indefinite"
-                    path="M224 232 H460"
-                    keyPoints="0;0;1;1"
-                    keyTimes="0;0.12;0.68;1"
-                    calcMode="linear"
-                  />
-                </circle>
-                <circle
-                  class="diagram-packet packet-copper"
-                  data-motion-for="workflow-transfer"
-                  r="5"
-                  visibility="hidden"
-                >
-                  <set attributeName="visibility" to="visible" begin="1.9s" />
-                  <animateMotion
-                    dur="6.8s"
-                    additive="replace"
-                    begin="1.9s"
-                    repeatCount="indefinite"
-                    path="M666 234 H836 V182 H1016 V116 H1070 V140"
-                    keyPoints="0;0;1;1"
-                    keyTimes="0;0.16;0.72;1"
-                    calcMode="linear"
-                  />
-                </circle>
-                <circle
-                  class="diagram-packet packet-result"
-                  data-motion-for="workflow-close"
-                  r="4"
-                  visibility="hidden"
-                >
-                  <set attributeName="visibility" to="visible" begin="3.6s" />
-                  <animateMotion
-                    dur="6.8s"
-                    additive="replace"
-                    begin="3.6s"
-                    repeatCount="indefinite"
-                    path="M460 264 H380 V404 H224"
-                    keyPoints="0;0;1;1"
-                    keyTimes="0;0.16;0.72;1"
-                    calcMode="linear"
-                  />
-                </circle>
-                <g class="diagram-node" data-node="workflow-open-node">
-                  <rect x="80" y="202" width="144" height="84" />
-                  <text x="106" y="236">OPEN</text>
-                  <text x="106" y="262" class="svg-muted">workspace_open</text>
-                </g>
-                <g
-                  class="diagram-node executor-node"
-                  data-node="workflow-work"
-                >
-                  <rect x="460" y="202" width="206" height="84" />
-                  <text x="488" y="236">WORK</text>
-                  <text x="488" y="262" class="svg-muted">
-                    files · code · commands
-                  </text>
-                </g>
-                <g
-                  class="diagram-node transfer-node"
-                  data-node="workflow-helper"
-                >
-                  <rect x="852" y="140" width="164" height="84" />
-                  <text x="880" y="174">HELPER</text>
-                  <text x="880" y="200" class="svg-muted">
-                    short-lived token
-                  </text>
-                </g>
-                <g class="diagram-node" data-node="workflow-origin">
-                  <rect x="1018" y="140" width="104" height="84" />
-                  <text x="1038" y="174">ORIGIN</text>
-                  <text x="1038" y="200" class="svg-muted">GitHub</text>
-                </g>
-                <g
-                  class="diagram-node close-node"
-                  data-node="workflow-close-node"
-                >
-                  <rect x="80" y="362" width="144" height="84" />
-                  <text x="106" y="396">CLOSE</text>
-                  <text x="106" y="422" class="svg-muted">workspace_close</text>
-                </g>
-                <g class="diagram-note-box compact-note-box">
-                  <rect x="416" y="450" width="288" height="40" />
-                  <text x="438" y="477">NO TOKEN · NETWORK DEFAULT: NONE</text>
-                </g>
-              </svg>
-            </div>
-            <figcaption>
-              The executor works locally. Remote Git becomes a deliberate
-              handoff through a sibling helper, not executor egress.
-            </figcaption>
-            <span
-              id="workflow-diagram-scroll-description"
-              class="sr-only diagram-scroll-description"
-              >On narrow screens, use the arrow keys to pan this diagram
-              horizontally.</span
-            >
-          </figure>
+        <!-- Sequence Diagram Container -->
+        <div class="diagram-container">
+          <div class="diagram-caption">
+            <span>● SEQUENCE TRACE — TIME-LIMITED WORKSPACE LIFECYCLE</span>
+            <span style="color: var(--cyan-glow);">4-STAGE CONTINUOUS VERIFICATION</span>
+          </div>
+
+          <div class="diagram-scroll-wrapper">
+            <svg class="svg-hud-diagram" viewBox="0 0 1000 440" aria-label="Sequence Workflow">
+              <!-- Column Lifelines -->
+              <line x1="120" y1="60" x2="120" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="380" y1="60" x2="380" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="650" y1="60" x2="650" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="880" y1="60" x2="880" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+
+              <!-- Column Header Badges -->
+              <rect x="50" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--cyan-glow)" stroke-width="1.2" />
+              <text x="75" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">AI Client</text>
+
+              <rect x="310" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--cyan-glow)" stroke-width="1.2" />
+              <text x="325" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">Control Plane</text>
+
+              <rect x="580" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--green-neon)" stroke-width="1.2" />
+              <text x="590" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">Docker Executor</text>
+
+              <rect x="810" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--purple-laser)" stroke-width="1.2" />
+              <text x="830" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">GitHub Origin</text>
+
+              <!-- Step 1: workspace_open -->
+              <path d="M 120 100 L 380 100" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#arrow-cyan)" />
+              <text x="140" y="92" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">1. workspace_open(repoUrl, idempotencyKey)</text>
+
+              <path d="M 380 130 L 880 130" stroke="var(--purple-laser)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <text x="420" y="122" fill="var(--purple-laser)" font-family="var(--font-mono)" font-size="11">2. Ephemeral Git Clone (Token over stdin)</text>
+
+              <path d="M 380 165 L 650 165" stroke="var(--green-neon)" stroke-width="2" />
+              <text x="400" y="157" fill="var(--green-neon)" font-family="var(--font-mono)" font-size="11">3. Spawn Non-Root Container (TTL: 30m, Net: None)</text>
+
+              <path d="M 380 195 L 120 195" stroke="var(--cyan-glow)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <text x="160" y="187" fill="var(--text-muted)" font-family="var(--font-mono)" font-size="11">4. Returns opaque workspaceId</text>
+
+              <!-- Step 2: Agent Work -->
+              <path d="M 120 240 L 650 240" stroke="var(--cyan-glow)" stroke-width="2" />
+              <text x="180" y="232" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">5. grep_search / files_apply_patch / shell_open / tasks_run</text>
+
+              <path d="M 650 270 L 120 270" stroke="var(--green-neon)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <text x="240" y="262" fill="var(--green-neon)" font-family="var(--font-mono)" font-size="11">6. Real-time stream results (Zero host leaks)</text>
+
+              <!-- Step 3: Git Push & Purge -->
+              <path d="M 120 320 L 380 320" stroke="var(--cyan-glow)" stroke-width="2" />
+              <text x="150" y="312" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">7. git_push(refspec, forceWithLease)</text>
+
+              <path d="M 380 345 L 880 345" stroke="var(--purple-laser)" stroke-width="2" />
+              <text x="450" y="337" fill="var(--purple-laser)" font-family="var(--font-mono)" font-size="11">8. Broker push via short-lived stdin helper</text>
+
+              <path d="M 120 380 L 380 380" stroke="#f59e0b" stroke-width="2" />
+              <text x="150" y="372" fill="#f59e0b" font-family="var(--font-mono)" font-size="11">9. workspace_close → Container & volumes destroyed (0 residual state)</text>
+            </svg>
+          </div>
+          <div class="swipe-hint">← Swipe horizontally to view full sequence workflow →</div>
+        </div>
       </section>
 
       <!-- Expanded 52+ Tools Section with Coming Soon Tools -->
-      <section class="section-wrap" id="mcp-tools" aria-labelledby="tools-title">
+      <section class="section-wrap" id="tools">
         <div class="section-header">
           <div class="section-tag">// Comprehensive Surface</div>
-          <h2 class="section-title" id="tools-title">52+ Precision Coding & Agent Tools</h2>
+          <h2 class="section-title">52+ Precision Coding & Agent Tools</h2>
           <p style="color: var(--text-muted);">
             From file manipulation and AST code intelligence to repository automation and autonomous multi-agent swarm orchestration.
           </p>
@@ -1608,293 +1412,11 @@
         </div>
       </section>
 
-      <!-- Section: Architecture -->
-      <section class="section-wrap" id="architecture" aria-labelledby="architecture-title">
-        <div class="section-header">
-          <div class="section-tag">// Hardened Topology</div>
-          <h2 class="section-title" id="architecture-title">System Architecture</h2>
-          <p style="color: var(--text-muted);">
-            Authority is separated by role. The motion marks the request path, not a permission path into the executor.
-          </p>
-        </div>
-
-        <figure
-          class="diagram architecture-diagram"
-          aria-labelledby="architecture-diagram-title"
-          aria-describedby="architecture-diagram-scroll-description"
-        >
-          <div class="diagram-meta">
-            <span id="architecture-diagram-title">Trust boundary map</span
-            ><span
-              ><i class="legend-request"></i> request path
-              <i class="legend-transfer"></i> isolated Git handoff</span
-            >
-          </div>
-          <div
-            class="diagram-canvas"
-            role="region"
-            aria-labelledby="architecture-diagram-title"
-            aria-describedby="architecture-diagram-scroll-description"
-            tabindex="0"
-          >
-            <svg
-              viewBox="0 0 1200 690"
-              role="img"
-              aria-labelledby="architecture-svg-title architecture-svg-description"
-            >
-              <title id="architecture-svg-title">
-                Cloud Harness architecture and authority boundaries
-              </title>
-              <desc id="architecture-svg-description">
-                Credential-free ingress bridges the public loopback edge to the
-                private MCP API. Trusted control holds the API, runner, state,
-                Docker authority, and optional Git helper. The execution plane
-                holds the non-root executor. The optional Git helper, not the
-                executor, can use temporary network access and a short-lived
-                GitHub App token.
-              </desc>
-              <defs>
-                <marker
-                  id="architecture-arrow"
-                  markerWidth="10"
-                  markerHeight="10"
-                  refX="10"
-                  refY="5"
-                  orient="auto"
-                >
-                  <path d="M0,0 L10,5 L0,10 z" />
-                </marker>
-              </defs>
-              <g class="diagram-zone zone-public">
-                <rect x="154" y="68" width="122" height="492" />
-                <text class="svg-kicker public-zone-label" x="166" y="102">
-                  PUBLIC EDGE
-                </text>
-              </g>
-              <g class="diagram-zone zone-control">
-                <rect x="284" y="68" width="532" height="492" />
-                <text class="svg-kicker" x="312" y="102">TRUSTED CONTROL</text>
-              </g>
-              <g class="diagram-zone zone-execution">
-                <rect x="842" y="68" width="272" height="492" />
-                <text class="svg-kicker" x="870" y="102">EXECUTION PLANE</text>
-              </g>
-              <path
-                class="diagram-lane request-lane"
-                data-edge="architecture-request"
-                data-source="architecture-owner"
-                data-source-side="right"
-                data-target="architecture-executor"
-                data-target-side="left"
-                data-via="architecture-ingress architecture-api architecture-runner"
-                d="M136 244 H892"
-                marker-end="url(#architecture-arrow)"
-              />
-              <path
-                class="diagram-lane result-lane"
-                data-edge="architecture-result"
-                data-source="architecture-executor"
-                data-source-side="bottom"
-                data-target="architecture-owner"
-                data-target-side="bottom"
-                data-via="architecture-runner architecture-api architecture-ingress"
-                d="M975 300 V334 H816 V274 H182 V334 H84 V300"
-                marker-end="url(#architecture-arrow)"
-              />
-              <path
-                class="diagram-control-line"
-                data-edge="architecture-state"
-                data-source="architecture-runner"
-                data-source-side="bottom"
-                data-target="architecture-state-node"
-                data-target-side="top"
-                d="M584 300 V350 H511 V382"
-                marker-end="url(#architecture-arrow)"
-              />
-              <path
-                class="diagram-control-line"
-                data-edge="architecture-docker"
-                data-source="architecture-runner"
-                data-source-side="bottom"
-                data-target="architecture-docker-node"
-                data-target-side="top"
-                d="M620 300 V350 H722 V382"
-                marker-end="url(#architecture-arrow)"
-              />
-              <path
-                class="diagram-transfer-line"
-                data-edge="architecture-helper"
-                data-source="architecture-runner"
-                data-source-side="bottom"
-                data-target="architecture-helper-node"
-                data-target-side="top"
-                d="M656 300 V350 H640 V466"
-                marker-end="url(#architecture-arrow)"
-              />
-              <path
-                class="diagram-transfer-line"
-                data-edge="architecture-github"
-                data-source="architecture-helper-node"
-                data-source-side="bottom"
-                data-target="architecture-github-node"
-                data-target-side="left"
-                d="M695 540 V618 H978"
-                marker-end="url(#architecture-arrow)"
-              />
-              <circle
-                class="diagram-packet packet-request"
-                data-motion-for="architecture-request"
-                r="5"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="0s" />
-                <animateMotion
-                  dur="7s"
-                  additive="replace"
-                  repeatCount="indefinite"
-                  path="M136 244 H892"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.14;0.68;1"
-                  calcMode="linear"
-                />
-              </circle>
-              <circle
-                class="diagram-packet packet-result"
-                data-motion-for="architecture-result"
-                r="4"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="3.5s" />
-                <animateMotion
-                  dur="7s"
-                  additive="replace"
-                  begin="3.5s"
-                  repeatCount="indefinite"
-                  path="M975 300 V334 H816 V274 H182 V334 H84 V300"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.14;0.68;1"
-                  calcMode="linear"
-                />
-              </circle>
-              <circle
-                class="diagram-packet packet-copper"
-                data-motion-for="architecture-helper"
-                r="5"
-                visibility="hidden"
-              >
-                <set attributeName="visibility" to="visible" begin="1.9s" />
-                <animateMotion
-                  dur="7s"
-                  additive="replace"
-                  begin="1.9s"
-                  repeatCount="indefinite"
-                  path="M656 300 V350 H640 V466"
-                  keyPoints="0;0;1;1"
-                  keyTimes="0;0.18;0.72;1"
-                  calcMode="linear"
-                />
-              </circle>
-              <g
-                class="diagram-node client-node"
-                data-node="architecture-owner"
-              >
-                <rect x="32" y="216" width="104" height="84" />
-                <text x="52" y="250">OWNER</text>
-                <text x="52" y="276" class="svg-muted">client</text>
-              </g>
-              <g class="diagram-node" data-node="architecture-ingress">
-                <rect x="182" y="216" width="90" height="84" />
-                <text x="198" y="250">INGRESS</text>
-                <text x="198" y="276" class="svg-muted">loopback</text>
-              </g>
-              <g class="diagram-node" data-node="architecture-api">
-                <rect x="292" y="216" width="90" height="84" />
-                <text x="318" y="250">API</text>
-                <text x="310" y="276" class="svg-muted">MCP</text>
-              </g>
-              <g
-                class="diagram-node runner-node"
-                data-node="architecture-runner"
-              >
-                <rect x="548" y="216" width="144" height="84" />
-                <text x="574" y="250">RUNNER</text>
-                <text x="574" y="276" class="svg-muted">lifecycle</text>
-              </g>
-              <g class="diagram-node" data-node="architecture-state-node">
-                <rect x="458" y="382" width="106" height="74" />
-                <text x="482" y="414">STATE</text>
-                <text x="476" y="438" class="svg-muted">SQLite</text>
-              </g>
-              <g class="diagram-node" data-node="architecture-docker-node">
-                <rect x="664" y="382" width="116" height="74" />
-                <text x="690" y="414">DOCKER</text>
-                <text x="682" y="438" class="svg-muted">runner only</text>
-              </g>
-              <g
-                class="diagram-node executor-node"
-                data-node="architecture-executor"
-              >
-                <rect x="892" y="216" width="166" height="84" />
-                <text x="920" y="250">EXECUTOR</text>
-                <text x="920" y="276" class="svg-muted">
-                  non-root workspace
-                </text>
-              </g>
-              <g
-                class="diagram-node transfer-node"
-                data-node="architecture-helper-node"
-              >
-                <rect x="610" y="466" width="170" height="74" />
-                <text x="634" y="498">GIT HELPER</text>
-                <text x="634" y="522" class="svg-muted">short-lived token</text>
-              </g>
-              <g
-                class="diagram-node github-node"
-                data-node="architecture-github-node"
-              >
-                <rect x="978" y="586" width="126" height="64" />
-                <text x="1000" y="616">GITHUB</text>
-                <text x="1000" y="638" class="svg-muted">origin</text>
-              </g>
-              <g class="blocked-route">
-                <path
-                  data-edge="architecture-blocked-egress"
-                  data-source="architecture-executor"
-                  data-source-side="right"
-                  data-blocked-stub
-                  d="M1058 258 H1114"
-                />
-                <path d="M1080 242 l16 32 M1096 242 l-16 32" />
-              </g>
-              <g class="diagram-note-box">
-                <rect x="866" y="402" width="240" height="76" />
-                <text x="888" y="432">EXECUTOR EGRESS</text>
-                <text x="888" y="458">DEFAULT: NONE</text>
-              </g>
-              <text class="lane-label request-label" x="44" y="188">
-                REQUEST
-              </text>
-              <text class="lane-label result-label" x="44" y="344">RESULT</text>
-            </svg>
-          </div>
-          <figcaption>
-            Authority stays separated by role. The runner can reach Docker and
-            an ephemeral helper. The executor cannot.
-          </figcaption>
-          <span
-            id="architecture-diagram-scroll-description"
-            class="sr-only diagram-scroll-description"
-            >On narrow screens, use the arrow keys to pan this diagram
-            horizontally.</span
-          >
-        </figure>
-      </section>
-
       <!-- Client Connect Matrix -->
-      <section class="section-wrap" id="connect" aria-labelledby="connect-title">
+      <section class="section-wrap" id="connect">
         <div class="section-header">
           <div class="section-tag">// Plug & Play</div>
-          <h2 class="section-title" id="connect-title">Connect Any AI Coding Agent</h2>
+          <h2 class="section-title">Connect Any AI Coding Agent</h2>
           <p style="color: var(--text-muted);">
             Compatible with all modern MCP-enabled IDEs, terminals, and web agents in seconds.
           </p>
@@ -1914,10 +1436,10 @@
               <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">
                 Connect via Streamable HTTP with your operator API key. Claude Code will instantly acquire all remote execution capabilities.
               </p>
-              <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);">
-                <li><span style="color: var(--cyan-glow);">→</span> Full worktree & subagent task graph support</li>
-                <li><span style="color: var(--cyan-glow);">→</span> Non-root execution ensures your local machine stays clean</li>
-                <li><span style="color: var(--cyan-glow);">→</span> Auto-reconnect with session recovery</li>
+              <ul class="arch-specs" style="border: none; padding: 0;">
+                <li><span>→</span> Full worktree & subagent task graph support</li>
+                <li><span>→</span> Non-root execution ensures your local machine stays clean</li>
+                <li><span>→</span> Auto-reconnect with session recovery</li>
               </ul>
             </div>
             <div class="code-box">
@@ -1931,11 +1453,11 @@
         </div>
       </section>
 
-      <!-- Security Invariants Section -->
-      <section class="section-wrap" id="boundaries" aria-labelledby="boundary-title">
+      <!-- Security Model Section with Anchor #security -->
+      <section class="section-wrap" id="security">
         <div class="security-box">
           <div class="section-tag" style="text-align: center;">// Zero-Trust Security Guarantees</div>
-          <h2 class="section-title" id="boundary-title" style="text-align: center;">Hardened Single-Owner Invariants</h2>
+          <h2 class="section-title" style="text-align: center;">Hardened Single-Owner Invariants</h2>
           <p style="text-align: center; color: var(--text-muted); max-width: 700px; margin: 0 auto 2.5rem;">
             Designed intentionally for one trusted operator or team. Arbitrary execution capability inside shared-kernel executors with strict boundary separation.
           </p>
@@ -2002,7 +1524,6 @@
         <div style="display: flex; gap: 2rem;">
           <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Documentation</a>
           <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">Repository</a>
-          <a href="support.html">Support</a>
           <a href="privacy.html">Privacy</a>
           <a href="terms.html">Terms</a>
         </div>
@@ -2023,11 +1544,56 @@
           .then(data => {
             if (data && typeof data.stargazers_count === 'number') {
               const badge = document.getElementById('githubStarsCount');
-              if (badge) badge.textContent = '★ ' + data.stargazers_count;
+              if (badge) badge.textContent = `★ ${data.stargazers_count}`;
             }
           })
           .catch(() => {});
       } catch (e) {}
+
+      function switchTermDemo(type, btn) {
+        document.querySelectorAll('.term-tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const box = document.getElementById('termContent');
+        if (type === 'open') {
+          box.innerHTML = `
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.workspace_open({</p>
+            <p style="padding-left: 1.5rem;">"repositoryUrl": <span class="term-string">"https://github.com/org/core-infra"</span>,</p>
+            <p style="padding-left: 1.5rem;">"idempotencyKey": <span class="term-string">"task_448f_09a1"</span></p>
+            <p>})</p>
+            <br/>
+            <p style="color: var(--cyan-glow)">[200 OK] Streamable HTTP Connection Established (14ms)</p>
+            <p style="color: var(--text-muted)">├── Ingress: Cloudflare Access OAuth token validated</p>
+            <p style="color: var(--text-muted)">├── Runner: Ephemeral GitHub broker minted stdin-only push key</p>
+            <p style="color: var(--text-muted)">├── Docker: Spawned non-root executor (TTL: 1800s, net: none)</p>
+            <p style="color: var(--green-neon)">└── Workspace Ready: <span class="term-badge">ws_8f93e120da</span></p>
+          `;
+        } else if (type === 'ast') {
+          box.innerHTML = `
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.symbols_search({</p>
+            <p style="padding-left: 1.5rem;">"workspaceId": <span class="term-string">"ws_8f93e120da"</span>,</p>
+            <p style="padding-left: 1.5rem;">"query": <span class="term-string">"verifyPrincipal"</span></p>
+            <p>})</p>
+            <br/>
+            <p style="color: var(--cyan-glow)">[LSP Symbols Found: 18 definitions parsed in 18ms]</p>
+            <p style="color: var(--text-muted)">├── apps/api/src/auth.ts:42 (function verifyPrincipal)</p>
+            <p style="color: var(--text-muted)">├── apps/runner/src/security.ts:110 (export const verifyPrincipal)</p>
+            <p style="color: var(--green-neon)">└── Full structural symbol resolution returned to agent context</p>
+          `;
+        } else if (type === 'push') {
+          box.innerHTML = `
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.git_push({</p>
+            <p style="padding-left: 1.5rem;">"workspaceId": <span class="term-string">"ws_8f93e120da"</span>,</p>
+            <p style="padding-left: 1.5rem;">"refspec": <span class="term-string">"feat/harness-v2"</span>,</p>
+            <p style="padding-left: 1.5rem;">"forceWithLease": <span class="term-keyword">true</span></p>
+            <p>})</p>
+            <br/>
+            <p style="color: var(--cyan-glow)">[Broker Transfer Staged]</p>
+            <p style="color: var(--text-muted)">├── GitHub App Broker minted 60s installation token</p>
+            <p style="color: var(--text-muted)">├── Token piped to git helper over stdio (zero disk writes)</p>
+            <p style="color: var(--green-neon)">└── Remote ref updated: 0a1b2c3 -> 9d8e7f6 [SUCCESS]</p>
+          `;
+        }
+      }
 
       function filterTools(category, btn) {
         document.querySelectorAll('.tool-pill').forEach(p => p.classList.remove('active'));
@@ -2050,47 +1616,46 @@
           claude: {
             title: "Claude Code Setup",
             desc: "Connect via Streamable HTTP with your operator API key. Claude Code will instantly acquire all remote execution capabilities.",
-            code: 'claude mcp add cloud-harness \
-  --transport http \
-  https://api.harness.zuey.me/mcp \
-  --header "Authorization: Bearer YOUR_OPERATOR_KEY"'
+            code: `claude mcp add cloud-harness \\\n  --transport http \\\n  https://api.harness.zuey.me/mcp \\\n  --header "Authorization: Bearer YOUR_OPERATOR_KEY"`
           },
           cursor: {
             title: "Cursor IDE Configuration",
             desc: "Add Cloud Harness MCP into your project or global .cursor/mcp.json for seamless background agent execution in Cursor.",
-            code: '{\n  "mcpServers": {\n    "cloud-harness": {\n      "url": "https://api.harness.zuey.me/mcp",\n      "headers": {\n        "Authorization": "Bearer YOUR_OPERATOR_KEY"\n      }\n    }\n  }\n}'
+            code: `{\n  "mcpServers": {\n    "cloud-harness": {\n      "url": "https://api.harness.zuey.me/mcp",\n      "headers": {\n        "Authorization": "Bearer YOUR_OPERATOR_KEY"\n      }\n    }\n  }\n}`
           },
           chatgpt: {
             title: "ChatGPT OAuth Connector",
             desc: "Connect directly to the Cloudflare Access SSO endpoint for single-click browser authentication with your corporate Google or GitHub ID.",
-            code: 'Endpoint URL: https://harness.zuey.me/mcp\nAuth Type: Managed OAuth (Cloudflare Access)\nProtocol: Streamable HTTP MCP'
+            code: `Endpoint URL: https://harness.zuey.me/mcp\nAuth Type: Managed OAuth (Cloudflare Access)\nProtocol: Streamable HTTP MCP`
           },
           codex: {
             title: "Codex CLI Setup",
             desc: "Configure codex config.toml to route heavy repository operations and Docker executions directly into Cloud Harness.",
-            code: '[mcp_servers.cloud_harness]\nurl = "https://api.harness.zuey.me/mcp"\nheaders = { Authorization = "Bearer YOUR_OPERATOR_KEY" }'
+            code: `[mcp_servers.cloud_harness]\nurl = "https://api.harness.zuey.me/mcp"\nheaders = { Authorization = "Bearer YOUR_OPERATOR_KEY" }`
           },
           antigravity: {
             title: "Google Antigravity IDE",
             desc: "Native integration for Google Antigravity developer environment via standard MCP config.",
-            code: '{\n  "servers": {\n    "cloud-harness": {\n      "endpoint": "https://api.harness.zuey.me/mcp",\n      "token": "YOUR_OPERATOR_KEY"\n    }\n  }\n}'
+            code: `{\n  "servers": {\n    "cloud-harness": {\n      "endpoint": "https://api.harness.zuey.me/mcp",\n      "token": "YOUR_OPERATOR_KEY"\n    }\n  }\n}`
           }
         };
 
         const item = configs[client];
-        container.innerHTML = '<div>' +
-          '<h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">' + item.title + '</h3>' +
-          '<p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">' + item.desc + '</p>' +
-          '<ul style="list-style: none; display: flex; flex-direction: column; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);">' +
-          '<li><span style="color: var(--cyan-glow);">→</span> Streamable HTTP MCP protocol support</li>' +
-          '<li><span style="color: var(--cyan-glow);">→</span> Strict principal authorization and token validation</li>' +
-          '<li><span style="color: var(--cyan-glow);">→</span> 52+ tools automatically discovered</li>' +
-          '</ul>' +
-          '</div>' +
-          '<div class="code-box">' +
-          '<button class="copy-btn" onclick="copySnippet(\'active-code-box\')">Copy</button>' +
-          '<pre id="active-code-box" style="overflow-x: auto; color: var(--text-bright);">' + item.code + '</pre>' +
-          '</div>';
+        container.innerHTML = `
+          <div>
+            <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">${item.title}</h3>
+            <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">${item.desc}</p>
+            <ul class="arch-specs" style="border: none; padding: 0;">
+              <li><span>→</span> Streamable HTTP MCP protocol support</li>
+              <li><span>→</span> Strict principal authorization and token validation</li>
+              <li><span>→</span> 52+ tools automatically discovered</li>
+            </ul>
+          </div>
+          <div class="code-box">
+            <button class="copy-btn" onclick="copySnippet('active-code-box')">Copy</button>
+            <pre id="active-code-box" style="overflow-x: auto; color: var(--text-bright);">${item.code}</pre>
+          </div>
+        `;
       }
 
       function copySnippet(id) {
@@ -2098,27 +1663,6 @@
         navigator.clipboard.writeText(text);
         alert('Copied configuration to clipboard!');
       }
-
-      // Diagram canvas keyboard panning
-      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-      document.querySelectorAll(".diagram-canvas").forEach((canvas) => {
-        canvas.addEventListener("keydown", (event) => {
-          if (canvas.scrollWidth <= canvas.clientWidth) return;
-          const step = Math.round(canvas.clientWidth * 0.8);
-          const targets = {
-            ArrowLeft: canvas.scrollLeft - step,
-            ArrowRight: canvas.scrollLeft + step,
-            Home: 0,
-            End: canvas.scrollWidth,
-          };
-          if (!(event.key in targets)) return;
-          event.preventDefault();
-          canvas.scrollTo({
-            left: targets[event.key],
-            behavior: reducedMotion.matches ? "auto" : "smooth",
-          });
-        });
-      });
     </script>
   </body>
 </html>
