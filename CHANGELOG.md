@@ -1,3 +1,10 @@
+# [0.11.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.10.0...v0.11.0) (2026-08-19)
+
+
+### Features
+
+* **dashboard:** adopt Mission Control design system (light + dark) ([#49](https://github.com/bestagentkits/cloud-harness-mcp/issues/49)) ([b5c172f](https://github.com/bestagentkits/cloud-harness-mcp/commit/b5c172fbcd31e029331ca239d61d5ec975b9d544))
+
 # [0.10.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.9.0...v0.10.0) (2026-08-19)
 
 
