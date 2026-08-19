@@ -891,16 +891,16 @@
         color: #fff;
       }
 
-            /* Responsive Queries */
+                  /* Responsive Queries */
       @media (max-width: 1120px) {
         .nav-links { display: none !important; }
         .mobile-menu-btn { display: inline-flex !important; }
       }
 
       @media (max-width: 860px) {
-        .nav-connect-btn { display: none !important; }
-        .github-btn-text { display: none !important; }
-        .logo-tag { display: none !important; }
+        .nav-actions .nav-connect-btn { display: none !important; }
+        .nav-actions .github-btn-text { display: none !important; }
+        .logo-hud .logo-tag { display: none !important; }
         .main-nav { padding: 0.85rem 1.15rem; }
         .hero-section { grid-template-columns: 1fr; }
         .arch-grid { grid-template-columns: 1fr; }
@@ -985,7 +985,6 @@
       <!-- Mobile Navigation Drawer -->
       <nav class="mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
         <a href="#connect" class="hud-button hud-button-primary drawer-connect-btn" style="justify-content: center; text-align: center; margin-bottom: 0.5rem;" onclick="toggleMobileMenu()">Connect Agent →</a>
-        <a href="#connect" class="hud-button hud-button-primary" style="justify-content: center; text-align: center; margin-bottom: 0.5rem;" onclick="toggleMobileMenu()">Connect Agent →</a>
         <a href="#architecture" onclick="toggleMobileMenu()">Architecture</a>
         <a href="#workflows" onclick="toggleMobileMenu()">Workflows</a>
         <a href="#tools" onclick="toggleMobileMenu()">Tools Surface</a>
