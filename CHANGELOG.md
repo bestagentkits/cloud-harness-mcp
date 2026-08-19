@@ -1,3 +1,10 @@
+## [0.16.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.2...v0.16.3) (2026-08-19)
+
+
+### Bug Fixes
+
+* **site:** prevent mobile header clipping on small screens and add drawer CTA ([#68](https://github.com/bestagentkits/cloud-harness-mcp/issues/68)) ([b736df3](https://github.com/bestagentkits/cloud-harness-mcp/commit/b736df32fdbdb3340f02eadff60f20a6a4c9802f))
+
 ## [0.16.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.1...v0.16.2) (2026-08-19)
 
 

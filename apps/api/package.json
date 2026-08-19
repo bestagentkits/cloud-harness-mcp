@@ -1,6 +1,6 @@
 {
   "name": "@cloud-harness/api",
-  "version": "0.16.2",
+  "version": "0.16.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@cloud-harness/contracts": "0.16.2",
+    "@cloud-harness/contracts": "0.16.3",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "express": "5.2.1",
