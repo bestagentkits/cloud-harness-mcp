@@ -1,3 +1,10 @@
+# [0.10.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.9.0...v0.10.0) (2026-08-19)
+
+
+### Features
+
+* **dashboard:** adaptive light/dark console, Overview home, and executor-image prune fix ([#48](https://github.com/bestagentkits/cloud-harness-mcp/issues/48)) ([10d110c](https://github.com/bestagentkits/cloud-harness-mcp/commit/10d110ccc35f275e8d674b0a30b3d8ce7f48c093))
+
 # [0.9.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.8.0...v0.9.0) (2026-08-19)
 
 
