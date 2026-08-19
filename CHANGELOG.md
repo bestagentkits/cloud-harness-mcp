@@ -1,3 +1,16 @@
+# [0.15.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.14.0...v0.15.0) (2026-08-19)
+
+
+### Bug Fixes
+
+* **broker:** allow unauthenticated public repository clone in Access mode without GitHub App grant ([f7019ab](https://github.com/bestagentkits/cloud-harness-mcp/commit/f7019abc533a3bf7f3617e6b4f529a830a12379f))
+
+
+### Features
+
+* **site:** align marketing site diagram geometry with cyber-engineering dark theme ([#58](https://github.com/bestagentkits/cloud-harness-mcp/issues/58)) ([8fc4c7a](https://github.com/bestagentkits/cloud-harness-mcp/commit/8fc4c7a3a2951f375691d18f21804ce63d920fc2))
+* **site:** redesign marketing site with cyber-engineering dark HUD, animated diagrams, and 5 variants ([#57](https://github.com/bestagentkits/cloud-harness-mcp/issues/57)) ([5875875](https://github.com/bestagentkits/cloud-harness-mcp/commit/5875875868ad9fc59329072930129fa4fea6c3de))
+
 # [0.14.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.13.0...v0.14.0) (2026-08-19)
 
 
