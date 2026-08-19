@@ -13,7 +13,7 @@ function resultToMcp(result: ToolResult): CallToolResult {
 
 export function createCloudHarnessServer(client: RunnerClient, principal?: RunnerPrincipalSelector): McpServer {
   const server = new McpServer(
-    { name: 'cloud-harness-mcp', version: '0.11.0' },
+    { name: 'cloud-harness-mcp', version: '0.12.0' },
     { instructions: 'Open an owner-bound workspace first, pass its opaque workspaceId to later tools, and close it when finished.' }
   );
   for (const spec of TOOL_SPECS) {

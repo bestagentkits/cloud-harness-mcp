@@ -1,3 +1,10 @@
+# [0.12.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.11.0...v0.12.0) (2026-08-19)
+
+
+### Features
+
+* **dashboard:** top header, working icon collapse, and Overview server status ([#50](https://github.com/bestagentkits/cloud-harness-mcp/issues/50)) ([51ca575](https://github.com/bestagentkits/cloud-harness-mcp/commit/51ca575c6ad1416e72c481518ed81876e2025567))
+
 # [0.11.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.10.0...v0.11.0) (2026-08-19)
 
 
