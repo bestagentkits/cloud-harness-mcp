@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Cloud Harness MCP — 5 Distinct Design Variants Showcase with Animated Architecture & Workflows."
+    />
+    <title>Cloud Harness MCP // Design Variants Showcase (5 Animated Archetypes)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg-hub: #000000;
+        --bg-surface: #08080c;
+        --bg-card: #0e1118;
+        --border-subtle: rgba(255, 255, 255, 0.08);
+        --border-active: #6366f1;
+        --text-primary: #f8fafc;
+        --text-muted: #94a3b8;
+        --text-dim: #64748b;
+        --accent-purple: #a855f7;
+        --accent-cyan: #00f0ff;
+        --accent-indigo: #6366f1;
+        --accent-emerald: #10b981;
+        --font-sans: "Plus Jakarta Sans", sans-serif;
+        --font-display: "Space Grotesk", sans-serif;
+        --font-mono: "JetBrains Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        background-color: var(--bg-hub);
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        line-height: 1.5;
+        overflow-x: hidden;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      /* Top Header */
+      .hub-header {
+        background: rgba(0, 0, 0, 0.9);
+        backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--border-subtle);
+        padding: 1rem 2rem;
+        position: sticky;
+        top: 0;
+        z-index: 1000;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .hub-brand {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-family: var(--font-display);
+        font-size: 1.25rem;
+        font-weight: 700;
+      }
+
+      .hub-badge {
+        background: linear-gradient(135deg, var(--accent-purple), var(--accent-indigo));
+        color: white;
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: 600;
+      }
+
+      .hub-controls {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+      }
+
+      /* Viewport Toggles */
+      .viewport-bar {
+        display: flex;
+        background: var(--bg-card);
+        border: 1px solid var(--border-subtle);
+        border-radius: 6px;
+        padding: 2px;
+      }
+
+      .vp-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        padding: 0.4rem 0.8rem;
+        border-radius: 4px;
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+
+      .vp-btn.active, .vp-btn:hover {
+        background: var(--accent-indigo);
+        color: white;
+      }
+
+      .btn-open-tab {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-subtle);
+        color: white;
+        font-size: 0.85rem;
+        font-weight: 600;
+        padding: 0.45rem 1rem;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        cursor: pointer;
+      }
+
+      .btn-open-tab:hover {
+        background: rgba(255, 255, 255, 0.15);
+      }
+
+      /* Main Layout */
+      .hub-main {
+        display: grid;
+        grid-template-columns: 370px 1fr;
+        height: calc(100vh - 65px);
+      }
+
+      /* Sidebar Selector */
+      .hub-sidebar {
+        background: var(--bg-surface);
+        border-right: 1px solid var(--border-subtle);
+        overflow-y: auto;
+        padding: 1.5rem 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+
+      .sidebar-title {
+        font-size: 0.82rem;
+        font-family: var(--font-mono);
+        text-transform: uppercase;
+        color: var(--text-dim);
+        letter-spacing: 0.08em;
+      }
+
+      .variant-selector-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        padding: 1.15rem;
+        cursor: pointer;
+        transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+        text-align: left;
+      }
+
+      .variant-selector-card:hover {
+        border-color: var(--border-active);
+        transform: translateY(-2px);
+      }
+
+      .variant-selector-card.active {
+        border-color: var(--accent-indigo);
+        background: #121622;
+        box-shadow: 0 0 16px rgba(99, 102, 241, 0.25);
+      }
+
+      .card-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+      }
+
+      .card-num {
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: var(--accent-indigo);
+      }
+
+      .card-tag {
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text-muted);
+      }
+
+      .card-name {
+        font-weight: 700;
+        font-size: 1rem;
+        margin-bottom: 0.35rem;
+      }
+
+      .card-summary {
+        font-size: 0.82rem;
+        color: var(--text-muted);
+        line-height: 1.5;
+      }
+
+      .card-tags-list {
+        display: flex;
+        gap: 0.4rem;
+        margin-top: 0.75rem;
+        flex-wrap: wrap;
+      }
+
+      .pill-mini {
+        font-size: 0.68rem;
+        font-family: var(--font-mono);
+        padding: 1px 5px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.04);
+        color: #cbd5e1;
+      }
+
+      /* Preview Frame Area */
+      .preview-area {
+        background: #000000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        padding: 1.5rem;
+        overflow-y: auto;
+        position: relative;
+      }
+
+      .iframe-wrapper {
+        background: #000;
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+        overflow: hidden;
+        transition: width 0.3s ease;
+        height: 100%;
+        width: 100%;
+        min-height: 850px;
+      }
+
+      iframe {
+        width: 100%;
+        height: 100%;
+        border: none;
+        display: block;
+      }
+
+      /* Info Modal / Drawer */
+      .design-analysis-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        padding: 1.25rem;
+        margin-top: 1rem;
+        font-size: 0.85rem;
+      }
+
+      .analysis-header {
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+        color: var(--accent-cyan);
+      }
+
+      @media (max-width: 960px) {
+        .hub-main { grid-template-columns: 1fr; height: auto; }
+        .hub-sidebar { height: auto; border-right: none; border-bottom: 1px solid var(--border-subtle); }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Hub Navigation -->
+    <header class="hub-header">
+      <div class="hub-brand">
+        <span>Cloud Harness MCP</span>
+        <span class="hub-badge">5 ANIMATED VARIANTS</span>
+      </div>
+      <div class="hub-controls">
+        <!-- Viewport Size Switcher -->
+        <div class="viewport-bar">
+          <button class="vp-btn active" onclick="setViewport('100%', this)">🖥️ Full 100%</button>
+          <button class="vp-btn" onclick="setViewport('1280px', this)">💻 Laptop (1280px)</button>
+          <button class="vp-btn" onclick="setViewport('768px', this)">📱 Tablet (768px)</button>
+          <button class="vp-btn" onclick="setViewport('390px', this)">📱 Mobile (390px)</button>
+        </div>
+
+        <a id="openTabBtn" href="variant-1-cyber-hud.html" target="_blank" class="btn-open-tab">
+          Open Fullscreen ↗
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="hub-main">
+      <!-- Sidebar Selection -->
+      <aside class="hub-sidebar">
+        <div class="sidebar-title">Select Design Concept</div>
+
+        <!-- Variant 1 -->
+        <div class="variant-selector-card active" onclick="loadVariant('variant-1-cyber-hud.html', 1, this)">
+          <div class="card-top">
+            <span class="card-num">VARIANT 01 ★ SELECTED</span>
+            <span class="card-tag" style="color: var(--accent-cyan);">CYBER-HUD</span>
+          </div>
+          <div class="card-name">Cyber-Engineering Dark HUD</div>
+          <p class="card-summary">
+            Vercel-grade pitch black background, expanded breathing room, animated Architecture Signal Matrix, Sequence Trace, and creator attribution.
+          </p>
+          <div class="card-tags-list">
+            <span class="pill-mini">Pitch Black</span>
+            <span class="pill-mini">Breathing Room</span>
+            <span class="pill-mini">AgentKit & GoClaw</span>
+            <span class="pill-mini">agents_* Tools</span>
+          </div>
+        </div>
+
+        <!-- Variant 2 -->
+        <div class="variant-selector-card" onclick="loadVariant('variant-2-linear-minimal.html', 2, this)">
+          <div class="card-top">
+            <span class="card-num">VARIANT 02</span>
+            <span class="card-tag" style="color: #cbd5e1;">LINEAR-MINIMAL</span>
+          </div>
+          <div class="card-name">Neo-Minimalist Precision B2B</div>
+          <p class="card-summary">
+            Ultra-refined dark luxury with whisper-thin borders, subtle glowing halo, animated Architecture Flow blueprint, and 3-step interactive lifecycle.
+          </p>
+          <div class="card-tags-list">
+            <span class="pill-mini">Animated Flow Canvas</span>
+            <span class="pill-mini">Stage Window</span>
+            <span class="pill-mini">Linear Style</span>
+          </div>
+        </div>
+
+        <!-- Variant 3 -->
+        <div class="variant-selector-card" onclick="loadVariant('variant-3-bento-sandbox.html', 3, this)">
+          <div class="card-top">
+            <span class="card-num">VARIANT 03</span>
+            <span class="card-tag" style="color: var(--accent-purple);">BENTO-SANDBOX</span>
+          </div>
+          <div class="card-name">Bento Grid & Live Sandbox</div>
+          <p class="card-summary">
+            Modular glassmorphism with vibrant purple/cyan gradients, animated Bento System Flowchart, and a 4-step real-time agent sandbox simulation widget.
+          </p>
+          <div class="card-tags-list">
+            <span class="pill-mini">Animated Bento Flow</span>
+            <span class="pill-mini">Live Simulator</span>
+            <span class="pill-mini">Modular Cards</span>
+          </div>
+        </div>
+
+        <!-- Variant 4 -->
+        <div class="variant-selector-card" onclick="loadVariant('variant-4-enterprise-defense.html', 4, this)">
+          <div class="card-top">
+            <span class="card-num">VARIANT 04</span>
+            <span class="card-tag" style="color: #60a5fa;">ENTERPRISE</span>
+          </div>
+          <div class="card-name">Enterprise Defense & Security</div>
+          <p class="card-summary">
+            Deep aerospace navy architecture, animated 5-layer Defense Topology Blueprint, and side-by-side threat model comparison matrix.
+          </p>
+          <div class="card-tags-list">
+            <span class="pill-mini">5-Zone Blueprint</span>
+            <span class="pill-mini">Threat Matrix</span>
+            <span class="pill-mini">CISO Approved</span>
+          </div>
+        </div>
+
+        <!-- Variant 5 -->
+        <div class="variant-selector-card" onclick="loadVariant('variant-5-futuristic-studio.html', 5, this)">
+          <div class="card-top">
+            <span class="card-num">VARIANT 05</span>
+            <span class="card-tag" style="color: #f43f5e;">STUDIO-AURORA</span>
+          </div>
+          <div class="card-name">Hyper-Modern Editorial Studio</div>
+          <p class="card-summary">
+            Dark velvet backdrop, holographic aurora gradients, animated Aurora Architecture Core with traveling particles, and interactive capability deck.
+          </p>
+          <div class="card-tags-list">
+            <span class="pill-mini">Aurora Core Diagram</span>
+            <span class="pill-mini">Editorial Style</span>
+            <span class="pill-mini">Fleet Connect</span>
+          </div>
+        </div>
+
+        <!-- Analysis Box -->
+        <div class="design-analysis-card" id="analysisBox">
+          <div class="analysis-header" id="analysisTitle">Variant 1: Selected & Perfected</div>
+          <p id="analysisBody" style="color: var(--text-muted); line-height: 1.55;">
+            <strong>Refinements Applied:</strong> Pitch black background (#000000), generous breathing room (8rem section gaps, spacious padding), creator attribution to AgentKit & GoClaw, and expanded 52+ tools surface with <code>agents_*</code> coming soon roadmap.
+          </p>
+        </div>
+      </aside>
+
+      <!-- Interactive Preview Area -->
+      <section class="preview-area">
+        <div class="iframe-wrapper" id="frameWrap">
+          <iframe id="previewIframe" src="variant-1-cyber-hud.html" title="Variant Preview"></iframe>
+        </div>
+      </section>
+    </main>
+
+    <!-- Interactive Switcher Script -->
+    <script>
+      const analysisData = {
+        1: {
+          title: "Variant 1: Cyber-Engineering Dark HUD (Selected)",
+          body: `<strong>Refinements Applied:</strong><br/>• <em>Pitch Black:</em> Pure #000000 Vercel-grade obsidian palette.<br/>• <em>Breathing Room:</em> Increased section gaps to 8rem, expanded card and container padding.<br/>• <em>Creator Badge:</em> "From the creator of AgentKit & GoClaw" in the footer.<br/>• <em>Tools Expansion:</em> Includes <code>agents_spawn</code>, <code>agents_delegate</code>, <code>agents_inbox</code>, <code>skills_*</code>, <code>hooks_*</code>, <code>memories_*</code>.`
+        },
+        2: {
+          title: "Variant 2: Neo-Minimalist Precision B2B",
+          body: `<strong>Target Persona:</strong> Tech founders, engineering leaders, and modern AI engineering teams.<br/><strong>Animated Features:</strong><br/>• <em>Minimalist Architecture Flow Canvas</em> with glowing data points traveling along dashed isolation boundaries.<br/>• <em>Interactive Stage Window</em> with live tabbed product preview.`
+        },
+        3: {
+          title: "Variant 3: Bento Grid & Live Sandbox",
+          body: `<strong>Target Persona:</strong> Broad developer audience, open-source contributors, and AI tinkers.<br/><strong>Animated Features:</strong><br/>• <em>Bento System Flowchart</em> with animated SVG path motion between Client, Ingress, Runner, and Non-root Container.<br/>• <em>Interactive 4-step live workspace simulation widget</em>.`
+        },
+        4: {
+          title: "Variant 4: Enterprise Defense & Security",
+          body: `<strong>Target Persona:</strong> CISOs, Security Architects, Platform Leads, and Enterprise DevOps.<br/><strong>Animated Features:</strong><br/>• <em>5-Layer Defense Topology Blueprint</em> with animated security verification packets.<br/>• <em>Interactive clickable defense map</em> explaining each isolation layer.`
+        },
+        5: {
+          title: "Variant 5: Hyper-Modern Editorial Studio",
+          body: `<strong>Target Persona:</strong> Next-gen AI startups, autonomous agent creators, and AI research teams.<br/><strong>Animated Features:</strong><br/>• <em>Holographic Aurora Architecture Core</em> with glowing particle streams traveling between control plane and sandboxes.<br/>• <em>3D-feel interactive capability deck</em> with metric ticker.`
+        }
+      };
+
+      function loadVariant(url, id, card) {
+        document.querySelectorAll('.variant-selector-card').forEach(c => c.classList.remove('active'));
+        card.classList.add('active');
+        document.getElementById('previewIframe').src = url;
+        document.getElementById('openTabBtn').href = url;
+        
+        const data = analysisData[id];
+        document.getElementById('analysisTitle').innerText = data.title;
+        document.getElementById('analysisBody').innerHTML = data.body;
+      }
+
+      function setViewport(width, btn) {
+        document.querySelectorAll('.vp-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('frameWrap').style.width = width;
+      }
+    </script>
+  </body>
+</html>
