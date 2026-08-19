@@ -1,7 +1,7 @@
 import { api } from './dashboard-api.js';
 import {
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderProjectDetail,
-  renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName
+  renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName
 } from './dashboard-render.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -202,6 +202,7 @@ export function initializeDashboard() {
       else if (location.pathname === '/dashboard/audit') await loadAudit();
       else if (location.pathname === '/dashboard/api-keys') await loadApiKeys();
       else if (location.pathname === '/dashboard/github') await loadGitHub();
+      else if (location.pathname === '/dashboard/profile') await loadProfile();
       else if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
       else if (pathMatch) await loadWorkspace(pathMatch[1]);
@@ -336,6 +337,10 @@ export function initializeDashboard() {
       try { await api('/github/reconcile', { method: 'POST', body: requestBody({}) }); announce('GitHub installation reconciled.'); await loadGitHub(); }
       catch (error) { showError(error); } finally { button.disabled = false; button.textContent = 'Reconcile installation'; }
     });
+  }
+  async function loadProfile() {
+    selectNavigation('profile'); setTitle('Profile', 'Your signed-in identity and session details.'); document.querySelector('#command-surface').hidden = true;
+    const result = await api('/profile'); content.innerHTML = renderProfile(result.data);
   }
   function bindWorkspaceDrawerLinks() {
     for (const link of content.querySelectorAll('a[href^="/dashboard/workspaces/"]')) link.addEventListener('click', async (event) => {

@@ -43,13 +43,14 @@ describe('dashboard static UI contract', () => {
   it('exposes accessible metadata navigation and only existing dashboard BFF controls', () => {
     for (const [path, label] of [
       ['/dashboard/projects', 'Projects'], ['/dashboard/artifacts', 'Artifacts'],
-      ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub']
+      ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub'],
+      ['/dashboard/profile', 'Profile']
     ]) {
       expect(html).toContain(`href="${path}"`);
       expect(html).toContain(`>${label}</a>`);
     }
     for (const endpoint of [
-      "api('/projects')", "api('/artifacts',", '`/audit?limit=50', "api('/github')",
+      "api('/projects')", "api('/artifacts',", '`/audit?limit=50', "api('/github')", "api('/profile')",
       "'/github/setup'", "'/github/complete'", "'/github/reconcile'", '`/environments/${'
     ]) expect(script).toContain(endpoint);
     expect(script).toContain('expectedGeneration');

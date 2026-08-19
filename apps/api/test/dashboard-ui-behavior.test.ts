@@ -3,7 +3,7 @@ import {
   apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
   renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderProjectDetail } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
 
 class FakeElement {
   hidden = false;
@@ -263,5 +263,25 @@ describe('dashboard UI behavior', () => {
     expect(html).toContain('data-generation="3"');
     expect(html).not.toContain(raw);
     expect(html).not.toContain('must-not-render');
+  });
+
+  it('escapes attacker-influenceable identity fields and renders scopes and expiry', () => {
+    const html = renderProfile({
+      identity: { issuer: 'https://team.cloudflareaccess.com', subject: 'operator', email: 'op@example.com', name: '<img src=x onerror=alert(1)>' },
+      scopes: ['workspace:read', 'workspace:execute'],
+      sessionExpiresAt: '2027-01-15T09:00:00.000Z'
+    });
+    expect(html).not.toContain('<img src=x onerror=alert(1)>');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).toContain('op@example.com');
+    expect(html).toContain('workspace:execute');
+    expect(html).toContain('datetime="2027-01-15T09:00:00.000Z"');
+  });
+
+  it('reports missing optional identity fields and no session expiry', () => {
+    const html = renderProfile({ identity: { issuer: 'https://team.cloudflareaccess.com', subject: 'operator' }, scopes: [], sessionExpiresAt: null });
+    expect(html).toContain('Not provided');
+    expect(html).toContain('No scopes reported.');
+    expect(html).toContain('Never');
   });
 });
