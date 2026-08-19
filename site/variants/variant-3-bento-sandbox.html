@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Cloud Harness MCP — Bento Grid & Interactive Visual Sandbox for Autonomous AI Agents."
+    />
+    <title>Cloud Harness MCP // Visual Bento Sandbox</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=Fira+Code:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0b0f19;
+        --bg-card: rgba(22, 30, 49, 0.65);
+        --bg-card-solid: #151d30;
+        --border-glass: rgba(255, 255, 255, 0.08);
+        --border-hover: rgba(147, 51, 234, 0.4);
+        --purple-accent: #9333ea;
+        --purple-glow: rgba(147, 51, 234, 0.25);
+        --cyan-accent: #06b6d4;
+        --emerald-accent: #10b981;
+        --pink-accent: #ec4899;
+        --text-main: #f8fafc;
+        --text-sub: #94a3b8;
+        --text-dim: #64748b;
+        --font-sans: "Plus Jakarta Sans", sans-serif;
+        --font-display: "Space Grotesk", sans-serif;
+        --font-mono: "Fira Code", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        background-color: var(--bg);
+        color: var(--text-main);
+        font-family: var(--font-sans);
+        line-height: 1.6;
+        overflow-x: hidden;
+        background-image: 
+          radial-gradient(circle at 20% 15%, rgba(147, 51, 234, 0.12) 0%, transparent 45%),
+          radial-gradient(circle at 80% 25%, rgba(6, 182, 212, 0.12) 0%, transparent 45%);
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      /* Navbar */
+      .navbar {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background: rgba(11, 15, 25, 0.85);
+        backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--border-glass);
+      }
+
+      .nav-container {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 1.1rem 1.75rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 1.25rem;
+      }
+
+      .logo-pill {
+        background: linear-gradient(135deg, var(--purple-accent), var(--cyan-accent));
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 0 16px var(--purple-glow);
+      }
+
+      .nav-items {
+        display: flex;
+        gap: 2rem;
+        font-weight: 500;
+        font-size: 0.95rem;
+      }
+
+      .nav-items a:hover {
+        color: var(--cyan-accent);
+      }
+
+      .btn-bento {
+        font-family: var(--font-sans);
+        font-weight: 600;
+        font-size: 0.9rem;
+        padding: 0.6rem 1.25rem;
+        border-radius: 8px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .btn-bento-primary {
+        background: linear-gradient(135deg, #a855f7 0%, #6366f1 100%);
+        color: white;
+        border: none;
+        box-shadow: 0 4px 20px var(--purple-glow);
+      }
+
+      .btn-bento-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 25px rgba(168, 85, 247, 0.45);
+      }
+
+      .btn-bento-outline {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border-glass);
+        color: var(--text-main);
+      }
+
+      .btn-bento-outline:hover {
+        border-color: rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      /* Hero Section */
+      .hero-wrap {
+        max-width: 1280px;
+        margin: 3.5rem auto 4rem;
+        padding: 0 1.75rem;
+        text-align: center;
+      }
+
+      .bento-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.4rem 1rem;
+        border-radius: 999px;
+        background: rgba(147, 51, 234, 0.12);
+        border: 1px solid rgba(147, 51, 234, 0.3);
+        color: #d8b4fe;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-bottom: 1.5rem;
+      }
+
+      .hero-heading {
+        font-family: var(--font-display);
+        font-size: clamp(2.8rem, 6vw, 4.6rem);
+        font-weight: 800;
+        line-height: 1.1;
+        letter-spacing: -0.03em;
+        margin-bottom: 1.5rem;
+      }
+
+      .hero-gradient-text {
+        background: linear-gradient(135deg, #c084fc 0%, #38bdf8 50%, #4ade80 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .hero-sub {
+        color: var(--text-sub);
+        font-size: 1.2rem;
+        max-width: 760px;
+        margin: 0 auto 2.5rem;
+      }
+
+      /* Interactive Live Sandbox Simulator Widget */
+      .sandbox-simulator {
+        background: var(--bg-card-solid);
+        border: 1px solid var(--border-glass);
+        border-radius: 16px;
+        padding: 1.5rem;
+        max-width: 1000px;
+        margin: 0 auto 5rem;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      }
+
+      .sim-controls {
+        display: flex;
+        gap: 0.75rem;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-bottom: 1.5rem;
+      }
+
+      .sim-btn {
+        padding: 0.65rem 1.25rem;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border-glass);
+        color: var(--text-sub);
+        font-family: var(--font-sans);
+        font-weight: 600;
+        font-size: 0.88rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        transition: all 0.2s ease;
+      }
+
+      .sim-btn.active, .sim-btn:hover {
+        background: rgba(147, 51, 234, 0.2);
+        border-color: var(--purple-accent);
+        color: white;
+      }
+
+      .sim-window {
+        background: #080b13;
+        border: 1px solid var(--border-glass);
+        border-radius: 12px;
+        padding: 1.5rem;
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        text-align: left;
+        min-height: 280px;
+        color: #e2e8f0;
+      }
+
+      /* Bento Grid Section */
+      .bento-section {
+        max-width: 1280px;
+        margin: 4rem auto 6rem;
+        padding: 0 1.75rem;
+      }
+
+      .bento-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.5rem;
+      }
+
+      .bento-card {
+        background: var(--bg-card);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--border-glass);
+        border-radius: 16px;
+        padding: 2rem;
+        position: relative;
+        overflow: hidden;
+        transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .bento-card:hover {
+        border-color: var(--border-hover);
+        transform: translateY(-4px);
+        box-shadow: 0 12px 30px var(--purple-glow);
+      }
+
+      .span-2 {
+        grid-column: span 2;
+      }
+
+      .span-3 {
+        grid-column: span 3;
+      }
+
+      .bento-badge {
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 6px;
+        display: inline-block;
+        margin-bottom: 1rem;
+      }
+
+      .badge-purple { background: rgba(147, 51, 234, 0.2); color: #d8b4fe; border: 1px solid rgba(147, 51, 234, 0.4); }
+      .badge-cyan { background: rgba(6, 182, 212, 0.2); color: #67e8f9; border: 1px solid rgba(6, 182, 212, 0.4); }
+      .badge-emerald { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.4); }
+
+      .bento-title {
+        font-family: var(--font-display);
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-bottom: 0.75rem;
+      }
+
+      .bento-desc {
+        color: var(--text-sub);
+        font-size: 0.95rem;
+        line-height: 1.6;
+        margin-bottom: 1.5rem;
+      }
+
+      .pill-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 1rem;
+      }
+
+      .pill-tag {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border-glass);
+        font-size: 0.8rem;
+        font-family: var(--font-mono);
+        padding: 0.3rem 0.6rem;
+        border-radius: 6px;
+        color: #cbd5e1;
+      }
+
+      /* Animated SVG Flow in Bento */
+      .svg-bento-flow {
+        width: 100%;
+        height: auto;
+        display: block;
+        margin-top: 1.5rem;
+      }
+
+      /* Client Selector */
+      .client-bento-tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+        flex-wrap: wrap;
+      }
+
+      .client-tab-bento {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border-glass);
+        border-radius: 6px;
+        color: var(--text-sub);
+        font-size: 0.85rem;
+        font-weight: 600;
+        padding: 0.4rem 0.8rem;
+        cursor: pointer;
+      }
+
+      .client-tab-bento.active {
+        background: var(--cyan-accent);
+        color: #0b0f19;
+        font-weight: 700;
+      }
+
+      /* FAQ Section */
+      .faq-wrap {
+        max-width: 900px;
+        margin: 6rem auto;
+        padding: 0 1.75rem;
+      }
+
+      .faq-item {
+        background: var(--bg-card);
+        border: 1px solid var(--border-glass);
+        border-radius: 10px;
+        margin-bottom: 1rem;
+        overflow: hidden;
+      }
+
+      .faq-q {
+        padding: 1.25rem 1.5rem;
+        font-weight: 600;
+        font-size: 1.05rem;
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .faq-a {
+        padding: 0 1.5rem 1.25rem;
+        color: var(--text-sub);
+        font-size: 0.95rem;
+        line-height: 1.6;
+        display: none;
+      }
+
+      .faq-item.open .faq-a {
+        display: block;
+      }
+
+      /* CTA */
+      .bento-cta {
+        background: linear-gradient(135deg, rgba(147, 51, 234, 0.25) 0%, rgba(6, 182, 212, 0.25) 100%), var(--bg-card-solid);
+        border: 1px solid var(--border-hover);
+        border-radius: 20px;
+        padding: 4.5rem 2rem;
+        text-align: center;
+        max-width: 1200px;
+        margin: 5rem auto 0;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+      }
+
+      /* Footer */
+      .footer-bento {
+        border-top: 1px solid var(--border-glass);
+        padding: 3rem 1.75rem;
+        max-width: 1280px;
+        margin: 5rem auto 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        color: var(--text-dim);
+        font-size: 0.9rem;
+      }
+
+      @media (max-width: 960px) {
+        .bento-grid { grid-template-columns: 1fr; }
+        .span-2, .span-3 { grid-column: span 1; }
+        .nav-items { display: none; }
+      }
+    </style>
+  </head>
+  <body id="top">
+    <!-- Navbar -->
+    <header class="navbar">
+      <div class="nav-container">
+        <a href="#top" class="logo">
+          <div class="logo-pill">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5">
+              <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242M12 12v9m-4-4 4 4 4-4"/>
+            </svg>
+          </div>
+          <span>Cloud Harness</span>
+        </a>
+        <nav class="nav-items">
+          <a href="#simulator">Live Sandbox</a>
+          <a href="#bento">Features</a>
+          <a href="#faq">FAQ</a>
+          <a href="https://docs.harness.agentkit.best" target="_blank">Docs ↗</a>
+        </nav>
+        <div style="display: flex; gap: 1rem;">
+          <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" class="btn-bento btn-bento-outline">
+            GitHub ★
+          </a>
+          <a href="#bento" class="btn-bento btn-bento-primary">
+            Launch Agent
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <main>
+      <section class="hero-wrap">
+        <div class="bento-tag">
+          <span>✨ Streamable HTTP MCP • Non-Root Executors</span>
+        </div>
+        <h1 class="hero-heading">
+          Give AI Coding Agents a<br/>
+          <span class="hero-gradient-text">Dedicated Cloud Sandbox.</span>
+        </h1>
+        <p class="hero-sub">
+          Isolate repository clones, run 52 AST & terminal tools in TTL-limited Docker containers, and eliminate credential leakage forever.
+        </p>
+
+        <!-- Live Sandbox Simulation Widget -->
+        <div class="sandbox-simulator" id="simulator">
+          <div class="sim-controls">
+            <button class="sim-btn active" onclick="runSim(1, this)">1. 🚀 Open Workspace</button>
+            <button class="sim-btn" onclick="runSim(2, this)">2. 🔍 AST Search</button>
+            <button class="sim-btn" onclick="runSim(3, this)">3. ⚙️ Run Test Suite</button>
+            <button class="sim-btn" onclick="runSim(4, this)">4. 🛡️ Push & Auto-Purge</button>
+          </div>
+          <div class="sim-window" id="simOutput">
+            <span style="color: #64748b;">// SIMULATION: Calling mcp.workspace_open()</span><br/>
+            <span style="color: #38bdf8;">[0.00s]</span> Request validated via Cloudflare Access OAuth.<br/>
+            <span style="color: #a855f7;">[0.12s]</span> Ephemeral Git Helper cloned repository into isolated job volume.<br/>
+            <span style="color: #10b981;">[0.28s]</span> Docker executor container started (ID: ws_01j9a3b, UID: 1000, Network: none).<br/>
+            <span style="color: #f59e0b;">[0.30s]</span> 30-minute execution TTL countdown started.<br/>
+            <span style="color: #4ade80; font-weight: bold;">✔ Workspace active and ready for agent instructions.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bento Grid Section -->
+      <section class="bento-section" id="bento">
+        <div class="bento-grid">
+          <!-- Card 1: Animated Architecture Flow (Span 3) -->
+          <div class="bento-card span-3">
+            <div>
+              <div class="bento-badge badge-purple">Animated System Flow</div>
+              <h3 class="bento-title">How Data and Control Flow Across Sandboxes</h3>
+              <p class="bento-desc">
+                Request handling is cleanly separated from Docker execution authority and GitHub authentication brokers.
+              </p>
+            </div>
+            
+            <!-- Animated SVG Flow -->
+            <svg class="svg-bento-flow" viewBox="0 0 1100 240">
+              <!-- Boxes -->
+              <rect x="20" y="50" width="160" height="90" rx="10" fill="#0d1424" stroke="rgba(255,255,255,0.15)" />
+              <text x="40" y="90" fill="#fff" font-family="var(--font-display)" font-size="14" font-weight="700">AI Client</text>
+              <text x="40" y="115" fill="var(--text-sub)" font-size="11">Claude • Cursor</text>
+
+              <rect x="240" y="50" width="170" height="90" rx="10" fill="#0d1424" stroke="var(--cyan-accent)" />
+              <text x="260" y="90" fill="var(--cyan-accent)" font-family="var(--font-display)" font-size="14" font-weight="700">Ingress & API</text>
+              <text x="260" y="115" fill="var(--text-sub)" font-size="11">SSO Auth + Schema</text>
+
+              <rect x="470" y="50" width="170" height="90" rx="10" fill="#0d1424" stroke="var(--purple-accent)" />
+              <text x="490" y="90" fill="#c084fc" font-family="var(--font-display)" font-size="14" font-weight="700">Trusted Runner</text>
+              <text x="490" y="115" fill="var(--text-sub)" font-size="11">Docker & SQLite Auth</text>
+
+              <rect x="700" y="30" width="200" height="130" rx="12" fill="#0d1424" stroke="var(--emerald-accent)" stroke-width="1.8" />
+              <text x="720" y="70" fill="var(--emerald-accent)" font-family="var(--font-display)" font-size="14" font-weight="700">Docker Executor</text>
+              <text x="720" y="95" fill="var(--text-sub)" font-size="11">Non-Root • Net: None</text>
+              <text x="720" y="118" fill="var(--text-sub)" font-size="11">52 AST & Shell Tools</text>
+              <text x="720" y="140" fill="#fcd34d" font-size="10">TTL: 1800s Auto-Evict</text>
+
+              <rect x="940" y="50" width="140" height="90" rx="10" fill="#0d1424" stroke="rgba(255,255,255,0.15)" />
+              <text x="960" y="90" fill="#fff" font-family="var(--font-display)" font-size="14" font-weight="700">GitHub</text>
+              <text x="960" y="115" fill="var(--text-sub)" font-size="11">Remote Origin</text>
+
+              <!-- Connection Lines -->
+              <path d="M 180 95 L 240 95" stroke="rgba(255,255,255,0.2)" stroke-width="2" stroke-dasharray="4 4" />
+              <path d="M 410 95 L 470 95" stroke="var(--cyan-accent)" stroke-width="2" />
+              <path d="M 640 95 L 700 95" stroke="var(--purple-accent)" stroke-width="2" />
+              <path d="M 900 95 L 940 95" stroke="var(--emerald-accent)" stroke-width="2" />
+
+              <!-- Traveling Packets -->
+              <circle r="4.5" fill="#38bdf8">
+                <animateMotion dur="3.5s" repeatCount="indefinite" path="M 180 95 L 240 95 L 410 95 L 470 95 L 640 95 L 700 95" />
+              </circle>
+              <circle r="4" fill="#10b981">
+                <animateMotion dur="3.5s" begin="1.75s" repeatCount="indefinite" path="M 700 95 L 900 95 L 940 95" />
+              </circle>
+            </svg>
+          </div>
+
+          <!-- Card 2: 52 Tools (Span 2) -->
+          <div class="bento-card span-2">
+            <div>
+              <div class="bento-badge badge-purple">Comprehensive Surface</div>
+              <h3 class="bento-title">52 Precision Coding Primitives</h3>
+              <p class="bento-desc">
+                Everything an autonomous agent needs to inspect repositories, parse syntax trees, execute persistent shell sessions, and manage Git worktrees safely.
+              </p>
+              <div class="pill-tags">
+                <span class="pill-tag">ast_grep</span>
+                <span class="pill-tag">ast_edit</span>
+                <span class="pill-tag">bash_session</span>
+                <span class="pill-tag">git_worktree</span>
+                <span class="pill-tag">task_graph</span>
+                <span class="pill-tag">git_push</span>
+                <span class="pill-tag">skill_run</span>
+                <span class="pill-tag">file_patch</span>
+                <span class="pill-tag">+44 more</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 3: Credential Isolation Firewall -->
+          <div class="bento-card">
+            <div>
+              <div class="bento-badge badge-emerald">Zero Leaks</div>
+              <h3 class="bento-title">Credential-Isolated Git Broker</h3>
+              <p class="bento-desc">
+                GitHub App private keys reside exclusively in the runner control memory. Installation tokens are piped over stdio to temporary helpers.
+              </p>
+            </div>
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 8px; font-family: var(--font-mono); font-size: 0.75rem; color: #a7f3d0;">
+              0 GitHub tokens written to disk<br/>
+              60s Token validity lifespan
+            </div>
+          </div>
+
+          <!-- Card 4: Non-Root Sandboxing -->
+          <div class="bento-card">
+            <div>
+              <div class="bento-badge badge-cyan">Hardened Runtime</div>
+              <h3 class="bento-title">Non-Root Docker Hardening</h3>
+              <p class="bento-desc">
+                Executors run as UID 1000 with read-only root filesystems, memory/CPU caps, and network mode <code>none</code> by default.
+              </p>
+            </div>
+            <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 8px; font-family: var(--font-mono); font-size: 0.75rem; color: #7dd3fc;">
+              No Docker socket mounts<br/>
+              Strict Linux cgroup bounds
+            </div>
+          </div>
+
+          <!-- Card 5: Multi-Client Hub (Span 2) -->
+          <div class="bento-card span-2">
+            <div>
+              <div class="bento-badge badge-purple">Universal Connect</div>
+              <h3 class="bento-title">Seamless AI Client Connectors</h3>
+              <p class="bento-desc">
+                Works out of the box with all leading agent runtimes through Streamable HTTP or Gateway API keys.
+              </p>
+              <div class="client-bento-tabs">
+                <button class="client-tab-bento active" onclick="switchBentoTab('claude', this)">Claude Code</button>
+                <button class="client-tab-bento" onclick="switchBentoTab('cursor', this)">Cursor IDE</button>
+                <button class="client-tab-bento" onclick="switchBentoTab('chatgpt', this)">ChatGPT</button>
+                <button class="client-tab-bento" onclick="switchBentoTab('codex', this)">Codex</button>
+              </div>
+              <div id="bentoClientBox" style="background: #080b13; padding: 1rem; border-radius: 8px; font-family: var(--font-mono); font-size: 0.8rem; color: #f1f5f9;">
+                claude mcp add cloud-harness --transport http https://api.harness.zuey.me/mcp --header "Authorization: Bearer YOUR_KEY"
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- FAQ Section -->
+      <section class="faq-wrap" id="faq">
+        <h2 style="font-family: var(--font-display); font-size: 2.2rem; text-align: center; margin-bottom: 2.5rem;">
+          Frequently Asked Questions
+        </h2>
+        <div class="faq-item open" onclick="toggleFaq(this)">
+          <div class="faq-q">
+            <span>Why not let AI agents run commands directly on my workstation?</span>
+            <span>+</span>
+          </div>
+          <div class="faq-a">
+            Local execution risks package hallucination attacks, accidental file deletions, and environment pollution. Cloud Harness runs every session in a disposable, bounded container with zero access to your local machine.
+          </div>
+        </div>
+        <div class="faq-item" onclick="toggleFaq(this)">
+          <div class="faq-q">
+            <span>How does the Streamable HTTP MCP transport work?</span>
+            <span>+</span>
+          </div>
+          <div class="faq-a">
+            Streamable HTTP allows real-time chunked command output and events over standard HTTPS with Cloudflare Access OAuth or static Authorization headers.
+          </div>
+        </div>
+        <div class="faq-item" onclick="toggleFaq(this)">
+          <div class="faq-q">
+            <span>What happens if an agent crashes or abandons a workspace?</span>
+            <span>+</span>
+          </div>
+          <div class="faq-a">
+            Every workspace has a strict Time-To-Live (TTL) limit. When the TTL expires, the runner automatically reclaims all Docker containers, removes temporary volumes, and purges state from memory.
+          </div>
+        </div>
+      </section>
+
+      <!-- Bento CTA Banner -->
+      <section style="padding: 0 1.75rem;">
+        <div class="bento-cta">
+          <h2 style="font-family: var(--font-display); font-size: 2.6rem; font-weight: 800; margin-bottom: 1rem;">
+            Ready to Supercharge Your Agents?
+          </h2>
+          <p style="color: var(--text-sub); max-width: 600px; margin: 0 auto 2rem; font-size: 1.1rem;">
+            Deploy Cloud Harness MCP on your VPS or Docker host today under the permissive MIT license.
+          </p>
+          <div style="display: flex; gap: 1rem; justify-content: center;">
+            <a href="https://docs.harness.agentkit.best/getting-started" target="_blank" class="btn-bento btn-bento-primary" style="padding: 0.85rem 2rem; font-size: 1rem;">
+              Get Started Now ↗
+            </a>
+            <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" class="btn-bento btn-bento-outline" style="padding: 0.85rem 2rem; font-size: 1rem;">
+              View GitHub Repo
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer-bento">
+      <div>
+        <span>Cloud Harness MCP // MIT License</span>
+      </div>
+      <div style="display: flex; gap: 1.5rem;">
+        <a href="https://docs.harness.agentkit.best" target="_blank">Documentation</a>
+        <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank">GitHub</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../terms.html">Terms</a>
+      </div>
+    </footer>
+
+    <!-- Interactive Script -->
+    <script>
+      function runSim(step, btn) {
+        document.querySelectorAll('.sim-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const out = document.getElementById('simOutput');
+        if (step === 1) {
+          out.innerHTML = `
+            <span style="color: #64748b;">// SIMULATION: Calling mcp.workspace_open()</span><br/>
+            <span style="color: #38bdf8;">[0.00s]</span> Request validated via Cloudflare Access OAuth.<br/>
+            <span style="color: #a855f7;">[0.12s]</span> Ephemeral Git Helper cloned repository into isolated job volume.<br/>
+            <span style="color: #10b981;">[0.28s]</span> Docker executor container started (ID: ws_01j9a3b, UID: 1000, Network: none).<br/>
+            <span style="color: #f59e0b;">[0.30s]</span> 30-minute execution TTL countdown started.<br/>
+            <span style="color: #4ade80; font-weight: bold;">✔ Workspace active and ready for agent instructions.</span>
+          `;
+        } else if (step === 2) {
+          out.innerHTML = `
+            <span style="color: #64748b;">// SIMULATION: Calling mcp.ast_grep()</span><br/>
+            <span style="color: #38bdf8;">[0.00s]</span> Parsing AST syntax trees across 48 source files...<br/>
+            <span style="color: #10b981;">[0.04s]</span> Found 12 matching declaration nodes for 'handleAuth()'<br/>
+            <span style="color: #e2e8f0;">[Match 1] src/auth/jwt.ts:24 - export function handleAuth(req, res)<br/>
+            [Match 2] src/auth/oauth.ts:56 - export async function handleAuth(token)</span><br/>
+            <span style="color: #4ade80; font-weight: bold;">✔ Structural syntax capture delivered to agent context.</span>
+          `;
+        } else if (step === 3) {
+          out.innerHTML = `
+            <span style="color: #64748b;">// SIMULATION: Calling mcp.bash_session()</span><br/>
+            <span style="color: #38bdf8;">[0.00s]</span> Spawning isolated container PTY shell...<br/>
+            <span style="color: #10b981;">[0.45s]</span> Running test suite: vitest run --coverage<br/>
+            <span style="color: #4ade80;">✓ packages/core/test/auth.test.ts (14 tests passed)</span><br/>
+            <span style="color: #4ade80;">✓ packages/runner/test/sandbox.test.ts (8 tests passed)</span><br/>
+            <span style="color: #4ade80; font-weight: bold;">✔ All test suites green (0 host leaks, 0 root privileges).</span>
+          `;
+        } else if (step === 4) {
+          out.innerHTML = `
+            <span style="color: #64748b;">// SIMULATION: Calling mcp.git_push() & mcp.workspace_close()</span><br/>
+            <span style="color: #a855f7;">[0.00s]</span> GitHub App Broker minted 60-second push token over stdin helper.<br/>
+            <span style="color: #10b981;">[0.32s]</span> Branch feat/new-harness successfully pushed to origin.<br/>
+            <span style="color: #ef4444;">[0.45s]</span> Executor container destroyed. Volumes wiped from disk.<br/>
+            <span style="color: #4ade80; font-weight: bold;">✔ Residual state: 0 bytes. All credentials wiped.</span>
+          `;
+        }
+      }
+
+      function switchBentoTab(client, btn) {
+        document.querySelectorAll('.client-tab-bento').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const box = document.getElementById('bentoClientBox');
+        if (client === 'claude') {
+          box.innerText = 'claude mcp add cloud-harness --transport http https://api.harness.zuey.me/mcp --header "Authorization: Bearer YOUR_KEY"';
+        } else if (client === 'cursor') {
+          box.innerText = 'Add to .cursor/mcp.json: { "mcpServers": { "cloud-harness": { "url": "https://api.harness.zuey.me/mcp", "headers": { "Authorization": "Bearer YOUR_KEY" } } } }';
+        } else if (client === 'chatgpt') {
+          box.innerText = 'ChatGPT Developer Connector: https://harness.zuey.me/mcp (Managed OAuth / Cloudflare Access SSO)';
+        } else if (client === 'codex') {
+          box.innerText = 'Add to ~/.codex/config.toml: [mcp_servers.cloud_harness] url = "https://api.harness.zuey.me/mcp" headers = { Authorization = "Bearer YOUR_KEY" }';
+        }
+      }
+
+      function toggleFaq(item) {
+        item.classList.toggle('open');
+      }
+    </script>
+  </body>
+</html>

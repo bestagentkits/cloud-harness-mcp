@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Cloud Harness MCP — Hyper-Modern Futuristic Editorial & Generative AI Studio."
+    />
+    <title>Cloud Harness MCP // Futuristic Editorial Edition</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --velvet-950: #06070a;
+        --velvet-900: #0d0f17;
+        --velvet-800: #141724;
+        --aurora-purple: #c084fc;
+        --aurora-magenta: #f43f5e;
+        --aurora-cyan: #38bdf8;
+        --aurora-emerald: #34d399;
+        --border-glass: rgba(255, 255, 255, 0.08);
+        --border-glow: rgba(192, 132, 252, 0.35);
+        --text-pure: #ffffff;
+        --text-sub: #94a3b8;
+        --text-dim: #64748b;
+        --font-display: "Space Grotesk", sans-serif;
+        --font-sans: "Plus Jakarta Sans", sans-serif;
+        --font-mono: "JetBrains Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        background-color: var(--velvet-950);
+        color: var(--text-pure);
+        font-family: var(--font-sans);
+        line-height: 1.6;
+        overflow-x: hidden;
+        background-image: 
+          radial-gradient(circle at 10% 20%, rgba(244, 63, 94, 0.1) 0%, transparent 40%),
+          radial-gradient(circle at 90% 30%, rgba(192, 132, 252, 0.12) 0%, transparent 45%),
+          radial-gradient(circle at 50% 80%, rgba(56, 189, 248, 0.08) 0%, transparent 50%);
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      /* Glowing Header */
+      .futuristic-nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        backdrop-filter: blur(20px);
+        background: rgba(6, 7, 10, 0.8);
+        border-bottom: 1px solid var(--border-glass);
+      }
+
+      .nav-container {
+        max-width: 1320px;
+        margin: 0 auto;
+        padding: 1.2rem 2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .brand-title {
+        font-family: var(--font-display);
+        font-size: 1.3rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .brand-gradient-badge {
+        background: linear-gradient(135deg, var(--aurora-magenta), var(--aurora-purple));
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        font-family: var(--font-mono);
+        color: white;
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 2.2rem;
+        font-weight: 500;
+        font-size: 0.95rem;
+      }
+
+      .nav-links a:hover {
+        color: var(--aurora-purple);
+      }
+
+      .btn-futuristic {
+        font-family: var(--font-sans);
+        font-weight: 600;
+        font-size: 0.9rem;
+        padding: 0.65rem 1.4rem;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+        transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .btn-glow {
+        background: linear-gradient(135deg, #f43f5e 0%, #c084fc 50%, #38bdf8 100%);
+        color: #06070a;
+        font-weight: 700;
+        border: none;
+        box-shadow: 0 4px 20px rgba(192, 132, 252, 0.35);
+      }
+
+      .btn-glow:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 30px rgba(192, 132, 252, 0.55);
+      }
+
+      .btn-glass {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--border-glass);
+        color: white;
+      }
+
+      .btn-glass:hover {
+        background: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.25);
+      }
+
+      /* Hero Section */
+      .editorial-hero {
+        max-width: 1320px;
+        margin: 4.5rem auto 5rem;
+        padding: 0 2rem;
+        text-align: center;
+      }
+
+      .aurora-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.4rem 1.1rem;
+        border-radius: 999px;
+        background: rgba(192, 132, 252, 0.1);
+        border: 1px solid rgba(192, 132, 252, 0.3);
+        font-size: 0.85rem;
+        color: #e9d5ff;
+        margin-bottom: 2rem;
+      }
+
+      .hero-huge-title {
+        font-family: var(--font-display);
+        font-size: clamp(3rem, 7vw, 5.5rem);
+        font-weight: 800;
+        line-height: 1.05;
+        letter-spacing: -0.04em;
+        margin-bottom: 1.75rem;
+        max-width: 1100px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      .aurora-text {
+        background: linear-gradient(135deg, #fda4af 0%, #c084fc 40%, #38bdf8 80%, #4ade80 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .hero-subtext {
+        color: var(--text-sub);
+        font-size: 1.25rem;
+        max-width: 780px;
+        margin: 0 auto 3rem;
+        line-height: 1.7;
+      }
+
+      .hero-cta-group {
+        display: flex;
+        justify-content: center;
+        gap: 1.25rem;
+        margin-bottom: 4.5rem;
+      }
+
+      /* Metrics Ticker */
+      .ticker-strip {
+        background: rgba(20, 23, 36, 0.6);
+        border: 1px solid var(--border-glass);
+        border-radius: 14px;
+        padding: 1.75rem 2rem;
+        max-width: 1100px;
+        margin: 0 auto 6rem;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 2rem;
+        text-align: center;
+      }
+
+      .metric-val {
+        font-family: var(--font-display);
+        font-size: 2.2rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #ffffff, #cbd5e1);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.25rem;
+      }
+
+      .metric-lbl {
+        font-size: 0.85rem;
+        color: var(--text-dim);
+        font-weight: 500;
+      }
+
+      /* Interactive Capability Deck */
+      .deck-section {
+        max-width: 1320px;
+        margin: 5rem auto;
+        padding: 0 2rem;
+      }
+
+      .section-heading {
+        text-align: center;
+        max-width: 700px;
+        margin: 0 auto 4rem;
+      }
+
+      .deck-headline {
+        font-family: var(--font-display);
+        font-size: 2.5rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        margin-bottom: 1rem;
+      }
+
+      .deck-grid {
+        display: grid;
+        grid-template-columns: 1fr 1.3fr;
+        gap: 3rem;
+        background: var(--velvet-900);
+        border: 1px solid var(--border-glass);
+        border-radius: 20px;
+        padding: 3rem;
+        box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
+        align-items: center;
+      }
+
+      .deck-nav-list {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+
+      .deck-nav-item {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid var(--border-glass);
+        border-radius: 12px;
+        padding: 1.25rem 1.5rem;
+        cursor: pointer;
+        transition: all 0.25s ease;
+        text-align: left;
+      }
+
+      .deck-nav-item.active {
+        background: rgba(192, 132, 252, 0.15);
+        border-color: var(--aurora-purple);
+        box-shadow: 0 0 20px rgba(192, 132, 252, 0.2);
+      }
+
+      .deck-nav-title {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 1.15rem;
+        margin-bottom: 0.35rem;
+      }
+
+      .deck-nav-desc {
+        color: var(--text-sub);
+        font-size: 0.88rem;
+      }
+
+      .deck-display-card {
+        background: #090a10;
+        border: 1px solid var(--border-glass);
+        border-radius: 14px;
+        padding: 2rem;
+        min-height: 380px;
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        color: #e2e8f0;
+        line-height: 1.7;
+        box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.6);
+      }
+
+      /* Animated Aurora Architecture Diagram */
+      .aurora-diagram-card {
+        background: var(--velvet-900);
+        border: 1px solid var(--border-glass);
+        border-radius: 20px;
+        padding: 2.5rem;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+        margin-bottom: 3.5rem;
+      }
+
+      .svg-aurora-diagram {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      /* 52 Tool Spotlight */
+      .tools-deck-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.5rem;
+        margin-top: 3.5rem;
+      }
+
+      .tool-editorial-card {
+        background: var(--velvet-900);
+        border: 1px solid var(--border-glass);
+        border-radius: 14px;
+        padding: 2rem;
+        transition: all 0.3s ease;
+      }
+
+      .tool-editorial-card:hover {
+        border-color: var(--border-glow);
+        transform: translateY(-3px);
+        box-shadow: 0 10px 30px rgba(192, 132, 252, 0.15);
+      }
+
+      .tool-badge-neon {
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        color: var(--aurora-cyan);
+        background: rgba(56, 189, 248, 0.12);
+        padding: 2px 8px;
+        border-radius: 4px;
+        display: inline-block;
+        margin-bottom: 1rem;
+      }
+
+      .tool-title {
+        font-family: var(--font-display);
+        font-size: 1.3rem;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+      }
+
+      .tool-desc {
+        color: var(--text-sub);
+        font-size: 0.92rem;
+      }
+
+      /* Connect Fleet Section */
+      .fleet-connect-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.5rem;
+        margin-top: 2.5rem;
+      }
+
+      .fleet-card {
+        background: var(--velvet-900);
+        border: 1px solid var(--border-glass);
+        border-radius: 12px;
+        padding: 1.75rem;
+        text-align: left;
+      }
+
+      .fleet-title {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 1.1rem;
+        margin-bottom: 0.5rem;
+        color: var(--aurora-purple);
+      }
+
+      .fleet-code {
+        background: #06070a;
+        padding: 0.75rem;
+        border-radius: 6px;
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        color: #e2e8f0;
+        overflow-x: auto;
+        margin-top: 0.75rem;
+      }
+
+      /* Editorial CTA */
+      .cta-editorial {
+        background: linear-gradient(135deg, rgba(244, 63, 94, 0.2) 0%, rgba(192, 132, 252, 0.2) 50%, rgba(56, 189, 248, 0.2) 100%), var(--velvet-900);
+        border: 1px solid rgba(192, 132, 252, 0.4);
+        border-radius: 24px;
+        padding: 5rem 2rem;
+        text-align: center;
+        max-width: 1200px;
+        margin: 6rem auto 0;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.8);
+      }
+
+      /* Footer */
+      .editorial-footer {
+        border-top: 1px solid var(--border-glass);
+        padding: 3.5rem 2rem;
+        max-width: 1320px;
+        margin: 6rem auto 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.9rem;
+        color: var(--text-dim);
+      }
+
+      @media (max-width: 960px) {
+        .deck-grid { grid-template-columns: 1fr; }
+        .ticker-strip { grid-template-columns: 1fr 1fr; }
+        .tools-deck-grid { grid-template-columns: 1fr; }
+        .fleet-connect-grid { grid-template-columns: 1fr; }
+        .nav-links { display: none; }
+      }
+    </style>
+  </head>
+  <body id="top">
+    <!-- Navbar -->
+    <header class="futuristic-nav">
+      <div class="nav-container">
+        <a href="#top" class="brand-title">
+          <span>CLOUD HARNESS</span>
+          <span class="brand-gradient-badge">STUDIO</span>
+        </a>
+        <nav class="nav-links">
+          <a href="#architecture">Architecture</a>
+          <a href="#deck">Capabilities</a>
+          <a href="#tools">Tool Matrix</a>
+          <a href="#connect">Connect Fleet</a>
+          <a href="https://docs.harness.agentkit.best" target="_blank">Docs ↗</a>
+        </nav>
+        <div style="display: flex; gap: 1rem;">
+          <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" class="btn-futuristic btn-glass">
+            GitHub
+          </a>
+          <a href="#connect" class="btn-futuristic btn-glow">
+            Deploy Now →
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <main>
+      <section class="editorial-hero">
+        <div class="aurora-pill">
+          <span>⚡ Streamable HTTP MCP • Non-Root Executors</span>
+        </div>
+        <h1 class="hero-huge-title">
+          AUTONOMOUS CODING AT THE<br/>
+          <span class="aurora-text">EDGE OF IMPOSSIBILITY.</span>
+        </h1>
+        <p class="hero-subtext">
+          Give Claude Code, Cursor, and ChatGPT a dedicated cloud execution harness. 52 structured AST and terminal tools, non-root Docker sandboxes, and zero-residual TTL cleanups.
+        </p>
+        <div class="hero-cta-group">
+          <a href="#connect" class="btn-futuristic btn-glow" style="font-size: 1rem; padding: 0.85rem 2.2rem;">
+            Initialize Cloud Harness →
+          </a>
+          <a href="#architecture" class="btn-futuristic btn-glass" style="font-size: 1rem; padding: 0.85rem 2.2rem;">
+            View Architecture Diagram ↓
+          </a>
+        </div>
+
+        <!-- Metrics Strip -->
+        <div class="ticker-strip">
+          <div>
+            <div class="metric-val">52</div>
+            <div class="metric-lbl">Structured Tools</div>
+          </div>
+          <div>
+            <div class="metric-val">0<span style="font-size: 1.2rem;"> bytes</span></div>
+            <div class="metric-lbl">Residual State</div>
+          </div>
+          <div>
+            <div class="metric-val">100%</div>
+            <div class="metric-lbl">Non-Root Docker</div>
+          </div>
+          <div>
+            <div class="metric-val">&lt;15<span style="font-size: 1.2rem;">ms</span></div>
+            <div class="metric-lbl">Ingress Latency</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Animated Aurora Architecture Section -->
+      <section class="deck-section" id="architecture">
+        <div class="section-heading">
+          <div style="font-family: var(--font-mono); color: var(--aurora-cyan); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem;">
+            // Holographic Architecture Core
+          </div>
+          <h2 class="deck-headline">Boundary Dynamics & Streamable RPC Flow</h2>
+          <p style="color: var(--text-sub);">
+            Watch how agent requests flow through the authenticated ingress into bounded, non-root containers.
+          </p>
+        </div>
+
+        <div class="aurora-diagram-card">
+          <svg class="svg-aurora-diagram" viewBox="0 0 1000 360">
+            <defs>
+              <linearGradient id="auroraGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#f43f5e" />
+                <stop offset="50%" stop-color="#c084fc" />
+                <stop offset="100%" stop-color="#38bdf8" />
+              </linearGradient>
+            </defs>
+
+            <!-- 3 Major Zones -->
+            <rect x="30" y="30" width="220" height="300" rx="14" fill="#090a10" stroke="rgba(244, 63, 94, 0.3)" />
+            <text x="50" y="65" fill="#fda4af" font-family="var(--font-mono)" font-size="11" font-weight="700">01. INGRESS MESH</text>
+
+            <rect x="280" y="30" width="370" height="300" rx="14" fill="#090a10" stroke="rgba(192, 132, 252, 0.4)" />
+            <text x="300" y="65" fill="#e9d5ff" font-family="var(--font-mono)" font-size="11" font-weight="700">02. CONTROL HARNESS</text>
+
+            <rect x="680" y="30" width="290" height="300" rx="14" fill="#090a10" stroke="rgba(56, 189, 248, 0.4)" stroke-width="1.8" />
+            <text x="700" y="65" fill="#7dd3fc" font-family="var(--font-mono)" font-size="11" font-weight="700">03. TIME-BOUND EXECUTOR</text>
+
+            <!-- Nodes -->
+            <rect x="50" y="90" width="180" height="60" rx="8" fill="#141724" />
+            <text x="65" y="125" fill="#fff" font-family="var(--font-display)" font-size="13" font-weight="700">AI Coding Client</text>
+
+            <rect x="50" y="210" width="180" height="60" rx="8" fill="#141724" />
+            <text x="65" y="245" fill="#fff" font-family="var(--font-display)" font-size="13" font-weight="700">Cloudflare Access</text>
+
+            <rect x="300" y="90" width="150" height="60" rx="8" fill="#141724" />
+            <text x="315" y="125" fill="#fff" font-family="var(--font-display)" font-size="13" font-weight="700">Stateless MCP</text>
+
+            <rect x="480" y="90" width="150" height="60" rx="8" fill="#141724" stroke="var(--aurora-purple)" />
+            <text x="495" y="125" fill="#fff" font-family="var(--font-display)" font-size="13" font-weight="700">Trusted Runner</text>
+
+            <rect x="480" y="210" width="150" height="60" rx="8" fill="#141724" />
+            <text x="495" y="245" fill="#fff" font-family="var(--font-display)" font-size="13" font-weight="700">GitHub App Broker</text>
+
+            <rect x="700" y="90" width="250" height="100" rx="10" fill="#141724" stroke="var(--aurora-emerald)" />
+            <text x="720" y="125" fill="var(--aurora-emerald)" font-family="var(--font-display)" font-size="14" font-weight="700">Non-Root Docker Executor</text>
+            <text x="720" y="150" fill="var(--text-sub)" font-size="11">UID: 1000 • Read-Only Root</text>
+            <text x="720" y="170" fill="var(--text-dim)" font-size="10">TTL: 1800s Auto-Eviction</text>
+
+            <rect x="700" y="210" width="250" height="60" rx="8" fill="#141724" stroke="var(--aurora-cyan)" />
+            <text x="720" y="245" fill="#38bdf8" font-family="var(--font-display)" font-size="13" font-weight="700">Ephemeral Git Helper</text>
+
+            <!-- Wires -->
+            <path d="M 140 150 L 140 210" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" stroke-dasharray="4 4" />
+            <path d="M 230 240 L 265 240 L 265 120 L 300 120" stroke="rgba(255,255,255,0.2)" stroke-width="1.8" />
+            <path d="M 450 120 L 480 120" stroke="var(--aurora-purple)" stroke-width="2" />
+            <path d="M 630 120 L 700 120" stroke="var(--aurora-emerald)" stroke-width="2" />
+            <path d="M 555 150 L 555 210" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" />
+            <path d="M 630 240 L 700 240" stroke="var(--aurora-cyan)" stroke-width="2" />
+
+            <!-- Traveling Particles -->
+            <circle r="4.5" fill="#c084fc">
+              <animateMotion dur="3.8s" repeatCount="indefinite" path="M 140 150 L 140 210 L 265 210 L 265 120 L 300 120 L 450 120 L 480 120 L 630 120 L 700 120" />
+            </circle>
+
+            <circle r="4" fill="#34d399">
+              <animateMotion dur="3.8s" begin="1.9s" repeatCount="indefinite" path="M 555 150 L 555 210 L 630 240 L 700 240" />
+            </circle>
+          </svg>
+        </div>
+      </section>
+
+      <!-- Interactive Capability Deck -->
+      <section class="deck-section" id="deck">
+        <div class="section-heading">
+          <div style="font-family: var(--font-mono); color: var(--aurora-purple); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem;">
+            // Engineered Primitives
+          </div>
+          <h2 class="deck-headline">A Complete Runtime for Agentic Software Engineering</h2>
+          <p style="color: var(--text-sub);">
+            Switch between core pillars to inspect how Cloud Harness empowers your AI models.
+          </p>
+        </div>
+
+        <div class="deck-grid">
+          <div class="deck-nav-list">
+            <div class="deck-nav-item active" onclick="switchDeck('ast', this)">
+              <div class="deck-nav-title">1. AST Structural Intelligence</div>
+              <div class="deck-nav-desc">Syntax-tree pattern matching & atomic code refactoring.</div>
+            </div>
+            <div class="deck-nav-item" onclick="switchDeck('sandbox', this)">
+              <div class="deck-nav-title">2. Ephemeral Docker Sandboxes</div>
+              <div class="deck-nav-desc">Non-root containers with strict CPU/memory cgroups and network none.</div>
+            </div>
+            <div class="deck-nav-item" onclick="switchDeck('broker', this)">
+              <div class="deck-nav-title">3. Stdin GitHub App Broker</div>
+              <div class="deck-nav-desc">Zero-disk push credentials streamed directly to ephemeral helpers.</div>
+            </div>
+            <div class="deck-nav-item" onclick="switchDeck('dag', this)">
+              <div class="deck-nav-title">4. DAG Multi-Agent Orchestrator</div>
+              <div class="deck-nav-desc">Parallel and sequential subagent tasks with dependency barriers.</div>
+            </div>
+          </div>
+
+          <div class="deck-display-card" id="deckDisplay">
+            <span style="color: #c084fc;">// AST Structural Search & Transform</span><br/>
+            <span style="color: #38bdf8;">call</span> mcp.ast_grep({<br/>
+            &nbsp;&nbsp;"pattern": "export function $NAME($$$ARGS) { $$$BODY }",<br/>
+            &nbsp;&nbsp;"path": "src/services"<br/>
+            })<br/><br/>
+            <span style="color: #34d399;">[MATCHES FOUND] 14 functions parsed cleanly across AST</span><br/>
+            ├── authService.verifyToken()<br/>
+            ├── runnerService.spawnSandbox()<br/>
+            └── stateStore.persistRecord()<br/><br/>
+            <span style="color: #f43f5e;">// Safe atomic replacement preserving code comments</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 52 Tool Spotlight Grid -->
+      <section class="deck-section" id="tools">
+        <div class="section-heading">
+          <div style="font-family: var(--font-mono); color: var(--aurora-cyan); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem;">
+            // Complete Surface
+          </div>
+          <h2 class="deck-headline">52 Tools Designed for Autonomous Operations</h2>
+        </div>
+
+        <div class="tools-deck-grid">
+          <div class="tool-editorial-card">
+            <span class="tool-badge-neon">AST INTEL</span>
+            <h3 class="tool-title">ast_grep & ast_edit</h3>
+            <p class="tool-desc">Structural AST code search and transformations across all modern programming languages.</p>
+          </div>
+          <div class="tool-editorial-card">
+            <span class="tool-badge-neon">TERMINAL</span>
+            <h3 class="tool-title">bash_session</h3>
+            <p class="tool-desc">Persistent PTY interactive shell session supporting live watcher commands and terminal controls.</p>
+          </div>
+          <div class="tool-editorial-card">
+            <span class="tool-badge-neon">GIT</span>
+            <h3 class="tool-title">git_worktree</h3>
+            <p class="tool-desc">Instant branch worktrees allowing parallel subagents to operate without conflicting Git checkouts.</p>
+          </div>
+          <div class="tool-editorial-card">
+            <span class="tool-badge-neon">WORKFLOW</span>
+            <h3 class="tool-title">task_graph</h3>
+            <p class="tool-desc">Orchestrate complex multi-stage tasks with topological barriers, artifact tracking, and rollback.</p>
+          </div>
+          <div class="tool-editorial-card">
+            <span class="tool-badge-neon">SECURITY</span>
+            <h3 class="tool-title">git_push</h3>
+            <p class="tool-desc">Push commits through ephemeral GitHub App tokens streamed directly over stdio.</p>
+          </div>
+          <div class="tool-editorial-card">
+            <span class="tool-badge-neon">EXTENSIONS</span>
+            <h3 class="tool-title">skill_run</h3>
+            <p class="tool-desc">Execute repository-defined skills, automated linters, and custom architectural reviews.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Connect Fleet Section with Anchor #connect -->
+      <section class="deck-section" id="connect">
+        <div class="section-heading">
+          <div style="font-family: var(--font-mono); color: var(--aurora-purple); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem;">
+            // Universal Integration
+          </div>
+          <h2 class="deck-headline">Connect Your AI Fleet in Seconds</h2>
+          <p style="color: var(--text-sub);">
+            Works out of the box with Streamable HTTP MCP and Gateway API keys.
+          </p>
+        </div>
+
+        <div class="fleet-connect-grid">
+          <div class="fleet-card">
+            <div class="fleet-title">Claude Code</div>
+            <p style="font-size: 0.85rem; color: var(--text-sub);">Native HTTP transport with Authorization Bearer header.</p>
+            <div class="fleet-code">claude mcp add cloud-harness --transport http https://api.harness.zuey.me/mcp --header "Authorization: Bearer KEY"</div>
+          </div>
+          <div class="fleet-card">
+            <div class="fleet-title">Cursor IDE</div>
+            <p style="font-size: 0.85rem; color: var(--text-sub);">Global or project .cursor/mcp.json configuration.</p>
+            <div class="fleet-code">{"mcpServers": {"cloud-harness": {"url": "https://api.harness.zuey.me/mcp", "headers": {"Authorization": "Bearer KEY"}}}}</div>
+          </div>
+          <div class="fleet-card">
+            <div class="fleet-title">ChatGPT Developer</div>
+            <p style="font-size: 0.85rem; color: var(--text-sub);">Single-click Cloudflare Access SSO managed OAuth connector.</p>
+            <div class="fleet-code">Endpoint: https://harness.zuey.me/mcp (OAuth 2.0 / Cloudflare Access SSO)</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Editorial CTA -->
+      <section style="padding: 0 2rem;">
+        <div class="cta-editorial">
+          <h2 style="font-family: var(--font-display); font-size: 2.8rem; font-weight: 800; margin-bottom: 1.25rem;">
+            Upgrade Your AI Coding Harness Today
+          </h2>
+          <p style="color: var(--text-sub); max-width: 650px; margin: 0 auto 2.5rem; font-size: 1.15rem;">
+            Free and open-source under the MIT license. Ready for single-owner production deployments.
+          </p>
+          <div style="display: flex; gap: 1.25rem; justify-content: center;">
+            <a href="https://docs.harness.agentkit.best/getting-started" target="_blank" class="btn-futuristic btn-glow" style="padding: 0.9rem 2.4rem; font-size: 1rem;">
+              Get Started Now →
+            </a>
+            <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" class="btn-futuristic btn-glass" style="padding: 0.9rem 2.4rem; font-size: 1rem;">
+              Star on GitHub ★
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="editorial-footer">
+      <div>
+        <span>CLOUD HARNESS MCP • MIT LICENSED</span>
+      </div>
+      <div style="display: flex; gap: 2rem;">
+        <a href="https://docs.harness.agentkit.best" target="_blank">Docs</a>
+        <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank">GitHub</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../terms.html">Terms</a>
+      </div>
+    </footer>
+
+    <!-- Interactive Script -->
+    <script>
+      function switchDeck(item, el) {
+        document.querySelectorAll('.deck-nav-item').forEach(i => i.classList.remove('active'));
+        el.classList.add('active');
+        const box = document.getElementById('deckDisplay');
+        if (item === 'ast') {
+          box.innerHTML = `
+            <span style="color: #c084fc;">// AST Structural Search & Transform</span><br/>
+            <span style="color: #38bdf8;">call</span> mcp.ast_grep({<br/>
+            &nbsp;&nbsp;"pattern": "export function $NAME($$$ARGS) { $$$BODY }",<br/>
+            &nbsp;&nbsp;"path": "src/services"<br/>
+            })<br/><br/>
+            <span style="color: #34d399;">[MATCHES FOUND] 14 functions parsed cleanly across AST</span><br/>
+            ├── authService.verifyToken()<br/>
+            ├── runnerService.spawnSandbox()<br/>
+            └── stateStore.persistRecord()<br/><br/>
+            <span style="color: #f43f5e;">// Safe atomic replacement preserving code comments</span>
+          `;
+        } else if (item === 'sandbox') {
+          box.innerHTML = `
+            <span style="color: #c084fc;">// Ephemeral Container Boot Sequence</span><br/>
+            <span style="color: #38bdf8;">spawn</span> DockerContainer({<br/>
+            &nbsp;&nbsp;"image": "cloud-harness-executor:latest",<br/>
+            &nbsp;&nbsp;"user": "1000:1000",<br/>
+            &nbsp;&nbsp;"network": "none",<br/>
+            &nbsp;&nbsp;"readOnlyRoot": true,<br/>
+            &nbsp;&nbsp;"memoryLimit": "4g"<br/>
+            })<br/><br/>
+            <span style="color: #34d399;">[CONTAINER ISOLATED] Execution boundary active</span>
+          `;
+        } else if (item === 'broker') {
+          box.innerHTML = `
+            <span style="color: #c084fc;">// Stdin GitHub App Token Broker</span><br/>
+            1. Runner verifies user push permission<br/>
+            2. Broker generates 60-second installation token<br/>
+            3. Token piped over stdin helper: git push origin main<br/>
+            4. Helper terminates and token is completely purged<br/><br/>
+            <span style="color: #34d399;">[ZERO DISK LEAKS] Remote origin updated cleanly</span>
+          `;
+        } else if (item === 'dag') {
+          box.innerHTML = `
+            <span style="color: #c084fc;">// DAG Multi-Agent Orchestration</span><br/>
+            [STAGE 1] Parallel Lint & AST Analysis (3 subagents)<br/>
+            [BARRIER] Waiting on Stage 1 completion... OK<br/>
+            [STAGE 2] Integration Test Execution in Isolated Worktree<br/>
+            [STAGE 3] Automated Commit & Push via Broker<br/><br/>
+            <span style="color: #34d399;">[DAG COMPLETE] All tasks settled successfully</span>
+          `;
+        }
+      }
+    </script>
+  </body>
+</html>
