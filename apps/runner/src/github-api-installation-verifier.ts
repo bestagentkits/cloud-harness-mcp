@@ -53,15 +53,29 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
       appId: this.githubApp.appId, installationId: Number(installationId),
       privateKey: this.githubApp.privateKey, request: boundedRequest
     });
-    const appAuthentication = await this.withinDeadline(auth({ type: 'app' }), deadline);
+    let appAuthentication;
+    try {
+      appAuthentication = await this.withinDeadline(auth({ type: 'app' }), deadline);
+    } catch (error) {
+      if (error instanceof HarnessError) throw error;
+      const msg = error instanceof Error ? error.message : 'GitHub App authentication failed';
+      throw new HarnessError('UNAVAILABLE', `GitHub App authentication failed: ${msg}`, 502, true);
+    }
     const installation = await this.get<InstallationPayload>(
       `/app/installations/${encodeURIComponent(installationId)}`,
       appAuthentication.token,
       deadline
     );
-    const installationAuthentication = await this.withinDeadline(
-      auth({ type: 'installation', installationId: Number(installationId) }), deadline
-    );
+    let installationAuthentication;
+    try {
+      installationAuthentication = await this.withinDeadline(
+        auth({ type: 'installation', installationId: Number(installationId) }), deadline
+      );
+    } catch (error) {
+      if (error instanceof HarnessError) throw error;
+      const msg = error instanceof Error ? error.message : 'GitHub installation token creation failed';
+      throw new HarnessError('UNAVAILABLE', `GitHub installation token creation failed: ${msg}`, 502, true);
+    }
     const repositories = await this.getAllRepositories(installationAuthentication.token, deadline);
     if (!installation.id || !installation.app_id || !installation.account?.id || !installation.account.login) {
       throw new HarnessError('UNAVAILABLE', 'GitHub returned an invalid installation record', 502, true);
@@ -74,12 +88,9 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
       status: installation.suspended_at ? 'suspended' : 'active',
       repositories: repositories.map((repository) => {
         const permissions = repository.permissions;
-        const contents = permissions?.contents === 'write' || permissions?.push
+        const contents = permissions?.contents === 'write' || permissions?.push === true
           ? 'write'
-          : permissions?.contents === 'read' || permissions?.pull
-            ? 'read'
-            : undefined;
-        if (!contents) throw invalidProviderResponse('GitHub returned repository permissions without Contents access');
+          : 'read';
         return { owner: repository.owner!.login!, repository: repository.name!, contents } as const;
       })
     };
