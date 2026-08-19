@@ -23,6 +23,7 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | Configuration | [`docs/configuration.md`](docs/configuration.md) | `.env.example`, `packages/contracts/src/config.ts`, `apps/api/src/config.ts`, `apps/runner/src/config.ts`, `compose*.yaml` |
 | Development and verification | [`docs/development.md`](docs/development.md) | `package.json`, `.github/workflows/ci.yml`, tests |
 | Deployment and recovery | [`docs/deployment.md`](docs/deployment.md), [`docs/operations.md`](docs/operations.md), [`docs/troubleshooting.md`](docs/troubleshooting.md) | `deploy/`, `compose.production.yaml`, `scripts/verify-production.mjs`, `scripts/deploy-canary.mjs` |
+| Operator dashboard UI | [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/api/dashboard/`, `apps/api/src/dashboard-router.ts`, `apps/api/src/dashboard-assets.ts`, `apps/api/test/dashboard-ui-contract.test.ts` |
 
 ## Safety-critical invariants
 

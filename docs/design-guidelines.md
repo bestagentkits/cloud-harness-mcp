@@ -57,12 +57,20 @@ fonts the CSP forbids. We carry the same voice with a native stack instead:
 
 ### Adaptive dark theme
 
-The theme follows `prefers-color-scheme` (no toggle, no persistence - storage is
-forbidden). Dark is a tinted graphite, not black: surfaces **elevate by
-lightening** (`--canvas` -> `--surface` -> `--surface-raised`), the amber accent
-is **brightened** so it stays legible, and shadows deepen. Both themes are
-verified at WCAG AA: body text and muted text >= 4.5:1, primary-button text and
-status pills pass against their actual backgrounds, and the focus ring is >= 3:1
+The default follows `prefers-color-scheme`; a **system / light / dark** control
+in the top bar lets an operator force a theme. Client storage is forbidden, so
+the choice persists **server-side, not in the browser**: `PUT
+/api/v1/preferences` (CSRF-guarded) sets an HttpOnly `ch-dashboard-theme`
+cookie, and the shell handler injects `html[data-theme]` on first paint so a
+forced theme never flashes. The client only reads that DOM attribute. Owners:
+[`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) and
+[`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts).
+
+Dark is a tinted graphite, not black: surfaces **elevate by lightening**
+(`--canvas` -> `--surface` -> `--surface-raised`), the amber accent is
+**brightened** so it stays legible, and shadows deepen. Both themes are verified
+at WCAG AA: body text and muted text >= 4.5:1, primary-button text and status
+pills pass against their actual backgrounds, and the focus ring is >= 3:1
 against its surface.
 
 ## Depth, shape, motion
@@ -77,13 +85,19 @@ against its surface.
 
 ## Components
 
+- **Top bar:** sticky header carrying the wordmark + `MCP Control Plane` tag,
+  the theme control, a profile chip (name, email, initials avatar), and Sign
+  out (Cloudflare Access logout at `/cdn-cgi/access/logout`).
 - **Navigation:** left icon+label rail, grouped by concern (Runtime,
   Configuration, Observability, Account) with an Overview home. Active item gets
-  the amber rail + soft fill; the rail collapses to icons on tablet and to a
-  drawer on mobile.
-- **Overview:** monospace metric tiles (corner-bracketed) capped at four
-  above the fold, a recent-activity feed, and an Access panel. Aggregated
-  client-side from existing allowlisted endpoints; it adds no new data surface.
+  the amber rail + soft fill. A chevron control collapses the rail to icons on
+  desktop (toggling `.app-shell.nav-collapsed`); it also collapses to icons on
+  tablet and to a drawer on mobile.
+- **Overview:** monospace metric tiles (corner-bracketed) capped at four above
+  the fold, a recent-activity feed, an Access panel, and a Server panel. Tiles
+  and feed aggregate client-side from allowlisted endpoints; the Server panel
+  reads `GET /api/v1/server`, a read-only projection of config and status that
+  exposes no owner ID, runner URL, token, or secret.
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **Interaction states:** every control ships default / hover / `:focus-visible`
