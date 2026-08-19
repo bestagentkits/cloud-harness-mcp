@@ -42,7 +42,7 @@ describe('dashboard static UI contract', () => {
 
   it('exposes accessible metadata navigation and only existing dashboard BFF controls', () => {
     for (const [path, label] of [
-      ['/dashboard/projects', 'Projects'], ['/dashboard/artifacts', 'Artifacts'],
+      ['/dashboard/overview', 'Overview'], ['/dashboard/projects', 'Projects'], ['/dashboard/artifacts', 'Artifacts'],
       ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub'],
       ['/dashboard/profile', 'Profile']
     ]) {

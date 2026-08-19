@@ -26,3 +26,28 @@ services:
         limits: { cpus: "1.00", memory: 1G, pids: 256 }
     volumes:
       - /etc/cloud-harness-mcp:/run/cloud-harness-secrets:ro
+
+  # Keep the locally-built executor image referenced by a running container so a
+  # host `docker image prune -a` / `docker system prune -a` cannot delete it
+  # between workspace operations. The executor image only ever runs as
+  # short-lived per-workspace containers, so without a standing reference it is
+  # "unused" and a prune removes it, breaking workspace_open until the next
+  # deploy. This idle holder is strictly less privileged than a real executor:
+  # no network, no mounts, no secrets, all capabilities dropped, read-only,
+  # non-root.
+  executor-image-keepalive:
+    image: cloud-harness-executor:local
+    command: ["sleep", "infinity"]
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: 1m, max-file: "1" }
+    deploy:
+      resources:
+        limits: { cpus: "0.01", memory: 32M, pids: 8 }
