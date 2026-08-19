@@ -1,0 +1,901 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Cloud Harness MCP — The Zero-Trust Remote Execution Harness for AI-Assisted Software Engineering."
+    />
+    <title>Cloud Harness MCP // Enterprise Defense Edition</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --navy-950: #070d18;
+        --navy-900: #0d1527;
+        --navy-800: #15223c;
+        --navy-700: #1e3156;
+        --blue-accent: #2563eb;
+        --blue-glow: rgba(37, 99, 235, 0.25);
+        --emerald-safe: #10b981;
+        --emerald-glow: rgba(16, 185, 129, 0.2);
+        --gold-shield: #f59e0b;
+        --border-navy: rgba(255, 255, 255, 0.09);
+        --border-hover: rgba(37, 99, 235, 0.4);
+        --text-pure: #ffffff;
+        --text-slate: #94a3b8;
+        --text-dim: #64748b;
+        --font-sans: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+        --font-mono: "JetBrains Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        background-color: var(--navy-950);
+        color: var(--text-pure);
+        font-family: var(--font-sans);
+        line-height: 1.6;
+        overflow-x: hidden;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      /* Enterprise Top Nav */
+      .ent-nav {
+        background: rgba(13, 21, 39, 0.85);
+        backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--border-navy);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+
+      .nav-inner {
+        max-width: 1300px;
+        margin: 0 auto;
+        padding: 1.1rem 2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .shield-logo {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-weight: 700;
+        font-size: 1.15rem;
+        letter-spacing: -0.01em;
+      }
+
+      .shield-icon {
+        width: 34px;
+        height: 34px;
+        background: linear-gradient(135deg, var(--blue-accent), #1d4ed8);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 0 14px var(--blue-glow);
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 2rem;
+        font-size: 0.92rem;
+        font-weight: 500;
+        color: var(--text-slate);
+      }
+
+      .nav-links a:hover {
+        color: var(--text-pure);
+      }
+
+      .btn-ent {
+        font-size: 0.88rem;
+        font-weight: 600;
+        padding: 0.6rem 1.25rem;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .btn-ent-primary {
+        background: var(--blue-accent);
+        color: white;
+        border: 1px solid #3b82f6;
+        box-shadow: 0 2px 10px var(--blue-glow);
+      }
+
+      .btn-ent-primary:hover {
+        background: #1d4ed8;
+      }
+
+      .btn-ent-outline {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border-navy);
+        color: var(--text-slate);
+      }
+
+      .btn-ent-outline:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: white;
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+
+      /* Hero */
+      .ent-hero {
+        max-width: 1300px;
+        margin: 4.5rem auto 5rem;
+        padding: 0 2rem;
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 3.5rem;
+        align-items: center;
+      }
+
+      .security-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.35rem 0.85rem;
+        background: rgba(37, 99, 235, 0.12);
+        border: 1px solid rgba(37, 99, 235, 0.35);
+        border-radius: 4px;
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: #93c5fd;
+        font-weight: 600;
+        margin-bottom: 1.5rem;
+      }
+
+      .ent-title {
+        font-size: clamp(2.6rem, 5vw, 3.8rem);
+        font-weight: 800;
+        line-height: 1.12;
+        letter-spacing: -0.03em;
+        margin-bottom: 1.5rem;
+      }
+
+      .ent-desc {
+        color: var(--text-slate);
+        font-size: 1.15rem;
+        line-height: 1.7;
+        margin-bottom: 2rem;
+      }
+
+      .trust-strip {
+        display: flex;
+        gap: 1.5rem;
+        border-top: 1px solid var(--border-navy);
+        padding-top: 1.5rem;
+        font-size: 0.85rem;
+        color: var(--text-slate);
+      }
+
+      .trust-item {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      /* Security Posture Radar Card */
+      .posture-card {
+        background: var(--navy-900);
+        border: 1px solid var(--border-navy);
+        border-radius: 10px;
+        padding: 2rem;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      }
+
+      .posture-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--border-navy);
+        padding-bottom: 1rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .posture-list {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+
+      .posture-row {
+        background: var(--navy-800);
+        border: 1px solid var(--border-navy);
+        border-radius: 6px;
+        padding: 1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .posture-name {
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+
+      .posture-status {
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        padding: 0.25rem 0.6rem;
+        border-radius: 4px;
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--emerald-safe);
+        border: 1px solid rgba(16, 185, 129, 0.3);
+      }
+
+      /* Section Common */
+      .section-wrap {
+        max-width: 1300px;
+        margin: 6rem auto;
+        padding: 0 2rem;
+      }
+
+      .section-header {
+        text-align: center;
+        max-width: 750px;
+        margin: 0 auto 3.5rem;
+      }
+
+      .section-kicker {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--blue-accent);
+        margin-bottom: 0.5rem;
+        font-weight: 600;
+      }
+
+      .section-title {
+        font-size: 2.3rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        margin-bottom: 1rem;
+      }
+
+      /* Animated SVG Topology Blueprint */
+      .defense-blueprint-card {
+        background: #090e1b;
+        border: 1px solid var(--border-navy);
+        border-radius: 12px;
+        padding: 2.5rem;
+        margin-bottom: 3.5rem;
+      }
+
+      .svg-defense-diagram {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      /* Interactive Threat Defense Topology */
+      .defense-map {
+        background: var(--navy-900);
+        border: 1px solid var(--border-navy);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      .defense-tabs {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        background: #080e1b;
+        border-bottom: 1px solid var(--border-navy);
+      }
+
+      .defense-tab-btn {
+        padding: 1.1rem 1rem;
+        background: transparent;
+        border: none;
+        border-right: 1px solid var(--border-navy);
+        color: var(--text-slate);
+        font-weight: 600;
+        font-size: 0.85rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-align: center;
+      }
+
+      .defense-tab-btn.active {
+        background: var(--navy-900);
+        color: white;
+        border-bottom: 3px solid var(--blue-accent);
+      }
+
+      .defense-detail-panel {
+        padding: 2.5rem;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3rem;
+        align-items: center;
+      }
+
+      .threat-box {
+        background: var(--navy-800);
+        border: 1px solid var(--border-navy);
+        border-radius: 8px;
+        padding: 1.5rem;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: #cbd5e1;
+        line-height: 1.7;
+      }
+
+      /* Threat Comparison Matrix */
+      .matrix-table-wrap {
+        overflow-x: auto;
+        background: var(--navy-900);
+        border: 1px solid var(--border-navy);
+        border-radius: 10px;
+      }
+
+      .matrix-table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
+        font-size: 0.92rem;
+      }
+
+      .matrix-table th, .matrix-table td {
+        padding: 1.25rem 1.5rem;
+        border-bottom: 1px solid var(--border-navy);
+      }
+
+      .matrix-table th {
+        background: #09101f;
+        font-weight: 700;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-slate);
+      }
+
+      .danger-col {
+        color: #f87171;
+      }
+
+      .safe-col {
+        color: var(--emerald-safe);
+        font-weight: 600;
+      }
+
+      /* Guarantees Grid */
+      .guarantees-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.5rem;
+        margin-top: 3rem;
+      }
+
+      .guarantee-card {
+        background: var(--navy-900);
+        border: 1px solid var(--border-navy);
+        border-radius: 8px;
+        padding: 2rem;
+      }
+
+      .guarantee-card h3 {
+        font-size: 1.15rem;
+        color: #93c5fd;
+        margin-bottom: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .guarantee-card p {
+        color: var(--text-slate);
+        font-size: 0.92rem;
+        line-height: 1.6;
+      }
+
+      /* CTA Banner */
+      .cta-defense {
+        background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
+        border: 1px solid #3b82f6;
+        border-radius: 12px;
+        padding: 4.5rem 2rem;
+        text-align: center;
+        box-shadow: 0 10px 40px rgba(37, 99, 235, 0.2);
+        margin-top: 5rem;
+      }
+
+      /* Footer */
+      .ent-footer {
+        border-top: 1px solid var(--border-navy);
+        padding: 3rem 2rem;
+        max-width: 1300px;
+        margin: 5rem auto 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.88rem;
+        color: var(--text-dim);
+      }
+
+      @media (max-width: 960px) {
+        .ent-hero { grid-template-columns: 1fr; }
+        .defense-tabs { grid-template-columns: 1fr; }
+        .defense-detail-panel { grid-template-columns: 1fr; }
+        .guarantees-grid { grid-template-columns: 1fr; }
+        .nav-links { display: none; }
+      }
+    </style>
+  </head>
+  <body id="top">
+    <!-- Enterprise Navigation -->
+    <header class="ent-nav">
+      <div class="nav-inner">
+        <a href="#top" class="shield-logo">
+          <div class="shield-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.3">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
+          <span>Cloud Harness <span style="color: var(--blue-accent);">ENTERPRISE</span></span>
+        </a>
+        <nav class="nav-links">
+          <a href="#defense-map">Architecture Topology</a>
+          <a href="#matrix">Threat Matrix</a>
+          <a href="#guarantees">Security Guarantees</a>
+          <a href="https://docs.harness.agentkit.best/security-model" target="_blank">Security Whitepaper ↗</a>
+        </nav>
+        <div style="display: flex; gap: 1rem;">
+          <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" class="btn-ent btn-ent-outline">
+            GitHub
+          </a>
+          <a href="https://docs.harness.agentkit.best/installation" target="_blank" class="btn-ent btn-ent-primary">
+            Deploy Harness →
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <main>
+      <section class="ent-hero">
+        <div>
+          <div class="security-badge">
+            <span>🛡️ ZERO-TRUST REMOTE EXECUTION HARNESS</span>
+          </div>
+          <h1 class="ent-title">
+            Empower AI Agents.<br/>
+            Protect Infrastructure.<br/>
+            Eliminate Leaks.
+          </h1>
+          <p class="ent-desc">
+            Cloud Harness MCP separates AI request handling from Docker authority. Run arbitrary agent coding tasks inside bounded, non-root Docker sandboxes with zero host mounts and zero disk credentials.
+          </p>
+          <div style="display: flex; gap: 1rem; margin-bottom: 2.5rem;">
+            <a href="https://docs.harness.agentkit.best/getting-started" target="_blank" class="btn-ent btn-ent-primary" style="padding: 0.75rem 1.75rem; font-size: 0.95rem;">
+              Read Getting Started Guide ↗
+            </a>
+            <a href="#defense-map" class="btn-ent btn-ent-outline" style="padding: 0.75rem 1.75rem; font-size: 0.95rem;">
+              Inspect Threat Defense Map ↓
+            </a>
+          </div>
+          <div class="trust-strip">
+            <div class="trust-item">
+              <span style="color: var(--emerald-safe);">✓</span> Single-Owner Threat Model
+            </div>
+            <div class="trust-item">
+              <span style="color: var(--emerald-safe);">✓</span> Ephemeral Stdin Git Helper
+            </div>
+            <div class="trust-item">
+              <span style="color: var(--emerald-safe);">✓</span> Non-Root UID Isolation
+            </div>
+          </div>
+        </div>
+
+        <!-- Security Posture Radar Card -->
+        <div class="posture-card">
+          <div class="posture-header">
+            <div>
+              <div style="font-weight: 700; font-size: 1.1rem;">Security Control Center</div>
+              <div style="font-size: 0.8rem; color: var(--text-slate);">Real-time boundary enforcement status</div>
+            </div>
+            <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--emerald-safe);">VERIFIED HARDENED</span>
+          </div>
+          <div class="posture-list">
+            <div class="posture-row">
+              <div>
+                <div class="posture-name">Docker Host Socket Exposure</div>
+                <div style="font-size: 0.78rem; color: var(--text-slate);">API & Ingress completely unmounted</div>
+              </div>
+              <span class="posture-status">ZERO SOCKET MOUNT</span>
+            </div>
+            <div class="posture-row">
+              <div>
+                <div class="posture-name">GitHub App Push Credentials</div>
+                <div style="font-size: 0.78rem; color: var(--text-slate);">Short-lived token streamed via stdio</div>
+              </div>
+              <span class="posture-status">ZERO DISK PERSISTENCE</span>
+            </div>
+            <div class="posture-row">
+              <div>
+                <div class="posture-name">Executor Container Privileges</div>
+                <div style="font-size: 0.78rem; color: var(--text-slate);">Non-root user with read-only root FS</div>
+              </div>
+              <span class="posture-status">UID 1000 ISOLATED</span>
+            </div>
+            <div class="posture-row">
+              <div>
+                <div class="posture-name">Residual State & Garbage Collection</div>
+                <div style="font-size: 0.78rem; color: var(--text-slate);">Strict Time-to-Live bounds with auto-purge</div>
+              </div>
+              <span class="posture-status">AUTOMATIC TTL PURGE</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Threat Defense Topology Map -->
+      <section class="section-wrap" id="defense-map">
+        <div class="section-header">
+          <div class="section-kicker">Architectural Boundaries</div>
+          <h2 class="section-title">The Five-Layer Defense Topology</h2>
+          <p style="color: var(--text-slate);">
+            Click any zone below to examine how Cloud Harness protects your secrets, containers, and repositories at each layer.
+          </p>
+        </div>
+
+        <!-- Animated SVG Blueprint -->
+        <div class="defense-blueprint-card">
+          <svg class="svg-defense-diagram" viewBox="0 0 1000 380">
+            <!-- Layers Boxes -->
+            <rect x="20" y="30" width="160" height="320" rx="8" fill="#0d1424" stroke="var(--border-navy)" />
+            <text x="35" y="60" fill="var(--text-slate)" font-family="var(--font-mono)" font-size="11" font-weight="700">ZONE 01: INGRESS</text>
+
+            <rect x="210" y="30" width="180" height="320" rx="8" fill="#0d1424" stroke="var(--border-navy)" />
+            <text x="225" y="60" fill="#60a5fa" font-family="var(--font-mono)" font-size="11" font-weight="700">ZONE 02: MCP API</text>
+
+            <rect x="420" y="30" width="200" height="320" rx="8" fill="#0d1424" stroke="var(--border-hover)" />
+            <text x="435" y="60" fill="#3b82f6" font-family="var(--font-mono)" font-size="11" font-weight="700">ZONE 03: RUNNER</text>
+
+            <rect x="650" y="30" width="330" height="150" rx="8" fill="#0d1424" stroke="rgba(16, 185, 129, 0.4)" stroke-width="1.6" />
+            <text x="665" y="60" fill="var(--emerald-safe)" font-family="var(--font-mono)" font-size="11" font-weight="700">ZONE 04: NON-ROOT EXECUTOR</text>
+
+            <rect x="650" y="200" width="330" height="150" rx="8" fill="#0d1424" stroke="rgba(245, 158, 11, 0.4)" stroke-width="1.6" />
+            <text x="665" y="230" fill="var(--gold-shield)" font-family="var(--font-mono)" font-size="11" font-weight="700">ZONE 05: EPHEMERAL GIT HELPER</text>
+
+            <!-- Internal Node Elements -->
+            <rect x="35" y="90" width="130" height="60" rx="6" fill="#15223c" />
+            <text x="45" y="125" fill="#fff" font-size="12" font-weight="600">Cloudflare Access</text>
+
+            <rect x="225" y="90" width="150" height="60" rx="6" fill="#15223c" />
+            <text x="235" y="125" fill="#fff" font-size="12" font-weight="600">Stateless RPC Router</text>
+
+            <rect x="435" y="90" width="170" height="60" rx="6" fill="#15223c" stroke="var(--blue-accent)" />
+            <text x="445" y="125" fill="#fff" font-size="12" font-weight="600">Docker Daemon Control</text>
+
+            <rect x="435" y="220" width="170" height="60" rx="6" fill="#15223c" />
+            <text x="445" y="255" fill="#fff" font-size="12" font-weight="600">GitHub App Keyring</text>
+
+            <text x="665" y="95" fill="#fff" font-size="12" font-weight="600">TTL Sandboxed Container</text>
+            <text x="665" y="118" fill="var(--text-slate)" font-size="11">UID 1000 • Read-Only Root • Network None</text>
+
+            <text x="665" y="265" fill="#fff" font-size="12" font-weight="600">Stdin Token Transfer Helper</text>
+            <text x="665" y="288" fill="var(--text-slate)" font-size="11">Origin Push → Ephemeral Exit</text>
+
+            <!-- Connecting Wires with Traveling Security Signals -->
+            <path d="M 165 120 L 225 120" stroke="rgba(255,255,255,0.2)" stroke-width="2" />
+            <path d="M 375 120 L 435 120" stroke="var(--blue-accent)" stroke-width="2" />
+            <path d="M 605 120 L 650 120" stroke="var(--emerald-safe)" stroke-width="2" />
+            <path d="M 605 250 L 650 250" stroke="var(--gold-shield)" stroke-width="2" />
+
+            <circle r="4" fill="#60a5fa">
+              <animateMotion dur="3s" repeatCount="indefinite" path="M 165 120 L 225 120 L 375 120 L 435 120 L 605 120 L 650 120" />
+            </circle>
+
+            <circle r="3.5" fill="#f59e0b">
+              <animateMotion dur="3s" begin="1.5s" repeatCount="indefinite" path="M 520 150 L 520 220 L 605 250 L 650 250" />
+            </circle>
+          </svg>
+        </div>
+
+        <div class="defense-map">
+          <div class="defense-tabs">
+            <button class="defense-tab-btn active" onclick="switchDefense(1, this)">1. Ingress Proxy</button>
+            <button class="defense-tab-btn" onclick="switchDefense(2, this)">2. MCP API</button>
+            <button class="defense-tab-btn" onclick="switchDefense(3, this)">3. Trusted Runner</button>
+            <button class="defense-tab-btn" onclick="switchDefense(4, this)">4. Docker Executor</button>
+            <button class="defense-tab-btn" onclick="switchDefense(5, this)">5. Git Broker</button>
+          </div>
+          <div class="defense-detail-panel" id="defensePanel">
+            <div>
+              <h3 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 0.75rem; color: #93c5fd;">
+                Layer 1: Credential-Free Ingress Proxy
+              </h3>
+              <p style="color: var(--text-slate); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
+                The only Internet-exposed service is an Nginx ingress bound to loopback. It verifies Cloudflare Access SSO assertion tokens or gateway headers before proxying requests to the stateless API.
+              </p>
+              <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.9rem;">
+                <li><span style="color: var(--blue-accent);">✔</span> Holds zero credentials, certificates, or repository secrets</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Does not join the backend execution network</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Strict rate-limiting and request payload truncation guards</li>
+              </ul>
+            </div>
+            <div class="threat-box">
+              <span style="color: #60a5fa;">// Ingress Security Verification</span><br/>
+              [REQUEST] GET /mcp<br/>
+              [CF-Access-JWT-Assertion] VALID (GitHub Org: @core-team)<br/>
+              [INGRESS] Forwarding to 127.0.0.1:4000 (Internal RPC)<br/>
+              <span style="color: #34d399;">[STATUS] Perimeter Authenticated (0 secrets exposed)</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Threat Comparison Matrix -->
+      <section class="section-wrap" id="matrix">
+        <div class="section-header">
+          <div class="section-kicker">Comparative Analysis</div>
+          <h2 class="section-title">Standard Agent Setup vs Cloud Harness MCP</h2>
+          <p style="color: var(--text-slate);">
+            Why platform engineers refuse raw host execution and choose Cloud Harness.
+          </p>
+        </div>
+
+        <div class="matrix-table-wrap">
+          <table class="matrix-table">
+            <thead>
+              <tr>
+                <th>Threat Surface</th>
+                <th>Standard Agent (Raw Host / VM)</th>
+                <th>Cloud Harness MCP Architecture</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>GitHub Push Credentials</strong></td>
+                <td class="danger-col">Stored in <code>~/.gitconfig</code> or persistent SSH keys</td>
+                <td class="safe-col">Short-lived tokens piped over stdin to ephemeral helper; 0 disk writes</td>
+              </tr>
+              <tr>
+                <td><strong>Docker Daemon Access</strong></td>
+                <td class="danger-col">Agent has direct access to <code>/var/run/docker.sock</code></td>
+                <td class="safe-col">Docker authority strictly confined to trusted runner; executors cannot reach socket</td>
+              </tr>
+              <tr>
+                <td><strong>Container Privileges</strong></td>
+                <td class="danger-col">Runs as <code>root</code> with full syscall capabilities</td>
+                <td class="safe-col">Non-root user (UID 1000), read-only root FS, default network <code>none</code></td>
+              </tr>
+              <tr>
+                <td><strong>Stale State & Crashes</strong></td>
+                <td class="danger-col">Abandoned processes and orphan temp files consume host disk</td>
+                <td class="safe-col">Strict Time-To-Live countdowns auto-evict containers and prune volumes</td>
+              </tr>
+              <tr>
+                <td><strong>Network Exfiltration</strong></td>
+                <td class="danger-col">Full outbound internet access allowed to unknown endpoints</td>
+                <td class="safe-col">Network mode <code>none</code> by default; bridge mode requires explicit owner flag</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Security Guarantees Section with Anchor #guarantees -->
+      <section class="section-wrap" id="guarantees">
+        <div class="section-header">
+          <div class="section-kicker">Verified Standards</div>
+          <h2 class="section-title">Six Hardened Security Guarantees</h2>
+          <p style="color: var(--text-slate);">
+            Every build and release is tested against strict boundary isolation invariants.
+          </p>
+        </div>
+
+        <div class="guarantees-grid">
+          <div class="guarantee-card">
+            <h3>🔒 Strict Non-Root Execution</h3>
+            <p>Executors run under unprivileged UID 1000. Privileged mode, capabilities, and kernel namespace breakouts are strictly blocked.</p>
+          </div>
+          <div class="guarantee-card">
+            <h3>🛡️ Stdin Secret Streaming</h3>
+            <p>GitHub App private keys reside exclusively in the runner control memory. Temporary tokens stream over stdin and vanish immediately.</p>
+          </div>
+          <div class="guarantee-card">
+            <h3>⏱️ Time-To-Live Auto-Eviction</h3>
+            <p>Abandoned workspaces are automatically cleaned up when the execution timer expires, eliminating orphaned processes.</p>
+          </div>
+          <div class="guarantee-card">
+            <h3>🌐 Network Isolation Default</h3>
+            <p>Default network mode is <code>none</code>. Outbound exfiltration to unverified external endpoints is prevented by the container engine.</p>
+          </div>
+          <div class="guarantee-card">
+            <h3>🗄️ Cryptographic State DB</h3>
+            <p>SQLite metadata state tracks active workspace IDs, TTL bounds, and principal authorizations with local encryption.</p>
+          </div>
+          <div class="guarantee-card">
+            <h3>📦 0 Bytes Residual Footprint</h3>
+            <p>Calling <code>workspace_close</code> deletes container volumes and transient checkouts immediately, leaving zero residual disk footprint.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- CTA -->
+      <section class="section-wrap">
+        <div class="cta-defense">
+          <h2 style="font-size: 2.4rem; font-weight: 800; margin-bottom: 1rem;">
+            Hardened Code Intelligence for Your Agent Fleet
+          </h2>
+          <p style="color: #bfdbfe; max-width: 650px; margin: 0 auto 2.5rem; font-size: 1.1rem;">
+            Deploy Cloud Harness MCP with Docker Compose in under 5 minutes and connect Claude Code, Cursor, or ChatGPT securely.
+          </p>
+          <div style="display: flex; gap: 1rem; justify-content: center;">
+            <a href="https://docs.harness.agentkit.best/getting-started" target="_blank" class="btn-ent btn-ent-primary" style="padding: 0.85rem 2rem; font-size: 1rem; background: white; color: #1e3a8a; border-color: white;">
+              Deploy Now ↗
+            </a>
+            <a href="https://docs.harness.agentkit.best/security-model" target="_blank" class="btn-ent btn-ent-outline" style="padding: 0.85rem 2rem; font-size: 1rem; color: white;">
+              Read Security Model ↗
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="ent-footer">
+      <div>
+        <span>Cloud Harness MCP // Single-Owner Security Architecture</span>
+      </div>
+      <div style="display: flex; gap: 1.5rem;">
+        <a href="https://docs.harness.agentkit.best" target="_blank">Documentation</a>
+        <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank">GitHub</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../terms.html">Terms</a>
+      </div>
+    </footer>
+
+    <!-- Interactive Script -->
+    <script>
+      function switchDefense(layer, btn) {
+        document.querySelectorAll('.defense-tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const panel = document.getElementById('defensePanel');
+        if (layer === 1) {
+          panel.innerHTML = `
+            <div>
+              <h3 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 0.75rem; color: #93c5fd;">
+                Layer 1: Credential-Free Ingress Proxy
+              </h3>
+              <p style="color: var(--text-slate); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
+                The only Internet-exposed service is an Nginx ingress bound to loopback. It verifies Cloudflare Access SSO assertion tokens or gateway headers before proxying requests to the stateless API.
+              </p>
+              <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.9rem;">
+                <li><span style="color: var(--blue-accent);">✔</span> Holds zero credentials, certificates, or repository secrets</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Does not join the backend execution network</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Strict rate-limiting and request payload truncation guards</li>
+              </ul>
+            </div>
+            <div class="threat-box">
+              <span style="color: #60a5fa;">// Ingress Security Verification</span><br/>
+              [REQUEST] GET /mcp<br/>
+              [CF-Access-JWT-Assertion] VALID (GitHub Org: @core-team)<br/>
+              [INGRESS] Forwarding to 127.0.0.1:4000 (Internal RPC)<br/>
+              <span style="color: #34d399;">[STATUS] Perimeter Authenticated (0 secrets exposed)</span>
+            </div>
+          `;
+        } else if (layer === 2) {
+          panel.innerHTML = `
+            <div>
+              <h3 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 0.75rem; color: #93c5fd;">
+                Layer 2: Stateless MCP API Server
+              </h3>
+              <p style="color: var(--text-slate); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
+                Translates incoming Streamable HTTP MCP calls into authenticated internal operations. The API possesses no Docker socket mounts and no repository clone data.
+              </p>
+              <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.9rem;">
+                <li><span style="color: var(--blue-accent);">✔</span> Validates principal identities and request signatures</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Enforces input schema boundaries via Zod contracts</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Emits chunked HTTP streaming responses back to AI clients</li>
+              </ul>
+            </div>
+            <div class="threat-box">
+              <span style="color: #60a5fa;">// MCP API Execution Boundary</span><br/>
+              [SCHEMA] Validating RunnerOperationSchema<br/>
+              [PRINCIPAL] Verified Owner UID: usr_90af2<br/>
+              [RPC] Dispatching authenticated operation to Runner Daemon<br/>
+              <span style="color: #34d399;">[STATUS] Zero Host Mounts in API Container</span>
+            </div>
+          `;
+        } else if (layer === 3) {
+          panel.innerHTML = `
+            <div>
+              <h3 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 0.75rem; color: #93c5fd;">
+                Layer 3: Trusted Runner & Policy Engine
+              </h3>
+              <p style="color: var(--text-slate); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
+                The only component with Docker socket access. Enforces time-to-live bounds, manages SQLite state records, and brokers short-lived repository tokens.
+              </p>
+              <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.9rem;">
+                <li><span style="color: var(--blue-accent);">✔</span> Idempotent workspace orchestration</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Scoped cleanup by verified workspace identity</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Automated garbage collection on expired TTLs</li>
+              </ul>
+            </div>
+            <div class="threat-box">
+              <span style="color: #60a5fa;">// Trusted Runner Policy Check</span><br/>
+              [POLICY] Asserting workspace limits (Max 4 active, TTL: 1800s)<br/>
+              [DOCKER] Spawning isolated executor (cgroups: 4GB RAM, 2 CPUs)<br/>
+              [STATE] Recording state in encrypted SQLite database<br/>
+              <span style="color: #34d399;">[STATUS] Executor Sandboxed & Controlled</span>
+            </div>
+          `;
+        } else if (layer === 4) {
+          panel.innerHTML = `
+            <div>
+              <h3 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 0.75rem; color: #93c5fd;">
+                Layer 4: Ephemeral Non-Root Docker Executor
+              </h3>
+              <p style="color: var(--text-slate); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
+                The workspace container where agent commands actually run. Configured with read-only root, non-root user (UID 1000), and network mode 'none' by default.
+              </p>
+              <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.9rem;">
+                <li><span style="color: var(--blue-accent);">✔</span> Cannot reach host filesystem or Docker socket</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Cannot exfiltrate data over network (net: none default)</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Automatically purged on workspace close</li>
+              </ul>
+            </div>
+            <div class="threat-box">
+              <span style="color: #60a5fa;">// Executor Container Isolation</span><br/>
+              [UID] 1000 (node/executor)<br/>
+              [ROOT FS] Read-only filesystem mounted<br/>
+              [NETWORK] Mode: none (Loopback only)<br/>
+              <span style="color: #34d399;">[STATUS] Host System Completely Air-Gapped</span>
+            </div>
+          `;
+        } else if (layer === 5) {
+          panel.innerHTML = `
+            <div>
+              <h3 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 0.75rem; color: #93c5fd;">
+                Layer 5: Ephemeral Stdin Git Helper
+              </h3>
+              <p style="color: var(--text-slate); font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">
+                When pushing code, the GitHub App Broker generates a temporary 60-second token and pipes it over stdin to a short-lived transfer helper.
+              </p>
+              <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.6rem; font-size: 0.9rem;">
+                <li><span style="color: var(--blue-accent);">✔</span> Tokens are never written to disk or .git/config</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Ephemeral helper terminates immediately after git push</li>
+                <li><span style="color: var(--blue-accent);">✔</span> Executors never see GitHub App private keys</li>
+              </ul>
+            </div>
+            <div class="threat-box">
+              <span style="color: #60a5fa;">// Zero-Disk Stdin Broker Flow</span><br/>
+              [BROKER] Minting 60s installation token for repo<br/>
+              [STDIO] Piping token to ephemeral git transfer helper<br/>
+              [GIT] git push origin refs/heads/branch<br/>
+              <span style="color: #34d399;">[STATUS] Token Erased From Memory (0 residual trace)</span>
+            </div>
+          `;
+        }
+      }
+    </script>
+  </body>
+</html>
