@@ -233,15 +233,23 @@ export function initializeDashboard() {
     const keyData = data(keys);
     const apiKeys = Array.isArray(keyData?.keys) ? keyData.keys : [];
     const events = data(auditResult)?.events ?? [];
-    const installation = data(github)?.installation;
+    const githubData = data(github);
+    const installations = Array.isArray(githubData?.installations) ? githubData.installations : (githubData?.installation ? [githubData.installation] : []);
+    const activeInstallations = installations.filter((inst) => inst.status === 'active');
+    const installationCount = installations.length;
+    const githubNote = installationCount === 1
+      ? (installations[0].accountLogin ?? installations[0].accountId ?? '1 account bound')
+      : installationCount > 1
+        ? `${installationCount} accounts/orgs bound`
+        : 'No installation bound';
+    const githubConnected = activeInstallations.length > 0;
     const identity = data(profile)?.identity ?? {};
     const endpoint = keyData?.readiness?.ready === true ? (keyData.readiness.publicUrl ?? keyData.publicUrl) : undefined;
-    const account = installation?.accountLogin ?? installation?.accountId;
     content.innerHTML = renderOverview({
       metrics: [
         { label: 'Active workspaces', value: workspaces.filter((item) => item.status === 'ACTIVE').length, note: `${workspaces.length} total` },
         { label: 'API keys', value: `${apiKeys.filter((item) => item.state === 'ACTIVE').length}/10`, note: 'Active of limit' },
-        { label: 'GitHub', value: installation ? 'Connected' : 'Not connected', small: true, note: installation ? (account ?? 'Installation bound') : 'No installation bound' },
+        { label: 'GitHub', value: githubConnected ? 'Connected' : 'Not connected', small: true, note: githubNote },
         { label: 'Recent events', value: events.length, note: 'Retained audit records' }
       ],
       activity: events.slice(0, 6).map((event) => ({ action: event.action, subjectType: event.subjectType, subjectId: event.subjectId, createdAt: event.createdAt })),
@@ -368,19 +376,52 @@ export function initializeDashboard() {
     const result = await api('/github'); content.innerHTML = renderGitHub(result.data); bindGitHubControls();
   }
   function bindGitHubControls() {
-    const form = document.querySelector('#github-setup-form'); form.addEventListener('submit', (event) => {
-      event.preventDefault(); const values = new FormData(form); const expectedAccountId = String(values.get('expectedAccountId') ?? '').trim();
-      void submitForm(form, 'Preparing connection…', async () => {
-        const result = await api('/github/setup', { method: 'POST', body: requestBody(expectedAccountId ? { expectedAccountId } : {}) });
-        const destination = new URL(result.data.url); if (destination.protocol !== 'https:') throw new Error('GitHub setup URL was invalid.');
-        location.assign(destination.toString());
-      }, async () => {});
-    });
-    document.querySelector('#reconcile-github').addEventListener('click', async (event) => {
-      const button = event.currentTarget; button.disabled = true; button.textContent = 'Reconciling…';
-      try { await api('/github/reconcile', { method: 'POST', body: requestBody({}) }); announce('GitHub installation reconciled.'); await loadGitHub(); }
-      catch (error) { showError(error); } finally { button.disabled = false; button.textContent = 'Reconcile installation'; }
-    });
+    const form = document.querySelector('#github-setup-form');
+    if (form) {
+      form.addEventListener('submit', (event) => {
+        event.preventDefault(); const values = new FormData(form); const expectedAccountId = String(values.get('expectedAccountId') ?? '').trim();
+        void submitForm(form, 'Preparing connection…', async () => {
+          const result = await api('/github/setup', { method: 'POST', body: requestBody(expectedAccountId ? { expectedAccountId } : {}) });
+          const destination = new URL(result.data.url); if (destination.protocol !== 'https:') throw new Error('GitHub setup URL was invalid.');
+          location.assign(destination.toString());
+        }, async () => {});
+      });
+    }
+    const reconcileAllButton = document.querySelector('#reconcile-github');
+    if (reconcileAllButton) {
+      reconcileAllButton.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Reconciling…';
+        try { await api('/github/reconcile', { method: 'POST', body: requestBody({}) }); announce('GitHub installations reconciled.'); await loadGitHub(); }
+        catch (error) { showError(error); } finally { button.disabled = false; button.textContent = originalText; }
+      });
+    }
+    for (const button of document.querySelectorAll('.reconcile-installation')) {
+      button.addEventListener('click', async (event) => {
+        const btn = event.currentTarget; btn.disabled = true; btn.textContent = 'Reconciling…';
+        try {
+          await api('/github/reconcile', { method: 'POST', body: requestBody({ installationId: btn.dataset.installationId }) });
+          announce('GitHub installation reconciled.');
+          await loadGitHub();
+        } catch (error) { showError(error); } finally { btn.disabled = false; btn.textContent = 'Reconcile'; }
+      });
+    }
+    for (const button of document.querySelectorAll('.disconnect-installation')) {
+      button.addEventListener('click', (event) => confirmAction({
+        title: 'Disconnect GitHub App installation?',
+        description: 'Disconnect this account/organization and remove associated repository authorizations?',
+        target: `${button.dataset.account ?? 'Installation'} (ID ${button.dataset.installationId})`,
+        label: 'Disconnect',
+        pendingLabel: 'Disconnecting…',
+        action: async () => {
+          await api('/github/disconnect', { method: 'POST', body: requestBody({ installationId: button.dataset.installationId }) });
+          announce('GitHub installation disconnected.');
+          await loadGitHub();
+        }
+      }, event.currentTarget));
+    }
   }
   async function loadProfile() {
     selectNavigation('profile'); setTitle('Profile', 'Your signed-in identity and session details.'); document.querySelector('#command-surface').hidden = true;

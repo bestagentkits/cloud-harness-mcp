@@ -103,9 +103,21 @@ export class DashboardControlService {
               this.principals.database, principalId,
               record.status === 'uninstalled' ? 'github.uninstalled' : 'github.reconciled',
               'github_installation', record.installationId, record.generation, { status: record.status }
-            )
+            ),
+            parsed.input.installationId
           );
           return ok('GitHub authorization reconciled', this.githubStatus(principalId));
+        }
+        case 'github_disconnect': {
+          this.requireGitHubBinding().disconnect(
+            principalId,
+            parsed.input.installationId,
+            (record) => this.metadata.recordAuditInTransaction(
+              this.principals.database, principalId, 'github.disconnected', 'github_installation',
+              record.installationId, record.generation, { accountLogin: record.accountLogin }
+            )
+          );
+          return ok('GitHub installation disconnected', this.githubStatus(principalId));
         }
       }
     } catch (error) {
@@ -116,8 +128,14 @@ export class DashboardControlService {
   }
 
   private githubStatus(principalId: string) {
+    const installations = this.githubInstallations?.listInstallations(principalId) ?? [];
     const record = this.githubInstallations?.getInstallation(principalId);
-    return { configured: Boolean(this.config.githubApp?.appSlug), installation: record ?? null, repositories: this.githubInstallations?.listRepositoryGrants(principalId) ?? [] };
+    return {
+      configured: Boolean(this.config.githubApp?.appSlug),
+      installations,
+      installation: record ?? null,
+      repositories: this.githubInstallations?.listRepositoryGrants(principalId) ?? []
+    };
   }
   private secrets() {
     if (!this.metadata.secretReadiness().ready) {

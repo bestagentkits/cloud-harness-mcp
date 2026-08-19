@@ -38,8 +38,8 @@ beforeEach(async () => {
       if (operation === 'files_write') return { ok: true, message: 'written', truncated: false, data: { path: input.path, sha256: 'b'.repeat(64) } };
       return { ok: true, message: 'ok', truncated: false, data: {} };
     }),
-    callInternal: vi.fn(async (_operation, input, selected): Promise<RunnerResponse> => {
-      calls.push({ operation: 'workspace_detail', input, principal: selected });
+    callInternal: vi.fn(async (operation, input, selected): Promise<RunnerResponse> => {
+      calls.push({ operation, input, principal: selected });
       return { ok: true, message: 'detail', truncated: false, data: {
         workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkMode: 'none', generation: 7,
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z'
@@ -104,6 +104,59 @@ describe('dashboard BFF', () => {
     }
   });
 
+  it('maps multi-installation github status and disconnect operations cleanly', async () => {
+    const hostile = { ownerId: 'hostile-owner', secretToken: 'secret' };
+    const rawStatus = {
+      configured: true,
+      installations: [
+        { appId: '1', installationId: '101', accountId: '201', accountLogin: 'org-one', status: 'active', ...hostile },
+        { appId: '1', installationId: '102', accountId: '202', accountLogin: 'org-two', status: 'active', ...hostile }
+      ],
+      repositories: [
+        { installationId: '101', owner: 'org-one', repository: 'repo1', contents: 'write', status: 'granted', ...hostile }
+      ],
+      ...hostile
+    };
+
+    const mapped = mapDashboardData('github_status', rawStatus) as Record<string, unknown>;
+    expect(mapped.configured).toBe(true);
+    expect(mapped.installations).toHaveLength(2);
+    expect(mapped.installation).toMatchObject({ installationId: '101', accountLogin: 'org-one' });
+    expect(mapped.repositories).toHaveLength(1);
+    const serialized = JSON.stringify(mapped);
+    expect(serialized).not.toContain('hostile-owner');
+    expect(serialized).not.toContain('secretToken');
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const csrfHeaders = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    // Reconcile with specific installation
+    await send('/api/v1/github/reconcile', {
+      method: 'POST', headers: csrfHeaders, body: JSON.stringify({ installationId: '101' })
+    });
+    expect(calls.at(-1)).toEqual({ operation: 'github_reconcile', input: { installationId: '101' }, principal });
+
+    // Disconnect via DELETE endpoint
+    const body = JSON.stringify({});
+    const res = await send('/api/v1/github/installations/101', {
+      method: 'DELETE',
+      headers: { ...csrfHeaders, 'content-length': String(Buffer.byteLength(body)) },
+      body
+    });
+    expect(res.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'github_disconnect', input: { installationId: '101' }, principal });
+
+    // Disconnect via POST endpoint
+    const postBody = JSON.stringify({ installationId: '102' });
+    const postRes = await send('/api/v1/github/disconnect', {
+      method: 'POST',
+      headers: { ...csrfHeaders, 'content-length': String(Buffer.byteLength(postBody)) },
+      body: postBody
+    });
+    expect(postRes.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'github_disconnect', input: { installationId: '102' }, principal });
+  });
   it('uses only the verified request principal and strips control-plane fields', async () => {
     const response = await send('/api/v1/workspaces');
     expect(response.status).toBe(200);

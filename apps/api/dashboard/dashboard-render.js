@@ -73,13 +73,25 @@ function renderApiKey(key) {
   return `<li class="panel api-key-card"><div class="record-heading"><div><h3>${escape(key?.name)}</h3><p><code class="mono">${escape(key?.displayPrefix)}</code> <span class="status ${state === 'ACTIVE' ? 'active' : state === 'EXPIRED' ? 'expired' : ''}">${escape(stateLabel(state))}</span></p></div>${action}</div><dl class="facts"><dt>Created</dt><dd>${optionalTime(key?.createdAt)}</dd><dt>Expires</dt><dd>${optionalTime(key?.expiresAt)}</dd><dt>Last used</dt><dd>${optionalTime(key?.lastUsedAt)}</dd><dt>Revoked</dt><dd>${optionalTime(key?.revokedAt)}</dd></dl></li>`;
 }
 
-export function renderGitHub(status, callbackPending = false) {
-  const installation = status.installation;
-  const installationView = installation ? `<dl class="facts"><dt>Account</dt><dd>${escape(installation.accountLogin ?? installation.accountId)}</dd><dt>Status</dt><dd>${escape(installation.status)}</dd><dt>Installation ID</dt><dd class="mono">${escape(installation.installationId)}</dd><dt>Last checked</dt><dd>${installation.checkedAt ? time(installation.checkedAt) : 'Not yet reconciled'}</dd></dl>` : '<p>No GitHub App installation is bound to this identity.</p>';
-  const repositories = status.repositories?.length ? `<ul class="record-list">${status.repositories.map((repository) => `<li><strong>${escape(repository.owner)}/${escape(repository.repository)}</strong><span>${escape(repository.status)} · Contents ${escape(repository.contents)}</span></li>`).join('')}</ul>` : '<p>No authorized repositories reported.</p>';
-  return `<div class="page-note"><strong>GitHub App authorization metadata.</strong> Provider private keys and minted tokens remain runner-only and are never rendered.</div>${callbackPending ? '<p class="status-message" role="status">Completing GitHub App connection…</p>' : ''}<section class="panel"><h2>Installation status</h2>${installationView}<button id="reconcile-github" type="button">Reconcile installation</button><p id="github-status-message" class="form-status" aria-live="polite"></p></section><section class="panel"><h2>Connect GitHub App</h2><form id="github-setup-form" class="stack-form"><label for="github-account-id">Expected account ID <span class="optional">Optional</span></label><input id="github-account-id" name="expectedAccountId" maxlength="100"><button type="submit">Connect GitHub App</button><p class="form-status" aria-live="polite"></p></form></section><section><h2>Authorized repositories</h2>${repositories}</section>`;
+function renderInstallationCard(installation) {
+  const id = escape(installation.installationId);
+  const account = escape(installation.accountLogin ?? installation.accountId);
+  const instStatus = escape(installation.status);
+  const checked = installation.checkedAt ? time(installation.checkedAt) : 'Not yet reconciled';
+  return `<li class="panel installation-card" data-installation-id="${id}"><div class="record-heading"><div><h3>${account}</h3><p><code class="mono">${id}</code> <span class="status ${installation.status === 'active' ? 'active' : ''}">${instStatus}</span></p></div><div class="row-actions"><button class="reconcile-installation" type="button" data-installation-id="${id}">Reconcile</button><button class="danger disconnect-installation" type="button" data-installation-id="${id}" data-account="${account}">Disconnect</button></div></div><dl class="facts"><dt>Account</dt><dd>${account}</dd><dt>Status</dt><dd>${instStatus}</dd><dt>Installation ID</dt><dd class="mono">${id}</dd><dt>Last checked</dt><dd>${checked}</dd></dl></li>`;
 }
 
+export function renderGitHub(status, callbackPending = false) {
+  const installations = Array.isArray(status?.installations) && status.installations.length
+    ? status.installations
+    : (status?.installation ? [status.installation] : []);
+  const installationView = installations.length
+    ? `<ul class="record-list">${installations.map(renderInstallationCard).join('')}</ul>`
+    : '<p>No GitHub App installation is bound to this identity.</p>';
+  const repositories = status?.repositories?.length ? `<ul class="record-list">${status.repositories.map((repository) => `<li><strong>${escape(repository.owner)}/${escape(repository.repository)}</strong><span>${escape(repository.status)} · Contents ${escape(repository.contents)}${repository.installationId ? ` · ID <code class="mono">${escape(repository.installationId)}</code>` : ''}</span></li>`).join('')}</ul>` : '<p>No authorized repositories reported.</p>';
+  const reconcileLabel = installations.length > 1 ? 'Reconcile all installations' : 'Reconcile installation';
+  return `<div class="page-note"><strong>GitHub App authorization metadata.</strong> Provider private keys and minted tokens remain runner-only and are never rendered.</div>${callbackPending ? '<p class="status-message" role="status">Completing GitHub App connection…</p>' : ''}<section class="panel"><h2>Installation status</h2>${installationView}<button id="reconcile-github" type="button"${installations.length === 0 ? ' disabled' : ''}>${reconcileLabel}</button><p id="github-status-message" class="form-status" aria-live="polite"></p></section><section class="panel"><h2>Connect GitHub App</h2><form id="github-setup-form" class="stack-form"><label for="github-account-id">Expected account ID <span class="optional">Optional</span></label><input id="github-account-id" name="expectedAccountId" maxlength="100"><button type="submit">Connect GitHub App</button><p class="form-status" aria-live="polite"></p></form></section><section><h2>Authorized repositories</h2>${repositories}</section>`;
+}
 export function renderProfile(profile) {
   const identity = profile?.identity ?? {};
   const scopes = Array.isArray(profile?.scopes) ? profile.scopes : [];

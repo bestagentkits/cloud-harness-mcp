@@ -141,9 +141,12 @@ stored remote URL to the credential-free URL.
 
 Optional GitHub App settings let the trusted runner mint a short-lived,
 repository-scoped installation token for clone and later remote Git transfers.
-In Access mode the installation and repository grants are bound to the exact
-authenticated principal; GitHub SSO alone grants nothing. In owner-bearer mode
-the fixed configured installation remains the compatibility path.
+In Access mode the installations and repository grants are bound to the exact
+authenticated principal; a principal may bind multiple concurrent installations
+(e.g. personal and organization accounts) and the runner selects the matching
+installation by repository owner. GitHub SSO alone grants nothing. In
+owner-bearer mode the fixed configured installation remains the compatibility
+path.
 The token is passed over stdin only to the ephemeral helper that needs it; it
 is absent from Docker arguments, the checkout remote, result envelopes, and the
 long-lived executor. Public clone/fetch/pull can proceed without an App token.
