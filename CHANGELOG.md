@@ -1,3 +1,10 @@
+# [0.9.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.8.0...v0.9.0) (2026-08-19)
+
+
+### Features
+
+* **dashboard:** polish control-plane dashboard UI/UX ([#47](https://github.com/bestagentkits/cloud-harness-mcp/issues/47)) ([8d9695e](https://github.com/bestagentkits/cloud-harness-mcp/commit/8d9695eebff2adf3df45be0120f0be4ff57ca760))
+
 # [0.8.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.7.1...v0.8.0) (2026-08-19)
 
 
