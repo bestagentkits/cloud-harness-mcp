@@ -247,24 +247,53 @@
         cursor: pointer;
       }
 
-      .mobile-drawer {
+            .mobile-drawer {
         display: none;
         position: fixed;
-        top: 60px;
+        top: 0;
         left: 0;
         right: 0;
         bottom: 0;
-        background: rgba(0, 0, 0, 0.96);
-        backdrop-filter: blur(20px);
-        z-index: 999;
-        padding: 2rem 1.5rem;
+        background: rgba(0, 0, 0, 0.98);
+        backdrop-filter: blur(24px);
+        z-index: 10000;
+        padding: 1.25rem 1.5rem;
         flex-direction: column;
-        gap: 1.5rem;
-        border-bottom: 1px solid var(--border-soft);
+        gap: 1rem;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
       }
 
       .mobile-drawer.open {
         display: flex;
+      }
+
+      .drawer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border-soft);
+        margin-bottom: 0.5rem;
+      }
+
+      .drawer-close-btn {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        padding: 0.45rem;
+        color: var(--text-bright);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s ease;
+      }
+
+      .drawer-close-btn:hover {
+        border-color: var(--cyan-glow);
+        color: var(--cyan-glow);
+        background: var(--cyan-dim);
       }
 
       .mobile-drawer a {
@@ -982,8 +1011,24 @@
         </button>
       </div>
 
-      <!-- Mobile Navigation Drawer -->
+            <!-- Mobile Navigation Drawer -->
       <nav class="mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
+        <div class="drawer-header">
+          <div class="logo-hud">
+            <div class="logo-icon" style="width: 30px; height: 30px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--cyan-glow)" stroke-width="2.2" aria-hidden="true">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+              </svg>
+            </div>
+            <span style="font-size: 1.05rem;">CLOUD HARNESS</span>
+          </div>
+          <button class="drawer-close-btn" onclick="toggleMobileMenu()" aria-label="Close navigation menu">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
         <a href="#connect" class="hud-button hud-button-primary drawer-connect-btn" style="justify-content: center; text-align: center; margin-bottom: 0.5rem;" onclick="toggleMobileMenu()">Connect Agent →</a>
         <a href="#architecture" onclick="toggleMobileMenu()">Architecture</a>
         <a href="#workflows" onclick="toggleMobileMenu()">Workflows</a>
