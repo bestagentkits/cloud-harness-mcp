@@ -1,3 +1,16 @@
+# [0.16.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.15.0...v0.16.0) (2026-08-19)
+
+
+### Bug Fixes
+
+* **dashboard:** wrap github complete in error handler and document Setup URL ([#63](https://github.com/bestagentkits/cloud-harness-mcp/issues/63)) ([c2b5cd0](https://github.com/bestagentkits/cloud-harness-mcp/commit/c2b5cd079128f3f0fe8dbe3ee454610a43e64f5f))
+* **test:** harden docker abort cancellation test and finalize cyber marketing site ([#62](https://github.com/bestagentkits/cloud-harness-mcp/issues/62)) ([d88b537](https://github.com/bestagentkits/cloud-harness-mcp/commit/d88b537f28870e806b265ac746f127eb12e9ac4a))
+
+
+### Features
+
+* **site:** adapt full cyber-engineering HUD content, responsive diagrams, and lock CI deploy gate ([#61](https://github.com/bestagentkits/cloud-harness-mcp/issues/61)) ([ffe2f5c](https://github.com/bestagentkits/cloud-harness-mcp/commit/ffe2f5c1943caa2f0fce1594caac9239f233c105))
+
 # [0.15.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.14.0...v0.15.0) (2026-08-19)
 
 
