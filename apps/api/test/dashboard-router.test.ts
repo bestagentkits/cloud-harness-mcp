@@ -170,6 +170,38 @@ describe('dashboard BFF', () => {
     expect(revoked.status).toBe(200);
     expect(revoked.text).not.toContain('.ssss');
   });
+
+  it('exposes safe server configuration and status without control-plane fields', async () => {
+    const response = await send('/api/v1/server');
+    expect(response.status).toBe(200);
+    expect(response.json.data.authMode).toBe('cloudflare-access');
+    expect(response.json.data.managedOAuthUrl).toBe('https://dashboard.example/mcp');
+    expect(response.json.data.apiKeyGateway).toEqual({ enabled: true, endpoint: 'https://api.example/mcp' });
+    expect(response.json.data.limits).toEqual({ maxRequestBytes: 65_536, requestTimeoutMs: 2_000 });
+    expect(typeof response.json.data.version).toBe('string');
+    expect(typeof response.json.data.checkedAt).toBe('string');
+    for (const forbidden of ['runner-token', 'runner:3001', 'api-key-audience', 'cf-service:d29ya2Vy']) expect(response.text).not.toContain(forbidden);
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('persists a valid theme preference by cookie and rejects unknown or unauthenticated changes', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const missingCsrf = await send('/api/v1/preferences', { method: 'PUT', headers: { origin: 'https://dashboard.example', 'content-type': 'application/json' }, body: JSON.stringify({ theme: 'dark' }) });
+    expect(missingCsrf.status).toBe(401);
+    const dark = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ theme: 'dark' }) });
+    expect(dark.status).toBe(200);
+    expect(dark.json.data.theme).toBe('dark');
+    const setCookie = String(dark.headers['set-cookie']?.[0]);
+    expect(setCookie).toContain('ch-dashboard-theme=dark');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Path=/dashboard');
+    const cleared = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ theme: 'system' }) });
+    expect(String(cleared.headers['set-cookie']?.[0])).toContain('Max-Age=0');
+    const invalid = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ theme: 'purple' }) });
+    expect(invalid.status).toBe(400);
+  });
 });
 
 describe('dashboard profile', () => {
@@ -239,5 +271,50 @@ describe('dashboard profile', () => {
   it('rejects a request that has no verified external principal', async () => {
     await serveProfile({ token: 'owner', clientId: 'owner', scopes: [], extra: { principal: { kind: 'owner', ownerId: 'owner' } } });
     expect((await get()).status).toBe(401);
+  });
+});
+
+describe('dashboard server access control', () => {
+  let srv: Server;
+  let srvPort: number;
+
+  async function serve(auth: AuthInfo): Promise<void> {
+    const app = express();
+    app.use((request, _response, next) => { (request as DashboardRequest).auth = auth; next(); });
+    app.use('/dashboard', createDashboardRouter(config, runner));
+    srv = createServer(app);
+    const listening = Promise.withResolvers<void>();
+    srv.listen(0, '127.0.0.1', () => listening.resolve());
+    await listening.promise;
+    const address = srv.address();
+    if (!address || typeof address === 'string') throw new Error('server unavailable');
+    srvPort = address.port;
+  }
+
+  function statusOf(): Promise<number> {
+    const { promise, resolve, reject } = Promise.withResolvers<number>();
+    const request = httpRequest({ hostname: '127.0.0.1', port: srvPort, path: '/dashboard/api/v1/server', method: 'GET', headers: { host: 'dashboard.example' } }, (response) => {
+      response.resume();
+      response.on('end', () => resolve(response.statusCode ?? 0));
+    });
+    request.on('error', reject); request.end();
+    return promise;
+  }
+
+  afterEach(async () => {
+    if (!srv) return;
+    const closed = Promise.withResolvers<void>();
+    srv.close(() => closed.resolve());
+    await closed.promise;
+  });
+
+  it('serves server info to a verified external principal', async () => {
+    await serve({ token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal } });
+    expect(await statusOf()).toBe(200);
+  });
+
+  it('rejects server info for a non-external principal', async () => {
+    await serve({ token: 'owner', clientId: 'owner', scopes: [], extra: { principal: { kind: 'owner', ownerId: 'owner' } } });
+    expect(await statusOf()).toBe(401);
   });
 });

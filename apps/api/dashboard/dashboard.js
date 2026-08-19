@@ -225,8 +225,8 @@ export function initializeDashboard() {
     setTitle('Overview', 'A live summary of your workspaces, credentials, and recent activity.');
     document.querySelector('#command-surface').hidden = true;
     content.innerHTML = renderOverviewSkeleton();
-    const [ws, keys, auditResult, github, profile] = await Promise.allSettled([
-      api('/workspaces'), api('/api-keys'), api('/audit?limit=50'), api('/github'), api('/profile')
+    const [ws, keys, auditResult, github, profile, server] = await Promise.allSettled([
+      api('/workspaces'), api('/api-keys'), api('/audit?limit=50'), api('/github'), api('/profile'), api('/server')
     ]);
     const data = (result) => result.status === 'fulfilled' ? result.value.data : undefined;
     const workspaces = data(ws)?.workspaces ?? [];
@@ -250,7 +250,8 @@ export function initializeDashboard() {
         email: identity.email ?? 'Not provided',
         sessionExpiresAt: data(profile)?.sessionExpiresAt,
         endpoint: typeof endpoint === 'string' && /^https:\/\//.test(endpoint) ? endpoint : undefined
-      }
+      },
+      server: data(server)
     });
   }
   async function loadIndex() {
@@ -466,7 +467,30 @@ export function initializeDashboard() {
   document.querySelector('#refresh').addEventListener('click', async () => { announce('Refreshing…'); await load(); announce('Workspace data refreshed.'); });
   const menu = createModalController({ panel: sidebar, backgrounds: [main], trigger: menuButton, initialFocus: () => sidebar.querySelector('a'), onOpen: () => { sidebar.classList.add('open'); menuButton.setAttribute('aria-expanded', 'true'); }, onClose: () => { sidebar.classList.remove('open'); menuButton.setAttribute('aria-expanded', 'false'); } });
   menuButton.addEventListener('click', () => menu.active ? menu.close() : menu.open());
-  document.querySelector('#nav-toggle').addEventListener('click', (event) => { const expanded = event.currentTarget.getAttribute('aria-expanded') === 'true'; event.currentTarget.setAttribute('aria-expanded', String(!expanded)); event.currentTarget.textContent = expanded ? 'Expand navigation' : 'Collapse navigation'; });
+  document.querySelector('#nav-toggle').addEventListener('click', (event) => {
+    const collapsed = document.querySelector('.app-shell').classList.toggle('nav-collapsed');
+    event.currentTarget.setAttribute('aria-expanded', String(!collapsed));
+    event.currentTarget.setAttribute('aria-label', collapsed ? 'Expand navigation' : 'Collapse navigation');
+  });
+  const themeControl = document.querySelector('.theme-control');
+  for (const option of themeControl.querySelectorAll('.theme-opt')) {
+    option.setAttribute('aria-pressed', String(option.dataset.themeValue === (document.documentElement.dataset.theme ?? 'system')));
+    option.addEventListener('click', (event) => {
+      const value = event.currentTarget.dataset.themeValue;
+      if (value === 'system') delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = value;
+      for (const other of themeControl.querySelectorAll('.theme-opt')) other.setAttribute('aria-pressed', String(other === event.currentTarget));
+      void api('/preferences', { method: 'PUT', body: requestBody({ theme: value }) }).catch(() => announce('Theme preference was not saved.'));
+      announce(`Theme set to ${value}.`);
+    });
+  }
+  void api('/profile').then((result) => {
+    const identity = result.data?.identity ?? {};
+    document.querySelector('#profile-name').textContent = identity.name ?? identity.email ?? 'Signed in';
+    document.querySelector('#profile-email').textContent = identity.email ?? '';
+    const parts = String(identity.name ?? identity.email ?? '?').trim().split(/[\s@._-]+/).filter(Boolean).slice(0, 2);
+    document.querySelector('#profile-avatar').textContent = (parts.map((part) => part[0]).join('') || '?').toUpperCase();
+  }).catch(() => undefined);
   document.addEventListener('click', (event) => { if (event.target.closest?.('a[href]')) apiKeyReveal.clear(); }, { capture: true });
   document.addEventListener('click', (event) => {
     const trigger = event.target.closest?.('[data-copy]');

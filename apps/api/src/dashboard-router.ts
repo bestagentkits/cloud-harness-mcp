@@ -7,6 +7,17 @@ import { dashboardSecurity, requireJson } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { registerDashboardControlRoutes } from './dashboard-control-router.js';
+import { createRequire } from 'node:module';
+
+const THEME_COOKIE = 'ch-dashboard-theme';
+let apiVersion = 'unknown';
+try {
+  // Local build-time package manifest; shape is known and trusted, not external input.
+  const manifest = createRequire(import.meta.url)('../package.json') as { version?: string };
+  apiVersion = manifest.version ?? 'unknown';
+} catch {
+  apiVersion = 'unknown';
+}
 
 const workspaceId = z.string().regex(/^ws_[A-Za-z0-9_-]{20,80}$/);
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
@@ -58,6 +69,41 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
         sessionExpiresAt: typeof request.auth?.expiresAt === 'number' ? new Date(request.auth.expiresAt * 1_000).toISOString() : null
       }
     });
+  });
+
+  router.get('/api/v1/server', (request: DashboardRequest, response) => {
+    const selected = principal(request, response);
+    if (!selected || selected.kind !== 'external') return;
+    const host = config.publicHosts[0];
+    response.json({
+      data: {
+        authMode: config.authMode,
+        managedOAuthUrl: host ? `https://${host}/mcp` : null,
+        apiKeyGateway: config.apiKeyAuthEnabled
+          ? { enabled: true, endpoint: config.apiKeyGatewayPublicUrl ?? null }
+          : { enabled: false },
+        limits: { maxRequestBytes: config.maxBodyBytes, requestTimeoutMs: config.requestTimeoutMs },
+        version: apiVersion,
+        session: {
+          expiresAt: typeof request.auth?.expiresAt === 'number' ? new Date(request.auth.expiresAt * 1_000).toISOString() : null,
+          scopes: request.auth?.scopes ?? []
+        },
+        checkedAt: new Date().toISOString()
+      }
+    });
+  });
+
+  router.put('/api/v1/preferences', (request: DashboardRequest, response) => {
+    const selected = principal(request, response);
+    if (!selected || selected.kind !== 'external') return;
+    const parsed = z.object({ theme: z.enum(['system', 'light', 'dark']) }).strict().safeParse(request.body);
+    if (!parsed.success) { response.status(400).json({ error: 'invalid_request', message: 'Unsupported theme preference.' }); return; }
+    const { theme } = parsed.data;
+    const attributes = 'Path=/dashboard; HttpOnly; Secure; SameSite=Strict';
+    response.setHeader('Set-Cookie', theme === 'system'
+      ? `${THEME_COOKIE}=; ${attributes}; Max-Age=0`
+      : `${THEME_COOKIE}=${theme}; ${attributes}; Max-Age=31536000`);
+    response.json({ data: { theme } });
   });
 
   router.get('/api/v1/workspaces', async (request: DashboardRequest, response, next) => {

@@ -41,6 +41,19 @@ describe('dashboard application mount', () => {
     }
   });
 
+  it('injects the forced theme from the preference cookie into the shell', async () => {
+    const app = express();
+    app.use('/dashboard', createDashboardAssetsRouter());
+    server = createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server failed');
+    const base = `http://127.0.0.1:${address.port}/dashboard/overview`;
+    expect(await (await fetch(base)).text()).toContain('<html lang="en">');
+    expect(await (await fetch(base, { headers: { cookie: 'ch-dashboard-theme=dark' } })).text()).toContain('<html lang="en" data-theme="dark">');
+    expect(await (await fetch(base, { headers: { cookie: 'ch-dashboard-theme=neon' } })).text()).toContain('<html lang="en">');
+  });
+
   it('does not expose dashboard routes in owner-bearer mode', async () => {
     const url = await serve({
       authMode: 'owner-bearer', host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken,
