@@ -1,11 +1,11 @@
 name: Deploy Cloudflare Pages
 
 on:
-  workflow_dispatch:
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
+
 permissions:
   contents: read
 
@@ -16,10 +16,9 @@ concurrency:
 jobs:
   deploy:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main')
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
