@@ -45,6 +45,8 @@ describe('marketing site diagram and structure verification', () => {
     expect(page).toContain('https://agentkit.best');
     expect(page).toContain('https://goclaw.sh');
     expect(page).toContain('githubStarsCount');
+    expect(page).toContain('Bounded Coding Workflow');
+    expect(page).toContain('seq-arrow-cyan');
     expect(page).toContain('agents_spawn');
     expect(page).toContain('symbols_search');
     expect(page).toContain('workspace_open');
