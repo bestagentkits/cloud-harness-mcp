@@ -20,11 +20,17 @@ export async function mintPrincipalRepositoryToken(input: {
   const { owner, repository } = parseGitHubRepository(input.repositoryUrl);
   const grant = input.installations.getRepositoryGrant(input.principalId, owner, repository);
   const requiredPermission = input.requiredPermission ?? 'read';
-  if (
-    !grant ||
-    grant.status !== 'granted' ||
-    (requiredPermission === 'write' && grant.contents !== 'write')
-  ) throw new HarnessError('FORBIDDEN', 'GitHub repository access is not authorized', 403);
+
+  if (!grant || grant.status !== 'granted') {
+    if (requiredPermission === 'write') {
+      throw new HarnessError('FORBIDDEN', 'GitHub repository access is not authorized', 403);
+    }
+    return undefined;
+  }
+
+  if (requiredPermission === 'write' && grant.contents !== 'write') {
+    throw new HarnessError('FORBIDDEN', 'GitHub repository access is not authorized', 403);
+  }
 
   const installation = input.installations.getInstallation(input.principalId, grant.installationId);
   if (

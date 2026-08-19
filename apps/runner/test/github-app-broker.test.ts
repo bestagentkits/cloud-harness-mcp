@@ -61,19 +61,26 @@ describe('GitHub App broker', () => {
       installations
     };
 
-    await expect(mintPrincipalRepositoryToken({ ...request, principalId: 'principal-b' })).rejects.toThrow('not authorized');
+    await expect(mintPrincipalRepositoryToken({ ...request, principalId: 'principal-b' })).resolves.toBeUndefined();
+    await expect(mintPrincipalRepositoryToken({
+      ...request, principalId: 'principal-b', requiredPermission: 'write'
+    })).rejects.toThrow('not authorized');
     await expect(mintPrincipalRepositoryToken({
       ...request, principalId: 'principal-a', requiredPermission: 'write'
     })).rejects.toThrow('not authorized');
-
     installations.replaceVerified('principal-a', {
       appId: 123, installationId: 456, accountId: 789, accountLogin: 'example', status: 'active', repositories: []
     }, 2_000);
-    await expect(mintPrincipalRepositoryToken({ ...request, principalId: 'principal-a' })).rejects.toThrow('not authorized');
+    await expect(mintPrincipalRepositoryToken({
+      ...request, principalId: 'principal-a', requiredPermission: 'write'
+    })).rejects.toThrow('not authorized');
     installations.replaceVerified('principal-a', {
-      appId: 123, installationId: 456, accountId: 789, accountLogin: 'example', status: 'suspended', repositories: []
+      appId: 123, installationId: 456, accountId: 789, accountLogin: 'example', status: 'suspended',
+      repositories: []
     }, 3_000);
-    await expect(mintPrincipalRepositoryToken({ ...request, principalId: 'principal-a' })).rejects.toThrow('not authorized');
+    await expect(mintPrincipalRepositoryToken({
+      ...request, principalId: 'principal-a', requiredPermission: 'write'
+    })).rejects.toThrow('not authorized');
     expect(authMocks.createAppAuth).not.toHaveBeenCalled();
   });
 

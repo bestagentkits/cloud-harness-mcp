@@ -132,7 +132,8 @@ describe('GitHub installation binding', () => {
       config: { githubApp: { appId: 123, privateKey: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----' } } as RunnerConfig,
       principalId: 'principal-a',
       repositoryUrl: new URL('https://github.com/example/private-repo.git'),
-      installations: store
+      installations: store,
+      requiredPermission: 'write'
     })).rejects.toThrow('not authorized');
   });
 
