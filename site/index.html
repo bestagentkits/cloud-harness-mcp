@@ -892,6 +892,10 @@
       }
 
       /* Responsive Queries */
+      @media (max-width: 1120px) {
+        .nav-links { display: none; }
+        .mobile-menu-btn { display: inline-flex; }
+      }
       @media (max-width: 960px) {
         .hero-section { grid-template-columns: 1fr; }
         .arch-grid { grid-template-columns: 1fr; }
@@ -1236,6 +1240,20 @@
 
           <div class="diagram-scroll-wrapper">
             <svg class="svg-hud-diagram" viewBox="0 0 1000 440" aria-label="Sequence Workflow">
+              <defs>
+                <marker id="seq-arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--cyan-glow)" />
+                </marker>
+                <marker id="seq-arrow-purple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--purple-laser)" />
+                </marker>
+                <marker id="seq-arrow-green" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--green-neon)" />
+                </marker>
+                <marker id="seq-arrow-amber" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--amber-warn)" />
+                </marker>
+              </defs>
               <!-- Column Lifelines -->
               <line x1="120" y1="60" x2="120" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
               <line x1="380" y1="60" x2="380" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
@@ -1256,33 +1274,33 @@
               <text x="830" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">GitHub Origin</text>
 
               <!-- Step 1: workspace_open -->
-              <path d="M 120 100 L 380 100" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#arrow-cyan)" />
+              <path d="M 120 100 L 380 100" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#seq-arrow-cyan)" />
               <text x="140" y="92" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">1. workspace_open(repoUrl, idempotencyKey)</text>
 
-              <path d="M 380 130 L 880 130" stroke="var(--purple-laser)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <path d="M 380 130 L 880 130" stroke="var(--purple-laser)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-purple)" />
               <text x="420" y="122" fill="var(--purple-laser)" font-family="var(--font-mono)" font-size="11">2. Ephemeral Git Clone (Token over stdin)</text>
 
-              <path d="M 380 165 L 650 165" stroke="var(--green-neon)" stroke-width="2" />
+              <path d="M 380 165 L 650 165" stroke="var(--green-neon)" stroke-width="2" marker-end="url(#seq-arrow-green)" />
               <text x="400" y="157" fill="var(--green-neon)" font-family="var(--font-mono)" font-size="11">3. Spawn Non-Root Container (TTL: 30m, Net: None)</text>
 
-              <path d="M 380 195 L 120 195" stroke="var(--cyan-glow)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <path d="M 380 195 L 120 195" stroke="var(--cyan-glow)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-cyan)" />
               <text x="160" y="187" fill="var(--text-muted)" font-family="var(--font-mono)" font-size="11">4. Returns opaque workspaceId</text>
 
               <!-- Step 2: Agent Work -->
-              <path d="M 120 240 L 650 240" stroke="var(--cyan-glow)" stroke-width="2" />
+              <path d="M 120 240 L 650 240" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#seq-arrow-cyan)" />
               <text x="180" y="232" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">5. grep_search / files_apply_patch / shell_open / tasks_run</text>
 
-              <path d="M 650 270 L 120 270" stroke="var(--green-neon)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <path d="M 650 270 L 120 270" stroke="var(--green-neon)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-green)" />
               <text x="240" y="262" fill="var(--green-neon)" font-family="var(--font-mono)" font-size="11">6. Real-time stream results (Zero host leaks)</text>
 
               <!-- Step 3: Git Push & Purge -->
               <path d="M 120 320 L 380 320" stroke="var(--cyan-glow)" stroke-width="2" />
               <text x="150" y="312" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">7. git_push(refspec, forceWithLease)</text>
 
-              <path d="M 380 345 L 880 345" stroke="var(--purple-laser)" stroke-width="2" />
+              <path d="M 380 345 L 880 345" stroke="var(--purple-laser)" stroke-width="2" marker-end="url(#seq-arrow-purple)" />
               <text x="450" y="337" fill="var(--purple-laser)" font-family="var(--font-mono)" font-size="11">8. Broker push via short-lived stdin helper</text>
 
-              <path d="M 120 380 L 380 380" stroke="#f59e0b" stroke-width="2" />
+              <path d="M 120 380 L 380 380" stroke="#f59e0b" stroke-width="2" marker-end="url(#seq-arrow-amber)" />
               <text x="150" y="372" fill="#f59e0b" font-family="var(--font-mono)" font-size="11">9. workspace_close → Container & volumes destroyed (0 residual state)</text>
             </svg>
           </div>
