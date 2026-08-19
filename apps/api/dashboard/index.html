@@ -13,12 +13,17 @@
     <aside id="product-nav" class="sidebar" aria-label="Product navigation">
       <div class="brand">Cloud Harness</div>
       <nav aria-label="Primary">
+        <a href="/dashboard/overview" data-section="overview">Overview</a>
+        <p class="nav-group">Runtime</p>
         <a href="/dashboard" data-section="workspaces">Workspaces</a>
+        <p class="nav-group">Configuration</p>
         <a href="/dashboard/projects" data-section="projects">Projects</a>
-        <a href="/dashboard/artifacts" data-section="artifacts">Artifacts</a>
-        <a href="/dashboard/audit" data-section="audit">Audit</a>
         <a href="/dashboard/api-keys" data-section="api-keys">API keys</a>
         <a href="/dashboard/github" data-section="github">GitHub</a>
+        <p class="nav-group">Observability</p>
+        <a href="/dashboard/artifacts" data-section="artifacts">Artifacts</a>
+        <a href="/dashboard/audit" data-section="audit">Audit</a>
+        <p class="nav-group">Account</p>
         <a href="/dashboard/profile" data-section="profile">Profile</a>
         <div id="context-nav"></div>
       </nav>
@@ -40,6 +45,7 @@
     <aside id="detail" class="detail" aria-labelledby="workspace-detail-title" hidden></aside>
   </div>
   <div id="announcer" class="sr-only" aria-live="polite"></div>
+  <div id="toasts" class="toasts" aria-hidden="true"></div>
   <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
     <h2 id="confirm-title">Confirm action</h2><p id="confirm-description"></p><p id="confirm-target" class="mono"></p>
     <p id="confirm-status" class="status-message" aria-live="polite"></p>

@@ -3,7 +3,7 @@ import {
   apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
   renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderOverview, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
 
 class FakeElement {
   hidden = false;
@@ -282,6 +282,19 @@ describe('dashboard UI behavior', () => {
     const html = renderProfile({ identity: { issuer: 'https://team.cloudflareaccess.com', subject: 'operator' }, scopes: [], sessionExpiresAt: null });
     expect(html).toContain('Not provided');
     expect(html).toContain('No scopes reported.');
+    expect(html).toContain('Never');
+  });
+
+  it('escapes attacker-influenceable overview fields and renders a copy affordance', () => {
+    const html = renderOverview({
+      metrics: [{ label: 'GitHub', value: '<img src=x onerror=alert(1)>', small: true, note: '<b>x</b>' }],
+      activity: [{ action: '<script>a</script>', subjectType: 'workspace', subjectId: '<script>b</script>', createdAt: '2026-01-01T00:00:00.000Z' }],
+      access: { name: '<script>n</script>', email: 'op@example.com', sessionExpiresAt: undefined, endpoint: 'https://api.example.com/mcp"><script>' }
+    });
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('&lt;script&gt;');
+    expect(html).toContain('data-copy="https://api.example.com/mcp&quot;&gt;&lt;script&gt;"');
     expect(html).toContain('Never');
   });
 });

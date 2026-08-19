@@ -1,7 +1,7 @@
 import { api } from './dashboard-api.js';
 import {
-  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderProjectDetail,
-  renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName
+  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderOverview, renderOverviewSkeleton,
+  renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName
 } from './dashboard-render.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -172,7 +172,16 @@ export function initializeDashboard() {
     clipboard: globalThis.navigator.clipboard, reportError: showError
   });
   const setBusy = (busy) => content.setAttribute('aria-busy', String(busy));
-  const announce = (message) => { announcer.textContent = message; };
+  const announce = (message) => { announcer.textContent = message; toast(message); };
+  function toast(message, kind = '') {
+    const region = document.querySelector('#toasts');
+    if (!region) return;
+    const node = document.createElement('div');
+    node.className = kind ? `toast ${kind}` : 'toast';
+    node.textContent = message;
+    region.appendChild(node);
+    globalThis.setTimeout(() => node.remove(), 4200);
+  }
   let apiKeyPageData;
   function showError(error) {
     alertBox.hidden = false;
@@ -196,6 +205,7 @@ export function initializeDashboard() {
     alertBox.hidden = true; setBusy(true);
     try {
       if (location.pathname === '/dashboard' || location.pathname === '/dashboard/') await loadIndex();
+      else if (location.pathname === '/dashboard/overview') await loadOverview();
       else if (location.pathname === '/dashboard/projects') await loadProjects();
       else if (projectMatch) await loadProject(projectMatch[1]);
       else if (location.pathname === '/dashboard/artifacts') await loadArtifacts();
@@ -209,6 +219,39 @@ export function initializeDashboard() {
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
       setBusy(false); main.focus({ preventScroll: true });
     } catch (error) { showError(error); }
+  }
+  async function loadOverview() {
+    selectNavigation('overview');
+    setTitle('Overview', 'A live summary of your workspaces, credentials, and recent activity.');
+    document.querySelector('#command-surface').hidden = true;
+    content.innerHTML = renderOverviewSkeleton();
+    const [ws, keys, auditResult, github, profile] = await Promise.allSettled([
+      api('/workspaces'), api('/api-keys'), api('/audit?limit=50'), api('/github'), api('/profile')
+    ]);
+    const data = (result) => result.status === 'fulfilled' ? result.value.data : undefined;
+    const workspaces = data(ws)?.workspaces ?? [];
+    const keyData = data(keys);
+    const apiKeys = Array.isArray(keyData?.keys) ? keyData.keys : [];
+    const events = data(auditResult)?.events ?? [];
+    const installation = data(github)?.installation;
+    const identity = data(profile)?.identity ?? {};
+    const endpoint = keyData?.readiness?.ready === true ? (keyData.readiness.publicUrl ?? keyData.publicUrl) : undefined;
+    const account = installation?.accountLogin ?? installation?.accountId;
+    content.innerHTML = renderOverview({
+      metrics: [
+        { label: 'Active workspaces', value: workspaces.filter((item) => item.status === 'ACTIVE').length, note: `${workspaces.length} total` },
+        { label: 'API keys', value: `${apiKeys.filter((item) => item.state === 'ACTIVE').length}/10`, note: 'Active of limit' },
+        { label: 'GitHub', value: installation ? 'Connected' : 'Not connected', small: true, note: installation ? (account ?? 'Installation bound') : 'No installation bound' },
+        { label: 'Recent events', value: events.length, note: 'Retained audit records' }
+      ],
+      activity: events.slice(0, 6).map((event) => ({ action: event.action, subjectType: event.subjectType, subjectId: event.subjectId, createdAt: event.createdAt })),
+      access: {
+        name: identity.name ?? 'Not provided',
+        email: identity.email ?? 'Not provided',
+        sessionExpiresAt: data(profile)?.sessionExpiresAt,
+        endpoint: typeof endpoint === 'string' && /^https:\/\//.test(endpoint) ? endpoint : undefined
+      }
+    });
   }
   async function loadIndex() {
     selectNavigation('workspaces');
@@ -425,6 +468,11 @@ export function initializeDashboard() {
   menuButton.addEventListener('click', () => menu.active ? menu.close() : menu.open());
   document.querySelector('#nav-toggle').addEventListener('click', (event) => { const expanded = event.currentTarget.getAttribute('aria-expanded') === 'true'; event.currentTarget.setAttribute('aria-expanded', String(!expanded)); event.currentTarget.textContent = expanded ? 'Expand navigation' : 'Collapse navigation'; });
   document.addEventListener('click', (event) => { if (event.target.closest?.('a[href]')) apiKeyReveal.clear(); }, { capture: true });
+  document.addEventListener('click', (event) => {
+    const trigger = event.target.closest?.('[data-copy]');
+    if (!trigger) return;
+    void globalThis.navigator.clipboard.writeText(trigger.dataset.copy).then(() => announce('Copied to clipboard.')).catch(() => announce('Copy failed. Select and copy the value manually.'));
+  });
   addEventListener('pagehide', () => apiKeyReveal.clear());
   addEventListener('popstate', () => location.reload()); void load();
 }

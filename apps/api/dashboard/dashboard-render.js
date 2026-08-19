@@ -116,3 +116,21 @@ const publicMcpUrl = (value) => {
     return url.protocol === 'https:' && url.pathname === '/mcp' && !url.username && !url.password && !url.search && !url.hash ? url.toString() : undefined;
   } catch { return undefined; }
 };
+
+export function renderOverviewSkeleton() {
+  const tile = '<li class="skeleton tile" aria-hidden="true"></li>';
+  const block = '<div class="skeleton tile" aria-hidden="true"></div>';
+  return `<div class="overview"><ul class="metric-grid">${tile.repeat(4)}</ul><div class="overview-columns">${block}${block}</div></div>`;
+}
+
+export function renderOverview(summary) {
+  const metrics = summary.metrics.map((metric) => `<li class="metric"><span class="metric-label">${escape(metric.label)}</span><span class="metric-value${metric.small ? ' small' : ''}">${escape(metric.value)}</span>${metric.note ? `<span class="metric-note">${escape(metric.note)}</span>` : ''}</li>`).join('');
+  const activity = summary.activity.length
+    ? `<ul class="activity-list">${summary.activity.map((event) => `<li><strong>${escape(event.action)}</strong>${time(event.createdAt)}<span class="subject">${escape(event.subjectType)} <span class="mono wrap">${escape(event.subjectId)}</span></span></li>`).join('')}</ul>`
+    : '<p>No retained audit events yet.</p>';
+  const access = summary.access;
+  const endpoint = access.endpoint
+    ? `<dt>Static endpoint</dt><dd class="wrap"><span class="mono wrap">${escape(access.endpoint)}</span> <button type="button" class="copy" data-copy="${escape(access.endpoint)}">Copy</button></dd>`
+    : '';
+  return `<div class="overview"><ul class="metric-grid">${metrics}</ul><div class="overview-columns"><section class="panel" aria-labelledby="overview-activity-heading"><h2 id="overview-activity-heading">Recent activity</h2>${activity}</section><section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name)}</dd><dt>Email</dt><dd class="wrap">${escape(access.email)}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section></div></div>`;
+}

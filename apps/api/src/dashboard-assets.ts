@@ -12,6 +12,7 @@ export function createDashboardAssetsRouter(): Router {
   router.get('/assets/dashboard.js', (_request, response) => response.sendFile('dashboard.js', options));
   router.get([
     '/',
+    '/overview',
     '/workspaces/:workspaceId',
     '/workspaces/:workspaceId/files',
     '/workspaces/:workspaceId/runtime',
