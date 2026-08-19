@@ -891,18 +891,21 @@
         color: #fff;
       }
 
-      /* Responsive Queries */
+            /* Responsive Queries */
       @media (max-width: 1120px) {
-        .nav-links { display: none; }
-        .mobile-menu-btn { display: inline-flex; }
+        .nav-links { display: none !important; }
+        .mobile-menu-btn { display: inline-flex !important; }
       }
-      @media (max-width: 960px) {
+
+      @media (max-width: 860px) {
+        .nav-connect-btn { display: none !important; }
+        .github-btn-text { display: none !important; }
+        .logo-tag { display: none !important; }
+        .main-nav { padding: 0.85rem 1.15rem; }
         .hero-section { grid-template-columns: 1fr; }
         .arch-grid { grid-template-columns: 1fr; }
         .invariants-grid { grid-template-columns: 1fr; }
         .client-content-panel { grid-template-columns: 1fr; }
-        .nav-links { display: none; }
-        .mobile-menu-btn { display: block; }
         .swipe-hint { display: block; }
         .footer-top-row { flex-direction: column; text-align: center; }
         .tools-filter-bar { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.5rem; -webkit-overflow-scrolling: touch; }
@@ -911,7 +914,6 @@
       @media (max-width: 640px) {
         .hero-stats { grid-template-columns: 1fr; gap: 1rem; }
         .tools-cards-grid { grid-template-columns: 1fr; }
-        .main-nav { padding: 1rem 1.25rem; }
         .telemetry-bar { font-size: 0.7rem; padding: 0.4rem 1rem; }
       }
     </style>
@@ -982,6 +984,7 @@
 
       <!-- Mobile Navigation Drawer -->
       <nav class="mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
+        <a href="#connect" class="hud-button hud-button-primary drawer-connect-btn" style="justify-content: center; text-align: center; margin-bottom: 0.5rem;" onclick="toggleMobileMenu()">Connect Agent →</a>
         <a href="#connect" class="hud-button hud-button-primary" style="justify-content: center; text-align: center; margin-bottom: 0.5rem;" onclick="toggleMobileMenu()">Connect Agent →</a>
         <a href="#architecture" onclick="toggleMobileMenu()">Architecture</a>
         <a href="#workflows" onclick="toggleMobileMenu()">Workflows</a>
