@@ -1,3 +1,10 @@
+# [0.8.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.7.1...v0.8.0) (2026-08-19)
+
+
+### Features
+
+* **dashboard:** add Profile page with signed-in account details ([83ae75d](https://github.com/bestagentkits/cloud-harness-mcp/commit/83ae75d468b723de6e502c56a0f3ef67416171ce))
+
 ## [0.7.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.7.0...v0.7.1) (2026-08-18)
 
 
