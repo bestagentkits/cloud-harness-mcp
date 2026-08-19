@@ -1,3 +1,10 @@
+# [0.13.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.12.0...v0.13.0) (2026-08-19)
+
+
+### Features
+
+* **docs:** public documentation site at docs.harness.agentkit.best with AI-crawler markdown twins ([#52](https://github.com/bestagentkits/cloud-harness-mcp/issues/52)) ([bf68455](https://github.com/bestagentkits/cloud-harness-mcp/commit/bf68455917769faf293eb9595e8c430b97544a15))
+
 # [0.12.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.11.0...v0.12.0) (2026-08-19)
 
 
