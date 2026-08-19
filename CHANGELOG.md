@@ -1,3 +1,10 @@
+# [0.14.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.13.0...v0.14.0) (2026-08-19)
+
+
+### Features
+
+* **github-app:** support multiple installations per principal ([#54](https://github.com/bestagentkits/cloud-harness-mcp/issues/54)) ([#55](https://github.com/bestagentkits/cloud-harness-mcp/issues/55)) ([aa7d1cb](https://github.com/bestagentkits/cloud-harness-mcp/commit/aa7d1cb8692baef1c0e3cefbe365f70a607d71a8))
+
 # [0.13.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.12.0...v0.13.0) (2026-08-19)
 
 
