@@ -68,12 +68,12 @@
 
       /* HUD Top Telemetry Bar */
       .telemetry-bar {
-        background: rgba(0, 0, 0, 0.9);
+        background: rgba(0, 0, 0, 0.92);
         backdrop-filter: blur(16px);
         border-bottom: 1px solid var(--border-soft);
         font-family: var(--font-mono);
         font-size: 0.75rem;
-        padding: 0.5rem 1.5rem;
+        padding: 0.45rem clamp(1rem, 3vw, 2rem);
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -83,12 +83,14 @@
         overflow-x: auto;
         white-space: nowrap;
         -webkit-overflow-scrolling: touch;
+        gap: 1.5rem;
       }
 
       .telemetry-group {
         display: flex;
         gap: 1.75rem;
         align-items: center;
+        flex-shrink: 0;
       }
 
       .telemetry-item {
@@ -104,6 +106,7 @@
         background: var(--green-neon);
         box-shadow: 0 0 8px var(--green-neon);
         animation: pulse 2.4s infinite;
+        flex-shrink: 0;
       }
 
       @keyframes pulse {
@@ -111,15 +114,18 @@
         50% { opacity: 0.35; transform: scale(0.85); }
       }
 
-      /* Main Nav */
+      /* Main Nav - Zero Wrapping Layout */
       .main-nav {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 1.25rem 2rem;
+        padding: 1.15rem clamp(1rem, 3vw, 2.5rem);
         max-width: 1380px;
         margin: 0 auto;
         position: relative;
+        flex-wrap: nowrap;
+        gap: 1rem;
+        width: 100%;
       }
 
       .logo-hud {
@@ -130,6 +136,8 @@
         font-weight: 800;
         font-size: 1.15rem;
         letter-spacing: -0.02em;
+        flex-shrink: 0;
+        white-space: nowrap;
       }
 
       .logo-icon {
@@ -142,6 +150,7 @@
         align-items: center;
         justify-content: center;
         box-shadow: 0 0 14px var(--cyan-dim);
+        flex-shrink: 0;
       }
 
       .logo-tag {
@@ -155,9 +164,12 @@
 
       .nav-links {
         display: flex;
-        gap: 2rem;
+        gap: clamp(1rem, 2vw, 2.25rem);
         font-family: var(--font-mono);
         font-size: 0.88rem;
+        flex-shrink: 1;
+        white-space: nowrap;
+        align-items: center;
       }
 
       .nav-links a {
@@ -175,7 +187,9 @@
       .nav-actions {
         display: flex;
         align-items: center;
-        gap: 0.85rem;
+        gap: 0.75rem;
+        flex-shrink: 0;
+        white-space: nowrap;
       }
 
       .hud-button {
@@ -190,6 +204,7 @@
         cursor: pointer;
         transition: all 0.2s ease;
         white-space: nowrap;
+        flex-shrink: 0;
       }
 
       .hud-button-primary {
@@ -221,7 +236,7 @@
       .github-star-btn {
         display: inline-flex;
         align-items: center;
-        gap: 0.5rem;
+        gap: 0.45rem;
       }
 
       .github-star-badge {
@@ -236,15 +251,23 @@
         letter-spacing: 0.02em;
       }
 
-      /* Mobile Menu Toggle */
+      /* Mobile Menu Toggle Button */
       .mobile-menu-btn {
         display: none;
-        background: transparent;
+        background: rgba(10, 14, 22, 0.8);
         border: 1px solid var(--border-soft);
         border-radius: 6px;
-        padding: 0.45rem;
+        padding: 0.5rem;
         color: var(--text-bright);
         cursor: pointer;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+
+      .mobile-menu-btn:hover {
+        border-color: var(--cyan-glow);
+        color: var(--cyan-glow);
       }
 
       .mobile-drawer {
@@ -254,12 +277,12 @@
         left: 0;
         right: 0;
         bottom: 0;
-        background: rgba(0, 0, 0, 0.96);
-        backdrop-filter: blur(20px);
+        background: rgba(0, 0, 0, 0.97);
+        backdrop-filter: blur(24px);
         z-index: 999;
         padding: 2rem 1.5rem;
         flex-direction: column;
-        gap: 1.5rem;
+        gap: 1.25rem;
         border-bottom: 1px solid var(--border-soft);
       }
 
@@ -269,9 +292,9 @@
 
       .mobile-drawer a {
         font-family: var(--font-mono);
-        font-size: 1.1rem;
+        font-size: 1.05rem;
         padding: 0.75rem 0;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         color: var(--text-bright);
       }
 
@@ -892,13 +915,16 @@
       }
 
       /* Responsive Queries */
+      @media (max-width: 1120px) {
+        .nav-links { display: none; }
+        .mobile-menu-btn { display: inline-flex; }
+      }
+
       @media (max-width: 960px) {
         .hero-section { grid-template-columns: 1fr; }
         .arch-grid { grid-template-columns: 1fr; }
         .invariants-grid { grid-template-columns: 1fr; }
         .client-content-panel { grid-template-columns: 1fr; }
-        .nav-links { display: none; }
-        .mobile-menu-btn { display: block; }
         .swipe-hint { display: block; }
         .footer-top-row { flex-direction: column; text-align: center; }
         .tools-filter-bar { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.5rem; -webkit-overflow-scrolling: touch; }
@@ -909,6 +935,7 @@
         .tools-cards-grid { grid-template-columns: 1fr; }
         .main-nav { padding: 1rem 1.25rem; }
         .telemetry-bar { font-size: 0.7rem; padding: 0.4rem 1rem; }
+        .github-star-btn span:first-of-type { display: none; }
       }
     </style>
   </head>
@@ -991,8 +1018,8 @@
     </header>
 
     <!-- Hero Section with Generous Spacing -->
-    <main>
-      <section class="hero-section">
+    <main id="main-content">
+      <section class="hero-section" id="hero">
         <div>
           <div class="badge-cyber">
             <span class="pulse-dot"></span>
@@ -1096,6 +1123,12 @@
                 <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
                   <path d="M0,0 L8,4 L0,8 z" fill="var(--cyan-glow)" />
                 </marker>
+                <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--green-neon)" />
+                </marker>
+                <marker id="arrow-purple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--purple-laser)" />
+                </marker>
               </defs>
 
               <!-- Zone 1: Ingress & Client -->
@@ -1160,12 +1193,12 @@
               </g>
 
               <!-- Animated Connecting Wire Paths -->
-              <path class="svg-wire" id="path-client-ingress" d="M 130 170 L 130 260" />
-              <path class="svg-wire" id="path-ingress-api" d="M 220 295 L 260 295 L 260 135 L 290 135" />
-              <path class="svg-wire-active" id="path-api-runner" d="M 440 135 L 470 135" />
-              <path class="svg-wire-green" id="path-runner-exec" d="M 610 135 L 680 135" />
-              <path class="svg-wire" id="path-runner-broker" d="M 540 170 L 540 260" />
-              <path class="svg-wire" id="path-broker-helper" d="M 610 295 L 680 295" />
+              <path class="svg-wire" id="path-client-ingress" d="M 130 170 L 130 260" marker-end="url(#arrow-cyan)" />
+              <path class="svg-wire" id="path-ingress-api" d="M 220 295 L 260 295 L 260 135 L 290 135" marker-end="url(#arrow-cyan)" />
+              <path class="svg-wire-active" id="path-api-runner" d="M 440 135 L 470 135" marker-end="url(#arrow-cyan)" />
+              <path class="svg-wire-green" id="path-runner-exec" d="M 610 135 L 680 135" marker-end="url(#arrow-green)" />
+              <path class="svg-wire" id="path-runner-broker" d="M 540 170 L 540 260" marker-end="url(#arrow-purple)" />
+              <path class="svg-wire" id="path-broker-helper" d="M 610 295 L 680 295" marker-end="url(#arrow-purple)" />
 
               <!-- Traveling Glowing Packets -->
               <circle class="svg-packet-cyan" r="5">
@@ -1221,7 +1254,7 @@
       <section class="section-wrap" id="workflows">
         <div class="section-header">
           <div class="section-tag">// Lifecycle Dynamics</div>
-          <h2 class="section-title">End-to-End Agent Coding Workflow</h2>
+          <h2 class="section-title">Bounded Coding Workflow</h2>
           <p style="color: var(--text-muted);">
             A high-velocity, deterministic sequence from workspace boot to safe git push and automatic sandbox purging.
           </p>
@@ -1236,11 +1269,26 @@
 
           <div class="diagram-scroll-wrapper">
             <svg class="svg-hud-diagram" viewBox="0 0 1000 440" aria-label="Sequence Workflow">
+              <defs>
+                <marker id="seq-arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--cyan-glow)" />
+                </marker>
+                <marker id="seq-arrow-purple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--purple-laser)" />
+                </marker>
+                <marker id="seq-arrow-green" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--green-neon)" />
+                </marker>
+                <marker id="seq-arrow-amber" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--amber-warn)" />
+                </marker>
+              </defs>
+
               <!-- Column Lifelines -->
-              <line x1="120" y1="60" x2="120" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
-              <line x1="380" y1="60" x2="380" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
-              <line x1="650" y1="60" x2="650" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
-              <line x1="880" y1="60" x2="880" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="120" y1="60" x2="120" y2="400" stroke="rgba(255,255,255,0.12)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="380" y1="60" x2="380" y2="400" stroke="rgba(255,255,255,0.12)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="650" y1="60" x2="650" y2="400" stroke="rgba(255,255,255,0.12)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="880" y1="60" x2="880" y2="400" stroke="rgba(255,255,255,0.12)" stroke-width="1.5" stroke-dasharray="4 4" />
 
               <!-- Column Header Badges -->
               <rect x="50" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--cyan-glow)" stroke-width="1.2" />
@@ -1256,33 +1304,33 @@
               <text x="830" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">GitHub Origin</text>
 
               <!-- Step 1: workspace_open -->
-              <path d="M 120 100 L 380 100" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#arrow-cyan)" />
+              <path d="M 120 100 L 380 100" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#seq-arrow-cyan)" />
               <text x="140" y="92" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">1. workspace_open(repoUrl, idempotencyKey)</text>
 
-              <path d="M 380 130 L 880 130" stroke="var(--purple-laser)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <path d="M 380 130 L 880 130" stroke="var(--purple-laser)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-purple)" />
               <text x="420" y="122" fill="var(--purple-laser)" font-family="var(--font-mono)" font-size="11">2. Ephemeral Git Clone (Token over stdin)</text>
 
-              <path d="M 380 165 L 650 165" stroke="var(--green-neon)" stroke-width="2" />
+              <path d="M 380 165 L 650 165" stroke="var(--green-neon)" stroke-width="2" marker-end="url(#seq-arrow-green)" />
               <text x="400" y="157" fill="var(--green-neon)" font-family="var(--font-mono)" font-size="11">3. Spawn Non-Root Container (TTL: 30m, Net: None)</text>
 
-              <path d="M 380 195 L 120 195" stroke="var(--cyan-glow)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <path d="M 380 195 L 120 195" stroke="var(--cyan-glow)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-cyan)" />
               <text x="160" y="187" fill="var(--text-muted)" font-family="var(--font-mono)" font-size="11">4. Returns opaque workspaceId</text>
 
               <!-- Step 2: Agent Work -->
-              <path d="M 120 240 L 650 240" stroke="var(--cyan-glow)" stroke-width="2" />
+              <path d="M 120 240 L 650 240" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#seq-arrow-cyan)" />
               <text x="180" y="232" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">5. grep_search / files_apply_patch / shell_open / tasks_run</text>
 
-              <path d="M 650 270 L 120 270" stroke="var(--green-neon)" stroke-width="1.8" stroke-dasharray="4 4" />
+              <path d="M 650 270 L 120 270" stroke="var(--green-neon)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-green)" />
               <text x="240" y="262" fill="var(--green-neon)" font-family="var(--font-mono)" font-size="11">6. Real-time stream results (Zero host leaks)</text>
 
               <!-- Step 3: Git Push & Purge -->
-              <path d="M 120 320 L 380 320" stroke="var(--cyan-glow)" stroke-width="2" />
+              <path d="M 120 320 L 380 320" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#seq-arrow-cyan)" />
               <text x="150" y="312" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">7. git_push(refspec, forceWithLease)</text>
 
-              <path d="M 380 345 L 880 345" stroke="var(--purple-laser)" stroke-width="2" />
+              <path d="M 380 345 L 880 345" stroke="var(--purple-laser)" stroke-width="2" marker-end="url(#seq-arrow-purple)" />
               <text x="450" y="337" fill="var(--purple-laser)" font-family="var(--font-mono)" font-size="11">8. Broker push via short-lived stdin helper</text>
 
-              <path d="M 120 380 L 380 380" stroke="#f59e0b" stroke-width="2" />
+              <path d="M 120 380 L 380 380" stroke="#f59e0b" stroke-width="2" marker-end="url(#seq-arrow-amber)" />
               <text x="150" y="372" fill="#f59e0b" font-family="var(--font-mono)" font-size="11">9. workspace_close → Container & volumes destroyed (0 residual state)</text>
             </svg>
           </div>
@@ -1436,10 +1484,10 @@
               <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">
                 Connect via Streamable HTTP with your operator API key. Claude Code will instantly acquire all remote execution capabilities.
               </p>
-              <ul class="arch-specs" style="border: none; padding: 0;">
-                <li><span>→</span> Full worktree & subagent task graph support</li>
-                <li><span>→</span> Non-root execution ensures your local machine stays clean</li>
-                <li><span>→</span> Auto-reconnect with session recovery</li>
+              <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);">
+                <li><span style="color: var(--cyan-glow);">→</span> Full worktree & subagent task graph support</li>
+                <li><span style="color: var(--cyan-glow);">→</span> Non-root execution ensures your local machine stays clean</li>
+                <li><span style="color: var(--cyan-glow);">→</span> Auto-reconnect with session recovery</li>
               </ul>
             </div>
             <div class="code-box">
@@ -1544,7 +1592,7 @@
           .then(data => {
             if (data && typeof data.stargazers_count === 'number') {
               const badge = document.getElementById('githubStarsCount');
-              if (badge) badge.textContent = `★ ${data.stargazers_count}`;
+              if (badge) badge.textContent = '★ ' + data.stargazers_count;
             }
           })
           .catch(() => {});
@@ -1616,46 +1664,44 @@
           claude: {
             title: "Claude Code Setup",
             desc: "Connect via Streamable HTTP with your operator API key. Claude Code will instantly acquire all remote execution capabilities.",
-            code: `claude mcp add cloud-harness \\\n  --transport http \\\n  https://api.harness.zuey.me/mcp \\\n  --header "Authorization: Bearer YOUR_OPERATOR_KEY"`
+            code: 'claude mcp add cloud-harness \\\n  --transport http \\\n  https://api.harness.zuey.me/mcp \\\n  --header "Authorization: Bearer YOUR_OPERATOR_KEY"'
           },
           cursor: {
             title: "Cursor IDE Configuration",
             desc: "Add Cloud Harness MCP into your project or global .cursor/mcp.json for seamless background agent execution in Cursor.",
-            code: `{\n  "mcpServers": {\n    "cloud-harness": {\n      "url": "https://api.harness.zuey.me/mcp",\n      "headers": {\n        "Authorization": "Bearer YOUR_OPERATOR_KEY"\n      }\n    }\n  }\n}`
+            code: '{\\n  "mcpServers": {\\n    "cloud-harness": {\\n      "url": "https://api.harness.zuey.me/mcp",\\n      "headers": {\\n        "Authorization": "Bearer YOUR_OPERATOR_KEY"\\n      }\\n    }\\n  }\\n}'
           },
           chatgpt: {
             title: "ChatGPT OAuth Connector",
             desc: "Connect directly to the Cloudflare Access SSO endpoint for single-click browser authentication with your corporate Google or GitHub ID.",
-            code: `Endpoint URL: https://harness.zuey.me/mcp\nAuth Type: Managed OAuth (Cloudflare Access)\nProtocol: Streamable HTTP MCP`
+            code: 'Endpoint URL: https://harness.zuey.me/mcp\\nAuth Type: Managed OAuth (Cloudflare Access)\\nProtocol: Streamable HTTP MCP'
           },
           codex: {
             title: "Codex CLI Setup",
             desc: "Configure codex config.toml to route heavy repository operations and Docker executions directly into Cloud Harness.",
-            code: `[mcp_servers.cloud_harness]\nurl = "https://api.harness.zuey.me/mcp"\nheaders = { Authorization = "Bearer YOUR_OPERATOR_KEY" }`
+            code: '[mcp_servers.cloud_harness]\\nurl = "https://api.harness.zuey.me/mcp"\\nheaders = { Authorization = "Bearer YOUR_OPERATOR_KEY" }'
           },
           antigravity: {
             title: "Google Antigravity IDE",
             desc: "Native integration for Google Antigravity developer environment via standard MCP config.",
-            code: `{\n  "servers": {\n    "cloud-harness": {\n      "endpoint": "https://api.harness.zuey.me/mcp",\n      "token": "YOUR_OPERATOR_KEY"\n    }\n  }\n}`
+            code: '{\\n  "servers": {\\n    "cloud-harness": {\\n      "endpoint": "https://api.harness.zuey.me/mcp",\\n      "token": "YOUR_OPERATOR_KEY"\n    }\\n  }\\n}'
           }
         };
 
         const item = configs[client];
-        container.innerHTML = `
-          <div>
-            <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">${item.title}</h3>
-            <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">${item.desc}</p>
-            <ul class="arch-specs" style="border: none; padding: 0;">
-              <li><span>→</span> Streamable HTTP MCP protocol support</li>
-              <li><span>→</span> Strict principal authorization and token validation</li>
-              <li><span>→</span> 52+ tools automatically discovered</li>
-            </ul>
-          </div>
-          <div class="code-box">
-            <button class="copy-btn" onclick="copySnippet('active-code-box')">Copy</button>
-            <pre id="active-code-box" style="overflow-x: auto; color: var(--text-bright);">${item.code}</pre>
-          </div>
-        `;
+        container.innerHTML = '<div>' +
+          '<h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">' + item.title + '</h3>' +
+          '<p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">' + item.desc + '</p>' +
+          '<ul style="list-style: none; display: flex; flex-direction: column; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);">' +
+          '<li><span style="color: var(--cyan-glow);">→</span> Streamable HTTP MCP protocol support</li>' +
+          '<li><span style="color: var(--cyan-glow);">→</span> Strict principal authorization and token validation</li>' +
+          '<li><span style="color: var(--cyan-glow);">→</span> 52+ tools automatically discovered</li>' +
+          '</ul>' +
+          '</div>' +
+          '<div class="code-box">' +
+          '<button class="copy-btn" onclick="copySnippet(\\'active-code-box\\')">Copy</button>' +
+          '<pre id="active-code-box" style="overflow-x: auto; color: var(--text-bright);">' + item.code + '</pre>' +
+          '</div>';
       }
 
       function copySnippet(id) {
