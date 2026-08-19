@@ -50,7 +50,7 @@ describe('dashboard static UI contract', () => {
       expect(html).toContain(`>${label}</a>`);
     }
     for (const endpoint of [
-      "api('/projects')", "api('/artifacts',", '`/audit?limit=50', "api('/github')",
+      "api('/projects')", "api('/artifacts',", '`/audit?limit=50', "api('/github')", "api('/profile')",
       "'/github/setup'", "'/github/complete'", "'/github/reconcile'", '`/environments/${'
     ]) expect(script).toContain(endpoint);
     expect(script).toContain('expectedGeneration');
