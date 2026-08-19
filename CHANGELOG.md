@@ -1,3 +1,10 @@
+## [0.16.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.0...v0.16.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **github:** fallback to read permissions and forward descriptive error messages ([#64](https://github.com/bestagentkits/cloud-harness-mcp/issues/64)) ([f921830](https://github.com/bestagentkits/cloud-harness-mcp/commit/f9218305496cfb61a06306b441107ae075f99cd3))
+
 # [0.16.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.15.0...v0.16.0) (2026-08-19)
 
 
