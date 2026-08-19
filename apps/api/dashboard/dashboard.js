@@ -370,8 +370,14 @@ export function initializeDashboard() {
     const callback = githubCallbackParameters(location.search);
     if (callback) {
       content.innerHTML = renderGitHub({ configured: true, installation: null, repositories: [] }, true);
-      await api('/github/complete', { method: 'POST', body: requestBody(callback) });
-      history.replaceState({}, '', '/dashboard/github'); announce('GitHub App connection completed.');
+      try {
+        await api('/github/complete', { method: 'POST', body: requestBody(callback) });
+        announce('GitHub App connection completed.');
+      } catch (error) {
+        showError(error);
+      } finally {
+        history.replaceState({}, '', '/dashboard/github');
+      }
     }
     const result = await api('/github'); content.innerHTML = renderGitHub(result.data); bindGitHubControls();
   }
