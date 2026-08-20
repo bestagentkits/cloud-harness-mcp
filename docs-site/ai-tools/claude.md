@@ -9,15 +9,30 @@ description: Setting up Claude Desktop with Cloud Harness MCP via API Key gatewa
   <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/claude.md</code>.
 </div>
 
-Claude Desktop can connect to Cloud Harness MCP through its configuration file using an HTTP proxy or static API key.
+Claude Desktop can connect to Cloud Harness MCP via **Native OAuth (Recommended)** or via the **Static API Key Gateway**.
 
-## Configuration
+## Option 1: Native OAuth via Connectors UI (Recommended)
 
-Open your Claude Desktop configuration file:
+Claude Desktop supports native OAuth 2.0 with Dynamic Client Registration (RFC 7591) and Cloudflare Access Managed OAuth.
+
+1. In Cloudflare Zero Trust, ensure **Allowed redirect URIs** includes:
+   - `https://claude.ai/api/mcp/auth_callback`
+   - `https://claude.com/api/mcp/auth_callback`
+2. Open **Claude Desktop** → Go to **Settings** → **Connectors** (or **Add custom connector**).
+3. Enter the Managed OAuth URL:
+   ```text
+   https://harness.zuey.me/mcp
+   ```
+4. Click **Connect**. Claude Desktop will open your default browser to complete authentication via Cloudflare Access (GitHub or Google SSO) and link the connector.
+
+---
+
+## Option 2: Static API Key Gateway
+
+For environments using static headers, configure `claude_desktop_config.json`:
+
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-
-Add the `cloud_harness` entry under `mcpServers`:
 
 ```json
 {
@@ -37,4 +52,4 @@ Add the `cloud_harness` entry under `mcpServers`:
 }
 ```
 
-Restart Claude Desktop and check the hammer icon to verify tool availability.
+Restart Claude Desktop and check the tool availability in your chat view.
