@@ -24,6 +24,7 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | Development and verification | [`docs/development.md`](docs/development.md) | `package.json`, `.github/workflows/ci.yml`, tests |
 | Deployment and recovery | [`docs/deployment.md`](docs/deployment.md), [`docs/operations.md`](docs/operations.md), [`docs/troubleshooting.md`](docs/troubleshooting.md) | `deploy/`, `compose.production.yaml`, `scripts/verify-production.mjs`, `scripts/deploy-canary.mjs` |
 | Operator dashboard UI | [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/api/dashboard/`, `apps/api/src/dashboard-router.ts`, `apps/api/src/dashboard-assets.ts`, `apps/api/test/dashboard-ui-contract.test.ts` |
+| Official user docs & guides | `docs-site/` | `docs-site/`, `scripts/build-docs-reference.mjs`, `npm run docs:build` |
 
 ## Safety-critical invariants
 
@@ -82,7 +83,12 @@ command authority; do not duplicate its full script list here. Do not run
 `npm run verify:production` casually: it targets a live MCP endpoint, requires
 owner credentials, and creates a disposable workspace.
 
-Update docs only for changed rationale, navigation, user-visible contracts,
-configuration, security posture, or operating workflow. Keep plans and reports
-out of evergreen guidance, and do not add release notes or governance files
-unless the repository contract requires them.
+Whenever shipping changes with user or operational impact (new features,
+workflows, configuration keys, public contracts, troubleshooting steps, or use
+cases), evaluate and update both internal docs (`docs/`) and the official docs
+site (`docs-site/`). Keep user and operator guides in sync (such as
+`docs-site/ai-tools/`, `docs-site/dashboard/`, `docs-site/reference/`, and
+`docs-site/troubleshooting.md`), and run `npm run docs:reference` or
+`npm run plugin:sync` if tool or contract surfaces changed. Keep plans and
+reports out of evergreen guidance, and do not add release notes or governance
+files unless the repository contract requires them.
