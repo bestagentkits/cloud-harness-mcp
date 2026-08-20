@@ -433,7 +433,7 @@ export class WorkspaceService {
     const requestedRefspec = input.refspec as string | undefined;
     const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
     if (!requestedRefspec && !branch) throw new HarnessError('CONFLICT', 'git_push requires refspec when HEAD is detached', 409, false);
-    const refspec = requestedRefspec ?? `${branch}:refs/heads/${branch}`;
+    const refspec = normalizePushRefspec(requestedRefspec, branch);
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
       await this.withPausedExecutor(record, async () =>
@@ -729,4 +729,15 @@ export class WorkspaceService {
       }
     }
   }
+}
+
+function normalizePushRefspec(refspec: string | undefined, defaultBranch: string | undefined): string {
+  if (!refspec) return `${defaultBranch}:refs/heads/${defaultBranch}`;
+  if (!refspec.includes(':')) return `${refspec}:refs/heads/${refspec}`;
+  const [source, destination] = refspec.split(':');
+  if (!destination) return `${source}:refs/heads/${source}`;
+  const normalizedDestination = destination.startsWith('refs/heads/')
+    ? destination
+    : `refs/heads/${destination}`;
+  return `${source}:${normalizedDestination}`;
 }
