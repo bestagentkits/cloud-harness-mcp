@@ -85,4 +85,25 @@ describe('GitHub API installation verifier', () => {
     );
     await expect(verifier.verifyInstallation('456')).rejects.toMatchObject({ code: 'TIMEOUT' });
   });
+  it('inherits contents: write from installation-level permissions when repository permissions omit contents', async () => {
+    const writeInstallation = {
+      id: 456, app_id: 123, suspended_at: null,
+      account: { id: 789, login: 'acme' },
+      permissions: { contents: 'write', metadata: 'read', workflows: 'write' }
+    };
+    const realGithubRepo = {
+      name: 'cmai',
+      owner: { login: 'mrgoonie' },
+      permissions: { admin: false, maintain: false, push: false, triage: false, pull: true }
+    };
+    const request = vi.fn(async (input: URL | RequestInfo) => String(input).includes('/app/installations/')
+      ? Response.json(writeInstallation)
+      : Response.json({ total_count: 1, repositories: [realGithubRepo] })) as typeof fetch;
+
+    const verified = await new GitHubApiInstallationVerifier(githubApp, request).verifyInstallation('456');
+    expect(verified.repositories).toEqual([
+      { owner: 'mrgoonie', repository: 'cmai', contents: 'write' }
+    ]);
+  });
+
 });
