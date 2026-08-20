@@ -40,3 +40,14 @@ docker compose --profile images build executor-image
 **Fix:**
 - Ensure the client URL is `https://api.harness.zuey.me/mcp` (NOT `https://harness.zuey.me/mcp`).
 - Verify key validity in the Dashboard under **API Keys**.
+
+---
+
+### 5. OAuth DCR Error (`redirect_uri is not allowed by the account configuration`)
+**Cause:** Cloudflare Access Managed OAuth rejected Dynamic Client Registration because the client's callback URL was not allowlisted.
+**Fix:**
+1. Log into [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications**.
+2. Edit the application for your MCP hostname → **Advanced settings** → **Managed OAuth**.
+3. Add the required callback URLs to **Allowed redirect URIs**:
+   - **Claude Desktop:** `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`
+   - **Codex App / Native Clients:** Pin `mcp_oauth_callback_port = 3118` in `~/.codex/config.toml` and add `http://127.0.0.1:3118/callback/*`, `http://127.0.0.1:3118/*`, `http://localhost:3118/callback/*`, and `http://localhost:3118/*`.
