@@ -1,3 +1,10 @@
+## [0.16.7](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.6...v0.16.7) (2026-08-20)
+
+
+### Bug Fixes
+
+* **github:** inherit contents write permission from installation payload ([#72](https://github.com/bestagentkits/cloud-harness-mcp/issues/72)) ([b95d6be](https://github.com/bestagentkits/cloud-harness-mcp/commit/b95d6bea1c21d37b037852a624137e5cfe82b058))
+
 ## [0.16.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.5...v0.16.6) (2026-08-19)
 
 
