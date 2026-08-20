@@ -1,3 +1,10 @@
+## [0.16.9](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.8...v0.16.9) (2026-08-20)
+
+
+### Bug Fixes
+
+* **runner:** permit script execution on tmpfs mounts for git askpass helper ([#75](https://github.com/bestagentkits/cloud-harness-mcp/issues/75)) ([a667b2c](https://github.com/bestagentkits/cloud-harness-mcp/commit/a667b2c13b4969ce98abd050bb74fbf0a9e678cc))
+
 ## [0.16.8](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.7...v0.16.8) (2026-08-20)
 
 
