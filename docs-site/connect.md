@@ -22,8 +22,8 @@ Cloud Harness MCP provides two distinct connection lanes over **Streamable HTTP 
            Browser OAuth SSO                     Static Header Bearer
         (GitHub / Google via Access)           Authorization: Bearer <key>
                    │                                     │
-         • ChatGPT Custom App                  • Cursor / Claude Code
-         • Web connectors                      • Codex / Gemini CLI
+         • Claude Desktop / ChatGPT Custom App • Cursor / Claude Code
+         • Codex App (Loopback OAuth)          • Non-interactive CLI scripts
 ```
 
 ## Protocol Lane Comparison
