@@ -1,3 +1,10 @@
+## [0.16.8](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.7...v0.16.8) (2026-08-20)
+
+
+### Bug Fixes
+
+* **runner:** pass interactive flag to docker run for clone and git transfer helpers ([#74](https://github.com/bestagentkits/cloud-harness-mcp/issues/74)) ([aeb3fe6](https://github.com/bestagentkits/cloud-harness-mcp/commit/aeb3fe6eb97ac295e83e0dca745fe0597e169260))
+
 ## [0.16.7](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.6...v0.16.7) (2026-08-20)
 
 
