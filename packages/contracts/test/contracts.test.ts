@@ -124,6 +124,17 @@ describe('contracts', () => {
     expect(() => TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, forceWithLease: false, expectedRemoteOid: 'a'.repeat(40) })).toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.git_rebase.parse({ workspaceId, action: 'start' })).toThrow();
   });
+  it('accepts shorthand branch refspecs and rejects non-branch destinations', () => {
+    const workspaceId = `ws_${'a'.repeat(24)}`;
+    expect(TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, refspec: 'main:main' })).toMatchObject({ refspec: 'main:main' });
+    expect(TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, refspec: 'HEAD:main' })).toMatchObject({ refspec: 'HEAD:main' });
+    expect(TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, refspec: 'feat/abc:feat/abc' })).toMatchObject({ refspec: 'feat/abc:feat/abc' });
+    expect(TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, refspec: 'main:main', forceWithLease: true, expectedRemoteOid: 'a'.repeat(40) })).toMatchObject({ refspec: 'main:main' });
+    expect(() => TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, refspec: 'main:refs/tags/v1.0' })).toThrow();
+    expect(() => TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, refspec: 'main:refs/notes/review' })).toThrow();
+    expect(() => TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, refspec: ':main' })).toThrow();
+  });
+
 
   it('rejects workspace-root file mutations and validates dependency handles', () => {
     const workspaceId = `ws_${'a'.repeat(24)}`;

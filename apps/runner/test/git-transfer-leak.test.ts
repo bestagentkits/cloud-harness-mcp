@@ -71,6 +71,19 @@ describe('remote Git credential boundary', () => {
       store.close();
     }
   });
+  it('normalizes shorthand refspecs to canonical destination refs', async () => {
+    const { workspaceId, store, service } = fixture('c');
+    try {
+      const result = await service.execute('owner', 'git_push', { workspaceId, remote: 'origin', refspec: 'HEAD:main', forceWithLease: false });
+      expect(result.ok).toBe(true);
+      expect(result.data).toMatchObject({ refspec: 'HEAD:refs/heads/main' });
+      const pushCall = docker.runDocker.mock.calls.find(([args]) => args.includes('push') && args.includes('/opt/harness/git-transfer-helper.sh'));
+      expect(pushCall?.[0]).toContain('HEAD:refs/heads/main');
+    } finally {
+      store.close();
+    }
+  });
+
 
   it('orchestrates pull as credentialed fetch plus uncredentialed rebase inside the executor', async () => {
     const { workspaceId, store, service } = fixture('b');
