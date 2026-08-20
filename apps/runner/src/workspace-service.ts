@@ -197,7 +197,7 @@ export class WorkspaceService {
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
     const args = [
-      'run', '--rm', '--pull', 'never', '--name', helperName,
+      'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
       '--label', 'cloud-harness.role=clone-helper', '--label', 'cloud-harness.ephemeral=true',
       '--label', `cloud-harness.instance=${this.instanceId}`,
       '--label', `cloud-harness.workspace=${record.id}`, '--network', 'bridge', '--user', '10001:10001',
@@ -364,7 +364,7 @@ export class WorkspaceService {
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
     try {
       const result = await runDocker([
-        'run', '--rm', '--pull', 'never', '--name', helperName,
+        'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
         '--label', 'cloud-harness.role=git-transfer-helper', '--label', 'cloud-harness.ephemeral=true',
         '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
         '--network', network, '--user', '10001:10001', '--read-only',
