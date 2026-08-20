@@ -157,11 +157,16 @@ Under **Allowed redirect URIs**, configure the exact callback URLs required by t
   - `http://127.0.0.1:3118/*`
   - `http://localhost:3118/callback/*`
   - `http://localhost:3118/*`
+- **ChatGPT Web / Custom MCP Connectors:**
+  - `https://chatgpt.com/connector/oauth/*`
+  - `https://chatgpt.com/connector_platform_oauth_redirect`
+  - `https://chatgpt.com/api/aip/p/oauth/callback`
 
 #### Why Allowed redirect URIs and wildcards are required
 
 1. **RFC 7591 Dynamic Client Registration (DCR):** When an AI client initiates an OAuth connection to `https://harness.zuey.me/mcp`, it automatically sends metadata (including `redirect_uris`, `grant_types`, and `client_name`) to the Cloudflare Access registration endpoint (`/cdn-cgi/access/oauth/registration`). If the requested callback URI is not allowlisted in the Cloudflare application settings, Cloudflare rejects the request with `HTTP 400 Bad Request: {"error":"invalid_client_metadata","error_description":"redirect_uri is not allowed by the account configuration"}`.
 2. **Loopback Port Pinning & Dynamic Subpaths:** Native desktop clients (such as Codex App using the `rmcp` engine) generate an ephemeral unique transaction ID per login attempt (e.g. `http://127.0.0.1:3118/callback/<TX_ID>`). Pinning the callback port (`mcp_oauth_callback_port = 3118` in `~/.codex/config.toml`) and adding wildcard subpaths (`/*`) in the Zero Trust Allowed redirect URIs allows these dynamic transaction subpaths to match and succeed without compromising security.
+3. **ChatGPT Connector Subpaths & Least-Privilege Scoping:** ChatGPT Web generates per-connector callback URLs under `https://chatgpt.com/connector/oauth/<CALLBACK_ID>`. Allowlisting `https://chatgpt.com/connector/oauth/*` covers all dynamic connector instances while avoiding overly broad wildcards (such as `https://chatgpt.com/*`) that could risk authorization code leakage on arbitrary parameter-reflecting endpoints.
 
 Configure the origin from that same application's issuer, audience, and JWKS
 material, remove the owner bearer, and pin any legacy owner mapping to the
