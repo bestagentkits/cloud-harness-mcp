@@ -7,6 +7,7 @@ import type { VerifiedGitHubInstallation } from './github-installation-store.js'
 type InstallationPayload = {
   id?: number; app_id?: number; suspended_at?: string | null;
   account?: { id?: number; login?: string };
+  permissions?: { contents?: string; [key: string]: string | undefined };
 };
 type RepositoriesPayload = {
   total_count?: number;
@@ -80,6 +81,7 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
     if (!installation.id || !installation.app_id || !installation.account?.id || !installation.account.login) {
       throw new HarnessError('UNAVAILABLE', 'GitHub returned an invalid installation record', 502, true);
     }
+    const installationContents = installation.permissions?.contents;
     return {
       appId: installation.app_id,
       installationId: installation.id,
@@ -88,7 +90,9 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
       status: installation.suspended_at ? 'suspended' : 'active',
       repositories: repositories.map((repository) => {
         const permissions = repository.permissions;
-        const contents = permissions?.contents === 'write' || permissions?.push === true
+        const contents = installationContents === 'write' ||
+          permissions?.contents === 'write' ||
+          permissions?.push === true
           ? 'write'
           : 'read';
         return { owner: repository.owner!.login!, repository: repository.name!, contents } as const;
