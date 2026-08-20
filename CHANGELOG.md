@@ -1,3 +1,45 @@
+# [0.17.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.9...v0.17.0) (2026-08-20)
+
+
+### Features
+
+* **contracts:** support shorthand push refspecs and normalize canonical destinations ([#76](https://github.com/bestagentkits/cloud-harness-mcp/issues/76)) ([c4dd836](https://github.com/bestagentkits/cloud-harness-mcp/commit/c4dd836ef3cc48826bc4c05000017ee67b3ae359))
+
+## [0.16.9](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.8...v0.16.9) (2026-08-20)
+
+
+### Bug Fixes
+
+* **runner:** permit script execution on tmpfs mounts for git askpass helper ([#75](https://github.com/bestagentkits/cloud-harness-mcp/issues/75)) ([a667b2c](https://github.com/bestagentkits/cloud-harness-mcp/commit/a667b2c13b4969ce98abd050bb74fbf0a9e678cc))
+
+## [0.16.8](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.7...v0.16.8) (2026-08-20)
+
+
+### Bug Fixes
+
+* **runner:** pass interactive flag to docker run for clone and git transfer helpers ([#74](https://github.com/bestagentkits/cloud-harness-mcp/issues/74)) ([aeb3fe6](https://github.com/bestagentkits/cloud-harness-mcp/commit/aeb3fe6eb97ac295e83e0dca745fe0597e169260))
+
+## [0.16.7](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.6...v0.16.7) (2026-08-20)
+
+
+### Bug Fixes
+
+* **github:** inherit contents write permission from installation payload ([#72](https://github.com/bestagentkits/cloud-harness-mcp/issues/72)) ([b95d6be](https://github.com/bestagentkits/cloud-harness-mcp/commit/b95d6bea1c21d37b037852a624137e5cfe82b058))
+
+## [0.16.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.5...v0.16.6) (2026-08-19)
+
+
+### Bug Fixes
+
+* **site:** add dedicated drawer close button and full-screen mobile menu overlay ([#71](https://github.com/bestagentkits/cloud-harness-mcp/issues/71)) ([5015036](https://github.com/bestagentkits/cloud-harness-mcp/commit/501503634811b448b23a7385891dfbe9df3f93ac))
+
+## [0.16.5](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.4...v0.16.5) (2026-08-19)
+
+
+### Bug Fixes
+
+* **site:** enforce strict specificity for mobile header compact rules and clean duplicate drawer CTA ([#70](https://github.com/bestagentkits/cloud-harness-mcp/issues/70)) ([9f48a12](https://github.com/bestagentkits/cloud-harness-mcp/commit/9f48a122c906b148a89b92ba7d042f31f912100e))
+
 ## [0.16.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.3...v0.16.4) (2026-08-19)
 
 

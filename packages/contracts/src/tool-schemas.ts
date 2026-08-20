@@ -16,7 +16,9 @@ const gitRefspec = z.string().min(1).max(512).refine((value) => {
   if (value.startsWith('-') || value.startsWith(':') || value.includes('\0') || value.includes('\n') || value.includes('..') || value.includes('@{')) return false;
   const [source, destination, extra] = value.split(':');
   if (!source || extra !== undefined || !/^(?:HEAD|[A-Za-z0-9._/-]+)$/.test(source)) return false;
-  return destination === undefined || /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(destination);
+  if (destination === undefined) return true;
+  if (destination.startsWith('refs/')) return /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(destination);
+  return /^[A-Za-z0-9._/-]+$/.test(destination);
 }, 'invalid Git branch push refspec');
 const sessionName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
 const EnvironmentIdSchema = z.string().regex(/^env_[A-Za-z0-9_-]{20,80}$/);

@@ -197,11 +197,11 @@ export class WorkspaceService {
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
     const args = [
-      'run', '--rm', '--pull', 'never', '--name', helperName,
+      'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
       '--label', 'cloud-harness.role=clone-helper', '--label', 'cloud-harness.ephemeral=true',
       '--label', `cloud-harness.instance=${this.instanceId}`,
       '--label', `cloud-harness.workspace=${record.id}`, '--network', 'bridge', '--user', '10001:10001',
-      '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', '--cap-drop', 'ALL',
+      '--read-only', '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL',
       '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
       '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
       '--volume', `${jobPath}:/job`, '--entrypoint', '/opt/harness/clone-helper.sh', this.config.executorImage,
@@ -225,7 +225,7 @@ export class WorkspaceService {
       '--label', 'cloud-harness.managed=true', '--label', `cloud-harness.instance=${this.instanceId}`,
       '--label', `cloud-harness.workspace=${record.id}`,
       '--user', '10001:10001', '--workdir', '/workspace', '--read-only',
-      '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
+      '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
       '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256',
       '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024',
       '--network', record.networkMode, '--volume', `${repositoryPath}:/workspace:rw`,
@@ -364,11 +364,11 @@ export class WorkspaceService {
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
     try {
       const result = await runDocker([
-        'run', '--rm', '--pull', 'never', '--name', helperName,
+        'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
         '--label', 'cloud-harness.role=git-transfer-helper', '--label', 'cloud-harness.ephemeral=true',
         '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
         '--network', network, '--user', '10001:10001', '--read-only',
-        '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
         '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
         '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
         '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
@@ -433,7 +433,7 @@ export class WorkspaceService {
     const requestedRefspec = input.refspec as string | undefined;
     const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
     if (!requestedRefspec && !branch) throw new HarnessError('CONFLICT', 'git_push requires refspec when HEAD is detached', 409, false);
-    const refspec = requestedRefspec ?? `${branch}:refs/heads/${branch}`;
+    const refspec = normalizePushRefspec(requestedRefspec, branch);
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
       await this.withPausedExecutor(record, async () =>
@@ -729,4 +729,15 @@ export class WorkspaceService {
       }
     }
   }
+}
+
+function normalizePushRefspec(refspec: string | undefined, defaultBranch: string | undefined): string {
+  if (!refspec) return `${defaultBranch}:refs/heads/${defaultBranch}`;
+  if (!refspec.includes(':')) return `${refspec}:refs/heads/${refspec}`;
+  const [source, destination] = refspec.split(':');
+  if (!destination) return `${source}:refs/heads/${source}`;
+  const normalizedDestination = destination.startsWith('refs/heads/')
+    ? destination
+    : `refs/heads/${destination}`;
+  return `${source}:${normalizedDestination}`;
 }
