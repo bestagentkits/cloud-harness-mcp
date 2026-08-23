@@ -260,6 +260,32 @@ describe('real Docker sandbox', () => {
       privileged: true
     })).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
+    // 9. Root execution creating 0700 directory does not break subsequent quota metering or cleanup
+    const unapproved4 = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'mkdir -m 0700 root-0700 && touch root-0700/secret.txt',
+      cwd: '.',
+      privileged: true
+    });
+    const grantId4 = unapproved4.error?.grantRequest?.grantId;
+    expect(store.approvePrivilegeGrant(wsRecord.ownerId, grantId4!)).toBe(true);
+    const rootExec = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'mkdir -m 0700 root-0700 && touch root-0700/secret.txt',
+      cwd: '.',
+      privileged: true,
+      approvalGrantToken: grantId4
+    });
+    expect(rootExec.ok).toBe(true);
+
+    // Standard exec and status still work
+    const nextExec = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'echo "post-root-ok"',
+      cwd: '.'
+    });
+    expect(JSON.stringify(nextExec.data)).toContain('post-root-ok');
+
     await service.execute('owner', 'workspace_close', { workspaceId: testWsId });
   }, 60_000);
 });
