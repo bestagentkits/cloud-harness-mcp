@@ -11,7 +11,8 @@ export const ErrorCodeSchema = z.enum([
   'TIMEOUT',
   'CANCELLED',
   'UNAVAILABLE',
-  'INTERNAL_ERROR'
+  'INTERNAL_ERROR',
+  'PRIVILEGE_APPROVAL_REQUIRED'
 ]);
 
 export const ToolResultSchema = z.object({
@@ -22,7 +23,16 @@ export const ToolResultSchema = z.object({
     .object({
       code: ErrorCodeSchema,
       message: z.string().max(2_000),
-      retryable: z.boolean()
+      retryable: z.boolean(),
+      grantRequest: z
+        .object({
+          grantId: z.string(),
+          workspaceId: z.string(),
+          commandSha256: z.string(),
+          cwd: z.string().optional(),
+          expiresAt: z.string()
+        })
+        .optional()
     })
     .optional(),
   truncated: z.boolean().default(false),

@@ -6,7 +6,7 @@ import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
-import type { StateStore } from './state-store.js';
+import type { PrivilegeGrantRecord, StateStore } from './state-store.js';
 import type { WorkspaceService } from './workspace-service.js';
 
 export class DashboardControlService {
@@ -118,6 +118,49 @@ export class DashboardControlService {
             )
           );
           return ok('GitHub installation disconnected', this.githubStatus(principalId));
+        }
+        case 'privilege_grant_list': {
+          return ok('Privilege grants listed', {
+            grants: this.principals.listPrivilegeGrants(principalId, parsed.input.workspaceId)
+          });
+        }
+        case 'privilege_grant_approve': {
+          let approvedGrant: PrivilegeGrantRecord | undefined;
+          const approved = this.principals.approvePrivilegeGrant(
+            principalId,
+            parsed.input.grantId,
+            (database, grant) => {
+              approvedGrant = grant;
+              this.metadata.recordAuditInTransaction(
+                database, principalId, 'privilege_grant.approved', 'privilege_grant',
+                grant.id, 1,
+                { workspaceId: grant.workspaceId, commandSha256: grant.commandSha256 }
+              );
+            }
+          );
+          if (!approved) {
+            throw new HarnessError('NOT_FOUND', 'privilege grant not found, expired, or already approved/consumed', 404, false);
+          }
+          return ok('Privilege grant approved', { grant: approvedGrant });
+        }
+        case 'privilege_grant_reject': {
+          let rejectedGrant: PrivilegeGrantRecord | undefined;
+          const rejected = this.principals.rejectPrivilegeGrant(
+            principalId,
+            parsed.input.grantId,
+            (database, grant) => {
+              rejectedGrant = grant;
+              this.metadata.recordAuditInTransaction(
+                database, principalId, 'privilege_grant.rejected', 'privilege_grant',
+                grant.id, 1,
+                { workspaceId: grant.workspaceId, commandSha256: grant.commandSha256 }
+              );
+            }
+          );
+          if (!rejected) {
+            throw new HarnessError('NOT_FOUND', 'privilege grant not found or not in pending state', 404, false);
+          }
+          return ok('Privilege grant rejected', { grant: rejectedGrant });
         }
       }
     } catch (error) {

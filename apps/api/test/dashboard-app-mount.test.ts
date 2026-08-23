@@ -61,6 +61,7 @@ describe('dashboard application mount', () => {
       allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536
     });
     expect((await fetch(`${url}/dashboard`)).status).toBe(404);
+    expect((await fetch(`${url}/operator`)).status).toBe(404);
   });
 
   it('requires a verified Access assertion before serving dashboard assets', async () => {

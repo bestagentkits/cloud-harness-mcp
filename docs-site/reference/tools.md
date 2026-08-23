@@ -1,6 +1,6 @@
 ---
 title: Tools Reference
-description: Complete machine-generated reference of all 52 MCP tools provided by Cloud Harness MCP.
+description: Complete machine-generated reference of all 53 MCP tools provided by Cloud Harness MCP.
 ---
 
 # Tools Reference
@@ -11,7 +11,7 @@ description: Complete machine-generated reference of all 52 MCP tools provided b
   <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/tools.md</code>.
 </div>
 
-Cloud Harness MCP exposes **52 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
+Cloud Harness MCP exposes **53 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
 
 ## Security & Capability Badges
 
@@ -256,6 +256,8 @@ Run one bounded shell command in the workspace and return captured output.
 | `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
 | `maxOutputBytes` | `integer` | **Yes** | range: 1024–1048576, default: `262144` |
+| `privileged` | `boolean` | **Yes** | default: `false` |
+| `approvalGrantToken` | `string` | No | length: 1–128 |
 
 ### `shell_open`
 
@@ -645,6 +647,27 @@ Remove one named managed worktree, optionally discarding dirty state.
 | `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
 | `force` | `boolean` | **Yes** | default: `false` |
+
+### `github_action`
+
+**Perform brokered GitHub operations**
+
+Execute authenticated GitHub pull request and issue operations via brokered helper without exposing tokens to workspace.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · <span class="badge-openworld">openWorld</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `action` | `"pr_list"` | **Yes** | — |
+| `limit` | `integer` | No | range: 1–100, default: `20` |
+| `state` | `"open"` \| `"closed"` \| `"all"` | No | default: `"open"` |
+| `prNumber` | `integer` | No | range: 0–9007199254740991 |
+| `title` | `string` | No | length: 1–256 |
+| `body` | `string` | No | max length: 65536, default: `""` |
+| `head` | `string` | No | length: 1–256 |
+| `base` | `string` | No | length: 1–256, default: `"main"` |
+| `issueNumber` | `integer` | No | range: 0–9007199254740991 |
 
 ## Repository Extensions
 

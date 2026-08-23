@@ -144,6 +144,28 @@ executor and import without network or credentials. Push first stages a bare
 snapshot without credentials, then uses a separate networked helper. Transfer
 directories and helper containers are removed after the operation.
 
+### Brokered GitHub actions
+
+Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `issue_list`, `issue_view`, `issue_create`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`) are minted by the runner from the trusted GitHub App installation and passed exclusively via `stdin`. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Tokens never enter the workspace filesystem or environment.
+
+### Three-zone storage and toolchain isolation
+
+Executors operate across three partitioned storage zones:
+1. **Zone A (Secrets & Session Config)**: `/tmp/cloud-harness-home` backed by RAM tmpfs (`128MB`), containing ephemeral configurations, temporary tokens, and tool cache metadata. Destroyed on container exit and cannot be committed into Git.
+2. **Zone B (User-Space Toolchains & Caches)**: `/opt/user-tools` and `/var/cache/harness` mounted from runner-managed job paths with UID `10001:10001` ownership and mode `0755`. Accommodates global user-space toolchain installations (`npm -g`, `bun`, `uv`, `pnpm`, `wrangler`) without requiring root.
+3. **Zone C (Git Repository)**: `/workspace` containing the clean repository working tree.
+
+Workspace disk usage metering calculates the combined footprint of all three persistent zones against `maxWorkspaceBytes`.
+
+### Privileged execution and operator approval grants
+
+Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, and user `10001:10001`. Sudo/root execution is treated as an explicit owner-approved threat model weakening (similar to `networkMode: bridge`).
+
+When `exec_run` is invoked with `privileged: true`:
+1. Privileged execution is supported in `cloudflare-access` mode (where the operator dashboard is authenticated via Cloudflare Access) and is disabled in `owner-bearer` mode to prevent self-approval.
+2. In `cloudflare-access` mode, an unapproved request is rejected with `PRIVILEGE_APPROVAL_REQUIRED` and returns a single-use `grantId` bound to the command and working directory with a 60-second TTL.
+3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
+4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
 The public contract fixes remote transfers to `origin`, permits only branch
 push refspecs, rejects deletion refspecs, and permits force only through
 force-with-lease. Private clone/fetch/pull require GitHub App Contents read

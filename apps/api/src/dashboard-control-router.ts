@@ -36,6 +36,9 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/github/reconcile', endpoint('github_reconcile', (request) => (request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {})));
   router.delete('/api/v1/github/installations/:installationId', endpoint('github_disconnect', (request) => ({ installationId: request.params.installationId })));
   router.post('/api/v1/github/disconnect', endpoint('github_disconnect', (request) => request.body as Record<string, unknown>));
+  router.get('/api/v1/privilege-grants', endpoint('privilege_grant_list', (request) => ({ ...(request.query.workspaceId ? { workspaceId: String(request.query.workspaceId) } : {}) })));
+  router.post('/api/v1/privilege-grants/:grantId/approve', endpoint('privilege_grant_approve', (request) => ({ grantId: request.params.grantId })));
+  router.post('/api/v1/privilege-grants/:grantId/reject', endpoint('privilege_grant_reject', (request) => ({ grantId: request.params.grantId })));
   router.get('/api/v1/api-keys', apiKeyEndpoint('api_key_list', () => ({})));
   router.post('/api/v1/api-keys', apiKeyEndpoint('api_key_create', (request) => z.object({
     name: z.string().trim().min(1).max(100), expiresInDays: z.number().int().min(1).max(365)

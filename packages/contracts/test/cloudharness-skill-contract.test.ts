@@ -68,7 +68,7 @@ describe('cloudharness skill contract', () => {
         const target = match[1].split('#', 1)[0];
         if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
         const resolvedTarget = resolve(dirname(path), target);
-        expect(resolvedTarget.startsWith(`${skillRoot}/`), `${path} -> ${target}`).toBe(true);
+        expect(!relative(skillRoot, resolvedTarget).startsWith('..'), `${path} -> ${target}`).toBe(true);
         await expect(stat(resolvedTarget), `${path} -> ${target}`).resolves.toMatchObject({});
       }
     }

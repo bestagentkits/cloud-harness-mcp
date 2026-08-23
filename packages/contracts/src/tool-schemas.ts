@@ -46,7 +46,15 @@ const schemas = {
   grep_search: z.object({ ...workspace, pattern: z.string().min(1).max(4_096), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
   symbols_search: z.object({ ...workspace, query: z.string().min(1).max(256), path: relativePath.default('.'), language: z.string().regex(/^[A-Za-z0-9_+#.-]{1,40}$/).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
   symbols_references: z.object({ ...workspace, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
-  exec_run: z.object({ ...workspace, command: z.string().min(1).max(32_768), cwd: relativePath.default('.'), timeoutMs: z.number().int().min(100).max(300_000).default(60_000), maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144) }),
+  exec_run: z.object({
+    ...workspace,
+    command: z.string().min(1).max(32_768),
+    cwd: relativePath.default('.'),
+    timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
+    maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144),
+    privileged: z.boolean().default(false),
+    approvalGrantToken: z.string().min(1).max(128).optional()
+  }),
   shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   shell_close: z.object({ ...workspace, shellId: ShellIdSchema }),
@@ -101,7 +109,45 @@ const schemas = {
   memories_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/) }),
   memories_write: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), content: z.string().max(262_144) }),
   deployments_list: z.object(workspace),
-  deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) })
+  deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
+  github_action: z.discriminatedUnion('action', [
+    z.object({
+      ...workspace,
+      action: z.literal('pr_list'),
+      limit: z.number().int().min(1).max(100).default(20),
+      state: z.enum(['open', 'closed', 'all']).default('open')
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('pr_view'),
+      prNumber: z.number().int().positive()
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('pr_create'),
+      title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
+      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
+      head: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'head cannot contain null bytes'),
+      base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').default('main')
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_list'),
+      limit: z.number().int().min(1).max(100).default(20),
+      state: z.enum(['open', 'closed', 'all']).default('open')
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_view'),
+      issueNumber: z.number().int().positive()
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_create'),
+      title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
+      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default('')
+    })
+  ])
 } satisfies Record<RunnerOperation, z.ZodType>;
 
 export type ToolSpec = {
@@ -125,7 +171,8 @@ const titles: Record<RunnerOperation, string> = {
   git_status: 'Git status', git_diff: 'Git diff', git_log: 'Git log', git_branch: 'Manage Git branches', git_checkout: 'Checkout Git ref', git_add: 'Stage Git changes', git_commit: 'Create Git commit', git_fetch: 'Fetch Git refs', git_pull: 'Pull Git changes', git_push: 'Push Git changes', git_merge: 'Merge Git ref', git_rebase: 'Manage Git rebase',
   worktrees_list: 'List worktrees', worktrees_create: 'Create worktree', worktrees_remove: 'Remove worktree',
   skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory',
-  deployments_list: 'List deployment targets', deployments_run: 'Run deployment target'
+  deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
+  github_action: 'Perform brokered GitHub operations'
 };
 
 const descriptions: Record<RunnerOperation, string> = {
@@ -180,13 +227,14 @@ const descriptions: Record<RunnerOperation, string> = {
   memories_read: 'Read one bounded repository-local Cloud Harness memory note.',
   memories_write: 'Create or replace one repository-local Cloud Harness memory note.',
   deployments_list: 'List repository-defined deployment targets without running them.',
-  deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.'
+  deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.',
+  github_action: 'Execute authenticated GitHub pull request and issue operations via brokered helper without exposing tokens to workspace.'
 };
 
 const readOnly = new Set<RunnerOperation>(['workspace_list', 'workspace_status', 'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references', 'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list']);
-const destructive = new Set<RunnerOperation>(['workspace_close', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close', 'tasks_run', 'tasks_cancel', 'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run']);
+const destructive = new Set<RunnerOperation>(['workspace_close', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close', 'tasks_run', 'tasks_cancel', 'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run', 'github_action']);
 const idempotent = new Set<RunnerOperation>(['workspace_open', 'workspace_list', 'workspace_status', 'workspace_close', 'files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references', 'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close', 'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'git_add', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list']);
-const openWorld = new Set<RunnerOperation>(['workspace_open', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run', 'git_fetch', 'git_pull', 'git_push', 'skills_run', 'hooks_run', 'deployments_run']);
+const openWorld = new Set<RunnerOperation>(['workspace_open', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run', 'git_fetch', 'git_pull', 'git_push', 'skills_run', 'hooks_run', 'deployments_run', 'github_action']);
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({
   name,

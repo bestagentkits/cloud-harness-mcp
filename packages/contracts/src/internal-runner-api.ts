@@ -42,7 +42,8 @@ export const MetadataRunnerOperationSchema = z.enum([
   'environment_list', 'environment_create', 'environment_update', 'environment_delete',
   'secret_list', 'secret_create', 'secret_rotate', 'secret_delete', 'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_delete',
-  'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect'
+  'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
+  'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject'
 ]);
 
 const metadataInputs = {
@@ -72,7 +73,10 @@ const metadataInputs = {
     state: z.string().min(32).max(128), installationId: z.string().min(1).max(100)
   }).strict(),
   github_reconcile: z.object({ installationId: z.string().min(1).max(100).optional() }).strict(),
-  github_disconnect: z.object({ installationId: z.string().min(1).max(100) }).strict()
+  github_disconnect: z.object({ installationId: z.string().min(1).max(100) }).strict(),
+  privilege_grant_list: z.object({ workspaceId: WorkspaceIdSchema.optional() }).strict(),
+  privilege_grant_approve: z.object({ grantId: z.string().min(1).max(128) }).strict(),
+  privilege_grant_reject: z.object({ grantId: z.string().min(1).max(128) }).strict()
 } as const;
 
 const metadataRequest = <Operation extends keyof typeof metadataInputs>(operation: Operation) => z.object({
@@ -88,7 +92,8 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('secret_list'), metadataRequest('secret_create'), metadataRequest('secret_rotate'), metadataRequest('secret_delete'),
   metadataRequest('audit_list'), metadataRequest('artifact_list'), metadataRequest('artifact_snapshot'), metadataRequest('artifact_delete'),
   metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'),
-  metadataRequest('github_reconcile'), metadataRequest('github_disconnect')
+  metadataRequest('github_reconcile'), metadataRequest('github_disconnect'),
+  metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject')
 ]);
 
 export type InternalRunnerOperation = z.infer<typeof InternalRunnerOperationSchema>;

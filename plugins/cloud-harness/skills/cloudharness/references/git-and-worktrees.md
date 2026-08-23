@@ -136,6 +136,28 @@ List managed worktrees and their branch/HEAD state for `workspaceId`.
 - Normal removal refuses dirty state. Forced removal can discard uncommitted
   files in that worktree; inspect it and preserve results first.
 
+## Brokered GitHub operations
+
+<!-- cloudharness-tool:github_action -->
+### `github_action`
+
+- Required: `workspaceId`, `action` (`pr_list`, `pr_view`, `pr_create`, `issue_list`, `issue_view`, or `issue_create`).
+- Uses trusted GitHub App broker tokens passed via stdin to an ephemeral helper container. Tokens are never exposed to workspace files.
+- `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state` (`open`, `closed`, or `all`).
+- `pr_view`: required `prNumber`.
+- `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`).
+- `issue_view`: required `issueNumber`.
+- `issue_create`: required `title`; optional `body`.
+
+<!-- cloudharness-example:github_action
+{
+  "workspaceId": "ws_abcdefghijklmnopqrstuvwxyz012345",
+  "action": "pr_list",
+  "limit": 10,
+  "state": "open"
+}
+-->
+
 ## Recommended sequence
 
 1. `git_status` and unstaged/staged `git_diff`.
