@@ -4,6 +4,7 @@ const token = z.string().min(32).max(512).refine((value) => !value.startsWith('c
 
 const httpsUrl = z.url().refine((value) => new URL(value).protocol === 'https:', 'HTTPS URL required');
 const enabled = z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false);
+const enabledByDefault = z.preprocess((value) => value === true || value === 'true', z.boolean()).default(true);
 
 const principalRelink = z.object({
   oldIssuer: httpsUrl,
@@ -28,7 +29,7 @@ export const ApiConfigSchema = z.object({
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
   apiKeyGatewayPublicUrl: httpsUrl.optional(),
-  mailboxProbeEnabled: enabled,
+  mailboxProbeEnabled: enabledByDefault,
   runnerUrl: z.url(),
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),

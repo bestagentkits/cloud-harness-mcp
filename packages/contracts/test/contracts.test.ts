@@ -20,6 +20,8 @@ describe('contracts', () => {
   it('defaults to owner bearer mode and rejects mixed or partial Access configuration', () => {
     const owner = ApiConfigSchema.parse({ ...commonApiConfig, bearerToken: 'owner-token-that-is-long-enough-123456' });
     expect(owner.authMode ?? 'owner-bearer').toBe('owner-bearer');
+    expect(owner.mailboxProbeEnabled).toBe(true);
+    expect(ApiConfigSchema.parse({ ...commonApiConfig, bearerToken: 'owner-token-that-is-long-enough-123456', mailboxProbeEnabled: false }).mailboxProbeEnabled).toBe(false);
     expect(() => ApiConfigSchema.parse({
       ...commonApiConfig,
       authMode: 'owner-bearer',

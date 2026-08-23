@@ -133,7 +133,7 @@ describe('mailbox probe MCP profile', () => {
     }
   });
 
-  it('keeps the draft HTTP endpoint unmounted while the feature gate is disabled', async () => {
+  it('keeps the draft HTTP endpoint unmounted while explicitly disabled', async () => {
     const config: ApiConfig = {
       host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: bearer,
       runnerUrl: 'http://127.0.0.1:9', runnerToken: 'runner-token-that-is-longer-than-32-characters',
@@ -149,7 +149,7 @@ describe('mailbox probe MCP profile', () => {
     expect(response.status).toBe(404);
   });
 
-  it('mounts the draft HTTP endpoint only when the feature gate is enabled', async () => {
+  it('mounts the draft HTTP endpoint when the feature gate is enabled', async () => {
     const config: ApiConfig = {
       host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: bearer,
       runnerUrl: 'http://127.0.0.1:9', runnerToken: 'runner-token-that-is-longer-than-32-characters',
