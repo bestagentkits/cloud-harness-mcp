@@ -1,3 +1,10 @@
+# [0.19.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.18.0...v0.19.0) (2026-08-23)
+
+
+### Features
+
+* **runner:** add workspace toolchains, 3-zone storage, privilege grants, and brokered github actions ([#83](https://github.com/bestagentkits/cloud-harness-mcp/issues/83)) ([e52e824](https://github.com/bestagentkits/cloud-harness-mcp/commit/e52e824398aa99b980d6604bc6adb5f7a57caa79))
+
 # [0.18.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.17.0...v0.18.0) (2026-08-23)
 
 
