@@ -1,3 +1,10 @@
+## [0.19.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.19.0...v0.19.1) (2026-08-23)
+
+
+### Bug Fixes
+
+* **runner:** meter privileged workspace size via root-capable helper on permission error ([#84](https://github.com/bestagentkits/cloud-harness-mcp/issues/84)) ([22f39bc](https://github.com/bestagentkits/cloud-harness-mcp/commit/22f39bc1eff644d238aba5f4bf86d31b79a80f10))
+
 # [0.19.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.18.0...v0.19.0) (2026-08-23)
 
 
