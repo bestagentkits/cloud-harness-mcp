@@ -22,7 +22,7 @@
     "test:unit": "vitest run packages apps --exclude '**/*.docker.test.ts'",
     "test:integration": "vitest run test/integration --exclude '**/*.docker.test.ts'",
     "pretest:docker": "npm run build -w @cloud-harness/contracts",
-    "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/git-transfer-helper.docker.test.ts --testTimeout=120000",
+    "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts --testTimeout=120000",
     "pretest:e2e": "npm run build -w @cloud-harness/contracts",
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
     "pages:check": "node scripts/verify-pages-artifact.mjs",

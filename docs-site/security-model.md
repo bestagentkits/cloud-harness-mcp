@@ -20,11 +20,19 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 - The API and Runner never publish host ports directly.
 - The API has no access to the Docker socket or host filesystem mounts.
 
-### 2. Executor Confinement
-- **Non-Root User:** Containers execute as UID 1000 (`node`).
-- **No Docker Authority:** No socket mount or privileged capabilities.
+### 2. Executor Confinement & Hardening
+- **Non-Root User:** Containers execute as UID 10001 (`harness`).
+- **Hardened Standard Mode:** Standard executors strictly maintain `--read-only`, `--cap-drop ALL`, and `--security-opt no-new-privileges`.
+- **3-Zone Storage Partitioning:** Ephemeral secrets/config in RAM tmpfs (`/tmp/cloud-harness-home`), persistent user-space toolchains in `/opt/user-tools` & `/var/cache/harness`, and clean Git checkout in `/workspace`.
+- **No Docker Authority:** No socket mount or host filesystem access.
 - **Default Network `none`:** Outbound network is disabled unless explicitly requested as `bridge`.
 
-### 3. Credential Safety
-- Private clone and push tokens exist only in memory during the lifetime of the ephemeral Git helper.
-- Tokens are streamed over `stdin` and never stored in environment variables, configuration files, or repository commit history.
+### 3. Privileged Execution & Operator Grants
+- Privileged (`sudo`/root) commands are treated as an explicit threat model weakening and are supported in **Cloudflare Access** mode only.
+- Running with `privileged: true` requires an operator approval grant (`PRIVILEGE_APPROVAL_REQUIRED`), single-use, 60s TTL, bound to command and working directory hash.
+- Approval is performed by authenticated operators via the Dashboard control plane (`/api/v1/privilege-grants`). MCP clients cannot self-approve.
+- Approved privileged commands run in isolated ephemeral containers with root cleanup normalizers.
+
+### 4. Credential Safety
+- Private clone, push, and GitHub CLI operations use short-lived GitHub App tokens passed exclusively over `stdin` into ephemeral helpers.
+- Tokens are never stored in environment variables, configuration files, or repository commit history.

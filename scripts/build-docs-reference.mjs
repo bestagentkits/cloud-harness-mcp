@@ -101,15 +101,30 @@ function renderToolMarkdown(spec) {
   if (Object.keys(properties).length === 0 && (jsonSchema.oneOf || jsonSchema.anyOf)) {
     const variants = jsonSchema.oneOf || jsonSchema.anyOf;
     properties = {};
+    const enumValuesByKey = {};
     for (const variant of variants) {
       if (variant.properties) {
         for (const [key, val] of Object.entries(variant.properties)) {
+          if (val.const !== undefined) {
+            enumValuesByKey[key] = enumValuesByKey[key] || [];
+            if (!enumValuesByKey[key].includes(val.const)) enumValuesByKey[key].push(val.const);
+          } else if (Array.isArray(val.enum)) {
+            enumValuesByKey[key] = enumValuesByKey[key] || [];
+            for (const e of val.enum) {
+              if (!enumValuesByKey[key].includes(e)) enumValuesByKey[key].push(e);
+            }
+          }
           if (!properties[key]) {
-            properties[key] = val;
+            properties[key] = { ...val };
           } else if (properties[key].type !== val.type) {
             properties[key] = { ...properties[key], type: 'any' };
           }
         }
+      }
+    }
+    for (const [key, enums] of Object.entries(enumValuesByKey)) {
+      if (enums.length > 1) {
+        properties[key] = { type: 'string', enum: enums };
       }
     }
     required = new Set(['workspaceId', 'action']);
