@@ -262,4 +262,49 @@ describe('StateStore', () => {
     expect((store.database.prepare('SELECT COUNT(*) AS count FROM principal_relinks').get() as { count: number }).count).toBe(0);
     store.close();
   });
+
+  it('manages privilege grant lifecycle, single-use consumption, and expiration', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    const ownerId = 'usr_owner123';
+    const workspaceId = 'ws_test123';
+    const command = 'sudo apt-get update';
+
+    // 1. Create grant with specific cwd
+    const grant = store.createPrivilegeGrant({ ownerId, workspaceId, command, cwd: 'src', ttlMs: 1000 });
+    expect(grant.id.startsWith('pvg_')).toBe(true);
+    expect(grant.status).toBe('PENDING');
+    expect(grant.command).toBe(command);
+    expect(grant.cwd).toBe('src');
+    expect(grant.consumedAt).toBeNull();
+
+    // 2. Query grant
+    expect(store.getPrivilegeGrant(grant.id)?.status).toBe('PENDING');
+    expect(store.listPrivilegeGrants(ownerId, workspaceId)).toHaveLength(1);
+
+    // 3. Approve grant
+    expect(store.approvePrivilegeGrant('wrong_owner', grant.id)).toBe(false);
+    expect(store.approvePrivilegeGrant(ownerId, grant.id)).toBe(true);
+    expect(store.getPrivilegeGrant(grant.id)?.status).toBe('APPROVED');
+
+    // 4. Consume grant with wrong cwd (cwd tampering) fails
+    expect(store.consumePrivilegeGrant({ ownerId, workspaceId, grantId: grant.id, commandSha256: grant.commandSha256, cwd: 'wrong_dir' })).toBe(false);
+
+    // 5. Consume grant with wrong command hash fails
+    expect(store.consumePrivilegeGrant({ ownerId, workspaceId, grantId: grant.id, commandSha256: 'wrong_hash', cwd: 'src' })).toBe(false);
+
+    // 6. Consume grant with correct cwd & command hash succeeds
+    expect(store.consumePrivilegeGrant({ ownerId, workspaceId, grantId: grant.id, commandSha256: grant.commandSha256, cwd: 'src' })).toBe(true);
+    expect(store.getPrivilegeGrant(grant.id)?.status).toBe('CONSUMED');
+    expect(store.getPrivilegeGrant(grant.id)?.consumedAt).toBeGreaterThan(0);
+
+    // 7. Reusing consumed grant fails
+    expect(store.consumePrivilegeGrant({ ownerId, workspaceId, grantId: grant.id, commandSha256: grant.commandSha256, cwd: 'src' })).toBe(false);
+    // 7. Rejection
+    const grant2 = store.createPrivilegeGrant({ ownerId, workspaceId, command: 'rm -rf /', ttlMs: 60_000 });
+    expect(store.rejectPrivilegeGrant(ownerId, grant2.id)).toBe(true);
+    expect(store.getPrivilegeGrant(grant2.id)?.status).toBe('REJECTED');
+    store.close();
+  });
 });

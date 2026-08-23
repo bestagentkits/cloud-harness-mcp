@@ -48,7 +48,8 @@ export type DashboardResponseOperation =
   | 'environment_list' | 'environment_create' | 'environment_update' | 'environment_delete'
   | 'secret_list' | 'secret_create' | 'secret_rotate' | 'secret_delete' | 'audit_list'
   | 'artifact_list' | 'artifact_snapshot' | 'artifact_delete'
-  | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect';
+  | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect'
+  | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject';
 
 function pick(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -59,6 +60,7 @@ const metadataKeys = ['id', 'name', 'state', 'generation', 'createdAt', 'updated
 const environmentKeys = [...metadataKeys, 'projectId'] as const;
 const secretKeys = ['id', 'environmentId', 'name', 'state', 'version', 'generation', 'createdAt', 'updatedAt', 'deletedAt'] as const;
 const artifactKeys = ['artifactId', 'logicalName', 'sha256', 'sizeBytes', 'projectId', 'environmentId', 'workspaceId', 'createdAt', 'updatedAt', 'expiresAt', 'retentionMs', 'generation'] as const;
+const privilegeGrantKeys = ['id', 'ownerId', 'workspaceId', 'command', 'cwd', 'commandSha256', 'status', 'createdAt', 'expiresAt', 'consumedAt'] as const;
 const list = (data: Record<string, unknown>, key: string, keys: readonly string[]) => ({
   [key]: Array.isArray(data[key]) ? data[key].map((record) => pick(record, keys)) : []
 });
@@ -116,6 +118,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'artifact_snapshot' || operation === 'artifact_delete') return pick(data, artifactKeys);
   if (operation === 'github_setup_begin') return pick(data, ['url', 'state', 'expiresAt']);
   if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect'].includes(operation)) return githubStatus(data);
+  if (operation === 'privilege_grant_list') return list(data, 'grants', privilegeGrantKeys);
+  if (operation === 'privilege_grant_approve' || operation === 'privilege_grant_reject') return { grant: pick(data.grant, privilegeGrantKeys) };
   return {};
 }
 

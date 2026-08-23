@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmod, chown, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
@@ -14,7 +14,7 @@ import {
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
-import { mintPrincipalRepositoryToken, mintRepositoryToken } from './github-app-broker.js';
+import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken } from './github-app-broker.js';
 import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
@@ -145,7 +145,7 @@ export class WorkspaceService {
     let result;
     if (record.containerName) {
       result = await runDocker(
-        ['exec', record.containerName, '/usr/bin/du', '-sb', '--apparent-size', '/workspace'],
+        ['exec', record.containerName, '/usr/bin/du', '-sb', '--apparent-size', '/workspace', '/opt/user-tools', '/var/cache/harness'],
         { timeoutMs: 30_000, maxBytes: 8_192 }
       );
     } else {
@@ -165,8 +165,15 @@ export class WorkspaceService {
       }
     }
     if (result.exitCode !== 0) return undefined;
-    const bytes = Number(result.stdout.trim().split(/\s+/, 1)[0]);
-    return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : undefined;
+    const lines = result.stdout.trim().split('\n');
+    let totalBytes = 0;
+    for (const line of lines) {
+      const bytes = Number(line.trim().split(/\s+/, 1)[0]);
+      if (Number.isSafeInteger(bytes) && bytes >= 0) {
+        totalBytes += bytes;
+      }
+    }
+    return totalBytes >= 0 ? totalBytes : undefined;
   }
 
   private async resourceViolation(record: WorkspaceRecord): Promise<string | undefined> {
@@ -218,18 +225,66 @@ export class WorkspaceService {
     return join(jobPath, 'repo');
   }
 
+  private async provisionMountDirectories(record: WorkspaceRecord): Promise<{ toolsPath: string; cachePath: string }> {
+    const jobPath = record.workspacePath;
+    const toolsPath = join(jobPath, 'tools');
+    const cachePath = join(jobPath, 'cache');
+    await mkdir(toolsPath, { recursive: true, mode: 0o755 });
+    await mkdir(cachePath, { recursive: true, mode: 0o755 });
+    try {
+      await chown(toolsPath, 10001, 10001);
+      await chown(cachePath, 10001, 10001);
+      await chmod(toolsPath, 0o755);
+      await chmod(cachePath, 0o755);
+    } catch {
+      const helperName = `chm-chown-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+      try {
+        const result = await runDocker([
+          'run', '--rm', '--pull', 'never', '--name', helperName,
+          '--label', 'cloud-harness.role=chown-helper', '--label', 'cloud-harness.ephemeral=true',
+          '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
+          '--network', 'none', '--user', '0:0',
+          '--volume', `${jobPath}:/job`,
+          '--entrypoint', '/bin/sh', this.config.executorImage,
+          '-c', 'mkdir -p /job/tools /job/cache && chown -R 10001:10001 /job/tools /job/cache && chmod 0755 /job/tools /job/cache'
+        ], { timeoutMs: 30_000, maxBytes: 8_192 });
+        if (result.exitCode !== 0) {
+          throw new HarnessError('UNAVAILABLE', `mount directory provisioning failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
+        }
+      } finally {
+        await removeContainer(helperName);
+      }
+    }
+    return { toolsPath, cachePath };
+  }
+
   private async createExecutor(record: WorkspaceRecord, repositoryPath: string, environment: Record<string, string> = {}): Promise<string> {
     const name = `cloud-harness-ws-${record.id.slice(3, 19).toLowerCase()}`;
+    const { toolsPath, cachePath } = await this.provisionMountDirectories(record);
     const args = [
       'create', '--name', name,
       '--label', 'cloud-harness.managed=true', '--label', `cloud-harness.instance=${this.instanceId}`,
       '--label', `cloud-harness.workspace=${record.id}`,
       '--user', '10001:10001', '--workdir', '/workspace', '--read-only',
-      '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
+      '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
       '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256',
       '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024',
-      '--network', record.networkMode, '--volume', `${repositoryPath}:/workspace:rw`,
-      '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1',
+      '--network', record.networkMode,
+      '--volume', `${repositoryPath}:/workspace:rw`,
+      '--volume', `${toolsPath}:/opt/user-tools:rw`,
+      '--volume', `${cachePath}:/var/cache/harness:rw`,
+      '--env', 'HOME=/tmp/cloud-harness-home',
+      '--env', 'GIT_CONFIG_NOSYSTEM=1',
+      '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
+      '--env', 'XDG_CACHE_HOME=/var/cache/harness',
+      '--env', 'XDG_DATA_HOME=/opt/user-tools/data',
+      '--env', 'NPM_CONFIG_PREFIX=/opt/user-tools',
+      '--env', 'NPM_CONFIG_CACHE=/var/cache/harness/npm',
+      '--env', 'UV_CACHE_DIR=/var/cache/harness/uv',
+      '--env', 'BUN_INSTALL=/opt/user-tools/bun',
+      '--env', 'PNPM_HOME=/opt/user-tools/pnpm',
+      '--env', 'UV_TOOL_BIN_DIR=/opt/user-tools/bin',
+      '--env', 'PATH=/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       ...Object.entries(environment).flatMap(([name, value]) => ['--env', `${name}=${value}`]),
       this.config.executorImage
     ];
@@ -445,6 +500,183 @@ export class WorkspaceService {
       await this.safeRemovePath(join(record.workspacePath, transferName));
     }
   }
+  private async handleExecRun(record: WorkspaceRecord, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    const command = validated.command as string;
+    const cwd = ((validated.cwd as string) || '.').replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
+    const timeoutMs = (validated.timeoutMs as number) || 60_000;
+    const maxOutputBytes = (validated.maxOutputBytes as number) || this.config.maxOutputBytes;
+    const privileged = Boolean(validated.privileged);
+    const approvalGrantToken = validated.approvalGrantToken as string | undefined;
+
+    if (privileged) {
+      if ((this.config.authMode ?? 'owner-bearer') === 'owner-bearer') {
+        throw new HarnessError('FORBIDDEN', 'Privileged execution requires Cloudflare Access operator dashboard approval and is disabled in owner-bearer mode', 403, false);
+      }
+      const commandSha256 = createHash('sha256').update(command).digest('hex');
+      if (!approvalGrantToken) {
+        const grant = this.store.createPrivilegeGrant({
+          ownerId: record.ownerId,
+          workspaceId: record.id,
+          command,
+          cwd,
+          ttlMs: 60_000
+        });
+
+        return {
+          ok: false,
+          message: 'Privileged execution requires explicit operator approval grant',
+          error: {
+            code: 'PRIVILEGE_APPROVAL_REQUIRED',
+            message: `Approval grant required to execute privileged command on workspace ${record.id}`,
+            grantRequest: {
+              grantId: grant.id,
+              workspaceId: grant.workspaceId,
+              commandSha256: grant.commandSha256,
+              cwd: grant.cwd,
+              expiresAt: new Date(grant.expiresAt).toISOString()
+            },
+            retryable: true
+          },
+          truncated: false
+        };
+      }
+
+      const grantValid = this.store.consumePrivilegeGrant({
+        ownerId: record.ownerId,
+        workspaceId: record.id,
+        grantId: approvalGrantToken,
+        commandSha256,
+        cwd
+      });
+
+      if (!grantValid) {
+        throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token', 403);
+      }
+
+      return await this.runPrivilegedEphemeralExec(record, { command, cwd, timeoutMs, maxOutputBytes }, signal);
+    }
+
+    return await this.runWorker(record, 'exec_run', validated, signal);
+  }
+
+  private async runPrivilegedEphemeralExec(
+    record: WorkspaceRecord,
+    input: { command: string; cwd: string; timeoutMs: number; maxOutputBytes: number },
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
+    const privName = `chm-priv-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+    const toolsPath = join(record.workspacePath, 'tools');
+    const cachePath = join(record.workspacePath, 'cache');
+    const normalizedCwd = input.cwd.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
+    const workdir = normalizedCwd === '.' ? '/workspace' : `/workspace/${normalizedCwd}`;
+    try {
+      const result = await runDocker([
+        'run', '-i', '--rm', '--name', privName,
+        '--label', 'cloud-harness.managed=true',
+        '--label', `cloud-harness.instance=${this.instanceId}`,
+        '--label', `cloud-harness.workspace=${record.id}`,
+        '--label', 'cloud-harness.role=priv-exec',
+        '--label', 'cloud-harness.ephemeral=true',
+        '--network', record.networkMode,
+        '--user', '0:0',
+        '--workdir', workdir,
+        '--pids-limit', '256',
+        '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
+        '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m',
+        '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
+        '--volume', `${record.workspacePath}/repo:/workspace:rw`,
+        '--volume', `${toolsPath}:/opt/user-tools:rw`,
+        '--volume', `${cachePath}:/var/cache/harness:rw`,
+        '--env', 'HOME=/tmp/cloud-harness-home',
+        '--env', 'BUN_INSTALL=/opt/user-tools/bun',
+        '--env', 'PNPM_HOME=/opt/user-tools/pnpm',
+        '--env', 'UV_TOOL_BIN_DIR=/opt/user-tools/bin',
+        '--env', 'PATH=/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        '--entrypoint', '/bin/bash',
+        this.config.executorImage,
+        '-c', input.command
+      ], {
+        timeoutMs: input.timeoutMs,
+        maxBytes: input.maxOutputBytes,
+        ...(signal ? { signal } : {})
+      });
+
+      return {
+        ok: result.exitCode === 0,
+        message: result.exitCode === 0 ? 'Privileged execution completed successfully' : `Privileged execution failed with exit code ${result.exitCode}`,
+        data: { output: result.stdout || result.stderr, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
+        truncated: result.truncated
+      };
+    } finally {
+      await removeContainer(privName);
+    }
+  }
+
+  private async runBrokeredGitHubAction(
+    record: WorkspaceRecord,
+    action: 'pr_list' | 'pr_view' | 'pr_create' | 'issue_list' | 'issue_view' | 'issue_create',
+    args: string[],
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
+    const isWrite = action === 'pr_create' || action === 'issue_create';
+    const permissionScope = action.startsWith('pr_') ? 'pull_requests' : 'issues';
+
+    // mintPrincipalRepositoryScopedToken handles both cloudflare-access (via installations) and owner-bearer (via config.githubApp.installationId)
+    const token = await mintPrincipalRepositoryScopedToken({
+      config: this.config,
+      principalId: record.ownerId,
+      repositoryUrl: new URL(record.repositoryUrl),
+      installations: this.githubInstallations,
+      permissionScope,
+      requiredPermission: isWrite ? 'write' : 'read'
+    });
+    if (!token) {
+      throw new HarnessError('FORBIDDEN', `No GitHub App installation available for ${record.repositoryUrl}`, 403);
+    }
+
+    const helperName = `chm-gh-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+    try {
+      const result = await runDocker([
+        'run', '-i', '--rm', '--name', helperName,
+        '--label', 'cloud-harness.managed=true',
+        '--label', `cloud-harness.instance=${this.instanceId}`,
+        '--label', `cloud-harness.workspace=${record.id}`,
+        '--label', 'cloud-harness.role=gh-helper',
+        '--label', 'cloud-harness.ephemeral=true',
+        '--network', 'bridge',
+        '--user', '10001:10001',
+        '--read-only',
+        '--tmpfs', '/tmp:rw,exec,size=32m',
+        '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges',
+        '--pids-limit', '128',
+        '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
+        '--ulimit', 'nofile=1024:1024',
+        '--volume', `${record.workspacePath}/repo:/workspace:ro`,
+        '--workdir', '/workspace',
+        '--env', 'HOME=/tmp/cloud-harness-home',
+        '--env', `GH_REPO=${new URL(record.repositoryUrl).pathname.replace(/^\//, '').replace(/\.git$/, '')}`,
+        '--entrypoint', '/opt/harness/gh-helper.sh',
+        this.config.executorImage,
+        action,
+        ...args
+      ], {
+        stdin: `${token}\n`,
+        timeoutMs: 60_000,
+        maxBytes: this.config.maxOutputBytes,
+        ...(signal ? { signal } : {})
+      });
+
+      return {
+        ok: result.exitCode === 0,
+        message: (result.exitCode === 0 ? `GitHub ${action} successful` : `GitHub ${action} failed: ${result.stderr}`).slice(0, 2_000),
+        data: { output: result.stdout || result.stderr },
+        truncated: result.truncated
+      };
+    } finally {
+      await removeContainer(helperName);
+    }
+  }
 
   async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
@@ -457,7 +689,27 @@ export class WorkspaceService {
     if (operation === 'workspace_close') return await this.close(ownerId, workspaceId);
     const record = this.touch(this.requireWorkspace(ownerId, workspaceId));
     await this.enforceActiveLimits(record);
-    if (operation === 'exec_run') validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
+    if (operation === 'exec_run') {
+      validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
+      const result = await this.handleExecRun(record, validated, signal);
+      await this.enforceActiveLimits(record);
+      return result;
+    }
+    if (operation === 'github_action') {
+      const action = validated.action as 'pr_list' | 'pr_view' | 'pr_create' | 'issue_list' | 'issue_view' | 'issue_create';
+      let args: string[] = [];
+      switch (action) {
+        case 'pr_list': args = [String(validated.limit ?? 20), (validated.state as string) ?? 'open']; break;
+        case 'pr_view': args = [String(validated.prNumber)]; break;
+        case 'pr_create': args = [validated.title as string, (validated.body as string) ?? '', validated.head as string, (validated.base as string) ?? 'main']; break;
+        case 'issue_list': args = [String(validated.limit ?? 20), (validated.state as string) ?? 'open']; break;
+        case 'issue_view': args = [String(validated.issueNumber)]; break;
+        case 'issue_create': args = [validated.title as string, (validated.body as string) ?? '']; break;
+      }
+      const result = await this.runBrokeredGitHubAction(record, action, args, signal);
+      await this.enforceActiveLimits(record);
+      return result;
+    }
     if (operation === 'shell_open') {
       const shell = this.operations.openShell(record.id, record.containerName!, validated.cwd as string, validated.idempotencyKey as string, this.config.maxOutputBytes);
       return { ok: true, message: 'Shell opened', data: this.operations.view(shell), truncated: false };
@@ -694,9 +946,9 @@ export class WorkspaceService {
       const cleaned = await runDocker([
         'run', '--rm', '--pull', 'never', '--name', helperName,
         '--label', 'cloud-harness.role=cleanup-helper', '--label', 'cloud-harness.ephemeral=true',
-        '--label', `cloud-harness.instance=${this.instanceId}`, '--network', 'none', '--user', '10001:10001',
-        '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m', '--cap-drop', 'ALL',
-        '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25',
+        '--label', `cloud-harness.instance=${this.instanceId}`, '--network', 'none', '--user', '0:0',
+        '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
+        '--pids-limit', '32', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25',
         '--volume', `${target}:/target:rw`, '--entrypoint', '/usr/bin/find', this.config.executorImage,
         '/target', '-mindepth', '1', '-delete'
       ], { timeoutMs: 30_000, maxBytes: 65_536 });

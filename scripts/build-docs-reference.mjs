@@ -40,7 +40,7 @@ const CATEGORIES = [
   {
     title: 'Git and Worktrees',
     description: 'Local repository version control, branch management, worktree isolation, and credential-isolated origin transfer.',
-    names: ['git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_list', 'worktrees_create', 'worktrees_remove']
+    names: ['git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_list', 'worktrees_create', 'worktrees_remove', 'github_action']
   },
   {
     title: 'Repository Extensions',
@@ -95,9 +95,25 @@ function renderToolMarkdown(spec) {
     ? spec.inputSchema.toJSONSchema()
     : z.toJSONSchema(spec.inputSchema);
 
-  const properties = jsonSchema.properties || {};
-  const required = new Set(jsonSchema.required || []);
+  let properties = jsonSchema.properties || {};
+  let required = new Set(jsonSchema.required || []);
 
+  if (Object.keys(properties).length === 0 && (jsonSchema.oneOf || jsonSchema.anyOf)) {
+    const variants = jsonSchema.oneOf || jsonSchema.anyOf;
+    properties = {};
+    for (const variant of variants) {
+      if (variant.properties) {
+        for (const [key, val] of Object.entries(variant.properties)) {
+          if (!properties[key]) {
+            properties[key] = val;
+          } else if (properties[key].type !== val.type) {
+            properties[key] = { ...properties[key], type: 'any' };
+          }
+        }
+      }
+    }
+    required = new Set(['workspaceId', 'action']);
+  }
   const flags = [
     spec.readOnly ? '<span class="badge-ro">readOnly</span>' : null,
     spec.destructive ? '<span class="badge-destructive">destructive</span>' : null,

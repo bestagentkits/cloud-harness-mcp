@@ -9,7 +9,7 @@ const authMocks = vi.hoisted(() => ({
 authMocks.createAppAuth.mockImplementation(() => authMocks.installationAuth);
 vi.mock('@octokit/auth-app', () => ({ createAppAuth: authMocks.createAppAuth }));
 
-import { mintPrincipalRepositoryToken, mintRepositoryToken } from '../src/github-app-broker.js';
+import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken } from '../src/github-app-broker.js';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 
 const config = {
@@ -112,5 +112,64 @@ describe('GitHub App broker', () => {
     })).resolves.toBe('repository-scoped-token');
     expect(authMocks.createAppAuth).toHaveBeenLastCalledWith(expect.objectContaining({ installationId: '102' }));
     expect(authMocks.installationAuth).toHaveBeenLastCalledWith({ type: 'installation', repositoryNames: ['repo-two'] });
+  });
+
+  it('mints action-scoped tokens for pull_requests and issues with granular permissions', async () => {
+    const installations = new InMemoryGitHubInstallationStore();
+    installations.replaceVerified('principal-a', {
+      appId: 123, installationId: 555, accountId: 888, accountLogin: 'octocat', status: 'active',
+      repositories: [{ owner: 'octocat', repository: 'hello-world', contents: 'read' }]
+    }, 1_000);
+
+    const accessConfig = { ...config, authMode: 'cloudflare-access' as const };
+    const ownerBearerConfig = { ...config, authMode: 'owner-bearer' as const };
+
+    // 1. Pull requests read (cloudflare-access)
+    await expect(mintPrincipalRepositoryScopedToken({
+      config: accessConfig, principalId: 'principal-a',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'pull_requests',
+      requiredPermission: 'read'
+    })).resolves.toBe('repository-scoped-token');
+    expect(authMocks.createAppAuth).toHaveBeenLastCalledWith(expect.objectContaining({ installationId: '555' }));
+    expect(authMocks.installationAuth).toHaveBeenLastCalledWith({
+      type: 'installation',
+      repositoryNames: ['hello-world'],
+      permissions: { pull_requests: 'read' }
+    });
+
+    // 2. Issues write (cloudflare-access)
+    await expect(mintPrincipalRepositoryScopedToken({
+      config: accessConfig, principalId: 'principal-a',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'issues',
+      requiredPermission: 'write'
+    })).resolves.toBe('repository-scoped-token');
+    expect(authMocks.installationAuth).toHaveBeenLastCalledWith({
+      type: 'installation',
+      repositoryNames: ['hello-world'],
+      permissions: { issues: 'write' }
+    });
+
+    // 3. Cross-principal / ungranted write denied in cloudflare-access
+    await expect(mintPrincipalRepositoryScopedToken({
+      config: accessConfig, principalId: 'principal-b',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'issues',
+      requiredPermission: 'write'
+    })).rejects.toThrow('not authorized');
+
+    // 4. Static installation in owner-bearer mode (even if installations store is passed)
+    await expect(mintPrincipalRepositoryScopedToken({
+      config: ownerBearerConfig, principalId: 'owner',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'issues',
+      requiredPermission: 'write'
+    })).resolves.toBe('repository-scoped-token');
+    expect(authMocks.createAppAuth).toHaveBeenLastCalledWith(expect.objectContaining({ installationId: 456 }));
   });
 });

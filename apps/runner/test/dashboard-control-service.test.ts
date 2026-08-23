@@ -13,15 +13,27 @@ import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0)) {
+    try { cleanup(); } catch { /* ignore cleanup error */ }
+  }
+  for (const root of roots.splice(0)) {
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* ignore cleanup error */ }
+  }
+});
 
 function setup(withKeyring = true) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-controls-')); roots.push(root);
   const databasePath = join(root, 'state.db'); const principals = new StateStore(databasePath);
   const keyring = withKeyring ? new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]) : undefined;
   const metadata = new MetadataStore(databasePath, keyring);
+  cleanups.push(() => {
+    try { metadata.database.close(); } catch { /* ignore */ }
+    try { principals.close(); } catch { /* ignore */ }
+  });
   const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
-  const workspaces = { readArtifactSource: async (principal: any) => ({ ownerId: principals.resolvePrincipal(principal), content: Buffer.from('snapshot') }) } as WorkspaceService;
+  const workspaces = { readArtifactSource: async (p: PrincipalSelector) => ({ ownerId: principals.resolvePrincipal(p), content: Buffer.from('snapshot') }) } as unknown as WorkspaceService;
   const controls = new DashboardControlService({ artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, workspaces);
   return { controls, principals, metadata, artifacts, keyring, workspaces };
 }
@@ -159,5 +171,41 @@ describe('dashboard control service', () => {
     expect(audits).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: 'github.disconnected', subjectId: '101' })
     ]));
+  });
+
+  it('lists, approves, and rejects privilege grants with operator authorization and audit logging', async () => {
+    const { controls, principals, metadata } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const workspaceId = `ws_${'b'.repeat(24)}`;
+    const grant = principals.createPrivilegeGrant({
+      ownerId,
+      workspaceId,
+      command: 'apt-get update',
+      ttlMs: 60_000
+    });
+
+    const listResult = await controls.execute(request('privilege_grant_list', { workspaceId }));
+    expect(listResult.ok).toBe(true);
+    const listData = listResult.data as { grants: { id: string }[] };
+    expect(listData.grants).toHaveLength(1);
+    expect(listData.grants[0].id).toBe(grant.id);
+    const approveResult = await controls.execute(request('privilege_grant_approve', { grantId: grant.id }));
+    expect(approveResult.ok).toBe(true);
+    expect(principals.getPrivilegeGrant(grant.id)?.status).toBe('APPROVED');
+
+    const auditEvents = metadata.listAudit(ownerId);
+    expect(auditEvents.some((e) => e.action === 'privilege_grant.approved')).toBe(true);
+
+    // Creating a second grant to test rejection
+    const grant2 = principals.createPrivilegeGrant({
+      ownerId,
+      workspaceId,
+      command: 'apt-get install -y cowsay',
+      ttlMs: 60_000
+    });
+    const rejectResult = await controls.execute(request('privilege_grant_reject', { grantId: grant2.id }));
+    expect(rejectResult.ok).toBe(true);
+    expect(principals.getPrivilegeGrant(grant2.id)?.status).toBe('REJECTED');
+    expect(metadata.listAudit(ownerId).some((e) => e.action === 'privilege_grant.rejected')).toBe(true);
   });
 });

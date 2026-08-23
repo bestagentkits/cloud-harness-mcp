@@ -13,7 +13,8 @@ export const RunnerOperationSchema = z.enum([
   'skills_list', 'skills_read', 'skills_run',
   'hooks_list', 'hooks_run',
   'memories_list', 'memories_read', 'memories_write',
-  'deployments_list', 'deployments_run'
+  'deployments_list', 'deployments_run',
+  'github_action'
 ]);
 
 export const ExternalPrincipalSchema = z.object({

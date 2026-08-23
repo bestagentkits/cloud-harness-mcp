@@ -21,7 +21,7 @@ terminate() {
 trap 'terminate; exit 143' TERM INT
 trap cleanup EXIT
 
-mkdir -p -- "$task_dir"
+mkdir -p -- "$task_dir" /tmp/cloud-harness-home
 /usr/bin/setsid /usr/bin/timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" \
   /bin/bash -lc 'exec /bin/bash -lc "$CH_COMMAND"' &
 child_pid=$!

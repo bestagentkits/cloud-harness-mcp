@@ -63,9 +63,19 @@ makes a lost response recoverable without duplicating work.
   `expectedSha256` option requires the target to exist and match.
 - `exec_run` accepts raw Bash and is intentionally remote code execution
   inside the executor. It is request-owned and bounded by timeout/output
-  settings. If its API request disconnects or reaches the API deadline, the
+  settings. Standard execution runs as user `10001:10001` with `--read-only` rootfs
+  and dropped capabilities. When `privileged: true` is requested in `cloudflare-access` mode,
+  it requires a valid `approvalGrantToken`. An unapproved request returns `PRIVILEGE_APPROVAL_REQUIRED`
+  with a `grantId` for the operator to approve in the dashboard. Approved grants
+  execute once in an isolated ephemeral container with `try/finally` cleanup.
+  In `owner-bearer` mode, `privileged: true` is rejected as `FORBIDDEN` to prevent unbrokered elevation.
+  If its API request disconnects or reaches the API deadline, the
   runner terminates and verifies the operation's process groups; the workspace
   remains active for later calls.
+- `github_action` executes authenticated GitHub CLI actions (`pr_list`, `pr_view`,
+  `pr_create`, `issue_list`, `issue_view`, `issue_create`) through an ephemeral
+  helper container using short-lived tokens minted from the configured GitHub App.
+  Tokens are supplied exclusively via stdin and are never written to workspace files.
 - `symbols_search` uses Universal Ctags to find definitions. It is not a
   language server. `symbols_references` is a bounded lexical word search, so it
   can include definitions and same-spelling identifiers rather than semantic

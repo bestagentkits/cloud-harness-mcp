@@ -19,6 +19,7 @@ const workspaceCeilingBytes = 64 * 1_024 * 1_024;
 beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), 'cloud-harness-docker-'));
   runnerConfig = {
+    authMode: 'cloudflare-access',
     host: '127.0.0.1', port: 3001, serviceToken: 'runner-test-token-that-is-longer-than-32-characters',
     jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state', 'state.db'), executorImage: 'cloud-harness-executor:local',
     allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300, idleTtlSeconds: 180,
@@ -35,7 +36,17 @@ afterAll(async () => {
   if (foreignOrphanContainer) await removeContainer(foreignOrphanContainer).catch(() => undefined);
   await service.stop();
   store.close();
-  rmSync(directory, { recursive: true, force: true });
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    await runDocker([
+      'run', '--rm', '--network', 'none', '--user', '0:0',
+      '--volume', `${directory}:/target`,
+      '--entrypoint', '/bin/sh', runnerConfig.executorImage,
+      '-c', 'rm -rf /target/*'
+    ]).catch(() => undefined);
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 });
 
 describe('real Docker sandbox', () => {
@@ -158,4 +169,97 @@ describe('real Docker sandbox', () => {
     await service.execute('owner', 'workspace_close', { workspaceId });
     workspaceId = undefined;
   }, 120_000);
+
+  it('enforces 3-zone storage isolation and single-use approval grants for privileged execution', async () => {
+    const opened = await service.execute('owner', 'workspace_open', {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: 'docker-test-privilege-workspace', networkMode: 'none'
+    });
+    expect(opened.ok).toBe(true);
+    workspaceId = (opened.data as { workspaceId: string }).workspaceId;
+    const testWsId = workspaceId;
+    // 1. Verify 3-zone storage mounts and user-space writability
+    const storageCheck = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'test -w /opt/user-tools && test -w /var/cache/harness && test -w /tmp && echo "3-zone-writable"',
+      cwd: '.'
+    });
+    expect(JSON.stringify(storageCheck.data)).toContain('3-zone-writable');
+
+    // 2. Unapproved privileged command must be rejected with PRIVILEGE_APPROVAL_REQUIRED
+    const unapproved = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'whoami',
+      privileged: true
+    });
+    expect(unapproved.ok).toBe(false);
+    expect(unapproved.error?.code).toBe('PRIVILEGE_APPROVAL_REQUIRED');
+    const grantId = unapproved.error?.grantRequest?.grantId;
+    expect(grantId).toBeDefined();
+
+    const wsRecord = store.byId(testWsId)!;
+
+    // 3. Operator approves the grant
+    expect(store.approvePrivilegeGrant(wsRecord.ownerId, grantId!)).toBe(true);
+
+    // 4. Executing with approved grant token runs in privileged ephemeral container
+    const approved = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'whoami',
+      privileged: true,
+      approvalGrantToken: grantId
+    });
+    expect(approved.ok).toBe(true);
+    expect(JSON.stringify(approved.data)).toContain('root');
+
+    // 5. Reusing the consumed grant token must be forbidden
+    await expect(service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'whoami',
+      privileged: true,
+      approvalGrantToken: grantId
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // 6. Modified command with valid token must fail hash check
+    const unapproved2 = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'id -u',
+      privileged: true
+    });
+    const grantId2 = unapproved2.error?.grantRequest?.grantId;
+    expect(store.approvePrivilegeGrant(wsRecord.ownerId, grantId2!)).toBe(true);
+    await expect(service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'id -g',
+      privileged: true,
+      approvalGrantToken: grantId2
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // 7. Modified cwd with valid token must fail
+    const unapproved3 = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'id -u',
+      cwd: '.',
+      privileged: true
+    });
+    const grantId3 = unapproved3.error?.grantRequest?.grantId;
+    expect(store.approvePrivilegeGrant(wsRecord.ownerId, grantId3!)).toBe(true);
+    await expect(service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'id -u',
+      cwd: 'src',
+      privileged: true,
+      approvalGrantToken: grantId3
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // 8. In owner-bearer mode, privileged exec is forbidden
+    const ownerBearerService = new WorkspaceService({ ...runnerConfig, authMode: 'owner-bearer' }, store);
+    await expect(ownerBearerService.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'whoami',
+      privileged: true
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    await service.execute('owner', 'workspace_close', { workspaceId: testWsId });
+  }, 60_000);
 });
