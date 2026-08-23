@@ -31,5 +31,6 @@ export function loadApiConfig(): ApiConfig {
     apiKeyGatewayAccessAudience: environment('API_KEY_GATEWAY_ACCESS_AUDIENCE'),
     apiKeyGatewayServiceSubject: environment('API_KEY_GATEWAY_SERVICE_SUBJECT'),
     apiKeyGatewayPublicUrl: environment('API_KEY_GATEWAY_PUBLIC_URL')
+    ,mailboxProbeEnabled: environment('MAILBOX_PROBE_ENABLED')
   });
 }

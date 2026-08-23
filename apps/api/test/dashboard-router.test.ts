@@ -16,7 +16,8 @@ const config: ApiConfig = {
   apiKeyAuthEnabled: true, apiKeyGatewayAccessAudience: 'api-key-audience',
   apiKeyGatewayServiceSubject: 'cf-service:d29ya2Vy', apiKeyGatewayPublicUrl: 'https://api.example/mcp',
   runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['dashboard.example'],
-  allowedOrigins: ['https://dashboard.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536
+  allowedOrigins: ['https://dashboard.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
+  mailboxProbeEnabled: false
 };
 
 type Reply = { status: number; headers: Record<string, string | string[] | undefined>; text: string; json: any };

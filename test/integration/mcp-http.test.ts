@@ -20,7 +20,7 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => runner.listen(0, '127.0.0.1', resolve));
   const runnerAddress = runner.address();
   if (!runnerAddress || typeof runnerAddress === 'string') throw new Error('runner failed');
-  const config: ApiConfig = { host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: token, runnerUrl: `http://127.0.0.1:${runnerAddress.port}`, runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['127.0.0.1'], allowedOrigins: [], requestTimeoutMs: 5_000, maxBodyBytes: 262_144 };
+  const config: ApiConfig = { host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: token, runnerUrl: `http://127.0.0.1:${runnerAddress.port}`, runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['127.0.0.1'], allowedOrigins: [], requestTimeoutMs: 5_000, maxBodyBytes: 262_144, apiKeyAuthEnabled: false, mailboxProbeEnabled: false };
   runtime = createApiApp(config);
   api = createServer(runtime.app);
   await new Promise<void>((resolve) => api.listen(0, '127.0.0.1', resolve));
