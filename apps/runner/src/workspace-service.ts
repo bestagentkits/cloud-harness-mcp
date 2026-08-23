@@ -148,15 +148,16 @@ export class WorkspaceService {
         ['exec', record.containerName, '/usr/bin/du', '-sb', '--apparent-size', '/workspace', '/opt/user-tools', '/var/cache/harness'],
         { timeoutMs: 30_000, maxBytes: 8_192 }
       );
-    } else {
+    }
+    if (!result || result.exitCode !== 0) {
       const helperName = `chm-size-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
       try {
         result = await runDocker([
           'run', '--rm', '--pull', 'never', '--name', helperName,
           '--label', 'cloud-harness.role=size-helper', '--label', 'cloud-harness.ephemeral=true',
           '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
-          '--network', 'none', '--user', '10001:10001', '--read-only', '--cap-drop', 'ALL',
-          '--security-opt', 'no-new-privileges', '--pids-limit', '32', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25',
+          '--network', 'none', '--user', '0:0', '--read-only',
+          '--pids-limit', '32', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25',
           '--volume', `${record.workspacePath}:/target:ro`, '--entrypoint', '/usr/bin/du', this.config.executorImage,
           '-sb', '--apparent-size', '/target'
         ], { timeoutMs: 30_000, maxBytes: 8_192 });
