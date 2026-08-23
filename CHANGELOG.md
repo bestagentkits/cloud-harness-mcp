@@ -1,10 +1,3 @@
-# [0.18.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.17.0...v0.18.0) (2026-08-23)
-
-
-### Features
-
-* **mailbox:** add chatgpt capability probe ([af1e1d0](https://github.com/bestagentkits/cloud-harness-mcp/commit/af1e1d0f3bb2d05aa4e0a4e7504d87aa142e4e80))
-
 # [0.17.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.16.9...v0.17.0) (2026-08-20)
 
 

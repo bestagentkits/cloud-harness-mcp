@@ -9,7 +9,7 @@ let runtime: ApiRuntime;
 let url: string;
 
 beforeEach(async () => {
-  const config: ApiConfig = { host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: token, runnerUrl: 'http://127.0.0.1:9', runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['127.0.0.1'], allowedOrigins: ['https://allowed.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536, apiKeyAuthEnabled: false, mailboxProbeEnabled: false };
+  const config: ApiConfig = { host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: token, runnerUrl: 'http://127.0.0.1:9', runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['127.0.0.1'], allowedOrigins: ['https://allowed.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536 };
   runtime = createApiApp(config);
   server = createServer(runtime.app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

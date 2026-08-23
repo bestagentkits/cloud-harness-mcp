@@ -28,7 +28,6 @@ export const ApiConfigSchema = z.object({
   apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
   apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
   apiKeyGatewayPublicUrl: httpsUrl.optional(),
-  mailboxProbeEnabled: enabled,
   runnerUrl: z.url(),
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),

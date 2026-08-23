@@ -53,8 +53,7 @@ beforeAll(async () => {
   const runnerPort = await listen(runnerServer);
   const apiConfig: ApiConfig = {
     host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: bearer, runnerUrl: `http://127.0.0.1:${runnerPort}`,
-    runnerToken: serviceToken, publicHosts: ['127.0.0.1'], allowedOrigins: [], requestTimeoutMs: 120_000, maxBodyBytes: 262_144,
-    apiKeyAuthEnabled: false, mailboxProbeEnabled: false
+    runnerToken: serviceToken, publicHosts: ['127.0.0.1'], allowedOrigins: [], requestTimeoutMs: 120_000, maxBodyBytes: 262_144
   };
   apiRuntime = createApiApp(apiConfig);
   apiServer = createServer(apiRuntime.app);

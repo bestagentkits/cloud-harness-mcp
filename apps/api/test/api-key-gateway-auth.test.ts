@@ -30,8 +30,7 @@ const config: ApiConfig = {
   apiKeyAuthEnabled: true, apiKeyGatewayAccessAudience: gatewayAudience,
   apiKeyGatewayServiceSubject: gatewaySubject, apiKeyGatewayPublicUrl: 'https://api.harness.example/mcp',
   runnerUrl: 'http://runner:3001', runnerToken: 'runner-token-that-is-longer-than-32-characters',
-  publicHosts: ['localhost'], allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
-  mailboxProbeEnabled: false
+  publicHosts: ['localhost'], allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536
 };
 
 const verifier = {

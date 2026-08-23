@@ -5,8 +5,7 @@ import { RunnerClient } from '../src/runner-client.js';
 const config: ApiConfig = {
   host: '127.0.0.1', port: 3000, ownerId: 'owner', bearerToken: 'owner-token-that-is-long-enough-123456',
   runnerUrl: 'http://runner:3001', runnerToken: 'runner-token-that-is-longer-than-32-characters',
-  publicHosts: ['localhost'], allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
-  apiKeyAuthEnabled: false, mailboxProbeEnabled: false
+  publicHosts: ['localhost'], allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536
 };
 
 afterEach(() => vi.unstubAllGlobals());

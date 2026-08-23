@@ -6,7 +6,6 @@ import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth } from './auth.js';
 import { createDashboardAssetsRouter } from './dashboard-assets.js';
 import { createDashboardRouter } from './dashboard-router.js';
 import { createCloudHarnessServerFactory } from './mcp-server.js';
-import { createMailboxProbeServerFactory } from './mailbox-probe-server.js';
 import { preAuthRequestLimits, principalRequestLimits, requestSecurity } from './request-security.js';
 import { RunnerClient } from './runner-client.js';
 
@@ -17,8 +16,6 @@ export function createApiApp(config: ApiConfig): ApiRuntime {
   const runnerClient = new RunnerClient(config);
   const handler = createMcpHandler(createCloudHarnessServerFactory(runnerClient), { legacy: 'stateless', responseMode: 'auto' });
   const nodeHandler = toNodeHandler(handler);
-  const probeHandler = config.mailboxProbeEnabled ? createMcpHandler(createMailboxProbeServerFactory(runnerClient), { legacy: 'stateless', responseMode: 'auto' }) : undefined;
-  const probeNodeHandler = probeHandler ? toNodeHandler(probeHandler) : undefined;
   app.disable('x-powered-by');
   app.get('/healthz', (_request, response) => response.json({ status: 'ok' }));
   app.get('/readyz', async (_request, response) => {
@@ -34,17 +31,6 @@ export function createApiApp(config: ApiConfig): ApiRuntime {
     }
     await nodeHandler(request, response, request.body);
   });
-  if (probeNodeHandler) {
-    app.use('/mcp-mailbox-probe', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config), principalRequestLimits());
-    app.use('/mcp-mailbox-probe', express.json({ limit: config.maxBodyBytes, strict: true }));
-    app.all('/mcp-mailbox-probe', async (request: Request, response: Response) => {
-      if (request.method === 'POST' && !request.is('application/json')) {
-        response.status(415).json({ error: 'unsupported_media_type' });
-        return;
-      }
-      await probeNodeHandler(request, response, request.body);
-    });
-  }
   if (config.authMode === 'cloudflare-access' && config.apiKeyAuthEnabled) {
     app.use('/mcp-api-key', requestSecurity(config), preAuthRequestLimits(), apiKeyGatewayAuth(config, runnerClient), principalRequestLimits());
     app.use('/mcp-api-key', express.json({ limit: config.maxBodyBytes, strict: true }));
@@ -61,5 +47,5 @@ export function createApiApp(config: ApiConfig): ApiRuntime {
     app.use('/dashboard', createDashboardRouter(config, runnerClient));
     app.use('/dashboard', createDashboardAssetsRouter());
   }
-  return { app, close: async () => { await handler.close(); await probeHandler?.close(); }, runnerClient };
+  return { app, close: () => handler.close(), runnerClient };
 }
