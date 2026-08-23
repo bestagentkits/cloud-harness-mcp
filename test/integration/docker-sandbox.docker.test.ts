@@ -178,14 +178,14 @@ describe('real Docker sandbox', () => {
     expect(opened.ok).toBe(true);
     workspaceId = (opened.data as { workspaceId: string }).workspaceId;
     const testWsId = workspaceId;
-    // 1. Verify 3-zone storage mounts and user-space writability
+    // 1. Verify 3-zone storage mounts, pre-baked toolchain versions, and user-space writability
     const storageCheck = await service.execute('owner', 'exec_run', {
       workspaceId: testWsId,
-      command: 'test -w /opt/user-tools && test -w /var/cache/harness && test -w /tmp && echo "3-zone-writable"',
+      command: 'test -w /opt/user-tools && test -w /var/cache/harness && test -w /tmp && gh --version && bun --version && uv --version && pnpm --version && wrangler --version && echo "3-zone-writable"',
       cwd: '.'
     });
     expect(JSON.stringify(storageCheck.data)).toContain('3-zone-writable');
-
+    expect(JSON.stringify(storageCheck.data)).toContain('gh version');
     // 2. Unapproved privileged command must be rejected with PRIVILEGE_APPROVAL_REQUIRED
     const unapproved = await service.execute('owner', 'exec_run', {
       workspaceId: testWsId,
@@ -287,5 +287,34 @@ describe('real Docker sandbox', () => {
     expect(JSON.stringify(nextExec.data)).toContain('post-root-ok');
 
     await service.execute('owner', 'workspace_close', { workspaceId: testWsId });
-  }, 60_000);
+  }, 120_000);
+
+  it('installs and executes real user-space global packages in bridge network mode', async () => {
+    const bridgeOpened = await service.execute('owner', 'workspace_open', {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: 'docker-test-npm-bridge-workspace', networkMode: 'bridge'
+    });
+    expect(bridgeOpened.ok).toBe(true);
+    const bridgeWsId = (bridgeOpened.data as { workspaceId: string }).workspaceId;
+    try {
+      const installResult = await service.execute('owner', 'exec_run', {
+        workspaceId: bridgeWsId,
+        command: 'npm install -g cowsay',
+        cwd: '.',
+        timeoutMs: 120_000
+      });
+      expect(installResult.ok).toBe(true);
+
+      const execResult = await service.execute('owner', 'exec_run', {
+        workspaceId: bridgeWsId,
+        command: 'cowsay "Verification Passed"',
+        cwd: '.',
+        timeoutMs: 120_000
+      });
+      expect(execResult.ok).toBe(true);
+      expect(JSON.stringify(execResult.data)).toContain('Verification Passed');
+    } finally {
+      await service.execute('owner', 'workspace_close', { workspaceId: bridgeWsId }).catch(() => undefined);
+    }
+  }, 120_000);
 });

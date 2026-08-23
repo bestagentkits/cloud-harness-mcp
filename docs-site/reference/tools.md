@@ -659,9 +659,9 @@ Execute authenticated GitHub pull request and issue operations via brokered help
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `action` | `"pr_list"` | **Yes** | — |
+| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_create"` \| `"issue_list"` \| `"issue_view"` \| `"issue_create"` | **Yes** | — |
 | `limit` | `integer` | No | range: 1–100, default: `20` |
-| `state` | `"open"` \| `"closed"` \| `"all"` | No | default: `"open"` |
+| `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |
 | `title` | `string` | No | length: 1–256 |
 | `body` | `string` | No | max length: 65536, default: `""` |

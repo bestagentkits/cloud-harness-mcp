@@ -15,8 +15,7 @@ description: Essential domain concepts, terminology, and invariants in Cloud Har
 A bounded, temporary working directory created on the host filesystem at `/var/lib/cloud-harness/jobs/<workspaceId>/repo`. A workspace hosts a clean clone of the target Git repository and is mounted exclusively into a single executor container.
 
 ### Executor
-The Docker container (`cloud-harness-executor:local`) executing repository commands on behalf of the workspace. It runs with UID/GID 1000 (`node`), has no Docker socket, lacks host mount access, and is isolated by network namespaces.
-
+The Docker container (`cloud-harness-executor:local`) executing repository commands on behalf of the workspace. It runs with UID/GID 10001 (`harness`), preserves strict hardening (`--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`), operates across 3 partitioned storage zones (`/tmp/cloud-harness-home` RAM tmpfs, `/opt/user-tools` & `/var/cache/harness`, `/workspace`), has no Docker socket, lacks host mount access, and is isolated by network namespaces.
 ### Runner
 The trusted central daemon (`apps/runner`) responsible for Docker container lifecycle, SQLite state persistence, GitHub App token brokerage, and audit recording. It is not exposed to the public Internet.
 

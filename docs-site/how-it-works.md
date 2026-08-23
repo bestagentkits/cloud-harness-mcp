@@ -45,10 +45,11 @@ Cloud Harness MCP is architected as a split control plane and execution runtime.
                     ▼                                   ▼
         ┌───────────────────────┐           ┌───────────────────────┐
         │   WORKSPACE EXECUTOR  │           │   GIT TRANSFER HELPER │
-        │  • Non-root (UID 1000)│           │  • Ephemeral bare repo│
-        │  • Network: NONE (def)│           │  • GitHub App Token   │
-        │  • No Docker socket   │           │    passed via STDIN   │
-        │  • TTL auto-cleanup   │           │  • Origin-only push   │
+        │  • Non-root (UID 10001│           │  • Ephemeral bare repo│
+        │  • 3-Zone Storage     │           │  • GitHub App Token   │
+        │  • Network: NONE (def)│           │    passed via STDIN   │
+        │  • No Docker socket   │           │  • Origin-only push   │
+        │  • TTL auto-cleanup   │           │  • Ephemeral cleanup  │
         └───────────────────────┘           └───────────────────────┘
 ```
 
@@ -61,7 +62,7 @@ Cloud Harness MCP is architected as a split control plane and execution runtime.
 3. **Policy & Lifecycle Execution:**
    The API performs JSON schema validation against `TOOL_SCHEMA_BY_NAME` and issues an internal RPC to the **Runner**. The Runner validates principal permissions, checks concurrency bounds, and orchestrates the workspace container.
 4. **Isolated Execution:**
-   The **Workspace Executor** is spawned from `cloud-harness-executor:local`. The repository is cloned into a dedicated directory. Commands, file edits, and tasks execute inside this container under user `node` (UID 1000).
+   The **Workspace Executor** is spawned from `cloud-harness-executor:local`. The repository is cloned into a dedicated directory. Commands, file edits, and tasks execute inside this container under user `harness` (UID 10001) across partitioned user-space toolchain directories (`/opt/user-tools`) and temporary home (`/tmp/cloud-harness-home`).
 5. **Credential-Free Git Origin Transfer:**
    When `git_push` is invoked, the Runner starts an ephemeral helper container, streams a short-lived GitHub App installation token over `stdin`, pushes to GitHub origin, and immediately tears down the helper. The workspace executor never touches or observes the token.
 6. **Result Normalization:**
