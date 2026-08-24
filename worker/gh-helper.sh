@@ -215,18 +215,20 @@ case "$action" in
       comment_posted=true
     fi
 
+    issue_url="https://github.com/${GH_REPO}/issues/${issue_number}"
     view_out=$(gh issue view "$issue_number" --json number,title,body,state,author,labels,comments,url 2>/dev/null || true)
     if [ -n "$view_out" ]; then
-      echo "$view_out" | jq --arg commentUrl "$comment_url" '. + (if $commentUrl != "" then { commentUrl: $commentUrl } else {} end)'
+      echo "$view_out" | jq --arg commentUrl "$comment_url" --arg url "$issue_url" '. + (if $commentUrl != "" then { commentUrl: $commentUrl } else {} end) + (if .url == null or .url == "" then { url: $url } else {} end)'
     else
       jq -n \
         --argjson number "$issue_number" \
         --argjson commentPosted "$comment_posted" \
         --arg commentUrl "$comment_url" \
+        --arg url "$issue_url" \
         --arg labelsCreated "$labels_created" \
         --arg labelsAdded "$labels_added" \
         --arg labelsRemoved "$labels_removed" \
-        '{ number: $number, published: true, commentPosted: $commentPosted, commentUrl: $commentUrl, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, labelsRemoved: $labelsRemoved }'
+        '{ number: $number, url: $url, published: true, commentPosted: $commentPosted, commentUrl: $commentUrl, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, labelsRemoved: $labelsRemoved }'
     fi
     ;;
   *)

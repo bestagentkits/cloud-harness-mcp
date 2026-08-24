@@ -495,12 +495,17 @@ export class WorkspaceService {
     if (active && record.status !== 'ACTIVE') {
       throw new HarnessError(record.status === 'CLOSED' ? 'EXPIRED' : 'CONFLICT', `workspace is ${record.status.toLowerCase()}`, 409);
     }
-    if (active && record.status === 'ACTIVE' && record.expiresAt <= Date.now()) {
-      if (record.containerName) {
-        void removeContainer(record.containerName).catch(() => undefined);
+    if (active && record.status === 'ACTIVE' && (record.expiresAt <= Date.now() || record.hardExpiresAt <= Date.now())) {
+      const now = Date.now();
+      const claimed = this.store.claimForExpiry(record.id, record.generation);
+      if (claimed) {
+        if (claimed.containerName) {
+          void removeContainer(claimed.containerName).catch(() => undefined);
+        }
+        this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'EXPIRED_RECOVERABLE', containerName: null, lastActivityAt: now });
+        throw new HarnessError('EXPIRED', 'workspace expired', 410);
       }
-      this.store.updateFenced(record.id, record.generation, ['ACTIVE'], { status: 'EXPIRED_RECOVERABLE', containerName: null, lastActivityAt: Date.now() });
-      throw new HarnessError('EXPIRED', 'workspace expired', 410);
+      return this.store.byId(record.id) ?? record;
     }
     return record;
   }
@@ -516,19 +521,25 @@ export class WorkspaceService {
     return touched;
   }
 
-  private async withMutationLease<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
+  private async withMutationLease<T>(record: WorkspaceRecord, action: () => Promise<T>, timeoutMs?: number): Promise<T> {
     const now = Date.now();
-    const holdExpiry = Math.min(record.hardExpiresAt + 300_000, Math.max(record.expiresAt, now + 300_000));
+    const holdDuration = Math.max(300_000, (timeoutMs ?? 300_000) + 15_000);
+    const holdExpiry = Math.min(record.hardExpiresAt + holdDuration, Math.max(record.expiresAt, now + holdDuration));
     try {
       this.store.acquireMutationLease(record.id, record.generation, holdExpiry);
     } catch {
       throw new HarnessError('EXPIRED', 'workspace lifecycle changed or is no longer active', 410);
     }
+    let actionSucceeded = false;
     try {
-      return await action();
+      const result = await action();
+      actionSucceeded = true;
+      return result;
     } finally {
       this.store.releaseMutationLease(record.id, record.generation);
-      this.touch(record);
+      if (actionSucceeded) {
+        this.touch(record);
+      }
     }
   }
 
@@ -1612,7 +1623,8 @@ export class WorkspaceService {
   };
 
   if (isMutationOperation(operation, validated)) {
-    return await this.withMutationLease(record, dispatchAction);
+    const opTimeout = typeof validated.timeoutMs === 'number' ? validated.timeoutMs : undefined;
+    return await this.withMutationLease(record, dispatchAction, opTimeout);
   }
   return await dispatchAction();
 }
@@ -1762,14 +1774,28 @@ export class WorkspaceService {
     let claimed = this.store.byId(record.id) ?? record;
     if (claimed.status !== 'REAPING') {
       if (claimed.status === 'CLOSED') return;
-      if (!this.store.claimForReaping(claimed.id, claimed.generation)) return;
-      claimed = this.store.byId(claimed.id)!;
+      if (!this.store.claimForReaping(claimed.id, claimed.generation, true)) {
+        const reloaded = this.store.byId(record.id);
+        if (!reloaded || reloaded.status === 'CLOSED') return;
+        if (reloaded.status === 'REAPING') {
+          claimed = reloaded;
+        } else {
+          if (!this.store.claimForReaping(reloaded.id, reloaded.generation, true)) return;
+          claimed = this.store.byId(reloaded.id)!;
+        }
+      } else {
+        claimed = this.store.byId(claimed.id)!;
+      }
     }
     this.operations.stopWorkspace(claimed.id);
     if (claimed.containerName) await removeContainer(claimed.containerName);
     await this.safeRemovePath(claimed.workspacePath);
     const closed = this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'CLOSED', containerName: null, error: reason, expiresAt: Date.now() });
-    if (!closed) throw new HarnessError('CONFLICT', 'workspace cleanup lost its lifecycle lease', 409, true);
+    if (!closed) {
+      const finalState = this.store.byId(claimed.id);
+      if (finalState?.status === 'CLOSED') return;
+      throw new HarnessError('CONFLICT', 'workspace cleanup lost its lifecycle lease', 409, true);
+    }
   }
 
   private async reapExpired(): Promise<void> {

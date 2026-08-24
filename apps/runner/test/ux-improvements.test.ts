@@ -988,4 +988,48 @@ describe('UX Improvements and Feature Enhancements', () => {
 
     expect(store.byId(ws.id)?.status).toBe('REAPING');
   });
+
+  it('Issue #94: synchronous mutations with >5-minute timeout compute dynamic lease hold', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-long-mut-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_long_mut' });
+    const now = Date.now();
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'3'.repeat(24)}`,
+      workspacePath: join(directory, 'ws_long_mut'),
+      containerName: 'cnt_long_mut',
+      expiresAt: now + 60_000,
+      hardExpiresAt: now + 3_600_000
+    });
+    store.create(ws);
+    const config = {
+      jobsRoot: directory,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const service = new WorkspaceService(config, store);
+
+    let leaseDuringExecution: number | null | undefined;
+    (service as unknown as { runWorker: (...args: unknown[]) => Promise<unknown> }).runWorker = vi.fn(async () => {
+      leaseDuringExecution = store.byId(ws.id)?.mutationLockedUntil;
+      return { ok: true, message: 'done', data: {}, truncated: false };
+    });
+    // Run synchronous exec_run with 300,000ms (5 minutes) timeout
+    await service.execute(ownerId, 'exec_run', {
+      workspaceId: ws.id,
+      command: 'echo test',
+      timeoutMs: 300_000
+    });
+
+    expect(leaseDuringExecution).toBeDefined();
+    // Must be greater than or equal to now + 315_000 (reflecting 300k timeout + 15k margin)
+    expect(leaseDuringExecution!).toBeGreaterThanOrEqual(now + 315_000);
+  });
 });
