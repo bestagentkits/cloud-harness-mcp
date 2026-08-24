@@ -88,6 +88,14 @@ export class WorkspaceService {
     private readonly githubBinding?: GitHubBindingService
   ) {
     this.instanceId = store.instanceId();
+    this.operations.onTaskStart = (wsId, timeoutMs) => {
+      const rec = this.store.byId(wsId);
+      if (rec) this.store.refreshMutationLock(rec.id, Date.now() + timeoutMs + 10_000, rec.generation);
+    };
+    this.operations.onTaskSettle = (wsId) => {
+      const rec = this.store.byId(wsId);
+      if (rec) this.store.clearMutationLock(rec.id, rec.generation);
+    };
   }
 
   async start(): Promise<void> {
@@ -170,15 +178,18 @@ export class WorkspaceService {
     const active = list.filter((record) => activeStatus.has(record.status));
     const now = Date.now();
     for (const record of active) {
-      if (record.expiresAt <= now || record.hardExpiresAt <= now) {
-        if (record.containerName) {
-          await removeContainer(record.containerName).catch(() => undefined);
+      if (record.status === 'ACTIVE' && (record.expiresAt <= now || record.hardExpiresAt <= now)) {
+        const claimed = this.store.claimForExpiry(record.id, record.generation);
+        if (claimed) {
+          if (claimed.containerName) {
+            await removeContainer(claimed.containerName).catch(() => undefined);
+          }
+          this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
+            status: 'EXPIRED_RECOVERABLE',
+            containerName: null,
+            lastActivityAt: now
+          });
         }
-        this.store.update(record.id, {
-          status: 'EXPIRED_RECOVERABLE',
-          containerName: null,
-          lastActivityAt: now
-        });
       }
     }
     const remainingActive = this.store.list(ownerId).filter((record) => activeStatus.has(record.status));
@@ -405,7 +416,7 @@ export class WorkspaceService {
       repositoryRef: parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
       status: 'CREATING', networkMode: parsed.networkMode ?? this.config.networkMode, createdAt: now,
       lastActivityAt: now, expiresAt: this.expiry(now, now), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
-      generation: 1, error: null
+      mutationLockedUntil: null, generation: 1, error: null
     };
     try {
       this.store.create(record);
@@ -484,12 +495,17 @@ export class WorkspaceService {
     if (active && record.status !== 'ACTIVE') {
       throw new HarnessError(record.status === 'CLOSED' ? 'EXPIRED' : 'CONFLICT', `workspace is ${record.status.toLowerCase()}`, 409);
     }
-    if (active && record.status === 'ACTIVE' && record.expiresAt <= Date.now()) {
-      if (record.containerName) {
-        void removeContainer(record.containerName).catch(() => undefined);
+    if (active && record.status === 'ACTIVE' && (record.expiresAt <= Date.now() || record.hardExpiresAt <= Date.now())) {
+      const now = Date.now();
+      const claimed = this.store.claimForExpiry(record.id, record.generation);
+      if (claimed) {
+        if (claimed.containerName) {
+          void removeContainer(claimed.containerName).catch(() => undefined);
+        }
+        this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'EXPIRED_RECOVERABLE', containerName: null, lastActivityAt: now });
+        throw new HarnessError('EXPIRED', 'workspace expired', 410);
       }
-      this.store.updateFenced(record.id, record.generation, ['ACTIVE'], { status: 'EXPIRED_RECOVERABLE', containerName: null, lastActivityAt: Date.now() });
-      throw new HarnessError('EXPIRED', 'workspace expired', 410);
+      return this.store.byId(record.id) ?? record;
     }
     return record;
   }
@@ -505,19 +521,31 @@ export class WorkspaceService {
     return touched;
   }
 
-  private async withMutationLease<T>(record: WorkspaceRecord, action: () => Promise<T>): Promise<T> {
+  private async withMutationLease<T>(record: WorkspaceRecord, action: () => Promise<T>, timeoutMs?: number): Promise<T> {
     const now = Date.now();
-    const holdExpiry = Math.min(record.hardExpiresAt + 300_000, Math.max(record.expiresAt, now + 300_000));
-    this.store.update(record.id, { expiresAt: holdExpiry });
+    const holdDuration = Math.max(600_000, (timeoutMs ?? 600_000) + 30_000);
+    const holdExpiry = Math.min(record.hardExpiresAt + holdDuration, Math.max(record.expiresAt, now + holdDuration));
     try {
-      return await action();
+      this.store.acquireMutationLease(record.id, record.generation, holdExpiry);
+    } catch {
+      throw new HarnessError('EXPIRED', 'workspace lifecycle changed or is no longer active', 410);
+    }
+    let actionSucceeded = false;
+    try {
+      const result = await action();
+      actionSucceeded = true;
+      return result;
     } finally {
-      this.touch(record);
+      this.store.releaseMutationLease(record.id, record.generation);
+      if (actionSucceeded) {
+        this.touch(record);
+      }
     }
   }
 
   private async runWorker(record: WorkspaceRecord, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
+    const containerName = record.containerName;
     const timeout = typeof input.timeoutMs === 'number' ? input.timeoutMs + 5_000 : 65_000;
     const operationId = (typeof input.operationId === 'string' && input.operationId) || opaqueId('op');
     const pidFile = `/tmp/cloud-harness-operations/${operationId}.pid`;
@@ -527,13 +555,13 @@ export class WorkspaceService {
       workspaceId: record.id,
       kind: operation,
       deadlineMs: Date.now() + timeout,
-      container: record.containerName
+      container: containerName
     });
 
     let result;
     try {
       result = await runDocker([
-        'exec', '-i', record.containerName, '/usr/bin/setsid', '--wait', '/opt/harness/worker-runner.sh', operationId
+        'exec', '-i', containerName, '/usr/bin/setsid', '--wait', '/opt/harness/worker-runner.sh', operationId
       ], {
         stdin: JSON.stringify({ operation, input }), timeoutMs: Math.min(timeout, 305_000), maxBytes: jsonMaxBytes,
         abortKillGraceMs: 2_000,
@@ -545,7 +573,7 @@ export class WorkspaceService {
         error: { code: signal?.aborted ? 'CANCELLED' : 'INTERNAL_ERROR', message: error instanceof Error ? error.message : 'worker failed', retryable: false }
       });
       if (signal?.aborted) {
-        await terminateContainerProcessGroup(record.containerName, pidFile);
+        await terminateContainerProcessGroup(containerName, pidFile);
         throw new HarnessError('CANCELLED', 'request cancelled', 499, false);
       }
       throw error;
@@ -803,11 +831,21 @@ export class WorkspaceService {
         container: record.containerName ?? undefined,
         abortController: serverAbortController
       });
+      const lockExpiry = Date.now() + timeoutMs + 10_000;
+      this.store.setMutationLock(record.id, lockExpiry, record.generation);
+      let timedOut = false;
       const deadlineTimer = setTimeout(() => {
+        timedOut = true;
         serverAbortController.abort();
         this.operations.updateGenericOperation(operationId, {
           status: 'failed',
-          error: { code: 'TIMEOUT', message: 'Command execution exceeded server deadline', retryable: false }
+          error: {
+            code: 'TIMEOUT',
+            message: 'Command execution exceeded server deadline',
+            retryable: false,
+            retryAfterMs: 5000,
+            deadline: new Date(Date.now()).toISOString()
+          }
         });
       }, timeoutMs);
       deadlineTimer.unref();
@@ -816,20 +854,25 @@ export class WorkspaceService {
         try {
           const result = await this.runWorker(record, 'exec_run', { ...validated, async: false }, serverAbortController.signal);
           clearTimeout(deadlineTimer);
-          this.operations.updateGenericOperation(operationId, {
-            status: result.ok ? 'completed' : 'failed',
-            result: result.data,
-            error: result.error
-          });
+          if (!timedOut) {
+            this.operations.updateGenericOperation(operationId, {
+              status: result.ok ? 'completed' : 'failed',
+              result: result.data,
+              error: result.error
+            });
+          }
         } catch (err: unknown) {
           clearTimeout(deadlineTimer);
-          this.operations.updateGenericOperation(operationId, {
-            status: serverAbortController.signal.aborted ? 'cancelled' : 'failed',
-            error: { code: serverAbortController.signal.aborted ? 'CANCELLED' : 'INTERNAL_ERROR', message: err instanceof Error ? err.message : 'command failed', retryable: false }
-          });
+          if (!timedOut) {
+            this.operations.updateGenericOperation(operationId, {
+              status: serverAbortController.signal.aborted ? 'cancelled' : 'failed',
+              error: { code: serverAbortController.signal.aborted ? 'CANCELLED' : 'INTERNAL_ERROR', message: err instanceof Error ? err.message : 'command failed', retryable: false }
+            });
+          }
+        } finally {
+          this.store.clearMutationLock(record.id, record.generation);
         }
       })();
-
       return {
         ok: true,
         message: 'Command started in background',
@@ -899,7 +942,7 @@ export class WorkspaceService {
     args: string[],
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
-    const isWrite = ['pr_create', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update'].includes(action);
+    const isWrite = ['pr_create', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
     const permissionScope = action.startsWith('pr_') ? 'pull_requests' : 'issues';
 
     const token = await mintPrincipalRepositoryScopedToken({
@@ -978,18 +1021,22 @@ export class WorkspaceService {
       const end = Math.min(total, offset + 65_536);
       const page = op.output.subarray(offset, end).toString('utf8');
       const isTruncated = end < total;
+      const isOk = op.status !== 'failed' && op.status !== 'cancelled';
       return {
-        ok: true,
+        ok: isOk,
         message: `Operation ${op.status}`,
         data: {
           operationId: op.id,
           status: op.status,
           kind: op.kind,
           createdAt: new Date(op.createdAt).toISOString(),
+          deadline: op.deadlineMs ? new Date(op.deadlineMs).toISOString() : undefined,
+          finishedAt: op.finishedAt ? new Date(op.finishedAt).toISOString() : undefined,
           progress: op.progress,
           result: op.result,
           output: page
         },
+        ...(op.error ? { error: op.error } : {}),
         ...(isTruncated ? { cursor: String(end) } : {}),
         truncated: isTruncated
       };
@@ -1027,10 +1074,17 @@ export class WorkspaceService {
         const op = this.operations.getGenericOperation(opId);
         if (!op) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
         if (op.status === 'completed' || op.status === 'failed' || op.status === 'cancelled') {
+          const isOk = op.status === 'completed';
           return {
-            ok: op.status === 'completed',
+            ok: isOk,
             message: `Operation ${op.status}`,
-            data: { operationId: op.id, status: op.status, result: op.result, error: op.error },
+            data: {
+              operationId: op.id,
+              status: op.status,
+              result: op.result,
+              finishedAt: op.finishedAt ? new Date(op.finishedAt).toISOString() : undefined
+            },
+            ...(op.error ? { error: op.error } : {}),
             truncated: false
           };
         }
@@ -1039,7 +1093,13 @@ export class WorkspaceService {
       return {
         ok: false,
         message: 'Operation wait timed out',
-        error: { code: 'TIMEOUT', message: 'Operation did not reach terminal state within timeout', retryable: true },
+        error: {
+          code: 'TIMEOUT',
+          message: 'Operation did not reach terminal state within timeout',
+          retryable: true,
+          retryAfterMs: 2000,
+          deadline: new Date(startTime + timeoutMs).toISOString()
+        },
         truncated: false
       };
     }
@@ -1099,7 +1159,14 @@ export class WorkspaceService {
       }
       const extSec = (validated.extensionSeconds as number) ?? this.config.idleTtlSeconds;
       const newExpires = Math.min(rec.hardExpiresAt, now + extSec * 1000);
-      const updated = this.store.update(rec.id, { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires });
+      const updated = this.store.updateFenced(rec.id, rec.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
+        status: 'ACTIVE',
+        lastActivityAt: now,
+        expiresAt: newExpires
+      });
+      if (!updated) {
+        throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during renewal', 409);
+      }
       return { ok: true, message: 'Workspace lease renewed', data: publicRecord(updated), truncated: false };
     }
     if (operation === 'workspace_recover') {
@@ -1130,40 +1197,51 @@ export class WorkspaceService {
         };
       }
       if (mode === 'export') {
-        const targetBranch = (validated.targetBranch as string | undefined) ?? await this.currentBranch(rec, signal);
-        const snapshotRes = await this.runRecoveryWorker(rec, 'workspace_recover', {
-          mode: 'snapshot_commit',
-          message: `chore(recovery): export snapshot for ${targetBranch}`
-        }, signal, true);
-        if (!snapshotRes.ok) {
+        const holdExpiry = Date.now() + 300_000;
+        try {
+          this.store.acquireRecoverableMutationLease(rec.id, rec.generation, holdExpiry);
+        } catch {
+          throw new HarnessError('CONFLICT', 'workspace lifecycle changed during export', 409);
+        }
+        try {
+          const targetBranch = (validated.targetBranch as string | undefined) ?? await this.currentBranch(rec, signal);
+          const snapshotRes = await this.runRecoveryWorker(rec, 'workspace_recover', {
+            mode: 'snapshot_commit',
+            message: `chore(recovery): export snapshot for ${targetBranch}`
+          }, signal, true);
+          if (!snapshotRes.ok) {
+            return {
+              ok: false,
+              message: `Recovery snapshot failed: ${snapshotRes.message}`,
+              data: { step: 'snapshot_commit', error: snapshotRes.message },
+              error: { code: 'INTERNAL_ERROR', message: snapshotRes.message, retryable: true },
+              truncated: false
+            };
+          }
+          const snapshotData = snapshotRes.data as { headCommitSha?: string; committedChanges?: boolean } | undefined;
+          const pushResult = await this.remotePush(rec, { refspec: `HEAD:refs/heads/${targetBranch}` }, signal);
           return {
-            ok: false,
-            message: `Recovery snapshot failed: ${snapshotRes.message}`,
-            data: { step: 'snapshot_commit', error: snapshotRes.message },
-            error: { code: 'INTERNAL_ERROR', message: snapshotRes.message, retryable: true },
+            ok: pushResult.ok,
+            message: pushResult.ok ? `Recovered work exported to ${targetBranch}` : 'Workspace export failed',
+            data: {
+              workspace: publicRecord(rec),
+              branch: targetBranch,
+              commitSha: snapshotData?.headCommitSha,
+              committedChanges: snapshotData?.committedChanges,
+              pushResult: pushResult.data
+            },
             truncated: false
           };
+        } finally {
+          this.store.releaseMutationLease(rec.id, rec.generation);
         }
-        const snapshotData = snapshotRes.data as { headCommitSha?: string; committedChanges?: boolean } | undefined;
-        const pushResult = await this.remotePush(rec, { refspec: `HEAD:refs/heads/${targetBranch}` }, signal);
-        return {
-          ok: pushResult.ok,
-          message: pushResult.ok ? `Recovered work exported to ${targetBranch}` : 'Workspace export failed',
-          data: {
-            workspace: publicRecord(rec),
-            branch: targetBranch,
-            commitSha: snapshotData?.headCommitSha,
-            committedChanges: snapshotData?.committedChanges,
-            pushResult: pushResult.data
-          },
-          truncated: false
-        };
       }
     }
 
     const record = this.touch(this.requireWorkspace(ownerId, workspaceId, true, false));
     await this.enforceActiveLimits(record);
 
+    const dispatchAction = async (): Promise<RunnerResponse> => {
     if (operation === 'workspace_context') {
       let branch = '';
       try {
@@ -1192,14 +1270,12 @@ export class WorkspaceService {
           return JSON.parse(cached) as RunnerResponse;
         }
       }
-      return await this.withMutationLease(record, async () => {
-        const result = await this.runWorker(record, 'files_write_batch', validated, signal);
-        await this.enforceActiveLimits(record);
-        if (idempotencyKey && result.ok) {
-          this.store.setBatchWriteIdempotency(ownerId, record.id, idempotencyKey, JSON.stringify(result));
-        }
-        return result;
-      });
+      const result = await this.runWorker(record, 'files_write_batch', validated, signal);
+      await this.enforceActiveLimits(record);
+      if (idempotencyKey && result.ok) {
+        this.store.setBatchWriteIdempotency(ownerId, record.id, idempotencyKey, JSON.stringify(result));
+      }
+      return result;
     }
     if (operation === 'workspace_finalize') {
       const idempotencyKey = validated.idempotencyKey as string | undefined;
@@ -1209,9 +1285,7 @@ export class WorkspaceService {
           return JSON.parse(cached) as RunnerResponse;
         }
       }
-
-      return await this.withMutationLease(record, async () => {
-        // Step 1: Preflight checks
+      // Step 1: Preflight checks
         const preflight = validated.preflight as { checkDiff?: boolean; forbiddenPatterns?: string[] } | undefined;
         if (preflight?.checkDiff !== false) {
           const diffResult = await this.runWorker(record, 'git_diff', { readAll: true }, signal);
@@ -1372,8 +1446,7 @@ export class WorkspaceService {
         if (idempotencyKey) {
           this.store.setFinalizeIdempotency(ownerId, record.id, idempotencyKey, JSON.stringify(response));
         }
-        return response;
-      });
+      return response;
     }
     if (operation === 'exec_run') {
       validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
@@ -1383,10 +1456,15 @@ export class WorkspaceService {
     }
     if (operation === 'github_action') {
       const action = validated.action as string;
-      if ((action === 'issue_comment' || action === 'issue_labels_add') && validated.idempotencyKey) {
-        const cached = this.store.getCommentIdempotency(ownerId, validated.idempotencyKey as string);
-        if (cached) {
-          return JSON.parse(cached) as RunnerResponse;
+      let fingerprint: string | undefined;
+      if (validated.idempotencyKey) {
+        fingerprint = createHash('sha256').update(JSON.stringify({ action, workspaceId: record.id, repo: record.repositoryUrl, validated })).digest('hex');
+        const cached = this.store.getCommentIdempotency(ownerId, validated.idempotencyKey as string, fingerprint);
+        if (cached?.mismatch) {
+          throw new HarnessError('CONFLICT', 'idempotency key reused with different request payload', 409);
+        }
+        if (cached?.resultJson) {
+          return JSON.parse(cached.resultJson) as RunnerResponse;
         }
       }
       let args: string[] = [];
@@ -1403,10 +1481,17 @@ export class WorkspaceService {
         case 'issue_labels_add': args = [String(validated.issueNumber), (validated.labels as string[]).join(','), String(validated.createMissing ?? true)]; break;
         case 'issue_labels_remove': args = [String(validated.issueNumber), validated.label as string]; break;
         case 'issue_update': args = [String(validated.issueNumber), (validated.title as string) ?? '', (validated.body as string) ?? '', (validated.state as string) ?? '', (validated.stateReason as string) ?? '']; break;
+        case 'issue_publish': args = [
+          String(validated.issueNumber),
+          (validated.comment as string) ?? '',
+          ((validated.addLabels as string[]) ?? []).join(','),
+          ((validated.removeLabels as string[]) ?? []).join(','),
+          String(validated.createMissingLabels ?? true)
+        ]; break;
       }
       const result = await this.runBrokeredGitHubAction(record, action, args, signal);
-      if ((action === 'issue_comment' || action === 'issue_labels_add') && validated.idempotencyKey && result.ok) {
-        this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result));
+      if ((action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey && result.ok) {
+        this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result), fingerprint);
       }
       await this.enforceActiveLimits(record);
       return result;
@@ -1456,17 +1541,30 @@ export class WorkspaceService {
       return { ok: true, message: 'Coding sessions listed', data: { sessions: page.map((session) => this.operations.summary(session)) }, truncated: false, ...(next ? { cursor: next } : {}) };
     }
     if (operation === 'tasks_run') {
-      const task = this.operations.runTask(
-        record.id,
-        record.containerName!,
-        validated.cwd as string,
-        validated.command as string,
-        validated.idempotencyKey as string,
-        validated.timeoutMs as number,
-        this.config.maxOutputBytes,
-        validated.dependsOn as string[]
-      );
-      return { ok: true, message: 'Task started', data: this.operations.view(task), truncated: false };
+      const taskTimeout = (validated.timeoutMs as number) || 60_000;
+      const mapKey = `task:${record.id}:${validated.idempotencyKey as string}`;
+      const isNew = !this.operations.hasTaskKey(mapKey);
+      if (isNew) {
+        this.store.setMutationLock(record.id, Date.now() + taskTimeout + 10_000, record.generation);
+      }
+      try {
+        const task = this.operations.runTask(
+          record.id,
+          record.containerName!,
+          validated.cwd as string,
+          validated.command as string,
+          validated.idempotencyKey as string,
+          validated.timeoutMs as number,
+          this.config.maxOutputBytes,
+          validated.dependsOn as string[]
+        );
+        return { ok: true, message: task.created ? 'Task started' : 'Idempotent task result', data: this.operations.view(task), truncated: false };
+      } catch (error) {
+        if (isNew) {
+          this.store.clearMutationLock(record.id, record.generation);
+        }
+        throw error;
+      }
     }
     if (operation === 'tasks_list') {
       const tasks = this.operations.listTasks(record.id);
@@ -1527,7 +1625,14 @@ export class WorkspaceService {
       this.auditWorkspaceOutcome(ownerId, 'workspace.file_mutation.failed', record, { operation });
       throw error;
     }
+  };
+
+  if (isMutationOperation(operation, validated)) {
+    const opTimeout = typeof validated.timeoutMs === 'number' ? validated.timeoutMs : undefined;
+    return await this.withMutationLease(record, dispatchAction, opTimeout);
   }
+  return await dispatchAction();
+}
 
   private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<string | undefined> {
     if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') {
@@ -1604,7 +1709,7 @@ export class WorkspaceService {
       throw new HarnessError('CONFLICT', 'workspace lifecycle changed', 409);
     }
     this.auditWorkspaceMutation(ownerId, 'workspace.close.requested', record, {});
-    if (!this.store.claimForReaping(record.id, expectedGeneration)) {
+    if (!this.store.claimForReaping(record.id, expectedGeneration, true)) {
       const current = this.store.byOwnerAndId(ownerId, workspaceId);
       if (!current || current.status === 'CLOSED' || (current.status === 'ACTIVE' && current.expiresAt <= Date.now())) {
         throw new HarnessError('EXPIRED', 'workspace expired', 410);
@@ -1633,6 +1738,9 @@ export class WorkspaceService {
     await this.closeRecord(record, 'closed by client');
     this.auditWorkspaceOutcome(ownerId, 'workspace.closed', record, { reason: 'closed by client' });
     const finalRecord = this.store.byId(workspaceId) ?? record;
+    if (finalRecord.status !== 'CLOSED') {
+      throw new HarnessError('CONFLICT', 'workspace could not be closed', 409);
+    }
     return { ok: true, message: 'Workspace closed', data: publicRecord(finalRecord), truncated: false };
   }
 
@@ -1671,41 +1779,83 @@ export class WorkspaceService {
     let claimed = this.store.byId(record.id) ?? record;
     if (claimed.status !== 'REAPING') {
       if (claimed.status === 'CLOSED') return;
-      if (!this.store.claimForReaping(claimed.id, claimed.generation)) return;
-      claimed = this.store.byId(claimed.id)!;
+      if (!this.store.claimForReaping(claimed.id, claimed.generation, true)) {
+        const reloaded = this.store.byId(record.id);
+        if (!reloaded || reloaded.status === 'CLOSED') return;
+        if (reloaded.status === 'REAPING') {
+          claimed = reloaded;
+        } else {
+          if (!this.store.claimForReaping(reloaded.id, reloaded.generation, true)) return;
+          claimed = this.store.byId(reloaded.id)!;
+        }
+      } else {
+        claimed = this.store.byId(claimed.id)!;
+      }
     }
     this.operations.stopWorkspace(claimed.id);
     if (claimed.containerName) await removeContainer(claimed.containerName);
     await this.safeRemovePath(claimed.workspacePath);
     const closed = this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'CLOSED', containerName: null, error: reason, expiresAt: Date.now() });
-    if (!closed) throw new HarnessError('CONFLICT', 'workspace cleanup lost its lifecycle lease', 409, true);
+    if (!closed) {
+      const finalState = this.store.byId(claimed.id);
+      if (finalState?.status === 'CLOSED') return;
+      throw new HarnessError('CONFLICT', 'workspace cleanup lost its lifecycle lease', 409, true);
+    }
   }
 
   private async reapExpired(): Promise<void> {
     const now = Date.now();
     for (const record of this.store.active()) {
-      if (record.expiresAt <= now || record.hardExpiresAt <= now) {
-        if (record.containerName) {
-          await removeContainer(record.containerName).catch(() => undefined);
+      if (record.status === 'ACTIVE' && (record.expiresAt <= now || record.hardExpiresAt <= now)) {
+        const claimed = this.store.claimForExpiry(record.id, record.generation);
+        if (claimed) {
+          if (claimed.containerName) {
+            await removeContainer(claimed.containerName).catch(() => undefined);
+          }
+          this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
+            status: 'EXPIRED_RECOVERABLE',
+            containerName: null,
+            lastActivityAt: now
+          });
         }
-        this.store.updateFenced(record.id, record.generation, ['ACTIVE'], {
-          status: 'EXPIRED_RECOVERABLE',
-          containerName: null,
-          lastActivityAt: now
-        });
       } else if (record.status === 'ACTIVE') {
         const violation = await this.resourceViolation(record).catch(() => undefined);
         if (violation) await this.closeRecord(record, violation).catch(() => undefined);
       }
     }
-    const recoverableRows = this.store.database.prepare("SELECT * FROM workspaces WHERE status = 'EXPIRED_RECOVERABLE'").all() as { id: string; last_activity_at: number }[];
+    const recoverableRows = this.store.database.prepare(
+      "SELECT id, generation, last_activity_at FROM workspaces WHERE status = 'EXPIRED_RECOVERABLE' AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?) AND (last_activity_at + 3600000 <= ?)"
+    ).all(now, now) as { id: string; generation: number; last_activity_at: number }[];
     for (const row of recoverableRows) {
-      if (row.last_activity_at + 3_600_000 <= now) {
+      if (this.store.claimForReaping(row.id, row.generation, false)) {
         const fullRec = this.store.byId(row.id);
         if (fullRec) await this.closeRecord(fullRec, 'recoverable grace period expired').catch(() => undefined);
       }
     }
   }
+}
+
+function isMutationOperation(operation: RunnerOperation, validated: Record<string, unknown>): boolean {
+  if (operation === 'exec_run') {
+    if (validated.privileged === true) return true;
+    return validated.async !== true;
+  }
+  if (operation === 'tasks_run') {
+    return false;
+  }
+  if (['files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir',
+       'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_merge', 'git_rebase', 'git_push',
+       'workspace_finalize', 'worktrees_create', 'worktrees_remove', 'memories_write', 'skills_run', 'hooks_run', 'deployments_run'].includes(operation)) {
+    return true;
+  }
+  if (operation === 'git_branch' && (validated.action === 'create' || validated.action === 'delete')) {
+    return true;
+  }
+  if (operation === 'github_action') {
+    const action = validated.action as string;
+    return ['pr_create', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
+  }
+  return false;
 }
 
 function normalizePushRefspec(refspec: string | undefined, defaultBranch: string | undefined): string {

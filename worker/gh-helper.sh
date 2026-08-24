@@ -135,6 +135,102 @@ case "$action" in
     fi
     exec "${cmd[@]}"
     ;;
+  issue_publish)
+    issue_number="${1:-}"
+    comment="${2:-}"
+    add_labels="${3:-}"
+    remove_labels="${4:-}"
+    create_missing="${5:-true}"
+    if [ -z "$issue_number" ]; then
+      echo "Issue number required" >&2
+      exit 1
+    fi
+    labels_created=""
+    labels_added=""
+    labels_removed=""
+    comment_posted=false
+    if [ "$create_missing" = "true" ] && [ -n "$add_labels" ]; then
+      IFS=',' read -ra ADDR <<< "$add_labels"
+      for label in "${ADDR[@]}"; do
+        if gh label create "$label" >/dev/null 2>&1; then
+          labels_created="${labels_created:+$labels_created,}$label"
+        fi
+      done
+    fi
+    if [ -n "$add_labels" ]; then
+      if ! gh issue edit "$issue_number" --add-label "$add_labels" >/dev/null 2>&1; then
+        jq -n \
+          --arg error "failed to add labels" \
+          --arg step "add_labels" \
+          --arg labelsCreated "$labels_created" \
+          --argjson issueNumber "$issue_number" \
+          '{ error: $error, step: $step, labelsCreated: $labelsCreated, issueNumber: $issueNumber }' >&2
+        exit 1
+      fi
+      labels_added="$add_labels"
+    fi
+    if [ -n "$remove_labels" ]; then
+      if ! current_labels=$(gh issue view "$issue_number" --json labels --jq '.labels[].name' 2>&1); then
+        jq -n \
+          --arg error "failed to query issue labels: $current_labels" \
+          --arg step "query_labels" \
+          --arg labelsCreated "$labels_created" \
+          --arg labelsAdded "$labels_added" \
+          --argjson issueNumber "$issue_number" \
+          '{ error: $error, step: $step, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, issueNumber: $issueNumber }' >&2
+        exit 1
+      fi
+      IFS=',' read -ra RADDR <<< "$remove_labels"
+      for rlabel in "${RADDR[@]}"; do
+        if echo "$current_labels" | grep -Fxq "$rlabel"; then
+          if ! gh issue edit "$issue_number" --remove-label "$rlabel" >/dev/null 2>&1; then
+            jq -n \
+              --arg error "failed to remove label $rlabel" \
+              --arg step "remove_labels" \
+              --arg failedLabel "$rlabel" \
+              --arg labelsCreated "$labels_created" \
+              --arg labelsAdded "$labels_added" \
+              --arg labelsRemoved "$labels_removed" \
+              --argjson issueNumber "$issue_number" \
+              '{ error: $error, step: $step, failedLabel: $failedLabel, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, labelsRemoved: $labelsRemoved, issueNumber: $issueNumber }' >&2
+            exit 1
+          fi
+        fi
+        labels_removed="${labels_removed:+$labels_removed,}$rlabel"
+      done
+    fi
+    comment_url=""
+    if [ -n "$comment" ]; then
+      if ! comment_url=$(gh issue comment "$issue_number" --body "$comment" 2>&1); then
+        jq -n \
+          --arg error "failed to post comment: $comment_url" \
+          --arg step "comment" \
+          --arg labelsCreated "$labels_created" \
+          --arg labelsAdded "$labels_added" \
+          --arg labelsRemoved "$labels_removed" \
+          --argjson issueNumber "$issue_number" \
+          '{ error: $error, step: $step, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, labelsRemoved: $labelsRemoved, issueNumber: $issueNumber }' >&2
+        exit 1
+      fi
+      comment_posted=true
+    fi
+
+    issue_url="https://github.com/${GH_REPO}/issues/${issue_number}"
+    view_out=$(gh issue view "$issue_number" --json number,title,body,state,author,labels,comments,url 2>/dev/null || true)
+    if [ -n "$view_out" ]; then
+      echo "$view_out" | jq --arg commentUrl "$comment_url" --arg url "$issue_url" '. + (if $commentUrl != "" then { commentUrl: $commentUrl } else {} end) + (if .url == null or .url == "" then { url: $url } else {} end)'
+    else
+      jq -n \
+        --argjson number "$issue_number" \
+        --argjson commentPosted "$comment_posted" \
+        --arg commentUrl "$comment_url" \
+        --arg url "$issue_url" \
+        --arg labelsCreated "$labels_created" \
+        --arg labelsAdded "$labels_added" \
+        --arg labelsRemoved "$labels_removed" \
+        '{ number: $number, url: $url, published: true, commentPosted: $commentPosted, commentUrl: $commentUrl, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, labelsRemoved: $labelsRemoved }'
+    fi
+    ;;
   *)
     echo "Unsupported or forbidden GitHub action: $action" >&2
     exit 1

@@ -14,7 +14,7 @@ export const ErrorCodeSchema = z.enum([
   'INTERNAL_ERROR',
   'PRIVILEGE_APPROVAL_REQUIRED'
 ]);
-
+export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const ToolResultSchema = z.object({
   ok: z.boolean(),
   message: z.string().max(2_000),
@@ -24,6 +24,8 @@ export const ToolResultSchema = z.object({
       code: ErrorCodeSchema,
       message: z.string().max(2_000),
       retryable: z.boolean(),
+      retryAfterMs: z.number().int().min(0).optional(),
+      deadline: z.string().optional(),
       grantRequest: z
         .object({
           grantId: z.string(),

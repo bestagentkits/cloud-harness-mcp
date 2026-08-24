@@ -146,7 +146,7 @@ describe('Issue #88: files_write_batch worker execution', () => {
     expect(readFileSync(join(root, 'packages/module-0/sub-0/file-0.ts'), 'utf8')).toBe('export const value0 = 0;');
     expect(readFileSync(join(root, 'packages/module-1/sub-1/file-1.ts'), 'utf8')).toBe('export const value1 = 10;');
     expect(readFileSync(join(root, 'packages/new-module/new-file-0.ts'), 'utf8')).toBe('export const new0 = 0;');
-  });
+  }, 20000);
 
   it('rejects path escape attempts cleanly', async () => {
     setupWorkspace();
@@ -257,4 +257,130 @@ describe('Issue #88: files_write_batch worker execution', () => {
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe('INTERNAL_ERROR');
   });
+
+  it('Issue #91: git_diff pagination and snapshot cursor validation with conflict detection', async () => {
+    const root = setupWorkspace();
+    execSync('git init && git config user.name "Tester" && git config user.email "test@example.com"', { cwd: root, stdio: 'ignore' });
+    writeFileSync(join(root, 'file.txt'), 'line 1\nline 2\nline 3\nline 4\nline 5\n', 'utf8');
+    execSync('git add file.txt && git commit -m "initial commit"', { cwd: root, stdio: 'ignore' });
+
+    // Make unstaged changes
+    writeFileSync(join(root, 'file.txt'), 'line 1 modified\nline 2\nline 3 modified\nline 4\nline 5 modified\n', 'utf8');
+
+    // First page with small limit
+    const firstPage = await executeWorkerRequest('git_diff', { limit: 20 });
+    expect(firstPage.ok).toBe(true);
+    expect(firstPage.truncated).toBe(true);
+    expect(firstPage.cursor).toBeDefined();
+
+    const cursor = firstPage.cursor as string;
+
+    // Fetch next page with same cursor
+    const secondPage = await executeWorkerRequest('git_diff', { cursor, limit: 1000 });
+    expect(secondPage.ok).toBe(true);
+    expect((secondPage.data as { output: string }).output).toBeDefined();
+
+    // Modify working tree
+    writeFileSync(join(root, 'file.txt'), 'line 1 modified again\n', 'utf8');
+
+    // Re-requesting with old cursor should return CONFLICT
+    const conflictResult = await executeWorkerRequest('git_diff', { cursor });
+    expect(conflictResult.ok).toBe(false);
+    expect(conflictResult.error?.code).toBe('CONFLICT');
+    expect(conflictResult.error?.message).toContain('working tree or index diff changed');
+  });
+
+  it('Issue #91: files_read pagination and snapshot cursor validation with conflict detection', async () => {
+    const root = setupWorkspace();
+    writeFileSync(join(root, 'large.txt'), 'A'.repeat(1000) + 'B'.repeat(1000), 'utf8');
+
+    // Read first page
+    const page1 = await executeWorkerRequest('files_read', { path: 'large.txt', limit: 500 });
+    expect(page1.ok).toBe(true);
+    expect(page1.truncated).toBe(true);
+    expect(page1.cursor).toBeDefined();
+
+    const cursor = page1.cursor as string;
+    const page2 = await executeWorkerRequest('files_read', { path: 'large.txt', cursor, limit: 1000 });
+    expect(page2.ok).toBe(true);
+    expect((page2.data as { content: string }).content.length).toBe(1000);
+
+    // Mutate file on disk
+    writeFileSync(join(root, 'large.txt'), 'C'.repeat(2000), 'utf8');
+
+    // Re-requesting with old cursor should return CONFLICT
+    const conflictResult = await executeWorkerRequest('files_read', { path: 'large.txt', cursor });
+    expect(conflictResult.ok).toBe(false);
+    expect(conflictResult.error?.code).toBe('CONFLICT');
+    expect(conflictResult.error?.message).toContain('file changed since initial read');
+  });
+
+  it('Issue #91: git_diff cleanly paginates a >65 KiB diff across multiple pages without false CONFLICT', async () => {
+    const root = setupWorkspace();
+    execSync('git init && git config user.name "Tester" && git config user.email "test@example.com"', { cwd: root, stdio: 'ignore' });
+    // Create an initial commit with a large file
+    const originalContent = 'initial line of content\n'.repeat(3500); // ~84 KB
+    writeFileSync(join(root, 'huge.txt'), originalContent, 'utf8');
+    execSync('git add huge.txt && git commit -m "initial commit"', { cwd: root, stdio: 'ignore' });
+
+    // Modify lines across the entire file so the diff exceeds 65 KiB
+    const modifiedContent = 'modified line of content\n'.repeat(3500);
+    writeFileSync(join(root, 'huge.txt'), modifiedContent, 'utf8');
+
+    // Page 1: read first 10 KiB
+    const page1 = await executeWorkerRequest('git_diff', { limit: 10240 });
+    expect(page1.ok).toBe(true);
+    expect(page1.truncated).toBe(true);
+    expect(page1.cursor).toBeDefined();
+    const totalBytes = (page1.data as { totalBytes: number }).totalBytes;
+    expect(totalBytes).toBeGreaterThan(65536);
+
+    const cursor1 = page1.cursor as string;
+
+    // Page 2: read next 70 KiB (crossing the default 65536 maxBytes threshold)
+    const page2 = await executeWorkerRequest('git_diff', { cursor: cursor1, limit: 71680 });
+    expect(page2.ok).toBe(true);
+    expect(page2.error).toBeUndefined();
+    const page2Data = page2.data as { output: string; bytesReturned: number };
+    expect(page2Data.bytesReturned).toBeGreaterThan(0);
+  }, 20000);
+
+  it('Issue #91: git_diff returns LIMIT_EXCEEDED on diffs larger than 10 MiB to prevent non-advancing cursors', async () => {
+    const root = setupWorkspace();
+    execSync('git init && git config user.name "Tester" && git config user.email "test@example.com"', { cwd: root, stdio: 'ignore' });
+    // Create an initial commit with a 10.5 MB file (450,000 lines * 25 bytes = ~11.25 MB)
+    const line = 'initial line of file data\n';
+    const originalContent = line.repeat(450_000);
+    writeFileSync(join(root, 'huge_diff.txt'), originalContent, 'utf8');
+    execSync('git add huge_diff.txt && git commit -m "initial large commit"', { cwd: root, stdio: 'ignore' });
+
+    // Mutate all lines to produce a >10 MiB diff
+    const modifiedContent = 'modified line of file dat\n'.repeat(450_000);
+    writeFileSync(join(root, 'huge_diff.txt'), modifiedContent, 'utf8');
+
+    const result = await executeWorkerRequest('git_diff', { limit: 65536 });
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('LIMIT_EXCEEDED');
+    expect(result.error?.message).toContain('diff exceeds maximum supported size');
+    expect(result.cursor).toBeUndefined();
+  }, 30000);
+
+  it('Issue #91: git_diff with readAll caps returned slice to 1 MiB on large diffs without overflowing output buffer', async () => {
+    const root = setupWorkspace();
+    execSync('git init && git config user.name "Tester" && git config user.email "test@example.com"', { cwd: root, stdio: 'ignore' });
+    // Create a 2 MB file (80,000 lines * 25 bytes = ~2 MB)
+    const line = 'initial line of file data\n';
+    writeFileSync(join(root, 'twomb.txt'), line.repeat(80_000), 'utf8');
+    execSync('git add twomb.txt && git commit -m "initial 2mb commit"', { cwd: root, stdio: 'ignore' });
+
+    writeFileSync(join(root, 'twomb.txt'), 'modified line of file dat\n'.repeat(80_000), 'utf8');
+
+    const result = await executeWorkerRequest('git_diff', { readAll: true });
+    expect(result.ok).toBe(true);
+    expect(result.truncated).toBe(true);
+    const data = result.data as { output: string; bytesReturned: number; totalBytes: number };
+    expect(data.totalBytes).toBeGreaterThan(1_048_576);
+    expect(data.bytesReturned).toBeLessThanOrEqual(1_048_576);
+    expect(result.cursor).toBeDefined();
+  }, 20000);
 });

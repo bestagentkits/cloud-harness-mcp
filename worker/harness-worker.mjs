@@ -215,6 +215,20 @@ const handlers = {
     const target = await safePath(input.path);
     const value = await readFile(target);
     const totalBytes = value.length;
+    const fileSha = sha256(value);
+    const fileTag = fileSha.slice(0, 16);
+
+    let offset = input.offset ?? 0;
+    if (input.cursor !== undefined) {
+      const raw = String(input.cursor);
+      const parts = raw.split(':');
+      offset = Number(parts[0]);
+      if (!Number.isSafeInteger(offset) || offset < 0) return fail('INVALID_INPUT', 'invalid cursor offset');
+      if (parts.length > 1 && parts[1] && parts[1] !== fileTag) {
+        return fail('CONFLICT', 'stale cursor: file changed since initial read', false);
+      }
+    }
+
     if (input.readAll) {
       const maxReadAllBytes = 1_048_576;
       const end = Math.min(totalBytes, maxReadAllBytes);
@@ -222,24 +236,24 @@ const handlers = {
       return ok(`Read ${end} bytes`, {
         path: input.path,
         content: value.subarray(0, end).toString('utf8'),
-        sha256: sha256(value),
+        sha256: fileSha,
         bytesReturned: end,
         totalBytes,
         eof: !isTruncated
-      }, isTruncated ? { truncated: true, cursor: String(end) } : { truncated: false });
+      }, isTruncated ? { truncated: true, cursor: `${end}:${fileTag}` } : { truncated: false });
     }
-    const offset = input.cursor !== undefined ? Number(input.cursor) : (input.offset ?? 0);
+
     const limit = input.limit ?? 65_536;
     const end = Math.min(totalBytes, offset + limit);
     const isTruncated = end < totalBytes;
     return ok(`Read ${end - offset} bytes`, {
       path: input.path,
       content: value.subarray(offset, end).toString('utf8'),
-      sha256: sha256(value),
+      sha256: fileSha,
       bytesReturned: end - offset,
       totalBytes,
       eof: !isTruncated
-    }, isTruncated ? { truncated: true, cursor: String(end) } : { truncated: false });
+    }, isTruncated ? { truncated: true, cursor: `${end}:${fileTag}` } : { truncated: false });
   },
   async files_write(input) {
     const target = await safePath(input.path, true);
@@ -466,33 +480,60 @@ const handlers = {
     const args = ['diff', '--no-ext-diff', '--no-textconv'];
     if (input.staged) args.push('--cached');
     if (input.path) args.push('--', input.path);
-    const offset = input.cursor ? Number(input.cursor) : 0;
-    const limit = input.readAll ? 1_048_576 : (input.limit ?? 65_536);
-    const maxFetchBytes = Math.min(10_485_760, Math.max(65_536, offset + limit + 8_192));
-    const result = await git(args, { maxBytes: maxFetchBytes });
+
+    const offset = input.cursor ? Number(String(input.cursor).split(':')[0]) : 0;
+    const result = await git(args, { maxBytes: 10_485_760 });
+    if (result.truncated) {
+      return fail('LIMIT_EXCEEDED', 'diff exceeds maximum supported size (10 MB); narrow scope with a path filter', false);
+    }
     const buffer = Buffer.from(result.output, 'utf8');
     const totalBytes = buffer.length;
-    const end = input.readAll ? totalBytes : Math.min(totalBytes, offset + limit);
+    const diffSignature = sha256(buffer).slice(0, 16);
+
+    if (input.cursor !== undefined) {
+      const raw = String(input.cursor);
+      const parts = raw.split(':');
+      const parsedOffset = Number(parts[0]);
+      if (!Number.isSafeInteger(parsedOffset) || parsedOffset < 0) return fail('INVALID_INPUT', 'invalid cursor offset');
+      if (parts.length > 1 && parts[1] && parts[1] !== diffSignature) {
+        return fail('CONFLICT', 'stale cursor: working tree or index diff changed since initial read', false);
+      }
+    }
+
+    const effectiveLimit = input.readAll ? 1_048_576 : (input.limit ?? 65_536);
+    const end = Math.min(totalBytes, offset + effectiveLimit);
     const sliceBuffer = buffer.subarray(offset, end);
     const sliceText = sliceBuffer.toString('utf8');
-    const isTruncated = result.truncated || end < totalBytes;
+    const isTruncated = end < totalBytes;
     return ok('Git diff', {
       output: sliceText,
       exitCode: result.exitCode,
       bytesReturned: sliceBuffer.length,
       totalBytes,
       eof: !isTruncated
-    }, isTruncated ? { truncated: true, cursor: String(end) } : { truncated: false });
+    }, isTruncated ? { truncated: true, cursor: `${end}:${diffSignature}` } : { truncated: false });
   },
   async git_log(input) {
+    const headRes = await git(['rev-parse', 'HEAD']).catch(() => ({ output: '' }));
+    const headSha = headRes.output.trim().slice(0, 16) || 'empty';
+    let offset = 0;
+    if (input.cursor !== undefined) {
+      const raw = String(input.cursor);
+      const parts = raw.split(':');
+      offset = Number(parts[0]);
+      if (!Number.isSafeInteger(offset) || offset < 0) return fail('INVALID_INPUT', 'invalid cursor offset');
+      if (parts.length > 1 && parts[1] && parts[1] !== headSha) {
+        return fail('CONFLICT', 'stale cursor: commit history changed since initial log', false);
+      }
+    }
+
     const limit = input.readAll ? 500 : (input.limit ?? 20);
-    const offset = input.cursor ? Number(input.cursor) : 0;
     const fetchCount = Math.min(501, offset + limit + 1);
     const result = await git(['log', `-${fetchCount}`, '--date=iso-strict', '--pretty=format:%H%x09%aI%x09%an%x09%s']);
     const lines = result.output.split('\n').filter(Boolean);
     const pageLines = lines.slice(offset, offset + limit);
     const hasMore = lines.length > offset + limit;
-    const nextCursor = hasMore ? String(offset + pageLines.length) : undefined;
+    const nextCursor = hasMore ? `${offset + pageLines.length}:${headSha}` : undefined;
     return ok('Git log', {
       output: pageLines.join('\n'),
       exitCode: result.exitCode,

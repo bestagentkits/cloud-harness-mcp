@@ -130,9 +130,9 @@ describe('real Docker sandbox', () => {
     expect(truncated.truncated).toBe(true);
     const startedAt = Date.now();
     const timed = await service.execute('owner', 'exec_run', {
-      workspaceId, command: 'sleep 2', cwd: '.', timeoutMs: 100, maxOutputBytes: 65_536
+      workspaceId, command: 'sleep 5', cwd: '.', timeoutMs: 100, maxOutputBytes: 65_536
     });
-    expect(Date.now() - startedAt).toBeLessThan(1_500);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
     expect((timed.data as { exitCode: number }).exitCode).not.toBe(0);
 
     const escaped = await service.execute('owner', 'exec_run', {

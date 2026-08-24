@@ -232,7 +232,7 @@ describe('complete coding workflow through MCP', () => {
     workspaceId = expiring.data.workspaceId;
     const expiringRecord = store.byId(workspaceId)!;
     store.update(workspaceId, { expiresAt: Date.now() - 1 });
-    for (let attempt = 0; attempt < 50 && store.byId(workspaceId)?.status === 'ACTIVE'; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && ['ACTIVE', 'REAPING'].includes(store.byId(workspaceId)?.status ?? ''); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     expect(['CLOSED', 'EXPIRED_RECOVERABLE']).toContain((await call('workspace_status', { workspaceId })).data.status);

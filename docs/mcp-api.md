@@ -77,10 +77,15 @@ workspace. This makes a lost response recoverable without duplicating work.
 - `github_action` executes authenticated GitHub CLI actions (`pr_list`, `pr_view`,
   `pr_create`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
   `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
-  `issue_update`) through an ephemeral helper container using short-lived tokens
-  minted from the configured GitHub App. Tokens are supplied exclusively via stdin
-  and are never written to workspace files. Comment and label mutations support
-  idempotency keys.
+  `issue_update`, `issue_publish`) through an ephemeral helper container using short-lived tokens
+  minted from the configured GitHub App. `issue_publish` provides a single brokered request
+  that posts a comment and adds or removes labels (with automatic missing-label creation).
+  Tokens are supplied exclusively via stdin and are never written to workspace files.
+  Comment, label, and publish mutations support idempotency keys.
+- Output pagination for tools such as `files_read`, `git_diff`, and `git_log` uses
+  snapshot-bound continuation cursors. The cursor is bound to content hashes or commit
+  signatures; if underlying files, index, or repository state change between calls,
+  subsequent page requests fail deterministically with `CONFLICT` to prevent silent corruption.
 - `files_write_batch` writes an array of files in a single atomic transaction. It
   creates missing parent directories by default and verifies expected SHA256 hashes
   prior to modifying any file. If any file fails validation or write, original files
