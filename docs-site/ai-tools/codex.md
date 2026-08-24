@@ -65,3 +65,15 @@ For non-interactive or static-header usage, use the dedicated API key gateway:
    ```bash
    codex mcp list
    ```
+
+---
+
+## Option 3: Local Stdio Mode
+
+To connect Codex directly to a local project folder:
+
+```toml
+[mcp_servers.cloudharness_local]
+command = "node"
+args = ["/path/to/cloud-harness-mcp/apps/api/dist/index.js", "--transport", "stdio", "--workspace", "/absolute/path/to/project"]
+```

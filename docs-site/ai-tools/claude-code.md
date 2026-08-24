@@ -39,3 +39,15 @@ claude
 ```
 
 You should see `cloud-harness` listed with 52 available tools.
+
+---
+
+## Local Stdio Mode
+
+To connect Claude Code directly to a local folder over stdio:
+
+```bash
+claude mcp add cloud-harness-local \
+  --transport stdio \
+  -- node /path/to/cloud-harness-mcp/apps/api/dist/index.js --transport stdio --workspace /absolute/path/to/project
+```
