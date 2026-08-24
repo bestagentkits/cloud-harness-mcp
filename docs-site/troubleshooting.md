@@ -57,4 +57,4 @@ docker compose --profile images build executor-image
 
 ### 6. Local Stdio: `--workspace path must be absolute` or Directory Error
 **Cause:** The `--workspace` argument provided to `cloud-harness-mcp --transport stdio` is relative, does not exist, or points to a regular file instead of a directory.
-**Fix:** Provide a valid, existing absolute directory path (e.g. `/home/user/project` or `C:\Users\user\project`).
+**Fix:** Provide a valid, existing absolute directory path (e.g. `/home/user/project` or `/mnt/c/Users/user/project` in WSL). Native Windows path formats (like `C:\...`) are unsupported in v1 local stdio mode; run the process inside WSL instead.
