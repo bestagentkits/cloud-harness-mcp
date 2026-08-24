@@ -159,10 +159,14 @@ export class StateStore {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS preferred_workspaces (owner_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS git_identities (owner_id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS comment_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
+      CREATE TABLE IF NOT EXISTS comment_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
       CREATE TABLE IF NOT EXISTS finalize_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
       CREATE TABLE IF NOT EXISTS batch_write_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
     `);
+    const commentCols = (this.database.prepare('PRAGMA table_info(comment_idempotency)').all() as { name: string }[]).map((c) => c.name);
+    if (!commentCols.includes('fingerprint')) {
+      this.database.exec('ALTER TABLE comment_idempotency ADD COLUMN fingerprint TEXT;');
+    }
     migratePrincipalSchema(this.database);
     this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
       .run('runner_instance_id', randomBytes(18).toString('hex'));
@@ -410,14 +414,22 @@ export class StateStore {
     return row ? { name: row.name, email: row.email } : undefined;
   }
 
-  getCommentIdempotency(ownerId: string, key: string): string | undefined {
-    const row = this.database.prepare('SELECT result_json FROM comment_idempotency WHERE owner_id = ? AND idempotency_key = ?').get(ownerId, key) as { result_json: string } | undefined;
-    return row?.result_json;
+  getCommentIdempotency(ownerId: string, key: string, expectedFingerprint?: string): { resultJson?: string; mismatch?: boolean } | undefined {
+    const row = this.database.prepare('SELECT fingerprint, result_json, created_at FROM comment_idempotency WHERE owner_id = ? AND idempotency_key = ?').get(ownerId, key) as { fingerprint: string | null; result_json: string; created_at: number } | undefined;
+    if (!row) return undefined;
+    if (Date.now() - row.created_at >= 86_400_000) {
+      this.database.prepare('DELETE FROM comment_idempotency WHERE owner_id = ? AND idempotency_key = ?').run(ownerId, key);
+      return undefined;
+    }
+    if (expectedFingerprint && row.fingerprint && row.fingerprint !== expectedFingerprint) {
+      return { mismatch: true };
+    }
+    return { resultJson: row.result_json };
   }
 
-  setCommentIdempotency(ownerId: string, key: string, resultJson: string): void {
-    this.database.prepare('INSERT OR REPLACE INTO comment_idempotency(owner_id, idempotency_key, result_json, created_at) VALUES (?, ?, ?, ?)')
-      .run(ownerId, key, resultJson, Date.now());
+  setCommentIdempotency(ownerId: string, key: string, resultJson: string, fingerprint?: string): void {
+    this.database.prepare('INSERT OR REPLACE INTO comment_idempotency(owner_id, idempotency_key, fingerprint, result_json, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(ownerId, key, fingerprint ?? null, resultJson, Date.now());
   }
 
   getFinalizeIdempotency(ownerId: string, workspaceId: string, key: string): string | undefined {

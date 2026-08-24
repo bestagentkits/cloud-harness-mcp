@@ -523,7 +523,7 @@ export class WorkspaceService {
 
   private async withMutationLease<T>(record: WorkspaceRecord, action: () => Promise<T>, timeoutMs?: number): Promise<T> {
     const now = Date.now();
-    const holdDuration = Math.max(300_000, (timeoutMs ?? 300_000) + 15_000);
+    const holdDuration = Math.max(600_000, (timeoutMs ?? 600_000) + 30_000);
     const holdExpiry = Math.min(record.hardExpiresAt + holdDuration, Math.max(record.expiresAt, now + holdDuration));
     try {
       this.store.acquireMutationLease(record.id, record.generation, holdExpiry);
@@ -1456,10 +1456,15 @@ export class WorkspaceService {
     }
     if (operation === 'github_action') {
       const action = validated.action as string;
-      if ((action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey) {
-        const cached = this.store.getCommentIdempotency(ownerId, validated.idempotencyKey as string);
-        if (cached) {
-          return JSON.parse(cached) as RunnerResponse;
+      let fingerprint: string | undefined;
+      if (validated.idempotencyKey) {
+        fingerprint = createHash('sha256').update(JSON.stringify({ action, workspaceId: record.id, repo: record.repositoryUrl, validated })).digest('hex');
+        const cached = this.store.getCommentIdempotency(ownerId, validated.idempotencyKey as string, fingerprint);
+        if (cached?.mismatch) {
+          throw new HarnessError('CONFLICT', 'idempotency key reused with different request payload', 409);
+        }
+        if (cached?.resultJson) {
+          return JSON.parse(cached.resultJson) as RunnerResponse;
         }
       }
       let args: string[] = [];
@@ -1486,7 +1491,7 @@ export class WorkspaceService {
       }
       const result = await this.runBrokeredGitHubAction(record, action, args, signal);
       if ((action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey && result.ok) {
-        this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result));
+        this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result), fingerprint);
       }
       await this.enforceActiveLimits(record);
       return result;
@@ -1832,6 +1837,7 @@ export class WorkspaceService {
 
 function isMutationOperation(operation: RunnerOperation, validated: Record<string, unknown>): boolean {
   if (operation === 'exec_run') {
+    if (validated.privileged === true) return true;
     return validated.async !== true;
   }
   if (operation === 'tasks_run') {
@@ -1839,7 +1845,7 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
   }
   if (['files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir',
        'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_merge', 'git_rebase', 'git_push',
-       'workspace_finalize'].includes(operation)) {
+       'workspace_finalize', 'worktrees_create', 'worktrees_remove', 'memories_write', 'skills_run', 'hooks_run', 'deployments_run'].includes(operation)) {
     return true;
   }
   if (operation === 'git_branch' && (validated.action === 'create' || validated.action === 'delete')) {

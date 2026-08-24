@@ -247,11 +247,15 @@ describe('UX Improvements and Feature Enhancements', () => {
 
     // Store comment idempotency cache directly
     const cachedResponse = { ok: true, message: 'GitHub issue_comment successful', data: { url: 'https://github.com/example/repo/issues/1#issuecomment-100' }, truncated: false };
-    store.setCommentIdempotency(ownerId, 'idem-comment-key-1', JSON.stringify(cachedResponse));
+    store.setCommentIdempotency(ownerId, 'idem-comment-key-1', JSON.stringify(cachedResponse), 'fp1');
 
-    const retrieved = store.getCommentIdempotency(ownerId, 'idem-comment-key-1');
-    expect(retrieved).toBeDefined();
-    expect(JSON.parse(retrieved!)).toEqual(cachedResponse);
+    const retrieved = store.getCommentIdempotency(ownerId, 'idem-comment-key-1', 'fp1');
+    expect(retrieved?.resultJson).toBeDefined();
+    expect(JSON.parse(retrieved!.resultJson!)).toEqual(cachedResponse);
+
+    // Mismatched fingerprint returns mismatch: true
+    const mismatched = store.getCommentIdempotency(ownerId, 'idem-comment-key-1', 'fp2');
+    expect(mismatched?.mismatch).toBe(true);
   });
 
   it('Issue #88 & #93: executes files_write_batch and workspace_finalize via worker and mutation lease', async () => {

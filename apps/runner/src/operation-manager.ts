@@ -21,8 +21,8 @@ type Managed = {
   cwd?: string;
   timeoutMs?: number;
   maxBytes?: number;
+  settled?: boolean;
 };
-
 export type TrackedOperation = {
   id: string;
   workspaceId?: string | undefined;
@@ -48,7 +48,6 @@ export class OperationManager {
   private readonly sessions = new Map<string, Managed>();
   private readonly idempotency = new Map<string, string>();
   private readonly genericOperations = new Map<string, TrackedOperation>();
-  private readonly settledTasks = new Set<string>();
   private readonly retainedOutputBytes = 67_108_864;
   onTaskStart?: (workspaceId: string, timeoutMs: number) => void;
   onTaskSettle?: (workspaceId: string, taskId: string) => void;
@@ -91,8 +90,8 @@ export class OperationManager {
     this.idempotency.delete(evictable.idempotencyKey);
   }
   private settleTask(record: Managed): void {
-    if (this.settledTasks.has(record.id)) return;
-    this.settledTasks.add(record.id);
+    if (record.settled) return;
+    record.settled = true;
     this.onTaskSettle?.(record.workspaceId, record.id);
   }
 
@@ -421,7 +420,14 @@ export class OperationManager {
 
   getGenericOperation(id: string): TrackedOperation | undefined {
     const gen = this.genericOperations.get(id);
-    if (gen) return gen;
+    if (gen) {
+      const isTerminal = gen.status === 'completed' || gen.status === 'failed' || gen.status === 'cancelled';
+      if (isTerminal && Date.now() - (gen.finishedAt ?? gen.createdAt) >= 600_000) {
+        this.genericOperations.delete(id);
+        return undefined;
+      }
+      return gen;
+    }
     const task = this.tasks.get(id);
     if (task) {
       return {
