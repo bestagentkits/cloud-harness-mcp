@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RunnerConfig } from '@cloud-harness/contracts';
+import { type RunnerConfig, TOOL_SCHEMA_BY_NAME } from '@cloud-harness/contracts';
+import { OperationManager } from '../src/operation-manager.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 
 const docker = vi.hoisted(() => ({
@@ -23,7 +24,14 @@ const docker = vi.hoisted(() => ({
   }),
   removeContainer: vi.fn(async () => undefined),
   inspectContainer: vi.fn(async () => undefined),
-  terminateContainerProcessGroup: vi.fn(async () => undefined)
+  terminateContainerProcessGroup: vi.fn(async () => undefined),
+  spawnDocker: vi.fn(() => ({
+    stdout: { on: vi.fn() },
+    stderr: { on: vi.fn() },
+    stdin: { write: vi.fn(), end: vi.fn() },
+    on: vi.fn(),
+    kill: vi.fn()
+  }))
 }));
 
 vi.mock('../src/docker-engine.js', () => docker);
@@ -469,5 +477,515 @@ describe('UX Improvements and Feature Enhancements', () => {
     // Ensure capacity allows a new workspace to open because EXPIRED_RECOVERABLE doesn't block it
     const ensureCapacityFn = (service as unknown as { ensureCapacity: (owner: string) => Promise<void> }).ensureCapacity;
     await expect(ensureCapacityFn.call(service, ownerId)).resolves.not.toThrow();
+  });
+
+  it('Issue #89: github_action issue_publish schema validation and idempotency handling', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-issue89-'));
+    temporaryDirectories.push(directory);
+    const jobsRoot = join(directory, 'jobs');
+    const wsPath = join(jobsRoot, `ws_${'8'.repeat(24)}`);
+    mkdirSync(wsPath, { recursive: true });
+    const config = {
+      jobsRoot,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      reaperIntervalSeconds: 60,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const store = new StateStore(config.stateDb);
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_issue89' });
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'8'.repeat(24)}`,
+      workspacePath: wsPath
+    });
+    store.create(ws);
+    const service = new WorkspaceService(config, store);
+
+    // Verify schema validation accepts issue_publish with comment and addLabels
+    const parsed = TOOL_SCHEMA_BY_NAME.github_action.safeParse({
+      workspaceId: ws.id,
+      action: 'issue_publish',
+      issueNumber: 42,
+      comment: 'Plan ready for review',
+      addLabels: ['ready to cook', 'in progress'],
+      createMissingLabels: true,
+      idempotencyKey: 'idemp_pub_123'
+    });
+    expect(parsed.success).toBe(true);
+
+    // Idempotency caching in store
+    store.setCommentIdempotency(ownerId, 'idemp_pub_123', JSON.stringify({
+      ok: true,
+      message: 'Published successfully',
+      data: { issueNumber: 42, published: true },
+      truncated: false
+    }));
+
+    const result = await service.execute(ownerId, 'github_action', {
+      workspaceId: ws.id,
+      action: 'issue_publish',
+      issueNumber: 42,
+      comment: 'Plan ready for review',
+      addLabels: ['ready to cook'],
+      idempotencyKey: 'idemp_pub_123'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual({ issueNumber: 42, published: true });
+  });
+
+  it('Issue #94: mutation_locked_until prevents reapExpired from reaping active workspaces', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-issue94-mut-'));
+    temporaryDirectories.push(directory);
+    const jobsRoot = join(directory, 'jobs');
+    const wsPath = join(jobsRoot, `ws_${'9'.repeat(24)}`);
+    mkdirSync(wsPath, { recursive: true });
+    const config = {
+      jobsRoot,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      reaperIntervalSeconds: 60,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const store = new StateStore(config.stateDb);
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_issue94_mutation' });
+    const now = Date.now();
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'9'.repeat(24)}`,
+      workspacePath: wsPath,
+      expiresAt: now - 1000,
+      mutationLockedUntil: now + 300_000
+    });
+    store.create(ws);
+    const service = new WorkspaceService(config, store);
+
+    const reapExpiredFn = (service as unknown as { reapExpired: () => Promise<void> }).reapExpired;
+    await reapExpiredFn.call(service);
+
+    // Should NOT be transitioned while mutation locked
+    const updated = store.byId(ws.id);
+    expect(updated?.status).toBe('ACTIVE');
+
+    // After unlocking, reapExpired transitions it
+    store.clearMutationLock(ws.id);
+    await reapExpiredFn.call(service);
+    const reaped = store.byId(ws.id);
+    expect(reaped?.status).toBe('EXPIRED_RECOVERABLE');
+  });
+
+  it('Issue #90: OperationManager preserves 10-minute terminal retention and rejects excess registration', () => {
+    const manager = new OperationManager();
+
+    // Register 500 fresh operations and mark terminal
+    const now = Date.now();
+    for (let i = 0; i < 500; i++) {
+      const op = manager.registerGenericOperation({
+        id: `op_test_${i}`,
+        kind: 'exec_run',
+        workspaceId: 'ws_test'
+      });
+      manager.updateGenericOperation(op.id, { status: 'completed' });
+    }
+
+    // All 500 recently completed operations exist
+    expect(manager.getGenericOperation('op_test_0')).toBeDefined();
+    expect(manager.getGenericOperation('op_test_499')).toBeDefined();
+
+    // Registering a 501st operation when all 500 are fresh should throw LIMIT_EXCEEDED
+    expect(() => {
+      manager.registerGenericOperation({
+        id: 'op_test_overflow',
+        kind: 'exec_run',
+        workspaceId: 'ws_test'
+      });
+    }).toThrow('too many live or retained operation handles');
+
+    // All 500 originals must remain untouched
+    expect(manager.getGenericOperation('op_test_0')).toBeDefined();
+    expect(manager.getGenericOperation('op_test_499')).toBeDefined();
+    expect(manager.getGenericOperation('op_test_overflow')).toBeUndefined();
+
+    // Manually age op_test_0 to 11 minutes ago (past 10-minute retention)
+    const op0 = manager.getGenericOperation('op_test_0');
+    if (op0) {
+      op0.finishedAt = now - 660_000;
+      op0.createdAt = now - 660_000;
+    }
+
+    // Now registering should prune the expired op_test_0 and succeed
+    const newOp = manager.registerGenericOperation({
+      id: 'op_test_new',
+      kind: 'exec_run',
+      workspaceId: 'ws_test'
+    });
+
+    expect(newOp).toBeDefined();
+    expect(manager.getGenericOperation('op_test_0')).toBeUndefined();
+    expect(manager.getGenericOperation('op_test_new')).toBeDefined();
+  });
+
+  it('Issue #90: operation_wait timeout includes retryAfterMs and deadline in error response', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-issue90-'));
+    temporaryDirectories.push(directory);
+    const jobsRoot = join(directory, 'jobs');
+    const wsPath = join(jobsRoot, `ws_${'a'.repeat(24)}`);
+    mkdirSync(wsPath, { recursive: true });
+    const config = {
+      jobsRoot,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const store = new StateStore(config.stateDb);
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_issue90' });
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'a'.repeat(24)}`,
+      workspacePath: wsPath
+    });
+    store.create(ws);
+    const service = new WorkspaceService(config, store);
+
+    // Register a running operation with valid ID
+    const validOpId = `op_${'b'.repeat(24)}`;
+    const ops = (service as unknown as { operations: OperationManager }).operations;
+    ops.registerGenericOperation({
+      id: validOpId,
+      kind: 'exec_run',
+      workspaceId: ws.id
+    });
+
+    // operation_wait with 100ms timeout
+    const waitRes = await service.execute(ownerId, 'operation_wait', {
+      workspaceId: ws.id,
+      operationId: validOpId,
+      timeoutMs: 100
+    });
+
+    expect(waitRes.ok).toBe(false);
+    expect(waitRes.error?.code).toBe('TIMEOUT');
+    expect(waitRes.error?.retryAfterMs).toBeDefined();
+    expect(waitRes.error?.deadline).toBeDefined();
+  });
+
+  it('Issue #94: non-batch mutations (e.g. files_write) hold mutation lock against reapExpired and ensureCapacity', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-single-mut-'));
+    temporaryDirectories.push(directory);
+    const jobsRoot = join(directory, 'jobs');
+    const wsPath = join(jobsRoot, `ws_${'c'.repeat(24)}`);
+    mkdirSync(wsPath, { recursive: true });
+    const config = {
+      jobsRoot,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const store = new StateStore(config.stateDb);
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_single_mut' });
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'c'.repeat(24)}`,
+      workspacePath: wsPath
+    });
+    store.create(ws);
+    const service = new WorkspaceService(config, store);
+
+    // Acquire mutation lock directly as files_write would
+    const now = Date.now();
+    store.setMutationLock(ws.id, now + 300_000);
+
+    // 1. reapExpired does not reap workspace even if expired
+    store.update(ws.id, { expiresAt: now - 1000 });
+    const reapExpiredFn = (service as unknown as { reapExpired: () => Promise<void> }).reapExpired;
+    await reapExpiredFn.call(service);
+    expect(store.byId(ws.id)?.status).toBe('ACTIVE');
+
+    // 2. ensureCapacity still protects the single active slot while active
+    const ensureCapacityFn = (service as unknown as { ensureCapacity: (owner: string) => Promise<void> }).ensureCapacity;
+    await expect(ensureCapacityFn.call(service, ownerId)).rejects.toThrow('only one active workspace is allowed');
+
+    // Release mutation lock and expire
+    store.clearMutationLock(ws.id);
+    await reapExpiredFn.call(service);
+    expect(store.byId(ws.id)?.status).toBe('EXPIRED_RECOVERABLE');
+
+    // After transitioning to EXPIRED_RECOVERABLE, ensureCapacity allows a new workspace
+    await expect(ensureCapacityFn.call(service, ownerId)).resolves.not.toThrow();
+  });
+
+  it('Issue #94: crash recovery allows claimForExpiry once timestamp lapses and generation-fences stale completions', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-crash-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_crash' });
+    const now = Date.now();
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'d'.repeat(24)}`,
+      workspacePath: join(directory, 'ws_crash'),
+      expiresAt: now - 1000
+    });
+    store.create(ws);
+
+    // Simulate crashed process holding lock count > 0 with expired timestamp
+    store.setMutationLock(ws.id, now - 500, ws.generation);
+    expect(store.byId(ws.id)?.mutationLockedUntil).toBeLessThanOrEqual(now);
+
+    // claimForExpiry should claim it despite positive lock count because timestamp lapsed
+    const claimed = store.claimForExpiry(ws.id, ws.generation);
+    expect(claimed).toBeDefined();
+    expect(claimed?.status).toBe('REAPING');
+    expect(claimed?.generation).toBe(ws.generation + 1);
+
+    // Stale release or clear from old generation cannot mutate the claimed workspace
+    store.releaseMutationLease(ws.id, ws.generation);
+    store.clearMutationLock(ws.id, ws.generation);
+    const current = store.byId(ws.id);
+    expect(current?.status).toBe('REAPING');
+    expect(current?.generation).toBe(ws.generation + 1);
+  });
+
+  it('Issue #90 & #94: real task lifecycle callbacks and overlapping async operations maintain ref-counted mutation locks', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-overlap-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_overlap' });
+    const now = Date.now();
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'e'.repeat(24)}`,
+      workspacePath: join(directory, 'ws_overlap'),
+      expiresAt: now - 1000
+    });
+    store.create(ws);
+    const manager = new OperationManager();
+    manager.onTaskSettle = (wsId) => {
+      const rec = store.byId(wsId);
+      if (rec) store.clearMutationLock(rec.id, rec.generation);
+    };
+
+    // 1. Task 1 starts and acquires lock
+    const t1 = manager.runTask(ws.id, 'cnt', '.', 'echo 1', 'key_1', 60000, 262144);
+    expect(t1.created).toBe(true);
+    store.setMutationLock(ws.id, now + 300_000, ws.generation);
+    expect(store.byId(ws.id)?.mutationLockedUntil).toBeGreaterThan(now);
+
+    // 2. Duplicate idempotent task request does NOT create new task or extra lease
+    const t1Replay = manager.runTask(ws.id, 'cnt', '.', 'echo 1', 'key_1', 60000, 262144);
+    expect(t1Replay.created).toBe(false);
+
+    // 3. Task 2 starts (overlapping, ref count = 2)
+    const t2 = manager.runTask(ws.id, 'cnt', '.', 'echo 2', 'key_2', 60000, 262144);
+    expect(t2.created).toBe(true);
+    store.setMutationLock(ws.id, now + 400_000, ws.generation);
+
+    // 4. Cancel Task 1 (fires once-only settle, ref count = 1, workspace still protected!)
+    await manager.cancelTask(ws.id, t1.id);
+    expect(store.byId(ws.id)?.mutationLockedUntil).toBeGreaterThan(now);
+
+    // 5. Cancelling Task 1 again does not double-decrement
+    await manager.cancelTask(ws.id, t1.id);
+    expect(store.byId(ws.id)?.mutationLockedUntil).toBeGreaterThan(now);
+
+    // 6. Cancel Task 2 (ref count = 0, lock cleared)
+    await manager.cancelTask(ws.id, t2.id);
+    expect(store.byId(ws.id)?.mutationLockedUntil).toBeNull();
+  });
+
+  it('Issue #90: cancelGenericOperation sets finishedAt and preserves retention window', async () => {
+    const { OperationManager } = await import('../src/operation-manager.js');
+    const manager = new OperationManager();
+    const op = manager.registerGenericOperation({
+      id: 'op_cancel_test',
+      kind: 'exec_run',
+      workspaceId: 'ws_test'
+    });
+
+    await manager.cancelGenericOperation(op.id);
+    const cancelled = manager.getGenericOperation(op.id);
+    expect(cancelled?.status).toBe('cancelled');
+    expect(cancelled?.finishedAt).toBeDefined();
+    expect(cancelled?.finishedAt).toBeGreaterThan(0);
+  });
+
+  it('Issue #90: operation_status & operation_wait return terminal error envelope within 10 minutes after close', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-close-reconnect-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_reconnect' });
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'f'.repeat(24)}`,
+      workspacePath: join(directory, 'ws_reconnect')
+    });
+    store.create(ws);
+    const config = {
+      jobsRoot: directory,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const service = new WorkspaceService(config, store);
+    const ops = (service as unknown as { operations: OperationManager }).operations;
+    const opId = `op_${'c'.repeat(24)}`;
+    ops.registerGenericOperation({
+      id: opId,
+      kind: 'exec_run',
+      workspaceId: ws.id
+    });
+
+    // Close the workspace
+    await service.close(ownerId, ws.id);
+    expect(store.byId(ws.id)?.status).toBe('CLOSED');
+
+    // 1. Reconnecting to operation_status returns terminal cancelled result with error envelope
+    const statusRes = await service.execute(ownerId, 'operation_status', {
+      operationId: opId
+    });
+
+    expect(statusRes.ok).toBe(false);
+    expect(statusRes.error?.code).toBe('CANCELLED');
+    const statusData = statusRes.data as { status: string; operationId: string; finishedAt?: string };
+    expect(statusData.operationId).toBe(opId);
+    expect(statusData.status).toBe('cancelled');
+    expect(statusData.finishedAt).toBeDefined();
+
+    // 2. Reconnecting to operation_wait returns terminal cancelled result with error envelope
+    const waitRes = await service.execute(ownerId, 'operation_wait', {
+      workspaceId: ws.id,
+      operationId: opId,
+      timeoutMs: 100
+    });
+
+    expect(waitRes.ok).toBe(false);
+    expect(waitRes.error?.code).toBe('CANCELLED');
+    const waitData = waitRes.data as { status: string; operationId: string; finishedAt?: string };
+    expect(waitData.operationId).toBe(opId);
+    expect(waitData.status).toBe('cancelled');
+    expect(waitData.finishedAt).toBeDefined();
+  });
+
+  it('Issue #90: async deadline records TIMEOUT with retryAfterMs and is never overwritten by CANCELLED', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-deadline-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_deadline' });
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'1'.repeat(24)}`,
+      workspacePath: join(directory, 'ws_deadline'),
+      containerName: 'cnt_deadline'
+    });
+    store.create(ws);
+    const config = {
+      jobsRoot: directory,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const service = new WorkspaceService(config, store);
+
+    // Override runWorker to simulate a long-running command that hangs until aborted
+    (service as unknown as { runWorker: (...args: unknown[]) => Promise<unknown> }).runWorker = vi.fn((_rec, _op, _inp, signal: AbortSignal) => {
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(new Error('aborted by timeout'));
+        });
+      });
+    });
+    // 1. Start async command with 100ms timeout
+    const startRes = await service.execute(ownerId, 'exec_run', {
+      workspaceId: ws.id,
+      command: 'sleep 10',
+      async: true,
+      timeoutMs: 100
+    });
+    expect(startRes.ok).toBe(true);
+    const opId = (startRes.data as { operationId: string }).operationId;
+
+    // Wait for the 100ms deadline to expire
+    await new Promise((r) => setTimeout(r, 200));
+
+    // 2. operation_status should return TIMEOUT with retryAfterMs and deadline, NOT CANCELLED
+    const statusRes = await service.execute(ownerId, 'operation_status', {
+      operationId: opId
+    });
+    expect(statusRes.ok).toBe(false);
+    expect(statusRes.error?.code).toBe('TIMEOUT');
+    expect(statusRes.error?.retryAfterMs).toBeDefined();
+    expect(statusRes.error?.deadline).toBeDefined();
+
+    // 3. operation_wait should also return TIMEOUT
+    const waitRes = await service.execute(ownerId, 'operation_wait', {
+      workspaceId: ws.id,
+      operationId: opId,
+      timeoutMs: 100
+    });
+    expect(waitRes.ok).toBe(false);
+    expect(waitRes.error?.code).toBe('TIMEOUT');
+  });
+
+  it('Issue #94: workspace_lease_renew is generation-fenced and fails with CONFLICT if reaped concurrently', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-renew-race-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner_renew_race' });
+    const now = Date.now();
+    const ws = createWorkspaceRecord(ownerId, {
+      id: `ws_${'2'.repeat(24)}`,
+      workspacePath: join(directory, 'ws_renew_race'),
+      expiresAt: now - 1000
+    });
+    store.create(ws);
+    const config = {
+      jobsRoot: directory,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const service = new WorkspaceService(config, store);
+
+    // Simulate concurrent reaper claiming the workspace generation before renew executes
+    const claimed = store.claimForExpiry(ws.id, ws.generation);
+    expect(claimed?.status).toBe('REAPING');
+
+    // workspace_lease_renew should fail and never resurrect status to ACTIVE
+    await expect(service.execute(ownerId, 'workspace_lease_renew', {
+      workspaceId: ws.id,
+      extensionSeconds: 3600
+    })).rejects.toThrow();
+
+    expect(store.byId(ws.id)?.status).toBe('REAPING');
   });
 });

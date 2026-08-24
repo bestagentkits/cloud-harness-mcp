@@ -236,6 +236,23 @@ const schemas = {
       if (input.stateReason && input.state !== 'closed' && input.stateReason !== 'reopened') {
         context.addIssue({ code: 'custom', path: ['stateReason'], message: 'stateReason is valid only when closing or reopening an issue' });
       }
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_publish'),
+      issueNumber: z.number().int().positive(),
+      comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
+      addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label cannot contain null bytes')).max(50).optional(),
+      removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label cannot contain null bytes')).max(50).optional(),
+      createMissingLabels: z.boolean().default(true),
+      idempotencyKey: IdempotencyKeySchema.optional()
+    }).superRefine((input, context) => {
+      const hasComment = Boolean(input.comment?.trim());
+      const hasAdd = Boolean(input.addLabels && input.addLabels.length > 0);
+      const hasRemove = Boolean(input.removeLabels && input.removeLabels.length > 0);
+      if (!hasComment && !hasAdd && !hasRemove) {
+        context.addIssue({ code: 'custom', path: ['comment'], message: 'at least one of comment, addLabels, or removeLabels is required' });
+      }
     })
   ])
 } satisfies Record<RunnerOperation, z.ZodType>;

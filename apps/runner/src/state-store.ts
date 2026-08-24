@@ -41,6 +41,7 @@ export type WorkspaceRecord = {
   hardExpiresAt: number;
   gitAuthorName: string | null;
   gitAuthorEmail: string | null;
+  mutationLockedUntil: number | null;
   generation: number;
   error: string | null;
 };
@@ -90,7 +91,7 @@ type Row = {
   id: string; owner_id: string; idempotency_key: string; repository_url: string; repository_ref: string | null;
   container_name: string | null; workspace_path: string; status: WorkspaceRecord['status']; network_mode: 'none' | 'bridge';
   created_at: number; last_activity_at: number; expires_at: number; hard_expires_at?: number | null;
-  git_author_name?: string | null; git_author_email?: string | null;
+  git_author_name?: string | null; git_author_email?: string | null; mutation_locked_until?: number | null;
   generation: number; error: string | null;
 };
 
@@ -100,6 +101,7 @@ const fromRow = (row: Row): WorkspaceRecord => ({
   status: row.status, networkMode: row.network_mode, createdAt: row.created_at, lastActivityAt: row.last_activity_at,
   expiresAt: row.expires_at, hardExpiresAt: row.hard_expires_at ?? (row.created_at + 14_400_000),
   gitAuthorName: row.git_author_name ?? null, gitAuthorEmail: row.git_author_email ?? null,
+  mutationLockedUntil: row.mutation_locked_until ?? null,
   generation: row.generation, error: row.error
 });
 
@@ -148,6 +150,12 @@ export class StateStore {
     if (!cols.includes('git_author_email')) {
       this.database.exec('ALTER TABLE workspaces ADD COLUMN git_author_email TEXT;');
     }
+    if (!cols.includes('mutation_locked_until')) {
+      this.database.exec('ALTER TABLE workspaces ADD COLUMN mutation_locked_until INTEGER;');
+    }
+    if (!cols.includes('mutation_lock_count')) {
+      this.database.exec('ALTER TABLE workspaces ADD COLUMN mutation_lock_count INTEGER NOT NULL DEFAULT 0;');
+    }
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS preferred_workspaces (owner_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS git_identities (owner_id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
@@ -168,8 +176,8 @@ export class StateStore {
 
   create(record: WorkspaceRecord): void {
     this.database.prepare(`INSERT INTO workspaces
-      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, generation, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, generation, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         record.id,
         record.ownerId,
@@ -186,7 +194,8 @@ export class StateStore {
         record.hardExpiresAt ?? (record.createdAt + 14_400_000),
         record.gitAuthorName ?? null,
         record.gitAuthorEmail ?? null,
-        record.generation,
+        record.mutationLockedUntil ?? null,
+        record.generation ?? 1,
         record.error ?? null
       );
   }
@@ -247,11 +256,11 @@ export class StateStore {
   active(): WorkspaceRecord[] {
     return (this.database.prepare("SELECT * FROM workspaces WHERE status IN ('CREATING','ACTIVE','REAPING')").all() as Row[]).map(fromRow);
   }
-  update(id: string, changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'hardExpiresAt' | 'gitAuthorName' | 'gitAuthorEmail' | 'generation' | 'error'>>): WorkspaceRecord {
+  update(id: string, changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'hardExpiresAt' | 'gitAuthorName' | 'gitAuthorEmail' | 'mutationLockedUntil' | 'generation' | 'error'>>): WorkspaceRecord {
     const current = this.byId(id);
     if (!current) throw new Error(`workspace ${id} missing`);
     const next = { ...current, ...changes };
-    this.database.prepare('UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, hard_expires_at=?, git_author_name=?, git_author_email=?, generation=?, error=? WHERE id=?')
+    this.database.prepare('UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, hard_expires_at=?, git_author_name=?, git_author_email=?, mutation_locked_until=?, generation=?, error=? WHERE id=?')
       .run(
         next.containerName ?? null,
         next.status,
@@ -260,11 +269,110 @@ export class StateStore {
         next.hardExpiresAt ?? (next.createdAt + 14_400_000),
         next.gitAuthorName ?? null,
         next.gitAuthorEmail ?? null,
+        next.mutationLockedUntil ?? null,
         next.generation,
         next.error ?? null,
         id
       );
     return next;
+  }
+
+  acquireMutationLease(id: string, expectedGeneration: number, holdExpiry: number): WorkspaceRecord {
+    const now = Date.now();
+    const result = this.database.prepare(`
+      UPDATE workspaces
+      SET mutation_lock_count = mutation_lock_count + 1,
+          mutation_locked_until = MAX(COALESCE(mutation_locked_until, 0), ?),
+          expires_at = MAX(expires_at, ?),
+          last_activity_at = ?
+      WHERE id = ? AND generation = ? AND status = 'ACTIVE'
+    `).run(holdExpiry, holdExpiry, now, id, expectedGeneration);
+    if (result.changes !== 1) {
+      throw new Error('MUTATION_LEASE_LOST');
+    }
+    return this.byId(id)!;
+  }
+
+  acquireRecoverableMutationLease(id: string, expectedGeneration: number, holdExpiry: number): WorkspaceRecord {
+    const now = Date.now();
+    const result = this.database.prepare(`
+      UPDATE workspaces
+      SET mutation_lock_count = mutation_lock_count + 1,
+          mutation_locked_until = MAX(COALESCE(mutation_locked_until, 0), ?),
+          last_activity_at = ?
+      WHERE id = ? AND generation = ? AND status IN ('ACTIVE', 'EXPIRED_RECOVERABLE')
+    `).run(holdExpiry, now, id, expectedGeneration);
+    if (result.changes !== 1) {
+      throw new Error('MUTATION_LEASE_LOST');
+    }
+    return this.byId(id)!;
+  }
+
+  releaseMutationLease(id: string, expectedGeneration?: number): void {
+    const sql = expectedGeneration !== undefined
+      ? `UPDATE workspaces
+         SET mutation_lock_count = MAX(0, mutation_lock_count - 1),
+             mutation_locked_until = CASE WHEN mutation_lock_count <= 1 THEN NULL ELSE mutation_locked_until END
+         WHERE id = ? AND generation = ? AND status IN ('ACTIVE', 'EXPIRED_RECOVERABLE')`
+      : `UPDATE workspaces
+         SET mutation_lock_count = MAX(0, mutation_lock_count - 1),
+             mutation_locked_until = CASE WHEN mutation_lock_count <= 1 THEN NULL ELSE mutation_locked_until END
+         WHERE id = ?`;
+    if (expectedGeneration !== undefined) {
+      this.database.prepare(sql).run(id, expectedGeneration);
+    } else {
+      this.database.prepare(sql).run(id);
+    }
+  }
+
+  claimForExpiry(id: string, expectedGeneration: number): WorkspaceRecord | undefined {
+    const now = Date.now();
+    const result = this.database.prepare(`
+      UPDATE workspaces
+      SET status = 'REAPING',
+          generation = generation + 1,
+          mutation_lock_count = 0,
+          mutation_locked_until = NULL,
+          last_activity_at = ?
+      WHERE id = ? AND generation = ? AND status = 'ACTIVE'
+        AND (expires_at <= ? OR hard_expires_at <= ?)
+        AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?)
+    `).run(now, id, expectedGeneration, now, now, now);
+    return result.changes === 1 ? this.byId(id) : undefined;
+  }
+
+  setMutationLock(id: string, lockedUntil: number, expectedGeneration?: number): void {
+    const sql = expectedGeneration !== undefined
+      ? `UPDATE workspaces
+         SET mutation_lock_count = mutation_lock_count + 1,
+             mutation_locked_until = MAX(COALESCE(mutation_locked_until, 0), ?)
+         WHERE id = ? AND generation = ? AND status = 'ACTIVE'`
+      : `UPDATE workspaces
+         SET mutation_lock_count = mutation_lock_count + 1,
+             mutation_locked_until = MAX(COALESCE(mutation_locked_until, 0), ?)
+         WHERE id = ?`;
+    if (expectedGeneration !== undefined) {
+      this.database.prepare(sql).run(lockedUntil, id, expectedGeneration);
+    } else {
+      this.database.prepare(sql).run(lockedUntil, id);
+    }
+  }
+
+  clearMutationLock(id: string, expectedGeneration?: number): void {
+    const sql = expectedGeneration !== undefined
+      ? `UPDATE workspaces
+         SET mutation_lock_count = MAX(0, mutation_lock_count - 1),
+             mutation_locked_until = CASE WHEN mutation_lock_count <= 1 THEN NULL ELSE mutation_locked_until END
+         WHERE id = ? AND generation = ? AND status = 'ACTIVE'`
+      : `UPDATE workspaces
+         SET mutation_lock_count = MAX(0, mutation_lock_count - 1),
+             mutation_locked_until = CASE WHEN mutation_lock_count <= 1 THEN NULL ELSE mutation_locked_until END
+         WHERE id = ?`;
+    if (expectedGeneration !== undefined) {
+      this.database.prepare(sql).run(id, expectedGeneration);
+    } else {
+      this.database.prepare(sql).run(id);
+    }
   }
 
   setPreferredWorkspace(ownerId: string, workspaceId: string): void {
@@ -368,8 +476,14 @@ export class StateStore {
     return result.changes === 1 ? next : undefined;
   }
 
-  claimForReaping(id: string, generation: number): boolean {
-    const result = this.database.prepare("UPDATE workspaces SET status='REAPING', generation=generation+1 WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE')").run(id, generation);
+  claimForReaping(id: string, generation: number, force = false): boolean {
+    const now = Date.now();
+    const sql = force
+      ? "UPDATE workspaces SET status='REAPING', generation=generation+1, mutation_lock_count=0, mutation_locked_until=NULL WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE')"
+      : "UPDATE workspaces SET status='REAPING', generation=generation+1 WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE') AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?)";
+    const result = force
+      ? this.database.prepare(sql).run(id, generation)
+      : this.database.prepare(sql).run(id, generation, now);
     return result.changes === 1;
   }
   createPrivilegeGrant(input: { ownerId: string; workspaceId: string; command: string; cwd?: string; ttlMs?: number }): PrivilegeGrantRecord {

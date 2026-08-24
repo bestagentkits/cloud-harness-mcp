@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { HarnessError } from '@cloud-harness/contracts';
+import { type ErrorCode, HarnessError } from '@cloud-harness/contracts';
 import { spawnDocker, terminateContainerProcessGroup } from './docker-engine.js';
 
 type ManagedStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'blocked';
@@ -29,10 +29,11 @@ export type TrackedOperation = {
   kind: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   createdAt: number;
+  finishedAt?: number | undefined;
   deadlineMs?: number | undefined;
   progress?: { percent?: number | undefined; stage?: string | undefined; message?: string | undefined } | undefined;
   result?: unknown;
-  error?: { code: string; message: string; retryable: boolean } | undefined;
+  error?: { code: ErrorCode; message: string; retryable: boolean; retryAfterMs?: number | undefined; deadline?: string | undefined } | undefined;
   output: Buffer;
   offset: number;
   child?: ChildProcessWithoutNullStreams | undefined;
@@ -46,8 +47,10 @@ export class OperationManager {
   private readonly shells = new Map<string, Managed>();
   private readonly sessions = new Map<string, Managed>();
   private readonly idempotency = new Map<string, string>();
-  private readonly retainedOutputBytes = 67_108_864;
   private readonly genericOperations = new Map<string, TrackedOperation>();
+  private readonly settledTasks = new Set<string>();
+  private readonly retainedOutputBytes = 67_108_864;
+  onTaskSettle?: (workspaceId: string, taskId: string) => void;
   private records(workspaceId: string): Managed[] {
     return [...this.tasks.values(), ...this.shells.values(), ...this.sessions.values()]
       .filter((record) => record.workspaceId === workspaceId)
@@ -81,6 +84,11 @@ export class OperationManager {
     map.delete(evictable.id);
     this.idempotency.delete(evictable.idempotencyKey);
   }
+  private settleTask(record: Managed): void {
+    if (this.settledTasks.has(record.id)) return;
+    this.settledTasks.add(record.id);
+    this.onTaskSettle?.(record.workspaceId, record.id);
+  }
 
   private track(record: Managed, child: ChildProcessWithoutNullStreams, maxBytes: number): void {
     record.child = child;
@@ -97,9 +105,11 @@ export class OperationManager {
       record.exitCode = code ?? 1;
       if (record.status === 'running') record.status = code === 0 ? 'succeeded' : 'failed';
       this.reconcileQueued(record.workspaceId);
+      if (this.tasks.has(record.id)) {
+        this.settleTask(record);
+      }
     });
   }
-
   private openInteractive(
     map: Map<string, Managed>,
     prefix: 'sh' | 'sess',
@@ -194,17 +204,20 @@ export class OperationManager {
     timeoutMs: number,
     maxBytes: number,
     dependsOn: string[] = []
-  ): Managed {
+  ): Managed & { created?: boolean } {
     const mapKey = `task:${workspaceId}:${key}`;
     const prior = this.idempotency.get(mapKey);
-    if (prior) return this.tasks.get(prior)!;
+    if (prior) {
+      const existing = this.tasks.get(prior)!;
+      return Object.assign(existing, { created: false });
+    }
     this.reserve(this.tasks, workspaceId, 128);
     if (new Set(dependsOn).size !== dependsOn.length) throw new HarnessError('INVALID_INPUT', 'task dependencies must be unique', 400, false);
     for (const dependencyId of dependsOn) {
       const dependency = this.tasks.get(dependencyId);
       if (!dependency || dependency.workspaceId !== workspaceId) throw new HarnessError('NOT_FOUND', `task dependency ${dependencyId} not found`, 404, false);
     }
-    const record: Managed = {
+    const record: Managed & { created?: boolean } = {
       id: id('task'),
       workspaceId,
       output: Buffer.alloc(0),
@@ -217,7 +230,8 @@ export class OperationManager {
       cwd,
       timeoutMs,
       maxBytes,
-      dependsOn: [...dependsOn]
+      dependsOn: [...dependsOn],
+      created: true
     };
     this.tasks.set(record.id, record);
     this.idempotency.set(mapKey, record.id);
@@ -242,10 +256,12 @@ export class OperationManager {
       const dependencies = (record.dependsOn ?? []).map((dependencyId) => this.tasks.get(dependencyId));
       if (dependencies.some((dependency) => !dependency || dependency.workspaceId !== workspaceId)) {
         record.status = 'blocked';
+        this.settleTask(record);
         continue;
       }
       if (dependencies.some((dependency) => ['failed', 'cancelled', 'blocked'].includes(dependency!.status))) {
         record.status = 'blocked';
+        this.settleTask(record);
         continue;
       }
       if (dependencies.every((dependency) => dependency!.status === 'succeeded')) this.startTask(record);
@@ -275,6 +291,7 @@ export class OperationManager {
     if (record.status === 'queued') {
       record.status = 'cancelled';
       this.reconcileQueued(workspaceId);
+      this.settleTask(record);
       return record;
     }
     if (record.status !== 'running') return record;
@@ -282,9 +299,9 @@ export class OperationManager {
     record.status = 'cancelled';
     record.child?.kill();
     this.reconcileQueued(workspaceId);
+    this.settleTask(record);
     return record;
   }
-
   stopWorkspace(workspaceId: string): void {
     for (const record of this.records(workspaceId)) {
       if (record.status === 'running' || record.status === 'queued') {
@@ -292,13 +309,19 @@ export class OperationManager {
         record.child?.kill();
       }
     }
-    for (const [opId, op] of this.genericOperations) {
+    for (const op of this.genericOperations.values()) {
       if (op.workspaceId === workspaceId) {
         if (op.status === 'running' || op.status === 'queued') {
           op.status = 'cancelled';
-          if (op.child) { try { op.child.kill('SIGTERM'); } catch { /* ignore */ } }
+          op.finishedAt = Date.now();
+          op.error = { code: 'CANCELLED', message: 'Workspace stopped or closed', retryable: false };
+          if (op.abortController) {
+            try { op.abortController.abort(); } catch { /* ignore */ }
+          }
+          if (op.child) {
+            try { op.child.kill('SIGTERM'); } catch { /* ignore */ }
+          }
         }
-        this.genericOperations.delete(opId);
       }
     }
     for (const [recordId, record] of this.tasks) if (record.workspaceId === workspaceId) this.tasks.delete(recordId);
@@ -351,24 +374,24 @@ export class OperationManager {
     container?: string | undefined;
     abortController?: AbortController | undefined;
   }): TrackedOperation {
-    while (this.genericOperations.size >= 500) {
-      const oldest = [...this.genericOperations.entries()]
-        .filter(([, o]) => o.status === 'completed' || o.status === 'failed' || o.status === 'cancelled')
-        .sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
-      if (oldest) {
-        this.genericOperations.delete(oldest[0]);
-      } else {
-        const oldestAny = [...this.genericOperations.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
-        if (oldestAny) this.genericOperations.delete(oldestAny[0]);
-        break;
+    const now = Date.now();
+    // First evict expired terminal operations older than 10 minutes (600,000 ms)
+    for (const [id, record] of this.genericOperations.entries()) {
+      const isTerminal = record.status === 'completed' || record.status === 'failed' || record.status === 'cancelled';
+      if (isTerminal && now - (record.finishedAt ?? record.createdAt) >= 600_000) {
+        this.genericOperations.delete(id);
       }
+    }
+    // If still at capacity, fail closed rather than evicting unexpired terminal or live operations
+    if (this.genericOperations.size >= 500) {
+      throw new HarnessError('LIMIT_EXCEEDED', 'too many live or retained operation handles (maximum 500)', 429, true);
     }
     const tracked: TrackedOperation = {
       id: op.id,
       workspaceId: op.workspaceId,
       kind: op.kind,
       status: 'running',
-      createdAt: Date.now(),
+      createdAt: now,
       deadlineMs: op.deadlineMs,
       output: Buffer.alloc(0),
       offset: 0,
@@ -382,6 +405,9 @@ export class OperationManager {
   updateGenericOperation(id: string, patch: Partial<TrackedOperation>): TrackedOperation | undefined {
     const current = this.genericOperations.get(id);
     if (!current) return undefined;
+    if (patch.status && patch.status !== 'running' && patch.status !== 'queued' && !current.finishedAt) {
+      current.finishedAt = Date.now();
+    }
     Object.assign(current, patch);
     return current;
   }
@@ -412,6 +438,7 @@ export class OperationManager {
     if (op) {
       if (op.status === 'running' || op.status === 'queued') {
         op.status = 'cancelled';
+        op.finishedAt = Date.now();
         if (op.abortController) {
           try { op.abortController.abort(); } catch { /* ignore */ }
         }
@@ -440,5 +467,11 @@ export class OperationManager {
       };
     }
     throw new HarnessError('NOT_FOUND', `operation ${id} not found`, 404, false);
+  }
+
+  hasRunningOperations(workspaceId: string): boolean {
+    const hasRunningTasks = [...this.tasks.values()].some((t) => t.workspaceId === workspaceId && t.status === 'running');
+    const hasRunningGeneric = [...this.genericOperations.values()].some((o) => o.workspaceId === workspaceId && o.status === 'running');
+    return hasRunningTasks || hasRunningGeneric;
   }
 }
