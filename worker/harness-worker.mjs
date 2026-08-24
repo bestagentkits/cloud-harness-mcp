@@ -41,6 +41,12 @@ async function safePath(input, allowMissing = false) {
   }
   const parent = await realpath(dirname(candidate));
   if (parent !== root && !parent.startsWith(`${root}${sep}`)) throw new Error('parent symlink escapes workspace');
+  try {
+    const actual = await realpath(candidate);
+    if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('symlink escapes workspace');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
   return candidate;
 }
 async function safeBatchFilePath(input, allowMissingParent = false) {
@@ -52,21 +58,30 @@ async function safeBatchFilePath(input, allowMissingParent = false) {
   if (!allowMissingParent) {
     const parent = await realpath(dirname(candidate));
     if (parent !== root && !parent.startsWith(`${root}${sep}`)) throw new Error('parent symlink escapes workspace');
-    return candidate;
-  }
-  let ancestor = dirname(candidate);
-  while (ancestor.startsWith(root)) {
-    try {
-      const actual = await realpath(ancestor);
-      if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('ancestor symlink escapes workspace');
-      return candidate;
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
-      if (ancestor === root) break;
-      ancestor = dirname(ancestor);
+  } else {
+    let ancestor = dirname(candidate);
+    let valid = false;
+    while (ancestor.startsWith(root)) {
+      try {
+        const actual = await realpath(ancestor);
+        if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('ancestor symlink escapes workspace');
+        valid = true;
+        break;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        if (ancestor === root) break;
+        ancestor = dirname(ancestor);
+      }
     }
+    if (!valid) throw new Error('directory ancestor is unavailable');
   }
-  throw new Error('directory ancestor is unavailable');
+  try {
+    const actual = await realpath(candidate);
+    if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('symlink escapes workspace');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  return candidate;
 }
 async function safeEntryPath(input, allowMissing = false) {
   const normalized = input.replaceAll('\\', '/');
@@ -233,8 +248,8 @@ const handlers = {
       try { current = await readFile(target); } catch { return fail('CONFLICT', 'target does not exist for expectedSha256'); }
       if (sha256(current) !== input.expectedSha256) return fail('CONFLICT', 'file changed since it was read');
     }
-    const temporary = `${target}.cloud-harness-${process.pid}.tmp`;
-    await writeFile(temporary, input.content, { mode: 0o600 });
+    const temporary = `${target}.cloud-harness-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
+    await writeFile(temporary, input.content, { mode: 0o600, flag: 'wx' });
     await rename(temporary, target);
     return ok('File written', { path: input.path, bytes: Buffer.byteLength(input.content), sha256: sha256(input.content) });
   },
@@ -299,9 +314,10 @@ const handlers = {
             if (err?.code !== 'EEXIST') throw err;
           }
         }
-        const tempPath = `${item.target}.cloud-harness-batch-${process.pid}-${i}.tmp`;
+        const batchId = randomBytes(8).toString('hex');
+        const tempPath = `${item.target}.cloud-harness-batch-${process.pid}-${batchId}-${i}.tmp`;
         tempFiles.push({ tempPath, target: item.target, item });
-        await writeFile(tempPath, item.content, { mode: 0o600 });
+        await writeFile(tempPath, item.content, { mode: 0o600, flag: 'wx' });
       }
 
       for (const { tempPath, target, item } of tempFiles) {
@@ -325,7 +341,9 @@ const handlers = {
         for (const item of prepared) {
           try {
             if (item.exists) {
-              await writeFile(item.target, item.originalContent, { mode: 0o600 });
+              const rollbackTemp = `${item.target}.cloud-harness-rollback-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
+              await writeFile(rollbackTemp, item.originalContent, { mode: 0o600, flag: 'wx' });
+              await rename(rollbackTemp, item.target);
             } else {
               await rm(item.target, { force: true });
             }
@@ -350,7 +368,9 @@ const handlers = {
     if (first < 0) return fail('CONFLICT', 'oldText was not found');
     if (current.indexOf(input.oldText, first + Math.max(1, input.oldText.length)) >= 0) return fail('CONFLICT', 'oldText is not unique');
     const next = current.slice(0, first) + input.newText + current.slice(first + input.oldText.length);
-    await writeFile(target, next);
+    const temporary = `${target}.cloud-harness-patch-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
+    await writeFile(temporary, next, { mode: 0o600, flag: 'wx' });
+    await rename(temporary, target);
     return ok('Patch applied', { path: input.path, sha256: sha256(next) });
   },
   async files_delete(input) {
@@ -590,10 +610,17 @@ const handlers = {
     } catch { return fail('NOT_FOUND', 'memory not found'); }
   },
   async memories_write(input) {
-    const root = resolve(getWorkspaceRoot(), '.cloud-harness/memories');
-    await mkdir(root, { recursive: true });
-    const target = await safePath(`.cloud-harness/memories/${input.name}.md`, true);
-    await writeFile(target, input.content, { mode: 0o600 });
+    const memoryDir = await safeRecursiveCreatePath('.cloud-harness/memories');
+    await mkdir(memoryDir, { recursive: true, mode: 0o700 });
+    const root = getWorkspaceRoot();
+    const actualMemDir = await realpath(memoryDir);
+    if (actualMemDir !== root && !actualMemDir.startsWith(`${root}${sep}`)) {
+      throw new Error('memory directory escapes workspace');
+    }
+    const target = await safeEntryPath(`.cloud-harness/memories/${input.name}.md`, true);
+    const temporary = join(actualMemDir, `.tmp-mem-${input.name}-${process.pid}-${randomBytes(8).toString('hex')}.tmp`);
+    await writeFile(temporary, input.content, { mode: 0o600, flag: 'wx' });
+    await rename(temporary, target);
     return ok('Memory written', { name: input.name, bytes: Buffer.byteLength(input.content) });
   },
   async deployments_list() {

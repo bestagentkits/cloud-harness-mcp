@@ -1,4 +1,5 @@
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -239,5 +240,137 @@ describe('LocalWorkspaceBackend', () => {
     });
     const readPatchedData = FileReadDataSchema.parse(readPatched.data);
     expect(readPatchedData.content).toBe('updated content');
+  });
+
+  it('supports memories_write, memories_read, and memories_list', async () => {
+    const memWriteRes = await backend.call('memories_write', {
+      workspaceId: backend.workspaceId,
+      name: 'test-memory',
+      content: 'durable context to remember'
+    });
+    expect(memWriteRes.ok).toBe(true);
+
+    const memReadRes = await backend.call('memories_read', {
+      workspaceId: backend.workspaceId,
+      name: 'test-memory'
+    });
+    expect(memReadRes.ok).toBe(true);
+    const memData = memReadRes.data as { name: string; content: string };
+    expect(memData.content).toBe('durable context to remember');
+
+    const memListRes = await backend.call('memories_list', {
+      workspaceId: backend.workspaceId
+    });
+    expect(memListRes.ok).toBe(true);
+    const memListData = memListRes.data as { memories: string[] };
+    expect(memListData.memories).toContain('test-memory');
+  });
+
+  it('rejects memories_write when .cloud-harness is a symlink pointing outside the workspace', async () => {
+    const outsideDir = join(tmpdir(), `ch-outside-mem-${Date.now()}`);
+    await mkdir(outsideDir, { recursive: true });
+
+    const linkPath = join(canonicalRoot, '.cloud-harness');
+    try {
+      await symlink(outsideDir, linkPath);
+      const writeRes = await backend.call('memories_write', {
+        workspaceId: backend.workspaceId,
+        name: 'escape-attempt',
+        content: 'should not be written outside'
+      });
+      expect(writeRes.ok).toBe(false);
+      expect(writeRes.message).toMatch(/escapes workspace/);
+      expect(existsSync(join(outsideDir, 'memories'))).toBe(false);
+      expect(existsSync(join(outsideDir, 'memories', 'escape-attempt.md'))).toBe(false);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw err;
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('safely handles precreated symlinks on files_write and writes exclusively', async () => {
+    const outsideDir = join(tmpdir(), `ch-outside-tmp-${Date.now()}`);
+    await mkdir(outsideDir, { recursive: true });
+    const outsideTarget = join(outsideDir, 'secret-victim.txt');
+    await writeFile(outsideTarget, 'original-victim-content');
+
+    const linkPath = join(canonicalRoot, 'target-link.txt');
+    try {
+      await symlink(outsideTarget, linkPath);
+      // Writing to an existing symlink that resolves outside must be rejected by safePath
+      const writeRes = await backend.call('files_write', {
+        workspaceId: backend.workspaceId,
+        path: 'target-link.txt',
+        content: 'attack-payload'
+      });
+      expect(writeRes.ok).toBe(false);
+      expect(writeRes.message).toMatch(/escapes workspace/);
+      // Outside file must remain untouched
+      const victimContent = await readFile(outsideTarget, 'utf8');
+      expect(victimContent).toBe('original-victim-content');
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw err;
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects files_write_batch when a target path is an existing symlink pointing outside', async () => {
+    const outsideDir = join(tmpdir(), `ch-outside-batch-${Date.now()}`);
+    await mkdir(outsideDir, { recursive: true });
+    const outsideTarget = join(outsideDir, 'victim-batch.txt');
+    await writeFile(outsideTarget, 'victim-batch-initial');
+
+    const linkPath = join(canonicalRoot, 'batch-escape.txt');
+    try {
+      await symlink(outsideTarget, linkPath);
+      const batchRes = await backend.call('files_write_batch', {
+        workspaceId: backend.workspaceId,
+        files: [
+          { path: 'batch-escape.txt', content: 'hacked-content' },
+          { path: 'normal-file.txt', content: 'normal-content' }
+        ]
+      });
+      expect(batchRes.ok).toBe(false);
+      expect(batchRes.message).toMatch(/escapes workspace/);
+      const victimContent = await readFile(outsideTarget, 'utf8');
+      expect(victimContent).toBe('victim-batch-initial');
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw err;
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('escalates to SIGKILL on workspace_close for stubborn processes', async () => {
+    const stubCommand = process.platform === 'win32'
+      ? 'timeout /t 30'
+      : "trap '' TERM; while true; do sleep 0.1; done";
+
+    const taskRes = await backend.call('tasks_run', {
+      workspaceId: backend.workspaceId,
+      command: stubCommand,
+      idempotencyKey: 'stubborn-proc-key'
+    });
+    expect(taskRes.ok).toBe(true);
+
+    // Close workspace - should escalate and terminate cleanly
+    const closeStart = Date.now();
+    const closeRes = await backend.call('workspace_close', {
+      workspaceId: backend.workspaceId
+    });
+    expect(closeRes.ok).toBe(true);
+    const duration = Date.now() - closeStart;
+    expect(duration).toBeLessThan(5000);
   });
 });

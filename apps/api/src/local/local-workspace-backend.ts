@@ -49,7 +49,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
 
   async close(): Promise<void> {
     this.status = 'CLOSED';
-    this.operationManager.stopWorkspace(this.workspaceId);
+    await this.operationManager.stopWorkspace(this.workspaceId);
   }
 
   async call(
