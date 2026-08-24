@@ -1,3 +1,10 @@
+# [0.20.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.19.2...v0.20.0) (2026-08-24)
+
+
+### Features
+
+* **api:** add stdio transport and local-folder workspace mode ([#33](https://github.com/bestagentkits/cloud-harness-mcp/issues/33)) ([5939d29](https://github.com/bestagentkits/cloud-harness-mcp/commit/5939d29483a45df5fca963f5b7ff33100641c4ea))
+
 ## [0.19.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.19.1...v0.19.2) (2026-08-24)
 
 
