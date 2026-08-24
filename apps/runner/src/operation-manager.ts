@@ -50,7 +50,13 @@ export class OperationManager {
   private readonly genericOperations = new Map<string, TrackedOperation>();
   private readonly settledTasks = new Set<string>();
   private readonly retainedOutputBytes = 67_108_864;
+  onTaskStart?: (workspaceId: string, timeoutMs: number) => void;
   onTaskSettle?: (workspaceId: string, taskId: string) => void;
+
+  hasTaskKey(key: string): boolean {
+    return this.idempotency.has(key);
+  }
+
   private records(workspaceId: string): Managed[] {
     return [...this.tasks.values(), ...this.shells.values(), ...this.sessions.values()]
       .filter((record) => record.workspaceId === workspaceId)
@@ -247,6 +253,7 @@ export class OperationManager {
     ]);
     child.stdin.end();
     record.status = 'running';
+    this.onTaskStart?.(record.workspaceId, record.timeoutMs ?? 60_000);
     this.track(record, child, record.maxBytes!);
   }
 

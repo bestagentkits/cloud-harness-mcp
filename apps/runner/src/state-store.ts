@@ -358,6 +358,21 @@ export class StateStore {
     }
   }
 
+  refreshMutationLock(id: string, lockedUntil: number, expectedGeneration?: number): void {
+    const sql = expectedGeneration !== undefined
+      ? `UPDATE workspaces
+         SET mutation_locked_until = MAX(COALESCE(mutation_locked_until, 0), ?)
+         WHERE id = ? AND generation = ? AND status = 'ACTIVE'`
+      : `UPDATE workspaces
+         SET mutation_locked_until = MAX(COALESCE(mutation_locked_until, 0), ?)
+         WHERE id = ?`;
+    if (expectedGeneration !== undefined) {
+      this.database.prepare(sql).run(lockedUntil, id, expectedGeneration);
+    } else {
+      this.database.prepare(sql).run(lockedUntil, id);
+    }
+  }
+
   clearMutationLock(id: string, expectedGeneration?: number): void {
     const sql = expectedGeneration !== undefined
       ? `UPDATE workspaces

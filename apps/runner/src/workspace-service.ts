@@ -88,6 +88,10 @@ export class WorkspaceService {
     private readonly githubBinding?: GitHubBindingService
   ) {
     this.instanceId = store.instanceId();
+    this.operations.onTaskStart = (wsId, timeoutMs) => {
+      const rec = this.store.byId(wsId);
+      if (rec) this.store.refreshMutationLock(rec.id, Date.now() + timeoutMs + 10_000, rec.generation);
+    };
     this.operations.onTaskSettle = (wsId) => {
       const rec = this.store.byId(wsId);
       if (rec) this.store.clearMutationLock(rec.id, rec.generation);
@@ -1522,20 +1526,29 @@ export class WorkspaceService {
     }
     if (operation === 'tasks_run') {
       const taskTimeout = (validated.timeoutMs as number) || 60_000;
-      const task = this.operations.runTask(
-        record.id,
-        record.containerName!,
-        validated.cwd as string,
-        validated.command as string,
-        validated.idempotencyKey as string,
-        validated.timeoutMs as number,
-        this.config.maxOutputBytes,
-        validated.dependsOn as string[]
-      );
-      if (task.created && (task.status === 'queued' || task.status === 'running')) {
+      const mapKey = `task:${record.id}:${validated.idempotencyKey as string}`;
+      const isNew = !this.operations.hasTaskKey(mapKey);
+      if (isNew) {
         this.store.setMutationLock(record.id, Date.now() + taskTimeout + 10_000, record.generation);
       }
-      return { ok: true, message: task.created ? 'Task started' : 'Idempotent task result', data: this.operations.view(task), truncated: false };
+      try {
+        const task = this.operations.runTask(
+          record.id,
+          record.containerName!,
+          validated.cwd as string,
+          validated.command as string,
+          validated.idempotencyKey as string,
+          validated.timeoutMs as number,
+          this.config.maxOutputBytes,
+          validated.dependsOn as string[]
+        );
+        return { ok: true, message: task.created ? 'Task started' : 'Idempotent task result', data: this.operations.view(task), truncated: false };
+      } catch (error) {
+        if (isNew) {
+          this.store.clearMutationLock(record.id, record.generation);
+        }
+        throw error;
+      }
     }
     if (operation === 'tasks_list') {
       const tasks = this.operations.listTasks(record.id);

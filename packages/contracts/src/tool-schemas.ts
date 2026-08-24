@@ -211,7 +211,7 @@ const schemas = {
       ...workspace,
       action: z.literal('issue_labels_add'),
       issueNumber: z.number().int().positive(),
-      labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label cannot contain null bytes')).min(1).max(50),
+      labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).min(1).max(50),
       createMissing: z.boolean().default(true),
       idempotencyKey: IdempotencyKeySchema.optional()
     }),
@@ -219,7 +219,7 @@ const schemas = {
       ...workspace,
       action: z.literal('issue_labels_remove'),
       issueNumber: z.number().int().positive(),
-      label: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label cannot contain null bytes')
+      label: z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')
     }),
     z.object({
       ...workspace,
@@ -242,8 +242,8 @@ const schemas = {
       action: z.literal('issue_publish'),
       issueNumber: z.number().int().positive(),
       comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
-      addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label cannot contain null bytes')).max(50).optional(),
-      removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label cannot contain null bytes')).max(50).optional(),
+      addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+      removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
       createMissingLabels: z.boolean().default(true),
       idempotencyKey: IdempotencyKeySchema.optional()
     }).superRefine((input, context) => {
@@ -251,11 +251,27 @@ const schemas = {
       const hasAdd = Boolean(input.addLabels && input.addLabels.length > 0);
       const hasRemove = Boolean(input.removeLabels && input.removeLabels.length > 0);
       if (!hasComment && !hasAdd && !hasRemove) {
-        context.addIssue({ code: 'custom', path: ['comment'], message: 'at least one of comment, addLabels, or removeLabels is required' });
+        context.addIssue({
+          code: 'custom',
+          path: ['comment'],
+          message: 'at least one of comment, addLabels, or removeLabels is required'
+        });
+      }
+      if (input.addLabels && input.removeLabels) {
+        const addSet = new Set(input.addLabels);
+        for (const label of input.removeLabels) {
+          if (addSet.has(label)) {
+            context.addIssue({
+              code: 'custom',
+              path: ['removeLabels'],
+              message: `label "${label}" cannot appear in both addLabels and removeLabels`
+            });
+          }
+        }
       }
     })
-  ])
-} satisfies Record<RunnerOperation, z.ZodType>;
+  ]),
+};
 
 export type ToolSpec = {
   name: RunnerOperation;

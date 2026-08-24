@@ -149,7 +149,6 @@ case "$action" in
     labels_added=""
     labels_removed=""
     comment_posted=false
-
     if [ "$create_missing" = "true" ] && [ -n "$add_labels" ]; then
       IFS=',' read -ra ADDR <<< "$add_labels"
       for label in "${ADDR[@]}"; do
@@ -160,24 +159,57 @@ case "$action" in
     fi
     if [ -n "$add_labels" ]; then
       if ! gh issue edit "$issue_number" --add-label "$add_labels" >/dev/null 2>&1; then
-        echo "{\"error\":\"failed to add labels\",\"step\":\"add_labels\",\"labelsCreated\":\"$labels_created\",\"issueNumber\":$issue_number}" >&2
+        jq -n \
+          --arg error "failed to add labels" \
+          --arg step "add_labels" \
+          --arg labelsCreated "$labels_created" \
+          --argjson issueNumber "$issue_number" \
+          '{ error: $error, step: $step, labelsCreated: $labelsCreated, issueNumber: $issueNumber }' >&2
         exit 1
       fi
       labels_added="$add_labels"
     fi
     if [ -n "$remove_labels" ]; then
+      if ! current_labels=$(gh issue view "$issue_number" --json labels --jq '.labels[].name' 2>&1); then
+        jq -n \
+          --arg error "failed to query issue labels: $current_labels" \
+          --arg step "query_labels" \
+          --arg labelsCreated "$labels_created" \
+          --arg labelsAdded "$labels_added" \
+          --argjson issueNumber "$issue_number" \
+          '{ error: $error, step: $step, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, issueNumber: $issueNumber }' >&2
+        exit 1
+      fi
       IFS=',' read -ra RADDR <<< "$remove_labels"
       for rlabel in "${RADDR[@]}"; do
-        if ! gh issue edit "$issue_number" --remove-label "$rlabel" >/dev/null 2>&1; then
-          echo "{\"error\":\"failed to remove label $rlabel\",\"step\":\"remove_labels\",\"failedLabel\":\"$rlabel\",\"labelsCreated\":\"$labels_created\",\"labelsAdded\":\"$labels_added\",\"labelsRemoved\":\"$labels_removed\",\"issueNumber\":$issue_number}" >&2
-          exit 1
+        if echo "$current_labels" | grep -Fxq "$rlabel"; then
+          if ! gh issue edit "$issue_number" --remove-label "$rlabel" >/dev/null 2>&1; then
+            jq -n \
+              --arg error "failed to remove label $rlabel" \
+              --arg step "remove_labels" \
+              --arg failedLabel "$rlabel" \
+              --arg labelsCreated "$labels_created" \
+              --arg labelsAdded "$labels_added" \
+              --arg labelsRemoved "$labels_removed" \
+              --argjson issueNumber "$issue_number" \
+              '{ error: $error, step: $step, failedLabel: $failedLabel, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, labelsRemoved: $labelsRemoved, issueNumber: $issueNumber }' >&2
+            exit 1
+          fi
         fi
         labels_removed="${labels_removed:+$labels_removed,}$rlabel"
       done
     fi
+    comment_url=""
     if [ -n "$comment" ]; then
-      if ! gh issue comment "$issue_number" --body "$comment" >/dev/null 2>&1; then
-        echo "{\"error\":\"failed to post comment\",\"step\":\"comment\",\"labelsCreated\":\"$labels_created\",\"labelsAdded\":\"$labels_added\",\"labelsRemoved\":\"$labels_removed\",\"issueNumber\":$issue_number}" >&2
+      if ! comment_url=$(gh issue comment "$issue_number" --body "$comment" 2>&1); then
+        jq -n \
+          --arg error "failed to post comment: $comment_url" \
+          --arg step "comment" \
+          --arg labelsCreated "$labels_created" \
+          --arg labelsAdded "$labels_added" \
+          --arg labelsRemoved "$labels_removed" \
+          --argjson issueNumber "$issue_number" \
+          '{ error: $error, step: $step, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, labelsRemoved: $labelsRemoved, issueNumber: $issueNumber }' >&2
         exit 1
       fi
       comment_posted=true
@@ -185,9 +217,16 @@ case "$action" in
 
     view_out=$(gh issue view "$issue_number" --json number,title,body,state,author,labels,comments,url 2>/dev/null || true)
     if [ -n "$view_out" ]; then
-      echo "$view_out"
+      echo "$view_out" | jq --arg commentUrl "$comment_url" '. + (if $commentUrl != "" then { commentUrl: $commentUrl } else {} end)'
     else
-      echo "{\"number\":$issue_number,\"published\":true,\"commentPosted\":$comment_posted,\"labelsCreated\":\"$labels_created\",\"labelsAdded\":\"$labels_added\",\"labelsRemoved\":\"$labels_removed\"}"
+      jq -n \
+        --argjson number "$issue_number" \
+        --argjson commentPosted "$comment_posted" \
+        --arg commentUrl "$comment_url" \
+        --arg labelsCreated "$labels_created" \
+        --arg labelsAdded "$labels_added" \
+        --arg labelsRemoved "$labels_removed" \
+        '{ number: $number, published: true, commentPosted: $commentPosted, commentUrl: $commentUrl, labelsCreated: $labelsCreated, labelsAdded: $labelsAdded, labelsRemoved: $labelsRemoved }'
     fi
     ;;
   *)
