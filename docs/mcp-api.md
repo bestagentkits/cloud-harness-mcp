@@ -41,19 +41,21 @@ The lifecycle contract is owned by
    optional ref, and a fresh idempotency key. To inject a retained dashboard
    environment, select its opaque ID and explicitly confirm the injection in
    the same request; omitting either injects nothing.
-2. Keep the returned opaque `workspaceId` and pass it to workspace-scoped
-   tools. Do not derive IDs or use filesystem paths as handles.
-3. Use bounded file and code-intelligence tools for inspection and edits. Use
-   `exec_run`, shells, sessions, or tasks only when arbitrary code execution is
-   intended.
-4. Read cursors and `truncated` instead of assuming a response is complete.
-5. Close shells and sessions, cancel unwanted tasks, then call
+2. Subsequent tool calls can omit `workspaceId` when exactly one active
+   workspace is open. The runner automatically resolves the active workspace,
+   or returns a structured `CONFLICT` ambiguity error if multiple exist.
+3. Use bounded file and code-intelligence tools for inspection and edits.
+   `files_write_batch` allows atomic multi-file creation with parent directory
+   scaffolding in one call.
+4. When ready to publish, use `workspace_finalize` to run preflights, stage,
+   commit, and push to origin in a single idempotent transaction.
+5. Read cursors and `truncated` or use `readAll: true` instead of assuming a response is complete.
+6. Close shells and sessions, cancel unwanted tasks, then call
    `workspace_close`.
 
-Reusing a `workspace_open`, `shell_open`, `sessions_open`, or `tasks_run`
-idempotency key returns the prior created resource for that workspace. This
-makes a lost response recoverable without duplicating work.
-
+Reusing a `workspace_open`, `shell_open`, `sessions_open`, `tasks_run`, or
+`workspace_finalize` idempotency key returns the prior created resource for that
+workspace. This makes a lost response recoverable without duplicating work.
 ## Semantics that are easy to misread
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
@@ -73,9 +75,25 @@ makes a lost response recoverable without duplicating work.
   runner terminates and verifies the operation's process groups; the workspace
   remains active for later calls.
 - `github_action` executes authenticated GitHub CLI actions (`pr_list`, `pr_view`,
-  `pr_create`, `issue_list`, `issue_view`, `issue_create`) through an ephemeral
-  helper container using short-lived tokens minted from the configured GitHub App.
-  Tokens are supplied exclusively via stdin and are never written to workspace files.
+  `pr_create`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
+  `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
+  `issue_update`) through an ephemeral helper container using short-lived tokens
+  minted from the configured GitHub App. Tokens are supplied exclusively via stdin
+  and are never written to workspace files. Comment and label mutations support
+  idempotency keys.
+- `files_write_batch` writes an array of files in a single atomic transaction. It
+  creates missing parent directories by default and verifies expected SHA256 hashes
+  prior to modifying any file. If any file fails validation or write, original files
+  are restored.
+- `workspace_finalize` provides a single transactional endpoint to stage changes,
+  run diff preflight checks, commit with workspace/owner default Git identity, and
+  push to remote. If a push is rejected or network fails, actionable resumption hints
+  and the created commit SHA are returned.
+- `workspace_lease_renew` and `workspace_recover` allow inspecting and extending
+  workspace idle leases or recovering unpushed commits and patches from active or
+  grace-period `EXPIRED_RECOVERABLE` workspaces.
+- `operation_status`, `operation_cancel`, and `operation_wait` provide observable,
+  cancellable, and reconnectable management of long-running operations.
 - `symbols_search` uses Universal Ctags to find definitions. It is not a
   language server. `symbols_references` is a bounded lexical word search, so it
   can include definitions and same-spelling identifiers rather than semantic

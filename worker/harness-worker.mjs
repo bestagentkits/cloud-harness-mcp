@@ -4,7 +4,9 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile 
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
-const ROOT = process.env.HARNESS_WORKSPACE_ROOT ? await realpath(process.env.HARNESS_WORKSPACE_ROOT) : '/workspace';
+function getWorkspaceRoot() {
+  return process.env.HARNESS_WORKSPACE_ROOT || process.env.CH_WORKSPACE_ROOT || '/workspace';
+}
 const MAX_INTERNAL_OUTPUT = 1_048_576;
 const MAX_DEPLOYMENTS_FILE_BYTES = 262_144;
 const MAX_DEPLOYMENTS = 100;
@@ -28,25 +30,51 @@ function ok(message, data, extra = {}) {
 async function safePath(input, allowMissing = false) {
   const normalized = input.replaceAll('\\', '/');
   if (normalized.startsWith('/') || normalized.split('/').includes('..') || /^[A-Za-z]:/.test(normalized) || normalized.includes('\0')) throw new Error('path escapes workspace');
-  const candidate = resolve(ROOT, normalized);
-  if (candidate !== ROOT && !candidate.startsWith(`${ROOT}${sep}`)) throw new Error('path escapes workspace');
+  const root = getWorkspaceRoot();
+  const candidate = resolve(root, normalized);
+  if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) throw new Error('path escapes workspace');
   if (!allowMissing) {
     const actual = await realpath(candidate);
-    if (actual !== ROOT && !actual.startsWith(`${ROOT}${sep}`)) throw new Error('symlink escapes workspace');
+    if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('symlink escapes workspace');
     return actual;
   }
   const parent = await realpath(dirname(candidate));
-  if (parent !== ROOT && !parent.startsWith(`${ROOT}${sep}`)) throw new Error('parent symlink escapes workspace');
+  if (parent !== root && !parent.startsWith(`${root}${sep}`)) throw new Error('parent symlink escapes workspace');
   return candidate;
 }
-
+async function safeBatchFilePath(input, allowMissingParent = false) {
+  const normalized = input.replaceAll('\\', '/');
+  if (normalized.startsWith('/') || normalized.split('/').includes('..') || /^[A-Za-z]:/.test(normalized) || normalized.includes('\0')) throw new Error('path escapes workspace');
+  const root = getWorkspaceRoot();
+  const candidate = resolve(root, normalized);
+  if (!candidate.startsWith(`${root}${sep}`)) throw new Error('path escapes workspace');
+  if (!allowMissingParent) {
+    const parent = await realpath(dirname(candidate));
+    if (parent !== root && !parent.startsWith(`${root}${sep}`)) throw new Error('parent symlink escapes workspace');
+    return candidate;
+  }
+  let ancestor = dirname(candidate);
+  while (ancestor.startsWith(root)) {
+    try {
+      const actual = await realpath(ancestor);
+      if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('ancestor symlink escapes workspace');
+      return candidate;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      if (ancestor === root) break;
+      ancestor = dirname(ancestor);
+    }
+  }
+  throw new Error('directory ancestor is unavailable');
+}
 async function safeEntryPath(input, allowMissing = false) {
   const normalized = input.replaceAll('\\', '/');
   if (normalized === '.' || normalized.startsWith('/') || normalized.split('/').includes('..') || /^[A-Za-z]:/.test(normalized) || normalized.includes('\0')) throw new Error('path escapes workspace');
-  const candidate = resolve(ROOT, normalized);
-  if (!candidate.startsWith(`${ROOT}${sep}`)) throw new Error('path escapes workspace');
+  const root = getWorkspaceRoot();
+  const candidate = resolve(root, normalized);
+  if (!candidate.startsWith(`${root}${sep}`)) throw new Error('path escapes workspace');
   const actualParent = await realpath(dirname(candidate));
-  if (actualParent !== ROOT && !actualParent.startsWith(`${ROOT}${sep}`)) throw new Error('parent symlink escapes workspace');
+  if (actualParent !== root && !actualParent.startsWith(`${root}${sep}`)) throw new Error('parent symlink escapes workspace');
   if (!allowMissing) await lstat(candidate);
   return join(actualParent, basename(candidate));
 }
@@ -54,17 +82,18 @@ async function safeEntryPath(input, allowMissing = false) {
 async function safeRecursiveCreatePath(input) {
   const normalized = input.replaceAll('\\', '/');
   if (normalized === '.' || normalized.startsWith('/') || normalized.split('/').includes('..') || /^[A-Za-z]:/.test(normalized) || normalized.includes('\0')) throw new Error('path escapes workspace');
-  const candidate = resolve(ROOT, normalized);
-  if (!candidate.startsWith(`${ROOT}${sep}`)) throw new Error('path escapes workspace');
+  const root = getWorkspaceRoot();
+  const candidate = resolve(root, normalized);
+  if (!candidate.startsWith(`${root}${sep}`)) throw new Error('path escapes workspace');
   let ancestor = dirname(candidate);
-  while (ancestor.startsWith(ROOT)) {
+  while (ancestor.startsWith(root)) {
     try {
       const actual = await realpath(ancestor);
-      if (actual !== ROOT && !actual.startsWith(`${ROOT}${sep}`)) throw new Error('ancestor symlink escapes workspace');
+      if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('ancestor symlink escapes workspace');
       return candidate;
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
-      if (ancestor === ROOT) break;
+      if (ancestor === root) break;
       ancestor = dirname(ancestor);
     }
   }
@@ -73,7 +102,7 @@ async function safeRecursiveCreatePath(input) {
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
-async function command(program, args, { cwd = ROOT, env = process.env, stdin, timeoutMs = 60_000, maxBytes = MAX_INTERNAL_OUTPUT } = {}) {
+async function command(program, args, { cwd = getWorkspaceRoot(), env = process.env, stdin, timeoutMs = 60_000, maxBytes = MAX_INTERNAL_OUTPUT } = {}) {
   return await new Promise((resolvePromise) => {
     const child = spawn(program, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     if (process.env.CH_OPERATION_PID_FILE) {
@@ -169,9 +198,32 @@ const handlers = {
   async files_read(input) {
     const target = await safePath(input.path);
     const value = await readFile(target);
-    const offset = input.offset ?? 0;
-    const end = Math.min(value.length, offset + (input.limit ?? 65_536));
-    return ok(`Read ${end - offset} bytes`, { path: input.path, content: value.subarray(offset, end).toString('utf8'), sha256: sha256(value), bytes: value.length }, end < value.length ? { truncated: true, cursor: String(end) } : {});
+    const totalBytes = value.length;
+    if (input.readAll) {
+      const maxReadAllBytes = 1_048_576;
+      const end = Math.min(totalBytes, maxReadAllBytes);
+      const isTruncated = totalBytes > maxReadAllBytes;
+      return ok(`Read ${end} bytes`, {
+        path: input.path,
+        content: value.subarray(0, end).toString('utf8'),
+        sha256: sha256(value),
+        bytesReturned: end,
+        totalBytes,
+        eof: !isTruncated
+      }, isTruncated ? { truncated: true, cursor: String(end) } : { truncated: false });
+    }
+    const offset = input.cursor !== undefined ? Number(input.cursor) : (input.offset ?? 0);
+    const limit = input.limit ?? 65_536;
+    const end = Math.min(totalBytes, offset + limit);
+    const isTruncated = end < totalBytes;
+    return ok(`Read ${end - offset} bytes`, {
+      path: input.path,
+      content: value.subarray(offset, end).toString('utf8'),
+      sha256: sha256(value),
+      bytesReturned: end - offset,
+      totalBytes,
+      eof: !isTruncated
+    }, isTruncated ? { truncated: true, cursor: String(end) } : { truncated: false });
   },
   async files_write(input) {
     const target = await safePath(input.path, true);
@@ -184,6 +236,110 @@ const handlers = {
     await writeFile(temporary, input.content, { mode: 0o600 });
     await rename(temporary, target);
     return ok('File written', { path: input.path, bytes: Buffer.byteLength(input.content), sha256: sha256(input.content) });
+  },
+  async files_write_batch(input) {
+    if (!Array.isArray(input.files) || input.files.length === 0) {
+      return fail('INVALID_INPUT', 'files array is required and cannot be empty');
+    }
+    const createParents = input.createParents !== false;
+    const atomic = input.atomic !== false;
+    const prepared = [];
+    const normalizedPaths = input.files.map((f) => f.path.replaceAll('\\', '/'));
+    for (let i = 0; i < normalizedPaths.length; i++) {
+      for (let j = 0; j < normalizedPaths.length; j++) {
+        if (i !== j && normalizedPaths[j].startsWith(`${normalizedPaths[i]}/`)) {
+          return fail('CONFLICT', `ancestor conflict: ${normalizedPaths[i]} is both a file and parent of ${normalizedPaths[j]}`);
+        }
+      }
+    }
+    for (const item of input.files) {
+      if (!item.path || typeof item.path !== 'string') return fail('INVALID_INPUT', 'invalid file path');
+      if (typeof item.content !== 'string') return fail('INVALID_INPUT', `content for ${item.path} must be string`);
+      let target;
+      try {
+        target = await safeBatchFilePath(item.path, createParents);
+      } catch {
+        return fail('INVALID_INPUT', `path ${item.path} escapes workspace`);
+      }
+      let existingContent = null;
+      let exists = false;
+      try {
+        existingContent = await readFile(target);
+        exists = true;
+      } catch (err) {
+        if (err?.code !== 'ENOENT') return fail('INTERNAL_ERROR', `failed to inspect ${item.path}`);
+      }
+      if (item.expectedSha256) {
+        if (!exists) return fail('CONFLICT', `target ${item.path} does not exist for expectedSha256`);
+        if (sha256(existingContent) !== item.expectedSha256) return fail('CONFLICT', `file ${item.path} changed since it was read`);
+      }
+      prepared.push({
+        path: item.path,
+        target,
+        content: item.content,
+        exists,
+        originalContent: existingContent,
+        parentDir: dirname(target)
+      });
+    }
+
+    const tempFiles = [];
+    const writtenResults = [];
+    let createdCount = 0;
+    let updatedCount = 0;
+
+    try {
+      for (let i = 0; i < prepared.length; i++) {
+        const item = prepared[i];
+        if (createParents) {
+          try {
+            await mkdir(item.parentDir, { recursive: true, mode: 0o700 });
+          } catch (err) {
+            if (err?.code !== 'EEXIST') throw err;
+          }
+        }
+        const tempPath = `${item.target}.cloud-harness-batch-${process.pid}-${i}.tmp`;
+        tempFiles.push({ tempPath, target: item.target, item });
+        await writeFile(tempPath, item.content, { mode: 0o600 });
+      }
+
+      for (const { tempPath, target, item } of tempFiles) {
+        await rename(tempPath, target);
+        const fileHash = sha256(item.content);
+        const status = item.exists ? 'updated' : 'created';
+        if (item.exists) updatedCount++;
+        else createdCount++;
+        writtenResults.push({
+          path: item.path,
+          sha256: fileHash,
+          bytes: Buffer.byteLength(item.content),
+          status
+        });
+      }
+    } catch (error) {
+      for (const { tempPath } of tempFiles) {
+        try { await rm(tempPath, { force: true }); } catch { /* temporary file cleanup */ }
+      }
+      if (atomic) {
+        for (const item of prepared) {
+          try {
+            if (item.exists) {
+              await writeFile(item.target, item.originalContent, { mode: 0o600 });
+            } else {
+              await rm(item.target, { force: true });
+            }
+          } catch { /* rollback error ignore */ }
+        }
+      }
+      return fail('INTERNAL_ERROR', error instanceof Error ? error.message : 'batch write failed');
+    }
+
+    return ok(`Batch wrote ${writtenResults.length} files (${createdCount} created, ${updatedCount} updated)`, {
+      createdCount,
+      updatedCount,
+      totalFiles: writtenResults.length,
+      files: writtenResults
+    });
   },
   async files_apply_patch(input) {
     const target = await safePath(input.path);
@@ -228,8 +384,9 @@ const handlers = {
     catch (error) {
       if (error?.code !== 'EEXIST' || !(await lstat(target)).isDirectory()) throw error;
     }
+    const root = getWorkspaceRoot();
     const actual = await realpath(target);
-    if (actual !== ROOT && !actual.startsWith(`${ROOT}${sep}`)) throw new Error('directory escapes workspace');
+    if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('directory escapes workspace');
     return ok('Directory created', { path: input.path });
   },
   async grep_search(input) {
@@ -256,7 +413,8 @@ const handlers = {
       try {
         const entry = JSON.parse(line);
         if (typeof entry.name !== 'string' || !entry.name.toLocaleLowerCase().includes(query)) continue;
-        const path = typeof entry.path === 'string' && entry.path.startsWith(`${ROOT}/`) ? entry.path.slice(ROOT.length + 1) : entry.path;
+        const root = getWorkspaceRoot();
+        const path = typeof entry.path === 'string' && entry.path.startsWith(`${root}/`) ? entry.path.slice(root.length + 1) : entry.path;
         symbols.push({ name: entry.name, path, line: entry.line, kind: entry.kind, language: entry.language, scope: entry.scope });
         if (symbols.length >= maxResults) break;
       } catch { /* ignore non-JSON diagnostic lines */ }
@@ -287,12 +445,40 @@ const handlers = {
     const args = ['diff', '--no-ext-diff', '--no-textconv'];
     if (input.staged) args.push('--cached');
     if (input.path) args.push('--', input.path);
-    const result = await git(args);
-    return ok('Git diff', { output: result.output, exitCode: result.exitCode }, { truncated: result.truncated });
+    const offset = input.cursor ? Number(input.cursor) : 0;
+    const limit = input.readAll ? 1_048_576 : (input.limit ?? 65_536);
+    const maxFetchBytes = Math.min(10_485_760, Math.max(65_536, offset + limit + 8_192));
+    const result = await git(args, { maxBytes: maxFetchBytes });
+    const buffer = Buffer.from(result.output, 'utf8');
+    const totalBytes = buffer.length;
+    const end = input.readAll ? totalBytes : Math.min(totalBytes, offset + limit);
+    const sliceBuffer = buffer.subarray(offset, end);
+    const sliceText = sliceBuffer.toString('utf8');
+    const isTruncated = result.truncated || end < totalBytes;
+    return ok('Git diff', {
+      output: sliceText,
+      exitCode: result.exitCode,
+      bytesReturned: sliceBuffer.length,
+      totalBytes,
+      eof: !isTruncated
+    }, isTruncated ? { truncated: true, cursor: String(end) } : { truncated: false });
   },
   async git_log(input) {
-    const result = await git(['log', `-${input.limit ?? 20}`, '--date=iso-strict', '--pretty=format:%H%x09%aI%x09%an%x09%s']);
-    return ok('Git log', { output: result.output, exitCode: result.exitCode }, { truncated: result.truncated });
+    const limit = input.readAll ? 500 : (input.limit ?? 20);
+    const offset = input.cursor ? Number(input.cursor) : 0;
+    const fetchCount = Math.min(501, offset + limit + 1);
+    const result = await git(['log', `-${fetchCount}`, '--date=iso-strict', '--pretty=format:%H%x09%aI%x09%an%x09%s']);
+    const lines = result.output.split('\n').filter(Boolean);
+    const pageLines = lines.slice(offset, offset + limit);
+    const hasMore = lines.length > offset + limit;
+    const nextCursor = hasMore ? String(offset + pageLines.length) : undefined;
+    return ok('Git log', {
+      output: pageLines.join('\n'),
+      exitCode: result.exitCode,
+      count: pageLines.length,
+      totalCount: lines.length,
+      eof: !hasMore
+    }, hasMore ? { truncated: true, cursor: nextCursor } : { truncated: false });
   },
   async git_branch(input) {
     let args;
@@ -318,8 +504,10 @@ const handlers = {
       const add = await git(['add', '--all']);
       if (add.exitCode !== 0) return fail('CONFLICT', add.output || 'Git add failed');
     }
-    const result = await git(['-c', `user.name=${input.authorName}`, '-c', `user.email=${input.authorEmail}`, 'commit', '--no-gpg-sign', '-m', input.message]);
-    return result.exitCode === 0 ? ok('Git commit created', { output: result.output }) : fail('CONFLICT', result.output || 'Git commit failed');
+    const authorName = input.authorName || process.env.GIT_AUTHOR_NAME || 'Cloud Harness Agent';
+    const authorEmail = input.authorEmail || process.env.GIT_AUTHOR_EMAIL || 'agent@cloud-harness.local';
+    const result = await git(['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 'commit', '--no-gpg-sign', '-m', input.message]);
+    return result.exitCode === 0 ? ok('Git commit created', { output: result.output, authorName, authorEmail }) : fail('CONFLICT', result.output || 'Git commit failed');
   },
   async git_fetch(input) {
     const result = await git(['fetch', '--no-tags', input.remote ?? 'origin', ...(input.refspec ? [input.refspec] : [])], { timeoutMs: 120_000 });
@@ -401,7 +589,7 @@ const handlers = {
     } catch { return fail('NOT_FOUND', 'memory not found'); }
   },
   async memories_write(input) {
-    const root = resolve(ROOT, '.cloud-harness/memories');
+    const root = resolve(getWorkspaceRoot(), '.cloud-harness/memories');
     await mkdir(root, { recursive: true });
     const target = await safePath(`.cloud-harness/memories/${input.name}.md`, true);
     await writeFile(target, input.content, { mode: 0o600 });
@@ -424,13 +612,25 @@ const handlers = {
   }
 };
 
+export async function executeWorkerRequest(operation, input = {}) {
+  const handler = handlers[operation];
+  if (!handler) return fail('INVALID_INPUT', `unsupported worker operation ${operation}`);
+  try {
+    return await handler(input);
+  } catch (error) {
+    return fail('INVALID_INPUT', error instanceof Error ? error.message : 'operation failed');
+  }
+}
+
 async function main() {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
   const request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  const handler = handlers[request.operation];
-  if (!handler) return fail('INVALID_INPUT', `unsupported worker operation ${request.operation}`);
-  try { return await handler(request.input ?? {}); } catch (error) { return fail('INVALID_INPUT', error instanceof Error ? error.message : 'operation failed'); }
+  return await executeWorkerRequest(request.operation, request.input ?? {});
 }
 
-process.stdout.write(JSON.stringify(await main()));
+export { handlers, fail, ok, safePath, sha256 };
+
+if (process.argv[1] && process.argv[1].endsWith('harness-worker.mjs') && process.env.VITEST !== 'true') {
+  main().then((res) => process.stdout.write(JSON.stringify(res)));
+}

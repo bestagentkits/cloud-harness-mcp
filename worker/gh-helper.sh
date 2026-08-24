@@ -59,6 +59,82 @@ case "$action" in
     fi
     exec gh issue create --title "$title" --body "$body"
     ;;
+  issue_comment)
+    issue_number="${1:-}"
+    body="${2:-}"
+    if [ -z "$issue_number" ] || [ -z "$body" ]; then
+      echo "Issue number and comment body required" >&2
+      exit 1
+    fi
+    exec gh issue comment "$issue_number" --body "$body"
+    ;;
+  issue_comment_update)
+    comment_id="${1:-}"
+    body="${2:-}"
+    if [ -z "$comment_id" ] || [ -z "$body" ]; then
+      echo "Comment ID and body required" >&2
+      exit 1
+    fi
+    exec gh api -X PATCH "repos/{owner}/{repo}/issues/comments/$comment_id" -f body="$body"
+    ;;
+  label_create)
+    name="${1:-}"
+    color="${2:-0E8A16}"
+    desc="${3:-}"
+    if [ -z "$name" ]; then
+      echo "Label name required" >&2
+      exit 1
+    fi
+    exec gh label create "$name" --color "$color" --description "$desc" --force
+    ;;
+  issue_labels_add)
+    issue_number="${1:-}"
+    labels="${2:-}"
+    create_missing="${3:-true}"
+    if [ -z "$issue_number" ] || [ -z "$labels" ]; then
+      echo "Issue number and labels required" >&2
+      exit 1
+    fi
+    if [ "$create_missing" = "true" ]; then
+      IFS=',' read -ra ADDR <<< "$labels"
+      for label in "${ADDR[@]}"; do
+        gh label create "$label" >/dev/null 2>&1 || true
+      done
+    fi
+    exec gh issue edit "$issue_number" --add-label "$labels"
+    ;;
+  issue_labels_remove)
+    issue_number="${1:-}"
+    label="${2:-}"
+    if [ -z "$issue_number" ] || [ -z "$label" ]; then
+      echo "Issue number and label required" >&2
+      exit 1
+    fi
+    exec gh issue edit "$issue_number" --remove-label "$label"
+    ;;
+  issue_update)
+    issue_number="${1:-}"
+    title="${2:-}"
+    body="${3:-}"
+    state="${4:-}"
+    state_reason="${5:-}"
+    if [ -z "$issue_number" ]; then
+      echo "Issue number required" >&2
+      exit 1
+    fi
+    cmd=(gh issue edit "$issue_number")
+    if [ -n "$title" ]; then cmd+=(--title "$title"); fi
+    if [ -n "$body" ]; then cmd+=(--body "$body"); fi
+    if [ -n "$state" ]; then
+      if [ "$state" = "closed" ]; then
+        cmd+=(--state "closed")
+        if [ -n "$state_reason" ]; then cmd+=(--reason "$state_reason"); fi
+      elif [ "$state" = "open" ]; then
+        cmd+=(--state "open")
+      fi
+    fi
+    exec "${cmd[@]}"
+    ;;
   *)
     echo "Unsupported or forbidden GitHub action: $action" >&2
     exit 1

@@ -102,6 +102,54 @@ Terminate the executor and remove the workspace directory.
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
 -->
 
+<!-- cloudharness-tool:workspace_lease_renew -->
+### `workspace_lease_renew`
+
+Explicitly renew the active workspace idle lease.
+
+- Optional: `workspaceId`, `extensionSeconds` (60–86,400).
+- Returns refreshed lease metadata with remaining lease time.
+
+<!-- cloudharness-example:workspace_lease_renew
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","extensionSeconds":3600}
+-->
+
+<!-- cloudharness-tool:workspace_recover -->
+### `workspace_recover`
+
+Inspect or recover unpushed commits and working tree from an active or recoverable expired workspace.
+
+- Optional: `workspaceId`, `mode` (`status`, `patch`, or `export`), `targetBranch`.
+- Returns recovery status, unpushed patch, or branch recovery details.
+
+<!-- cloudharness-example:workspace_recover
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","mode":"status"}
+-->
+
+<!-- cloudharness-tool:workspace_context -->
+### `workspace_context`
+
+Read compact active workspace overview, branch, remaining lease, and Git identity.
+
+- Optional: `workspaceId`.
+- Returns active workspace ID, repository URL, current branch, remaining lease time, and default Git author.
+
+<!-- cloudharness-example:workspace_context
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
+<!-- cloudharness-tool:workspace_set_active -->
+### `workspace_set_active`
+
+Set the preferred active workspace for subsequent calls that omit `workspaceId`.
+
+- Required: `workspaceId`.
+- Returns confirmation and updated active workspace context.
+
+<!-- cloudharness-example:workspace_set_active
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
 ## Lifecycle details
 
 - Active workspace calls refresh idle expiry but cannot extend beyond the

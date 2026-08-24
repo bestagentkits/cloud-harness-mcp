@@ -33,11 +33,14 @@ export type WorkspaceRecord = {
   repositoryRef: string | null;
   containerName: string | null;
   workspacePath: string;
-  status: 'CREATING' | 'ACTIVE' | 'REAPING' | 'CLOSED' | 'FAILED';
+  status: 'CREATING' | 'ACTIVE' | 'REAPING' | 'CLOSED' | 'FAILED' | 'EXPIRED_RECOVERABLE';
   networkMode: 'none' | 'bridge';
   createdAt: number;
   lastActivityAt: number;
   expiresAt: number;
+  hardExpiresAt: number;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   generation: number;
   error: string | null;
 };
@@ -86,14 +89,18 @@ const fromPrivilegeGrantRow = (row: PrivilegeGrantRow): PrivilegeGrantRecord => 
 type Row = {
   id: string; owner_id: string; idempotency_key: string; repository_url: string; repository_ref: string | null;
   container_name: string | null; workspace_path: string; status: WorkspaceRecord['status']; network_mode: 'none' | 'bridge';
-  created_at: number; last_activity_at: number; expires_at: number; generation: number; error: string | null;
+  created_at: number; last_activity_at: number; expires_at: number; hard_expires_at?: number | null;
+  git_author_name?: string | null; git_author_email?: string | null;
+  generation: number; error: string | null;
 };
 
 const fromRow = (row: Row): WorkspaceRecord => ({
   id: row.id, ownerId: row.owner_id, idempotencyKey: row.idempotency_key, repositoryUrl: row.repository_url,
   repositoryRef: row.repository_ref, containerName: row.container_name, workspacePath: row.workspace_path,
   status: row.status, networkMode: row.network_mode, createdAt: row.created_at, lastActivityAt: row.last_activity_at,
-  expiresAt: row.expires_at, generation: row.generation, error: row.error
+  expiresAt: row.expires_at, hardExpiresAt: row.hard_expires_at ?? (row.created_at + 14_400_000),
+  gitAuthorName: row.git_author_name ?? null, gitAuthorEmail: row.git_author_email ?? null,
+  generation: row.generation, error: row.error
 });
 
 export class StateStore {
@@ -131,6 +138,23 @@ export class StateStore {
       );
       CREATE INDEX IF NOT EXISTS privilege_grants_owner_workspace ON privilege_grants(owner_id, workspace_id);
     `);
+    const cols = (this.database.prepare('PRAGMA table_info(workspaces)').all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes('hard_expires_at')) {
+      this.database.exec('ALTER TABLE workspaces ADD COLUMN hard_expires_at INTEGER;');
+    }
+    if (!cols.includes('git_author_name')) {
+      this.database.exec('ALTER TABLE workspaces ADD COLUMN git_author_name TEXT;');
+    }
+    if (!cols.includes('git_author_email')) {
+      this.database.exec('ALTER TABLE workspaces ADD COLUMN git_author_email TEXT;');
+    }
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS preferred_workspaces (owner_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS git_identities (owner_id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS comment_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
+      CREATE TABLE IF NOT EXISTS finalize_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
+      CREATE TABLE IF NOT EXISTS batch_write_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
+    `);
     migratePrincipalSchema(this.database);
     this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
       .run('runner_instance_id', randomBytes(18).toString('hex'));
@@ -144,11 +168,28 @@ export class StateStore {
 
   create(record: WorkspaceRecord): void {
     this.database.prepare(`INSERT INTO workspaces
-      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, generation, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(record.id, record.ownerId, record.idempotencyKey, record.repositoryUrl, record.repositoryRef, record.containerName, record.workspacePath, record.status, record.networkMode, record.createdAt, record.lastActivityAt, record.expiresAt, record.generation, record.error);
+      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, generation, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        record.id,
+        record.ownerId,
+        record.idempotencyKey,
+        record.repositoryUrl,
+        record.repositoryRef ?? null,
+        record.containerName ?? null,
+        record.workspacePath,
+        record.status,
+        record.networkMode,
+        record.createdAt,
+        record.lastActivityAt,
+        record.expiresAt,
+        record.hardExpiresAt ?? (record.createdAt + 14_400_000),
+        record.gitAuthorName ?? null,
+        record.gitAuthorEmail ?? null,
+        record.generation,
+        record.error ?? null
+      );
   }
-
   byId(id: string): WorkspaceRecord | undefined {
     const row = this.database.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as Row | undefined;
     return row ? fromRow(row) : undefined;
@@ -206,14 +247,109 @@ export class StateStore {
   active(): WorkspaceRecord[] {
     return (this.database.prepare("SELECT * FROM workspaces WHERE status IN ('CREATING','ACTIVE','REAPING')").all() as Row[]).map(fromRow);
   }
-
-  update(id: string, changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'generation' | 'error'>>): WorkspaceRecord {
+  update(id: string, changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'hardExpiresAt' | 'gitAuthorName' | 'gitAuthorEmail' | 'generation' | 'error'>>): WorkspaceRecord {
     const current = this.byId(id);
     if (!current) throw new Error(`workspace ${id} missing`);
     const next = { ...current, ...changes };
-    this.database.prepare('UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, generation=?, error=? WHERE id=?')
-      .run(next.containerName, next.status, next.lastActivityAt, next.expiresAt, next.generation, next.error, id);
+    this.database.prepare('UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, hard_expires_at=?, git_author_name=?, git_author_email=?, generation=?, error=? WHERE id=?')
+      .run(
+        next.containerName ?? null,
+        next.status,
+        next.lastActivityAt,
+        next.expiresAt,
+        next.hardExpiresAt ?? (next.createdAt + 14_400_000),
+        next.gitAuthorName ?? null,
+        next.gitAuthorEmail ?? null,
+        next.generation,
+        next.error ?? null,
+        id
+      );
     return next;
+  }
+
+  setPreferredWorkspace(ownerId: string, workspaceId: string): void {
+    this.database.prepare('INSERT INTO preferred_workspaces(owner_id, workspace_id) VALUES (?, ?) ON CONFLICT(owner_id) DO UPDATE SET workspace_id = excluded.workspace_id')
+      .run(ownerId, workspaceId);
+  }
+
+  getPreferredWorkspace(ownerId: string): string | undefined {
+    const row = this.database.prepare('SELECT workspace_id FROM preferred_workspaces WHERE owner_id = ?').get(ownerId) as { workspace_id: string } | undefined;
+    return row?.workspace_id;
+  }
+
+  setGitIdentity(ownerId: string, identity: { name: string; email: string }): void {
+    this.database.prepare('INSERT INTO git_identities(owner_id, name, email) VALUES (?, ?, ?) ON CONFLICT(owner_id) DO UPDATE SET name = excluded.name, email = excluded.email')
+      .run(ownerId, identity.name, identity.email);
+  }
+
+  getGitIdentity(ownerId: string): { name: string; email: string } | undefined {
+    const row = this.database.prepare('SELECT name, email FROM git_identities WHERE owner_id = ?').get(ownerId) as { name: string; email: string } | undefined;
+    return row ? { name: row.name, email: row.email } : undefined;
+  }
+
+  getCommentIdempotency(ownerId: string, key: string): string | undefined {
+    const row = this.database.prepare('SELECT result_json FROM comment_idempotency WHERE owner_id = ? AND idempotency_key = ?').get(ownerId, key) as { result_json: string } | undefined;
+    return row?.result_json;
+  }
+
+  setCommentIdempotency(ownerId: string, key: string, resultJson: string): void {
+    this.database.prepare('INSERT OR REPLACE INTO comment_idempotency(owner_id, idempotency_key, result_json, created_at) VALUES (?, ?, ?, ?)')
+      .run(ownerId, key, resultJson, Date.now());
+  }
+
+  getFinalizeIdempotency(ownerId: string, workspaceId: string, key: string): string | undefined {
+    const row = this.database.prepare('SELECT result_json FROM finalize_idempotency WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?').get(ownerId, workspaceId, key) as { result_json: string } | undefined;
+    return row?.result_json;
+  }
+
+  setFinalizeIdempotency(ownerId: string, workspaceId: string, key: string, resultJson: string): void {
+    this.database.prepare('INSERT OR REPLACE INTO finalize_idempotency(owner_id, workspace_id, idempotency_key, result_json, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(ownerId, workspaceId, key, resultJson, Date.now());
+  }
+
+  getBatchWriteIdempotency(ownerId: string, workspaceId: string, key: string): string | undefined {
+    const row = this.database.prepare('SELECT result_json FROM batch_write_idempotency WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?').get(ownerId, workspaceId, key) as { result_json: string } | undefined;
+    return row?.result_json;
+  }
+
+  setBatchWriteIdempotency(ownerId: string, workspaceId: string, key: string, resultJson: string): void {
+    this.database.prepare('INSERT OR REPLACE INTO batch_write_idempotency(owner_id, workspace_id, idempotency_key, result_json, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(ownerId, workspaceId, key, resultJson, Date.now());
+  }
+
+  resolveActiveWorkspace(ownerId: string, explicitId?: string): WorkspaceRecord {
+    if (explicitId) {
+      const record = this.byOwnerAndId(ownerId, explicitId);
+      if (!record) throw new Error('NOT_FOUND');
+      return record;
+    }
+    const activeWorkspaces = this.list(ownerId).filter((w) => w.status === 'ACTIVE' || w.status === 'CREATING');
+    const preferred = this.getPreferredWorkspace(ownerId);
+    if (preferred) {
+      const record = this.byOwnerAndId(ownerId, preferred);
+      if (record && (record.status === 'ACTIVE' || record.status === 'CREATING')) {
+        return record;
+      }
+    }
+    const firstActive = activeWorkspaces[0];
+    if (activeWorkspaces.length === 1 && firstActive) {
+      return firstActive;
+    }
+    if (activeWorkspaces.length === 0) {
+      if (preferred) {
+        const record = this.byOwnerAndId(ownerId, preferred);
+        if (record && record.status === 'EXPIRED_RECOVERABLE') {
+          return record;
+        }
+      }
+      const recoverable = this.list(ownerId).filter((w) => w.status === 'EXPIRED_RECOVERABLE');
+      const firstRecoverable = recoverable[0];
+      if (recoverable.length === 1 && firstRecoverable) {
+        return firstRecoverable;
+      }
+      throw new Error('NO_ACTIVE_WORKSPACE');
+    }
+    throw new Error('AMBIGUOUS_ACTIVE_WORKSPACES');
   }
 
   updateFenced(
@@ -233,7 +369,7 @@ export class StateStore {
   }
 
   claimForReaping(id: string, generation: number): boolean {
-    const result = this.database.prepare("UPDATE workspaces SET status='REAPING', generation=generation+1 WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED')").run(id, generation);
+    const result = this.database.prepare("UPDATE workspaces SET status='REAPING', generation=generation+1 WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE')").run(id, generation);
     return result.changes === 1;
   }
   createPrivilegeGrant(input: { ownerId: string; workspaceId: string; command: string; cwd?: string; ttlMs?: number }): PrivilegeGrantRecord {
