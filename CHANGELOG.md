@@ -1,3 +1,10 @@
+## [0.21.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.21.0...v0.21.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **runner:** ensure large recovery buffer sizing, rootfs read-only protection, and server-owned async signals ([#97](https://github.com/bestagentkits/cloud-harness-mcp/issues/97)) ([b450ee9](https://github.com/bestagentkits/cloud-harness-mcp/commit/b450ee9790e0231fc565d6a24a899ccd36a723e8))
+
 # [0.21.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.20.0...v0.21.0) (2026-08-24)
 
 
