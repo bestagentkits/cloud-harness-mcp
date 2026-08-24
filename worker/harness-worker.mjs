@@ -596,10 +596,15 @@ const handlers = {
     } catch { return fail('NOT_FOUND', 'memory not found'); }
   },
   async memories_write(input) {
-    const root = resolve(getWorkspaceRoot(), '.cloud-harness/memories');
-    await mkdir(root, { recursive: true });
-    const target = await safePath(`.cloud-harness/memories/${input.name}.md`, true);
-    const temporary = join(root, `.tmp-mem-${input.name}-${process.pid}-${randomBytes(8).toString('hex')}.tmp`);
+    const memoryDir = await safeRecursiveCreatePath('.cloud-harness/memories');
+    await mkdir(memoryDir, { recursive: true, mode: 0o700 });
+    const root = getWorkspaceRoot();
+    const actualMemDir = await realpath(memoryDir);
+    if (actualMemDir !== root && !actualMemDir.startsWith(`${root}${sep}`)) {
+      throw new Error('memory directory escapes workspace');
+    }
+    const target = await safeEntryPath(`.cloud-harness/memories/${input.name}.md`, true);
+    const temporary = join(actualMemDir, `.tmp-mem-${input.name}-${process.pid}-${randomBytes(8).toString('hex')}.tmp`);
     await writeFile(temporary, input.content, { mode: 0o600 });
     await rename(temporary, target);
     return ok('Memory written', { name: input.name, bytes: Buffer.byteLength(input.content) });

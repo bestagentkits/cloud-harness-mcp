@@ -113,6 +113,24 @@ describe('LocalPathPolicy', () => {
     }
   });
 
+  it('detects ancestor symlink escape with safeRecursiveCreatePath', async () => {
+    const outsideDir = join(tmpdir(), `ch-outside-ancestor-${Date.now()}`);
+    await mkdir(outsideDir, { recursive: true });
+
+    const linkPath = join(canonicalRoot, '.cloud-harness');
+    try {
+      await symlink(outsideDir, linkPath);
+      await expect(policy.safeRecursiveCreatePath('.cloud-harness/memories')).rejects.toThrow('ancestor symlink escapes workspace');
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw err;
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   it('validates safeCwd defaulting to root and checking subdirectories', async () => {
     expect(await policy.safeCwd()).toBe(canonicalRoot);
     expect(await policy.safeCwd('.')).toBe(canonicalRoot);

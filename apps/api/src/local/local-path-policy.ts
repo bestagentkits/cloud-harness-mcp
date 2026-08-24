@@ -85,6 +85,34 @@ export class LocalPathPolicy {
     return join(actualParent, basename(candidate));
   }
 
+  async safeRecursiveCreatePath(input: string): Promise<string> {
+    const normalized = input.replaceAll('\\', '/');
+    if (normalized === '.' || !this.isLexicallySafe(normalized)) {
+      throw new Error('path escapes workspace');
+    }
+    const candidate = resolve(this.canonicalRoot, normalized);
+    if (!candidate.startsWith(`${this.canonicalRoot}${sep}`)) {
+      throw new Error('path escapes workspace');
+    }
+    let ancestor = dirname(candidate);
+    while (ancestor.startsWith(this.canonicalRoot)) {
+      try {
+        const actual = await realpath(ancestor);
+        if (actual !== this.canonicalRoot && !actual.startsWith(`${this.canonicalRoot}${sep}`)) {
+          throw new Error('ancestor symlink escapes workspace');
+        }
+        return candidate;
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+          throw error;
+        }
+        if (ancestor === this.canonicalRoot) break;
+        ancestor = dirname(ancestor);
+      }
+    }
+    throw new Error('directory ancestor is unavailable');
+  }
+
   async safeCwd(inputCwd?: string): Promise<string> {
     if (!inputCwd || inputCwd === '.' || inputCwd === './') {
       return this.canonicalRoot;

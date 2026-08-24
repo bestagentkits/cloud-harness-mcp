@@ -1,4 +1,5 @@
-import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -263,5 +264,31 @@ describe('LocalWorkspaceBackend', () => {
     expect(memListRes.ok).toBe(true);
     const memListData = memListRes.data as { memories: string[] };
     expect(memListData.memories).toContain('test-memory');
+  });
+
+  it('rejects memories_write when .cloud-harness is a symlink pointing outside the workspace', async () => {
+    const outsideDir = join(tmpdir(), `ch-outside-mem-${Date.now()}`);
+    await mkdir(outsideDir, { recursive: true });
+
+    const linkPath = join(canonicalRoot, '.cloud-harness');
+    try {
+      await symlink(outsideDir, linkPath);
+      const writeRes = await backend.call('memories_write', {
+        workspaceId: backend.workspaceId,
+        name: 'escape-attempt',
+        content: 'should not be written outside'
+      });
+      expect(writeRes.ok).toBe(false);
+      expect(writeRes.message).toMatch(/escapes workspace/);
+      expect(existsSync(join(outsideDir, 'memories'))).toBe(false);
+      expect(existsSync(join(outsideDir, 'memories', 'escape-attempt.md'))).toBe(false);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw err;
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
   });
 });
