@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { chmod, chown, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
   InternalRunnerRequestSchema,
@@ -1571,23 +1571,30 @@ export class WorkspaceService {
   }
 
   private async safeRemovePath(path: string): Promise<void> {
+    const root = resolve(this.config.jobsRoot);
     const target = resolve(path);
-    if (!target.startsWith(`${resolve(this.config.jobsRoot)}${sep}`)) {
-      throw new Error(`path ${path} is outside jobsRoot ${this.config.jobsRoot}`);
+    if (target === root || !target.startsWith(`${root}${sep}`) || relative(root, target).startsWith('..')) throw new Error('refusing unsafe workspace cleanup path');
+    try {
+      const actualRoot = await realpath(root);
+      const actualTarget = await realpath(target);
+      if (!actualTarget.startsWith(`${actualRoot}${sep}`)) throw new Error('workspace cleanup path escaped jobs root');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     try {
       await rm(target, { recursive: true, force: true, maxRetries: 3 });
     } catch (error) {
-      if ((error as { code?: string })?.code === 'ENOENT') return;
-      const helperName = `chm-rm-${randomBytes(8).toString('hex')}`;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EACCES' && code !== 'EPERM') throw error;
+      const helperName = `chm-clean-${randomBytes(8).toString('hex')}`;
       const cleaned = await runDocker([
         'run', '--rm', '--pull', 'never', '--name', helperName,
         '--label', 'cloud-harness.role=cleanup-helper', '--label', 'cloud-harness.ephemeral=true',
-        '--label', `cloud-harness.instance=${this.instanceId}`,
-        '--network', 'none', '--user', '0:0',
-        '--volume', `${target}:/target`,
-        '--entrypoint', '/bin/sh', this.config.executorImage,
-        '-c', 'chmod -R u+rwX /target 2>/dev/null || true'
+        '--label', `cloud-harness.instance=${this.instanceId}`, '--network', 'none', '--user', '0:0',
+        '--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
+        '--pids-limit', '32', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25',
+        '--volume', `${target}:/target:rw`, '--entrypoint', '/usr/bin/find', this.config.executorImage,
+        '/target', '-mindepth', '1', '-delete'
       ], { timeoutMs: 30_000, maxBytes: 65_536 });
       if (cleaned.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'workspace permissions could not be normalized for cleanup', 503, true);
       await rm(target, { recursive: true, force: true, maxRetries: 3 });
