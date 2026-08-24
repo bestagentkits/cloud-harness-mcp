@@ -53,3 +53,26 @@ For environments using static headers, configure `claude_desktop_config.json`:
 ```
 
 Restart Claude Desktop and check the tool availability in your chat view.
+
+---
+
+## Option 3: Local Stdio Mode (Direct Folder Access)
+
+To operate directly on a local project directory without remote cloud hosting, configure `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "cloud_harness_local": {
+      "command": "node",
+      "args": [
+        "/path/to/cloud-harness-mcp/apps/api/dist/index.js",
+        "--transport",
+        "stdio",
+        "--workspace",
+        "/absolute/path/to/project"
+      ]
+    }
+  }
+}
+```

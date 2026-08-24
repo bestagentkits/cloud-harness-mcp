@@ -34,6 +34,10 @@ URLs, or raw command content into tickets or shared logs.
 | `415 unsupported_media_type` | An MCP POST was not JSON. Use an MCP Streamable HTTP client. |
 | `429 rate_limited` | The process-local request window or active-request bound was exceeded. Wait for `Retry-After`; investigate stuck/parallel clients before restarting. |
 | Public `/healthz` works but `/readyz` is 503 | API is up but cannot reach the runner. Inspect the Compose runner health, internal network, and matching `RUNNER_TOKEN`. |
+| Local stdio: `--workspace path is not a directory` or `must be absolute` | Stdio mode requires an existing directory and an absolute path format (e.g. `/home/user/project` or `/path/to/repo`). Check the `--workspace` parameter. |
+| Local stdio: Windows platform notice | Local stdio v1 currently supports POSIX platforms (Linux and macOS) due to POSIX process-group semantics. On Windows, run the command within WSL (Windows Subsystem for Linux) or use Cloud Harness over Streamable HTTP. |
+| Local stdio: `workspace_open is unsupported in local stdio mode` | In local stdio mode, the workspace is already selected and pre-opened at startup. Do not call `workspace_open`; proceed directly to file, search, exec, session, or Git tools using the active workspace ID. |
+| Local stdio: `network Git operations are disabled` or `Git push operations are disabled` | In local mode, remote network fetch/pull and push are disabled by default. Pass `--git-network` to enable network fetch/pull, and `--git-push` to enable push. |
 
 The request policy is owned by
 [`apps/api/src/request-security.ts`](../apps/api/src/request-security.ts) and
