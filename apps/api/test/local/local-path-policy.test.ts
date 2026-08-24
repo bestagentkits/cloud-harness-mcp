@@ -93,6 +93,26 @@ describe('LocalPathPolicy', () => {
     }
   });
 
+  it('detects symlink escape even when allowMissing is true if target symlink exists', async () => {
+    const outsideDir = join(tmpdir(), `ch-outside-missing-${Date.now()}`);
+    await mkdir(outsideDir, { recursive: true });
+    const outsideFile = join(outsideDir, 'secret.txt');
+    await writeFile(outsideFile, 'secret content');
+
+    const linkPath = join(canonicalRoot, 'escape-link-missing');
+    try {
+      await symlink(outsideFile, linkPath);
+      await expect(policy.safePath('escape-link-missing', true)).rejects.toThrow('symlink escapes workspace');
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw err;
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   it('validates safeCwd defaulting to root and checking subdirectories', async () => {
     expect(await policy.safeCwd()).toBe(canonicalRoot);
     expect(await policy.safeCwd('.')).toBe(canonicalRoot);

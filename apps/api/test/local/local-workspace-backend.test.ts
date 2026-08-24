@@ -240,4 +240,28 @@ describe('LocalWorkspaceBackend', () => {
     const readPatchedData = FileReadDataSchema.parse(readPatched.data);
     expect(readPatchedData.content).toBe('updated content');
   });
+
+  it('supports memories_write, memories_read, and memories_list', async () => {
+    const memWriteRes = await backend.call('memories_write', {
+      workspaceId: backend.workspaceId,
+      name: 'test-memory',
+      content: 'durable context to remember'
+    });
+    expect(memWriteRes.ok).toBe(true);
+
+    const memReadRes = await backend.call('memories_read', {
+      workspaceId: backend.workspaceId,
+      name: 'test-memory'
+    });
+    expect(memReadRes.ok).toBe(true);
+    const memData = memReadRes.data as { name: string; content: string };
+    expect(memData.content).toBe('durable context to remember');
+
+    const memListRes = await backend.call('memories_list', {
+      workspaceId: backend.workspaceId
+    });
+    expect(memListRes.ok).toBe(true);
+    const memListData = memListRes.data as { memories: string[] };
+    expect(memListData.memories).toContain('test-memory');
+  });
 });

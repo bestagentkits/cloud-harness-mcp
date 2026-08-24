@@ -50,6 +50,19 @@ export class LocalPathPolicy {
     if (parent !== this.canonicalRoot && !parent.startsWith(`${this.canonicalRoot}${sep}`)) {
       throw new Error('parent symlink escapes workspace');
     }
+    try {
+      const actual = await realpath(candidate);
+      if (actual !== this.canonicalRoot && !actual.startsWith(`${this.canonicalRoot}${sep}`)) {
+        throw new Error('symlink escapes workspace');
+      }
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.includes('escapes workspace')) {
+        throw error;
+      }
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
     return candidate;
   }
 

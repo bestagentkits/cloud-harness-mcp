@@ -41,6 +41,12 @@ async function safePath(input, allowMissing = false) {
   }
   const parent = await realpath(dirname(candidate));
   if (parent !== root && !parent.startsWith(`${root}${sep}`)) throw new Error('parent symlink escapes workspace');
+  try {
+    const actual = await realpath(candidate);
+    if (actual !== root && !actual.startsWith(`${root}${sep}`)) throw new Error('symlink escapes workspace');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
   return candidate;
 }
 async function safeBatchFilePath(input, allowMissingParent = false) {
@@ -233,7 +239,7 @@ const handlers = {
       try { current = await readFile(target); } catch { return fail('CONFLICT', 'target does not exist for expectedSha256'); }
       if (sha256(current) !== input.expectedSha256) return fail('CONFLICT', 'file changed since it was read');
     }
-    const temporary = `${target}.cloud-harness-${process.pid}.tmp`;
+    const temporary = `${target}.cloud-harness-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
     await writeFile(temporary, input.content, { mode: 0o600 });
     await rename(temporary, target);
     return ok('File written', { path: input.path, bytes: Buffer.byteLength(input.content), sha256: sha256(input.content) });
@@ -593,7 +599,9 @@ const handlers = {
     const root = resolve(getWorkspaceRoot(), '.cloud-harness/memories');
     await mkdir(root, { recursive: true });
     const target = await safePath(`.cloud-harness/memories/${input.name}.md`, true);
-    await writeFile(target, input.content, { mode: 0o600 });
+    const temporary = join(root, `.tmp-mem-${input.name}-${process.pid}-${randomBytes(8).toString('hex')}.tmp`);
+    await writeFile(temporary, input.content, { mode: 0o600 });
+    await rename(temporary, target);
     return ok('Memory written', { name: input.name, bytes: Buffer.byteLength(input.content) });
   },
   async deployments_list() {
