@@ -1,3 +1,10 @@
+# [0.21.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.20.0...v0.21.0) (2026-08-24)
+
+
+### Features
+
+* **ux:** implement atomic batch writes, finalize, lease recovery, and extended operations ([#96](https://github.com/bestagentkits/cloud-harness-mcp/issues/96)) ([5e338a6](https://github.com/bestagentkits/cloud-harness-mcp/commit/5e338a6a08b7941322a0d0b61710958df622d219)), closes [#88](https://github.com/bestagentkits/cloud-harness-mcp/issues/88) [#89](https://github.com/bestagentkits/cloud-harness-mcp/issues/89) [#90](https://github.com/bestagentkits/cloud-harness-mcp/issues/90) [#91](https://github.com/bestagentkits/cloud-harness-mcp/issues/91) [#92](https://github.com/bestagentkits/cloud-harness-mcp/issues/92) [#93](https://github.com/bestagentkits/cloud-harness-mcp/issues/93) [#94](https://github.com/bestagentkits/cloud-harness-mcp/issues/94)
+
 # [0.20.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.19.2...v0.20.0) (2026-08-24)
 
 
