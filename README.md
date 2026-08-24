@@ -111,6 +111,97 @@ write access; clone/fetch/pull need read access. See
 Start with the normal workflow in [MCP usage](docs/mcp-api.md#normal-workflow)
 for lifecycle, cursor, network, and Git-transfer semantics.
 
+## Local stdio workspace mode
+
+In addition to the remote HTTP/Docker service, Cloud Harness MCP can operate directly against an explicitly selected project folder on your local machine over **stdio transport**.
+
+```bash
+# Start local stdio server for a project:
+cloud-harness-mcp --transport stdio --workspace /path/to/project
+```
+
+In local mode:
+
+- The configured folder behaves as an already-opened workspace (with an opaque `workspaceId`). `workspace_open` is not required.
+- File operations, patches, grep search, symbol search, sessions, tasks, and local Git tools operate directly on the folder.
+- `workspace_close` terminates owned child processes and tasks but **never deletes your local project folder**.
+- Tool paths and working directories are strictly confined within the workspace root.
+- Commands (`exec_run`, shells, tasks) execute with host-user permissions. File path confinement is not an OS sandbox.
+- Network Git (`git_fetch`, `git_pull`) and Git push (`git_push`) are disabled by default and require explicit startup opt-in flags (`--git-network`, `--git-push`).
+- v1 supports POSIX (Linux and macOS); Windows process semantics are a documented follow-up (use WSL on Windows).
+
+### CLI options
+
+| Option | Description |
+|---|---|
+| `--transport <http\|stdio>` | Select transport protocol: `http` (default) or `stdio` |
+| `--workspace <path>` | Absolute path to the local project folder (required for stdio) |
+| `--git-network` | Enable network Git operations (`git_fetch`, `git_pull`) |
+| `--git-push` | Enable Git push (`git_push`, implies `--git-network`) |
+| `--env <NAME>` | Forward additional host environment variable (repeatable) |
+| `-h, --help` | Display help message |
+| `-v, --version` | Display version information |
+
+### Configuring local stdio in AI clients
+
+#### Claude Desktop
+
+In `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `~/.config/Claude/claude_desktop_config.json` (Linux):
+
+```json
+{
+  "mcpServers": {
+    "cloud-harness-local": {
+      "command": "node",
+      "args": [
+        "/path/to/cloud-harness-mcp/apps/api/dist/index.js",
+        "--transport",
+        "stdio",
+        "--workspace",
+        "/path/to/my-project"
+      ]
+    }
+  }
+}
+```
+
+#### Claude Code
+
+```bash
+claude mcp add cloud-harness-local --transport stdio -- node /path/to/cloud-harness-mcp/apps/api/dist/index.js --transport stdio --workspace /path/to/my-project
+```
+
+#### Cursor
+
+In `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "cloud-harness-local": {
+      "command": "node",
+      "args": [
+        "/path/to/cloud-harness-mcp/apps/api/dist/index.js",
+        "--transport",
+        "stdio",
+        "--workspace",
+        "/path/to/my-project"
+      ]
+    }
+  }
+}
+```
+
+#### OpenAI Codex
+
+In `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.cloud_harness_local]
+command = "node"
+args = ["/path/to/cloud-harness-mcp/apps/api/dist/index.js", "--transport", "stdio", "--workspace", "/path/to/my-project"]
+```
+
 ## MCP tools
 
 The public tool names are owned by

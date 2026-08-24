@@ -3,6 +3,9 @@
   "version": "0.19.2",
   "private": true,
   "type": "module",
+  "bin": {
+    "cloud-harness-mcp": "./apps/api/dist/index.js"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -18,8 +21,11 @@
     "dev:runner": "npm run dev -w @cloud-harness/runner",
     "lint": "eslint .",
     "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway",
+    "pretest": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
     "test": "vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism",
+    "pretest:unit": "npm run build -w @cloud-harness/contracts",
     "test:unit": "vitest run packages apps --exclude '**/*.docker.test.ts'",
+    "pretest:integration": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
     "test:integration": "vitest run test/integration --exclude '**/*.docker.test.ts'",
     "pretest:docker": "npm run build -w @cloud-harness/contracts",
     "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts --testTimeout=120000",

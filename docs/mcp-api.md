@@ -142,6 +142,16 @@ makes a lost response recoverable without duplicating work.
 Tool annotations inform client approval UX. They do not replace review of the
 command, repository, network mode, or workspace changes.
 
+## Local stdio mode semantics
+
+When running Cloud Harness MCP over local stdio (`--transport stdio --workspace <path>`):
+
+1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
+2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` returns capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`). `workspace_close` terminates owned child processes but **never deletes the local folder**.
+3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
+4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action` and `exec_run.privileged=true` return structured unsupported errors.
+5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
+
 ## Repository opening policy
 
 The runner accepts credential-free HTTPS URLs on configured allowlisted hosts,

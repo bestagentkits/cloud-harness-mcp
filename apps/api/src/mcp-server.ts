@@ -1,7 +1,15 @@
 import { McpServer, type CallToolResult, type McpRequestContext } from '@modelcontextprotocol/server';
-import { TOOL_SPECS, ToolResultSchema, type RunnerPrincipalSelector, type ToolResult } from '@cloud-harness/contracts';
+import {
+  TOOL_SPECS,
+  ToolResultSchema,
+  type RunnerOperation,
+  type RunnerPrincipalSelector,
+  type RunnerResponse,
+  type ToolResult
+} from '@cloud-harness/contracts';
 import { principalFromAuthInfo } from './auth.js';
-import type { RunnerClient } from './runner-client.js';
+import { RunnerClient } from './runner-client.js';
+import type { OperationBackend } from './operation-backend.js';
 
 function resultToMcp(result: ToolResult): CallToolResult {
   return {
@@ -11,18 +19,56 @@ function resultToMcp(result: ToolResult): CallToolResult {
   };
 }
 
-export function createCloudHarnessServer(client: RunnerClient, principal?: RunnerPrincipalSelector): McpServer {
+export class RunnerOperationBackend implements OperationBackend {
+  constructor(
+    private readonly client: RunnerClient,
+    private readonly principal?: RunnerPrincipalSelector
+  ) {}
+
+  async call(operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    if (!this.principal) {
+      return {
+        ok: false,
+        message: 'Authentication context unavailable',
+        error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication context unavailable', retryable: false },
+        truncated: false
+      };
+    }
+    return await this.client.call(operation, input, this.principal, signal);
+  }
+}
+
+const DEFAULT_INSTRUCTIONS = 'Open an owner-bound workspace first, pass its opaque workspaceId to later tools, and close it when finished.';
+
+export function createCloudHarnessServer(
+  backendOrClient: OperationBackend | RunnerClient,
+  principalOrInstructions?: RunnerPrincipalSelector | string,
+  maybeInstructions?: string
+): McpServer {
+  let backend: OperationBackend;
+  let instructions = DEFAULT_INSTRUCTIONS;
+
+  if (backendOrClient instanceof RunnerClient) {
+    const principal = typeof principalOrInstructions === 'object' && principalOrInstructions !== null ? principalOrInstructions : undefined;
+    instructions = typeof maybeInstructions === 'string' ? maybeInstructions : (typeof principalOrInstructions === 'string' ? principalOrInstructions : DEFAULT_INSTRUCTIONS);
+    backend = new RunnerOperationBackend(backendOrClient, principal);
+  } else {
+    backend = backendOrClient;
+    instructions = typeof principalOrInstructions === 'string' ? principalOrInstructions : (backend.getInstructions?.() ?? DEFAULT_INSTRUCTIONS);
+  }
+
   const server = new McpServer(
     { name: 'cloud-harness-mcp', version: '0.19.2' },
-    { instructions: 'Open an owner-bound workspace first, pass its opaque workspaceId to later tools, and close it when finished.' }
+    { instructions }
   );
+
   for (const spec of TOOL_SPECS) {
     server.registerTool(
       spec.name,
       {
         title: spec.title,
         description: spec.description,
-        inputSchema: spec.inputSchema as any,
+        inputSchema: spec.inputSchema,
         outputSchema: ToolResultSchema,
         annotations: {
           readOnlyHint: spec.readOnly,
@@ -32,8 +78,7 @@ export function createCloudHarnessServer(client: RunnerClient, principal?: Runne
         }
       },
       async (input, context) => {
-        if (!principal) return resultToMcp({ ok: false, message: 'Authentication context unavailable', error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication context unavailable', retryable: false }, truncated: false });
-        return resultToMcp(await client.call(spec.name, input as Record<string, unknown>, principal, context.mcpReq.signal));
+        return resultToMcp(await backend.call(spec.name, input as Record<string, unknown>, context.mcpReq.signal));
       }
     );
   }
@@ -41,5 +86,5 @@ export function createCloudHarnessServer(client: RunnerClient, principal?: Runne
 }
 
 export function createCloudHarnessServerFactory(client: RunnerClient): (context: McpRequestContext) => McpServer {
-  return (context) => createCloudHarnessServer(client, principalFromAuthInfo(context.authInfo));
+  return (context) => createCloudHarnessServer(new RunnerOperationBackend(client, principalFromAuthInfo(context.authInfo)));
 }

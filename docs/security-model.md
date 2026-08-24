@@ -224,3 +224,43 @@ Close/TTL removes the executor and workspace directory. Shell/session/task
 state is in-memory and disappears on runner restart. Startup restarts surviving
 executors to stop processes whose handles were lost; this remains a durability
 limitation, not a security guarantee.
+
+## Local stdio security model
+
+Local stdio mode intentionally alters the trust boundary compared to the remote Docker executor:
+
+### Host authority vs Docker isolation
+
+- Commands executed in local mode (`exec_run`, shells, sessions, tasks) run with the authority of the current host user.
+- File path confinement ensures that tool-supplied file paths and working directories cannot resolve outside the canonical workspace root.
+- **Path confinement is not an OS command sandbox.** A command running under `exec_run` or in a shell can still access anything accessible to the host user. Never claim local stdio mode is a sandboxed environment.
+
+### Filesystem confinement policy
+
+- The workspace root is canonicalized once at startup from the `--workspace` argument using `realpath`.
+- Relative paths, lexical traversal (`..`), absolute paths, and null bytes are rejected before resolution.
+- Symlinks are resolved against the canonical root; attempts to escape via symlinks or parent symlinks fail with a structured error.
+- `workspace_close` is terminal and idempotent: it terminates child processes and marks the workspace closed, but **never deletes or modifies the user's project folder**.
+
+### Environment curation and secret isolation
+
+- Child subprocesses do not inherit the complete host environment.
+- An allowlist provides standard system variables (`PATH`, `HOME`, `USER`, `SHELL`, `LANG`, etc.).
+- Cloud Harness tokens, bearer secrets, GitHub App credentials, session secrets, and database URLs are actively scrubbed.
+- Reserved control prefixes (`HARNESS_*`, `CH_*`) cannot be overridden by tool input.
+- Additional host environment variables can be explicitly forwarded via `--env <NAME>`.
+
+### Process cleanup
+
+- Local long-running children are launched in POSIX process groups.
+- Cancellation, workspace close, signal receipt (SIGINT, SIGTERM), and process exit trigger process-group termination (`SIGTERM` followed by a grace period and `SIGKILL` escalation).
+
+### Network Git and push opt-ins
+
+- Network Git operations (`git_fetch`, `git_pull`) and Git push (`git_push`) are disabled by default in local mode.
+- Enabling them requires explicit startup flags (`--git-network` and `--git-push`).
+- Local Git operations use the user's existing checkout configuration and credentials only when authorized by these flags.
+
+### Unsupported capabilities
+
+- `exec_run` with `privileged: true` and `github_action` are unsupported in local v1 and return immediate structured capability errors.

@@ -58,6 +58,18 @@ temporary network access and an optional token. This split exists so remote
 repository synchronization does not put long-lived credentials in the
 repository executor.
 
+## Composition roots and transports
+
+Cloud Harness MCP supports two distinct composition roots sharing the same public `TOOL_SPECS` and result envelopes:
+
+1. **Streamable HTTP mode (default):**
+   `cloud-harness-mcp --transport http` (or default without flags).
+   Assembles Express routes, bearer/Access authentication, and translates requests through `RunnerClient` to the isolated Docker runner on a private network.
+
+2. **Local stdio mode:**
+   `cloud-harness-mcp --transport stdio --workspace <path>`.
+   Assembles `serveStdio` directly connected to `LocalWorkspaceBackend`. Binds to one canonical local project directory, manages host subprocesses via `LocalOperationManager`, and parameterizes `worker/harness-worker.mjs` via `HARNESS_WORKSPACE_ROOT`.
+
 Executable owners:
 
 - Loopback-to-frontend byte proxy:

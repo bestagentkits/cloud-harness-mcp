@@ -4,11 +4,18 @@ import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile 
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
-const ROOT = '/workspace';
+const ROOT = process.env.HARNESS_WORKSPACE_ROOT ? await realpath(process.env.HARNESS_WORKSPACE_ROOT) : '/workspace';
 const MAX_INTERNAL_OUTPUT = 1_048_576;
 const MAX_DEPLOYMENTS_FILE_BYTES = 262_144;
 const MAX_DEPLOYMENTS = 100;
-const gitEnvironment = { ...process.env, HOME: '/tmp/cloud-harness-home', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat', PAGER: 'cat' };
+const gitEnvironment = {
+  ...process.env,
+  HOME: process.env.HARNESS_WORKSPACE_ROOT ? (process.env.HOME || '/tmp') : '/tmp/cloud-harness-home',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_PAGER: 'cat',
+  PAGER: 'cat'
+};
 
 function fail(code, message, retryable = false) {
   return { ok: false, message, error: { code, message, retryable }, truncated: false };
