@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IdempotencyKeySchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import type { RunnerOperation } from './runner-api.js';
 
 const relativePath = z.string().min(1).max(1_024).refine((value) => {
@@ -87,7 +87,8 @@ const schemas = {
     timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
     maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144),
     privileged: z.boolean().default(false),
-    approvalGrantToken: z.string().min(1).max(128).optional()
+    approvalGrantToken: z.string().min(1).max(128).optional(),
+    async: z.boolean().default(false)
   }),
   shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
@@ -101,9 +102,9 @@ const schemas = {
   tasks_status: z.object({ ...workspace, taskId: TaskIdSchema, cursor: z.string().max(256).optional() }),
   tasks_cancel: z.object({ ...workspace, taskId: TaskIdSchema }),
   tasks_graph: z.object(workspace),
-  operation_status: z.object({ operationId: z.string().min(1).max(128), cursor: z.string().max(256).optional() }),
-  operation_cancel: z.object({ operationId: z.string().min(1).max(128) }),
-  operation_wait: z.object({ operationId: z.string().min(1).max(128), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
+  operation_status: z.object({ operationId: OperationIdSchema, cursor: z.string().max(256).optional() }),
+  operation_cancel: z.object({ operationId: OperationIdSchema }),
+  operation_wait: z.object({ operationId: OperationIdSchema, timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
   git_status: z.object(workspace),
   git_diff: z.object({ ...workspace, staged: z.boolean().default(false), path: relativePath.optional(), cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500_000).default(65_536), readAll: z.boolean().optional() }),
   git_log: z.object({ ...workspace, limit: z.number().int().min(1).max(500).default(20), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),

@@ -519,10 +519,9 @@ export class WorkspaceService {
   private async runWorker(record: WorkspaceRecord, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     const timeout = typeof input.timeoutMs === 'number' ? input.timeoutMs + 5_000 : 65_000;
-    const operationId = opaqueId('op');
+    const operationId = (typeof input.operationId === 'string' && input.operationId) || opaqueId('op');
     const pidFile = `/tmp/cloud-harness-operations/${operationId}.pid`;
     const jsonMaxBytes = Math.min(67_108_864, Math.max(this.config.maxOutputBytes, 262_144) * 6 + 8_192);
-
     this.operations.registerGenericOperation({
       id: operationId,
       workspaceId: record.id,
@@ -590,13 +589,14 @@ export class WorkspaceService {
     }
     const helperName = `chm-rec-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
     const mode = writable ? 'rw' : 'ro';
+    const jsonMaxBytes = Math.min(67_108_864, Math.max(this.config.maxOutputBytes, 262_144) * 6 + 8_192);
     try {
       const result = await runDocker([
         'run', '-i', '--rm', '--name', helperName,
         '--label', 'cloud-harness.role=recover-helper', '--label', 'cloud-harness.ephemeral=true',
         '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
         '--network', 'none', '--user', '10001:10001',
-        ...(writable ? [] : ['--read-only']),
+        '--read-only',
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m',
         '--pids-limit', '64', '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
         '--volume', `${record.workspacePath}/repo:/workspace:${mode}`,
@@ -608,7 +608,7 @@ export class WorkspaceService {
       ], {
         stdin: JSON.stringify({ operation, input }),
         timeoutMs: 60_000,
-        maxBytes: this.config.maxOutputBytes,
+        maxBytes: jsonMaxBytes,
         ...(signal ? { signal } : {})
       });
       if (result.exitCode !== 0) throw new HarnessError('INTERNAL_ERROR', `recovery worker failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 500, true);
@@ -792,10 +792,54 @@ export class WorkspaceService {
 
       return await this.runPrivilegedEphemeralExec(record, { command, cwd, timeoutMs, maxOutputBytes }, signal);
     }
+    if (validated.async === true) {
+      const operationId = opaqueId('op');
+      const serverAbortController = new AbortController();
+      this.operations.registerGenericOperation({
+        id: operationId,
+        workspaceId: record.id,
+        kind: 'exec_run',
+        deadlineMs: Date.now() + timeoutMs,
+        container: record.containerName ?? undefined,
+        abortController: serverAbortController
+      });
+      const deadlineTimer = setTimeout(() => {
+        serverAbortController.abort();
+        this.operations.updateGenericOperation(operationId, {
+          status: 'failed',
+          error: { code: 'TIMEOUT', message: 'Command execution exceeded server deadline', retryable: false }
+        });
+      }, timeoutMs);
+      deadlineTimer.unref();
+
+      void (async () => {
+        try {
+          const result = await this.runWorker(record, 'exec_run', { ...validated, async: false }, serverAbortController.signal);
+          clearTimeout(deadlineTimer);
+          this.operations.updateGenericOperation(operationId, {
+            status: result.ok ? 'completed' : 'failed',
+            result: result.data,
+            error: result.error
+          });
+        } catch (err: unknown) {
+          clearTimeout(deadlineTimer);
+          this.operations.updateGenericOperation(operationId, {
+            status: serverAbortController.signal.aborted ? 'cancelled' : 'failed',
+            error: { code: serverAbortController.signal.aborted ? 'CANCELLED' : 'INTERNAL_ERROR', message: err instanceof Error ? err.message : 'command failed', retryable: false }
+          });
+        }
+      })();
+
+      return {
+        ok: true,
+        message: 'Command started in background',
+        data: { operationId, status: 'running' },
+        truncated: false
+      };
+    }
 
     return await this.runWorker(record, 'exec_run', validated, signal);
   }
-
   private async runPrivilegedEphemeralExec(
     record: WorkspaceRecord,
     input: { command: string; cwd: string; timeoutMs: number; maxOutputBytes: number },

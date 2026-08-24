@@ -37,6 +37,7 @@ export type TrackedOperation = {
   offset: number;
   child?: ChildProcessWithoutNullStreams | undefined;
   container?: string | undefined;
+  abortController?: AbortController | undefined;
 };
 const id = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
 
@@ -342,7 +343,14 @@ export class OperationManager {
     };
   }
 
-  registerGenericOperation(op: { id: string; workspaceId?: string; kind: string; deadlineMs?: number; container?: string }): TrackedOperation {
+  registerGenericOperation(op: {
+    id: string;
+    workspaceId?: string | undefined;
+    kind: string;
+    deadlineMs?: number | undefined;
+    container?: string | undefined;
+    abortController?: AbortController | undefined;
+  }): TrackedOperation {
     while (this.genericOperations.size >= 500) {
       const oldest = [...this.genericOperations.entries()]
         .filter(([, o]) => o.status === 'completed' || o.status === 'failed' || o.status === 'cancelled')
@@ -364,7 +372,8 @@ export class OperationManager {
       deadlineMs: op.deadlineMs,
       output: Buffer.alloc(0),
       offset: 0,
-      container: op.container
+      container: op.container,
+      abortController: op.abortController
     };
     this.genericOperations.set(op.id, tracked);
     return tracked;
@@ -403,6 +412,9 @@ export class OperationManager {
     if (op) {
       if (op.status === 'running' || op.status === 'queued') {
         op.status = 'cancelled';
+        if (op.abortController) {
+          try { op.abortController.abort(); } catch { /* ignore */ }
+        }
         if (op.child) {
           try { op.child.kill('SIGTERM'); } catch { /* process already exited */ }
         }
