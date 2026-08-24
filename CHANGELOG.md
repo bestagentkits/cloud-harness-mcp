@@ -1,3 +1,10 @@
+## [0.21.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.21.1...v0.21.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* **security:** prevent symlink escapes and improve local stdio process termination ([#99](https://github.com/bestagentkits/cloud-harness-mcp/issues/99)) ([ba79491](https://github.com/bestagentkits/cloud-harness-mcp/commit/ba79491eb60374bb1099a919b33323650ef398fb))
+
 ## [0.21.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.21.0...v0.21.1) (2026-08-24)
 
 
