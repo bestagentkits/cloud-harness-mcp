@@ -650,14 +650,18 @@ const handlers = {
     }
     if (mode === 'snapshot_commit') {
       const statusRes = await git(['status', '--short', '--untracked-files=all']);
+      if (statusRes.exitCode !== 0) return fail('INTERNAL_ERROR', statusRes.output || 'git status failed');
       const hasChanges = Boolean(statusRes.output.split('\n').filter((l) => l && !l.startsWith('##')).length);
       if (hasChanges) {
-        await git(['add', '--all']);
+        const addRes = await git(['add', '--all']);
+        if (addRes.exitCode !== 0) return fail('INTERNAL_ERROR', addRes.output || 'git add failed during recovery snapshot');
         const authorName = input.authorName || 'Cloud Harness Recovery';
         const authorEmail = input.authorEmail || 'recovery@cloud-harness.local';
-        await git(['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 'commit', '--no-gpg-sign', '-m', input.message || 'chore(recovery): snapshot uncommitted work for export']);
+        const commitRes = await git(['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 'commit', '--no-gpg-sign', '-m', input.message || 'chore(recovery): snapshot uncommitted work for export']);
+        if (commitRes.exitCode !== 0) return fail('INTERNAL_ERROR', commitRes.output || 'git commit failed during recovery snapshot');
       }
       const headRes = await git(['rev-parse', 'HEAD']);
+      if (headRes.exitCode !== 0) return fail('INTERNAL_ERROR', headRes.output || 'failed to resolve HEAD after recovery snapshot');
       return ok('Recovery snapshot committed', {
         headCommitSha: headRes.output.trim(),
         committedChanges: hasChanges

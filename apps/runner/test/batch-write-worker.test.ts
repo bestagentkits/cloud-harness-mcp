@@ -247,4 +247,14 @@ describe('Issue #88: files_write_batch worker execution', () => {
     const postStatus = await executeWorkerRequest('workspace_recover', { mode: 'status' });
     expect((postStatus.data as Record<string, unknown>).hasUncommitted).toBe(false);
   });
+
+  it('fails closed and reports failure if snapshot_commit encounters a Git error', async () => {
+    const root = setupWorkspace();
+    // Create an untracked file without initializing a Git repository
+    writeFileSync(join(root, 'untracked.txt'), 'content\n', 'utf8');
+
+    const result = await executeWorkerRequest('workspace_recover', { mode: 'snapshot_commit' });
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('INTERNAL_ERROR');
+  });
 });

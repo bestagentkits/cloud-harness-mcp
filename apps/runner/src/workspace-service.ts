@@ -1091,6 +1091,15 @@ export class WorkspaceService {
           mode: 'snapshot_commit',
           message: `chore(recovery): export snapshot for ${targetBranch}`
         }, signal, true);
+        if (!snapshotRes.ok) {
+          return {
+            ok: false,
+            message: `Recovery snapshot failed: ${snapshotRes.message}`,
+            data: { step: 'snapshot_commit', error: snapshotRes.message },
+            error: { code: 'INTERNAL_ERROR', message: snapshotRes.message, retryable: true },
+            truncated: false
+          };
+        }
         const snapshotData = snapshotRes.data as { headCommitSha?: string; committedChanges?: boolean } | undefined;
         const pushResult = await this.remotePush(rec, { refspec: `HEAD:refs/heads/${targetBranch}` }, signal);
         return {
