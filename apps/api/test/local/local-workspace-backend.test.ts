@@ -291,4 +291,64 @@ describe('LocalWorkspaceBackend', () => {
       await rm(outsideDir, { recursive: true, force: true });
     }
   });
+
+  it('safely handles precreated symlinks on files_write and writes exclusively', async () => {
+    const outsideDir = join(tmpdir(), `ch-outside-tmp-${Date.now()}`);
+    await mkdir(outsideDir, { recursive: true });
+    const outsideTarget = join(outsideDir, 'secret-victim.txt');
+    await writeFile(outsideTarget, 'original-victim-content');
+
+    const linkPath = join(canonicalRoot, 'target-link.txt');
+    try {
+      await symlink(outsideTarget, linkPath);
+      // Writing to an existing symlink that resolves outside must be rejected by safePath
+      const writeRes = await backend.call('files_write', {
+        workspaceId: backend.workspaceId,
+        path: 'target-link.txt',
+        content: 'attack-payload'
+      });
+      expect(writeRes.ok).toBe(false);
+      expect(writeRes.message).toMatch(/escapes workspace/);
+      // Outside file must remain untouched
+      const victimContent = await readFile(outsideTarget, 'utf8');
+      expect(victimContent).toBe('original-victim-content');
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw err;
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects files_write_batch when a target path is an existing symlink pointing outside', async () => {
+    const outsideDir = join(tmpdir(), `ch-outside-batch-${Date.now()}`);
+    await mkdir(outsideDir, { recursive: true });
+    const outsideTarget = join(outsideDir, 'victim-batch.txt');
+    await writeFile(outsideTarget, 'victim-batch-initial');
+
+    const linkPath = join(canonicalRoot, 'batch-escape.txt');
+    try {
+      await symlink(outsideTarget, linkPath);
+      const batchRes = await backend.call('files_write_batch', {
+        workspaceId: backend.workspaceId,
+        files: [
+          { path: 'batch-escape.txt', content: 'hacked-content' },
+          { path: 'normal-file.txt', content: 'normal-content' }
+        ]
+      });
+      expect(batchRes.ok).toBe(false);
+      expect(batchRes.message).toMatch(/escapes workspace/);
+      const victimContent = await readFile(outsideTarget, 'utf8');
+      expect(victimContent).toBe('victim-batch-initial');
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        return;
+      }
+      throw err;
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
 });
