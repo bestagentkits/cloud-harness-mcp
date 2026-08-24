@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -72,7 +73,12 @@ afterAll(async () => {
     new Promise<void>((resolve) => apiServer.close(() => resolve())),
     new Promise<void>((resolve) => runnerServer.close(() => resolve()))
   ]);
-  rmSync(directory, { recursive: true, force: true });
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    execFileSync('docker', ['run', '--rm', '--user', '0:0', '--volume', `${directory}:/target:rw`, '--entrypoint', '/bin/sh', 'cloud-harness-executor:local', '-c', 'chmod -R u+rwX /target 2>/dev/null || true']);
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 describe('complete coding workflow through MCP', () => {
@@ -226,11 +232,12 @@ describe('complete coding workflow through MCP', () => {
     workspaceId = expiring.data.workspaceId;
     const expiringRecord = store.byId(workspaceId)!;
     store.update(workspaceId, { expiresAt: Date.now() - 1 });
-    for (let attempt = 0; attempt < 50 && store.byId(workspaceId)?.status !== 'CLOSED'; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && store.byId(workspaceId)?.status === 'ACTIVE'; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    expect((await call('workspace_status', { workspaceId })).data.status).toBe('CLOSED');
+    expect(['CLOSED', 'EXPIRED_RECOVERABLE']).toContain((await call('workspace_status', { workspaceId })).data.status);
     expect(await inspectContainer(expiringRecord.containerName!)).toBeUndefined();
+    await call('workspace_close', { workspaceId });
     workspaceId = undefined;
     const firstWorkspacePage = await call('workspace_list', { limit: 1 });
     expect(firstWorkspacePage.data.workspaces).toHaveLength(1);

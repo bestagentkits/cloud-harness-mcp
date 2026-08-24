@@ -142,4 +142,72 @@ describe('contracts', () => {
     expect(() => TOOL_SCHEMA_BY_NAME.files_move.parse({ workspaceId, source: '.', destination: 'moved', overwrite: false })).toThrow();
     expect(() => TOOL_SCHEMA_BY_NAME.tasks_run.parse({ workspaceId, command: 'true', idempotencyKey: 'task-test', dependsOn: ['task_invalid'] })).toThrow();
   });
+
+  it('validates files_write_batch schemas and boundaries', () => {
+    const validBatch = {
+      files: [
+        { path: 'plans/plan.md', content: '# Plan', expectedSha256: 'a'.repeat(64) },
+        { path: 'src/main.ts', content: 'console.log("hello");' }
+      ],
+      createParents: true,
+      atomic: true
+    };
+    expect(TOOL_SCHEMA_BY_NAME.files_write_batch.parse(validBatch)).toMatchObject({ createParents: true, atomic: true });
+    expect(() => TOOL_SCHEMA_BY_NAME.files_write_batch.parse({ files: [] })).toThrow();
+    expect(() => TOOL_SCHEMA_BY_NAME.files_write_batch.parse({ files: [{ path: '../outside.txt', content: 'hack' }] })).toThrow();
+  });
+
+  it('validates workspace_finalize schemas and options', () => {
+    const validFinalize = {
+      commitMessage: 'feat(ux): improve developer experience',
+      push: true,
+      all: true
+    };
+    expect(TOOL_SCHEMA_BY_NAME.workspace_finalize.parse(validFinalize)).toMatchObject({ push: true, all: true });
+    expect(() => TOOL_SCHEMA_BY_NAME.workspace_finalize.parse({ commitMessage: '' })).toThrow();
+    expect(() => TOOL_SCHEMA_BY_NAME.workspace_finalize.parse({ commitMessage: 'msg', authorEmail: 'invalid-email' })).toThrow();
+  });
+
+  it('validates operation status, cancel, and wait schemas', () => {
+    expect(TOOL_SCHEMA_BY_NAME.operation_status.parse({ operationId: 'op_12345' })).toMatchObject({ operationId: 'op_12345' });
+    expect(TOOL_SCHEMA_BY_NAME.operation_cancel.parse({ operationId: 'op_12345' })).toMatchObject({ operationId: 'op_12345' });
+    expect(TOOL_SCHEMA_BY_NAME.operation_wait.parse({ operationId: 'op_12345', timeoutMs: 5000 })).toMatchObject({ timeoutMs: 5000 });
+    expect(() => TOOL_SCHEMA_BY_NAME.operation_status.parse({ operationId: '' })).toThrow();
+  });
+
+  it('validates extended github_action schemas for comments and labels', () => {
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'issue_comment',
+      issueNumber: 42,
+      body: 'Comment body here'
+    })).toMatchObject({ action: 'issue_comment', issueNumber: 42 });
+
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'label_create',
+      name: 'ready to ship stable',
+      color: '0E8A16',
+      description: 'Ready for stable'
+    })).toMatchObject({ action: 'label_create', name: 'ready to ship stable' });
+
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'issue_labels_add',
+      issueNumber: 42,
+      labels: ['bug', 'p0']
+    })).toMatchObject({ action: 'issue_labels_add', labels: ['bug', 'p0'] });
+
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'issue_update',
+      issueNumber: 42,
+      state: 'closed',
+      stateReason: 'completed'
+    })).toMatchObject({ action: 'issue_update', state: 'closed' });
+  });
+
+  it('validates workspace lease renew, recovery, context, and git identity schemas', () => {
+    expect(TOOL_SCHEMA_BY_NAME.workspace_lease_renew.parse({ extensionSeconds: 3600 })).toMatchObject({ extensionSeconds: 3600 });
+    expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'patch' })).toMatchObject({ mode: 'patch' });
+    expect(TOOL_SCHEMA_BY_NAME.workspace_context.parse({})).toBeDefined();
+    expect(TOOL_SCHEMA_BY_NAME.git_identity_status.parse({})).toBeDefined();
+    expect(TOOL_SCHEMA_BY_NAME.git_identity_set.parse({ name: 'Dev', email: 'dev@example.com' })).toMatchObject({ name: 'Dev', email: 'dev@example.com' });
+  });
 });

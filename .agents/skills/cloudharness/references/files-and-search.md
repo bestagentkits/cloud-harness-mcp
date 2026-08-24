@@ -47,6 +47,19 @@ Atomically replace or create a file.
 - This replaces the complete file. Re-read and use the current hash before
   overwriting a file that another actor may edit.
 
+
+<!-- cloudharness-tool:files_write_batch -->
+### `files_write_batch`
+
+Atomically create or update multiple workspace files in one operation with parent directory creation.
+
+- Required: `files` array of 1–100 path/content objects.
+- Optional: `workspaceId`, `createParents` (default true), `atomic` (default true), `idempotencyKey`.
+- Returns created/updated counts, hashes, and per-file write details.
+
+<!-- cloudharness-example:files_write_batch
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","files":[{"path":"plans/plan.md","content":"# Plan"}],"createParents":true}
+-->
 <!-- cloudharness-tool:files_apply_patch -->
 ### `files_apply_patch`
 

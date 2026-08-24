@@ -7,7 +7,7 @@ const relativePath = z.string().min(1).max(1_024).refine((value) => {
   return !normalized.startsWith('/') && !/^[A-Za-z]:/.test(normalized) && !normalized.split('/').includes('..') && !normalized.includes('\0');
 }, 'path must stay workspace-relative');
 const entryPath = relativePath.refine((value) => value.replaceAll('\\', '/') !== '.', 'path must identify an entry below the workspace root');
-const workspace = { workspaceId: WorkspaceIdSchema };
+const workspace = { workspaceId: WorkspaceIdSchema.optional() };
 const pagination = { cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500).default(100) };
 const gitArgument = z.string().min(1).max(255).refine((value) => !value.startsWith('-') && !value.includes('\0'), 'Git argument cannot start with a dash');
 const gitFetchRef = gitArgument.refine((value) => !value.includes(':'), 'Git fetch ref cannot contain a destination');
@@ -36,9 +36,43 @@ const schemas = {
   workspace_list: z.object(pagination),
   workspace_status: z.object(workspace),
   workspace_close: z.object(workspace),
+  workspace_lease_renew: z.object({ ...workspace, extensionSeconds: z.number().int().min(60).max(86_400).optional() }),
+  workspace_recover: z.object({ ...workspace, mode: z.enum(['status', 'patch', 'export']).default('status'), targetBranch: gitArgument.optional() }),
+  workspace_context: z.object(workspace),
+  workspace_set_active: z.object({ workspaceId: WorkspaceIdSchema }),
+  workspace_finalize: z.object({
+    ...workspace,
+    paths: z.array(relativePath).max(500).optional(),
+    all: z.boolean().default(true),
+    commitMessage: z.string().min(1).max(10_000),
+    branch: gitArgument.optional(),
+    push: z.boolean().default(true),
+    authorName: z.string().min(1).max(200).optional(),
+    authorEmail: z.email().optional(),
+    preflight: z.object({ checkDiff: z.boolean().default(true), forbiddenPatterns: z.array(z.string()).optional() }).optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (!input.all && (!input.paths || input.paths.length === 0)) {
+      context.addIssue({ code: 'custom', path: ['paths'], message: 'paths are required when all is false' });
+    }
+    if (input.all && input.paths && input.paths.length > 0) {
+      context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
+    }
+  }),
   files_list: z.object({ ...workspace, path: relativePath.default('.'), ...pagination }),
-  files_read: z.object({ ...workspace, path: relativePath, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(262_144).default(65_536) }),
+  files_read: z.object({ ...workspace, path: relativePath, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1_048_576).default(65_536), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
   files_write: z.object({ ...workspace, path: relativePath, content: z.string().max(1_048_576), expectedSha256: z.string().length(64).optional() }),
+  files_write_batch: z.object({
+    ...workspace,
+    files: z.array(z.object({
+      path: relativePath,
+      content: z.string().max(1_048_576),
+      expectedSha256: z.string().length(64).optional()
+    })).min(1).max(100),
+    createParents: z.boolean().default(true),
+    atomic: z.boolean().default(true),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
   files_apply_patch: z.object({ ...workspace, path: relativePath, oldText: z.string().max(262_144), newText: z.string().max(262_144), expectedSha256: z.string().length(64).optional() }),
   files_delete: z.object({ ...workspace, path: entryPath, recursive: z.boolean().default(false), expectedSha256: z.string().length(64).optional() }),
   files_move: z.object({ ...workspace, source: entryPath, destination: entryPath, overwrite: z.boolean().default(false) }),
@@ -67,9 +101,12 @@ const schemas = {
   tasks_status: z.object({ ...workspace, taskId: TaskIdSchema, cursor: z.string().max(256).optional() }),
   tasks_cancel: z.object({ ...workspace, taskId: TaskIdSchema }),
   tasks_graph: z.object(workspace),
+  operation_status: z.object({ operationId: z.string().min(1).max(128), cursor: z.string().max(256).optional() }),
+  operation_cancel: z.object({ operationId: z.string().min(1).max(128) }),
+  operation_wait: z.object({ operationId: z.string().min(1).max(128), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
   git_status: z.object(workspace),
-  git_diff: z.object({ ...workspace, staged: z.boolean().default(false), path: relativePath.optional() }),
-  git_log: z.object({ ...workspace, limit: z.number().int().min(1).max(100).default(20) }),
+  git_diff: z.object({ ...workspace, staged: z.boolean().default(false), path: relativePath.optional(), cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500_000).default(65_536), readAll: z.boolean().optional() }),
+  git_log: z.object({ ...workspace, limit: z.number().int().min(1).max(500).default(20), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
   git_branch: z.object({ ...workspace, action: z.enum(['list', 'create', 'delete']), name: gitArgument.optional(), startPoint: gitArgument.optional(), force: z.boolean().default(false) }).superRefine((input, context) => {
     if (input.action !== 'list' && !input.name) context.addIssue({ code: 'custom', path: ['name'], message: 'name is required for create and delete' });
   }),
@@ -78,7 +115,9 @@ const schemas = {
     if (!input.all && input.paths.length === 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths are required unless all is true' });
     if (input.all && input.paths.length > 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
   }),
-  git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200), authorEmail: z.email(), all: z.boolean().default(false) }),
+  git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200).optional(), authorEmail: z.email().optional(), all: z.boolean().default(false) }),
+  git_identity_status: z.object(workspace),
+  git_identity_set: z.object({ ...workspace, name: z.string().min(1).max(200), email: z.email() }),
   git_fetch: z.object({ ...workspace, remote: z.literal('origin').default('origin'), refspec: gitFetchRef.optional() }),
   git_pull: z.object({ ...workspace, remote: z.literal('origin').default('origin'), branch: gitArgument.optional(), strategy: z.enum(['ff-only', 'merge', 'rebase']).default('ff-only') }),
   git_push: z.object({
@@ -146,6 +185,56 @@ const schemas = {
       action: z.literal('issue_create'),
       title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
       body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default('')
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_comment'),
+      issueNumber: z.number().int().positive(),
+      body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
+      idempotencyKey: IdempotencyKeySchema.optional()
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_comment_update'),
+      commentId: z.number().int().positive(),
+      body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes')
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('label_create'),
+      name: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label name cannot contain null bytes'),
+      color: z.string().regex(/^[0-9A-Fa-f]{6}$/).optional(),
+      description: z.string().max(200).optional()
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_labels_add'),
+      issueNumber: z.number().int().positive(),
+      labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label cannot contain null bytes')).min(1).max(50),
+      createMissing: z.boolean().default(true),
+      idempotencyKey: IdempotencyKeySchema.optional()
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_labels_remove'),
+      issueNumber: z.number().int().positive(),
+      label: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label cannot contain null bytes')
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('issue_update'),
+      issueNumber: z.number().int().positive(),
+      title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
+      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+      state: z.enum(['open', 'closed']).optional(),
+      stateReason: z.enum(['completed', 'not_planned', 'reopened']).optional()
+    }).superRefine((input, context) => {
+      if (!input.title && !input.body && !input.state) {
+        context.addIssue({ code: 'custom', path: ['title'], message: 'at least one of title, body, or state is required' });
+      }
+      if (input.stateReason && input.state !== 'closed' && input.stateReason !== 'reopened') {
+        context.addIssue({ code: 'custom', path: ['stateReason'], message: 'stateReason is valid only when closing or reopening an issue' });
+      }
     })
   ])
 } satisfies Record<RunnerOperation, z.ZodType>;
@@ -163,12 +252,16 @@ export type ToolSpec = {
 
 const titles: Record<RunnerOperation, string> = {
   workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_close: 'Close workspace',
-  files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
+  workspace_lease_renew: 'Renew workspace lease', workspace_recover: 'Recover workspace state', workspace_context: 'Workspace context', workspace_set_active: 'Set active workspace',
+  workspace_finalize: 'Finalize workspace commit and push',
+  files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
   exec_run: 'Run command', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
   sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
   tasks_graph: 'Read task dependency graph',
+  operation_status: 'Read operation status', operation_cancel: 'Cancel operation', operation_wait: 'Wait for operation',
   git_status: 'Git status', git_diff: 'Git diff', git_log: 'Git log', git_branch: 'Manage Git branches', git_checkout: 'Checkout Git ref', git_add: 'Stage Git changes', git_commit: 'Create Git commit', git_fetch: 'Fetch Git refs', git_pull: 'Pull Git changes', git_push: 'Push Git changes', git_merge: 'Merge Git ref', git_rebase: 'Manage Git rebase',
+  git_identity_status: 'Read Git author identity', git_identity_set: 'Set Git author identity',
   worktrees_list: 'List worktrees', worktrees_create: 'Create worktree', worktrees_remove: 'Remove worktree',
   skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory',
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
@@ -180,14 +273,20 @@ const descriptions: Record<RunnerOperation, string> = {
   workspace_list: 'List owner-visible workspace records with bounded cursor pagination.',
   workspace_status: 'Read the lifecycle state and metadata for one workspace.',
   workspace_close: 'Stop a workspace executor and permanently remove all workspace files, including unpushed commits.',
+  workspace_lease_renew: 'Explicitly renew or extend the workspace idle lease duration.',
+  workspace_recover: 'Inspect, patch, or export unpushed work from an active or recoverable expired workspace.',
+  workspace_context: 'Read the active workspace ID, branch, lease time, Git identity, and repository overview.',
+  workspace_set_active: 'Set the caller preferred active workspace when multiple workspaces exist.',
+  workspace_finalize: 'Transactionally stage changes, run preflights, commit with default or explicit identity, and push to remote in one call.',
   files_list: 'List one workspace directory with bounded cursor pagination.',
-  files_read: 'Read a bounded byte range from a workspace file with its size and SHA-256.',
+  files_read: 'Read a bounded byte range from a workspace file with its size, SHA-256, and continuation cursor.',
   files_write: 'Atomically create or replace a workspace file, optionally guarded by its current SHA-256.',
+  files_write_batch: 'Atomically write multiple workspace files in one call, automatically creating missing parent directories.',
   files_apply_patch: 'Replace one unique exact text occurrence, optionally guarded by the file SHA-256.',
   files_delete: 'Delete one workspace file or directory, with explicit recursion and optional file hash guard.',
   files_move: 'Move or rename one workspace entry, optionally overwriting an existing file.',
   files_mkdir: 'Create one workspace directory, including missing parents by default.',
-  grep_search: 'Search workspace text with a bounded regular expression and optional path or glob filter.',
+  grep_search: 'Search workspace text with a bounded regular expression and optional path, glob filter, and continuation cursor.',
   symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring.',
   symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text.',
   exec_run: 'Run one bounded shell command in the workspace and return captured output.',
@@ -203,13 +302,18 @@ const descriptions: Record<RunnerOperation, string> = {
   tasks_status: 'Read one managed task state and its next bounded output chunk.',
   tasks_cancel: 'Terminate a managed task process group without rolling back completed effects.',
   tasks_graph: 'Read the current managed-task dependency graph for a workspace.',
+  operation_status: 'Query the execution state, progress, and terminal result of a long-running operation.',
+  operation_cancel: 'Cancel an in-flight long-running operation.',
+  operation_wait: 'Wait for a long-running operation to reach a terminal state with a timeout.',
   git_status: 'Read branch, index, and working-tree status for the workspace repository.',
-  git_diff: 'Read a bounded staged or unstaged Git diff, optionally narrowed to one path.',
-  git_log: 'Read bounded recent commit metadata from the workspace repository.',
+  git_diff: 'Read a bounded staged or unstaged Git diff with cursor pagination and readAll convenience.',
+  git_log: 'Read bounded recent commit metadata from the workspace repository with cursor pagination.',
   git_branch: 'List, create, or delete a local Git branch with constrained ref arguments.',
   git_checkout: 'Check out an existing Git ref or create and check out a local branch.',
   git_add: 'Stage either explicit workspace paths or all tracked and untracked changes.',
-  git_commit: 'Create an unsigned local Git commit with an explicit author and message.',
+  git_commit: 'Create an unsigned local Git commit with default or explicit author and message.',
+  git_identity_status: 'Read the default or configured Git author name and email for the workspace.',
+  git_identity_set: 'Configure default Git author name and email for workspace commits.',
   git_fetch: 'Fetch a constrained source ref from origin through the trusted repository broker.',
   git_pull: 'Integrate an origin branch using ff-only, merge, or rebase strategy.',
   git_push: 'Push a constrained branch refspec to origin, with optional explicit force-with-lease.',
@@ -231,10 +335,35 @@ const descriptions: Record<RunnerOperation, string> = {
   github_action: 'Execute authenticated GitHub pull request and issue operations via brokered helper without exposing tokens to workspace.'
 };
 
-const readOnly = new Set<RunnerOperation>(['workspace_list', 'workspace_status', 'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references', 'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list']);
-const destructive = new Set<RunnerOperation>(['workspace_close', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close', 'tasks_run', 'tasks_cancel', 'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run', 'github_action']);
-const idempotent = new Set<RunnerOperation>(['workspace_open', 'workspace_list', 'workspace_status', 'workspace_close', 'files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references', 'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close', 'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph', 'git_status', 'git_diff', 'git_log', 'git_add', 'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list']);
-const openWorld = new Set<RunnerOperation>(['workspace_open', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run', 'git_fetch', 'git_pull', 'git_push', 'skills_run', 'hooks_run', 'deployments_run', 'github_action']);
+const readOnly = new Set<RunnerOperation>([
+  'workspace_list', 'workspace_status', 'workspace_context',
+  'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references',
+  'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph',
+  'operation_status', 'operation_wait',
+  'git_status', 'git_diff', 'git_log', 'git_identity_status',
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list'
+]);
+const destructive = new Set<RunnerOperation>([
+  'workspace_close', 'workspace_recover', 'workspace_finalize',
+  'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move',
+  'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
+  'tasks_run', 'tasks_cancel', 'operation_cancel',
+  'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
+  'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run', 'github_action'
+]);
+const idempotent = new Set<RunnerOperation>([
+  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
+  'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
+  'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close',
+  'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
+  'operation_status', 'operation_cancel', 'operation_wait',
+  'git_status', 'git_diff', 'git_log', 'git_add', 'git_identity_status', 'git_identity_set',
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list'
+]);
+const openWorld = new Set<RunnerOperation>([
+  'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',
+  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'hooks_run', 'deployments_run', 'github_action'
+]);
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({
   name,

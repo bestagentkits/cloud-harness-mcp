@@ -1,6 +1,6 @@
 ---
 title: Tools Reference
-description: Complete machine-generated reference of all 53 MCP tools provided by Cloud Harness MCP.
+description: Complete machine-generated reference of all 64 MCP tools provided by Cloud Harness MCP.
 ---
 
 # Tools Reference
@@ -11,7 +11,7 @@ description: Complete machine-generated reference of all 53 MCP tools provided b
   <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/tools.md</code>.
 </div>
 
-Cloud Harness MCP exposes **53 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
+Cloud Harness MCP exposes **64 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
 
 ## Security & Capability Badges
 
@@ -66,7 +66,7 @@ Read the lifecycle state and metadata for one workspace.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ### `workspace_close`
 
@@ -78,7 +78,7 @@ Stop a workspace executor and permanently remove all workspace files, including 
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ## Files and Code Intelligence
 
@@ -94,7 +94,7 @@ List one workspace directory with bounded cursor pagination.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `cursor` | `string` | No | max length: 256 |
 | `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
@@ -103,16 +103,18 @@ List one workspace directory with bounded cursor pagination.
 
 **Read file**
 
-Read a bounded byte range from a workspace file with its size and SHA-256.
+Read a bounded byte range from a workspace file with its size, SHA-256, and continuation cursor.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `offset` | `integer` | **Yes** | range: 0–9007199254740991, default: `0` |
-| `limit` | `integer` | **Yes** | range: 1–262144, default: `65536` |
+| `limit` | `integer` | **Yes** | range: 1–1048576, default: `65536` |
+| `cursor` | `string` | No | max length: 256 |
+| `readAll` | `boolean` | No | — |
 
 ### `files_write`
 
@@ -124,7 +126,7 @@ Atomically create or replace a workspace file, optionally guarded by its current
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `content` | `string` | **Yes** | max length: 1048576 |
 | `expectedSha256` | `string` | No | length: 64–64 |
@@ -139,7 +141,7 @@ Replace one unique exact text occurrence, optionally guarded by the file SHA-256
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `oldText` | `string` | **Yes** | max length: 262144 |
 | `newText` | `string` | **Yes** | max length: 262144 |
@@ -155,7 +157,7 @@ Delete one workspace file or directory, with explicit recursion and optional fil
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `recursive` | `boolean` | **Yes** | default: `false` |
 | `expectedSha256` | `string` | No | length: 64–64 |
@@ -170,7 +172,7 @@ Move or rename one workspace entry, optionally overwriting an existing file.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `source` | `string` | **Yes** | length: 1–1024 |
 | `destination` | `string` | **Yes** | length: 1–1024 |
 | `overwrite` | `boolean` | **Yes** | default: `false` |
@@ -185,7 +187,7 @@ Create one workspace directory, including missing parents by default.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `recursive` | `boolean` | **Yes** | default: `true` |
 
@@ -193,13 +195,13 @@ Create one workspace directory, including missing parents by default.
 
 **Search workspace**
 
-Search workspace text with a bounded regular expression and optional path or glob filter.
+Search workspace text with a bounded regular expression and optional path, glob filter, and continuation cursor.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `pattern` | `string` | **Yes** | length: 1–4096 |
 | `path` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `glob` | `string` | No | max length: 512 |
@@ -215,7 +217,7 @@ Find bounded indexed symbol definitions by case-insensitive substring.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `query` | `string` | **Yes** | length: 1–256 |
 | `path` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `language` | `string` | No | pattern: `^[A-Za-z0-9_+#.-]{1,40}$` |
@@ -231,7 +233,7 @@ Find bounded lexical whole-word occurrences of a symbol in workspace text.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `symbol` | `string` | **Yes** | length: 1–256 |
 | `path` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `glob` | `string` | No | max length: 512 |
@@ -251,7 +253,7 @@ Run one bounded shell command in the workspace and return captured output.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `command` | `string` | **Yes** | length: 1–32768 |
 | `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
@@ -269,7 +271,7 @@ Open an idempotent ephemeral interactive shell in the workspace.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
@@ -283,7 +285,7 @@ Send input to or poll bounded output from an open interactive shell.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `shellId` | `string` | **Yes** | pattern: `^sh_[A-Za-z0-9_-]{20,80}$` |
 | `input` | `string` | No | max length: 65536 |
 | `cursor` | `string` | No | max length: 256 |
@@ -299,7 +301,7 @@ Terminate an interactive shell and release its in-memory state.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `shellId` | `string` | **Yes** | pattern: `^sh_[A-Za-z0-9_-]{20,80}$` |
 
 ## Sessions and Tasks
@@ -316,7 +318,7 @@ List named coding sessions in a workspace with bounded cursor pagination.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `cursor` | `string` | No | max length: 256 |
 | `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
 
@@ -330,7 +332,7 @@ Open an idempotent named coding session in the workspace.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
 | `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
@@ -345,7 +347,7 @@ Send input to or poll bounded output from a named coding session.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `sessionId` | `string` | **Yes** | pattern: `^sess_[A-Za-z0-9_-]{20,80}$` |
 | `input` | `string` | No | max length: 65536 |
 | `cursor` | `string` | No | max length: 256 |
@@ -361,7 +363,7 @@ Terminate a coding session and release its in-memory state.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `sessionId` | `string` | **Yes** | pattern: `^sess_[A-Za-z0-9_-]{20,80}$` |
 
 ### `tasks_list`
@@ -374,7 +376,7 @@ List managed background task records with bounded cursor pagination.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `cursor` | `string` | No | max length: 256 |
 | `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
 
@@ -388,7 +390,7 @@ Start an idempotent managed command task with optional task dependencies.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `command` | `string` | **Yes** | length: 1–32768 |
 | `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
@@ -405,7 +407,7 @@ Read one managed task state and its next bounded output chunk.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `taskId` | `string` | **Yes** | pattern: `^task_[A-Za-z0-9_-]{20,80}$` |
 | `cursor` | `string` | No | max length: 256 |
 
@@ -419,7 +421,7 @@ Terminate a managed task process group without rolling back completed effects.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `taskId` | `string` | **Yes** | pattern: `^task_[A-Za-z0-9_-]{20,80}$` |
 
 ### `tasks_graph`
@@ -432,7 +434,7 @@ Read the current managed-task dependency graph for a workspace.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ## Git and Worktrees
 
@@ -448,34 +450,39 @@ Read branch, index, and working-tree status for the workspace repository.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ### `git_diff`
 
 **Git diff**
 
-Read a bounded staged or unstaged Git diff, optionally narrowed to one path.
+Read a bounded staged or unstaged Git diff with cursor pagination and readAll convenience.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `staged` | `boolean` | **Yes** | default: `false` |
 | `path` | `string` | No | length: 1–1024 |
+| `cursor` | `string` | No | max length: 256 |
+| `limit` | `integer` | **Yes** | range: 1–500000, default: `65536` |
+| `readAll` | `boolean` | No | — |
 
 ### `git_log`
 
 **Git log**
 
-Read bounded recent commit metadata from the workspace repository.
+Read bounded recent commit metadata from the workspace repository with cursor pagination.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `limit` | `integer` | **Yes** | range: 1–100, default: `20` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `limit` | `integer` | **Yes** | range: 1–500, default: `20` |
+| `cursor` | `string` | No | max length: 256 |
+| `readAll` | `boolean` | No | — |
 
 ### `git_branch`
 
@@ -487,7 +494,7 @@ List, create, or delete a local Git branch with constrained ref arguments.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `action` | `"list"` \| `"create"` \| `"delete"` | **Yes** | — |
 | `name` | `string` | No | length: 1–255 |
 | `startPoint` | `string` | No | length: 1–255 |
@@ -503,7 +510,7 @@ Check out an existing Git ref or create and check out a local branch.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `ref` | `string` | **Yes** | length: 1–255 |
 | `create` | `boolean` | **Yes** | default: `false` |
 
@@ -517,7 +524,7 @@ Stage either explicit workspace paths or all tracked and untracked changes.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `all` | `boolean` | **Yes** | default: `false` |
 | `paths` | string[] | **Yes** | default: `[]` |
 
@@ -525,14 +532,14 @@ Stage either explicit workspace paths or all tracked and untracked changes.
 
 **Create Git commit**
 
-Create an unsigned local Git commit with an explicit author and message.
+Create an unsigned local Git commit with default or explicit author and message.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `message` | `string` | **Yes** | length: 1–10000 |
-| `authorName` | `string` | **Yes** | length: 1–200 |
-| `authorEmail` | `string` | **Yes** | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
+| `authorName` | `string` | No | length: 1–200 |
+| `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
 | `all` | `boolean` | **Yes** | default: `false` |
 
 ### `git_fetch`
@@ -545,7 +552,7 @@ Fetch a constrained source ref from origin through the trusted repository broker
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `remote` | `"origin"` | **Yes** | default: `"origin"` |
 | `refspec` | `string` | No | length: 1–255 |
 
@@ -559,7 +566,7 @@ Integrate an origin branch using ff-only, merge, or rebase strategy.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `remote` | `"origin"` | **Yes** | default: `"origin"` |
 | `branch` | `string` | No | length: 1–255 |
 | `strategy` | `"ff-only"` \| `"merge"` \| `"rebase"` | **Yes** | default: `"ff-only"` |
@@ -574,7 +581,7 @@ Push a constrained branch refspec to origin, with optional explicit force-with-l
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `remote` | `"origin"` | **Yes** | default: `"origin"` |
 | `refspec` | `string` | No | length: 1–512 |
 | `forceWithLease` | `boolean` | **Yes** | default: `false` |
@@ -590,7 +597,7 @@ Merge a Git ref with an explicit fast-forward policy and optional message.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `ref` | `string` | **Yes** | length: 1–255 |
 | `fastForward` | `"allow"` \| `"only"` \| `"never"` | **Yes** | default: `"allow"` |
 | `message` | `string` | No | length: 1–10000 |
@@ -605,7 +612,7 @@ Start, continue, or abort a local Git rebase with constrained ref arguments.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `action` | `"start"` \| `"continue"` \| `"abort"` | **Yes** | — |
 | `upstream` | `string` | No | length: 1–255 |
 
@@ -619,7 +626,7 @@ List managed Git worktrees and their current branch or HEAD state.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ### `worktrees_create`
 
@@ -629,7 +636,7 @@ Create a named managed worktree, optionally with a new local branch.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
 | `ref` | `string` | **Yes** | length: 1–255 |
 | `createBranch` | `boolean` | **Yes** | default: `false` |
@@ -644,7 +651,7 @@ Remove one named managed worktree, optionally discarding dirty state.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
 | `force` | `boolean` | **Yes** | default: `false` |
 
@@ -659,7 +666,7 @@ Execute authenticated GitHub pull request and issue operations via brokered help
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_create"` \| `"issue_list"` \| `"issue_view"` \| `"issue_create"` | **Yes** | — |
+| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_create"` \| `"issue_list"` \| `"issue_view"` \| `"issue_create"` \| `"issue_comment"` \| `"issue_comment_update"` \| `"label_create"` \| `"issue_labels_add"` \| `"issue_labels_remove"` \| `"issue_update"` | **Yes** | — |
 | `limit` | `integer` | No | range: 1–100, default: `20` |
 | `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |
@@ -668,6 +675,15 @@ Execute authenticated GitHub pull request and issue operations via brokered help
 | `head` | `string` | No | length: 1–256 |
 | `base` | `string` | No | length: 1–256, default: `"main"` |
 | `issueNumber` | `integer` | No | range: 0–9007199254740991 |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
+| `commentId` | `integer` | No | range: 0–9007199254740991 |
+| `name` | `string` | No | length: 1–100 |
+| `color` | `string` | No | pattern: `^[0-9A-Fa-f]{6}$` |
+| `description` | `string` | No | max length: 200 |
+| `labels` | string[] | No | — |
+| `createMissing` | `boolean` | No | default: `true` |
+| `label` | `string` | No | length: 1–100 |
+| `stateReason` | `"completed"` \| `"not_planned"` \| `"reopened"` | No | — |
 
 ## Repository Extensions
 
@@ -683,7 +699,7 @@ List repository-provided agent skills discovered in the workspace.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ### `skills_read`
 
@@ -695,7 +711,7 @@ Read bounded instructions for one repository-provided agent skill.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]{1,120}$` |
 
 ### `skills_run`
@@ -708,7 +724,7 @@ Execute one reviewed script packaged by a repository-provided skill.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]{1,120}$` |
 | `script` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `args` | string[] | **Yes** | default: `[]` |
@@ -724,7 +740,7 @@ List repository-defined Cloud Harness automation hooks without running them.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ### `hooks_run`
 
@@ -736,7 +752,7 @@ Execute one named repository-defined hook as a bounded shell command.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
 
@@ -750,7 +766,7 @@ List repository-local Cloud Harness memory note names.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ### `memories_read`
 
@@ -762,7 +778,7 @@ Read one bounded repository-local Cloud Harness memory note.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 
 ### `memories_write`
@@ -775,7 +791,7 @@ Create or replace one repository-local Cloud Harness memory note.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `content` | `string` | **Yes** | max length: 262144 |
 
@@ -789,7 +805,7 @@ List repository-defined deployment targets without running them.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ### `deployments_run`
 
@@ -801,7 +817,161 @@ Execute one named repository-defined deployment target with external-effect risk
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
+
+## Additional Tools
+
+### `workspace_lease_renew`
+
+**Renew workspace lease**
+
+Explicitly renew or extend the workspace idle lease duration.
+
+**Attributes:** `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `extensionSeconds` | `integer` | No | range: 60–86400 |
+
+### `workspace_recover`
+
+**Recover workspace state**
+
+Inspect, patch, or export unpushed work from an active or recoverable expired workspace.
+
+**Attributes:** <span class="badge-destructive">destructive</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `mode` | `"status"` \| `"patch"` \| `"export"` | **Yes** | default: `"status"` |
+| `targetBranch` | `string` | No | length: 1–255 |
+
+### `workspace_context`
+
+**Workspace context**
+
+Read the active workspace ID, branch, lease time, Git identity, and repository overview.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
+### `workspace_set_active`
+
+**Set active workspace**
+
+Set the caller preferred active workspace when multiple workspaces exist.
+
+**Attributes:** `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
+### `workspace_finalize`
+
+**Finalize workspace commit and push**
+
+Transactionally stage changes, run preflights, commit with default or explicit identity, and push to remote in one call.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent` · <span class="badge-openworld">openWorld</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `paths` | string[] | No | — |
+| `all` | `boolean` | **Yes** | default: `true` |
+| `commitMessage` | `string` | **Yes** | length: 1–10000 |
+| `branch` | `string` | No | length: 1–255 |
+| `push` | `boolean` | **Yes** | default: `true` |
+| `authorName` | `string` | No | length: 1–200 |
+| `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
+| `preflight` | `object` | No | — |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
+
+### `files_write_batch`
+
+**Write batch files**
+
+Atomically write multiple workspace files in one call, automatically creating missing parent directories.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `files` | object[] | **Yes** | — |
+| `createParents` | `boolean` | **Yes** | default: `true` |
+| `atomic` | `boolean` | **Yes** | default: `true` |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
+
+### `operation_status`
+
+**Read operation status**
+
+Query the execution state, progress, and terminal result of a long-running operation.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `operationId` | `string` | **Yes** | length: 1–128 |
+| `cursor` | `string` | No | max length: 256 |
+
+### `operation_cancel`
+
+**Cancel operation**
+
+Cancel an in-flight long-running operation.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `operationId` | `string` | **Yes** | length: 1–128 |
+
+### `operation_wait`
+
+**Wait for operation**
+
+Wait for a long-running operation to reach a terminal state with a timeout.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `operationId` | `string` | **Yes** | length: 1–128 |
+| `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
+
+### `git_identity_status`
+
+**Read Git author identity**
+
+Read the default or configured Git author name and email for the workspace.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
+### `git_identity_set`
+
+**Set Git author identity**
+
+Configure default Git author name and email for workspace commits.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `name` | `string` | **Yes** | length: 1–200 |
+| `email` | `string` | **Yes** | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
 

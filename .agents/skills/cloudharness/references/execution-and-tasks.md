@@ -129,6 +129,44 @@ only ASCII letters, digits, `.`, `_`, and `-`, with length 1–80.
 - Required: `workspaceId`.
 - Returns the current task/dependency graph for diagnosing blocked work.
 
+## Long-running operations
+
+<!-- cloudharness-tool:operation_status -->
+### `operation_status`
+
+Query status, progress, and terminal result of a long-running operation.
+
+- Required: `operationId`. Optional: `cursor`.
+- Returns status (`queued`, `running`, `completed`, `failed`, `cancelled`), progress, and retained output.
+
+<!-- cloudharness-example:operation_status
+{"operationId":"op_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
+<!-- cloudharness-tool:operation_cancel -->
+### `operation_cancel`
+
+Cancel an in-flight long-running operation.
+
+- Required: `operationId`.
+- Terminates the underlying process group and marks the operation cancelled.
+
+<!-- cloudharness-example:operation_cancel
+{"operationId":"op_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
+<!-- cloudharness-tool:operation_wait -->
+### `operation_wait`
+
+Wait for an operation to reach a terminal state with a server timeout.
+
+- Required: `operationId`. Optional: `timeoutMs` (100–300,000).
+- Returns terminal result or timed-out status with resumption hint.
+
+<!-- cloudharness-example:operation_wait
+{"operationId":"op_aaaaaaaaaaaaaaaaaaaa","timeoutMs":30000}
+-->
+
 ## Recovery and cleanup
 
 1. For a lost create response, reuse its original idempotency key.

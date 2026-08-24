@@ -59,6 +59,43 @@ Read branch, index, and working-tree status for `workspaceId`.
   as tracked modifications/deletions. Inspect status for secrets and unrelated
   files first. The tool creates a local commit and does not sign or push it.
 
+<!-- cloudharness-tool:git_identity_status -->
+### `git_identity_status`
+
+Read configured or default Git author identity for the workspace.
+
+- Optional: `workspaceId`.
+- Returns author name, email, and source (`workspace`, `principal`, or `default`).
+
+<!-- cloudharness-example:git_identity_status
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
+<!-- cloudharness-tool:git_identity_set -->
+### `git_identity_set`
+
+Configure default Git author name and email for commits.
+
+- Required: `name`, `email`. Optional: `workspaceId`.
+- Returns updated Git author identity settings.
+
+<!-- cloudharness-example:git_identity_set
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","name":"Agent Developer","email":"agent@example.com"}
+-->
+
+<!-- cloudharness-tool:workspace_finalize -->
+### `workspace_finalize`
+
+Transactionally stage changes, run preflights, commit, and push to origin in one call.
+
+- Required: `commitMessage` (1–10,000 characters).
+- Optional: `workspaceId`, `paths`, `all` (default true), `branch`, `push` (default true), `authorName`, `authorEmail`, `preflight`, `idempotencyKey`.
+- Returns commit SHA, target branch, push result, and final workspace status.
+
+<!-- cloudharness-example:workspace_finalize
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","commitMessage":"feat(core): implement feature","push":true}
+-->
+
 ## Origin transfer and history integration
 
 The trusted runner brokers repository credentials when configured. Credentials

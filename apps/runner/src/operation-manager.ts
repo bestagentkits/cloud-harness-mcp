@@ -23,6 +23,21 @@ type Managed = {
   maxBytes?: number;
 };
 
+export type TrackedOperation = {
+  id: string;
+  workspaceId?: string | undefined;
+  kind: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  createdAt: number;
+  deadlineMs?: number | undefined;
+  progress?: { percent?: number | undefined; stage?: string | undefined; message?: string | undefined } | undefined;
+  result?: unknown;
+  error?: { code: string; message: string; retryable: boolean } | undefined;
+  output: Buffer;
+  offset: number;
+  child?: ChildProcessWithoutNullStreams | undefined;
+  container?: string | undefined;
+};
 const id = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
 
 export class OperationManager {
@@ -31,7 +46,7 @@ export class OperationManager {
   private readonly sessions = new Map<string, Managed>();
   private readonly idempotency = new Map<string, string>();
   private readonly retainedOutputBytes = 67_108_864;
-
+  private readonly genericOperations = new Map<string, TrackedOperation>();
   private records(workspaceId: string): Managed[] {
     return [...this.tasks.values(), ...this.shells.values(), ...this.sessions.values()]
       .filter((record) => record.workspaceId === workspaceId)
@@ -276,6 +291,15 @@ export class OperationManager {
         record.child?.kill();
       }
     }
+    for (const [opId, op] of this.genericOperations) {
+      if (op.workspaceId === workspaceId) {
+        if (op.status === 'running' || op.status === 'queued') {
+          op.status = 'cancelled';
+          if (op.child) { try { op.child.kill('SIGTERM'); } catch { /* ignore */ } }
+        }
+        this.genericOperations.delete(opId);
+      }
+    }
     for (const [recordId, record] of this.tasks) if (record.workspaceId === workspaceId) this.tasks.delete(recordId);
     for (const [recordId, record] of this.shells) if (record.workspaceId === workspaceId) this.shells.delete(recordId);
     for (const [recordId, record] of this.sessions) if (record.workspaceId === workspaceId) this.sessions.delete(recordId);
@@ -316,5 +340,93 @@ export class OperationManager {
       cursor: String(nextCursor),
       truncated: missedOutput || nextCursor < end
     };
+  }
+
+  registerGenericOperation(op: { id: string; workspaceId?: string; kind: string; deadlineMs?: number; container?: string }): TrackedOperation {
+    while (this.genericOperations.size >= 500) {
+      const oldest = [...this.genericOperations.entries()]
+        .filter(([, o]) => o.status === 'completed' || o.status === 'failed' || o.status === 'cancelled')
+        .sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+      if (oldest) {
+        this.genericOperations.delete(oldest[0]);
+      } else {
+        const oldestAny = [...this.genericOperations.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+        if (oldestAny) this.genericOperations.delete(oldestAny[0]);
+        break;
+      }
+    }
+    const tracked: TrackedOperation = {
+      id: op.id,
+      workspaceId: op.workspaceId,
+      kind: op.kind,
+      status: 'running',
+      createdAt: Date.now(),
+      deadlineMs: op.deadlineMs,
+      output: Buffer.alloc(0),
+      offset: 0,
+      container: op.container
+    };
+    this.genericOperations.set(op.id, tracked);
+    return tracked;
+  }
+
+  updateGenericOperation(id: string, patch: Partial<TrackedOperation>): TrackedOperation | undefined {
+    const current = this.genericOperations.get(id);
+    if (!current) return undefined;
+    Object.assign(current, patch);
+    return current;
+  }
+
+  getGenericOperation(id: string): TrackedOperation | undefined {
+    const gen = this.genericOperations.get(id);
+    if (gen) return gen;
+    const task = this.tasks.get(id);
+    if (task) {
+      return {
+        id: task.id,
+        workspaceId: task.workspaceId,
+        kind: 'task',
+        status: task.status === 'succeeded' ? 'completed' : task.status === 'blocked' ? 'failed' : task.status === 'failed' ? 'failed' : task.status === 'cancelled' ? 'cancelled' : 'running',
+        createdAt: task.createdAt,
+        output: task.output,
+        offset: task.offset,
+        child: task.child,
+        container: task.container,
+        error: task.status === 'blocked' ? { code: 'CONFLICT', message: 'Task blocked by dependency failure', retryable: false } : undefined
+      };
+    }
+    return undefined;
+  }
+
+  async cancelGenericOperation(id: string): Promise<TrackedOperation> {
+    const op = this.genericOperations.get(id);
+    if (op) {
+      if (op.status === 'running' || op.status === 'queued') {
+        op.status = 'cancelled';
+        if (op.child) {
+          try { op.child.kill('SIGTERM'); } catch { /* process already exited */ }
+        }
+        if (op.container) {
+          try {
+            await terminateContainerProcessGroup(op.container, `/tmp/cloud-harness-operations/${id}.pid`);
+          } catch { /* container already stopped */ }
+        }
+      }
+      return op;
+    }
+    const task = this.tasks.get(id);
+    if (task) {
+      await this.cancelTask(task.workspaceId, id);
+      return {
+        id: task.id,
+        workspaceId: task.workspaceId,
+        kind: 'task',
+        status: 'cancelled',
+        createdAt: task.createdAt,
+        output: task.output,
+        offset: task.offset
+      };
+    }
+    throw new HarnessError('NOT_FOUND', `operation ${id} not found`, 404, false);
   }
 }
