@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunnerConfig } from '@cloud-harness/contracts';
 import type { GitHubBindingService } from '../src/github-binding-service.js';
-import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
+import { InMemoryGitHubInstallationStore, type GitHubInstallationMutationAudit } from '../src/github-installation-store.js';
+import type { MetadataStore } from '../src/metadata-store.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 
 const docker = vi.hoisted(() => ({
@@ -79,9 +80,11 @@ function fixture() {
 type CloneMethod = (record: WorkspaceRecord, repositoryUrl: URL, ref?: string) => Promise<string>;
 
 describe('private repository clone reconciliation', () => {
-  it('reconciles stale Access grants and retries clone once with a freshly minted token', async () => {
+  it('reconciles stale Access grants, records mutation audit, and retries clone once with a freshly minted token', async () => {
     const { config, store, installations, record } = fixture();
-    const reconcile = vi.fn(async (principalId: string) => {
+    const recordAuditInTransaction = vi.fn();
+    const metadata = { recordAuditInTransaction } as unknown as MetadataStore;
+    const reconcile = vi.fn(async (principalId: string, audit?: GitHubInstallationMutationAudit) => {
       return installations.replaceVerified(principalId, {
         appId: 123,
         installationId: 777,
@@ -89,10 +92,10 @@ describe('private repository clone reconciliation', () => {
         accountLogin: 'bestagentkits',
         status: 'active',
         repositories: [{ owner: 'bestagentkits', repository: 'agentkit', contents: 'read' }]
-      }, 2_000);
+      }, 2_000, audit);
     });
     const binding = { reconcile } as unknown as GitHubBindingService;
-    const service = new WorkspaceService(config, store, undefined, installations, binding);
+    const service = new WorkspaceService(config, store, metadata, installations, binding);
     broker.mintPrincipalRepositoryToken
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce('fresh-repository-token');
@@ -104,12 +107,47 @@ describe('private repository clone reconciliation', () => {
       const clone = (service as unknown as { clone: CloneMethod }).clone.bind(service);
       await expect(clone(record, new URL(record.repositoryUrl))).resolves.toBe(join(record.workspacePath, 'repo'));
       expect(reconcile).toHaveBeenCalledTimes(1);
-      expect(reconcile).toHaveBeenCalledWith('principal-a', undefined, '777');
+      expect(reconcile).toHaveBeenCalledWith('principal-a', expect.any(Function), '777');
+      expect(recordAuditInTransaction).toHaveBeenCalledWith(
+        store.database,
+        'principal-a',
+        'github.reconciled',
+        'github_installation',
+        '777',
+        2,
+        { status: 'active' }
+      );
       expect(broker.mintPrincipalRepositoryToken).toHaveBeenCalledTimes(2);
       expect(docker.runDocker).toHaveBeenCalledTimes(2);
       expect(docker.runDocker.mock.calls[0]?.[1]?.stdin).toBe('\n');
       expect(docker.runDocker.mock.calls[1]?.[1]?.stdin).toBe('fresh-repository-token\n');
       expect(docker.removeContainer).toHaveBeenCalledTimes(2);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('does not retry when principal has no bound installation matching the repository owner', async () => {
+    const { config, store, record } = fixture();
+    const emptyInstallations = new InMemoryGitHubInstallationStore();
+    const reconcile = vi.fn();
+    const binding = { reconcile } as unknown as GitHubBindingService;
+    const service = new WorkspaceService(config, store, undefined, emptyInstallations, binding);
+    broker.mintPrincipalRepositoryToken.mockResolvedValueOnce(undefined);
+    docker.runDocker.mockResolvedValueOnce({
+      exitCode: 128,
+      stdout: '',
+      stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      truncated: false
+    });
+
+    try {
+      const clone = (service as unknown as { clone: CloneMethod }).clone.bind(service);
+      await expect(clone(record, new URL(record.repositoryUrl))).rejects.toThrow('repository clone failed');
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(broker.mintPrincipalRepositoryToken).toHaveBeenCalledTimes(1);
+      expect(docker.runDocker).toHaveBeenCalledTimes(1);
+      expect(docker.removeContainer).toHaveBeenCalledTimes(1);
     } finally {
       store.close();
     }

@@ -16,7 +16,7 @@ import { inspectContainer, removeContainer, runDocker, terminateContainerProcess
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
-import type { GitHubInstallationStore } from './github-installation-store.js';
+import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
@@ -249,7 +249,18 @@ export class WorkspaceService {
       candidate.status !== 'uninstalled' && candidate.accountLogin.toLowerCase() === repositoryOwner
     );
     if (!installation) return undefined;
-    await this.githubBinding.reconcile(ownerId, undefined, installation.installationId);
+    const audit = this.metadata
+      ? (record: GitHubInstallationRecord) => this.metadata!.recordAuditInTransaction(
+          this.store.database,
+          ownerId,
+          record.status === 'uninstalled' ? 'github.uninstalled' : 'github.reconciled',
+          'github_installation',
+          record.installationId,
+          record.generation,
+          { status: record.status }
+        )
+      : undefined;
+    await this.githubBinding.reconcile(ownerId, audit, installation.installationId);
     return await mintPrincipalRepositoryToken({
       config: this.config,
       principalId: ownerId,
