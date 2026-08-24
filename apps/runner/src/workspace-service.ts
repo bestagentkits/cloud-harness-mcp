@@ -15,7 +15,8 @@ import {
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken } from './github-app-broker.js';
-import type { GitHubInstallationStore } from './github-installation-store.js';
+import type { GitHubBindingService } from './github-binding-service.js';
+import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
@@ -56,7 +57,8 @@ export class WorkspaceService {
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
     private readonly metadata?: MetadataStore,
-    private readonly githubInstallations?: GitHubInstallationStore
+    private readonly githubInstallations?: GitHubInstallationStore,
+    private readonly githubBinding?: GitHubBindingService
   ) {
     this.instanceId = store.instanceId();
   }
@@ -201,6 +203,7 @@ export class WorkspaceService {
 
   private async clone(record: WorkspaceRecord, repositoryUrl: URL, ref?: string): Promise<string> {
     const jobPath = record.workspacePath;
+    const repositoryPath = join(jobPath, 'repo');
     const helperName = `chm-clone-${record.id.slice(3, 15)}`;
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
@@ -215,15 +218,56 @@ export class WorkspaceService {
       '--volume', `${jobPath}:/job`, '--entrypoint', '/opt/harness/clone-helper.sh', this.config.executorImage,
       record.repositoryUrl, '/job/repo', ref ?? ''
     ];
-    const repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
-    let result;
-    try {
-      result = await runDocker(args, { stdin: `${repositoryToken ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
-    } finally {
-      await removeContainer(helperName);
+    const runClone = async (token: string | undefined) => {
+      try {
+        return await runDocker(args, { stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
+      } finally {
+        await removeContainer(helperName);
+      }
+    };
+
+    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    let result = await runClone(repositoryToken);
+    if (result.exitCode !== 0 && !repositoryToken) {
+      const refreshedToken = await this.refreshRepositoryToken(record.ownerId, repositoryUrl);
+      if (refreshedToken) {
+        await this.safeRemovePath(repositoryPath);
+        repositoryToken = refreshedToken;
+        result = await runClone(repositoryToken);
+      }
     }
     if (result.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `repository clone failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
-    return join(jobPath, 'repo');
+    return repositoryPath;
+  }
+
+  private async refreshRepositoryToken(ownerId: string, repositoryUrl: URL): Promise<string | undefined> {
+    if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') return undefined;
+    if (!this.githubInstallations || !this.githubBinding || !this.config.githubApp) return undefined;
+    if (repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
+    const repositoryOwner = repositoryUrl.pathname.replace(/^\/+/, '').split('/')[0]?.toLowerCase();
+    const installation = this.githubInstallations.listInstallations(ownerId).find((candidate) =>
+      candidate.status !== 'uninstalled' && candidate.accountLogin.toLowerCase() === repositoryOwner
+    );
+    if (!installation) return undefined;
+    const audit = this.metadata
+      ? (record: GitHubInstallationRecord) => this.metadata!.recordAuditInTransaction(
+          this.store.database,
+          ownerId,
+          record.status === 'uninstalled' ? 'github.uninstalled' : 'github.reconciled',
+          'github_installation',
+          record.installationId,
+          record.generation,
+          { status: record.status }
+        )
+      : undefined;
+    await this.githubBinding.reconcile(ownerId, audit, installation.installationId);
+    return await mintPrincipalRepositoryToken({
+      config: this.config,
+      principalId: ownerId,
+      repositoryUrl,
+      installations: this.githubInstallations,
+      requiredPermission: 'read'
+    });
   }
 
   private async provisionMountDirectories(record: WorkspaceRecord): Promise<{ toolsPath: string; cachePath: string }> {
