@@ -1,3 +1,10 @@
+## [0.19.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.19.1...v0.19.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* **runner:** reconcile private repo grants before clone retry ([#87](https://github.com/bestagentkits/cloud-harness-mcp/issues/87)) ([02f94b3](https://github.com/bestagentkits/cloud-harness-mcp/commit/02f94b3614bc0c292253629555581082fa652c30)), closes [#86](https://github.com/bestagentkits/cloud-harness-mcp/issues/86) [#86](https://github.com/bestagentkits/cloud-harness-mcp/issues/86)
+
 ## [0.19.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.19.0...v0.19.1) (2026-08-23)
 
 
