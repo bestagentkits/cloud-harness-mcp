@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Local processes, Git, and repository extensions"
-status: pending
+status: completed
 priority: P1
 effort: "2-4d"
 dependencies: [2]

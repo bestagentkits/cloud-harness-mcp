@@ -31,6 +31,14 @@ npm test
 npm run build
 ```
 
+### Running local stdio mode
+
+After building packages with `npm run build`, you can test local stdio mode directly:
+
+```bash
+node apps/api/dist/index.js --transport stdio --workspace /path/to/test-folder
+```
+
 ## Skill and plugin packaging
 
 The installable `cloudharness` skill is authored under

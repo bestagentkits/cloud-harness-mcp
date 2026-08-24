@@ -37,6 +37,19 @@ Cloud Harness MCP provides two distinct connection lanes over **Streamable HTTP 
 | **Key Expiry** | Session bound | 1–365 days (configurable) |
 | **Max Keys per Identity** | N/A | 10 active keys |
 
+
+---
+
+## Local Stdio Mode
+
+In addition to remote Streamable HTTP, Cloud Harness MCP can run locally over **stdio** against a selected folder:
+
+```bash
+cloud-harness-mcp --transport stdio --workspace /absolute/path/to/project
+```
+
+Local mode exposes the full tool surface directly to the local folder with host-user authority. Closing the workspace terminates processes without deleting the project folder.
+
 ---
 
 ## Managing API Keys

@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Interop tests, documentation, and release readiness"
-status: pending
+status: completed
 priority: P2
 effort: "2d"
 dependencies: [1, 2, 3]

@@ -1,7 +1,7 @@
 ---
 title: "Stdio transport and local-folder workspace"
 description: "Add a local stdio execution mode that reuses the Cloud Harness MCP contract while preserving the remote HTTP/Docker security boundary."
-status: pending
+status: completed
 priority: P2
 effort: "8-12d"
 issue: 33
