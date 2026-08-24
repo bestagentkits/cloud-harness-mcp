@@ -1,3 +1,10 @@
+# [0.22.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.21.2...v0.22.0) (2026-08-24)
+
+
+### Features
+
+* **ux:** complete lease recovery, compound publish, pagination and reconnect window ([#89](https://github.com/bestagentkits/cloud-harness-mcp/issues/89), [#90](https://github.com/bestagentkits/cloud-harness-mcp/issues/90), [#91](https://github.com/bestagentkits/cloud-harness-mcp/issues/91), [#94](https://github.com/bestagentkits/cloud-harness-mcp/issues/94)) ([#100](https://github.com/bestagentkits/cloud-harness-mcp/issues/100)) ([cf050f8](https://github.com/bestagentkits/cloud-harness-mcp/commit/cf050f8842512a96078c4851aa788789a203f47f))
+
 ## [0.21.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.21.1...v0.21.2) (2026-08-24)
 
 
