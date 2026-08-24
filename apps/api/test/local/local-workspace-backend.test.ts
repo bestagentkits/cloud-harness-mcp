@@ -351,4 +351,26 @@ describe('LocalWorkspaceBackend', () => {
       await rm(outsideDir, { recursive: true, force: true });
     }
   });
+
+  it('escalates to SIGKILL on workspace_close for stubborn processes', async () => {
+    const stubCommand = process.platform === 'win32'
+      ? 'timeout /t 30'
+      : "trap '' TERM; while true; do sleep 0.1; done";
+
+    const taskRes = await backend.call('tasks_run', {
+      workspaceId: backend.workspaceId,
+      command: stubCommand,
+      idempotencyKey: 'stubborn-proc-key'
+    });
+    expect(taskRes.ok).toBe(true);
+
+    // Close workspace - should escalate and terminate cleanly
+    const closeStart = Date.now();
+    const closeRes = await backend.call('workspace_close', {
+      workspaceId: backend.workspaceId
+    });
+    expect(closeRes.ok).toBe(true);
+    const duration = Date.now() - closeStart;
+    expect(duration).toBeLessThan(5000);
+  });
 });

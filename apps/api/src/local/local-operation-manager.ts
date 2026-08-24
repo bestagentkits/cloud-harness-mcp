@@ -26,10 +26,18 @@ type Managed = {
 
 const id = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
 
-function terminateProcess(child?: ChildProcessWithoutNullStreams): void {
-  if (!child || child.killed) return;
+async function terminateProcess(child?: ChildProcessWithoutNullStreams, graceMs = 1000): Promise<void> {
+  if (!child || child.exitCode !== null) return;
   const pid = child.pid;
   if (!pid) return;
+
+  let resolveExit: () => void = () => {};
+  const exitPromise = new Promise<void>((resolve) => {
+    resolveExit = resolve;
+  });
+
+  child.once('close', () => resolveExit());
+  child.once('exit', () => resolveExit());
 
   if (process.platform !== 'win32') {
     try {
@@ -41,24 +49,41 @@ function terminateProcess(child?: ChildProcessWithoutNullStreams): void {
         // already exited
       }
     }
-    setTimeout(() => {
-      try {
-        process.kill(-pid, 'SIGKILL');
-      } catch {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // already exited
-        }
-      }
-    }, 1000).unref();
   } else {
     try {
       child.kill('SIGTERM');
     } catch {
-      // ignore
+      // already exited
     }
   }
+
+  const killTimer = setTimeout(() => {
+    if (child.exitCode === null) {
+      if (process.platform !== 'win32') {
+        try {
+          process.kill(-pid, 'SIGKILL');
+        } catch {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // already dead
+          }
+        }
+      } else {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // already dead
+        }
+      }
+    }
+  }, graceMs);
+
+  await Promise.race([
+    exitPromise,
+    new Promise((resolve) => setTimeout(resolve, graceMs + 200))
+  ]);
+  clearTimeout(killTimer);
 }
 
 function resolveShell(): { bin: string; args: (cmd?: string) => string[] } {
@@ -501,13 +526,15 @@ export class LocalOperationManager {
     return record;
   }
 
-  stopWorkspace(workspaceId: string): void {
+  async stopWorkspace(workspaceId: string): Promise<void> {
+    const toTerminate: ChildProcessWithoutNullStreams[] = [];
     for (const record of this.records(workspaceId)) {
       if (record.status === 'running' || record.status === 'queued') {
         record.status = 'cancelled';
-        terminateProcess(record.child);
+        if (record.child) toTerminate.push(record.child);
       }
     }
+    await Promise.all(toTerminate.map((c) => terminateProcess(c)));
     for (const [recordId, record] of this.tasks) {
       if (record.workspaceId === workspaceId) this.tasks.delete(recordId);
     }
