@@ -609,7 +609,49 @@ const handlers = {
       return { ok: false, message, data: result, error: { code: 'CONFLICT', message, retryable: false }, truncated: result.truncated };
     }
     return ok('Deployment target completed', result, { truncated: result.truncated });
-  }
+  },
+  async workspace_recover(input) {
+    const mode = input.mode ?? 'status';
+    if (mode === 'status') {
+      const statusRes = await git(['status', '--short', '--branch', '--untracked-files=all']);
+      const logRes = await git(['log', '-10', '--date=iso-strict', '--pretty=format:%H%x09%aI%x09%an%x09%s']);
+      const unpushedRes = await git(['log', '@{u}..HEAD', '--oneline']).catch(() => ({ output: '' }));
+      return ok('Workspace recovery status', {
+        status: statusRes.output,
+        recentLog: logRes.output,
+        unpushed: unpushedRes.output || logRes.output,
+        hasUncommitted: Boolean(statusRes.output.split('\n').filter((l) => l && !l.startsWith('##')).length)
+      });
+    }
+    if (mode === 'patch') {
+      await git(['add', '-N', '--all']);
+      const headDiff = await git(['diff', 'HEAD', '--no-ext-diff', '--no-textconv'], { maxBytes: 1_048_576 });
+      const stagedDiff = await git(['diff', '--cached', '--no-ext-diff', '--no-textconv'], { maxBytes: 1_048_576 });
+      const unpushedDiff = await git(['diff', '@{u}..HEAD', '--no-ext-diff', '--no-textconv'], { maxBytes: 1_048_576 }).catch(() => ({ output: '' }));
+      return ok('Workspace recovery patch', {
+        workingTreePatch: headDiff.output || stagedDiff.output,
+        stagedPatch: stagedDiff.output,
+        unpushedPatch: unpushedDiff.output,
+        combinedPatch: [unpushedDiff.output, headDiff.output].filter(Boolean).join('\n')
+      });
+    }
+    if (mode === 'snapshot_commit') {
+      const statusRes = await git(['status', '--short', '--untracked-files=all']);
+      const hasChanges = Boolean(statusRes.output.split('\n').filter((l) => l && !l.startsWith('##')).length);
+      if (hasChanges) {
+        await git(['add', '--all']);
+        const authorName = input.authorName || 'Cloud Harness Recovery';
+        const authorEmail = input.authorEmail || 'recovery@cloud-harness.local';
+        await git(['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 'commit', '--no-gpg-sign', '-m', input.message || 'chore(recovery): snapshot uncommitted work for export']);
+      }
+      const headRes = await git(['rev-parse', 'HEAD']);
+      return ok('Recovery snapshot committed', {
+        headCommitSha: headRes.output.trim(),
+        committedChanges: hasChanges
+      });
+    }
+    return fail('INVALID_INPUT', `unsupported recovery mode ${mode}`);
+  },
 };
 
 export async function executeWorkerRequest(operation, input = {}) {

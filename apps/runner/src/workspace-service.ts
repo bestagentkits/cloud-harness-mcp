@@ -1054,40 +1054,45 @@ export class WorkspaceService {
       const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
       const mode = (validated.mode as 'status' | 'patch' | 'export') ?? 'status';
       if (mode === 'status') {
-        const gitStatus = await this.runRecoveryWorker(rec, 'git_status', {}, signal);
-        const gitLog = await this.runRecoveryWorker(rec, 'git_log', { limit: 10 }, signal);
+        const recoverRes = await this.runRecoveryWorker(rec, 'workspace_recover', { mode: 'status' }, signal);
         return {
           ok: true,
           message: 'Workspace recovery status',
           data: {
             workspace: publicRecord(rec),
-            gitStatus: gitStatus.data,
-            gitLog: gitLog.data
+            ...(recoverRes.data && typeof recoverRes.data === 'object' ? recoverRes.data : {})
           },
           truncated: false
         };
       }
       if (mode === 'patch') {
-        const diff = await this.runRecoveryWorker(rec, 'git_diff', { readAll: true }, signal);
+        const patchRes = await this.runRecoveryWorker(rec, 'workspace_recover', { mode: 'patch' }, signal);
         return {
           ok: true,
           message: 'Workspace recovery patch',
           data: {
             workspace: publicRecord(rec),
-            patch: diff.data
+            ...(patchRes.data && typeof patchRes.data === 'object' ? patchRes.data : {})
           },
           truncated: false
         };
       }
       if (mode === 'export') {
         const targetBranch = (validated.targetBranch as string | undefined) ?? await this.currentBranch(rec, signal);
+        const snapshotRes = await this.runRecoveryWorker(rec, 'workspace_recover', {
+          mode: 'snapshot_commit',
+          message: `chore(recovery): export snapshot for ${targetBranch}`
+        }, signal);
+        const snapshotData = snapshotRes.data as { headCommitSha?: string; committedChanges?: boolean } | undefined;
         const pushResult = await this.remotePush(rec, { refspec: `HEAD:refs/heads/${targetBranch}` }, signal);
         return {
           ok: pushResult.ok,
-          message: pushResult.ok ? 'Workspace state exported to remote branch' : 'Workspace export failed',
+          message: pushResult.ok ? `Recovered work exported to ${targetBranch}` : 'Workspace export failed',
           data: {
             workspace: publicRecord(rec),
             branch: targetBranch,
+            commitSha: snapshotData?.headCommitSha,
+            committedChanges: snapshotData?.committedChanges,
             pushResult: pushResult.data
           },
           truncated: false

@@ -304,13 +304,25 @@ describe('UX Improvements and Feature Enhancements', () => {
     expect((finalizeRes.data as Record<string, unknown>).pushed).toBe(false);
 
     // Test workspace_recover in status and patch mode
+    docker.workerResult = {
+      ok: true,
+      message: 'Workspace recovery status',
+      data: { status: '## main\n M file.ts\n', hasUncommitted: true },
+      truncated: false
+    };
     const recoverStatus = await service.execute(ownerId, 'workspace_recover', { workspaceId: ws.id, mode: 'status' });
     expect(recoverStatus.ok).toBe(true);
     expect((recoverStatus.data as Record<string, unknown>).workspace).toBeDefined();
 
+    docker.workerResult = {
+      ok: true,
+      message: 'Workspace recovery patch',
+      data: { workingTreePatch: 'diff --git a/file.ts b/file.ts', combinedPatch: 'diff --git a/file.ts b/file.ts' },
+      truncated: false
+    };
     const recoverPatch = await service.execute(ownerId, 'workspace_recover', { workspaceId: ws.id, mode: 'patch' });
     expect(recoverPatch.ok).toBe(true);
-    expect((recoverPatch.data as Record<string, unknown>).patch).toBeDefined();
+    expect((recoverPatch.data as Record<string, unknown>).workingTreePatch).toBeDefined();
   });
 
   it('Issue #93: workspace_finalize validates preflight conflicts and enforces journal idempotency', async () => {

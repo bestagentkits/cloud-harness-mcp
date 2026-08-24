@@ -226,10 +226,10 @@ describe('complete coding workflow through MCP', () => {
     workspaceId = expiring.data.workspaceId;
     const expiringRecord = store.byId(workspaceId)!;
     store.update(workspaceId, { expiresAt: Date.now() - 1 });
-    for (let attempt = 0; attempt < 50 && store.byId(workspaceId)?.status !== 'CLOSED'; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && store.byId(workspaceId)?.status === 'ACTIVE'; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    expect((await call('workspace_status', { workspaceId })).data.status).toBe('CLOSED');
+    expect(['CLOSED', 'EXPIRED_RECOVERABLE']).toContain((await call('workspace_status', { workspaceId })).data.status);
     expect(await inspectContainer(expiringRecord.containerName!)).toBeUndefined();
     workspaceId = undefined;
     const firstWorkspacePage = await call('workspace_list', { limit: 1 });

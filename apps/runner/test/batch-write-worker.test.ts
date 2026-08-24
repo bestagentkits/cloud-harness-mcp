@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -194,5 +195,51 @@ describe('Issue #88: files_write_batch worker execution', () => {
     // Verify that neither valid1.txt nor valid2.txt exists on disk
     expect(existsSync(join(root, 'valid1.txt'))).toBe(false);
     expect(existsSync(join(root, 'valid2.txt'))).toBe(false);
+  });
+
+  it('Issue #94: workspace_recover captures unpushed commits, staged changes, and untracked files', async () => {
+    const root = setupWorkspace();
+
+    // Initialize a real Git repository in root
+    execSync('git init && git config user.name "Tester" && git config user.email "test@example.com"', { cwd: root, stdio: 'ignore' });
+    writeFileSync(join(root, 'initial.txt'), 'version 1\n', 'utf8');
+    execSync('git add initial.txt && git commit -m "initial commit"', { cwd: root, stdio: 'ignore' });
+
+    // 1. Create an unpushed commit
+    writeFileSync(join(root, 'committed.txt'), 'committed work\n', 'utf8');
+    execSync('git add committed.txt && git commit -m "unpushed feature"', { cwd: root, stdio: 'ignore' });
+
+    // 2. Create staged changes
+    writeFileSync(join(root, 'initial.txt'), 'version 2 (staged)\n', 'utf8');
+    execSync('git add initial.txt', { cwd: root, stdio: 'ignore' });
+
+    // 3. Create untracked file
+    writeFileSync(join(root, 'untracked.txt'), 'untracked new work\n', 'utf8');
+
+    // Test mode: 'status'
+    const statusResult = await executeWorkerRequest('workspace_recover', { mode: 'status' });
+    expect(statusResult.ok).toBe(true);
+    const statusData = statusResult.data as Record<string, unknown>;
+    expect(statusData.hasUncommitted).toBe(true);
+    expect(statusData.status).toContain('initial.txt');
+    expect(statusData.status).toContain('untracked.txt');
+
+    // Test mode: 'patch' (captures staged, unstaged, and untracked)
+    const patchResult = await executeWorkerRequest('workspace_recover', { mode: 'patch' });
+    expect(patchResult.ok).toBe(true);
+    const patchData = patchResult.data as Record<string, unknown>;
+    expect(patchData.workingTreePatch).toContain('version 2 (staged)');
+    expect(patchData.workingTreePatch).toContain('untracked.txt');
+
+    // Test mode: 'snapshot_commit' (commits all uncommitted/untracked work for export)
+    const snapshotResult = await executeWorkerRequest('workspace_recover', { mode: 'snapshot_commit', message: 'chore: recovery snapshot' });
+    expect(snapshotResult.ok).toBe(true);
+    const snapshotData = snapshotResult.data as Record<string, unknown>;
+    expect(snapshotData.committedChanges).toBe(true);
+    expect(snapshotData.headCommitSha).toBeDefined();
+
+    // Working tree is now clean at the recovery commit
+    const postStatus = await executeWorkerRequest('workspace_recover', { mode: 'status' });
+    expect((postStatus.data as Record<string, unknown>).hasUncommitted).toBe(false);
   });
 });
