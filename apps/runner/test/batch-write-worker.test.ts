@@ -224,13 +224,18 @@ describe('Issue #88: files_write_batch worker execution', () => {
     expect(statusData.status).toContain('initial.txt');
     expect(statusData.status).toContain('untracked.txt');
 
-    // Test mode: 'patch' (captures staged, unstaged, and untracked)
+    // Record index content before patch recovery to verify real .git/index is not mutated
+    const indexBefore = readFileSync(join(root, '.git/index'));
+
+    // Test mode: 'patch' (captures staged, unstaged, and untracked without mutating .git/index)
     const patchResult = await executeWorkerRequest('workspace_recover', { mode: 'patch' });
     expect(patchResult.ok).toBe(true);
     const patchData = patchResult.data as Record<string, unknown>;
     expect(patchData.workingTreePatch).toContain('version 2 (staged)');
     expect(patchData.workingTreePatch).toContain('untracked.txt');
 
+    const indexAfter = readFileSync(join(root, '.git/index'));
+    expect(indexAfter.equals(indexBefore)).toBe(true);
     // Test mode: 'snapshot_commit' (commits all uncommitted/untracked work for export)
     const snapshotResult = await executeWorkerRequest('workspace_recover', { mode: 'snapshot_commit', message: 'chore: recovery snapshot' });
     expect(snapshotResult.ok).toBe(true);

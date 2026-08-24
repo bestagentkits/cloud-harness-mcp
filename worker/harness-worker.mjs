@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -624,16 +625,28 @@ const handlers = {
       });
     }
     if (mode === 'patch') {
-      await git(['add', '-N', '--all']);
-      const headDiff = await git(['diff', 'HEAD', '--no-ext-diff', '--no-textconv'], { maxBytes: 1_048_576 });
-      const stagedDiff = await git(['diff', '--cached', '--no-ext-diff', '--no-textconv'], { maxBytes: 1_048_576 });
-      const unpushedDiff = await git(['diff', '@{u}..HEAD', '--no-ext-diff', '--no-textconv'], { maxBytes: 1_048_576 }).catch(() => ({ output: '' }));
-      return ok('Workspace recovery patch', {
-        workingTreePatch: headDiff.output || stagedDiff.output,
-        stagedPatch: stagedDiff.output,
-        unpushedPatch: unpushedDiff.output,
-        combinedPatch: [unpushedDiff.output, headDiff.output].filter(Boolean).join('\n')
-      });
+      const tempIndex = resolve(tmpdir(), `cloud-harness-temp-index-${process.pid}-${randomBytes(6).toString('hex')}`);
+      const tempEnv = { ...gitEnvironment, GIT_INDEX_FILE: tempIndex };
+      try {
+        const realIndex = resolve(getWorkspaceRoot(), '.git/index');
+        try {
+          const indexData = await readFile(realIndex);
+          await writeFile(tempIndex, indexData);
+        } catch { /* no prior index */ }
+
+        await command('git', gitArgs(['add', '-N', '--all']), { env: tempEnv, maxBytes: 1_048_576 });
+        const headDiff = await command('git', gitArgs(['diff', 'HEAD', '--no-ext-diff', '--no-textconv']), { env: tempEnv, maxBytes: 1_048_576 });
+        const stagedDiff = await git(['diff', '--cached', '--no-ext-diff', '--no-textconv'], { maxBytes: 1_048_576 });
+        const unpushedDiff = await git(['diff', '@{u}..HEAD', '--no-ext-diff', '--no-textconv'], { maxBytes: 1_048_576 }).catch(() => ({ output: '' }));
+        return ok('Workspace recovery patch', {
+          workingTreePatch: headDiff.output || stagedDiff.output,
+          stagedPatch: stagedDiff.output,
+          unpushedPatch: unpushedDiff.output,
+          combinedPatch: [unpushedDiff.output, headDiff.output].filter(Boolean).join('\n')
+        });
+      } finally {
+        try { await rm(tempIndex, { force: true }); } catch { /* cleanup temp index */ }
+      }
     }
     if (mode === 'snapshot_commit') {
       const statusRes = await git(['status', '--short', '--untracked-files=all']);
