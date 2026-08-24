@@ -578,20 +578,28 @@ export class WorkspaceService {
     }
   }
 
-  private async runRecoveryWorker(record: WorkspaceRecord, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  private async runRecoveryWorker(
+    record: WorkspaceRecord,
+    operation: RunnerOperation,
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+    writable = false
+  ): Promise<RunnerResponse> {
     if (record.containerName) {
       return await this.runWorker(record, operation, input, signal);
     }
     const helperName = `chm-rec-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+    const mode = writable ? 'rw' : 'ro';
     try {
       const result = await runDocker([
         'run', '-i', '--rm', '--name', helperName,
         '--label', 'cloud-harness.role=recover-helper', '--label', 'cloud-harness.ephemeral=true',
         '--label', `cloud-harness.instance=${this.instanceId}`, '--label', `cloud-harness.workspace=${record.id}`,
-        '--network', 'none', '--user', '10001:10001', '--read-only',
+        '--network', 'none', '--user', '10001:10001',
+        ...(writable ? [] : ['--read-only']),
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m',
         '--pids-limit', '64', '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
-        '--volume', `${record.workspacePath}/repo:/workspace:ro`,
+        '--volume', `${record.workspacePath}/repo:/workspace:${mode}`,
         '--workdir', '/workspace',
         '--env', 'HOME=/tmp/cloud-harness-home',
         '--entrypoint', '/opt/harness/worker-runner.sh',
@@ -1082,7 +1090,7 @@ export class WorkspaceService {
         const snapshotRes = await this.runRecoveryWorker(rec, 'workspace_recover', {
           mode: 'snapshot_commit',
           message: `chore(recovery): export snapshot for ${targetBranch}`
-        }, signal);
+        }, signal, true);
         const snapshotData = snapshotRes.data as { headCommitSha?: string; committedChanges?: boolean } | undefined;
         const pushResult = await this.remotePush(rec, { refspec: `HEAD:refs/heads/${targetBranch}` }, signal);
         return {

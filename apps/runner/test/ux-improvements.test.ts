@@ -27,7 +27,12 @@ const docker = vi.hoisted(() => ({
 }));
 
 vi.mock('../src/docker-engine.js', () => docker);
-
+vi.mock('../src/repository-policy.js', () => ({ validateRepositoryUrl: vi.fn(async (value: string) => new URL(value)) }));
+vi.mock('../src/github-app-broker.js', () => ({
+  mintRepositoryToken: vi.fn(async () => 'mock-token'),
+  mintPrincipalRepositoryScopedToken: vi.fn(async () => 'mock-token'),
+  mintPrincipalRepositoryToken: vi.fn(async () => 'mock-token')
+}));
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
@@ -259,7 +264,9 @@ describe('UX Improvements and Feature Enhancements', () => {
     openStores.push(store);
     const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner-5' });
 
-    const ws = createWorkspaceRecord(ownerId, { id: `ws_${'5'.repeat(24)}`, idempotencyKey: 'key-5' });
+    const wsPath = join(jobsRoot, `ws_${'5'.repeat(24)}`);
+    mkdirSync(join(wsPath, 'repo'), { recursive: true });
+    const ws = createWorkspaceRecord(ownerId, { id: `ws_${'5'.repeat(24)}`, workspacePath: wsPath, idempotencyKey: 'key-5' });
     store.create(ws);
     const service = new WorkspaceService(config, store);
 
@@ -323,6 +330,33 @@ describe('UX Improvements and Feature Enhancements', () => {
     const recoverPatch = await service.execute(ownerId, 'workspace_recover', { workspaceId: ws.id, mode: 'patch' });
     expect(recoverPatch.ok).toBe(true);
     expect((recoverPatch.data as Record<string, unknown>).workingTreePatch).toBeDefined();
+
+    // Test workspace_recover in export mode on EXPIRED_RECOVERABLE workspace without container
+    store.update(ws.id, { status: 'EXPIRED_RECOVERABLE', containerName: null });
+    docker.workerResult = {
+      ok: true,
+      message: 'Recovery snapshot committed',
+      data: { headCommitSha: 'sha1234567890', committedChanges: true },
+      truncated: false
+    };
+
+    const recoverExport = await service.execute(ownerId, 'workspace_recover', {
+      workspaceId: ws.id,
+      mode: 'export',
+      targetBranch: 'recovered-branch'
+    });
+    expect(recoverExport.ok).toBe(true);
+    expect((recoverExport.data as Record<string, unknown>).branch).toBe('recovered-branch');
+    expect((recoverExport.data as Record<string, unknown>).commitSha).toBe('sha1234567890');
+
+    // Verify that runRecoveryWorker mounted the workspace repo with :rw when writable: true
+    const recoverDockerCalls = docker.runDocker.mock.calls.filter((call) =>
+      call[0].includes('--label') && call[0].includes('cloud-harness.role=recover-helper')
+    );
+    expect(recoverDockerCalls.length).toBeGreaterThan(0);
+    const lastCallArgs = recoverDockerCalls.at(-1)![0];
+    expect(lastCallArgs.some((arg: string) => arg.includes('/repo:/workspace:rw'))).toBe(true);
+    expect(lastCallArgs.includes('--read-only')).toBe(false);
   });
 
   it('Issue #93: workspace_finalize validates preflight conflicts and enforces journal idempotency', async () => {
