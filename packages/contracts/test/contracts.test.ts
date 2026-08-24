@@ -169,9 +169,10 @@ describe('contracts', () => {
   });
 
   it('validates operation status, cancel, and wait schemas', () => {
-    expect(TOOL_SCHEMA_BY_NAME.operation_status.parse({ operationId: 'op_12345' })).toMatchObject({ operationId: 'op_12345' });
-    expect(TOOL_SCHEMA_BY_NAME.operation_cancel.parse({ operationId: 'op_12345' })).toMatchObject({ operationId: 'op_12345' });
-    expect(TOOL_SCHEMA_BY_NAME.operation_wait.parse({ operationId: 'op_12345', timeoutMs: 5000 })).toMatchObject({ timeoutMs: 5000 });
+    const validOpId = `op_${'a'.repeat(24)}`;
+    expect(TOOL_SCHEMA_BY_NAME.operation_status.parse({ operationId: validOpId })).toMatchObject({ operationId: validOpId });
+    expect(TOOL_SCHEMA_BY_NAME.operation_cancel.parse({ operationId: validOpId })).toMatchObject({ operationId: validOpId });
+    expect(TOOL_SCHEMA_BY_NAME.operation_wait.parse({ operationId: validOpId, timeoutMs: 5000 })).toMatchObject({ timeoutMs: 5000 });
     expect(() => TOOL_SCHEMA_BY_NAME.operation_status.parse({ operationId: '' })).toThrow();
   });
 

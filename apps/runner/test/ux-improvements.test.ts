@@ -194,25 +194,26 @@ describe('UX Improvements and Feature Enhancements', () => {
 
     // Register a generic operation in operation manager
     const opManager = (service as unknown as { operations: { registerGenericOperation: (op: unknown) => { id: string, status: string } } }).operations;
+    const opId = `op_${'a'.repeat(24)}`;
     const tracked = opManager.registerGenericOperation({
-      id: 'op_custom_12345',
+      id: opId,
       kind: 'build',
       deadlineMs: Date.now() + 60_000
     });
-    expect(tracked.id).toBe('op_custom_12345');
+    expect(tracked.id).toBe(opId);
 
     // Poll operation_status
-    const statusRes = await service.execute(ownerId, 'operation_status', { operationId: 'op_custom_12345' });
+    const statusRes = await service.execute(ownerId, 'operation_status', { operationId: opId });
     expect(statusRes.ok).toBe(true);
     expect((statusRes.data as Record<string, unknown>).status).toBe('running');
 
     // Cancel operation
-    const cancelRes = await service.execute(ownerId, 'operation_cancel', { operationId: 'op_custom_12345' });
+    const cancelRes = await service.execute(ownerId, 'operation_cancel', { operationId: opId });
     expect(cancelRes.ok).toBe(true);
     expect((cancelRes.data as Record<string, unknown>).status).toBe('cancelled');
 
     // Wait for operation (already terminal)
-    const waitRes = await service.execute(ownerId, 'operation_wait', { operationId: 'op_custom_12345', timeoutMs: 1000 });
+    const waitRes = await service.execute(ownerId, 'operation_wait', { operationId: opId, timeoutMs: 1000 });
     expect(waitRes.ok).toBe(false);
     expect((waitRes.data as Record<string, unknown>).status).toBe('cancelled');
   });
@@ -356,7 +357,7 @@ describe('UX Improvements and Feature Enhancements', () => {
     expect(recoverDockerCalls.length).toBeGreaterThan(0);
     const lastCallArgs = recoverDockerCalls.at(-1)![0];
     expect(lastCallArgs.some((arg: string) => arg.includes('/repo:/workspace:rw'))).toBe(true);
-    expect(lastCallArgs.includes('--read-only')).toBe(false);
+    expect(lastCallArgs.includes('--read-only')).toBe(true);
   });
 
   it('Issue #93: workspace_finalize validates preflight conflicts and enforces journal idempotency', async () => {

@@ -260,6 +260,7 @@ Run one bounded shell command in the workspace and return captured output.
 | `maxOutputBytes` | `integer` | **Yes** | range: 1024–1048576, default: `262144` |
 | `privileged` | `boolean` | **Yes** | default: `false` |
 | `approvalGrantToken` | `string` | No | length: 1–128 |
+| `async` | `boolean` | **Yes** | default: `false` |
 
 ### `shell_open`
 
@@ -921,7 +922,7 @@ Query the execution state, progress, and terminal result of a long-running opera
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `operationId` | `string` | **Yes** | length: 1–128 |
+| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
 | `cursor` | `string` | No | max length: 256 |
 
 ### `operation_cancel`
@@ -934,7 +935,7 @@ Cancel an in-flight long-running operation.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `operationId` | `string` | **Yes** | length: 1–128 |
+| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
 
 ### `operation_wait`
 
@@ -946,7 +947,7 @@ Wait for a long-running operation to reach a terminal state with a timeout.
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `operationId` | `string` | **Yes** | length: 1–128 |
+| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
 | `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
 
 ### `git_identity_status`
