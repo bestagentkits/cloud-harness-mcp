@@ -50,6 +50,7 @@ describe('official SDK interoperability', () => {
     const result = await client.callTool({ name: 'workspace_list', arguments: {} });
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toMatchObject({ ok: true });
+    expect(result.content).toEqual([{ type: 'text', text: 'Stub runner result\n\noperation: workspace_list' }]);
     await client.close();
   });
 
@@ -57,7 +58,9 @@ describe('official SDK interoperability', () => {
     const legacy = new Client({ name: 'cloud-harness-legacy-test', version: '1.0.0' }, { versionNegotiation: { mode: 'legacy' } });
     await legacy.connect(new StreamableHTTPClientTransport(endpoint, { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
     expect((await legacy.listTools()).tools).toHaveLength(TOOL_SPECS.length);
-    expect((await legacy.callTool({ name: 'workspace_list', arguments: {} })).isError).toBe(false);
+    const result = await legacy.callTool({ name: 'workspace_list', arguments: {} });
+    expect(result.isError).toBe(false);
+    expect(result.content).toEqual([{ type: 'text', text: 'Stub runner result\n\noperation: workspace_list' }]);
     await legacy.close();
   });
 });

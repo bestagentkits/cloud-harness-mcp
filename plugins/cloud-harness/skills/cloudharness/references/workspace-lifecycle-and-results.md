@@ -6,12 +6,13 @@ one active workspace in the current service, and removed by close or TTL expiry.
 
 ## Result envelope
 
-Read `structuredContent`, not only the text message:
+MCP tool results provide formatted human-readable output and continuation markers
+in standard text content, while `structuredContent` carries the machine envelope:
 
 | Field | Meaning |
 | --- | --- |
 | `ok` | `true` only when the operation succeeded |
-| `message` | Bounded human summary; never the complete machine result |
+| `message` | Bounded human summary |
 | `data` | Operation-specific JSON payload when available |
 | `error.code` | Stable failure category |
 | `error.message` | Bounded failure detail |

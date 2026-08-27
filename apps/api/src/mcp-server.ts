@@ -10,10 +10,11 @@ import {
 import { principalFromAuthInfo } from './auth.js';
 import { RunnerClient } from './runner-client.js';
 import type { OperationBackend } from './operation-backend.js';
+import { formatToolResultText } from './mcp-response-text.js';
 
 function resultToMcp(result: ToolResult): CallToolResult {
   return {
-    content: [{ type: 'text', text: result.message }],
+    content: [{ type: 'text', text: formatToolResultText(result) }],
     structuredContent: result,
     isError: !result.ok
   };

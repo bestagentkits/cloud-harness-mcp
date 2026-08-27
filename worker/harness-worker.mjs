@@ -1,12 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { realpathSync, writeFileSync } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
 function getWorkspaceRoot() {
-  return process.env.HARNESS_WORKSPACE_ROOT || process.env.CH_WORKSPACE_ROOT || '/workspace';
+  const raw = process.env.HARNESS_WORKSPACE_ROOT || process.env.CH_WORKSPACE_ROOT || '/workspace';
+  try { return realpathSync(raw); } catch { return raw; }
 }
 const MAX_INTERNAL_OUTPUT = 1_048_576;
 const MAX_DEPLOYMENTS_FILE_BYTES = 262_144;

@@ -23,8 +23,9 @@ Inputs, bounds, annotations, and defaults are owned by
 [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts).
 Results use the stable envelope defined in
 [`packages/contracts/src/mcp-results.ts`](../packages/contracts/src/mcp-results.ts):
-inspect `structuredContent` for `ok`, `data`, `error`, `truncated`, and
-`cursor`; the text content is a concise human message.
+MCP tools return formatted human-readable output, metadata, error details, and
+continuation markers in the text content, while preserving the complete machine
+envelope in `structuredContent`.
 
 Create, inspect, and revoke managed keys in `/dashboard/api-keys`. The complete
 key is returned once at creation; later list responses contain only safe
