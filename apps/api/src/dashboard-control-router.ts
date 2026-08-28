@@ -1,5 +1,5 @@
 import type { NextFunction, Response, Router } from 'express';
-import { ApiKeyManagementResponseSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -41,7 +41,7 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/privilege-grants/:grantId/reject', endpoint('privilege_grant_reject', (request) => ({ grantId: request.params.grantId })));
   router.get('/api/v1/api-keys', apiKeyEndpoint('api_key_list', () => ({})));
   router.post('/api/v1/api-keys', apiKeyEndpoint('api_key_create', (request) => z.object({
-    name: z.string().trim().min(1).max(100), expiresInDays: z.number().int().min(1).max(365)
+    name: z.string().trim().min(1).max(100), expiresInDays: z.number().int().min(1).max(API_KEY_MAX_EXPIRY_DAYS)
   }).strict().parse(request.body)));
   router.delete('/api/v1/api-keys/:keyId', apiKeyEndpoint('api_key_revoke', (request) => ({
     keyId: internalId('apk').parse(request.params.keyId), ...generation.parse(request.body)

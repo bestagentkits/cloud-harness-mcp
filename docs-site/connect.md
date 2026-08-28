@@ -34,7 +34,7 @@ Cloud Harness MCP provides two distinct connection lanes over **Streamable HTTP 
 | **Authentication** | Cloudflare Access OAuth | Dashboard-managed API Key |
 | **Header** | Access JWT Cookie / Bearer | `Authorization: Bearer <api-key>` |
 | **Target Clients** | ChatGPT, Web App Connectors | Cursor, Claude Code, Codex, Antigravity |
-| **Key Expiry** | Session bound | 1–365 days (configurable) |
+| **Key Expiry** | Session bound | 1–3,650 days (configurable, approximately 10 years) |
 | **Max Keys per Identity** | N/A | 10 active keys |
 
 
@@ -56,7 +56,7 @@ Local mode exposes the full tool surface directly to the local folder with host-
 
 1. Log into the **Operator Dashboard** at `https://harness.zuey.me/dashboard`.
 2. Navigate to **API Keys** in the sidebar.
-3. Click **Generate New Key**, specify an expiry (1–365 days) and label.
+3. Click **Generate New Key**, specify an expiry (1–3,650 days, approximately 10 years) and label.
 4. Copy the revealed key immediately. Store it securely in your local environment or credential vault.
 
 ::: danger One-Time Display

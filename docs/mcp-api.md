@@ -30,7 +30,7 @@ envelope in `structuredContent`.
 Create, inspect, and revoke managed keys in `/dashboard/api-keys`. The complete
 key is returned once at creation; later list responses contain only safe
 metadata. Keys grant the same full MCP/RCE authority as their creator, expire
-in 1–365 days, and are limited to 10 active keys per principal. There are no
+in 1–3,650 days (approximately 10 years), and are limited to 10 active keys per principal. There are no
 scopes, recovery, ownership transfer, or rotation endpoint. Rotate by creating
 a replacement, updating the client, verifying it, then revoking the old key.
 The lifecycle contract is owned by

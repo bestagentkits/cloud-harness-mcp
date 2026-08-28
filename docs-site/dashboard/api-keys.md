@@ -14,7 +14,7 @@ Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Co
 ## Key Rules & Limits
 
 - **Maximum Active Keys:** Up to 10 active keys per operator identity.
-- **Configurable Lifetime:** 1 day to 365 days.
+- **Configurable Lifetime:** 1 day to 3,650 days (approximately 10 years).
 - **One-Time Secret Reveal:** Keys are shown only once upon generation.
 - **Instant Revocation:** Revoking a key denies any ongoing or future MCP requests instantly.
 

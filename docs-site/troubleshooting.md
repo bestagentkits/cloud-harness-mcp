@@ -55,6 +55,21 @@ docker compose --profile images build executor-image
 
 ---
 
-### 6. Local Stdio: `--workspace path must be absolute` or Directory Error
+### 6. Frequent MCP Sign-out or Re-authentication Prompts in AI Tools
+**Cause:** When connecting via Managed OAuth (`https://harness.zuey.me/mcp`), client continuity depends on Cloudflare Access's **Grant session duration** (refresh token lifetime). When the grant expires, the client prompts for interactive browser re-authentication.
+
+**Fix:**
+1. **Adjust Managed OAuth Grant Session Duration (OAuth Clients):**
+   - Log into [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications**.
+   - Edit the MCP application → **Advanced settings** → **Managed OAuth**.
+   - Set **Grant session duration** to your preferred continuity interval (Cloudflare recommends 1–2 weeks for CLI/agent clients, or longer up to 1 month where supported by the tenant).
+   - Keep the **Access token lifetime** short (5–15 minutes, default 15 minutes) so silent refresh and policy re-evaluation continue normally.
+2. **Switch to Static API Key Gateway (Zero-Reauth for Coding Tools):**
+   - For IDE/CLI coding agents (Claude Code, Cursor, Codex, etc.) that support static headers, generate an API key from the Dashboard at `https://harness.zuey.me/dashboard/api-keys` (configurable for 1 to 3,650 days, approximately 10 years).
+   - Configure the tool to connect directly to `https://api.harness.zuey.me/mcp` with `Authorization: Bearer <api-key>` to eliminate interactive OAuth prompts entirely.
+
+---
+
+### 7. Local Stdio: `--workspace path must be absolute` or Directory Error
 **Cause:** The `--workspace` argument provided to `cloud-harness-mcp --transport stdio` is relative, does not exist, or points to a regular file instead of a directory.
 **Fix:** Provide a valid, existing absolute directory path (e.g. `/home/user/project` or `/mnt/c/Users/user/project` in WSL). Native Windows path formats (like `C:\...`) are unsupported in v1 local stdio mode; run the process inside WSL instead.

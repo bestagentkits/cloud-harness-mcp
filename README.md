@@ -311,7 +311,7 @@ Its dashboard is `https://harness.zuey.me/dashboard`.
 
 Create, list, and revoke API keys under **Dashboard → API keys**. A new key is
 shown once and cannot be recovered; store it only in the client's private
-credential store. Keys expire after 1–365 days, and each identity may have at
+credential store. Keys expire after 1–3,650 days (approximately 10 years), and each identity may have at
 most 10 active keys. There are no per-tool scopes or rotation endpoint: replace
 a key by creating a new one and then revoking the old one. Every key has the
 creator's full MCP authority, including arbitrary command execution in the

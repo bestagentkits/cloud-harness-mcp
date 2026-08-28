@@ -42,13 +42,15 @@ export function createDashboardSessions(maxSessions = 1_000, now = () => Date.no
     prune();
     const id = bytes();
     const token = bytes();
-    const assertionExpiry = (request.auth?.expiresAt ?? Math.floor(now() / 1_000) + 28_800) * 1_000;
+    const currentTime = now();
+    const assertionExpiry = (request.auth?.expiresAt ?? Math.floor(currentTime / 1_000) + 28_800) * 1_000;
+    const effectiveExpiry = Math.min(assertionExpiry, currentTime + 28_800_000);
     sessions.set(id, {
       principalKey: principalKey(principal), tokenHash: digest(token),
-      expiresAt: Math.min(assertionExpiry, now() + 28_800_000), lastSeenAt: now()
+      expiresAt: effectiveExpiry, lastSeenAt: currentTime
     });
     response.setHeader('Set-Cookie', `${COOKIE}=${id}; Path=/; HttpOnly; Secure; SameSite=Strict`);
-    response.json({ csrfToken: token, expiresAt: new Date(assertionExpiry).toISOString() });
+    response.json({ csrfToken: token, expiresAt: new Date(effectiveExpiry).toISOString() });
   }
 
   function verify(request: DashboardRequest, response: Response, next: NextFunction): void {

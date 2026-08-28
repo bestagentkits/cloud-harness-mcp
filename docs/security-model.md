@@ -104,7 +104,7 @@ remote command execution. It is not a fine-grained capability and has no tool
 scopes. The browser can create, list, and revoke keys only through the existing
 Access-authenticated, same-origin CSRF boundary. Plaintext is shown once;
 SQLite retains only the SHA-256 digest and non-secret metadata. Expiry is
-mandatory, revocation takes effect on the next request, and authentication has
+mandatory (configurable up to 3,650 days, approximately 10 years; choosing a longer lifetime lengthens exposure if the secret is compromised). Revocation takes effect on the next request, and authentication has
 no positive cache. Treat disclosure as full account compromise: revoke the key,
 inspect redacted audit and request metadata, and create a replacement only
 after the leak path is closed.

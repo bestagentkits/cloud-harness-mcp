@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  API_KEY_MAX_EXPIRY_DAYS,
   ApiKeyAuthenticationRequestSchema,
   ApiKeyManagementRequestSchema,
   ApiKeyManagementResponseSchema,
@@ -14,11 +15,21 @@ describe('managed API-key contracts', () => {
   });
 
   it('validates strict create bounds and a dedicated one-time response', () => {
+    expect(API_KEY_MAX_EXPIRY_DAYS).toBe(3_650);
     expect(ApiKeyManagementRequestSchema.parse({
       version: 1, principal, operation: 'api_key_create', input: { name: 'CLI', expiresInDays: 30 }
     }).operation).toBe('api_key_create');
+    expect(ApiKeyManagementRequestSchema.parse({
+      version: 1, principal, operation: 'api_key_create', input: { name: 'CLI', expiresInDays: 3_650 }
+    }).operation).toBe('api_key_create');
     expect(ApiKeyManagementRequestSchema.safeParse({
-      version: 1, principal, operation: 'api_key_create', input: { name: 'CLI', expiresInDays: 366 }
+      version: 1, principal, operation: 'api_key_create', input: { name: 'CLI', expiresInDays: 3_651 }
+    }).success).toBe(false);
+    expect(ApiKeyManagementRequestSchema.safeParse({
+      version: 1, principal, operation: 'api_key_create', input: { name: 'CLI', expiresInDays: 0 }
+    }).success).toBe(false);
+    expect(ApiKeyManagementRequestSchema.safeParse({
+      version: 1, principal, operation: 'api_key_create', input: { name: 'CLI', expiresInDays: 30.5 }
     }).success).toBe(false);
     const apiKey = `chm_key_apk_${'a'.repeat(24)}.${'b'.repeat(43)}`;
     expect(ApiKeyManagementResponseSchema.parse({
