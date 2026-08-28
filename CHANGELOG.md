@@ -1,3 +1,10 @@
+# [0.23.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.22.1...v0.23.0) (2026-08-28)
+
+
+### Features
+
+* **auth:** extend API key max lifetime to 3,650 days for zero-reauth AI clients ([#102](https://github.com/bestagentkits/cloud-harness-mcp/issues/102)) ([f74f957](https://github.com/bestagentkits/cloud-harness-mcp/commit/f74f957f47484bd8365d918811df290c35497069)), closes [#101](https://github.com/bestagentkits/cloud-harness-mcp/issues/101)
+
 ## [0.22.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.22.0...v0.22.1) (2026-08-27)
 
 
