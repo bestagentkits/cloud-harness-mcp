@@ -213,9 +213,15 @@ describe('dashboard BFF', () => {
     const session = await send('/api/v1/session');
     const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
     const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
-    const created = await send('/api/v1/api-keys', { method: 'POST', headers, body: JSON.stringify({ name: 'CLI', expiresInDays: 30 }) });
+    const created = await send('/api/v1/api-keys', { method: 'POST', headers, body: JSON.stringify({ name: 'CLI', expiresInDays: 3_650 }) });
     expect(created.status).toBe(200);
     expect(created.json.data.apiKey).toMatch(/^chm_key_/);
+    expect(runner.callApiKeys).toHaveBeenCalledWith('api_key_create', { name: 'CLI', expiresInDays: 3_650 }, principal);
+
+    const callsBeforeRejected = runner.callApiKeys.mock.calls.length;
+    const rejectedOverLimit = await send('/api/v1/api-keys', { method: 'POST', headers, body: JSON.stringify({ name: 'CLI', expiresInDays: 3_651 }) });
+    expect(rejectedOverLimit.status).toBe(400);
+    expect(runner.callApiKeys).toHaveBeenCalledTimes(callsBeforeRejected);
     const revokeBody = JSON.stringify({ expectedGeneration: 1 });
     const revoked = await send(`/api/v1/api-keys/apk_${'k'.repeat(24)}`, {
       method: 'DELETE', headers: { ...headers, 'content-length': String(Buffer.byteLength(revokeBody)) }, body: revokeBody

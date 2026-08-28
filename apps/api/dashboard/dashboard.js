@@ -80,8 +80,8 @@ export function apiKeyCreateInput(form) {
   const values = new FormData(form);
   const name = String(values.get('name') ?? '').trim();
   const expiresInDays = Number(values.get('expiryDays'));
-  if (!name || name.length > 100 || !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 365) {
-    throw new Error('Enter a key name and an expiry from 1 to 365 whole days.');
+  if (!name || name.length > 100 || !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 3650) {
+    throw new Error('Enter a key name and an expiry from 1 to 3650 whole days.');
   }
   return { name, expiresInDays };
 }

@@ -233,12 +233,27 @@ describe('dashboard UI behavior', () => {
 
   it('validates and normalizes API-key creation input without retaining it', () => {
     class FakeFormData {
-      get(name: string) { return name === 'name' ? '  CI client  ' : '30'; }
+      constructor(private readonly form: Record<string, unknown>) {}
+      get(name: string) {
+        if (this.form && typeof this.form[name] === 'string') return this.form[name];
+        return name === 'name' ? '  CI client  ' : '30';
+      }
     }
     vi.stubGlobal('FormData', FakeFormData);
-    try { expect(apiKeyCreateInput({})).toEqual({ name: 'CI client', expiresInDays: 30 }); }
-    finally { vi.unstubAllGlobals(); }
+    try {
+      expect(apiKeyCreateInput({})).toEqual({ name: 'CI client', expiresInDays: 30 });
+      expect(apiKeyCreateInput({ name: 'Long Lived', expiryDays: '3650' })).toEqual({ name: 'Long Lived', expiresInDays: 3650 });
+      expect(() => apiKeyCreateInput({ name: 'Too Long', expiryDays: '3651' })).toThrow('Enter a key name and an expiry from 1 to 3650 whole days.');
+      expect(() => apiKeyCreateInput({ name: 'Zero', expiryDays: '0' })).toThrow('Enter a key name and an expiry from 1 to 3650 whole days.');
+      expect(() => apiKeyCreateInput({ name: 'Fractional', expiryDays: '30.5' })).toThrow('Enter a key name and an expiry from 1 to 3650 whole days.');
+    } finally { vi.unstubAllGlobals(); }
   });
+  it('renders API key creation form with max 3650 days', () => {
+    const html = renderApiKeyIndex({ keys: [] });
+    expect(html).toContain('max="3650"');
+    expect(html).toContain('id="api-key-expiry"');
+  });
+
 
   it('reveals an API key once, copies it, then clears DOM and JS state on acknowledgement', async () => {
     const dialog = new FakeElement(); const secretField = new FakeElement(); const copyButton = new FakeElement();

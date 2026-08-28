@@ -148,7 +148,7 @@ non-secret dashboard reads remain available.
 
 Dashboard-managed MCP API keys use a different write-only contract from
 encrypted environment secrets. The runner stores only a SHA-256 digest and
-safe metadata; the complete random key crosses the authenticated, CSRF-
+safe metadata (with configurable lifetime up to 3,650 days, approximately 10 years); the complete random key crosses the authenticated, CSRF-
 protected Dashboard response exactly once. Lifecycle limits and response
 schemas are owned by
 [`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts)

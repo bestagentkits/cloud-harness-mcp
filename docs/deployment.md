@@ -168,6 +168,14 @@ Under **Allowed redirect URIs**, configure the exact callback URLs required by t
 2. **Loopback Port Pinning & Dynamic Subpaths:** Native desktop clients (such as Codex App using the `rmcp` engine) generate an ephemeral unique transaction ID per login attempt (e.g. `http://127.0.0.1:3118/callback/<TX_ID>`). Pinning the callback port (`mcp_oauth_callback_port = 3118` in `~/.codex/config.toml`) and adding wildcard subpaths (`/*`) in the Zero Trust Allowed redirect URIs allows these dynamic transaction subpaths to match and succeed without compromising security.
 3. **ChatGPT Connector Subpaths & Least-Privilege Scoping:** ChatGPT Web generates per-connector callback URLs under `https://chatgpt.com/connector/oauth/<CALLBACK_ID>`. Allowlisting `https://chatgpt.com/connector/oauth/*` covers all dynamic connector instances while avoiding overly broad wildcards (such as `https://chatgpt.com/*`) that could risk authorization code leakage on arbitrary parameter-reflecting endpoints.
 
+#### Managed OAuth Grant Session Duration vs Access Session Duration
+
+Cloudflare Access governs OAuth clients and browser dashboard sessions through separate settings:
+
+1. **Managed OAuth Grant session duration (AI OAuth Clients):** Under **Advanced settings → Managed OAuth → Grant session duration**, configure the desired continuity interval (Cloudflare recommends 1–2 weeks for CLI/agent clients, or longer up to 1 month where supported by the tenant). This sets how long the client's refresh token remains valid before requiring interactive browser re-authentication. Keep the **Access token lifetime** short (5–15 minutes, default 15 minutes) so silent refresh and policy re-evaluation continue normally.
+2. **Access Application & Policy session duration (Dashboard Browser):** In the application and policy settings, configure **Session Duration** (up to 1 month) to control application token lifetime and when Access re-evaluates access. If the global Access session remains valid, Cloudflare can issue a new application token without requiring another interactive IdP login; interactive re-authentication is governed by the remaining global/IdP session state.
+3. **Static Client Zero-Reauth Alternative:** For IDE/CLI coding agents (Claude Code, Cursor, Codex, etc.) that support static headers, configure them against the API-key gateway (`https://api.harness.zuey.me/mcp`) using a dashboard-managed API key (valid for up to 3,650 days, approximately 10 years) to avoid OAuth grant expirations entirely.
+
 Configure the origin from that same application's issuer, audience, and JWKS
 material, remove the owner bearer, and pin any legacy owner mapping to the
 exact observed issuer and subject. Never infer a mapping from email. The mode

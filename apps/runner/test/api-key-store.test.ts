@@ -61,6 +61,21 @@ describe('ApiKeyStore', () => {
     expect(value.keys.list(value.principalId)[0]?.state).toBe('EXPIRED');
     value.metadata.close(); value.state.close();
   });
+  it('accepts maximum lifetime of 3650 days and rejects 3651 days or non-positive bounds', () => {
+    const value = fixture(1_800_000_000_000);
+    const created = value.keys.create(value.principalId, 'LongLived', 3_650);
+    expect(created.key.expiresAt).toBe(1_800_000_000_000 + 3_650 * 86_400_000);
+    expect(value.keys.verify(created.apiKey)).toEqual({ principal: value.principal, keyId: created.key.id });
+    value.setNow(created.key.expiresAt - 1);
+    expect(value.keys.verify(created.apiKey)).toBeDefined();
+    value.setNow(created.key.expiresAt);
+    expect(value.keys.verify(created.apiKey)).toBeUndefined();
+    expect(() => value.keys.create(value.principalId, 'TooLong', 3_651)).toThrow('invalid API key request');
+    expect(() => value.keys.create(value.principalId, 'ZeroDays', 0)).toThrow('invalid API key request');
+    expect(() => value.keys.create(value.principalId, 'NegativeDays', -1)).toThrow('invalid API key request');
+    value.metadata.close(); value.state.close();
+  });
+
 
   it('enforces ten active unexpired keys per principal', () => {
     const value = fixture();

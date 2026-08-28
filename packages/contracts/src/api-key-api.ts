@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 
+export const API_KEY_MAX_EXPIRY_DAYS = 3_650;
 export const ApiKeyIdSchema = z.string().regex(/^apk_[A-Za-z0-9_-]{24}$/);
 export const ApiKeyValueSchema = z.string().regex(/^chm_key_apk_[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{43}$/).max(96);
-
 const name = z.string().trim().min(1).max(100);
 const generation = z.number().int().positive();
 
@@ -19,7 +19,7 @@ export const ApiKeyManagementRequestSchema = z.discriminatedUnion('operation', [
   z.object({
     ...managementBase,
     operation: z.literal('api_key_create'),
-    input: z.object({ name, expiresInDays: z.number().int().min(1).max(365) }).strict()
+    input: z.object({ name, expiresInDays: z.number().int().min(1).max(API_KEY_MAX_EXPIRY_DAYS) }).strict()
   }).strict(),
   z.object({
     ...managementBase,

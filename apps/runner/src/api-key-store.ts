@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { ApiKeyValueSchema, type ApiKeyMetadata, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyValueSchema, type ApiKeyMetadata, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 
 type ApiKeyRow = {
   id: string; principal_id: string; name: string; display_prefix: string; secret_hash: Uint8Array;
@@ -64,7 +64,7 @@ export class ApiKeyStore {
 
   create(principalId: string, name: string, expiresInDays: number): { key: ApiKeyMetadata; apiKey: string } {
     const normalizedName = name.trim();
-    if (!normalizedName || normalizedName.length > 100 || !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 365) {
+    if (!normalizedName || normalizedName.length > 100 || !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > API_KEY_MAX_EXPIRY_DAYS) {
       throw new Error('invalid API key request');
     }
     return transaction(this.database, () => {
