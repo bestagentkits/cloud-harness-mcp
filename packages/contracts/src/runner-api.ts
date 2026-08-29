@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { ToolResultSchema } from './mcp-results.js';
 
 export const RunnerOperationSchema = z.enum([
-  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_close',
+  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close',
   'workspace_lease_renew', 'workspace_recover', 'workspace_context', 'workspace_set_active',
   'workspace_finalize',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'grep_search',
@@ -50,3 +50,64 @@ export type ExternalPrincipal = z.infer<typeof ExternalPrincipalSchema>;
 export type RunnerPrincipalSelector = z.infer<typeof RunnerPrincipalSelectorSchema>;
 export type RunnerRequest = z.infer<typeof RunnerRequestSchema>;
 export type RunnerResponse = z.infer<typeof RunnerResponseSchema>;
+
+export const RepositoryCapabilitiesSchema = z.object({
+  read: z.boolean(),
+  push: z.boolean(),
+  issuesRead: z.boolean(),
+  issuesWrite: z.boolean(),
+  pullRequestsRead: z.boolean(),
+  pullRequestsWrite: z.boolean()
+}).strict();
+
+export const WorkspaceCapabilitiesSchema = z.object({
+  shell: z.boolean(),
+  tasks: z.boolean(),
+  sessions: z.boolean(),
+  deployments: z.boolean(),
+  privileged: z.boolean().default(false),
+  networkMode: z.string()
+}).passthrough();
+
+export const RepositoryPermissionsSchema = z.object({
+  contents: z.object({ read: z.boolean(), write: z.boolean() }).strict(),
+  issues: z.object({ read: z.boolean(), write: z.boolean() }).strict(),
+  pullRequests: z.object({ read: z.boolean(), write: z.boolean() }).strict()
+}).strict();
+
+export const RepositoryOperationsSchema = z.object({
+  gitFetch: z.boolean(),
+  gitPull: z.boolean(),
+  gitPush: z.boolean(),
+  issueList: z.boolean(),
+  issueView: z.boolean(),
+  issueCreate: z.boolean(),
+  issueComment: z.boolean(),
+  issueUpdate: z.boolean(),
+  issuePublish: z.boolean(),
+  labelCreate: z.boolean(),
+  pullRequestList: z.boolean(),
+  pullRequestView: z.boolean(),
+  pullRequestCreate: z.boolean(),
+  execRun: z.boolean(),
+  privilegedExec: z.boolean(),
+  deploymentsRun: z.boolean()
+}).passthrough();
+
+export const WorkspaceCapabilityResultSchema = z.object({
+  workspaceId: z.string(),
+  repository: z.string().nullable(),
+  repositoryUrl: z.string(),
+  capabilities: z.object({
+    repository: RepositoryCapabilitiesSchema,
+    workspace: WorkspaceCapabilitiesSchema
+  }).passthrough(),
+  permissions: RepositoryPermissionsSchema,
+  operations: RepositoryOperationsSchema
+}).passthrough();
+
+export type RepositoryCapabilities = z.infer<typeof RepositoryCapabilitiesSchema>;
+export type WorkspaceCapabilities = z.infer<typeof WorkspaceCapabilitiesSchema>;
+export type RepositoryPermissions = z.infer<typeof RepositoryPermissionsSchema>;
+export type RepositoryOperations = z.infer<typeof RepositoryOperationsSchema>;
+export type WorkspaceCapabilityResult = z.infer<typeof WorkspaceCapabilityResultSchema>;

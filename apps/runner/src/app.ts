@@ -60,7 +60,19 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
 
 function sendRunnerError(response: Response, error: unknown): void {
   if (error instanceof HarnessError) {
-    response.status(error.status).json({ ok: false, message: error.message, error: { code: error.code, message: error.message, retryable: error.retryable }, truncated: false });
+    response.status(error.status).json({
+      ok: false,
+      message: error.message,
+      error: {
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+        ...(error.operation ? { operation: error.operation } : {}),
+        ...(error.repository ? { repository: error.repository } : {}),
+        ...(error.requiredCapability ? { requiredCapability: error.requiredCapability } : {})
+      },
+      truncated: false
+    });
     return;
   }
   if (error instanceof ZodError) {

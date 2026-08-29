@@ -52,6 +52,66 @@ export class LocalWorkspaceBackend implements OperationBackend {
     };
   }
 
+  private getCapabilities() {
+    const gitNetwork = Boolean(this.options.gitNetwork);
+    const gitPush = Boolean(this.options.gitPush);
+    return {
+      workspaceId: this.workspaceId,
+      repository: `local://${this.canonicalRoot}`,
+      repositoryUrl: `local://${this.canonicalRoot}`,
+      capabilities: {
+        repository: {
+          read: true,
+          push: gitPush,
+          issuesRead: false,
+          issuesWrite: false,
+          pullRequestsRead: false,
+          pullRequestsWrite: false
+        },
+        workspace: {
+          mode: 'local',
+          platform: process.platform,
+          gitNetwork,
+          gitPush,
+          sandboxed: false,
+          shell: true,
+          tasks: true,
+          sessions: true,
+          deployments: true,
+          privileged: false,
+          networkMode: gitNetwork ? 'host' : 'none'
+        },
+        mode: 'local',
+        platform: process.platform,
+        gitNetwork,
+        gitPush,
+        sandboxed: false
+      },
+      permissions: {
+        contents: { read: true, write: true },
+        issues: { read: false, write: false },
+        pullRequests: { read: false, write: false }
+      },
+      operations: {
+        gitFetch: gitNetwork,
+        gitPull: gitNetwork,
+        gitPush,
+        issueList: false,
+        issueView: false,
+        issueCreate: false,
+        issueComment: false,
+        issueUpdate: false,
+        issuePublish: false,
+        labelCreate: false,
+        pullRequestList: false,
+        pullRequestView: false,
+        pullRequestCreate: false,
+        execRun: true,
+        privilegedExec: false,
+        deploymentsRun: true
+      }
+    };
+  }
   async close(): Promise<void> {
     this.status = 'CLOSED';
     await this.operationManager.stopWorkspace(this.workspaceId);
@@ -89,8 +149,8 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
-    if (operation === 'workspace_status') {
-      if (input.workspaceId !== this.workspaceId || this.status === 'CLOSED') {
+    if (operation === 'workspace_capabilities') {
+      if (input.workspaceId && input.workspaceId !== this.workspaceId) {
         return {
           ok: false,
           message: 'workspace not found',
@@ -100,17 +160,73 @@ export class LocalWorkspaceBackend implements OperationBackend {
       }
       return {
         ok: true,
+        message: 'Workspace capabilities retrieved',
+        data: this.getCapabilities(),
+        truncated: false
+      };
+    }
+
+    if (operation === 'workspace_status') {
+      if ((input.workspaceId && input.workspaceId !== this.workspaceId) || this.status === 'CLOSED') {
+        return {
+          ok: false,
+          message: 'workspace not found',
+          error: { code: 'NOT_FOUND', message: 'workspace not found', retryable: false },
+          truncated: false
+        };
+      }
+      const caps = this.getCapabilities();
+      return {
+        ok: true,
         message: 'Workspace status retrieved',
         data: {
           ...this.getPublicRecord(),
           root: this.canonicalRoot,
-          capabilities: {
-            mode: 'local',
-            platform: process.platform,
-            gitNetwork: this.options.gitNetwork,
-            gitPush: this.options.gitPush,
-            sandboxed: false
-          }
+          capabilities: caps.capabilities,
+          permissions: caps.permissions,
+          operations: caps.operations
+        },
+        truncated: false
+      };
+    }
+
+    if (operation === 'workspace_context') {
+      if (input.workspaceId && input.workspaceId !== this.workspaceId) {
+        return {
+          ok: false,
+          message: 'workspace not found',
+          error: { code: 'NOT_FOUND', message: 'workspace not found', retryable: false },
+          truncated: false
+        };
+      }
+      if (this.status === 'CLOSED') {
+        return {
+          ok: false,
+          message: 'workspace is closed',
+          error: { code: 'NOT_FOUND', message: 'workspace is closed', retryable: false },
+          truncated: false
+        };
+      }
+      const caps = this.getCapabilities();
+      return {
+        ok: true,
+        message: 'Workspace context',
+        data: {
+          workspace: {
+            ...this.getPublicRecord(),
+            root: this.canonicalRoot,
+            capabilities: caps.capabilities,
+            permissions: caps.permissions,
+            operations: caps.operations
+          },
+          branch: 'HEAD',
+          gitIdentity: {
+            name: 'Cloud Harness Agent',
+            email: 'agent@cloud-harness.local'
+          },
+          capabilities: caps.capabilities,
+          permissions: caps.permissions,
+          operations: caps.operations
         },
         truncated: false
       };
@@ -214,13 +330,18 @@ export class LocalWorkspaceBackend implements OperationBackend {
     }
 
     if (operation === 'github_action') {
+      const action = typeof input.action === 'string' ? input.action : '';
+      const requiredCapability = action.startsWith('pr_') ? 'repository.pullRequestsWrite' : 'repository.issuesWrite';
       return {
         ok: false,
         message: 'github_action is unsupported in local mode',
         error: {
-          code: 'INVALID_INPUT',
+          code: 'REPOSITORY_OPERATION_NOT_AUTHORIZED',
           message: 'github_action is unsupported in local mode',
-          retryable: false
+          retryable: false,
+          operation: 'github_action',
+          repository: `local://${this.canonicalRoot}`,
+          requiredCapability
         },
         truncated: false
       };
@@ -499,9 +620,12 @@ export class LocalWorkspaceBackend implements OperationBackend {
           ok: false,
           message: 'Git push operations are disabled in local mode; pass --git-push to enable',
           error: {
-            code: 'FORBIDDEN',
+            code: 'REPOSITORY_OPERATION_NOT_AUTHORIZED',
             message: 'Git push operations are disabled in local mode; pass --git-push to enable',
-            retryable: false
+            retryable: false,
+            operation: 'git_push',
+            repository: `local://${this.canonicalRoot}`,
+            requiredCapability: 'repository.push'
           },
           truncated: false
         };

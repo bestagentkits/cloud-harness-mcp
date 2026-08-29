@@ -88,6 +88,19 @@ Read one workspace record by opaque ID.
   record, unlike tools that require an active executor.
 - Read-only and safe to repeat.
 
+<!-- cloudharness-tool:workspace_capabilities -->
+### `workspace_capabilities`
+
+Inspect workspace and bound repository authorization capabilities without modifying state or minting tokens.
+
+- Optional: `workspaceId`.
+- Returns high-level capabilities (`repository`, `workspace`), fine-grained permissions (`contents`, `issues`, `pullRequests`), and direct operation authorizations (`gitPush`, `issueCreate`, `pullRequestCreate`, etc.).
+- Read-only and safe to repeat.
+
+<!-- cloudharness-example:workspace_capabilities
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
 <!-- cloudharness-tool:workspace_close -->
 ### `workspace_close`
 

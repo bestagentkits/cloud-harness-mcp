@@ -288,7 +288,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     expect(args).toContain('not_planned');
   });
 
-  it('throws FORBIDDEN when no GitHub App token can be minted for the workspace', async () => {
+  it('throws REPOSITORY_OPERATION_NOT_AUTHORIZED when no GitHub App token can be minted for the workspace', async () => {
     const { config, store, workspaceId, principalSelector } = fixture();
     const emptyInstallations = new InMemoryGitHubInstallationStore();
     const service = new WorkspaceService(config, store, undefined, emptyInstallations);
@@ -298,6 +298,10 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     await expect(service.execute(principalSelector, 'github_action', {
       workspaceId,
       action: 'pr_list'
-    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    })).rejects.toMatchObject({
+      code: 'REPOSITORY_OPERATION_NOT_AUTHORIZED',
+      operation: 'github_action.pr_list',
+      requiredCapability: 'repository.pullRequestsRead'
+    });
   });
 });

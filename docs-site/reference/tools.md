@@ -1,6 +1,6 @@
 ---
 title: Tools Reference
-description: Complete machine-generated reference of all 64 MCP tools provided by Cloud Harness MCP.
+description: Complete machine-generated reference of all 65 MCP tools provided by Cloud Harness MCP.
 ---
 
 # Tools Reference
@@ -11,7 +11,7 @@ description: Complete machine-generated reference of all 64 MCP tools provided b
   <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/tools.md</code>.
 </div>
 
-Cloud Harness MCP exposes **64 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
+Cloud Harness MCP exposes **65 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
 
 ## Security & Capability Badges
 
@@ -67,6 +67,57 @@ Read the lifecycle state and metadata for one workspace.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
+### `workspace_capabilities`
+
+**Workspace capabilities**
+
+Inspect workspace and repository authorization capabilities without modifying state or minting tokens.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
+### `workspace_context`
+
+**Workspace context**
+
+Read the active workspace ID, branch, lease time, Git identity, and repository overview.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
+### `workspace_lease_renew`
+
+**Renew workspace lease**
+
+Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace.
+
+**Attributes:** `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `extensionSeconds` | `integer` | No | range: 60–86400 |
+
+### `workspace_recover`
+
+**Recover workspace state**
+
+Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.
+
+**Attributes:** <span class="badge-destructive">destructive</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `mode` | `"resume"` \| `"status"` \| `"patch"` \| `"export"` | **Yes** | default: `"resume"` |
+| `targetBranch` | `string` | No | length: 1–255 |
 
 ### `workspace_close`
 
@@ -829,45 +880,6 @@ Execute one named repository-defined deployment target with external-effect risk
 | `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
 
 ## Additional Tools
-
-### `workspace_lease_renew`
-
-**Renew workspace lease**
-
-Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace.
-
-**Attributes:** `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `extensionSeconds` | `integer` | No | range: 60–86400 |
-
-### `workspace_recover`
-
-**Recover workspace state**
-
-Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.
-
-**Attributes:** <span class="badge-destructive">destructive</span>
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `mode` | `"resume"` \| `"status"` \| `"patch"` \| `"export"` | **Yes** | default: `"resume"` |
-| `targetBranch` | `string` | No | length: 1–255 |
-
-### `workspace_context`
-
-**Workspace context**
-
-Read the active workspace ID, branch, lease time, Git identity, and repository overview.
-
-**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
 ### `workspace_set_active`
 

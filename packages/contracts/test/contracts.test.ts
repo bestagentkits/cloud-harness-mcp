@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { ApiConfigSchema, RunnerConfigSchema, RunnerRequestSchema, TOOL_SCHEMA_BY_NAME, WorkspaceIdSchema } from '../src/index.js';
-
+import {
+  ApiConfigSchema,
+  HarnessError,
+  RunnerConfigSchema,
+  RunnerRequestSchema,
+  TOOL_SCHEMA_BY_NAME,
+  ToolResultSchema,
+  WorkspaceCapabilityResultSchema,
+  WorkspaceIdSchema
+} from '../src/index.js';
 const commonApiConfig = {
   runnerToken: 'another-token-that-is-long-enough-1234',
   runnerUrl: 'http://runner:3001',
@@ -268,8 +276,7 @@ describe('contracts', () => {
     })).toMatchObject({ workspaceId: validWs, action: 'pr_list', limit: 5 });
   });
 
-  it('validates workspace lease renew, recovery, context, and git identity schemas', () => {
-    expect(TOOL_SCHEMA_BY_NAME.workspace_lease_renew.parse({})).toMatchObject({});
+  it('validates workspace lease renew, recovery, context, capabilities, and git identity schemas', () => {
     expect(TOOL_SCHEMA_BY_NAME.workspace_lease_renew.parse({ extensionSeconds: 3600 })).toMatchObject({ extensionSeconds: 3600 });
     expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({})).toMatchObject({ mode: 'resume' });
     expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'resume' })).toMatchObject({ mode: 'resume' });
@@ -277,7 +284,90 @@ describe('contracts', () => {
     expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'status' })).toMatchObject({ mode: 'status' });
     expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'export', targetBranch: 'backup' })).toMatchObject({ mode: 'export', targetBranch: 'backup' });
     expect(TOOL_SCHEMA_BY_NAME.workspace_context.parse({})).toBeDefined();
+    expect(TOOL_SCHEMA_BY_NAME.workspace_capabilities.parse({})).toBeDefined();
+    expect(TOOL_SCHEMA_BY_NAME.workspace_capabilities.parse({ workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaa' })).toMatchObject({ workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaa' });
     expect(TOOL_SCHEMA_BY_NAME.git_identity_status.parse({})).toBeDefined();
     expect(TOOL_SCHEMA_BY_NAME.git_identity_set.parse({ name: 'Dev', email: 'dev@example.com' })).toMatchObject({ name: 'Dev', email: 'dev@example.com' });
+  });
+
+  it('validates REPOSITORY_OPERATION_NOT_AUTHORIZED and structured error details', () => {
+    const errorResult = ToolResultSchema.parse({
+      ok: false,
+      message: 'Not authorized to push',
+      error: {
+        code: 'REPOSITORY_OPERATION_NOT_AUTHORIZED',
+        message: 'Git push is not authorized for repository',
+        retryable: false,
+        operation: 'git_push',
+        repository: 'owner/repo',
+        requiredCapability: 'repository.push'
+      }
+    });
+    expect(errorResult.error?.code).toBe('REPOSITORY_OPERATION_NOT_AUTHORIZED');
+    expect(errorResult.error?.operation).toBe('git_push');
+    expect(errorResult.error?.repository).toBe('owner/repo');
+    expect(errorResult.error?.requiredCapability).toBe('repository.push');
+
+    const err = new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', 'Push forbidden', 403, false, {
+      operation: 'git_push',
+      repository: 'owner/repo',
+      requiredCapability: 'repository.push'
+    });
+    expect(err.code).toBe('REPOSITORY_OPERATION_NOT_AUTHORIZED');
+    expect(err.operation).toBe('git_push');
+    expect(err.repository).toBe('owner/repo');
+    expect(err.requiredCapability).toBe('repository.push');
+  });
+
+  it('validates capability result schemas', () => {
+    const parsed = WorkspaceCapabilityResultSchema.parse({
+      workspaceId: 'ws_123',
+      repository: 'owner/repo',
+      repositoryUrl: 'https://github.com/owner/repo',
+      capabilities: {
+        repository: {
+          read: true,
+          push: true,
+          issuesRead: false,
+          issuesWrite: false,
+          pullRequestsRead: false,
+          pullRequestsWrite: false
+        },
+        workspace: {
+          shell: true,
+          tasks: true,
+          sessions: true,
+          deployments: true,
+          privileged: false,
+          networkMode: 'none'
+        }
+      },
+      permissions: {
+        contents: { read: true, write: true },
+        issues: { read: false, write: false },
+        pullRequests: { read: false, write: false }
+      },
+      operations: {
+        gitFetch: true,
+        gitPull: true,
+        gitPush: true,
+        issueList: false,
+        issueView: false,
+        issueCreate: false,
+        issueComment: false,
+        issueUpdate: false,
+        issuePublish: false,
+        labelCreate: false,
+        pullRequestList: false,
+        pullRequestView: false,
+        pullRequestCreate: false,
+        execRun: true,
+        privilegedExec: false,
+        deploymentsRun: true
+      }
+    });
+    expect(parsed.capabilities.repository.push).toBe(true);
+    expect(parsed.permissions.contents.write).toBe(true);
+    expect(parsed.operations.gitPush).toBe(true);
   });
 });
