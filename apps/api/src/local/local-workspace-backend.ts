@@ -43,7 +43,12 @@ export class LocalWorkspaceBackend implements OperationBackend {
       networkMode: this.options.gitNetwork ? 'host' : 'none',
       createdAt: new Date(this.createdAt).toISOString(),
       lastActivityAt: new Date(this.lastActivityAt).toISOString(),
-      expiresAt: new Date(Date.now() + 86_400_000 * 365).toISOString()
+      expiresAt: new Date(Date.now() + 86_400_000 * 365).toISOString(),
+      leaseState: this.status === 'ACTIVE' ? 'ACTIVE' : 'EXPIRED',
+      canRenewLease: false,
+      availableActions: this.status === 'ACTIVE'
+        ? ['workspace_lease_renew', 'workspace_recover', 'workspace_close', 'workspace_context', 'workspace_finalize']
+        : []
     };
   }
 
@@ -126,6 +131,67 @@ export class LocalWorkspaceBackend implements OperationBackend {
         message: 'Workspace closed',
         data: { workspaceId: this.workspaceId, status: 'CLOSED' },
         truncated: false
+      };
+    }
+
+    if (operation === 'workspace_lease_renew') {
+      if (input.workspaceId && input.workspaceId !== this.workspaceId) {
+        return {
+          ok: false,
+          message: 'workspace not found',
+          error: { code: 'NOT_FOUND', message: 'workspace not found', retryable: false },
+          truncated: false
+        };
+      }
+      if (this.status === 'CLOSED') {
+        return {
+          ok: false,
+          message: 'workspace is closed and cannot be renewed',
+          error: { code: 'EXPIRED', message: 'workspace is closed and cannot be renewed', retryable: false },
+          truncated: false
+        };
+      }
+      return {
+        ok: true,
+        message: 'Local workspace lease is permanent',
+        data: this.getPublicRecord(),
+        truncated: false
+      };
+    }
+
+    if (operation === 'workspace_recover') {
+      if (input.workspaceId && input.workspaceId !== this.workspaceId) {
+        return {
+          ok: false,
+          message: 'workspace not found',
+          error: { code: 'NOT_FOUND', message: 'workspace not found', retryable: false },
+          truncated: false
+        };
+      }
+      if (this.status === 'CLOSED') {
+        return {
+          ok: false,
+          message: 'workspace is closed and cannot be recovered',
+          error: { code: 'EXPIRED', message: 'workspace is closed and cannot be recovered', retryable: false },
+          truncated: false
+        };
+      }
+      const mode = (input.mode as string | undefined) ?? 'resume';
+      if (mode === 'resume') {
+        return {
+          ok: true,
+          message: 'Local workspace is already active',
+          data: this.getPublicRecord(),
+          truncated: false
+        };
+      }
+      const workerRes = await this.workerClient.call('workspace_recover', input, signal);
+      return {
+        ...workerRes,
+        data: {
+          workspace: this.getPublicRecord(),
+          ...(workerRes.data && typeof workerRes.data === 'object' ? workerRes.data : {})
+        }
       };
     }
 

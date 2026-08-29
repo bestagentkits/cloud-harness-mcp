@@ -269,8 +269,13 @@ describe('contracts', () => {
   });
 
   it('validates workspace lease renew, recovery, context, and git identity schemas', () => {
+    expect(TOOL_SCHEMA_BY_NAME.workspace_lease_renew.parse({})).toMatchObject({});
     expect(TOOL_SCHEMA_BY_NAME.workspace_lease_renew.parse({ extensionSeconds: 3600 })).toMatchObject({ extensionSeconds: 3600 });
+    expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({})).toMatchObject({ mode: 'resume' });
+    expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'resume' })).toMatchObject({ mode: 'resume' });
     expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'patch' })).toMatchObject({ mode: 'patch' });
+    expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'status' })).toMatchObject({ mode: 'status' });
+    expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'export', targetBranch: 'backup' })).toMatchObject({ mode: 'export', targetBranch: 'backup' });
     expect(TOOL_SCHEMA_BY_NAME.workspace_context.parse({})).toBeDefined();
     expect(TOOL_SCHEMA_BY_NAME.git_identity_status.parse({})).toBeDefined();
     expect(TOOL_SCHEMA_BY_NAME.git_identity_set.parse({ name: 'Dev', email: 'dev@example.com' })).toMatchObject({ name: 'Dev', email: 'dev@example.com' });

@@ -105,6 +105,26 @@ describe('LocalWorkspaceBackend', () => {
     expect(statusData.status).toBe('ACTIVE');
     expect(statusData.capabilities.mode).toBe('local');
     expect(statusData.capabilities.gitNetwork).toBe(false);
+    expect((statusRes.data as Record<string, unknown>).availableActions).toContain('workspace_lease_renew');
+    expect((statusRes.data as Record<string, unknown>).availableActions).toContain('workspace_recover');
+  });
+
+  it('handles workspace_lease_renew and workspace_recover in local mode', async () => {
+    const renewRes = await backend.call('workspace_lease_renew', { workspaceId: backend.workspaceId });
+    expect(renewRes.ok).toBe(true);
+    expect(renewRes.message).toContain('Local workspace lease is permanent');
+
+    const recoverRes = await backend.call('workspace_recover', { workspaceId: backend.workspaceId, mode: 'resume' });
+    expect(recoverRes.ok).toBe(true);
+    expect(recoverRes.message).toContain('Local workspace is already active');
+
+    // After close, recovery and renew fail
+    await backend.close();
+    const closedRenew = await backend.call('workspace_lease_renew', { workspaceId: backend.workspaceId });
+    expect(closedRenew.ok).toBe(false);
+    const closedRecover = await backend.call('workspace_recover', { workspaceId: backend.workspaceId });
+    expect(closedRecover.ok).toBe(false);
+    expect(closedRecover.error?.code).toBe('EXPIRED');
   });
 
   it('closes workspace idempotently and preserves local directory contents', async () => {
