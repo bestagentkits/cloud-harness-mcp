@@ -146,7 +146,7 @@ directories and helper containers are removed after the operation.
 
 ### Brokered GitHub actions
 
-Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`) are minted by the runner from the trusted GitHub App installation and passed exclusively via `stdin`. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Tokens never enter the workspace filesystem or environment.
+Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`) are minted by the runner from the trusted GitHub App installation and passed exclusively via `stdin`. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Tokens never enter the workspace filesystem or environment.
 
 ### Three-zone storage and toolchain isolation
 

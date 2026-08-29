@@ -76,10 +76,12 @@ workspace. This makes a lost response recoverable without duplicating work.
   runner terminates and verifies the operation's process groups; the workspace
   remains active for later calls.
 - `github_action` executes authenticated GitHub CLI actions (`pr_list`, `pr_view`,
-  `pr_create`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
+  `pr_create`, `pr_update`, `pr_comment`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
   `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
   `issue_update`, `issue_publish`) through an ephemeral helper container using short-lived tokens
-  minted from the configured GitHub App. `issue_publish` provides a single brokered request
+  minted from the configured GitHub App. `pr_create` supports draft PRs and labels; `pr_update` supports
+  updating title, body, base branch, and closing or reopening PRs; `pr_comment` adds comments with
+  idempotency support. `issue_publish` provides a single brokered request
   that posts a comment and adds or removes labels (with automatic missing-label creation).
   Tokens are supplied exclusively via stdin and are never written to workspace files.
   Comment, label, and publish mutations support idempotency keys.
