@@ -1,3 +1,10 @@
+## [0.23.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.23.0...v0.23.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **runner:** reconcile GitHub repository grants on git_push ([238a117](https://github.com/bestagentkits/cloud-harness-mcp/commit/238a1175664762c73f276d08445bc013b9517547))
+
 # [0.23.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.22.1...v0.23.0) (2026-08-28)
 
 
