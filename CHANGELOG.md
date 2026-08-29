@@ -1,3 +1,10 @@
+# [0.26.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.25.0...v0.26.0) (2026-08-29)
+
+
+### Features
+
+* **artifacts:** add bounded read, workspace restore, and public MCP tools ([#109](https://github.com/bestagentkits/cloud-harness-mcp/issues/109), [#110](https://github.com/bestagentkits/cloud-harness-mcp/issues/110), [#111](https://github.com/bestagentkits/cloud-harness-mcp/issues/111)) ([#113](https://github.com/bestagentkits/cloud-harness-mcp/issues/113)) ([45cc468](https://github.com/bestagentkits/cloud-harness-mcp/commit/45cc4687c6c2797d48eeacacc19037f95e27e2f4))
+
 # [0.25.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.24.0...v0.25.0) (2026-08-29)
 
 
