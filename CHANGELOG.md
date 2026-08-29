@@ -1,3 +1,10 @@
+# [0.24.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.23.1...v0.24.0) (2026-08-29)
+
+
+### Features
+
+* **runner:** add brokered GitHub issues and pull request operations ([#105](https://github.com/bestagentkits/cloud-harness-mcp/issues/105)) ([#106](https://github.com/bestagentkits/cloud-harness-mcp/issues/106)) ([06e972b](https://github.com/bestagentkits/cloud-harness-mcp/commit/06e972be00bb885891a8ae295613c39a53f22864))
+
 ## [0.23.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.23.0...v0.23.1) (2026-08-29)
 
 

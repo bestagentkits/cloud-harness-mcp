@@ -667,7 +667,7 @@ Execute authenticated GitHub pull request and issue operations via brokered help
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_create"` \| `"issue_list"` \| `"issue_view"` \| `"issue_create"` \| `"issue_comment"` \| `"issue_comment_update"` \| `"label_create"` \| `"issue_labels_add"` \| `"issue_labels_remove"` \| `"issue_update"` \| `"issue_publish"` | **Yes** | — |
+| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_create"` \| `"pr_update"` \| `"pr_comment"` \| `"issue_list"` \| `"issue_view"` \| `"issue_create"` \| `"issue_comment"` \| `"issue_comment_update"` \| `"label_create"` \| `"issue_labels_add"` \| `"issue_labels_remove"` \| `"issue_update"` \| `"issue_publish"` | **Yes** | — |
 | `limit` | `integer` | No | range: 1–100, default: `20` |
 | `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |
@@ -675,13 +675,15 @@ Execute authenticated GitHub pull request and issue operations via brokered help
 | `body` | `string` | No | max length: 65536, default: `""` |
 | `head` | `string` | No | length: 1–256 |
 | `base` | `string` | No | length: 1–256, default: `"main"` |
-| `issueNumber` | `integer` | No | range: 0–9007199254740991 |
+| `draft` | `boolean` | No | default: `false` |
+| `labels` | string[] | No | — |
 | `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
+| `issueNumber` | `integer` | No | range: 0–9007199254740991 |
+| `assignees` | string[] | No | — |
 | `commentId` | `integer` | No | range: 0–9007199254740991 |
 | `name` | `string` | No | length: 1–100 |
 | `color` | `string` | No | pattern: `^[0-9A-Fa-f]{6}$` |
 | `description` | `string` | No | max length: 200 |
-| `labels` | string[] | No | — |
 | `createMissing` | `boolean` | No | default: `true` |
 | `label` | `string` | No | length: 1–100 |
 | `stateReason` | `"completed"` \| `"not_planned"` \| `"reopened"` | No | — |
