@@ -55,7 +55,7 @@ const artifactReaper = setInterval(() => {
   }
 }, config.reaperIntervalSeconds * 1_000);
 artifactReaper.unref();
-const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding);
+const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts);
 const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding);
 await service.start();
 const server = createServer(createRunnerApp(config, service, controls, apiKeys));

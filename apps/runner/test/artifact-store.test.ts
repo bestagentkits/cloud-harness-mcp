@@ -144,4 +144,52 @@ describe('ArtifactStore', () => {
     })).toThrow('artifact root must not be a symbolic link');
     database.close();
   });
+
+  it('Issue #109: reads bounded chunks with base64 encoding and validates cross-principal isolation', () => {
+    const { database, store } = setup({ maxArtifactBytes: 1024, maxPrincipalBytes: 4096 });
+    const rawData = Buffer.from('hello world binary payload test 12345');
+    const created = store.create('principal-a', { logicalName: 'payload.bin', content: rawData, now: 1_000, retentionMs: 5_000 });
+
+    // Chunk 1: first 10 bytes
+    const chunk1 = store.read('principal-a', { artifactId: created.artifactId, offset: 0, limit: 10, now: 1_500 });
+    expect(chunk1.artifactId).toBe(created.artifactId);
+    expect(chunk1.logicalName).toBe('payload.bin');
+    expect(chunk1.offset).toBe(0);
+    expect(chunk1.bytesReturned).toBe(10);
+    expect(chunk1.totalBytes).toBe(rawData.length);
+    expect(chunk1.eof).toBe(false);
+    expect(Buffer.from(chunk1.content, 'base64')).toEqual(rawData.subarray(0, 10));
+
+    // Chunk 2: next bytes to end
+    const chunk2 = store.read('principal-a', { artifactId: created.artifactId, offset: 10, limit: 100, now: 1_500 });
+    expect(chunk2.offset).toBe(10);
+    expect(chunk2.bytesReturned).toBe(rawData.length - 10);
+    expect(chunk2.eof).toBe(true);
+    expect(Buffer.from(chunk2.content, 'base64')).toEqual(rawData.subarray(10));
+
+    // Full reassembly matches original
+    const reassembled = Buffer.concat([Buffer.from(chunk1.content, 'base64'), Buffer.from(chunk2.content, 'base64')]);
+    expect(reassembled).toEqual(rawData);
+    expect(chunk1.sha256).toBe(createHash('sha256').update(rawData).digest('hex'));
+
+    // Offset past EOF
+    const chunkPastEof = store.read('principal-a', { artifactId: created.artifactId, offset: 100, limit: 10, now: 1_500 });
+    expect(chunkPastEof.bytesReturned).toBe(0);
+    expect(chunkPastEof.eof).toBe(true);
+    expect(chunkPastEof.content).toBe('');
+
+    // Expired artifact read throws NOT_FOUND
+    expect(() => store.read('principal-a', { artifactId: created.artifactId, now: 7_000 })).toThrow('artifact not found');
+
+    // Cross-principal read throws NOT_FOUND indistinguishable from nonexistent
+    expect(() => store.read('principal-b', { artifactId: created.artifactId })).toThrow('artifact not found');
+    expect(() => store.read('principal-b', { artifactId: `art_${'z'.repeat(32)}` })).toThrow('artifact not found');
+
+    // readPayload returns verified buffer
+    const payload = store.readPayload('principal-a', created.artifactId, 1_500);
+    expect(payload.metadata.artifactId).toBe(created.artifactId);
+    expect(payload.content).toEqual(rawData);
+
+    database.close();
+  });
 });

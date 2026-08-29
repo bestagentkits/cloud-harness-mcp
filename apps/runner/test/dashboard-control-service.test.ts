@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { MetadataRunnerRequest, RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, type MetadataRunnerRequest, type RunnerConfig } from '@cloud-harness/contracts';
 import { ArtifactStore } from '../src/artifact-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { GitHubBindingService, GitHubSetupStateStore } from '../src/github-binding-service.js';
@@ -33,7 +33,54 @@ function setup(withKeyring = true) {
     try { principals.close(); } catch { /* ignore */ }
   });
   const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
-  const workspaces = { readArtifactSource: async (p: PrincipalSelector) => ({ ownerId: principals.resolvePrincipal(p), content: Buffer.from('snapshot') }) } as unknown as WorkspaceService;
+  const workspaces = {
+    readArtifactSource: async (p: PrincipalSelector) => ({ ownerId: principals.resolvePrincipal(p), content: Buffer.from('snapshot') }),
+    snapshotArtifact: async (p: PrincipalSelector, input: { workspaceId?: string; path: string; logicalName: string; retentionSeconds?: number; projectId?: string; environmentId?: string }) => {
+      const ownerId = principals.resolvePrincipal(p);
+      const provenance = {
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(input.environmentId ? { environmentId: input.environmentId } : {})
+      };
+      if (provenance.projectId || provenance.environmentId) {
+        if (!metadata.validateArtifactProvenance(ownerId, provenance)) {
+          throw new HarnessError('NOT_FOUND', 'artifact provenance is unavailable', 404, false);
+        }
+      }
+      return artifacts.create(ownerId, {
+        logicalName: input.logicalName,
+        content: Buffer.from('snapshot'),
+        workspaceId: input.workspaceId,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(input.environmentId ? { environmentId: input.environmentId } : {}),
+        ...(input.retentionSeconds ? { retentionMs: input.retentionSeconds * 1_000 } : {})
+      }, (database, _owner, artifact) => {
+        if (provenance.projectId || provenance.environmentId) {
+          if (!metadata.validateArtifactProvenance(ownerId, provenance)) {
+            throw new HarnessError('NOT_FOUND', 'artifact provenance is unavailable', 404, false);
+          }
+        }
+        metadata.recordAuditInTransaction(
+          database, ownerId, 'artifact.created', 'artifact', artifact.artifactId,
+          artifact.generation, { sizeBytes: artifact.sizeBytes }
+        );
+      });
+    },
+    restoreArtifact: async (p: PrincipalSelector, input: { artifactId: string; workspaceId?: string; path: string; overwrite?: boolean; expectedSha256?: string }) => {
+      const ownerId = principals.resolvePrincipal(p);
+      const { metadata: artifactMeta } = artifacts.readPayload(ownerId, input.artifactId);
+      metadata.recordAudit(
+        ownerId, 'artifact.restored', 'artifact', artifactMeta.artifactId, artifactMeta.generation,
+        { sourceWorkspaceId: artifactMeta.workspaceId ?? '', destinationWorkspaceId: input.workspaceId ?? '', destinationPath: input.path, sha256: artifactMeta.sha256, sizeBytes: artifactMeta.sizeBytes }
+      );
+      return {
+        artifactId: artifactMeta.artifactId,
+        workspaceId: input.workspaceId ?? '',
+        path: input.path,
+        sizeBytes: artifactMeta.sizeBytes,
+        sha256: artifactMeta.sha256
+      };
+    }
+  } as unknown as WorkspaceService;
   const controls = new DashboardControlService({ artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, workspaces);
   return { controls, principals, metadata, artifacts, keyring, workspaces };
 }
@@ -207,5 +254,41 @@ describe('dashboard control service', () => {
     expect(rejectResult.ok).toBe(true);
     expect(principals.getPrivilegeGrant(grant2.id)?.status).toBe('REJECTED');
     expect(metadata.listAudit(ownerId).some((e) => e.action === 'privilege_grant.rejected')).toBe(true);
+  });
+
+  it('Issue #109 and #110: reads bounded artifact chunks and restores artifact into workspace', async () => {
+    const { controls } = setup();
+    const snapResult = await controls.execute(request('artifact_snapshot', {
+      workspaceId: `ws_${'a'.repeat(24)}`, path: 'report.txt', logicalName: 'report.txt', expectedGeneration: 0
+    }));
+    expect(snapResult.ok).toBe(true);
+    const artifactId = (snapResult.data as { artifactId: string }).artifactId;
+
+    // Read artifact via dashboard control service
+    const readResult = await controls.execute(request('artifact_read', {
+      artifactId, offset: 0, limit: 100
+    }));
+    expect(readResult.ok).toBe(true);
+    const readData = readResult.data as { logicalName: string; sizeBytes?: number; totalBytes: number; bytesReturned: number; sha256: string; content: string; eof: boolean };
+    expect(readData.logicalName).toBe('report.txt');
+    expect(readData.totalBytes).toBe(8);
+    expect(readData.bytesReturned).toBe(8);
+    expect(readData.eof).toBe(true);
+    expect(Buffer.from(readData.content, 'base64').toString('utf8')).toBe('snapshot');
+
+    // Restore artifact via dashboard control service
+    const restoreResult = await controls.execute(request('artifact_restore', {
+      artifactId, workspaceId: `ws_${'b'.repeat(24)}`, path: 'context/restored.txt', overwrite: true
+    }));
+    expect(restoreResult.ok).toBe(true);
+    expect(restoreResult.data).toMatchObject({
+      artifactId,
+      workspaceId: `ws_${'b'.repeat(24)}`,
+      path: 'context/restored.txt',
+      sizeBytes: 8
+    });
+
+    const audit = await controls.execute(request('audit_list', { limit: 50 }));
+    expect(JSON.stringify(audit)).toContain('artifact.restored');
   });
 });

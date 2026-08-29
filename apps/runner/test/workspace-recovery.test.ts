@@ -139,7 +139,7 @@ describe('Workspace Recovery and Lease Renewal (Issue #103)', () => {
     const createCalls = docker.runDocker.mock.calls.filter((c) => c[0][0] === 'create');
     expect(createCalls.length).toBeGreaterThan(0);
     const lastCreateArgs = createCalls.at(-1)![0];
-    expect(lastCreateArgs.some((arg: string) => arg.includes(`${wsPath}/repo:/workspace:rw`))).toBe(true);
+    expect(lastCreateArgs.some((arg: string) => arg.includes(`${join(wsPath, 'repo')}:/workspace:rw`) || arg.includes(`${wsPath}/repo:/workspace:rw`))).toBe(true);
     const startCalls = docker.runDocker.mock.calls.filter((c) => c[0][0] === 'start');
     expect(startCalls.length).toBeGreaterThan(0);
   });

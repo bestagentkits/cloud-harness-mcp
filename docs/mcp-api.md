@@ -143,12 +143,16 @@ workspace. This makes a lost response recoverable without duplicating work.
   [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
 - Workspace metadata is durable in SQLite; executor files persist only until
   workspace close or TTL cleanup.
-- Dashboard project/environment, encrypted-secret reference, GitHub binding,
-  artifact, and audit operations use the distinct internal runner contract in
+- Retained artifact snapshots (`artifacts_snapshot`, `artifacts_list`, `artifacts_read`,
+  `artifacts_restore`, `artifacts_delete`) allow agents to explicitly retain selected
+  workspace files beyond ephemeral workspace TTLs, list and read bounded base64 chunks,
+  and restore snapshots into active workspaces for cross-session and cross-agent handoffs.
+  Artifacts are principal-owned, TTL-bounded snapshots; they are not Git source history,
+  volatile task/session buffers, or arbitrary object storage.
+- Dashboard project/environment, encrypted-secret reference, GitHub binding, and audit
+  operations use the distinct internal runner contract in
   [`packages/contracts/src/internal-runner-api.ts`](../packages/contracts/src/internal-runner-api.ts).
-  They are not public MCP tools. Retained artifact snapshots are bounded
-  control-plane records, not durable task/session output or a source-control
-  replacement.
+  They are not public MCP tools.
 - Dashboard API-key lifecycle uses a separate internal contract and is not an
   MCP tool. A key remains bound to the creator's durable principal across an
   explicitly applied Access subject relink. Expiry and revocation are checked

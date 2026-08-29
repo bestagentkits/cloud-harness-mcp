@@ -268,6 +268,38 @@ const handlers = {
     await rename(temporary, target);
     return ok('File written', { path: input.path, bytes: Buffer.byteLength(input.content), sha256: sha256(input.content) });
   },
+  async artifacts_restore(input) {
+    if (!input.path || typeof input.path !== 'string') return fail('INVALID_INPUT', 'invalid destination path');
+    if (typeof input.contentBase64 !== 'string') return fail('INVALID_INPUT', 'contentBase64 is required');
+    let target;
+    try {
+      target = await safeBatchFilePath(input.path, true);
+    } catch {
+      return fail('INVALID_INPUT', `path ${input.path} escapes workspace`);
+    }
+    let exists = false;
+    try {
+      const st = await stat(target);
+      exists = true;
+      if (st.isDirectory()) return fail('INVALID_INPUT', 'destination path is a directory');
+    } catch (err) {
+      if (err?.code !== 'ENOENT') return fail('INTERNAL_ERROR', `failed to inspect ${input.path}`);
+    }
+    if (exists && !input.overwrite) {
+      return fail('CONFLICT', 'destination file already exists');
+    }
+    const content = Buffer.from(input.contentBase64, 'base64');
+    const contentSha = sha256(content);
+    if (input.expectedSha256 && contentSha !== input.expectedSha256) {
+      return fail('CONFLICT', 'artifact hash mismatch');
+    }
+    const targetDir = dirname(target);
+    await mkdir(targetDir, { recursive: true });
+    const temporary = join(targetDir, `.cloud-harness-${process.pid}-${randomBytes(8).toString('hex')}.tmp`);
+    await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
+    await rename(temporary, target);
+    return ok('Artifact restored to workspace', { path: input.path, sizeBytes: content.length, sha256: contentSha });
+  },
   async files_write_batch(input) {
     if (!Array.isArray(input.files) || input.files.length === 0) {
       return fail('INVALID_INPUT', 'files array is required and cannot be empty');

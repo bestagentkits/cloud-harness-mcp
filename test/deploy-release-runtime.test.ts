@@ -76,7 +76,7 @@ cat "$state/release-config-current/mode"
   return spawnSync('bash', ['-c', script, 'bash', runtime, directory], { encoding: 'utf8' });
 }
 
-describe('release rollback orchestration', () => {
+describe.skipIf(process.platform === 'win32')('release rollback orchestration', () => {
   it('takes a nonblocking host lock before touching the shared deployment checkout', () => {
     const source = readFileSync(deployScript, 'utf8');
     const lock = source.indexOf('flock -n 9');

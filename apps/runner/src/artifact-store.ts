@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { closeSync, openSync, readFileSync, readSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { ArtifactStoragePaths, type StagedDeletion } from './artifact-storage-paths.js';
 import {
@@ -101,6 +102,77 @@ export class ArtifactStore {
     const row = this.rowByOwner(principalId, artifactId);
     if (!row || row.expires_at <= now) throw new ArtifactStoreError('NOT_FOUND', 'artifact not found');
     return artifactMetadata(row);
+  }
+
+  read(principalId: string, input: { artifactId: string; offset?: number | undefined; limit?: number | undefined; now?: number | undefined }): {
+    artifactId: string;
+    logicalName: string;
+    offset: number;
+    bytesReturned: number;
+    totalBytes: number;
+    sha256: string;
+    eof: boolean;
+    content: string;
+  } {
+    this.validatePrincipal(principalId);
+    const now = input.now ?? Date.now();
+    const row = this.rowByOwner(principalId, input.artifactId);
+    if (!row || row.expires_at <= now) throw new ArtifactStoreError('NOT_FOUND', 'artifact not found');
+    const targetPath = this.paths.resolveExisting(row.relative_path);
+    const offset = input.offset ?? 0;
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new ArtifactStoreError('INVALID_INPUT', 'invalid artifact offset');
+    const limit = input.limit ?? 65_536;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_048_576) throw new ArtifactStoreError('INVALID_INPUT', 'invalid artifact limit');
+    const totalBytes = row.size_bytes;
+    if (offset >= totalBytes) {
+      return {
+        artifactId: row.id,
+        logicalName: row.logical_name,
+        offset,
+        bytesReturned: 0,
+        totalBytes,
+        sha256: row.sha256,
+        eof: true,
+        content: ''
+      };
+    }
+    const readLength = Math.min(limit, totalBytes - offset);
+    const buffer = Buffer.alloc(readLength);
+    const descriptor = openSync(targetPath, 'r');
+    try {
+      const bytesActual = readSync(descriptor, buffer, 0, readLength, offset);
+      if (bytesActual !== readLength) {
+        throw new ArtifactStoreError('NOT_FOUND', 'artifact payload verification failed');
+      }
+    } finally {
+      closeSync(descriptor);
+    }
+    const bytesReturned = readLength;
+    const eof = offset + bytesReturned >= totalBytes;
+    const content = buffer.toString('base64');
+    return {
+      artifactId: row.id,
+      logicalName: row.logical_name,
+      offset,
+      bytesReturned,
+      totalBytes,
+      sha256: row.sha256,
+      eof,
+      content
+    };
+  }
+
+  readPayload(principalId: string, artifactId: string, now = Date.now()): { metadata: ArtifactMetadata; content: Buffer } {
+    this.validatePrincipal(principalId);
+    const row = this.rowByOwner(principalId, artifactId);
+    if (!row || row.expires_at <= now) throw new ArtifactStoreError('NOT_FOUND', 'artifact not found');
+    const targetPath = this.paths.resolveExisting(row.relative_path);
+    const content = readFileSync(targetPath);
+    const calculatedSha256 = createHash('sha256').update(content).digest('hex');
+    if (calculatedSha256 !== row.sha256 || content.byteLength !== row.size_bytes) {
+      throw new ArtifactStoreError('NOT_FOUND', 'artifact payload verification failed');
+    }
+    return { metadata: artifactMetadata(row), content };
   }
 
   list(principalId: string, input: { limit: number; cursor?: string; now?: number }): { artifacts: ArtifactMetadata[]; cursor?: string } {

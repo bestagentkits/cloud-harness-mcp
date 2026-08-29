@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { NextFunction, Response, Router } from 'express';
 import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
@@ -29,6 +30,58 @@ export function registerDashboardControlRoutes(
   router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.get('/api/v1/artifacts', endpoint('artifact_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.post('/api/v1/artifacts', endpoint('artifact_snapshot', (request) => request.body as Record<string, unknown>));
+  router.get('/api/v1/artifacts/:artifactId', endpoint('artifact_read', (request) => ({
+    artifactId: internalId('art').parse(request.params.artifactId),
+    offset: request.query.offset !== undefined ? Number(request.query.offset) : undefined,
+    limit: request.query.limit !== undefined ? Number(request.query.limit) : undefined
+  })));
+  router.post('/api/v1/artifacts/:artifactId/restore', endpoint('artifact_restore', (request) => ({
+    ...(request.body && typeof request.body === 'object' ? request.body : {}),
+    artifactId: internalId('art').parse(request.params.artifactId)
+  })));
+  router.get('/api/v1/artifacts/:artifactId/download', async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) throw new Error('dashboard controls are unavailable');
+      const artifactId = internalId('art').parse(request.params.artifactId);
+      let offset = 0;
+      let totalBytes = 0;
+      let logicalName = 'artifact.bin';
+      let expectedSha256 = '';
+      const chunks: Buffer[] = [];
+      while (true) {
+        const res = await runner.callInternal('artifact_read', { artifactId, offset, limit: 1_048_576 }, selected);
+        if (!res.ok) {
+          const code = res.error?.code ?? 'INTERNAL_ERROR';
+          const status = code === 'NOT_FOUND' ? 404 : 500;
+          response.status(status).json({ error: code.toLowerCase(), message: res.error?.message ?? res.message });
+          return;
+        }
+        const data = res.data as { logicalName: string; offset: number; bytesReturned: number; totalBytes: number; sha256: string; eof: boolean; content: string };
+        logicalName = data.logicalName;
+        totalBytes = data.totalBytes;
+        expectedSha256 = data.sha256;
+        if (data.bytesReturned > 0) {
+          const buf = Buffer.from(data.content, 'base64');
+          chunks.push(buf);
+          offset += buf.byteLength;
+        }
+        if (data.eof || offset >= totalBytes) break;
+      }
+      const fullBuffer = Buffer.concat(chunks);
+      const computedSha = createHash('sha256').update(fullBuffer).digest('hex');
+      if (computedSha !== expectedSha256) {
+        response.status(500).json({ error: 'internal_error', message: 'artifact download integrity verification failed' });
+        return;
+      }
+      const sanitizedName = logicalName.replaceAll('"', '').replaceAll('\r', '').replaceAll('\n', '');
+      response.setHeader('Content-Type', 'application/octet-stream');
+      response.setHeader('Content-Disposition', `attachment; filename="${sanitizedName}"`);
+      response.setHeader('Content-Length', String(fullBuffer.length));
+      response.end(fullBuffer);
+    } catch (error) { next(error); }
+  });
   router.delete('/api/v1/artifacts/:artifactId', endpoint('artifact_delete', (request) => ({ artifactId: internalId('art').parse(request.params.artifactId), ...generation.parse(request.body) })));
   router.get('/api/v1/github', endpoint('github_status', () => ({})));
   router.post('/api/v1/github/setup', endpoint('github_setup_begin', (request) => request.body as Record<string, unknown>));
