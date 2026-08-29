@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { chmod, chown, mkdir, readdir, realpath, rm, statfs } from 'node:fs/promises';
+import { chmod, chown, mkdir, readdir, realpath, rm, stat, statfs } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
@@ -29,11 +29,32 @@ const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
 
+function availableLifecycleActions(status: WorkspaceRecord['status'], canRenewLease: boolean): string[] {
+  switch (status) {
+    case 'ACTIVE':
+      return canRenewLease
+        ? ['workspace_lease_renew', 'workspace_close', 'workspace_context', 'workspace_finalize']
+        : ['workspace_close', 'workspace_context', 'workspace_finalize'];
+    case 'EXPIRED_RECOVERABLE':
+      return canRenewLease
+        ? ['workspace_recover', 'workspace_lease_renew', 'workspace_close']
+        : ['workspace_recover', 'workspace_close'];
+    case 'CREATING':
+    case 'REAPING':
+      return ['workspace_status'];
+    case 'CLOSED':
+    case 'FAILED':
+      return ['workspace_open'];
+    default:
+      return [];
+  }
+}
+
 function publicRecord(record: WorkspaceRecord) {
   const now = Date.now();
   const remainingLeaseMs = Math.max(0, record.expiresAt - now);
   const hardRemainingMs = Math.max(0, record.hardExpiresAt - now);
-  const canRenewLease = record.status === 'ACTIVE' && hardRemainingMs > 60_000;
+  const canRenewLease = (record.status === 'ACTIVE' || record.status === 'EXPIRED_RECOVERABLE') && hardRemainingMs > 60_000;
   let leaseState: 'ACTIVE' | 'WARNING' | 'EXPIRED_RECOVERABLE' | 'EXPIRED' = 'ACTIVE';
   const leaseWarnings: string[] = [];
 
@@ -65,6 +86,7 @@ function publicRecord(record: WorkspaceRecord) {
     remainingLeaseMs,
     canRenewLease,
     leaseState,
+    availableActions: availableLifecycleActions(record.status, canRenewLease),
     ...(leaseWarnings.length > 0 ? { leaseWarnings } : {}),
     error: record.error
   };
@@ -363,6 +385,7 @@ export class WorkspaceService {
 
   private async createExecutor(record: WorkspaceRecord, repositoryPath: string, environment: Record<string, string> = {}): Promise<string> {
     const name = `cloud-harness-ws-${record.id.slice(3, 19).toLowerCase()}`;
+    await removeContainer(name).catch(() => undefined);
     const { toolsPath, cachePath } = await this.provisionMountDirectories(record);
     const args = [
       'create', '--name', name,
@@ -399,6 +422,37 @@ export class WorkspaceService {
       throw new HarnessError('UNAVAILABLE', `executor start failed: ${started.stderr}`.slice(0, 2_000), 502, true);
     }
     return name;
+  }
+
+  private async ensureActiveExecutor(record: WorkspaceRecord): Promise<WorkspaceRecord> {
+    if (record.containerName) {
+      const inspected = await inspectContainer(record.containerName);
+      if (inspected) {
+        const state = inspected.State as { Running?: boolean } | undefined;
+        if (state?.Running) {
+          return record;
+        }
+        const started = await runDocker(['start', record.containerName], { timeoutMs: 30_000 });
+        if (started.exitCode === 0) {
+          return record;
+        }
+      }
+      await removeContainer(record.containerName).catch(() => undefined);
+    }
+    const repositoryPath = join(record.workspacePath, 'repo');
+    const repoExists = await stat(repositoryPath).then(() => true).catch(() => false);
+    if (!repoExists) {
+      throw new HarnessError('EXPIRED', 'workspace repository data is no longer retained on disk and cannot be recovered', 410);
+    }
+    const containerName = await this.createExecutor(record, repositoryPath, {});
+    const updated = this.store.updateFenced(record.id, record.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
+      containerName
+    });
+    if (!updated) {
+      await removeContainer(containerName).catch(() => undefined);
+      throw new HarnessError('CONFLICT', 'workspace lifecycle changed during executor activation', 409, true);
+    }
+    return updated;
   }
 
   async open(ownerId: string, input: Record<string, unknown>): Promise<RunnerResponse> {
@@ -1153,25 +1207,118 @@ export class WorkspaceService {
     }
     if (operation === 'workspace_lease_renew') {
       const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
+      if (rec.status === 'CLOSED' || rec.status === 'FAILED') {
+        throw new HarnessError('EXPIRED', `workspace is ${rec.status.toLowerCase()} and cannot be renewed`, 410);
+      }
+      if (rec.status === 'CREATING' || rec.status === 'REAPING') {
+        throw new HarnessError('CONFLICT', `workspace is ${rec.status.toLowerCase()}`, 409, true);
+      }
       const now = Date.now();
       if (rec.hardExpiresAt <= now) {
-        throw new HarnessError('EXPIRED', 'Workspace hard lease limit reached and cannot be renewed');
+        throw new HarnessError('EXPIRED', 'Workspace hard lease limit reached and cannot be renewed', 410);
       }
-      const extSec = (validated.extensionSeconds as number) ?? this.config.idleTtlSeconds;
-      const newExpires = Math.min(rec.hardExpiresAt, now + extSec * 1000);
-      const updated = this.store.updateFenced(rec.id, rec.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
-        status: 'ACTIVE',
-        lastActivityAt: now,
-        expiresAt: newExpires
-      });
-      if (!updated) {
-        throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during renewal', 409);
+      const isRecoverable = rec.status === 'EXPIRED_RECOVERABLE';
+      if (isRecoverable) {
+        const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && activeStatus.has(w.status));
+        if (activeSiblings.length > 0) {
+          throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+        }
+        const holdExpiry = now + 300_000;
+        try {
+          this.store.acquireRecoverableMutationLease(rec.id, rec.generation, holdExpiry);
+        } catch {
+          throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during renewal', 409);
+        }
       }
-      return { ok: true, message: 'Workspace lease renewed', data: publicRecord(updated), truncated: false };
+      try {
+        const extSec = (validated.extensionSeconds as number) ?? this.config.idleTtlSeconds;
+        const newExpires = Math.min(rec.hardExpiresAt, now + extSec * 1000);
+        let activeRecord = rec;
+        if (isRecoverable) {
+          activeRecord = await this.ensureActiveExecutor(rec);
+        }
+        let updated: WorkspaceRecord | undefined;
+        try {
+          updated = this.store.updateFenced(activeRecord.id, activeRecord.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
+            status: 'ACTIVE',
+            lastActivityAt: now,
+            expiresAt: newExpires
+          });
+        } catch (err) {
+          if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+            throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+          }
+          throw err;
+        }
+        if (!updated) {
+          throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during renewal', 409);
+        }
+        return { ok: true, message: 'Workspace lease renewed', data: publicRecord(updated), truncated: false };
+      } finally {
+        if (isRecoverable) {
+          this.store.releaseMutationLease(rec.id, rec.generation);
+        }
+      }
     }
     if (operation === 'workspace_recover') {
       const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
-      const mode = (validated.mode as 'status' | 'patch' | 'export') ?? 'status';
+      if (rec.status === 'CLOSED' || rec.status === 'FAILED') {
+        throw new HarnessError('EXPIRED', `workspace is ${rec.status.toLowerCase()} and cannot be recovered`, 410);
+      }
+      if (rec.status === 'CREATING' || rec.status === 'REAPING') {
+        throw new HarnessError('CONFLICT', `workspace is ${rec.status.toLowerCase()}`, 409, true);
+      }
+      const mode = (validated.mode as 'resume' | 'status' | 'patch' | 'export') ?? 'resume';
+      if (mode === 'resume') {
+        const now = Date.now();
+        if (rec.hardExpiresAt <= now) {
+          throw new HarnessError('EXPIRED', 'Workspace hard lease limit reached and cannot be recovered to active state; use mode: export to save work', 410);
+        }
+        const isRecoverable = rec.status === 'EXPIRED_RECOVERABLE';
+        if (isRecoverable) {
+          const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && activeStatus.has(w.status));
+          if (activeSiblings.length > 0) {
+            throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+          }
+          const holdExpiry = now + 300_000;
+          try {
+            this.store.acquireRecoverableMutationLease(rec.id, rec.generation, holdExpiry);
+          } catch {
+            throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during recovery', 409);
+          }
+        }
+        try {
+          const activeRecord = await this.ensureActiveExecutor(rec);
+          const extSec = this.config.idleTtlSeconds;
+          const newExpires = Math.min(activeRecord.hardExpiresAt, now + extSec * 1000);
+          let updated: WorkspaceRecord | undefined;
+          try {
+            updated = this.store.updateFenced(activeRecord.id, activeRecord.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
+              status: 'ACTIVE',
+              lastActivityAt: now,
+              expiresAt: newExpires
+            });
+          } catch (err) {
+            if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+              throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+            }
+            throw err;
+          }
+          if (!updated) {
+            throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during recovery', 409);
+          }
+          return {
+            ok: true,
+            message: 'Workspace recovered to active state',
+            data: publicRecord(updated),
+            truncated: false
+          };
+        } finally {
+          if (isRecoverable) {
+            this.store.releaseMutationLease(rec.id, rec.generation);
+          }
+        }
+      }
       if (mode === 'status') {
         const recoverRes = await this.runRecoveryWorker(rec, 'workspace_recover', { mode: 'status' }, signal);
         return {

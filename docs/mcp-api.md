@@ -95,9 +95,28 @@ workspace. This makes a lost response recoverable without duplicating work.
   run diff preflight checks, commit with workspace/owner default Git identity, and
   push to remote. If a push is rejected or network fails, actionable resumption hints
   and the created commit SHA are returned.
-- `workspace_lease_renew` and `workspace_recover` allow inspecting and extending
-  workspace idle leases or recovering unpushed commits and patches from active or
-  grace-period `EXPIRED_RECOVERABLE` workspaces.
+- `workspace_lease_renew` and `workspace_recover` allow inspecting, extending,
+  and restoring workspaces across their lifecycle states:
+  - **`ACTIVE` → `EXPIRED_RECOVERABLE` → `CLOSED` Lifecycle:** When an active
+    workspace's idle lease expires, its container executor is reaped to release CPU
+    and memory, but its repository files, unpushed commits, branches, and working-tree
+    modifications are retained during a recoverable grace period (`EXPIRED_RECOVERABLE`).
+    If the recoverable grace period lapses or the workspace is explicitly closed, it
+    transitions to `CLOSED` and all host files are permanently pruned.
+  - **`workspace_recover`:** Restores or exports work from active or `EXPIRED_RECOVERABLE`
+    workspaces. In `resume` mode (default), it restores the workspace to `ACTIVE` state,
+    recreates and starts the executor container on demand, and refreshes the idle lease
+    while preserving all local Git and file state. In `status` and `patch` modes, it
+    non-destructively returns unpushed changes or unified diffs. In `export` mode, it
+    creates a recovery snapshot commit and pushes it to a target remote branch as a
+    safety escape hatch even if the hard wall-clock deadline was reached.
+  - **`workspace_lease_renew`:** Explicitly extends the idle lease of an `ACTIVE` or
+    `EXPIRED_RECOVERABLE` workspace (clamped to the maximum `hardExpiresAt` limit),
+    reactivating the executor container if previously reaped.
+  - **`availableActions` Metadata:** `workspace_status` and `workspace_list` responses
+    expose an `availableActions` string array listing valid lifecycle operations
+    (e.g., `['workspace_recover', 'workspace_lease_renew', 'workspace_close']` for
+    `EXPIRED_RECOVERABLE` workspaces) to remove guesswork for MCP clients.
 - `operation_status`, `operation_cancel`, and `operation_wait` provide observable,
   cancellable, and reconnectable management of long-running operations.
 - `symbols_search` uses Universal Ctags to find definitions. It is not a

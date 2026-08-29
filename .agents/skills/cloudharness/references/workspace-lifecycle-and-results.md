@@ -106,7 +106,7 @@ Terminate the executor and remove the workspace directory.
 <!-- cloudharness-tool:workspace_lease_renew -->
 ### `workspace_lease_renew`
 
-Explicitly renew the active workspace idle lease.
+Explicitly renew the active workspace idle lease or reactivate a recoverable expired workspace.
 
 - Optional: `workspaceId`, `extensionSeconds` (60–86,400).
 - Returns refreshed lease metadata with remaining lease time.
@@ -118,13 +118,13 @@ Explicitly renew the active workspace idle lease.
 <!-- cloudharness-tool:workspace_recover -->
 ### `workspace_recover`
 
-Inspect or recover unpushed commits and working tree from an active or recoverable expired workspace.
+Recover an active or recoverable expired workspace to active state, or inspect, patch, or export unpushed work.
 
-- Optional: `workspaceId`, `mode` (`status`, `patch`, or `export`), `targetBranch`.
-- Returns recovery status, unpushed patch, or branch recovery details.
+- Optional: `workspaceId`, `mode` (`resume` (default), `status`, `patch`, or `export`), `targetBranch`.
+- Returns restored active workspace, recovery status, unpushed patch, or branch recovery details.
 
 <!-- cloudharness-example:workspace_recover
-{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","mode":"status"}
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","mode":"resume"}
 -->
 
 <!-- cloudharness-tool:workspace_context -->

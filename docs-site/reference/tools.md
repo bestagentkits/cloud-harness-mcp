@@ -832,7 +832,7 @@ Execute one named repository-defined deployment target with external-effect risk
 
 **Renew workspace lease**
 
-Explicitly renew or extend the workspace idle lease duration.
+Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace.
 
 **Attributes:** `idempotent`
 
@@ -845,14 +845,14 @@ Explicitly renew or extend the workspace idle lease duration.
 
 **Recover workspace state**
 
-Inspect, patch, or export unpushed work from an active or recoverable expired workspace.
+Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.
 
 **Attributes:** <span class="badge-destructive">destructive</span>
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `mode` | `"status"` \| `"patch"` \| `"export"` | **Yes** | default: `"status"` |
+| `mode` | `"resume"` \| `"status"` \| `"patch"` \| `"export"` | **Yes** | default: `"resume"` |
 | `targetBranch` | `string` | No | length: 1–255 |
 
 ### `workspace_context`
