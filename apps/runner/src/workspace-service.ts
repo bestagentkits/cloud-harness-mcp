@@ -10,7 +10,8 @@ import {
   type RunnerConfig,
   type InternalRunnerOperation,
   type RunnerOperation,
-  type RunnerResponse
+  type RunnerResponse,
+  type WorkspaceCapabilityResult
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
@@ -50,7 +51,7 @@ function availableLifecycleActions(status: WorkspaceRecord['status'], canRenewLe
   }
 }
 
-function publicRecord(record: WorkspaceRecord) {
+function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilityResult) {
   const now = Date.now();
   const remainingLeaseMs = Math.max(0, record.expiresAt - now);
   const hardRemainingMs = Math.max(0, record.hardExpiresAt - now);
@@ -88,6 +89,11 @@ function publicRecord(record: WorkspaceRecord) {
     leaseState,
     availableActions: availableLifecycleActions(record.status, canRenewLease),
     ...(leaseWarnings.length > 0 ? { leaseWarnings } : {}),
+    ...(capabilities ? {
+      capabilities: capabilities.capabilities,
+      permissions: capabilities.permissions,
+      operations: capabilities.operations
+    } : {}),
     error: record.error
   };
 }
@@ -458,7 +464,7 @@ export class WorkspaceService {
   async open(ownerId: string, input: Record<string, unknown>): Promise<RunnerResponse> {
     const parsed = TOOL_SCHEMA_BY_NAME.workspace_open.parse(input);
     const prior = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
-    if (prior) return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: publicRecord(prior), truncated: false };
+    if (prior) return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(prior), truncated: false };
     await this.ensureCapacity(ownerId);
     const url = await validateRepositoryUrl(parsed.repositoryUrl, this.config.allowedGitHosts);
     if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
@@ -476,7 +482,7 @@ export class WorkspaceService {
       this.store.create(record);
     } catch (error) {
       const replay = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
-      if (replay) return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: publicRecord(replay), truncated: false };
+      if (replay) return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(replay), truncated: false };
       if (this.store.list(ownerId).some((candidate) => activeStatus.has(candidate.status))) {
         throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
       }
@@ -499,7 +505,7 @@ export class WorkspaceService {
         await removeContainer(containerName);
         throw new HarnessError('CONFLICT', 'workspace creation lost its lifecycle lease', 409, true);
       }
-      return { ok: true, message: 'Workspace opened', data: publicRecord(active), truncated: false };
+      return { ok: true, message: 'Workspace opened', data: this.publicWorkspaceRecord(active), truncated: false };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'workspace creation failed';
       this.store.updateFenced(workspaceId, record.generation, ['CREATING'], { status: 'FAILED', error: message.slice(0, 2_000) });
@@ -515,12 +521,143 @@ export class WorkspaceService {
     if (!Number.isSafeInteger(offset) || offset < 0) throw new HarnessError('INVALID_INPUT', 'invalid workspace cursor');
     const page = records.slice(offset, offset + limit);
     const next = offset + page.length < records.length ? String(offset + page.length) : undefined;
-    return { ok: true, message: 'Workspaces listed', data: { workspaces: page.map(publicRecord) }, truncated: false, ...(next ? { cursor: next } : {}) };
+    return { ok: true, message: 'Workspaces listed', data: { workspaces: page.map((rec) => this.publicWorkspaceRecord(rec)) }, truncated: false, ...(next ? { cursor: next } : {}) };
   }
 
   status(ownerId: string, workspaceId?: string): RunnerResponse {
     const record = this.requireWorkspace(ownerId, workspaceId, false, true);
-    return { ok: true, message: 'Workspace status', data: publicRecord(record), truncated: false };
+    return { ok: true, message: 'Workspace status', data: this.publicWorkspaceRecord(record), truncated: false };
+  }
+
+  publicWorkspaceRecord(record: WorkspaceRecord): Record<string, unknown> {
+    return publicRecord(record, this.computeWorkspaceCapabilities(record));
+  }
+
+  private extractRepositoryName(repositoryUrl: URL): string | null {
+    if (repositoryUrl.hostname.toLowerCase() !== 'github.com') return null;
+    const parts = repositoryUrl.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/');
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      return `${parts[0]}/${parts[1]}`;
+    }
+    return null;
+  }
+
+  computeWorkspaceCapabilities(record: WorkspaceRecord): WorkspaceCapabilityResult {
+    let repoName: string | null = null;
+    let isGitHub = false;
+    let owner = '';
+    let repository = '';
+    try {
+      const url = new URL(record.repositoryUrl);
+      if (url.hostname.toLowerCase() === 'github.com') {
+        isGitHub = true;
+        const parts = url.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/');
+        if (parts.length === 2 && parts[0] && parts[1]) {
+          owner = parts[0].toLowerCase();
+          repository = parts[1].toLowerCase();
+          repoName = `${parts[0]}/${parts[1]}`;
+        }
+      }
+    } catch {
+      // Ignore invalid url format fallback
+    }
+
+    const authMode = this.config.authMode ?? 'owner-bearer';
+    let contentsRead = true;
+    let contentsWrite = false;
+    let issuesRead = false;
+    let issuesWrite = false;
+    let pullRequestsRead = false;
+    let pullRequestsWrite = false;
+
+    if (authMode === 'cloudflare-access') {
+      if (this.githubInstallations && isGitHub && owner && repository) {
+        const grant = this.githubInstallations.getRepositoryGrant(record.ownerId, owner, repository);
+        if (grant && grant.status === 'granted') {
+          const installation = this.githubInstallations.getInstallation(record.ownerId, grant.installationId);
+          if (
+            installation &&
+            installation.status === 'active' &&
+            String(this.config.githubApp?.appId) === installation.appId
+          ) {
+            contentsRead = true;
+            contentsWrite = grant.contents === 'write';
+            issuesRead = true;
+            issuesWrite = grant.contents === 'write';
+            pullRequestsRead = true;
+            pullRequestsWrite = grant.contents === 'write';
+          }
+        }
+      }
+    } else {
+      // owner-bearer mode
+      if (isGitHub && this.config.githubApp?.installationId) {
+        contentsRead = true;
+        contentsWrite = true;
+        issuesRead = true;
+        issuesWrite = true;
+        pullRequestsRead = true;
+        pullRequestsWrite = true;
+      }
+    }
+
+    const privileged = authMode === 'cloudflare-access';
+
+    return {
+      workspaceId: record.id,
+      repository: repoName,
+      repositoryUrl: record.repositoryUrl,
+      capabilities: {
+        repository: {
+          read: contentsRead,
+          push: contentsWrite,
+          issuesRead,
+          issuesWrite,
+          pullRequestsRead,
+          pullRequestsWrite
+        },
+        workspace: {
+          shell: true,
+          tasks: true,
+          sessions: true,
+          deployments: true,
+          privileged,
+          networkMode: record.networkMode
+        }
+      },
+      permissions: {
+        contents: {
+          read: contentsRead,
+          write: contentsWrite
+        },
+        issues: {
+          read: issuesRead,
+          write: issuesWrite
+        },
+        pullRequests: {
+          read: pullRequestsRead,
+          write: pullRequestsWrite
+        }
+      },
+      operations: {
+        gitFetch: contentsRead,
+        gitPull: contentsRead,
+        gitPush: contentsWrite,
+        issueList: issuesRead,
+        issueView: issuesRead,
+        issueCreate: issuesWrite,
+        issueComment: issuesWrite,
+        issueUpdate: issuesWrite,
+        issuePublish: issuesWrite,
+        labelCreate: issuesWrite,
+        pullRequestList: pullRequestsRead,
+        pullRequestView: pullRequestsRead,
+        pullRequestCreate: pullRequestsWrite,
+        execRun: true,
+        privilegedExec: privileged,
+        deploymentsRun: true
+      }
+    };
   }
 
   private requireWorkspace(ownerId: string, workspaceId?: string, active = true, allowRecoverable = false): WorkspaceRecord {
@@ -797,8 +934,27 @@ export class WorkspaceService {
 
   private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
-    const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
-    if (!token) throw new HarnessError('UNAVAILABLE', 'Git push requires a configured GitHub App with repository write access', 503, false);
+    const repoStr = this.extractRepositoryName(repositoryUrl);
+    let token: string | undefined;
+    try {
+      token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
+    } catch (err: unknown) {
+      if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
+        throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
+          operation: 'git_push',
+          repository: repoStr ?? undefined,
+          requiredCapability: 'repository.push'
+        });
+      }
+      throw err;
+    }
+    if (!token) {
+      throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', 'Git push requires a configured GitHub App with repository write access', 403, false, {
+        operation: 'git_push',
+        repository: repoStr ?? undefined,
+        requiredCapability: 'repository.push'
+      });
+    }
     const requestedRefspec = input.refspec as string | undefined;
     const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
     if (!requestedRefspec && !branch) throw new HarnessError('CONFLICT', 'git_push requires refspec when HEAD is detached', 409, false);
@@ -998,17 +1154,43 @@ export class WorkspaceService {
   ): Promise<RunnerResponse> {
     const isWrite = ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
     const permissionScope = action.startsWith('pr_') ? 'pull_requests' : 'issues';
+    const requiredCapability = permissionScope === 'pull_requests'
+      ? (isWrite ? 'repository.pullRequestsWrite' : 'repository.pullRequestsRead')
+      : (isWrite ? 'repository.issuesWrite' : 'repository.issuesRead');
+    let repoUrl: URL;
+    try {
+      repoUrl = new URL(record.repositoryUrl);
+    } catch {
+      throw new HarnessError('INVALID_INPUT', 'Invalid repository URL');
+    }
+    const repoStr = this.extractRepositoryName(repoUrl);
 
-    const token = await mintPrincipalRepositoryScopedToken({
-      config: this.config,
-      principalId: record.ownerId,
-      repositoryUrl: new URL(record.repositoryUrl),
-      installations: this.githubInstallations,
-      permissionScope,
-      requiredPermission: isWrite ? 'write' : 'read'
-    });
+    let token: string | undefined;
+    try {
+      token = await mintPrincipalRepositoryScopedToken({
+        config: this.config,
+        principalId: record.ownerId,
+        repositoryUrl: repoUrl,
+        installations: this.githubInstallations,
+        permissionScope,
+        requiredPermission: isWrite ? 'write' : 'read'
+      });
+    } catch (err: unknown) {
+      if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
+        throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
+          operation: `github_action.${action}`,
+          repository: repoStr ?? undefined,
+          requiredCapability
+        });
+      }
+      throw err;
+    }
     if (!token) {
-      throw new HarnessError('FORBIDDEN', `No GitHub App installation available for ${record.repositoryUrl}`, 403);
+      throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', `No GitHub App installation available for ${record.repositoryUrl}`, 403, false, {
+        operation: `github_action.${action}`,
+        repository: repoStr ?? undefined,
+        requiredCapability
+      });
     }
 
     const helperName = `chm-gh-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
@@ -1201,6 +1383,16 @@ export class WorkspaceService {
 
     const workspaceId = validated.workspaceId as string | undefined;
     if (operation === 'workspace_status') return this.status(ownerId, workspaceId);
+    if (operation === 'workspace_capabilities') {
+      const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
+      const caps = this.computeWorkspaceCapabilities(rec);
+      return {
+        ok: true,
+        message: 'Workspace capabilities retrieved',
+        data: caps,
+        truncated: false
+      };
+    }
     if (operation === 'workspace_close') {
       const rec = this.requireWorkspace(ownerId, workspaceId, false, true);
       return await this.close(ownerId, rec.id);
@@ -1398,13 +1590,17 @@ export class WorkspaceService {
         name: record.gitAuthorName || 'Cloud Harness Agent',
         email: record.gitAuthorEmail || 'agent@cloud-harness.local'
       };
+      const caps = this.computeWorkspaceCapabilities(record);
       return {
         ok: true,
         message: 'Workspace context',
         data: {
-          workspace: publicRecord(record),
+          workspace: this.publicWorkspaceRecord(record),
           branch,
-          gitIdentity
+          gitIdentity,
+          capabilities: caps.capabilities,
+          permissions: caps.permissions,
+          operations: caps.operations
         },
         truncated: false
       };
@@ -1488,11 +1684,23 @@ export class WorkspaceService {
               pushed = Boolean(pushResult.ok);
             } catch (err: unknown) {
               const pushErrMsg = err instanceof Error ? err.message : 'push failed';
+              const errorCode = err instanceof HarnessError ? err.code : 'UNAVAILABLE';
+              const retryable = err instanceof HarnessError ? err.retryable : true;
+              const operationDetail = err instanceof HarnessError ? err.operation : undefined;
+              const repositoryDetail = err instanceof HarnessError ? err.repository : undefined;
+              const requiredCapDetail = err instanceof HarnessError ? err.requiredCapability : undefined;
               return {
                 ok: false,
                 message: `Working tree clean but push failed: ${pushErrMsg}`,
                 data: { step: 'push', commitSha, branch, pushed: false, pushError: pushErrMsg, resumeAction: 'Call git_push or workspace_finalize to retry push' },
-                error: { code: 'UNAVAILABLE', message: pushErrMsg, retryable: true },
+                error: {
+                  code: errorCode,
+                  message: pushErrMsg,
+                  retryable,
+                  operation: operationDetail,
+                  repository: repositoryDetail,
+                  requiredCapability: requiredCapDetail
+                },
                 truncated: false
               };
             }
@@ -1558,6 +1766,11 @@ export class WorkspaceService {
             pushed = Boolean(pushResult.ok);
           } catch (pushErr: unknown) {
             const pushErrMsg = pushErr instanceof Error ? pushErr.message : 'push failed';
+            const errorCode = pushErr instanceof HarnessError ? pushErr.code : 'UNAVAILABLE';
+            const retryable = pushErr instanceof HarnessError ? pushErr.retryable : true;
+            const operationDetail = pushErr instanceof HarnessError ? pushErr.operation : undefined;
+            const repositoryDetail = pushErr instanceof HarnessError ? pushErr.repository : undefined;
+            const requiredCapDetail = pushErr instanceof HarnessError ? pushErr.requiredCapability : undefined;
             return {
               ok: false,
               message: `Commit created (${commitSha.slice(0, 7)}) but push failed: ${pushErrMsg}`,
@@ -1569,7 +1782,14 @@ export class WorkspaceService {
                 pushError: pushErrMsg,
                 resumeAction: 'Call git_push or workspace_finalize to retry push'
               },
-              error: { code: 'UNAVAILABLE', message: pushErrMsg, retryable: true },
+              error: {
+                code: errorCode,
+                message: pushErrMsg,
+                retryable,
+                operation: operationDetail,
+                repository: repositoryDetail,
+                requiredCapability: requiredCapDetail
+              },
               truncated: false
             };
           }

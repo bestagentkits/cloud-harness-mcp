@@ -264,3 +264,14 @@ Local stdio mode intentionally alters the trust boundary compared to the remote 
 ### Unsupported capabilities
 
 - `exec_run` with `privileged: true` and `github_action` are unsupported in local v1 and return immediate structured capability errors.
+
+## Repository capability introspection and authorization preflight
+
+To prevent late-stage workflow failures where an agent completes extensive edits before discovering that pushing or publishing is unauthorized, Cloud Harness exposes preflight authorization state:
+
+- **`workspace_capabilities` and `workspace_status`:** Inspectable at any point without modifying state, minting tokens, or launching containers. Returns structured `capabilities.repository` (`read`, `push`, `issuesRead`, `issuesWrite`, `pullRequestsRead`, `pullRequestsWrite`), `permissions`, and `operations`.
+- **Policy-driven derivation:** Capabilities reflect Cloud Harness security policy:
+  - In `owner-bearer` mode, write capabilities require a configured GitHub App installation on GitHub repositories.
+  - In `cloudflare-access` mode, write capabilities are derived from verified GitHub App installation grants bound to the authenticated principal.
+  - In local stdio mode, capabilities reflect explicit operator flags (`--git-push`, `--git-network`).
+- **Structured denial error:** Unauthorized operations reject immediately with `REPOSITORY_OPERATION_NOT_AUTHORIZED` (403, non-retryable) indicating the exact `operation`, `repository`, and `requiredCapability` (e.g. `repository.push`, `repository.issuesWrite`, `repository.pullRequestsWrite`).

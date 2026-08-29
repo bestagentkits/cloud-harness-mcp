@@ -35,6 +35,7 @@ const schemas = {
   }),
   workspace_list: z.object(pagination),
   workspace_status: z.object(workspace),
+  workspace_capabilities: z.object(workspace),
   workspace_close: z.object(workspace),
   workspace_lease_renew: z.object({ ...workspace, extensionSeconds: z.number().int().min(60).max(86_400).optional() }),
   workspace_recover: z.object({ ...workspace, mode: z.enum(['resume', 'status', 'patch', 'export']).default('resume'), targetBranch: gitArgument.optional() }),
@@ -309,7 +310,7 @@ export type ToolSpec = {
 };
 
 const titles: Record<RunnerOperation, string> = {
-  workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_close: 'Close workspace',
+  workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_capabilities: 'Workspace capabilities', workspace_close: 'Close workspace',
   workspace_lease_renew: 'Renew workspace lease', workspace_recover: 'Recover workspace state', workspace_context: 'Workspace context', workspace_set_active: 'Set active workspace',
   workspace_finalize: 'Finalize workspace commit and push',
   files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
@@ -330,6 +331,7 @@ const descriptions: Record<RunnerOperation, string> = {
   workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace.',
   workspace_list: 'List owner-visible workspace records with bounded cursor pagination.',
   workspace_status: 'Read the lifecycle state and metadata for one workspace.',
+  workspace_capabilities: 'Inspect workspace and repository authorization capabilities without modifying state or minting tokens.',
   workspace_close: 'Stop a workspace executor and permanently remove all workspace files, including unpushed commits.',
   workspace_lease_renew: 'Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace.',
   workspace_recover: 'Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.',
@@ -394,7 +396,7 @@ const descriptions: Record<RunnerOperation, string> = {
 };
 
 const readOnly = new Set<RunnerOperation>([
-  'workspace_list', 'workspace_status', 'workspace_context',
+  'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context',
   'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references',
   'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph',
   'operation_status', 'operation_wait',
@@ -410,7 +412,7 @@ const destructive = new Set<RunnerOperation>([
   'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run', 'github_action'
 ]);
 const idempotent = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
+  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
   'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
   'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close',
   'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',

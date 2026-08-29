@@ -20,7 +20,7 @@ const CATEGORIES = [
   {
     title: 'Workspace Lifecycle',
     description: 'Tools for opening, inspecting, listing, and closing isolated TTL-bound workspaces.',
-    names: ['workspace_open', 'workspace_list', 'workspace_status', 'workspace_close']
+    names: ['workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context', 'workspace_lease_renew', 'workspace_recover', 'workspace_close']
   },
   {
     title: 'Files and Code Intelligence',

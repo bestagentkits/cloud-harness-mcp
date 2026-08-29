@@ -78,7 +78,18 @@ export function formatToolResultText(result: ToolResult): string {
     }
   }
   if (result.error) {
-    sections.push(`Error [${result.error.code}]: ${result.error.message} (retryable: ${result.error.retryable})`);
+    const details: string[] = [];
+    if (result.error.requiredCapability) {
+      details.push(`required capability: ${result.error.requiredCapability}`);
+    }
+    if (result.error.operation) {
+      details.push(`operation: ${result.error.operation}`);
+    }
+    if (result.error.repository) {
+      details.push(`repository: ${result.error.repository}`);
+    }
+    details.push(`retryable: ${result.error.retryable}`);
+    sections.push(`Error [${result.error.code}]: ${result.error.message} (${details.join(', ')})`);
   }
   if (result.truncated && result.cursor) {
     sections.push(`[truncated — next cursor: ${result.cursor}]`);
