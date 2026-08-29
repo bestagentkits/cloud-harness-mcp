@@ -1,3 +1,11 @@
+# [0.25.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.24.0...v0.25.0) (2026-08-29)
+
+
+### Features
+
+* **contracts,runner,api:** add repository capability and authorization preflight ([#107](https://github.com/bestagentkits/cloud-harness-mcp/issues/107)) ([997a6f2](https://github.com/bestagentkits/cloud-harness-mcp/commit/997a6f27916c39a5889fe015043ec4b90927d862))
+* **mcp:** expose workspace recovery and lease renewal ([#103](https://github.com/bestagentkits/cloud-harness-mcp/issues/103)) ([#108](https://github.com/bestagentkits/cloud-harness-mcp/issues/108)) ([39d722b](https://github.com/bestagentkits/cloud-harness-mcp/commit/39d722bacfb102f2edbc1c0df8a8be86fbcd17a5))
+
 # [0.24.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.23.1...v0.24.0) (2026-08-29)
 
 
