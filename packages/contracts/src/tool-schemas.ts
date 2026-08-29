@@ -168,7 +168,29 @@ const schemas = {
       title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
       body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
       head: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'head cannot contain null bytes'),
-      base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').default('main')
+      base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').default('main'),
+      draft: z.boolean().default(false),
+      labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional()
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('pr_update'),
+      prNumber: z.number().int().positive(),
+      title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
+      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+      base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').optional(),
+      state: z.enum(['open', 'closed']).optional()
+    }).superRefine((input, context) => {
+      if (!input.title && !input.body && !input.base && !input.state) {
+        context.addIssue({ code: 'custom', path: ['title'], message: 'at least one of title, body, base, or state is required' });
+      }
+    }),
+    z.object({
+      ...workspace,
+      action: z.literal('pr_comment'),
+      prNumber: z.number().int().positive(),
+      body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
+      idempotencyKey: IdempotencyKeySchema.optional()
     }),
     z.object({
       ...workspace,
@@ -185,7 +207,9 @@ const schemas = {
       ...workspace,
       action: z.literal('issue_create'),
       title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
-      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default('')
+      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
+      labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+      assignees: z.array(z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username')).max(10).optional()
     }),
     z.object({
       ...workspace,

@@ -204,6 +204,70 @@ describe('contracts', () => {
     })).toMatchObject({ action: 'issue_update', state: 'closed' });
   });
 
+  it('validates pull request and extended issue schemas in github_action', () => {
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'pr_create',
+      title: 'feat: add brokered github operations',
+      body: 'PR body',
+      head: 'feat/gh-ops',
+      base: 'main',
+      draft: true,
+      labels: ['enhancement']
+    })).toMatchObject({
+      action: 'pr_create',
+      title: 'feat: add brokered github operations',
+      draft: true,
+      labels: ['enhancement']
+    });
+
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'pr_update',
+      prNumber: 10,
+      title: 'Updated title',
+      state: 'closed'
+    })).toMatchObject({ action: 'pr_update', prNumber: 10, title: 'Updated title', state: 'closed' });
+
+    expect(() => TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'pr_update',
+      prNumber: 10
+    })).toThrow();
+
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'pr_comment',
+      prNumber: 10,
+      body: 'LGTM!',
+      idempotencyKey: 'idem_key_123'
+    })).toMatchObject({ action: 'pr_comment', prNumber: 10, body: 'LGTM!' });
+
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'issue_create',
+      title: 'New bug report',
+      body: 'Bug description',
+      labels: ['bug', 'p1'],
+      assignees: ['octocat']
+    })).toMatchObject({
+      action: 'issue_create',
+      title: 'New bug report',
+      labels: ['bug', 'p1'],
+      assignees: ['octocat']
+    });
+
+    const validWs = `ws_${'a'.repeat(24)}`;
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      workspaceId: validWs,
+      action: 'issue_list',
+      limit: 5,
+      state: 'open'
+    })).toMatchObject({ workspaceId: validWs, action: 'issue_list', limit: 5 });
+
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
+      workspaceId: validWs,
+      action: 'pr_list',
+      limit: 5,
+      state: 'all'
+    })).toMatchObject({ workspaceId: validWs, action: 'pr_list', limit: 5 });
+  });
+
   it('validates workspace lease renew, recovery, context, and git identity schemas', () => {
     expect(TOOL_SCHEMA_BY_NAME.workspace_lease_renew.parse({ extensionSeconds: 3600 })).toMatchObject({ extensionSeconds: 3600 });
     expect(TOOL_SCHEMA_BY_NAME.workspace_recover.parse({ mode: 'patch' })).toMatchObject({ mode: 'patch' });

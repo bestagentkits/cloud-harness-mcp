@@ -31,11 +31,65 @@ case "$action" in
     body="${2:-}"
     head="${3:-}"
     base="${4:-main}"
+    draft="${5:-false}"
+    labels="${6:-}"
     if [ -z "$title" ] || [ -z "$head" ]; then
       echo "Title and head branch required for pull request creation" >&2
       exit 1
     fi
-    exec gh pr create --title "$title" --body "$body" --head "$head" --base "$base"
+    cmd=(gh pr create --title "$title" --body "$body" --head "$head" --base "$base")
+    if [ "$draft" = "true" ]; then
+      cmd+=(--draft)
+    fi
+    if [ -n "$labels" ]; then
+      cmd+=(--label "$labels")
+    fi
+    exec "${cmd[@]}"
+    ;;
+  pr_update)
+    pr_number="${1:-}"
+    title="${2:-}"
+    body="${3:-}"
+    base="${4:-}"
+    state="${5:-}"
+    if [ -z "$pr_number" ]; then
+      echo "Pull request number required" >&2
+      exit 1
+    fi
+    edit_needed=false
+    cmd=(gh pr edit "$pr_number")
+    if [ -n "$title" ]; then cmd+=(--title "$title"); edit_needed=true; fi
+    if [ -n "$body" ]; then cmd+=(--body "$body"); edit_needed=true; fi
+    if [ -n "$base" ]; then cmd+=(--base "$base"); edit_needed=true; fi
+    if [ "$edit_needed" = "true" ]; then
+      if ! "${cmd[@]}" >/dev/null; then
+        echo "Failed to edit pull request $pr_number" >&2
+        exit 1
+      fi
+    fi
+    if [ -n "$state" ]; then
+      if [ "$state" = "closed" ]; then
+        if ! gh pr close "$pr_number" >/dev/null; then
+          echo "Failed to close pull request $pr_number" >&2
+          exit 1
+        fi
+      elif [ "$state" = "open" ]; then
+        if ! gh pr reopen "$pr_number" >/dev/null; then
+          echo "Failed to reopen pull request $pr_number" >&2
+          exit 1
+        fi
+      fi
+    fi
+    exec gh pr view "$pr_number" --json number,title,body,state,author,reviews,comments,url
+    ;;
+  pr_comment)
+    pr_number="${1:-}"
+    body="${2:-}"
+    if [ -z "$pr_number" ] || [ -z "$body" ]; then
+      echo "Pull request number and comment body required" >&2
+      exit 1
+    fi
+    exec gh pr comment "$pr_number" --body "$body"
     ;;
   issue_list)
     limit="${1:-20}"
@@ -53,11 +107,20 @@ case "$action" in
   issue_create)
     title="${1:-}"
     body="${2:-}"
+    labels="${3:-}"
+    assignees="${4:-}"
     if [ -z "$title" ]; then
       echo "Title required for issue creation" >&2
       exit 1
     fi
-    exec gh issue create --title "$title" --body "$body"
+    cmd=(gh issue create --title "$title" --body "$body")
+    if [ -n "$labels" ]; then
+      cmd+=(--label "$labels")
+    fi
+    if [ -n "$assignees" ]; then
+      cmd+=(--assignee "$assignees")
+    fi
+    exec "${cmd[@]}"
     ;;
   issue_comment)
     issue_number="${1:-}"
@@ -122,18 +185,38 @@ case "$action" in
       echo "Issue number required" >&2
       exit 1
     fi
+    edit_needed=false
     cmd=(gh issue edit "$issue_number")
-    if [ -n "$title" ]; then cmd+=(--title "$title"); fi
-    if [ -n "$body" ]; then cmd+=(--body "$body"); fi
-    if [ -n "$state" ]; then
-      if [ "$state" = "closed" ]; then
-        cmd+=(--state "closed")
-        if [ -n "$state_reason" ]; then cmd+=(--reason "$state_reason"); fi
-      elif [ "$state" = "open" ]; then
-        cmd+=(--state "open")
+    if [ -n "$title" ]; then cmd+=(--title "$title"); edit_needed=true; fi
+    if [ -n "$body" ]; then cmd+=(--body "$body"); edit_needed=true; fi
+    if [ "$edit_needed" = "true" ]; then
+      if ! "${cmd[@]}" >/dev/null; then
+        echo "Failed to edit issue $issue_number" >&2
+        exit 1
       fi
     fi
-    exec "${cmd[@]}"
+    if [ -n "$state" ]; then
+      if [ "$state" = "closed" ]; then
+        close_cmd=(gh issue close "$issue_number")
+        if [ -n "$state_reason" ]; then
+          if [ "$state_reason" = "not_planned" ] || [ "$state_reason" = "not planned" ]; then
+            close_cmd+=(--reason "not planned")
+          elif [ "$state_reason" = "completed" ]; then
+            close_cmd+=(--reason "completed")
+          fi
+        fi
+        if ! "${close_cmd[@]}" >/dev/null; then
+          echo "Failed to close issue $issue_number" >&2
+          exit 1
+        fi
+      elif [ "$state" = "open" ]; then
+        if ! gh issue reopen "$issue_number" >/dev/null; then
+          echo "Failed to reopen issue $issue_number" >&2
+          exit 1
+        fi
+      fi
+    fi
+    exec gh issue view "$issue_number" --json number,title,body,state,author,labels,comments,url
     ;;
   issue_publish)
     issue_number="${1:-}"

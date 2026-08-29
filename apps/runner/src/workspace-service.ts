@@ -942,7 +942,7 @@ export class WorkspaceService {
     args: string[],
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
-    const isWrite = ['pr_create', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
+    const isWrite = ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
     const permissionScope = action.startsWith('pr_') ? 'pull_requests' : 'issues';
 
     const token = await mintPrincipalRepositoryScopedToken({
@@ -1471,10 +1471,30 @@ export class WorkspaceService {
       switch (action) {
         case 'pr_list': args = [String(validated.limit ?? 20), (validated.state as string) ?? 'open']; break;
         case 'pr_view': args = [String(validated.prNumber)]; break;
-        case 'pr_create': args = [validated.title as string, (validated.body as string) ?? '', validated.head as string, (validated.base as string) ?? 'main']; break;
+        case 'pr_create': args = [
+          validated.title as string,
+          (validated.body as string) ?? '',
+          validated.head as string,
+          (validated.base as string) ?? 'main',
+          String(validated.draft ?? false),
+          ((validated.labels as string[]) ?? []).join(',')
+        ]; break;
+        case 'pr_update': args = [
+          String(validated.prNumber),
+          (validated.title as string) ?? '',
+          (validated.body as string) ?? '',
+          (validated.base as string) ?? '',
+          (validated.state as string) ?? ''
+        ]; break;
+        case 'pr_comment': args = [String(validated.prNumber), validated.body as string]; break;
         case 'issue_list': args = [String(validated.limit ?? 20), (validated.state as string) ?? 'open']; break;
         case 'issue_view': args = [String(validated.issueNumber)]; break;
-        case 'issue_create': args = [validated.title as string, (validated.body as string) ?? '']; break;
+        case 'issue_create': args = [
+          validated.title as string,
+          (validated.body as string) ?? '',
+          ((validated.labels as string[]) ?? []).join(','),
+          ((validated.assignees as string[]) ?? []).join(',')
+        ]; break;
         case 'issue_comment': args = [String(validated.issueNumber), validated.body as string]; break;
         case 'issue_comment_update': args = [String(validated.commentId), validated.body as string]; break;
         case 'label_create': args = [validated.name as string, (validated.color as string) ?? '0E8A16', (validated.description as string) ?? '']; break;
@@ -1490,7 +1510,7 @@ export class WorkspaceService {
         ]; break;
       }
       const result = await this.runBrokeredGitHubAction(record, action, args, signal);
-      if ((action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey && result.ok) {
+      if ((action === 'pr_comment' || action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey && result.ok) {
         this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result), fingerprint);
       }
       await this.enforceActiveLimits(record);
@@ -1870,7 +1890,7 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
   }
   if (operation === 'github_action') {
     const action = validated.action as string;
-    return ['pr_create', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
+    return ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
   }
   return false;
 }
