@@ -298,7 +298,7 @@ export class WorkspaceService {
     return repositoryPath;
   }
 
-  private async refreshRepositoryToken(ownerId: string, repositoryUrl: URL): Promise<string | undefined> {
+  private async refreshRepositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write' = 'read'): Promise<string | undefined> {
     if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') return undefined;
     if (!this.githubInstallations || !this.githubBinding || !this.config.githubApp) return undefined;
     if (repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
@@ -324,7 +324,7 @@ export class WorkspaceService {
       principalId: ownerId,
       repositoryUrl,
       installations: this.githubInstallations,
-      requiredPermission: 'read'
+      requiredPermission: permission
     });
   }
 
@@ -1639,10 +1639,27 @@ export class WorkspaceService {
       return await mintRepositoryToken(this.config, repositoryUrl);
     }
     if (!this.githubInstallations || !this.config.githubApp) return undefined;
-    return await mintPrincipalRepositoryToken({
-      config: this.config, principalId: ownerId, repositoryUrl,
-      installations: this.githubInstallations, requiredPermission: permission
-    });
+
+    let token: string | undefined;
+    let mintError: unknown;
+    try {
+      token = await mintPrincipalRepositoryToken({
+        config: this.config, principalId: ownerId, repositoryUrl,
+        installations: this.githubInstallations, requiredPermission: permission
+      });
+    } catch (error) {
+      mintError = error;
+    }
+
+    if (token) return token;
+
+    if (permission === 'write' && this.githubBinding) {
+      const refreshed = await this.refreshRepositoryToken(ownerId, repositoryUrl, 'write');
+      if (refreshed) return refreshed;
+    }
+
+    if (mintError) throw mintError;
+    return undefined;
   }
 
   private auditWorkspaceMutation(
