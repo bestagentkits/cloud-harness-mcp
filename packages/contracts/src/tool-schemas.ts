@@ -151,6 +151,32 @@ const schemas = {
   memories_write: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), content: z.string().max(262_144) }),
   deployments_list: z.object(workspace),
   deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
+  artifacts_snapshot: z.object({
+    ...workspace,
+    path: relativePath,
+    logicalName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, 'invalid artifact logical name'),
+    retentionSeconds: z.number().int().min(60).max(2_592_000).optional()
+  }),
+  artifacts_list: z.object({
+    cursor: z.string().max(256).optional(),
+    limit: z.number().int().min(1).max(100).default(50)
+  }),
+  artifacts_read: z.object({
+    artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
+    offset: z.number().int().min(0).default(0),
+    limit: z.number().int().min(1).max(1_048_576).default(65_536)
+  }),
+  artifacts_restore: z.object({
+    ...workspace,
+    artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
+    path: relativePath,
+    overwrite: z.boolean().default(false),
+    expectedSha256: z.string().length(64).optional()
+  }),
+  artifacts_delete: z.object({
+    artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
+    expectedGeneration: z.number().int().positive().default(1)
+  }),
   github_action: z.discriminatedUnion('action', [
     z.object({
       ...workspace,
@@ -324,6 +350,7 @@ const titles: Record<RunnerOperation, string> = {
   worktrees_list: 'List worktrees', worktrees_create: 'Create worktree', worktrees_remove: 'Remove worktree',
   skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory',
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
+  artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
   github_action: 'Perform brokered GitHub operations'
 };
 
@@ -392,7 +419,12 @@ const descriptions: Record<RunnerOperation, string> = {
   memories_write: 'Create or replace one repository-local Cloud Harness memory note.',
   deployments_list: 'List repository-defined deployment targets without running them.',
   deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.',
-  github_action: 'Execute authenticated GitHub pull request and issue operations via brokered helper without exposing tokens to workspace.'
+  artifacts_snapshot: 'Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot.',
+  artifacts_list: 'List principal-owned retained artifact snapshots with bounded pagination.',
+  artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
+  artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
+  artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
+  github_action: 'Perform brokered GitHub operations via brokered helper without exposing tokens to workspace.'
 };
 
 const readOnly = new Set<RunnerOperation>([
@@ -401,7 +433,8 @@ const readOnly = new Set<RunnerOperation>([
   'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph',
   'operation_status', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_identity_status',
-  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list'
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list',
+  'artifacts_list', 'artifacts_read'
 ]);
 const destructive = new Set<RunnerOperation>([
   'workspace_close', 'workspace_recover', 'workspace_finalize',
@@ -409,7 +442,7 @@ const destructive = new Set<RunnerOperation>([
   'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
   'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
-  'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run', 'github_action'
+  'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action'
 ]);
 const idempotent = new Set<RunnerOperation>([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
@@ -418,7 +451,8 @@ const idempotent = new Set<RunnerOperation>([
   'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
   'operation_status', 'operation_cancel', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_add', 'git_identity_status', 'git_identity_set',
-  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list'
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list',
+  'artifacts_list', 'artifacts_read'
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',

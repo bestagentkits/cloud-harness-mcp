@@ -21,6 +21,7 @@ authority, deployment authority, or permission to weaken network isolation.
 | Run a command, interactive shell, coding session, or dependency task | [Execution and tasks](references/execution-and-tasks.md) |
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |
 | Read/run repository skills, hooks, memories, or deployments | [Repository automation](references/repository-automation.md) |
+| Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
 
 Read a reference before using an unfamiliar, destructive, networked, or
 recovery-sensitive operation. The references are bundled with this skill and do

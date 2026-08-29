@@ -18,6 +18,7 @@ export const RunnerOperationSchema = z.enum([
   'hooks_list', 'hooks_run',
   'memories_list', 'memories_read', 'memories_write',
   'deployments_list', 'deployments_run',
+  'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
   'github_action'
 ]);
 

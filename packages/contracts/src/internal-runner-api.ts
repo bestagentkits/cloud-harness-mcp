@@ -41,7 +41,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'project_list', 'project_create', 'project_update', 'project_delete',
   'environment_list', 'environment_create', 'environment_update', 'environment_delete',
   'secret_list', 'secret_create', 'secret_rotate', 'secret_delete', 'audit_list',
-  'artifact_list', 'artifact_snapshot', 'artifact_delete',
+  'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject'
 ]);
@@ -65,6 +65,18 @@ const metadataInputs = {
     workspaceId: WorkspaceIdSchema, path: z.string().min(1).max(1_024), logicalName: z.string().min(1).max(128),
     projectId: internalId('prj').optional(), environmentId: internalId('env').optional(),
     retentionSeconds: z.number().int().min(60).max(2_592_000).optional(), expectedGeneration: z.literal(0)
+  }).strict(),
+  artifact_read: z.object({
+    artifactId: internalId('art'),
+    offset: z.number().int().min(0).default(0),
+    limit: z.number().int().min(1).max(1_048_576).default(65_536)
+  }).strict(),
+  artifact_restore: z.object({
+    artifactId: internalId('art'),
+    workspaceId: WorkspaceIdSchema,
+    path: z.string().min(1).max(1_024),
+    overwrite: z.boolean().default(false),
+    expectedSha256: z.string().length(64).optional()
   }).strict(),
   artifact_delete: z.object({ artifactId: internalId('art'), expectedGeneration: generation }).strict(),
   github_status: z.object({}).strict(),
@@ -90,7 +102,8 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('project_list'), metadataRequest('project_create'), metadataRequest('project_update'), metadataRequest('project_delete'),
   metadataRequest('environment_list'), metadataRequest('environment_create'), metadataRequest('environment_update'), metadataRequest('environment_delete'),
   metadataRequest('secret_list'), metadataRequest('secret_create'), metadataRequest('secret_rotate'), metadataRequest('secret_delete'),
-  metadataRequest('audit_list'), metadataRequest('artifact_list'), metadataRequest('artifact_snapshot'), metadataRequest('artifact_delete'),
+  metadataRequest('audit_list'), metadataRequest('artifact_list'), metadataRequest('artifact_snapshot'),
+  metadataRequest('artifact_read'), metadataRequest('artifact_restore'), metadataRequest('artifact_delete'),
   metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'),
   metadataRequest('github_reconcile'), metadataRequest('github_disconnect'),
   metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject')

@@ -75,6 +75,14 @@ export class DashboardControlService {
           });
           return ok('Artifact snapshot created', created);
         }
+        case 'artifact_read': {
+          const chunk = this.artifacts.read(principalId, parsed.input);
+          return ok('Artifact read', chunk, chunk.eof ? undefined : String(chunk.offset + chunk.bytesReturned));
+        }
+        case 'artifact_restore': {
+          const restored = await this.workspaces.restoreArtifact(parsed.principal, parsed.input);
+          return ok('Artifact restored to workspace', restored);
+        }
         case 'artifact_delete': {
           const deleted = this.artifacts.delete(
             principalId, parsed.input.artifactId, parsed.input.expectedGeneration,

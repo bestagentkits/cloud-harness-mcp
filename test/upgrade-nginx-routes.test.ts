@@ -72,7 +72,7 @@ function backups(root: string) {
   try { return readdirSync(directory); } catch { return []; }
 }
 
-describe('nginx route upgrade', () => {
+describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
   it('adds the API-key route to a dashboard-only install and is idempotent', () => {
     const fixture = createFixture();
     const first = runUpgrade(fixture.root);

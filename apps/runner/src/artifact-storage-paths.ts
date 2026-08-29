@@ -81,8 +81,13 @@ export class ArtifactStoragePaths {
   rollbackDeletion(staged: StagedDeletion): void {
     if (existsSync(staged.tombstonePath) && !existsSync(staged.targetPath)) renameSync(staged.tombstonePath, staged.targetPath);
   }
+  resolveExisting(relativePath: string): string {
+    const targetPath = this.resolveRelative(relativePath);
+    this.assertSafeExistingFile(targetPath);
+    return targetPath;
+  }
 
-  private resolveRelative(relativePath: string): string {
+  resolveRelative(relativePath: string): string {
     if (!/^objects\/art_[A-Za-z0-9_-]{32}\.snapshot$/.test(relativePath)) throw new Error('unsafe artifact storage path');
     const target = resolve(this.root, relativePath);
     if (!target.startsWith(`${this.objectsRoot}${sep}`) || relative(this.objectsRoot, target).startsWith('..')) {
@@ -91,7 +96,7 @@ export class ArtifactStoragePaths {
     return target;
   }
 
-  private assertSafeExistingFile(path: string): void {
+  assertSafeExistingFile(path: string): void {
     const actual = realpathSync(path);
     if (!actual.startsWith(`${this.objectsRoot}${sep}`) || lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) {
       throw new Error('unsafe artifact storage path');

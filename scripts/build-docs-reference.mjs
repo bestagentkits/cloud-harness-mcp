@@ -46,6 +46,11 @@ const CATEGORIES = [
     title: 'Repository Extensions',
     description: 'Skills execution, workspace hooks, persistent memory, and repository-defined deployment operations.',
     names: ['skills_list', 'skills_read', 'skills_run', 'hooks_list', 'hooks_run', 'memories_list', 'memories_read', 'memories_write', 'deployments_list', 'deployments_run']
+  },
+  {
+    title: 'Retained Artifacts',
+    description: 'Tools for snapshotting workspace files, listing, reading bounded ranges, restoring into workspaces, and deleting retained artifacts.',
+    names: ['artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete']
   }
 ];
 

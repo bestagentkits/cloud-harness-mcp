@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -71,7 +72,9 @@ function send(path: string, options: { method?: string; headers?: Record<string,
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8');
-        resolve({ status: response.statusCode ?? 0, headers: response.headers as Reply['headers'], text, json: text ? JSON.parse(text) : undefined });
+        let json: any = undefined;
+        try { if (text) json = JSON.parse(text); } catch { /* not json */ }
+        resolve({ status: response.statusCode ?? 0, headers: response.headers as Reply['headers'], text, json });
       });
     });
     request.on('error', reject); request.end(options.body);
@@ -260,6 +263,82 @@ describe('dashboard BFF', () => {
     expect(String(cleared.headers['set-cookie']?.[0])).toContain('Max-Age=0');
     const invalid = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ theme: 'purple' }) });
     expect(invalid.status).toBe(400);
+  });
+
+  it('Issue #109 and #110: exposes artifact read, restore, and streaming download with safe headers', async () => {
+    const artifactId = `art_${'a'.repeat(32)}`;
+    const artifactPayload = Buffer.from('artifact payload bytes test 123');
+    const artifactSha = createHash('sha256').update(artifactPayload).digest('hex');
+
+    (runner.callInternal as any).mockImplementation(async (operation: string, input: Record<string, unknown>) => {
+      if (operation === 'artifact_read') {
+        return {
+          ok: true,
+          message: 'read',
+          truncated: false,
+          data: {
+            artifactId,
+            logicalName: 'report.txt',
+            offset: 0,
+            bytesReturned: artifactPayload.length,
+            totalBytes: artifactPayload.length,
+            sha256: artifactSha,
+            eof: true,
+            content: artifactPayload.toString('base64')
+          }
+        };
+      }
+      if (operation === 'artifact_restore') {
+        return {
+          ok: true,
+          message: 'restored',
+          truncated: false,
+          data: {
+            artifactId,
+            workspaceId,
+            path: input.path,
+            sizeBytes: artifactPayload.length,
+            sha256: artifactSha
+          }
+        };
+      }
+      return { ok: true, message: 'ok', truncated: false, data: {} };
+    });
+
+    // 1. GET /api/v1/artifacts/:artifactId
+    const readResp = await send(`/api/v1/artifacts/${artifactId}`);
+    expect(readResp.status).toBe(200);
+    expect(readResp.json.data).toMatchObject({
+      artifactId,
+      logicalName: 'report.txt',
+      totalBytes: artifactPayload.length,
+      sha256: artifactSha
+    });
+
+    // 2. POST /api/v1/artifacts/:artifactId/restore
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const restoreBody = JSON.stringify({ workspaceId, path: 'restored/report.txt', overwrite: true });
+    const restoreResp = await send(`/api/v1/artifacts/${artifactId}/restore`, {
+      method: 'POST',
+      headers: { ...headers, 'content-length': String(Buffer.byteLength(restoreBody)) },
+      body: restoreBody
+    });
+    expect(restoreResp.status).toBe(200);
+    expect(restoreResp.json.data).toMatchObject({
+      artifactId,
+      workspaceId,
+      path: 'restored/report.txt',
+      sizeBytes: artifactPayload.length
+    });
+
+    // 3. GET /api/v1/artifacts/:artifactId/download
+    const downloadResp = await send(`/api/v1/artifacts/${artifactId}/download`);
+    expect(downloadResp.status).toBe(200);
+    expect(downloadResp.headers['content-type']).toBe('application/octet-stream');
+    expect(downloadResp.headers['content-disposition']).toBe('attachment; filename="report.txt"');
+    expect(downloadResp.text).toBe('artifact payload bytes test 123');
   });
 });
 

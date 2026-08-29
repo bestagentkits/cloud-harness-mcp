@@ -47,7 +47,7 @@ export type DashboardResponseOperation =
   | 'project_list' | 'project_create' | 'project_update' | 'project_delete'
   | 'environment_list' | 'environment_create' | 'environment_update' | 'environment_delete'
   | 'secret_list' | 'secret_create' | 'secret_rotate' | 'secret_delete' | 'audit_list'
-  | 'artifact_list' | 'artifact_snapshot' | 'artifact_delete'
+  | 'artifact_list' | 'artifact_snapshot' | 'artifact_read' | 'artifact_restore' | 'artifact_delete'
   | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect'
   | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject';
 
@@ -116,6 +116,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'audit_list') return list(data, 'events', ['id', 'action', 'subjectType', 'subjectId', 'subjectGeneration', 'details', 'createdAt']);
   if (operation === 'artifact_list') return list(data, 'artifacts', artifactKeys);
   if (operation === 'artifact_snapshot' || operation === 'artifact_delete') return pick(data, artifactKeys);
+  if (operation === 'artifact_read') return pick(data, ['artifactId', 'logicalName', 'offset', 'bytesReturned', 'totalBytes', 'sha256', 'eof', 'content']);
+  if (operation === 'artifact_restore') return pick(data, ['artifactId', 'workspaceId', 'path', 'sizeBytes', 'sha256']);
   if (operation === 'github_setup_begin') return pick(data, ['url', 'state', 'expiresAt']);
   if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect'].includes(operation)) return githubStatus(data);
   if (operation === 'privilege_grant_list') return list(data, 'grants', privilegeGrantKeys);
@@ -128,7 +130,7 @@ const descriptiveOperations = new Set<string>([
   'secret_create', 'secret_rotate', 'secret_delete',
   'project_create', 'project_update', 'project_delete',
   'environment_create', 'environment_update', 'environment_delete',
-  'artifact_snapshot', 'artifact_delete'
+  'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete'
 ]);
 
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {

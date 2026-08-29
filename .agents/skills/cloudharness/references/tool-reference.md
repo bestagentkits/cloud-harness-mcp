@@ -42,6 +42,12 @@ See [repository automation](repository-automation.md).
 `memories_list` `memories_read` `memories_write` `deployments_list`
 `deployments_run`
 
+## Retained artifacts
+
+See [retained artifacts](artifacts.md).
+
+`artifacts_snapshot` `artifacts_list` `artifacts_read` `artifacts_restore`
+`artifacts_delete`
 ## Shared input rules
 
 - `workspaceId`, `shellId`, `sessionId`, and `taskId` are opaque handles. Copy

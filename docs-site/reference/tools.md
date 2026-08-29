@@ -1,6 +1,6 @@
 ---
 title: Tools Reference
-description: Complete machine-generated reference of all 65 MCP tools provided by Cloud Harness MCP.
+description: Complete machine-generated reference of all 70 MCP tools provided by Cloud Harness MCP.
 ---
 
 # Tools Reference
@@ -11,7 +11,7 @@ description: Complete machine-generated reference of all 65 MCP tools provided b
   <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/tools.md</code>.
 </div>
 
-Cloud Harness MCP exposes **65 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
+Cloud Harness MCP exposes **70 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
 
 ## Security & Capability Badges
 
@@ -711,7 +711,7 @@ Remove one named managed worktree, optionally discarding dirty state.
 
 **Perform brokered GitHub operations**
 
-Execute authenticated GitHub pull request and issue operations via brokered helper without exposing tokens to workspace.
+Perform brokered GitHub operations via brokered helper without exposing tokens to workspace.
 
 **Attributes:** <span class="badge-destructive">destructive</span> · <span class="badge-openworld">openWorld</span>
 
@@ -878,6 +878,79 @@ Execute one named repository-defined deployment target with external-effect risk
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
+
+## Retained Artifacts
+
+Tools for snapshotting workspace files, listing, reading bounded ranges, restoring into workspaces, and deleting retained artifacts.
+
+### `artifacts_snapshot`
+
+**Preserve workspace file snapshot**
+
+Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot.
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `path` | `string` | **Yes** | length: 1–1024 |
+| `logicalName` | `string` | **Yes** | pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `retentionSeconds` | `integer` | No | range: 60–2592000 |
+
+### `artifacts_list`
+
+**List retained artifacts**
+
+List principal-owned retained artifact snapshots with bounded pagination.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `cursor` | `string` | No | max length: 256 |
+| `limit` | `integer` | **Yes** | range: 1–100, default: `50` |
+
+### `artifacts_read`
+
+**Read retained artifact chunk**
+
+Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
+| `offset` | `integer` | **Yes** | range: 0–9007199254740991, default: `0` |
+| `limit` | `integer` | **Yes** | range: 1–1048576, default: `65536` |
+
+### `artifacts_restore`
+
+**Restore artifact to workspace**
+
+Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.
+
+**Attributes:** <span class="badge-destructive">destructive</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
+| `path` | `string` | **Yes** | length: 1–1024 |
+| `overwrite` | `boolean` | **Yes** | default: `false` |
+| `expectedSha256` | `string` | No | length: 64–64 |
+
+### `artifacts_delete`
+
+**Delete retained artifact**
+
+Delete a principal-owned retained artifact snapshot before its retention expiry.
+
+**Attributes:** <span class="badge-destructive">destructive</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
+| `expectedGeneration` | `integer` | **Yes** | range: 0–9007199254740991, default: `1` |
 
 ## Additional Tools
 

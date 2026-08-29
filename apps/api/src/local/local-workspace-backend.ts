@@ -149,6 +149,19 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
+    if (['artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete'].includes(operation)) {
+      return {
+        ok: false,
+        message: `${operation} is unsupported in local stdio mode because retained artifacts require remote runner storage`,
+        error: {
+          code: 'INVALID_INPUT',
+          message: `${operation} is unsupported in local stdio mode because retained artifacts require remote runner storage`,
+          retryable: false
+        },
+        truncated: false
+      };
+    }
+
     if (operation === 'workspace_capabilities') {
       if (input.workspaceId && input.workspaceId !== this.workspaceId) {
         return {

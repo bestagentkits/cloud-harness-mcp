@@ -17,6 +17,7 @@ import { inspectContainer, removeContainer, runDocker, terminateContainerProcess
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
+import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
 import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
@@ -113,7 +114,8 @@ export class WorkspaceService {
     private readonly store: StateStore,
     private readonly metadata?: MetadataStore,
     private readonly githubInstallations?: GitHubInstallationStore,
-    private readonly githubBinding?: GitHubBindingService
+    private readonly githubBinding?: GitHubBindingService,
+    private readonly artifacts?: ArtifactStore
   ) {
     this.instanceId = store.instanceId();
     this.operations.onTaskStart = (wsId, timeoutMs) => {
@@ -124,6 +126,11 @@ export class WorkspaceService {
       const rec = this.store.byId(wsId);
       if (rec) this.store.clearMutationLock(rec.id, rec.generation);
     };
+  }
+
+  private requireArtifacts(): ArtifactStore {
+    if (!this.artifacts) throw new HarnessError('UNAVAILABLE', 'artifact store is unavailable', 503);
+    return this.artifacts;
   }
 
   async start(): Promise<void> {
@@ -1381,6 +1388,57 @@ export class WorkspaceService {
       };
     }
 
+    if (operation === 'artifacts_list') {
+      try {
+        const page = this.requireArtifacts().list(ownerId, {
+          limit: validated.limit as number,
+          ...(validated.cursor ? { cursor: validated.cursor as string } : {})
+        });
+        return { ok: true, message: 'Artifacts listed', data: { artifacts: page.artifacts }, truncated: false, ...(page.cursor ? { cursor: page.cursor } : {}) };
+      } catch (error) {
+        if (error instanceof ArtifactStoreError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : (error.code === 'CONFLICT' ? 409 : (error.code === 'LIMIT_EXCEEDED' ? 429 : 400));
+          throw new HarnessError(error.code, error.message, status, false);
+        }
+        throw error;
+      }
+    }
+    if (operation === 'artifacts_read') {
+      try {
+        const chunk = this.requireArtifacts().read(ownerId, {
+          artifactId: validated.artifactId as string,
+          ...(validated.offset !== undefined ? { offset: validated.offset as number } : {}),
+          ...(validated.limit !== undefined ? { limit: validated.limit as number } : {})
+        });
+        return { ok: true, message: 'Artifact chunk read', data: chunk, truncated: !chunk.eof, ...(chunk.eof ? {} : { cursor: String(chunk.offset + chunk.bytesReturned) }) };
+      } catch (error) {
+        if (error instanceof ArtifactStoreError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : (error.code === 'CONFLICT' ? 409 : (error.code === 'LIMIT_EXCEEDED' ? 429 : 400));
+          throw new HarnessError(error.code, error.message, status, false);
+        }
+        throw error;
+      }
+    }
+    if (operation === 'artifacts_delete') {
+      try {
+        const deleted = this.requireArtifacts().delete(
+          ownerId,
+          validated.artifactId as string,
+          (validated.expectedGeneration as number) ?? 1,
+          (database, _owner, artifact) => this.metadata?.recordAuditInTransaction(
+            database, ownerId, 'artifact.deleted', 'artifact', artifact.artifactId, artifact.generation
+          )
+        );
+        return { ok: true, message: 'Artifact deleted', data: deleted, truncated: false };
+      } catch (error) {
+        if (error instanceof ArtifactStoreError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : (error.code === 'CONFLICT' ? 409 : (error.code === 'LIMIT_EXCEEDED' ? 429 : 400));
+          throw new HarnessError(error.code, error.message, status, false);
+        }
+        throw error;
+      }
+    }
+
     const workspaceId = validated.workspaceId as string | undefined;
     if (operation === 'workspace_status') return this.status(ownerId, workspaceId);
     if (operation === 'workspace_capabilities') {
@@ -1581,6 +1639,25 @@ export class WorkspaceService {
     await this.enforceActiveLimits(record);
 
     const dispatchAction = async (): Promise<RunnerResponse> => {
+    if (operation === 'artifacts_snapshot') {
+      const created = await this.snapshotArtifact(principal, validated as {
+        workspaceId?: string;
+        path: string;
+        logicalName: string;
+        retentionSeconds?: number;
+      });
+      return { ok: true, message: 'Artifact snapshot created', data: created, truncated: false };
+    }
+    if (operation === 'artifacts_restore') {
+      const restored = await this.restoreArtifact(principal, validated as {
+        artifactId: string;
+        workspaceId?: string;
+        path: string;
+        overwrite?: boolean;
+        expectedSha256?: string;
+      }, signal);
+      return { ok: true, message: 'Artifact restored to workspace', data: restored, truncated: false };
+    }
     if (operation === 'workspace_context') {
       let branch = '';
       try {
@@ -2090,6 +2167,117 @@ export class WorkspaceService {
     return { ownerId, content };
   }
 
+  async snapshotArtifact(
+    principal: PrincipalSelector | string,
+    input: {
+      workspaceId?: string | undefined;
+      path: string;
+      logicalName: string;
+      retentionSeconds?: number | undefined;
+      projectId?: string | undefined;
+      environmentId?: string | undefined;
+    }
+  ): Promise<ArtifactMetadata> {
+    const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
+    const record = this.requireWorkspace(ownerId, input.workspaceId);
+    const provenance = {
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+      ...(input.environmentId ? { environmentId: input.environmentId } : {})
+    };
+    if (provenance.projectId || provenance.environmentId) {
+      if (!this.metadata?.validateArtifactProvenance(ownerId, provenance)) {
+        throw new HarnessError('NOT_FOUND', 'artifact provenance is unavailable', 404, false);
+      }
+    }
+    const source = await this.readArtifactSource(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal, { workspaceId: record.id, path: input.path });
+    const artifacts = this.requireArtifacts();
+    return artifacts.create(ownerId, {
+      logicalName: input.logicalName,
+      content: source.content,
+      workspaceId: record.id,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
+      ...(input.retentionSeconds ? { retentionMs: input.retentionSeconds * 1_000 } : {})
+    }, (database, _owner, artifact) => {
+      if (provenance.projectId || provenance.environmentId) {
+        if (!this.metadata?.validateArtifactProvenance(ownerId, provenance)) {
+          throw new HarnessError('NOT_FOUND', 'artifact provenance is unavailable', 404, false);
+        }
+      }
+      this.metadata?.recordAuditInTransaction(
+        database, ownerId, 'artifact.created', 'artifact', artifact.artifactId,
+        artifact.generation, { sizeBytes: artifact.sizeBytes }
+      );
+    });
+  }
+
+  async restoreArtifact(
+    principal: PrincipalSelector | string,
+    input: {
+      artifactId: string;
+      workspaceId?: string | undefined;
+      path: string;
+      overwrite?: boolean | undefined;
+      expectedSha256?: string | undefined;
+    },
+    signal?: AbortSignal
+  ): Promise<{ artifactId: string; workspaceId: string; path: string; sizeBytes: number; sha256: string }> {
+    const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
+    const record = this.requireWorkspace(ownerId, input.workspaceId, true, false);
+    const artifacts = this.requireArtifacts();
+    let artifactMeta: ArtifactMetadata;
+    let content: Buffer;
+    try {
+      const payload = artifacts.readPayload(ownerId, input.artifactId);
+      artifactMeta = payload.metadata;
+      content = payload.content;
+    } catch (error) {
+      if (error instanceof ArtifactStoreError) {
+        const status = error.code === 'NOT_FOUND' ? 404 : (error.code === 'CONFLICT' ? 409 : 400);
+        throw new HarnessError(error.code, error.message, status, false);
+      }
+      throw error;
+    }
+    if (input.expectedSha256 && artifactMeta.sha256 !== input.expectedSha256) {
+      throw new HarnessError('CONFLICT', 'artifact hash mismatch', 409, false);
+    }
+    const workerRes = await this.runWorker(record, 'artifacts_restore', {
+      path: input.path,
+      contentBase64: content.toString('base64'),
+      overwrite: input.overwrite ?? false,
+      expectedSha256: input.expectedSha256
+    }, signal);
+    if (!workerRes.ok) {
+      const code = workerRes.error?.code ?? 'INTERNAL_ERROR';
+      const msg = workerRes.error?.message ?? workerRes.message ?? 'failed to restore artifact';
+      const status = code === 'CONFLICT' ? 409 : (code === 'INVALID_INPUT' ? 400 : (code === 'NOT_FOUND' ? 404 : (code === 'LIMIT_EXCEEDED' ? 429 : 500)));
+      const errCode = (code === 'CONFLICT' || code === 'INVALID_INPUT' || code === 'NOT_FOUND' || code === 'LIMIT_EXCEEDED') ? code : 'INTERNAL_ERROR';
+      throw new HarnessError(errCode, msg, status, false);
+    }
+    await this.enforceActiveLimits(record);
+    this.metadata?.recordAudit(
+      ownerId,
+      'artifact.restored',
+      'artifact',
+      artifactMeta.artifactId,
+      artifactMeta.generation,
+      {
+        sourceWorkspaceId: artifactMeta.workspaceId ?? '',
+        destinationWorkspaceId: record.id,
+        destinationPath: input.path,
+        sha256: artifactMeta.sha256,
+        sizeBytes: artifactMeta.sizeBytes
+      }
+    );
+    return {
+      artifactId: artifactMeta.artifactId,
+      workspaceId: record.id,
+      path: input.path,
+      sizeBytes: artifactMeta.sizeBytes,
+      sha256: artifactMeta.sha256
+    };
+  }
+
   async executeInternal(
     principal: PrincipalSelector,
     operation: InternalRunnerOperation,
@@ -2249,7 +2437,8 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
   }
   if (['files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir',
        'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_merge', 'git_rebase', 'git_push',
-       'workspace_finalize', 'worktrees_create', 'worktrees_remove', 'memories_write', 'skills_run', 'hooks_run', 'deployments_run'].includes(operation)) {
+       'workspace_finalize', 'worktrees_create', 'worktrees_remove', 'memories_write', 'skills_run', 'hooks_run', 'deployments_run',
+       'artifacts_snapshot', 'artifacts_restore'].includes(operation)) {
     return true;
   }
   if (operation === 'git_branch' && (validated.action === 'create' || validated.action === 'delete')) {

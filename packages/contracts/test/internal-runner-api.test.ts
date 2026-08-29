@@ -78,5 +78,39 @@ describe('internal runner API contract', () => {
       version: 2, principal, operation: 'github_reconcile',
       input: {}
     })).toMatchObject({ operation: 'github_reconcile', input: {} });
+    expect(MetadataRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'artifact_read',
+      input: { artifactId: `art_${'a'.repeat(32)}`, offset: 0, limit: 1024 }
+    })).toMatchObject({ operation: 'artifact_read', input: { artifactId: `art_${'a'.repeat(32)}` } });
+    expect(MetadataRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'artifact_restore',
+      input: { artifactId: `art_${'a'.repeat(32)}`, workspaceId: `ws_${'a'.repeat(24)}`, path: 'out.txt', overwrite: true }
+    })).toMatchObject({ operation: 'artifact_restore', input: { path: 'out.txt', overwrite: true } });
+  });
+
+  it('defines the 5 public artifact MCP tools with expected annotations and schemas', () => {
+    const artifactToolNames = ['artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete'] as const;
+    for (const name of artifactToolNames) {
+      expect(RunnerOperationSchema.options).toContain(name);
+      const spec = TOOL_SPECS.find((t) => t.name === name);
+      expect(spec).toBeDefined();
+    }
+    const listSpec = TOOL_SPECS.find((t) => t.name === 'artifacts_list')!;
+    expect(listSpec.readOnly).toBe(true);
+    expect(listSpec.destructive).toBe(false);
+    expect(listSpec.idempotent).toBe(true);
+
+    const readSpec = TOOL_SPECS.find((t) => t.name === 'artifacts_read')!;
+    expect(readSpec.readOnly).toBe(true);
+    expect(readSpec.destructive).toBe(false);
+    expect(readSpec.idempotent).toBe(true);
+
+    const restoreSpec = TOOL_SPECS.find((t) => t.name === 'artifacts_restore')!;
+    expect(restoreSpec.readOnly).toBe(false);
+    expect(restoreSpec.destructive).toBe(true);
+
+    const deleteSpec = TOOL_SPECS.find((t) => t.name === 'artifacts_delete')!;
+    expect(deleteSpec.readOnly).toBe(false);
+    expect(deleteSpec.destructive).toBe(true);
   });
 });
