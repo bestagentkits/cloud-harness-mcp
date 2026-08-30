@@ -1,11 +1,11 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { describe, it, expect, vi } from 'vitest';
 import { StateStore } from '../src/state-store.js';
 import { WorkspaceService } from '../src/workspace-service.js';
-import { HarnessError } from '@cloud-harness/contracts';
+import { HarnessError, TOOL_SCHEMA_BY_NAME } from '@cloud-harness/contracts';
 
 const tempDir = () => {
   const dir = join(tmpdir(), `test-git-durability-${randomBytes(8).toString('hex')}`);
@@ -331,6 +331,113 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
           idempotencyKey: 'ik_in_flight'
         })
       ).rejects.toThrow(/already in progress|parameters/);
+    } finally {
+      store.close();
+    }
+  }, 15_000);
+
+  it('reconciles interrupted workspace_finalize from remote ref without duplicating commit or push', async () => {
+    const dir = tempDir();
+    const dbPath = join(dir, 'state.sqlite');
+    const store = new StateStore(dbPath);
+
+    const config = {
+      jobsRoot: join(dir, 'jobs'),
+      stateDb: dbPath,
+      executorImage: 'cloud-harness-executor:local',
+      allowedGitHosts: ['github.com'],
+      networkMode: 'none',
+      wallTtlSeconds: 300,
+      idleTtlSeconds: 180,
+      maxOutputBytes: 262_144,
+      minFreeBytes: 104_857_600,
+      maxWorkspaceBytes: 536_870_912,
+      reaperIntervalSeconds: 30,
+      artifactRoot: join(dir, 'artifacts'),
+      maxArtifactBytes: 16_777_216,
+      maxPrincipalArtifactBytes: 134_217_728,
+      artifactRetentionSeconds: 86_400,
+      enableRepoCache: false,
+      repoCacheRoot: join(dir, 'cache')
+    };
+
+    const service = new WorkspaceService(config, store);
+
+    try {
+      const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'test-owner-finalize' });
+      const wsId = 'ws_finalize_interrupted_test';
+
+      store.create({
+        id: wsId,
+        ownerId,
+        idempotencyKey: 'ik_ws_fin',
+        repositoryUrl: 'https://github.com/org/repo',
+        workspacePath: join(dir, 'jobs', wsId),
+        status: 'ACTIVE',
+        networkMode: 'none',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        hardExpiresAt: Date.now() + 7200_000,
+        gitAuthorName: 'Test Author',
+        gitAuthorEmail: 'author@test.local',
+        mutationLockedUntil: null,
+        generation: 1,
+        error: null
+      });
+
+      // Mock probeRemoteRefOid to return the commit SHA (simulating push landed on remote before runner crash)
+      const knownCommitSha = '9999888877776666555544443333222211110000';
+      vi.spyOn(service as any, 'currentBranch').mockResolvedValue('main');
+      vi.spyOn(service as any, 'repositoryToken').mockResolvedValue('fake-token');
+      vi.spyOn(service as any, 'probeRemoteRefOid').mockResolvedValue(knownCommitSha);
+      // Simulate a runner crash after commit: finalize operation in UNKNOWN_REMOTE_STATE with commitSha recorded
+      const idempotencyKey = 'ik_finalize_crash_recovery';
+      const input = {
+        workspaceId: wsId,
+        commitMessage: 'fix: finalize work',
+        idempotencyKey
+      };
+      const validated = TOOL_SCHEMA_BY_NAME.workspace_finalize.parse(input);
+      const requestFingerprint = createHash('sha256').update(JSON.stringify(validated)).digest('hex');
+      store.recordGitOperationPending({
+        ownerId,
+        workspaceId: wsId,
+        idempotencyKey,
+        operation: 'finalize',
+        requestFingerprint,
+        targetRef: 'refs/heads/main',
+        expectedRemoteOid: null,
+        localCommitSha: knownCommitSha,
+        createdAt: Date.now() - 10_000
+      });
+      store.updateGitOperationStatus(
+        ownerId,
+        wsId,
+        idempotencyKey,
+        'UNKNOWN_REMOTE_STATE',
+        null,
+        JSON.stringify({ message: 'Operation interrupted by runner restart' }),
+        knownCommitSha
+      );
+
+      // Retry workspace_finalize with the same idempotency key
+      const response = await service.execute(ownerId, 'workspace_finalize', {
+        workspaceId: wsId,
+        commitMessage: 'fix: finalize work',
+        idempotencyKey
+      });
+
+      expect(response.ok).toBe(true);
+      expect(response.message).toContain('reconciled from remote state');
+      expect((response.data as any).alreadyFinalized).toBe(true);
+      expect((response.data as any).commitSha).toBe(knownCommitSha);
+      expect((response.data as any).pushed).toBe(true);
+
+      // Verify ledger status was updated to SUCCEEDED
+      const ledgerRecord = store.getGitOperation(ownerId, wsId, idempotencyKey);
+      expect(ledgerRecord?.status).toBe('SUCCEEDED');
+      expect(ledgerRecord?.localCommitSha).toBe(knownCommitSha);
     } finally {
       store.close();
     }

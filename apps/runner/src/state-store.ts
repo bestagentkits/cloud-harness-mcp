@@ -667,15 +667,8 @@ export class StateStore {
   }
 
   setFinalizeIdempotency(ownerId: string, workspaceId: string, key: string, resultJson: string): void {
-    const now = Date.now();
     this.database.prepare('INSERT OR REPLACE INTO finalize_idempotency(owner_id, workspace_id, idempotency_key, result_json, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(ownerId, workspaceId, key, resultJson, now);
-    this.database.prepare(`
-      INSERT OR REPLACE INTO git_operation_idempotency
-      (owner_id, workspace_id, idempotency_key, operation, request_fingerprint, target_ref,
-       expected_remote_oid, local_commit_sha, status, result_json, error_json, created_at, finished_at)
-      VALUES (?, ?, ?, 'finalize', '', NULL, NULL, NULL, 'SUCCEEDED', ?, NULL, ?, ?)
-    `).run(ownerId, workspaceId, key, resultJson, now, now);
+      .run(ownerId, workspaceId, key, resultJson, Date.now());
   }
   getBatchWriteIdempotency(ownerId: string, workspaceId: string, key: string): string | undefined {
     const row = this.database.prepare('SELECT result_json FROM batch_write_idempotency WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?').get(ownerId, workspaceId, key) as { result_json: string } | undefined;

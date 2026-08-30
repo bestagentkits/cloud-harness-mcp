@@ -193,8 +193,8 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         SELECT f.owner_id, f.workspace_id, f.idempotency_key, 'finalize', '',
           'SUCCEEDED', f.result_json, f.created_at, f.created_at
         FROM finalize_idempotency f
-        WHERE EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_id = f.owner_id AND w.id = f.workspace_id);
-
+        WHERE EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_id = f.owner_id AND w.id = f.workspace_id)
+          AND EXISTS (SELECT 1 FROM principals p WHERE p.id = f.owner_id);
         UPDATE schema_meta SET version = 4;
       `);
     });
