@@ -106,8 +106,36 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     response.json({ data: { theme } });
   });
 
+  router.get('/api/v1/toolkits', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) {
+        response.status(503).json({ error: 'toolkits_unavailable', message: 'Toolkits list is temporarily unavailable.' });
+        return;
+      }
+      sendRunnerResponse(response, 'toolkits_list', await runner.callInternal('toolkits_list', {}, selected));
+    } catch (error) { next(error); }
+  });
+
+  router.post('/api/v1/toolkits/preview', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) {
+        response.status(503).json({ error: 'preview_unavailable', message: 'Toolkits preview is temporarily unavailable.' });
+        return;
+      }
+      sendRunnerResponse(response, 'toolkits_preview', await runner.callInternal('toolkits_preview', request.body ?? {}, selected));
+    } catch (error) { next(error); }
+  });
+
   router.get('/api/v1/workspaces', async (request: DashboardRequest, response, next) => {
     await call(runner, request, response, next, 'workspace_list', pageQuery.parse(request.query));
+  });
+
+  router.post('/api/v1/workspaces', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_open', request.body ?? {});
   });
   router.get('/api/v1/workspaces/:workspaceId', async (request: DashboardRequest, response, next) => {
     try {

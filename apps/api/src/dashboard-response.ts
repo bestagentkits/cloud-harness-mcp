@@ -32,10 +32,13 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
 }
 
 export type DashboardResponseOperation =
+  | 'workspace_open'
   | 'workspace_list'
   | 'workspace_status'
   | 'workspace_detail'
   | 'workspace_close'
+  | 'toolkits_list'
+  | 'toolkits_preview'
   | 'files_list'
   | 'files_read'
   | 'files_write'
@@ -53,7 +56,6 @@ export type DashboardResponseOperation =
   | 'artifact_list' | 'artifact_snapshot' | 'artifact_read' | 'artifact_restore' | 'artifact_delete'
   | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect'
   | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject';
-
 function pick(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return Object.fromEntries(keys.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
@@ -88,7 +90,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     const workspaces = Array.isArray(data.workspaces) ? data.workspaces.map(cleanWorkspace) : [];
     return { workspaces };
   }
-  if (operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close') return cleanWorkspace(data);
+  if (operation === 'workspace_open' || operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close') return cleanWorkspace(data);
+  if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
     const entries = Array.isArray(data.entries) ? data.entries.map((entry) => {
       const item = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};

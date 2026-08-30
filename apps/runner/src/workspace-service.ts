@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { chmod, chown, mkdir, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
@@ -28,12 +28,15 @@ import { validateRepositoryUrl } from './repository-policy.js';
 import type { GitOperationStatus, PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
+import { ToolkitCacheManager } from './toolkit-cache-manager.js';
+import { ToolkitService } from './toolkit-service.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
+import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
@@ -121,9 +124,12 @@ export class WorkspaceService {
   private readonly repoCacheManager: RepositoryCacheManager;
   private readonly instanceId: string;
   private readonly bootId: string = randomBytes(16).toString('hex');
-  private reaper?: NodeJS.Timeout;
-  private reaperRunning = false;
   private readonly redactorCache = new Map<string, SecretSnapshotRedactor>();
+  private reaper?: NodeJS.Timeout | undefined;
+  private reaperRunning = false;
+  readonly toolkitCacheManager: ToolkitCacheManager;
+  readonly toolkitService: ToolkitService;
+
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
   private readonly metadata?: MetadataStore | undefined;
@@ -159,6 +165,22 @@ export class WorkspaceService {
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
     this.networkProfileManager = new NetworkProfileManager(this.config);
     this.repoCacheManager = new RepositoryCacheManager(this.config.repoCacheRoot, this.store, this.config.allowedGitHosts, this.config.executorImage, this.instanceId);
+    const cacheRoot = this.config.toolkitCacheRoot || '/var/lib/cloud-harness/cache/toolkits';
+    const provNet = this.config.provisioningNetwork || 'cloud-harness-mcp_provisioning';
+    this.toolkitCacheManager = new ToolkitCacheManager(cacheRoot, this.store);
+    const proxyOpts = this.config.toolkitEgressProxy ? { toolkitEgressProxy: this.config.toolkitEgressProxy } : {};
+    this.toolkitService = new ToolkitService({
+      cacheManager: this.toolkitCacheManager,
+      repoCacheManager: this.repoCacheManager,
+      store: this.store,
+      executorImage: this.config.executorImage,
+      provisioningNetwork: provNet,
+      allowedGitHosts: this.config.allowedGitHosts,
+      instanceId: this.instanceId,
+      enableToolkitCache: this.config.enableToolkitCache,
+      toolkitNetworkPolicy: this.config.toolkitNetworkPolicy,
+      ...proxyOpts
+    });
     this.operations.onTaskStart = (wsId, timeoutMs) => {
       const rec = this.store.byId(wsId);
       if (rec) this.store.refreshMutationLock(rec.id, Date.now() + timeoutMs + 10_000, rec.generation);
@@ -302,6 +324,7 @@ export class WorkspaceService {
         if (restarted.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor restart reconciliation failed', 503, true);
       }
     }
+    await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
     await this.reconcileContainers();
     await this.reconcileJobDirectories();
     await this.agentManager?.start();
@@ -528,17 +551,21 @@ export class WorkspaceService {
     });
   }
 
-  private async provisionMountDirectories(record: WorkspaceRecord): Promise<{ toolsPath: string; cachePath: string }> {
+  private async provisionMountDirectories(record: WorkspaceRecord): Promise<{ toolsPath: string; cachePath: string; ownerSkillsPath: string }> {
     const jobPath = record.workspacePath;
     const toolsPath = join(jobPath, 'tools');
     const cachePath = join(jobPath, 'cache');
+    const ownerSkillsPath = join(jobPath, 'toolkit-projection', 'owner-skills');
     await mkdir(toolsPath, { recursive: true, mode: 0o755 });
     await mkdir(cachePath, { recursive: true, mode: 0o755 });
+    await mkdir(ownerSkillsPath, { recursive: true, mode: 0o755 });
     try {
       await chown(toolsPath, 10001, 10001);
       await chown(cachePath, 10001, 10001);
+      await chown(ownerSkillsPath, 10001, 10001);
       await chmod(toolsPath, 0o755);
       await chmod(cachePath, 0o755);
+      await chmod(ownerSkillsPath, 0o755);
     } catch {
       const helperName = `chm-chown-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
       try {
@@ -549,7 +576,7 @@ export class WorkspaceService {
           '--network', 'none', '--user', '0:0',
           '--volume', `${jobPath}:/job`,
           '--entrypoint', '/bin/sh', this.config.executorImage,
-          '-c', 'mkdir -p /job/tools /job/cache && chown -R 10001:10001 /job/tools /job/cache && chmod 0755 /job/tools /job/cache'
+          '-c', 'mkdir -p /job/tools /job/cache /job/toolkit-projection/owner-skills && chown -R 10001:10001 /job/tools /job/cache /job/toolkit-projection/owner-skills && chmod -R 0755 /job/tools /job/cache /job/toolkit-projection/owner-skills'
         ], { timeoutMs: 30_000, maxBytes: 8_192 });
         if (result.exitCode !== 0) {
           throw new HarnessError('UNAVAILABLE', `mount directory provisioning failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
@@ -558,13 +585,13 @@ export class WorkspaceService {
         await removeContainer(helperName);
       }
     }
-    return { toolsPath, cachePath };
+    return { toolsPath, cachePath, ownerSkillsPath };
   }
 
   private async createExecutor(record: WorkspaceRecord, repositoryPath: string, environment: Record<string, string> = {}): Promise<string> {
     const name = `cloud-harness-ws-${record.id.slice(3, 19).toLowerCase()}`;
     await removeContainer(name).catch(() => undefined);
-    const { toolsPath, cachePath } = await this.provisionMountDirectories(record);
+    const { toolsPath, cachePath, ownerSkillsPath } = await this.provisionMountDirectories(record);
     const envEntries = Object.entries(environment);
     const envFilePath = join(record.workspacePath, `.env.injected-${randomBytes(6).toString('hex')}`);
     let useEnvFile = false;
@@ -588,6 +615,7 @@ export class WorkspaceService {
         '--volume', `${repositoryPath}:/workspace:rw`,
         '--volume', `${toolsPath}:/opt/user-tools:rw`,
         '--volume', `${cachePath}:/var/cache/harness:rw`,
+        '--volume', `${ownerSkillsPath}:/opt/cloud-harness/owner-skills:ro`,
         '--env', 'HOME=/tmp/cloud-harness-home',
         '--env', 'GIT_CONFIG_NOSYSTEM=1',
         '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
@@ -676,8 +704,14 @@ export class WorkspaceService {
 
   async open(ownerId: string, input: Record<string, unknown>): Promise<RunnerResponse> {
     const parsed = TOOL_SCHEMA_BY_NAME.workspace_open.parse(input);
+    const requestFingerprint = this.toolkitService.computeRequestFingerprint(parsed.toolkits);
     const prior = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
-    if (prior) return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(prior), truncated: false };
+    if (prior) {
+      if (prior.requestFingerprint && prior.requestFingerprint !== requestFingerprint) {
+        throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
+      }
+      return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(prior), truncated: false };
+    }
     await this.ensureCapacity(ownerId);
     const url = await validateRepositoryUrl(parsed.repositoryUrl, this.config.allowedGitHosts);
     if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
@@ -690,13 +724,18 @@ export class WorkspaceService {
       environmentId: parsed.environmentId ?? null,
       status: 'CREATING', networkProfile: parsed.networkProfile ?? this.config.networkProfile, createdAt: now,
       lastActivityAt: now, expiresAt: this.expiry(now, now), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
-      mutationLockedUntil: null, generation: 1, error: null
+      mutationLockedUntil: null, generation: 1, error: null, requestFingerprint
     };
     try {
       this.store.create(record);
     } catch (error) {
       const replay = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
-      if (replay) return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(replay), truncated: false };
+      if (replay) {
+        if (replay.requestFingerprint && replay.requestFingerprint !== requestFingerprint) {
+          throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
+        }
+        return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(replay), truncated: false };
+      }
       if (this.store.list(ownerId).some((candidate) => activeStatus.has(candidate.status))) {
         throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
       }
@@ -738,7 +777,30 @@ export class WorkspaceService {
           throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
         }
       }
+      const { lockItems, bundlePaths } = await this.toolkitService.resolveToolkits(ownerId, parsed.toolkits);
+      const ownerBundles = bundlePaths.filter(b => b.scope === 'owner');
+      const workspaceBundles = bundlePaths.filter(b => b.scope === 'workspace');
+
+      await this.composeOwnerToolkitProjection(record, ownerBundles);
+
       const repositoryPath = await this.clone(record, url, parsed.ref);
+      if (workspaceBundles.length > 0) {
+        await this.applyWorkspaceToolkitPatches(record, workspaceBundles, repositoryPath);
+      }
+
+      this.store.saveWorkspaceToolkits(
+        workspaceId,
+        ownerId,
+        lockItems.map((item, idx) => ({
+          ordinal: idx,
+          toolkitId: item.id,
+          scope: item.scope,
+          requestedJson: JSON.stringify(item),
+          resolvedJson: JSON.stringify(item),
+          bundleSha256: item.bundleSha256
+        }))
+      );
+
       const cloneViolation = await this.resourceViolation(record);
       if (cloneViolation) throw new HarnessError('LIMIT_EXCEEDED', cloneViolation, 507, false);
       const containerName = await this.createExecutor(record, repositoryPath, validatedWorkspaceEnvironment(environment ?? {}));
@@ -757,6 +819,107 @@ export class WorkspaceService {
       await this.safeRemovePath(record.workspacePath);
       throw error;
     }
+  }
+
+  private async composeOwnerToolkitProjection(
+    record: WorkspaceRecord,
+    ownerBundlePaths: Array<{ instanceId: string; path: string }>
+  ): Promise<void> {
+    const ownerSkillsPath = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
+    await mkdir(ownerSkillsPath, { recursive: true, mode: 0o755 });
+
+    const seenSkills = new Map<string, { bundlePath: string; contentHash: string }>();
+
+    for (const item of ownerBundlePaths) {
+      const skillsDir = join(item.path, 'skills');
+      if (!existsSync(skillsDir)) continue;
+
+      const entries = await readdir(skillsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const srcSkill = join(skillsDir, entry.name);
+        const skillMd = join(srcSkill, 'SKILL.md');
+        if (!existsSync(skillMd)) continue;
+
+        const digest = computeFullTreeDigest(srcSkill).bundleSha256;
+
+        const prior = seenSkills.get(entry.name);
+        if (prior && prior.contentHash !== digest) {
+          throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${entry.name} is defined with conflicting content in multiple toolkits`, 409, false);
+        }
+
+        const destSkill = join(ownerSkillsPath, entry.name);
+        if (!existsSync(destSkill)) {
+          await cp(srcSkill, destSkill, { recursive: true });
+        }
+        seenSkills.set(entry.name, { bundlePath: item.path, contentHash: digest });
+      }
+    }
+  }
+
+  private async applyWorkspaceToolkitPatches(
+    record: WorkspaceRecord,
+    workspaceBundlePaths: Array<{ instanceId: string; path: string }>,
+    repositoryPath: string
+  ): Promise<string[]> {
+    const changedPaths: string[] = [];
+    const realRepoPath = realpathSync(repositoryPath);
+    const cloudHarnessDir = join(repositoryPath, '.cloud-harness');
+    if (existsSync(cloudHarnessDir)) {
+      const st = lstatSync(cloudHarnessDir);
+      if (st.isSymbolicLink()) {
+        throw new HarnessError('INVALID_INPUT', 'repository contains .cloud-harness as a symbolic link', 400, false);
+      }
+      const realCloudHarness = realpathSync(cloudHarnessDir);
+      if (!realCloudHarness.startsWith(realRepoPath)) {
+        throw new HarnessError('INVALID_INPUT', '.cloud-harness escapes repository root', 400, false);
+      }
+    }
+    const targetSkillsRoot = join(cloudHarnessDir, 'skills');
+    if (existsSync(targetSkillsRoot)) {
+      const st = lstatSync(targetSkillsRoot);
+      if (st.isSymbolicLink()) {
+        throw new HarnessError('INVALID_INPUT', 'repository contains .cloud-harness/skills as a symbolic link', 400, false);
+      }
+      const realSkills = realpathSync(targetSkillsRoot);
+      if (!realSkills.startsWith(realRepoPath)) {
+        throw new HarnessError('INVALID_INPUT', '.cloud-harness/skills escapes repository root', 400, false);
+      }
+    }
+    await mkdir(targetSkillsRoot, { recursive: true, mode: 0o755 });
+
+    for (const item of workspaceBundlePaths) {
+      const skillsDir = join(item.path, 'skills');
+      if (!existsSync(skillsDir)) continue;
+
+      const entries = await readdir(skillsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const srcSkill = join(skillsDir, entry.name);
+        const destSkill = join(targetSkillsRoot, entry.name);
+
+        if (existsSync(destSkill)) {
+          const st = lstatSync(destSkill);
+          if (st.isSymbolicLink()) {
+            throw new HarnessError('INVALID_INPUT', `target skill path ${entry.name} is a symbolic link`, 400, false);
+          }
+          const srcDigest = computeFullTreeDigest(srcSkill).bundleSha256;
+          const destDigest = computeFullTreeDigest(destSkill).bundleSha256;
+          if (srcDigest !== destDigest) {
+            throw new HarnessError('CONFLICT', `Workspace skill patch conflict for ${entry.name}: target exists with different content`, 409, false);
+          }
+        } else {
+          await cp(srcSkill, destSkill, { recursive: true });
+          changedPaths.push(`.cloud-harness/skills/${entry.name}`);
+        }
+      }
+    }
+
+    try {
+      await chown(targetSkillsRoot, 10001, 10001);
+    } catch { /* ignore non-posix chown */ }
+
+    return changedPaths;
   }
 
   list(ownerId: string, input: Record<string, unknown>): RunnerResponse {
@@ -3184,15 +3347,32 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   async executeInternal(
     principal: PrincipalSelector,
     operation: InternalRunnerOperation,
-    input: { workspaceId: string; expectedGeneration?: number }
+    input: Record<string, unknown>
   ): Promise<RunnerResponse> {
     const parsed = InternalRunnerRequestSchema.parse({ version: 2, principal, operation, input });
     const ownerId = this.store.resolvePrincipal(parsed.principal);
-    const record = this.requireWorkspace(ownerId, parsed.input.workspaceId, false, true);
+    if (parsed.operation === 'toolkits_list') {
+      const presets = this.toolkitService.listCatalogPresets();
+      return { ok: true, message: 'Catalog toolkits list', data: { toolkits: presets }, truncated: false };
+    }
+    if (parsed.operation === 'toolkits_preview') {
+      const fingerprint = this.toolkitService.computeRequestFingerprint(parsed.input.toolkits);
+      return {
+        ok: true,
+        message: 'Toolkits preview',
+        data: {
+          requestFingerprint: fingerprint,
+          toolkitsCount: parsed.input.toolkits.length
+        },
+        truncated: false
+      };
+    }
+    const workspaceInput = parsed.input as { workspaceId: string; expectedGeneration?: number };
+    const record = this.requireWorkspace(ownerId, workspaceInput.workspaceId, false, true);
     if (parsed.operation === 'workspace_detail') {
       return { ok: true, message: 'Workspace detail', data: internalWorkspaceDetail(record), truncated: false };
     }
-    return await this.closeFenced(ownerId, parsed.input.workspaceId, parsed.input.expectedGeneration!);
+    return await this.closeFenced(ownerId, workspaceInput.workspaceId, workspaceInput.expectedGeneration!);
   }
 
   async closeFenced(ownerId: string, workspaceId: string, expectedGeneration: number): Promise<RunnerResponse> {

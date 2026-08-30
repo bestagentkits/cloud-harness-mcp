@@ -35,7 +35,7 @@ describe('MetadataStore', () => {
   it('migrates once, survives restart, and enforces owner-qualified foreign keys', () => {
     const { path, owner, foreign, store, keyring } = fixture();
     const { project, environment } = projectEnvironment(store, owner);
-    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(4);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(5);
     expect(() => store.database.prepare(`INSERT INTO environments
       (id, principal_id, project_id, name, state, generation, created_at, updated_at)
       VALUES (?, ?, ?, 'Foreign', 'ACTIVE', 1, 1, 1)`).run(`env_${'x'.repeat(24)}`, foreign, project.id)).toThrow();
@@ -363,7 +363,7 @@ describe('MetadataStore', () => {
 
     const db = new DatabaseSync(path);
     const initialRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
-    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(4);
+    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(5);
 
     downgradeMetadataSchemaToV3(db);
     const v3Row = db.prepare('SELECT version FROM metadata_schema_meta').get();
@@ -379,7 +379,7 @@ describe('MetadataStore', () => {
 
     migrateMetadataSchema(db);
     const migratedRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
-    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(4);
+    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(5);
     db.close();
   });
 });
