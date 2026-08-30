@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "mode": "production",
+  "profiles": [
+    {
+      "id": "openai-default",
+      "provider": "openai",
+      "model": "gpt-5.2-codex",
+      "downstreamPath": "/v1/chat/completions",
+      "upstreamUrl": "https://api.openai.com/v1/chat/completions",
+      "credentialFile": "/run/model-gateway-secrets/provider-api-key",
+      "credentialHeader": "authorization",
+      "credentialScheme": "Bearer",
+      "pricing": {
+        "inputMicrosPerMillionTokens": 1750000,
+        "outputMicrosPerMillionTokens": 14000000
+      },
+      "limits": {
+        "maxRequestBytes": 4194304,
+        "maxResponseBytes": 16777216,
+        "maxHeaderBytes": 16384,
+        "maxHeaders": 32,
+        "deadlineMs": 300000,
+        "maxInputTokens": 400000,
+        "maxOutputTokens": 128000,
+        "maxCostMicros": 100000000,
+        "maxStreamLineBytes": 1048576
+      }
+    }
+  ]
+}

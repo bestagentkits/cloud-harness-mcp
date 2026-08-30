@@ -7,12 +7,12 @@ import { migratePrincipalSchema, applyLegacyPrincipalMapping } from '../src/prin
 
 const tempDbPath = () => join(tmpdir(), `test-state-v4-${randomBytes(8).toString('hex')}.sqlite`);
 describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
-  it('migrates fresh database to schema version 6', () => {
+  it('migrates fresh database to schema version 7', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
       const version = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(version).toBe(6);
+      expect(version).toBe(7);
     } finally {
       store.close();
     }
@@ -257,12 +257,12 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     }
   });
 
-  it('downgrades a v6 store to v3 for legacy simulation', () => {
+  it('downgrades a v7 store to v3 for legacy simulation', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
-      downgradeStateSchemaToV4(store.database);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(7);
+      downgradeStateSchemaToV4(store.database, true);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(4);
       downgradeStateSchemaToV3(store.database);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(3);
@@ -282,24 +282,15 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       const p = store.resolvePrincipal({ kind: 'owner', ownerId: 'legacy-user' });
       const wsId = 'ws_legacy_finalize';
-      store.create({
-        id: wsId,
-        ownerId: p,
-        idempotencyKey: 'ik_ws_legacy',
-        repositoryUrl: 'https://github.com/org/repo',
-        workspacePath: '/tmp/ws_legacy',
-        status: 'ACTIVE',
-        networkProfile: 'network-none',
-        createdAt: Date.now() - 100_000,
-        lastActivityAt: Date.now() - 100_000,
-        expiresAt: Date.now() + 3600_000,
-        hardExpiresAt: Date.now() + 7200_000,
-        gitAuthorName: null,
-        gitAuthorEmail: null,
-        mutationLockedUntil: null,
-        generation: 1,
-        error: null
-      });
+      store.database.prepare(`
+        INSERT INTO workspaces (
+          id, owner_id, idempotency_key, repository_url, workspace_path,
+          status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, generation
+        ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', 'none', ?, ?, ?, ?, 1)
+      `).run(
+        wsId, p, 'ik_ws_legacy', 'https://github.com/org/repo', '/tmp/ws_legacy',
+        Date.now() - 100_000, Date.now() - 100_000, Date.now() + 3600_000, Date.now() + 7200_000
+      );
 
       // Seed legacy finalize_idempotency row
       const legacyResult = JSON.stringify({ ok: true, message: 'Legacy finalized', commitSha: '1111222233334444555566667777888899990000' });
@@ -309,8 +300,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       // Upgrade to v4
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
-
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(7);
       // Verify row was migrated into git_operation_idempotency
       const migratedRow = store.getGitOperation(p, wsId, 'ik_legacy_fin_1');
       expect(migratedRow).toBeDefined();
@@ -419,8 +409,8 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
       store.database.prepare(`
         INSERT INTO workspaces (
           id, owner_id, idempotency_key, repository_url, workspace_path,
-          status, network_profile, created_at, last_activity_at, expires_at, hard_expires_at, generation
-        ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', 'network-none', ?, ?, ?, ?, 1)
+          status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, generation
+        ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', 'none', ?, ?, ?, ?, 1)
       `).run(
         wsId, legacyOwnerId, 'ik_ws_unmapped', 'https://github.com/org/repo', '/tmp/ws_unmapped',
         Date.now() - 100_000, Date.now() - 100_000, Date.now() + 3600_000, Date.now() + 7200_000
@@ -434,8 +424,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       // Upgrade to schema version 4: MUST NOT throw foreign key constraint error!
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
-
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(7);
       // Prior to principal mapping, git_operation_idempotency should NOT have the row (since FK to principals is enforced)
       const unmappedGitOp = store.database.prepare(
         'SELECT * FROM git_operation_idempotency WHERE workspace_id = ? AND idempotency_key = ?'

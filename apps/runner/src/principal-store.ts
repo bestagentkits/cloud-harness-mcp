@@ -331,12 +331,274 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
       database.exec('PRAGMA foreign_keys = ON;');
     }
   }
-  if (version !== 6) throw new Error(`unsupported state schema version ${version}`);
+  if (version === 6) {
+    transaction(database, () => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS runtime_epochs (
+          instance_id TEXT PRIMARY KEY,
+          epoch INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agents (
+          id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          workspace_generation INTEGER NOT NULL,
+          parent_agent_id TEXT,
+          parent_generation INTEGER,
+          idempotency_key TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          prompt_hash TEXT NOT NULL,
+          profile_id TEXT NOT NULL,
+          proxy_operations_json TEXT NOT NULL,
+          max_ttl_seconds INTEGER NOT NULL,
+          max_output_bytes INTEGER NOT NULL,
+          max_input_tokens INTEGER NOT NULL,
+          max_output_tokens INTEGER NOT NULL,
+          max_cost_micros INTEGER NOT NULL,
+          container_name TEXT NOT NULL,
+          network_name TEXT NOT NULL,
+          gateway_lease_id TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL CHECK(status IN ('SPAWNING', 'RUNNING', 'CANCELLING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED')),
+          generation INTEGER NOT NULL,
+          runner_epoch INTEGER NOT NULL DEFAULT 1,
+          spawn_admission_open INTEGER NOT NULL DEFAULT 1,
+          message_admission_open INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          terminal_at INTEGER,
+          expires_at INTEGER NOT NULL,
+          terminal_reason TEXT,
+          cleanup_reason TEXT,
+          outcome_unknown INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(owner_id, workspace_id, idempotency_key),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS agents_workspace_lookup ON agents(owner_id, workspace_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS agents_parent_lookup ON agents(owner_id, workspace_id, parent_agent_id);
+        CREATE TABLE IF NOT EXISTS agent_workspace_admission (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          workspace_generation INTEGER NOT NULL,
+          spawn_open INTEGER NOT NULL DEFAULT 1,
+          message_open INTEGER NOT NULL DEFAULT 1,
+          lifetime_records INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(owner_id, workspace_id),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_messages (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          agent_generation INTEGER NOT NULL,
+          runner_epoch INTEGER NOT NULL DEFAULT 1,
+          idempotency_key TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          mode TEXT NOT NULL CHECK(mode IN ('steer', 'followUp')),
+          state TEXT NOT NULL CHECK(state IN ('RESERVED', 'SENT', 'REJECTED', 'UNKNOWN')),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          error TEXT,
+          PRIMARY KEY(owner_id, workspace_id, agent_id, idempotency_key),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_effects (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          agent_generation INTEGER NOT NULL,
+          runner_epoch INTEGER NOT NULL,
+          request_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('INTENT', 'DISPATCHED', 'APPLIED', 'REJECTED', 'UNKNOWN')),
+          reserved_input_tokens INTEGER NOT NULL DEFAULT 0,
+          reserved_output_tokens INTEGER NOT NULL DEFAULT 0,
+          reserved_cost_micros INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(agent_id, agent_generation, request_id, kind),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_usage (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          agent_generation INTEGER NOT NULL,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cost_micros INTEGER NOT NULL DEFAULT 0,
+          output_bytes INTEGER NOT NULL DEFAULT 0,
+          event_count INTEGER NOT NULL DEFAULT 0,
+          tool_time_ms INTEGER NOT NULL DEFAULT 0,
+          wall_time_ms INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(owner_id, workspace_id, agent_id, agent_generation),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_log_watermarks (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          agent_generation INTEGER NOT NULL,
+          retained_base_cursor INTEGER NOT NULL DEFAULT 0,
+          next_cursor INTEGER NOT NULL DEFAULT 0,
+          retained_bytes INTEGER NOT NULL DEFAULT 0,
+          retained_events INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(owner_id, workspace_id, agent_id, agent_generation),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_log_chunks (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          agent_generation INTEGER NOT NULL,
+          cursor_start INTEGER NOT NULL,
+          cursor_end INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          event_type TEXT NOT NULL,
+          content TEXT NOT NULL,
+          byte_length INTEGER NOT NULL,
+          PRIMARY KEY(owner_id, workspace_id, agent_id, agent_generation, cursor_start),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_cleanup_retries (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          agent_generation INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at INTEGER NOT NULL,
+          last_error TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(owner_id, workspace_id, agent_id, agent_generation),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_tombstones (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          agent_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          status TEXT NOT NULL,
+          generation INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          PRIMARY KEY(owner_id, workspace_id, agent_id),
+          UNIQUE(owner_id, workspace_id, idempotency_key),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS agent_tombstones_expiry ON agent_tombstones(expires_at);
+
+        UPDATE schema_meta SET version = 7;
+      `);
+    });
+    version = 7;
+  }
+  if (version !== 7) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV6(database: DatabaseSync): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 7) throw new Error(`state schema must be version 7 before downgrade, got ${version}`);
+  transaction(database, () => {
+    database.exec(`
+      DROP TABLE IF EXISTS agent_tombstones;
+      DROP TABLE IF EXISTS agent_cleanup_retries;
+      DROP TABLE IF EXISTS agent_log_chunks;
+      DROP TABLE IF EXISTS agent_log_watermarks;
+      DROP TABLE IF EXISTS agent_usage;
+      DROP TABLE IF EXISTS agent_effects;
+      DROP TABLE IF EXISTS agent_messages;
+      DROP TABLE IF EXISTS agent_workspace_admission;
+      DROP TABLE IF EXISTS agents;
+      DROP TABLE IF EXISTS runtime_epochs;
+      UPDATE schema_meta SET version = 6;
+    `);
+  });
+}
+
+export function downgradeStateSchemaToV5(database: DatabaseSync): void {
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 7) {
+    downgradeStateSchemaToV6(database);
+    version = 6;
+  }
+  if (version !== 6) throw new Error(`state schema must be version 6 before downgrade, got ${version}`);
+  database.exec('PRAGMA foreign_keys = OFF;');
+  try {
+    transaction(database, () => {
+      database.exec(`
+        CREATE TABLE workspaces_v5 (
+          id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          repository_url TEXT NOT NULL,
+          repository_ref TEXT,
+          container_name TEXT,
+          workspace_path TEXT NOT NULL,
+          environment_id TEXT,
+          status TEXT NOT NULL CHECK(status IN ('CREATING', 'ACTIVE', 'REAPING', 'CLOSED', 'FAILED', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED')),
+          network_mode TEXT NOT NULL CHECK(network_mode IN ('none', 'bridge')),
+          created_at INTEGER NOT NULL,
+          last_activity_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          hard_expires_at INTEGER,
+          git_author_name TEXT,
+          git_author_email TEXT,
+          mutation_locked_until INTEGER,
+          mutation_lock_count INTEGER NOT NULL DEFAULT 0,
+          generation INTEGER NOT NULL DEFAULT 1,
+          error TEXT,
+          UNIQUE(owner_id, idempotency_key),
+          UNIQUE(owner_id, id)
+        );
+
+        INSERT INTO workspaces_v5
+          (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, mutation_lock_count, generation, error)
+        SELECT
+          id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status,
+          CASE
+            WHEN network_profile = 'dependency-access' THEN 'bridge'
+            ELSE 'none'
+          END,
+          created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, mutation_lock_count, generation, error
+        FROM workspaces;
+
+        DROP TABLE workspaces;
+        ALTER TABLE workspaces_v5 RENAME TO workspaces;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner
+          ON workspaces(owner_id)
+          WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED');
+        CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id
+          ON workspaces(owner_id, id);
+
+        UPDATE schema_meta SET version = 5;
+      `);
+    });
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON;');
+  }
 }
 
 export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version !== 5 && version !== 6) throw new Error(`state schema must be version 5 or 6 before downgrade, got ${version}`);
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 7) {
+    downgradeStateSchemaToV6(database);
+    version = 6;
+  }
+  if (version === 6) {
+    downgradeStateSchemaToV5(database);
+    version = 5;
+  }
+  if (version !== 5) throw new Error(`state schema must be version 5 before downgrade, got ${version}`);
   if (!allowDataLoss) {
     const memCount = (database.prepare('SELECT count(*) as count FROM memories').get() as { count: number }).count;
     const hookCount = (database.prepare('SELECT count(*) as count FROM hook_activations').get() as { count: number }).count;
@@ -360,8 +622,20 @@ export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss =
 }
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version !== 4 && version !== 5) throw new Error(`state schema must be version 4 or 5 before downgrade, got ${version}`);
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 7) {
+    downgradeStateSchemaToV6(database);
+    version = 6;
+  }
+  if (version === 6) {
+    downgradeStateSchemaToV5(database);
+    version = 5;
+  }
+  if (version === 5) {
+    downgradeStateSchemaToV4(database, true);
+    version = 4;
+  }
+  if (version !== 4) throw new Error(`state schema must be version 4 before downgrade, got ${version}`);
   transaction(database, () => {
     database.exec(`
       DROP TABLE IF EXISTS git_operation_idempotency;

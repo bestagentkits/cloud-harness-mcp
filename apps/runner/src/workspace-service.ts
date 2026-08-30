@@ -3,11 +3,13 @@ import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, mkdir, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
+  AgentProxyOperationSchema,
   HarnessError,
   InternalRunnerRequestSchema,
   RunnerOperationSchema,
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
+  type AgentProxyOperation,
   type RunnerConfig,
   type InternalRunnerOperation,
   type RunnerOperation,
@@ -31,6 +33,7 @@ import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
+import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
@@ -122,14 +125,33 @@ export class WorkspaceService {
   private reaperRunning = false;
   private readonly redactorCache = new Map<string, SecretSnapshotRedactor>();
   public readonly networkProfileManager: NetworkProfileManager;
+  private readonly agentManager?: AgentManager | undefined;
+  private readonly metadata?: MetadataStore | undefined;
   constructor(
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
-    private readonly metadata?: MetadataStore,
+    metadataOrDependencies?: MetadataStore | (Omit<AgentManagerDependencies, 'toolExecutor'> & { manager?: AgentManager }),
     private readonly githubInstallations?: GitHubInstallationStore,
     private readonly githubBinding?: GitHubBindingService,
-    private readonly artifacts?: ArtifactStore
+    private readonly artifacts?: ArtifactStore,
+    agentDependencies?: Omit<AgentManagerDependencies, 'toolExecutor'> & { manager?: AgentManager }
   ) {
+    let metadata: MetadataStore | undefined;
+    let agentDeps = agentDependencies;
+    if (metadataOrDependencies && ('manager' in metadataOrDependencies || 'launcher' in metadataOrDependencies || 'gateway' in metadataOrDependencies)) {
+      agentDeps = metadataOrDependencies as Omit<AgentManagerDependencies, 'toolExecutor'> & { manager?: AgentManager };
+    } else {
+      metadata = metadataOrDependencies as MetadataStore | undefined;
+    }
+    this.metadata = metadata;
+    this.instanceId = store.instanceId();
+    const { manager, ...managerDependencies } = agentDeps ?? {};
+    this.agentManager = manager ?? (config.agents
+      ? new AgentManager(config.agents, store, {
+          ...managerDependencies,
+          toolExecutor: async (request) => await this.executeAgentProxy(request)
+        })
+      : undefined);
     this.instanceId = store.instanceId();
     this.store.reconcileRunningTasks(this.bootId, Date.now());
     this.store.reconcilePendingGitOperations(Date.now());
@@ -282,6 +304,7 @@ export class WorkspaceService {
     }
     await this.reconcileContainers();
     await this.reconcileJobDirectories();
+    await this.agentManager?.start();
     this.reaper = setInterval(() => {
       if (this.reaperRunning) return;
       this.reaperRunning = true;
@@ -290,10 +313,15 @@ export class WorkspaceService {
     this.reaper.unref();
   }
 
-  async stop(): Promise<void> {
-    if (this.reaper) clearInterval(this.reaper);
+  beginShutdown(): void {
+    this.agentManager?.fence();
   }
 
+  async stop(): Promise<void> {
+    this.beginShutdown();
+    clearInterval(this.reaper);
+    await this.agentManager?.stop();
+  }
   private async reconcileContainers(): Promise<void> {
     const managed = await runDocker([
       'ps', '-a', '--filter', 'label=cloud-harness.managed=true',
@@ -2067,6 +2095,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
       }
     }
+    if (AgentManager.isPublicOperation(operation)) {
+      if (!this.agentManager) throw new HarnessError('UNAVAILABLE', 'agent execution is not configured', 503, false);
+      const targetWorkspace = this.requireWorkspace(ownerId, workspaceId, false, true);
+      return await this.agentManager.dispatch(ownerId, targetWorkspace, operation, validated);
+    }
 
     const record = this.touch(this.requireWorkspace(ownerId, workspaceId, true, false));
     await this.enforceActiveLimits(record);
@@ -3255,6 +3288,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
     }
     try {
+      await this.agentManager?.stopWorkspace(claimed.ownerId, claimed.id, reason);
       await this.operations.stopWorkspace(claimed.id, claimed.ownerId);
     } catch (stopErr) {
       this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
@@ -3498,6 +3532,34 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       truncated: hasMore,
       cursor: nextCursor
     };
+  }
+  private async executeAgentProxy(request: Parameters<AgentManagerDependencies['toolExecutor']>[0]): Promise<RunnerResponse> {
+    const operation = AgentProxyOperationSchema.parse(request.operation) as AgentProxyOperation;
+    const validated = TOOL_SCHEMA_BY_NAME[operation].parse(request.toolInput) as Record<string, unknown>;
+    const before = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
+    if (before.generation !== request.workspaceGeneration || before.networkProfile !== 'network-none') {
+      throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
+    }
+    const result = await this.runWorker(before, operation, validated, request.signal);
+    const after = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
+    if (after.generation !== request.workspaceGeneration || after.networkProfile !== 'network-none') {
+      throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
+    }
+    const violation = await this.resourceViolation(after);
+    if (violation) {
+      void this.closeRecord(after, violation).catch(() => undefined);
+      throw new HarnessError('LIMIT_EXCEEDED', `${violation}; workspace cleanup started`, 507, false);
+    }
+    return result;
+  }
+
+  private requireWorkspaceForAgent(ownerId: string, workspaceId: string): WorkspaceRecord {
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
+    if (record.status !== 'ACTIVE' || record.expiresAt <= Date.now()) {
+      throw new HarnessError('EXPIRED', 'workspace is not active', 410, false);
+    }
+    return record;
   }
 }
 
