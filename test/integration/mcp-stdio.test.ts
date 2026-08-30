@@ -68,7 +68,9 @@ describe('MCP stdio real binary interoperability', () => {
 
     const closeTool = tools.tools.find((t) => t.name === 'workspace_close');
     expect(closeTool?.annotations?.destructiveHint).toBe(true);
-
+    const ghActionTool = tools.tools.find((t) => t.name === 'github_action');
+    expect(ghActionTool).toBeDefined();
+    expect(ghActionTool?.annotations?.destructiveHint).toBe(true);
     // List workspaces (should have 1 pre-opened local workspace)
     const listResult = await client.callTool({ name: 'workspace_list', arguments: {} });
     expect(listResult.isError).toBe(false);
@@ -110,6 +112,18 @@ describe('MCP stdio real binary interoperability', () => {
       }
     });
     expect(execResult.isError).toBe(false);
+
+    // Verify github_action returns structured unsupported error in local mode
+    const ghActionCall = await client.callTool({
+      name: 'github_action',
+      arguments: {
+        workspaceId,
+        action: 'pr_list'
+      }
+    });
+    expect(ghActionCall.isError).toBe(true);
+    expect((ghActionCall.structuredContent as Record<string, any>).error.code).toBe('REPOSITORY_OPERATION_NOT_AUTHORIZED');
+    expect((ghActionCall.structuredContent as Record<string, any>).error.operation).toBe('github_action');
 
     // Close the workspace
     const closeResult = await client.callTool({
