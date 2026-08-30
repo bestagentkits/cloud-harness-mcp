@@ -1424,6 +1424,16 @@ export class StateStore {
         throw new Error('memory note already exists with this name in the given scope');
       }
 
+      if (params.scope === 'owner') {
+        this.database.prepare('DELETE FROM memories WHERE principal_id = ? AND name = ? AND scope = \'owner\' AND (expires_at <= ? OR deleted_at IS NOT NULL)')
+          .run(params.principalId, params.name, now);
+      } else if (params.scope === 'repository') {
+        this.database.prepare('DELETE FROM memories WHERE principal_id = ? AND name = ? AND repository_key = ? AND scope = \'repository\' AND (expires_at <= ? OR deleted_at IS NOT NULL)')
+          .run(params.principalId, params.name, params.repositoryKey ?? null, now);
+      } else {
+        this.database.prepare('DELETE FROM memories WHERE principal_id = ? AND name = ? AND workspace_id = ? AND scope = \'workspace\' AND (expires_at <= ? OR deleted_at IS NOT NULL)')
+          .run(params.principalId, params.name, params.workspaceId ?? null, now);
+      }
       this.database.prepare(`
         INSERT INTO memories
         (id, principal_id, scope, repository_key, workspace_id, name, content, content_sha256, generation, created_at, updated_at, expires_at, deleted_at, provenance_json)
@@ -1568,10 +1578,34 @@ export class StateStore {
         row = this.database.prepare(`
           SELECT * FROM memories WHERE id = ? AND principal_id = ? AND deleted_at IS NULL
         `).get(params.id, params.principalId);
+      } else if (params.name && params.scope) {
+        let query = 'SELECT * FROM memories WHERE principal_id = ? AND name = ? AND scope = ? AND deleted_at IS NULL';
+        const args: (string | number | null)[] = [params.principalId, params.name, params.scope];
+        if (params.scope === 'repository') {
+          query += ' AND repository_key = ?';
+          args.push(params.repositoryKey ?? null);
+        } else if (params.scope === 'workspace') {
+          query += ' AND workspace_id = ?';
+          args.push(params.workspaceId ?? null);
+        }
+        row = this.database.prepare(query).get(...args);
       } else if (params.name) {
-        row = this.database.prepare(`
-          SELECT * FROM memories WHERE name = ? AND principal_id = ? AND deleted_at IS NULL
-        `).get(params.name, params.principalId);
+        let query = 'SELECT * FROM memories WHERE principal_id = ? AND name = ? AND deleted_at IS NULL';
+        const args: (string | number | null)[] = [params.principalId, params.name];
+        if (params.repositoryKey || params.workspaceId) {
+          query += ' AND (scope = \'owner\'';
+          if (params.repositoryKey) {
+            query += ' OR (scope = \'repository\' AND repository_key = ?)';
+            args.push(params.repositoryKey);
+          }
+          if (params.workspaceId) {
+            query += ' OR (scope = \'workspace\' AND workspace_id = ?)';
+            args.push(params.workspaceId);
+          }
+          query += ')';
+        }
+        query += ' ORDER BY updated_at DESC LIMIT 1';
+        row = this.database.prepare(query).get(...args);
       }
       if (!row) {
         throw new Error('memory note not found');

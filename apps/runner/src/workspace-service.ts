@@ -667,6 +667,7 @@ export class WorkspaceService {
         await removeContainer(containerName);
         throw new HarnessError('CONFLICT', 'workspace creation lost its lifecycle lease', 409, true);
       }
+      await this.runLifecycleHooks(active, 'on_workspace_open').catch(() => undefined);
       return { ok: true, message: 'Workspace opened', data: this.publicWorkspaceRecord(active), truncated: false };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'workspace creation failed';
@@ -2671,6 +2672,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       if ((action === 'pr_comment' || action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey && result.ok) {
         this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result), fingerprint);
+      }
+      await this.enforceActiveLimits(record);
+      return result;
+    }
+    if (operation === 'git_checkout') {
+      const result = await this.runWorker(record, 'git_checkout', validated, signal);
+      if (result.ok) {
+        await this.runLifecycleHooks(record, 'post_checkout', signal).catch(() => undefined);
       }
       await this.enforceActiveLimits(record);
       return result;

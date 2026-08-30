@@ -341,10 +341,6 @@ const schemas = {
     timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
     expectedSha256: z.string().length(64).optional(),
     expectedContentSha256: z.string().length(64).optional()
-  }).superRefine((input, context) => {
-    if (!input.expectedSha256 && !input.expectedContentSha256) {
-      context.addIssue({ code: 'custom', path: ['expectedSha256'], message: 'expectedSha256 is required to prevent TOCTOU execution of modified scripts' });
-    }
   }),
   hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
   hooks_run: z.object({
@@ -354,10 +350,6 @@ const schemas = {
     expectedSha256: z.string().length(64).optional(),
     expectedManifestSha256: z.string().length(64).optional(),
     timeoutMs: z.number().int().min(100).max(300_000).default(60_000)
-  }).superRefine((input, context) => {
-    if (!input.expectedSha256 && !input.expectedManifestSha256) {
-      context.addIssue({ code: 'custom', path: ['expectedManifestSha256'], message: 'expectedManifestSha256 is required to prevent TOCTOU execution of modified hooks' });
-    }
   }),
   hooks_activate: z.object({ ...workspace, manifestSha256: z.string().length(64), events: z.array(HookEventSchema).min(1).max(10), retentionSeconds: z.number().int().min(60).max(2_592_000).optional() }),
   hooks_deactivate: z.object({ ...workspace, events: z.array(HookEventSchema).max(10).optional() }),
