@@ -390,6 +390,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
 
       // Mock probeRemoteRefOid to return the commit SHA (simulating push landed on remote before runner crash)
       const knownCommitSha = '9999888877776666555544443333222211110000';
+      vi.spyOn(service as unknown as { workspaceBytes: () => Promise<number> }, 'workspaceBytes').mockResolvedValue(1024);
       vi.spyOn(service as any, 'currentBranch').mockResolvedValue('main');
       vi.spyOn(service as any, 'repositoryToken').mockResolvedValue('fake-token');
       vi.spyOn(service as any, 'probeRemoteRefOid').mockResolvedValue(knownCommitSha);
