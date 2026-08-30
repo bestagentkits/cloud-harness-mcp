@@ -17,13 +17,13 @@ export interface BenchmarkEnvironmentRecord {
   platform: string;
   arch: string;
   cpuModel: string;
-  status: 'benchmarks_pending_kvm_host' | 'evidence_collected';
+  cpuCores: number;
   totalMemoryBytes: number;
   hasKvm: boolean;
   hasDocker: boolean;
   hasFirecracker: boolean;
   prerequisitesMet: boolean;
-  status: 'evidence_collected' | 'prerequisites_unmet_skipped';
+  status: 'benchmarks_pending_kvm_host' | 'evidence_collected';
 }
 
 export interface LiveBenchmarkResult {
@@ -50,7 +50,7 @@ export function inspectBenchmarkEnvironment(): BenchmarkEnvironmentRecord {
   const cpuList = cpus();
   const cpuModel = cpuList.length > 0 ? cpuList[0].model : 'unknown';
 
-  const prerequisitesMet = isLinux && hasKvm && hasDocker;
+  const prerequisitesMet = isLinux && hasKvm && hasDocker && hasFirecracker;
 
   return {
     timestamp: new Date().toISOString(),

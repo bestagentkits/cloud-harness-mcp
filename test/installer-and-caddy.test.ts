@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-
+import { inspectBenchmarkEnvironment, runIsolationBenchmarkHarness, type BenchmarkEnvironmentRecord } from './benchmarks/isolation-overhead.bench.js';
 describe('OSS 1-Click Installer & Ingress Templates', () => {
   it('scripts/install.sh exists and contains required preflight and deployment steps', () => {
     expect(existsSync('scripts/install.sh')).toBe(true);
@@ -84,5 +84,21 @@ describe('OSS 1-Click Installer & Ingress Templates', () => {
     expect(content).toContain('Tier 2: Commercial Beta (Dedicated Single-Tenant VMs)');
     expect(content).toContain('Tier 3: Commercial Pooled GA (Hardware MicroVMs)');
     expect(content).toContain('Fail-Closed Security Guarantee');
+  });
+
+  it('inspectBenchmarkEnvironment accurately returns BenchmarkEnvironmentRecord without fabricating data', () => {
+    const record: BenchmarkEnvironmentRecord = inspectBenchmarkEnvironment();
+    expect(typeof record.platform).toBe('string');
+    expect(typeof record.cpuCores).toBe('number');
+    expect(record.cpuCores).toBeGreaterThan(0);
+    expect(typeof record.totalMemoryBytes).toBe('number');
+    expect(typeof record.hasKvm).toBe('boolean');
+    expect(typeof record.hasDocker).toBe('boolean');
+    expect(typeof record.hasFirecracker).toBe('boolean');
+    expect(['benchmarks_pending_kvm_host', 'evidence_collected']).toContain(record.status);
+
+    const harnessResult = runIsolationBenchmarkHarness();
+    expect(harnessResult.environment).toBeDefined();
+    expect(Array.isArray(harnessResult.samples)).toBe(true);
   });
 });
