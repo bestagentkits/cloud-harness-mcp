@@ -1,3 +1,15 @@
+# [0.30.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.29.1...v0.30.0) (2026-08-30)
+
+
+### Bug Fixes
+
+* **runner:** ensure hard teardown deadline rejection and late write capture ([#14](https://github.com/bestagentkits/cloud-harness-mcp/issues/14)) ([52b5385](https://github.com/bestagentkits/cloud-harness-mcp/commit/52b5385c56d61a80a93cc4c9fdce7d3093149ff6))
+
+
+### Features
+
+* **secrets:** add global secrets management, precedence merge, and dashboard UI ([#121](https://github.com/bestagentkits/cloud-harness-mcp/issues/121)) ([4193e50](https://github.com/bestagentkits/cloud-harness-mcp/commit/4193e506d0e130c28b99c41273b53b6419edebbf))
+
 ## [0.29.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.29.0...v0.29.1) (2026-08-30)
 
 
