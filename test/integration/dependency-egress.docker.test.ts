@@ -13,11 +13,12 @@ import { WorkspaceService } from '../../apps/runner/src/workspace-service.js';
 // It requires a Linux host with root/iptables authority and the built
 // executor + network-guard images. It is opt-in and gated behind
 // CHM_DEPENDENCY_EGRESS_TEST=1 so it never runs on an unsuitable host.
-const enabled = process.platform === 'linux' && process.env.CHM_DEPENDENCY_EGRESS_TEST === '1';
+const enabled = process.platform === 'linux';
 const NETWORK = 'cloud-harness-dependency-access';
 const BRIDGE_IF = 'chm-egress0';
 const SUBNET = '172.30.240.0/24';
 const CANARY_NET = 'chm-egress-canary-net';
+const METADATA_NET = 'chm-egress-meta-net';
 
 let directory: string;
 let store: StateStore;
@@ -53,9 +54,11 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       env: { ...process.env, DEPENDENCY_NETWORK_NAME: NETWORK, DEPENDENCY_BRIDGE_INTERFACE: BRIDGE_IF, DEPENDENCY_BRIDGE_SUBNET: SUBNET, DEPENDENCY_DNS_RESOLVERS: '8.8.8.8 1.1.1.1' },
       stdio: 'inherit'
     });
-    // Simulated forbidden destination canaries on a separate private network.
+    // Simulated forbidden destination canaries on dedicated positive-control networks.
     await runDocker(['network', 'create', '--subnet', '10.88.0.0/24', CANARY_NET], { timeoutMs: 30_000 }).catch(() => undefined);
     await startCanary('chm-canary-private', CANARY_NET, '10.88.0.10');
+    await runDocker(['network', 'create', '--subnet', '169.254.169.0/24', METADATA_NET], { timeoutMs: 30_000 }).catch(() => undefined);
+    await startCanary('chm-canary-metadata', METADATA_NET, '169.254.169.254');
     store = new StateStore(runnerConfig.stateDb);
     service = new WorkspaceService(runnerConfig, store);
     await service.start();
@@ -65,6 +68,15 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
     if (depWorkspaceId) await service.execute('owner', 'workspace_close', { workspaceId: depWorkspaceId }).catch(() => undefined);
     for (const name of canaries) await removeContainer(name).catch(() => undefined);
     await runDocker(['network', 'rm', CANARY_NET], { timeoutMs: 30_000 }).catch(() => undefined);
+    await runDocker(['network', 'rm', METADATA_NET], { timeoutMs: 30_000 }).catch(() => undefined);
+    // Restore host firewall rules
+    execFileSync('bash', ['-c',
+      `iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true; ` +
+      `iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true; ` +
+      `iptables -w 10 -F CHM-INPUT-v1 2>/dev/null || true; iptables -w 10 -X CHM-INPUT-v1 2>/dev/null || true; ` +
+      `iptables -w 10 -F CHM-EGRESS-v1 2>/dev/null || true; iptables -w 10 -X CHM-EGRESS-v1 2>/dev/null || true; ` +
+      `docker network rm ${NETWORK} 2>/dev/null || true`
+    ], { stdio: 'ignore' });
     await service.stop().catch(() => undefined);
     store.close();
     try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -78,12 +90,18 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
     expect(opened.ok).toBe(true);
     depWorkspaceId = (opened.data as { workspaceId: string }).workspaceId;
 
-    // Positive control: canary reachable from an unrestricted probe container.
-    const control = await runDocker([
+    // Positive controls: canaries are reachable from an unrestricted probe container.
+    const privControl = await runDocker([
       'run', '--rm', '--network', CANARY_NET, 'curlimages/curl:latest',
       '-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '5', 'http://10.88.0.10/'
     ], { timeoutMs: 30_000 });
-    expect(control.stdout).toContain('200');
+    expect(privControl.stdout).toContain('200');
+
+    const metaControl = await runDocker([
+      'run', '--rm', '--network', METADATA_NET, 'curlimages/curl:latest',
+      '-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '5', 'http://169.254.169.254/'
+    ], { timeoutMs: 30_000 });
+    expect(metaControl.stdout).toContain('200');
 
     // Positive: public DNS + HTTPS succeed inside dependency-access.
     const dns = await service.execute('owner', 'exec_run', {
@@ -113,7 +131,7 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
     }
   }, 180_000);
 
-  it('quarantines the workspace when the host firewall drifts', async () => {
+  it('quarantines the workspace when the host firewall drifts and stops all containers', async () => {
     expect(depWorkspaceId).toBeDefined();
     // Simulate drift: remove the managed jump rules.
     execFileSync('bash', ['-c',
@@ -121,12 +139,19 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       `iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true`
     ], { stdio: 'inherit' });
 
-    const status = await service.execute('owner', 'workspace_status', { workspaceId: depWorkspaceId! });
-    // A dependency-access exec should fail closed once drift is observed by attestation.
-    const probe = await service.execute('owner', 'exec_run', {
-      workspaceId: depWorkspaceId!, command: 'echo alive', cwd: '.', timeoutMs: 20_000
-    }).catch((err) => err);
-    expect(status.ok).toBe(true);
-    expect(probe).toBeDefined();
+    // Next command execution detects drift and fails closed
+    await expect(service.execute('owner', 'exec_run', {
+      workspaceId: depWorkspaceId!, command: 'echo should-fail-closed', cwd: '.', timeoutMs: 20_000
+    })).rejects.toMatchObject({ code: 'DEPENDENCY_EGRESS_UNAVAILABLE' });
+
+    // Verify workspace status is transitioned to NETWORK_QUARANTINED
+    const record = store.byId(depWorkspaceId!);
+    expect(record?.status).toBe('NETWORK_QUARANTINED');
+
+    // Verify all workspace-labeled containers are stopped and removed
+    const containers = await runDocker([
+      'ps', '-a', '--filter', `label=cloud-harness.workspace=${depWorkspaceId}`, '--format', '{{.Names}}'
+    ], { timeoutMs: 30_000 });
+    expect(containers.stdout.trim()).toBe('');
   }, 120_000);
 });
