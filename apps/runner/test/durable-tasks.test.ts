@@ -1,11 +1,13 @@
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { StateStore } from '../src/state-store.js';
 import { OperationManager } from '../src/operation-manager.js';
-
+import { WorkspaceService } from '../src/workspace-service.js';
 const tempDir = () => {
   const dir = join(tmpdir(), `test-durable-tasks-${randomBytes(8).toString('hex')}`);
   mkdirSync(dir, { recursive: true });
@@ -438,8 +440,14 @@ describe('Durable Task Engine & Restart Reconciliation', () => {
       expect(task.logPath).toBeDefined();
 
       // Mock a live child that emits late output when receiving SIGTERM before closing
-      const { EventEmitter } = await import('node:events');
-      const fakeChild = new EventEmitter() as any;
+      const fakeChild = new EventEmitter() as unknown as {
+        exitCode: number | null;
+        signalCode: string | null;
+        killed: boolean;
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: (signal?: string) => void;
+      };
       fakeChild.exitCode = null;
       fakeChild.signalCode = null;
       fakeChild.killed = false;
@@ -458,10 +466,8 @@ describe('Durable Task Engine & Restart Reconciliation', () => {
         }
       };
 
-      (ops as any).track(task, fakeChild, 65536);
-      task.child = fakeChild;
-      task.status = 'running';
-
+      (ops as unknown as { track: (t: unknown, c: unknown, b: number) => void }).track(task, fakeChild, 65536);
+      task.child = fakeChild as unknown as ChildProcessWithoutNullStreams;
       await ops.stopWorkspace('ws_term', ownerId);
 
       const page = ops.viewSince(task, '0');
@@ -470,4 +476,99 @@ describe('Durable Task Engine & Restart Reconciliation', () => {
       store.close();
     }
   });
+  it('rejects teardown on unkillable process, preserves workspace directory and transitions to EXPIRED_RECOVERABLE', async () => {
+    const dir = tempDir();
+    const dbPath = join(dir, 'state.sqlite');
+    const store = new StateStore(dbPath);
+
+    const config = {
+      host: '0.0.0.0',
+      port: 3001,
+      serviceToken: 'a'.repeat(32),
+      jobsRoot: join(dir, 'jobs'),
+      stateDb: dbPath,
+      executorImage: 'cloud-harness-executor:local',
+      allowedGitHosts: ['github.com'],
+      networkMode: 'none' as const,
+      wallTtlSeconds: 900,
+      idleTtlSeconds: 300,
+      maxOutputBytes: 262144,
+      minFreeBytes: 104857600,
+      maxWorkspaceBytes: 104857600,
+      reaperIntervalSeconds: 30,
+      artifactRoot: join(dir, 'artifacts'),
+      maxArtifactBytes: 16777216,
+      maxPrincipalArtifactBytes: 134217728,
+      artifactRetentionSeconds: 86400,
+      enableRepoCache: false,
+      repoCacheRoot: join(dir, 'cache')
+    };
+    const service = new WorkspaceService(config, store);
+    try {
+      const ownerId = store.resolvePrincipal({ kind: 'external', issuer: 'https://issuer.com', subject: 'user-task-unkillable' });
+      const wsId = 'ws_uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu';
+      const wsPath = join(dir, 'jobs', wsId);
+      mkdirSync(wsPath, { recursive: true });
+
+      store.create({
+        id: wsId,
+        ownerId,
+        idempotencyKey: 'ik_ws_unkillable',
+        repositoryUrl: 'https://github.com/org/repo',
+        containerName: null,
+        workspacePath: wsPath,
+        status: 'ACTIVE',
+        networkMode: 'none',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        hardExpiresAt: Date.now() + 7200_000,
+        gitAuthorName: null,
+        gitAuthorEmail: null,
+        mutationLockedUntil: null,
+        generation: 1,
+        error: null
+      });
+
+      const ops = (service as unknown as { operations: OperationManager }).operations;
+      const task = ops.runTask(wsId, 'c_dummy', '.', 'sleep', 'ik_unkillable_task', 60000, 65536, [], ownerId, wsPath);
+      const logFile = task.logPath!;
+      writeFileSync(logFile, 'Live output stream.\n', 'utf8');
+
+      // Mock an unkillable child process that ignores SIGTERM and SIGKILL
+      const unkillableChild = new EventEmitter() as unknown as {
+        exitCode: number | null;
+        signalCode: string | null;
+        killed: boolean;
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: (signal?: string) => void;
+      };
+      unkillableChild.exitCode = null;
+      unkillableChild.signalCode = null;
+      unkillableChild.killed = false;
+      unkillableChild.stdout = new EventEmitter();
+      unkillableChild.stderr = new EventEmitter();
+      unkillableChild.kill = () => { /* ignores signals */ };
+
+      (ops as unknown as { track: (t: unknown, c: unknown, b: number) => void }).track(task, unkillableChild, 65536);
+      task.child = unkillableChild as unknown as ChildProcessWithoutNullStreams;
+
+      // Attempt workspace_close -> stopWorkspace hits deadline and throws 503 UNAVAILABLE
+      await expect(
+        service.execute(ownerId, 'workspace_close', { workspaceId: wsId })
+      ).rejects.toThrow(/failed to terminate within teardown deadline/);
+
+      // Workspace directory and log file must NOT be deleted!
+      expect(existsSync(wsPath)).toBe(true);
+      expect(existsSync(logFile)).toBe(true);
+
+      // Workspace status must be rolled back to EXPIRED_RECOVERABLE
+      const wsRecord = store.byId(wsId);
+      expect(wsRecord?.status).toBe('EXPIRED_RECOVERABLE');
+      expect(wsRecord?.error).toContain('Workspace stop failed');
+    } finally {
+      store.close();
+    }
+  }, 10_000);
 });
