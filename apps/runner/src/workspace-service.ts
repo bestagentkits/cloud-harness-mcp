@@ -3347,15 +3347,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               this.store.update(record.id, { containerName: null });
             }
 
-            // 3. Emit audit event
-            this.metadata?.recordAudit(
-              record.ownerId,
-              'network_profile.drift_detected',
-              'workspace',
-              record.id,
-              fenced.generation,
-              { profile: record.networkProfile, containersRemoved: allRemoved }
-            );
+            // 3. Emit audit event (best-effort; observability failure must not abort security fencing/cleanup)
+            try {
+              this.metadata?.recordAudit(
+                record.ownerId,
+                'network_profile.drift_detected',
+                'workspace',
+                record.id,
+                fenced.generation,
+                { profile: record.networkProfile, containersRemoved: allRemoved }
+              );
+            } catch {
+              // Ignore audit failure to ensure subsequent workspaces are fenced
+            }
           }
         }
       }

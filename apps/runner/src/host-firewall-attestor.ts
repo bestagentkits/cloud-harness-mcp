@@ -269,7 +269,7 @@ export class HostFirewallAttestor {
   public async attestHostKernel(): Promise<{ ok: boolean; reason?: string }> {
     try {
       const result = await runDocker([
-        'run', '--rm', '--network', 'host',
+        'run', '--rm', '--pull', 'never', '--network', 'host',
         '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN',
         '--security-opt', 'no-new-privileges',
         '--user', '0:0',
