@@ -1219,8 +1219,9 @@ const handlers = {
     const runId = `run-${Date.now()}-${randomBytes(4).toString('hex')}`;
     const snapDir = `/tmp/cloud-harness-exec/${runId}`;
     await mkdir(snapDir, { recursive: true, mode: 0o700 });
+    await cp(skillDir, snapDir, { recursive: true });
     const snapScriptPath = join(snapDir, input.script);
-    await writeFile(snapScriptPath, scriptContent, { mode: 0o700 });
+    await chmod(snapScriptPath, 0o700).catch(() => undefined);
     try {
       const result = await command(snapScriptPath, input.args ?? [], { timeoutMs: input.timeoutMs });
       if (result.exitCode !== 0) {

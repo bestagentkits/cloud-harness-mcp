@@ -24,7 +24,7 @@ if [[ ! -f /etc/cloud-harness-mcp/runtime.env ]]; then
     printf '%s\n' 'API_ALLOWED_ORIGINS=https://cloud-harness-mcp.46-250-239-227.sslip.io'
     printf '%s\n' 'API_PORT=3000' 'RUNNER_PORT=3001' 'RUNNER_URL=http://runner:3001'
     printf '%s\n' 'JOBS_ROOT=/var/lib/cloud-harness/jobs' 'STATE_DB=/var/lib/cloud-harness/state/cloud-harness.db'
-    printf '%s\n' 'EXECUTOR_IMAGE=cloud-harness-executor:local' 'ALLOWED_GIT_HOSTS=github.com' 'WORKSPACE_NETWORK_MODE=none'
+    printf '%s\n' 'EXECUTOR_IMAGE=cloud-harness-executor:local' 'NETWORK_GUARD_IMAGE=cloud-harness-network-guard:local' 'ALLOWED_GIT_HOSTS=github.com' 'WORKSPACE_NETWORK_PROFILE=network-none'
     printf '%s\n' 'WORKSPACE_WALL_TTL_SECONDS=900' 'WORKSPACE_IDLE_TTL_SECONDS=300'
   } > /etc/cloud-harness-mcp/runtime.env
 fi

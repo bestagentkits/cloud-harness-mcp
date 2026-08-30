@@ -63,7 +63,7 @@ function fixture(idCharacter = 'a', containerName: string | null = 'executor-con
   const record: WorkspaceRecord = {
     id: workspaceId, ownerId, idempotencyKey: `audit-${idCharacter}`,
     repositoryUrl: 'https://github.com/example/repo.git', repositoryRef: null,
-    containerName, workspacePath, status: 'ACTIVE', networkMode: 'none',
+    containerName, workspacePath, status: 'ACTIVE', networkProfile: 'network-none',
     createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, generation: 1, error: null
   };
   store.create(record);

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "mode": "test",
+  "profiles": [
+    {
+      "id": "fake-test-only",
+      "provider": "fake",
+      "model": "fake-model",
+      "downstreamPath": "/v1/chat/completions",
+      "upstreamUrl": "https://fake-provider:3443/v1/chat/completions",
+      "credentialFile": "/run/model-gateway-test-secrets/provider-api-key",
+      "credentialHeader": "authorization",
+      "credentialScheme": "Bearer",
+      "pricing": {
+        "inputMicrosPerMillionTokens": 1000,
+        "outputMicrosPerMillionTokens": 2000
+      },
+      "limits": {
+        "maxRequestBytes": 65536,
+        "maxResponseBytes": 1048576,
+        "maxHeaderBytes": 8192,
+        "maxHeaders": 24,
+        "deadlineMs": 10000,
+        "maxInputTokens": 65536,
+        "maxOutputTokens": 1024,
+        "maxCostMicros": 1000000,
+        "maxStreamLineBytes": 65536
+      },
+      "testOnly": true,
+      "allowPrivateUpstream": true,
+      "tlsCaFile": "/run/model-gateway-test-tls/server-cert.pem"
+    }
+  ]
+}

@@ -171,6 +171,75 @@ Wait for an operation to reach a terminal state with a server timeout.
 {"operationId":"op_aaaaaaaaaaaaaaaaaaaa","timeoutMs":30000}
 -->
 
+
+## Subagents (Pi coding-agent)
+
+<!-- cloudharness-tool:agent_spawn -->
+### `agent_spawn`
+
+Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.
+
+- Required: `prompt`, `idempotencyKey`, `profileId`, `proxyOperations`.
+- Optional: `workspaceId`, `parentAgentId`, `ttlSeconds`, `maxOutputBytes`, `maxInputTokens`, `maxOutputTokens`, `maxCostMicros`.
+
+<!-- cloudharness-example:agent_spawn
+{"prompt":"Implement feature","idempotencyKey":"spawn-subagent-1234","profileId":"default","proxyOperations":["files_read","files_write","files_apply_patch"]}
+-->
+
+<!-- cloudharness-tool:agent_status -->
+### `agent_status`
+
+Read the execution state, budgets, and terminal summary of one coding agent.
+
+- Required: exactly one of `agentId` or `idempotencyKey`. Optional: `workspaceId`.
+
+<!-- cloudharness-example:agent_status
+{"agentId":"agent_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
+<!-- cloudharness-tool:agent_logs -->
+### `agent_logs`
+
+Read bounded streaming diagnostic and tool events from one coding agent.
+
+- Required: `agentId`. Optional: `workspaceId`, `cursor`, `limitBytes`.
+
+<!-- cloudharness-example:agent_logs
+{"agentId":"agent_aaaaaaaaaaaaaaaaaaaa","cursor":"0","limitBytes":65536}
+-->
+
+<!-- cloudharness-tool:agent_message -->
+### `agent_message`
+
+Send an idempotent steering or follow-up message to a running coding agent.
+
+- Required: `agentId`, `idempotencyKey`, `mode` (`steer` or `followUp`), `message`. Optional: `workspaceId`.
+
+<!-- cloudharness-example:agent_message
+{"agentId":"agent_aaaaaaaaaaaaaaaaaaaa","idempotencyKey":"msg-steer-1234","mode":"steer","message":"Please also add unit tests"}
+-->
+
+<!-- cloudharness-tool:agent_cancel -->
+### `agent_cancel`
+
+Cancel an in-flight coding agent and cascade cancellation to all its child agents.
+
+- Required: `agentId`. Optional: `workspaceId`, `reason`.
+
+<!-- cloudharness-example:agent_cancel
+{"agentId":"agent_aaaaaaaaaaaaaaaaaaaa"}
+-->
+
+<!-- cloudharness-tool:agent_list -->
+### `agent_list`
+
+List coding agents in a workspace with bounded pagination.
+
+- Optional: `workspaceId`, `parentAgentId`, `status`, `cursor`, `limit`.
+
+<!-- cloudharness-example:agent_list
+{"limit":50}
+-->
 ## Recovery and cleanup
 
 1. For a lost create response, reuse its original idempotency key.

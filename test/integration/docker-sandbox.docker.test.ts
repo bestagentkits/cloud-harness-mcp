@@ -22,7 +22,7 @@ beforeAll(async () => {
     authMode: 'cloudflare-access',
     host: '127.0.0.1', port: 3001, serviceToken: 'runner-test-token-that-is-longer-than-32-characters',
     jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state', 'state.db'), executorImage: 'cloud-harness-executor:local',
-    allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300, idleTtlSeconds: 180,
+    allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 300, idleTtlSeconds: 180,
     maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: workspaceCeilingBytes, reaperIntervalSeconds: 30,
     artifactRoot: join(directory, 'artifacts'), maxArtifactBytes: 16_777_216, maxPrincipalArtifactBytes: 134_217_728,
     artifactRetentionSeconds: 86_400, enableRepoCache: false, repoCacheRoot: join(directory, 'cache')
@@ -55,7 +55,7 @@ describe('real Docker sandbox', () => {
   it('clones, persists edits across calls, enforces container policy, and cleans up', async () => {
     const opened = await service.execute('owner', 'workspace_open', {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
-      idempotencyKey: 'docker-test-workspace-1', networkMode: 'none'
+      idempotencyKey: 'docker-test-workspace-1', networkProfile: 'network-none'
     });
     expect(opened.ok).toBe(true);
     workspaceId = (opened.data as { workspaceId: string }).workspaceId;
@@ -153,7 +153,7 @@ describe('real Docker sandbox', () => {
 
     const cancellableWorkspace = await service.execute('owner', 'workspace_open', {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
-      idempotencyKey: 'docker-test-abort-workspace', networkMode: 'none'
+      idempotencyKey: 'docker-test-abort-workspace', networkProfile: 'network-none'
     });
     workspaceId = (cancellableWorkspace.data as { workspaceId: string }).workspaceId;
     const cancellableRecord = store.byId(workspaceId)!;
@@ -175,7 +175,7 @@ describe('real Docker sandbox', () => {
   it('enforces 3-zone storage isolation and single-use approval grants for privileged execution', async () => {
     const opened = await service.execute('owner', 'workspace_open', {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
-      idempotencyKey: 'docker-test-privilege-workspace', networkMode: 'none'
+      idempotencyKey: 'docker-test-privilege-workspace', networkProfile: 'network-none'
     });
     expect(opened.ok).toBe(true);
     workspaceId = (opened.data as { workspaceId: string }).workspaceId;
@@ -291,32 +291,10 @@ describe('real Docker sandbox', () => {
     await service.execute('owner', 'workspace_close', { workspaceId: testWsId });
   }, 120_000);
 
-  it('installs and executes real user-space global packages in bridge network mode', async () => {
-    const bridgeOpened = await service.execute('owner', 'workspace_open', {
+  it('rejects the removed bridge escape hatch and legacy networkMode input', async () => {
+    await expect(service.execute('owner', 'workspace_open', {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
-      idempotencyKey: 'docker-test-npm-bridge-workspace', networkMode: 'bridge'
-    });
-    expect(bridgeOpened.ok).toBe(true);
-    const bridgeWsId = (bridgeOpened.data as { workspaceId: string }).workspaceId;
-    try {
-      const installResult = await service.execute('owner', 'exec_run', {
-        workspaceId: bridgeWsId,
-        command: 'npm install -g cowsay',
-        cwd: '.',
-        timeoutMs: 120_000
-      });
-      expect(installResult.ok).toBe(true);
-
-      const execResult = await service.execute('owner', 'exec_run', {
-        workspaceId: bridgeWsId,
-        command: 'cowsay "Verification Passed"',
-        cwd: '.',
-        timeoutMs: 120_000
-      });
-      expect(execResult.ok).toBe(true);
-      expect(JSON.stringify(execResult.data)).toContain('Verification Passed');
-    } finally {
-      await service.execute('owner', 'workspace_close', { workspaceId: bridgeWsId }).catch(() => undefined);
-    }
-  }, 120_000);
+      idempotencyKey: 'docker-test-legacy-bridge', networkMode: 'bridge'
+    })).rejects.toThrow(/networkMode was replaced by networkProfile/);
+  }, 30_000);
 });

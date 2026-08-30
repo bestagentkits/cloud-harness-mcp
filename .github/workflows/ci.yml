@@ -44,11 +44,12 @@ jobs:
           node-version: 24.11.0
           cache: npm
       - run: npm ci
-      - run: docker compose --profile images build executor-image api runner
+      - run: node scripts/generate-model-gateway-test-fixtures.mjs
+      - run: docker compose --profile images build executor-image agent-image api runner model-gateway network-guard-image
       - name: Verify non-root API runtime dependencies
         run: docker run --rm --entrypoint node cloud-harness-api:local -e "const fs=require('node:fs'); for (const file of ['/app/package.json','/app/apps/api/package.json','/app/apps/api/dashboard/index.html','/app/packages/contracts/package.json','/app/scripts/deploy-canary.mjs','/app/deploy/ingress-proxy.mjs']) fs.accessSync(file, fs.constants.R_OK); import('@cloud-harness/contracts')"
-      - run: npm run test:docker
-      - run: npm run test:e2e
+      - run: CLOUD_HARNESS_REQUIRE_DOCKER_TESTS=1 npm run test:docker
+      - run: CLOUD_HARNESS_REQUIRE_DOCKER_TESTS=1 npm run test:e2e
       - name: Assert managed-container cleanup
         if: always()
         run: |

@@ -40,7 +40,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
       repositoryUrl: `local://${this.canonicalRoot}`,
       ref: 'HEAD',
       status: this.status,
-      networkMode: this.options.gitNetwork ? 'host' : 'none',
+      networkProfile: 'local-host',
       createdAt: new Date(this.createdAt).toISOString(),
       lastActivityAt: new Date(this.lastActivityAt).toISOString(),
       expiresAt: new Date(Date.now() + 86_400_000 * 365).toISOString(),
@@ -79,7 +79,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
           sessions: true,
           deployments: true,
           privileged: false,
-          networkMode: gitNetwork ? 'host' : 'none'
+          networkProfile: 'local-host'
         },
         mode: 'local',
         platform: process.platform,

@@ -596,12 +596,13 @@ replace those entries with the hostname and origins of your deployment.
 | `API_PUBLIC_HOSTS` | `localhost,127.0.0.1` | Comma-separated `Host` allowlist. Add the public MCP hostname in a deployed environment. |
 | `API_ALLOWED_ORIGINS` | empty | Comma-separated exact browser origins allowed to send requests. CLI clients that omit `Origin` do not need an entry. |
 | `ALLOWED_GIT_HOSTS` | `github.com` | Comma-separated repository-host allowlist. Repository URLs must still use credential-free HTTPS. |
-| `WORKSPACE_NETWORK_MODE` | `none` | Executor networking: `none` is the safe default; `bridge` explicitly allows ordinary container egress. |
+| `WORKSPACE_NETWORK_PROFILE` | `network-none` | Executor networking: `network-none` blocks all egress (safe default); `dependency-access` permits only public DNS and TCP 80/443 via a Linux host firewall attested before each executor start. The legacy `WORKSPACE_NETWORK_MODE` is rejected. |
 | `WORKSPACE_WALL_TTL_SECONDS` | `900` | Maximum workspace lifetime, from 60 to 86,400 seconds. |
 | `WORKSPACE_IDLE_TTL_SECONDS` | `300` | Maximum idle time, from 30 to 43,200 seconds. |
 | `JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | Runner path for ephemeral workspace directories. |
 | `STATE_DB` | `/var/lib/cloud-harness/state/cloud-harness.db` | Runner SQLite state-file path. |
 | `EXECUTOR_IMAGE` | `cloud-harness-executor:local` | Trusted executor image selected by the operator, never by MCP callers. |
+| `NETWORK_GUARD_IMAGE` | `cloud-harness-network-guard:local` | Trusted `NET_ADMIN`-only image used to attest the host firewall for `dependency-access`. |
 
 The maintained template contains every setting needed for the normal local
 Compose workflow. The following limits are optional; omit them to use their

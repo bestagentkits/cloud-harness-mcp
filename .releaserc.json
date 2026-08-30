@@ -45,6 +45,8 @@
           "apps/api/src/mcp-server.ts",
           "apps/runner/package.json",
           "packages/contracts/package.json",
+          "apps/agent-runtime/package.json",
+          "apps/model-gateway/package.json",
           "plugins/cloud-harness/.claude-plugin/plugin.json",
           "plugins/cloud-harness/.codex-plugin/plugin.json",
           ".claude-plugin/marketplace.json"

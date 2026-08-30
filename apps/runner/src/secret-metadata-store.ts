@@ -177,6 +177,7 @@ export class SecretMetadataStore {
       name: string;
       value: string;
       description?: string | null | undefined;
+      purpose?: SecretPurpose | undefined;
       action: 'create' | 'rotate';
       expectedGeneration: number;
     }>
@@ -188,7 +189,7 @@ export class SecretMetadataStore {
       const results: SecretView[] = [];
       for (const item of items) {
         if (item.action === 'create') {
-          const created = this.createInTransaction(principalId, environmentId, item.name, item.value, 0, item.description ?? null);
+          const created = this.createInTransaction(principalId, environmentId, item.name, item.value, 0, item.description ?? null, item.purpose ?? 'runtime');
           if (!created) throw new Error(`failed to create secret ${item.name}: already exists or generation conflict`);
           results.push(created);
         } else if (item.action === 'rotate') {
@@ -281,6 +282,7 @@ export class SecretMetadataStore {
       name: string;
       value: string;
       description?: string | null | undefined;
+      purpose?: SecretPurpose | undefined;
       action: 'create' | 'rotate';
       expectedGeneration: number;
     }>
@@ -289,7 +291,7 @@ export class SecretMetadataStore {
       const results: SecretView[] = [];
       for (const item of items) {
         if (item.action === 'create') {
-          const created = this.globalCreateInTransaction(principalId, item.name, item.value, 0, item.description ?? null);
+          const created = this.globalCreateInTransaction(principalId, item.name, item.value, 0, item.description ?? null, item.purpose ?? 'runtime');
           if (!created) throw new Error(`failed to create global secret ${item.name}: already exists or generation conflict`);
           results.push(created);
         } else if (item.action === 'rotate') {

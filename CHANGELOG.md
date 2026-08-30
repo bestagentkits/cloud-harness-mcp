@@ -1,3 +1,43 @@
+# [0.34.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.3...v0.34.0) (2026-08-30)
+
+
+### Bug Fixes
+
+* **runner:** adapt agent tests and repository to network profile and schema v7 ([d9ac32b](https://github.com/bestagentkits/cloud-harness-mcp/commit/d9ac32bd46b6231743a7750ddbae25af67b53068))
+
+
+### Features
+
+* **agent:** add bounded Pi coding subagents ([7860dc1](https://github.com/bestagentkits/cloud-harness-mcp/commit/7860dc15137e7fadb9ac24358e9e321c1a07f727))
+
+## [0.33.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.2...v0.33.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* **security:** explicitly deny multicast (224/4), class E (240/4), and 0/8 in egress chain ([#134](https://github.com/bestagentkits/cloud-harness-mcp/issues/134)) ([e7f452e](https://github.com/bestagentkits/cloud-harness-mcp/commit/e7f452e3ab30ca9eaea19f8d49a3661d6b3317f8))
+
+## [0.33.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.1...v0.33.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* **security:** exact FORWARD/INPUT jump matching and network-guard deploy recording ([#133](https://github.com/bestagentkits/cloud-harness-mcp/issues/133)) ([2f4bc5a](https://github.com/bestagentkits/cloud-harness-mcp/commit/2f4bc5afdbd3797198ff89877d017d21bb28a7b4))
+
+## [0.33.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.0...v0.33.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **security:** reject early RETURN and indirect jumps in INPUT target chain ([#132](https://github.com/bestagentkits/cloud-harness-mcp/issues/132)) ([c031764](https://github.com/bestagentkits/cloud-harness-mcp/commit/c031764560c0b497681510c14e84481b6aaa0ef6))
+
+# [0.33.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.32.0...v0.33.0) (2026-08-30)
+
+
+### Features
+
+* **runner:** enforce controlled executor egress profiles ([#128](https://github.com/bestagentkits/cloud-harness-mcp/issues/128)) ([27ac3a7](https://github.com/bestagentkits/cloud-harness-mcp/commit/27ac3a7342e992af229206075908c60e2a0b840e)), closes [#12](https://github.com/bestagentkits/cloud-harness-mcp/issues/12)
+
 # [0.32.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.31.1...v0.32.0) (2026-08-30)
 
 

@@ -1,6 +1,6 @@
 ---
 title: Tools Reference
-description: Complete machine-generated reference of all 71 MCP tools provided by Cloud Harness MCP.
+description: Complete machine-generated reference of all 81 MCP tools provided by Cloud Harness MCP.
 ---
 
 # Tools Reference
@@ -11,7 +11,7 @@ description: Complete machine-generated reference of all 71 MCP tools provided b
   <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/tools.md</code>.
 </div>
 
-Cloud Harness MCP exposes **71 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
+Cloud Harness MCP exposes **81 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
 
 ## Security & Capability Badges
 
@@ -39,7 +39,8 @@ Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding 
 | `repositoryUrl` | `string` | **Yes** | format: `uri` |
 | `ref` | `string` | No | length: 1–255 |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
-| `networkMode` | `"none"` \| `"bridge"` | No | — |
+| `networkProfile` | `"network-none"` \| `"dependency-access"` | No | — |
+| `networkMode` | `any` | No | — |
 | `environmentId` | `string` | No | pattern: `^env_[A-Za-z0-9_-]{20,80}$` |
 | `confirmEnvironmentInjection` | `true` | No | — |
 
@@ -91,6 +92,12 @@ Read the active workspace ID, branch, lease time, Git identity, and repository o
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `clientProfile` | `"all"` \| `"claude"` \| `"codex"` \| `"cursor"` \| `"aider"` | No | default: `"all"` |
+| `include` | string[] | No | default: `["instructions","languages","test_commands","skills"]` |
+| `contentMode` | `"none"` \| `"excerpt"` | No | default: `"none"` |
+| `cursor` | `string` | No | max length: 256 |
+| `limit` | `integer` | No | range: 1–100, default: `50` |
+| `maxBytes` | `integer` | No | range: 4096–131072, default: `32768` |
 
 ### `workspace_set_active`
 
@@ -890,6 +897,9 @@ List repository-provided agent skills discovered in the workspace.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `limit` | `integer` | No | range: 1–100, default: `50` |
+| `cursor` | `string` | No | max length: 256 |
+| `includeShadowed` | `boolean` | No | default: `true` |
 
 ### `skills_read`
 
@@ -903,6 +913,10 @@ Read bounded instructions for one repository-provided agent skill.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]{1,120}$` |
+| `source` | `"built-in"` \| `"owner"` \| `"workspace"` \| `"repository"` | No | — |
+| `expectedSha256` | `string` | No | length: 64–64 |
+| `offset` | `integer` | No | range: 0–9007199254740991, default: `0` |
+| `limit` | `integer` | No | range: 1–262144, default: `65536` |
 
 ### `skills_run`
 
@@ -916,9 +930,12 @@ Execute one reviewed script packaged by a repository-provided skill.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]{1,120}$` |
+| `source` | `"built-in"` \| `"owner"` \| `"workspace"` \| `"repository"` | No | — |
 | `script` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `args` | string[] | No | default: `[]` |
 | `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
+| `expectedSha256` | `string` | No | length: 64–64 |
+| `expectedContentSha256` | `string` | No | length: 64–64 |
 
 ### `hooks_list`
 
@@ -931,6 +948,10 @@ List repository-defined Cloud Harness automation hooks without running them.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `event` | `"on_workspace_open"` \| `"post_checkout"` \| `"pre_commit"` \| `"post_commit"` \| `"manual"` | No | — |
+| `includeInactive` | `boolean` | No | default: `false` |
+| `limit` | `integer` | No | range: 1–100, default: `50` |
+| `cursor` | `string` | No | max length: 256 |
 
 ### `hooks_run`
 
@@ -944,46 +965,60 @@ Execute one named repository-defined hook as a bounded shell command.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
+| `event` | `"on_workspace_open"` \| `"post_checkout"` \| `"pre_commit"` \| `"post_commit"` \| `"manual"` | No | — |
+| `expectedSha256` | `string` | No | length: 64–64 |
+| `expectedManifestSha256` | `string` | No | length: 64–64 |
 | `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
 
 ### `memories_list`
 
 **List memories**
 
-List repository-local Cloud Harness memory note names.
+List Cloud Harness memory note names across owner, repository, and workspace scopes.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | — |
+| `tags` | string[] | No | — |
+| `limit` | `integer` | No | range: 1–100, default: `50` |
+| `cursor` | `string` | No | max length: 256 |
 
 ### `memories_read`
 
 **Read memory**
 
-Read one bounded repository-local Cloud Harness memory note.
+Read one bounded Cloud Harness memory note by name or ID.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
+| `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | — |
+| `name` | `string` | No | pattern: `^[A-Za-z0-9._-]{1,120}$` |
+| `memoryId` | `string` | No | pattern: `^mem_[A-Za-z0-9_-]{10,80}$` |
 
 ### `memories_write`
 
 **Write memory**
 
-Create or replace one repository-local Cloud Harness memory note.
+Create or replace one scoped Cloud Harness memory note with optimistic concurrency.
 
 **Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | default: `"workspace"` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
 | `content` | `string` | **Yes** | max length: 262144 |
+| `tags` | string[] | No | default: `[]` |
+| `retentionSeconds` | `integer` | No | range: 60–31536000 |
+| `expectedGeneration` | `integer` | No | range: 0–9007199254740991, default: `0` |
+| `idempotencyKey` | `string` | No | length: 1–256 |
 
 ### `deployments_list`
 
@@ -1083,4 +1118,165 @@ Delete a principal-owned retained artifact snapshot before its retention expiry.
 |---|---|---|---|
 | `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
 | `expectedGeneration` | `integer` | No | range: 0–9007199254740991, default: `1` |
+
+## Additional Tools
+
+### `hooks_activate`
+
+**Activate lifecycle hooks**
+
+Explicitly activate reviewed lifecycle hooks for a workspace by exact manifest digest.
+
+**Attributes:** <span class="badge-destructive">destructive</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `manifestSha256` | `string` | **Yes** | length: 64–64 |
+| `events` | string[] | **Yes** | — |
+| `retentionSeconds` | `integer` | No | range: 60–2592000 |
+
+### `hooks_deactivate`
+
+**Deactivate lifecycle hooks**
+
+Deactivate enrolled lifecycle hooks for a workspace.
+
+**Attributes:** <span class="badge-destructive">destructive</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `events` | string[] | No | — |
+
+### `memories_search`
+
+**Search memories**
+
+Search scoped memory notes by literal text query and tag filters with bounded pagination.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `query` | `string` | **Yes** | length: 1–512 |
+| `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | — |
+| `tags` | string[] | No | — |
+| `tagMatch` | `"all"` \| `"any"` | No | default: `"all"` |
+| `limit` | `integer` | No | range: 1–50, default: `20` |
+| `cursor` | `string` | No | max length: 256 |
+
+### `memories_delete`
+
+**Delete memory note**
+
+Delete one scoped memory note with generation guard.
+
+**Attributes:** <span class="badge-destructive">destructive</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `memoryId` | `string` | No | pattern: `^mem_[A-Za-z0-9_-]{10,80}$` |
+| `name` | `string` | No | pattern: `^[A-Za-z0-9._-]{1,120}$` |
+| `scope` | `"owner"` \| `"repository"` \| `"workspace"` | No | — |
+| `expectedGeneration` | `integer` | No | range: 0–9007199254740991, default: `1` |
+
+### `agent_spawn`
+
+**Spawn coding agent**
+
+Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent` · <span class="badge-openworld">openWorld</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `prompt` | `string` | **Yes** | min length: 1 |
+| `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
+| `profileId` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
+| `parentAgentId` | `string` | No | pattern: `^agent_[A-Za-z0-9_-]{20,80}$` |
+| `proxyOperations` | string[] | **Yes** | — |
+| `ttlSeconds` | `integer` | No | range: 30–86400, default: `900` |
+| `maxOutputBytes` | `integer` | No | range: 1024–10485760, default: `262144` |
+| `maxInputTokens` | `integer` | No | range: 1–2000000, default: `200000` |
+| `maxOutputTokens` | `integer` | No | range: 1–2000000, default: `32000` |
+| `maxCostMicros` | `integer` | No | range: 0–1000000000, default: `10000000` |
+
+### `agent_status`
+
+**Read coding agent status**
+
+Read the execution state, budgets, and terminal summary of one coding agent.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `agentId` | `string` | No | pattern: `^agent_[A-Za-z0-9_-]{20,80}$` |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
+
+### `agent_logs`
+
+**Read coding agent logs**
+
+Read bounded streaming diagnostic and tool events from one coding agent.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `agentId` | `string` | **Yes** | pattern: `^agent_[A-Za-z0-9_-]{20,80}$` |
+| `cursor` | `string` | No | pattern: `^(?:0|[1-9]\d*)$`, default: `"0"` |
+| `limitBytes` | `integer` | No | range: 1024–262144, default: `65536` |
+
+### `agent_message`
+
+**Message coding agent**
+
+Send an idempotent steering or follow-up message to a running coding agent.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent` · <span class="badge-openworld">openWorld</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `agentId` | `string` | **Yes** | pattern: `^agent_[A-Za-z0-9_-]{20,80}$` |
+| `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
+| `mode` | `"steer"` \| `"followUp"` | **Yes** | — |
+| `message` | `string` | **Yes** | min length: 1 |
+
+### `agent_cancel`
+
+**Cancel coding agent**
+
+Cancel an in-flight coding agent and cascade cancellation to all its child agents.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `agentId` | `string` | **Yes** | pattern: `^agent_[A-Za-z0-9_-]{20,80}$` |
+| `reason` | `string` | No | max length: 2000 |
+
+### `agent_list`
+
+**List coding agents**
+
+List coding agents in a workspace with bounded pagination.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `parentAgentId` | `string` | No | pattern: `^agent_[A-Za-z0-9_-]{20,80}$` |
+| `status` | `"SPAWNING"` \| `"RUNNING"` \| `"CANCELLING"` \| `"SUCCEEDED"` \| `"FAILED"` \| `"CANCELLED"` \| `"TIMED_OUT"` \| `"LIMIT_EXCEEDED"` \| `"INTERRUPTED"` | No | — |
+| `cursor` | `string` | No | pattern: `^[1-9]\d*$` |
+| `limit` | `integer` | No | range: 1–100, default: `50` |
 

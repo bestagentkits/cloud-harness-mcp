@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, writeFileSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import type { RepositoryCacheManager } from '../repository-cache-manager.js';
@@ -24,7 +24,18 @@ export function computeFullTreeDigest(rootDir: string): { bundleSha256: string; 
     const items = readdirSync(currentDir, { withFileTypes: true });
     for (const item of items) {
       const fullPath = join(currentDir, item.name);
-      if (item.isDirectory()) {
+      if (item.isSymbolicLink()) {
+        const relPath = relative(rootDir, fullPath).replaceAll('\\', '/');
+        const target = readlinkSync(fullPath);
+        const contentHash = createHash('sha256').update(`symlink:${target}`).digest('hex');
+        const st = lstatSync(fullPath);
+        fileEntries.push({
+          relPath: `${relPath} -> ${target}`,
+          contentHash,
+          size: Buffer.byteLength(target),
+          mode: st.mode & 0o777
+        });
+      } else if (item.isDirectory()) {
         walk(fullPath);
       } else if (item.isFile()) {
         const relPath = relative(rootDir, fullPath).replaceAll('\\', '/');

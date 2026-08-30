@@ -4,13 +4,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  downgradeStateSchemaToV5,
+  downgradeStateSchemaToV7,
   migratePrincipalSchema,
   resolveOwnerPrincipal
 } from '../src/principal-store.js';
 import { StateStore } from '../src/state-store.js';
 
-describe('StateSchema v6 Migration and Downgrade', () => {
+describe('StateSchema v8 Migration and Downgrade', () => {
   let tmpDir: string;
   let dbPath: string;
 
@@ -23,10 +23,11 @@ describe('StateSchema v6 Migration and Downgrade', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('migrates fresh database to version 6 and creates toolkit tables', () => {
+  it('migrates fresh database to version 8 and creates toolkit tables', () => {
     const store = new StateStore(dbPath);
-    const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-    expect(row.version).toBe(6);
+    try {
+      const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
+      expect(row.version).toBe(8);
 
     const tables = (store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(t => t.name);
     expect(tables).toContain('toolkit_cache_entries');
@@ -35,12 +36,15 @@ describe('StateSchema v6 Migration and Downgrade', () => {
     const wsCols = (store.database.prepare('PRAGMA table_info(workspaces)').all() as { name: string }[]).map(c => c.name);
     expect(wsCols).toContain('request_fingerprint');
 
-    store.close();
+    } finally {
+      store.close();
+    }
   });
 
-  it('performs transactional downgrade to v5 and refuses downgrade when active rows exist without allowDataLoss', () => {
+  it('performs transactional downgrade to v7 and refuses downgrade when active rows exist without allowDataLoss', () => {
     const store = new StateStore(dbPath);
-    const ownerId = resolveOwnerPrincipal(store.database, 'owner-test-1');
+    try {
+      const ownerId = resolveOwnerPrincipal(store.database, 'owner-test-1');
 
     store.upsertToolkitCacheEntry({
       cacheKey: 'test-key-1',
@@ -56,13 +60,14 @@ describe('StateSchema v6 Migration and Downgrade', () => {
       lastUsedAt: Date.now(),
       errorSummary: null
     });
-    expect(() => downgradeStateSchemaToV5(store.database, false)).toThrow('cannot downgrade state schema to v5: toolkit tables contain active records');
+      expect(() => downgradeStateSchemaToV7(store.database, false)).toThrow('cannot downgrade state schema to v7: toolkit tables contain active records');
 
     // Downgrade with allowDataLoss = true
-    downgradeStateSchemaToV5(store.database, true);
+      // Downgrade with allowDataLoss = true
+      downgradeStateSchemaToV7(store.database, true);
 
-    const versionAfter = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-    expect(versionAfter).toBe(5);
+      const versionAfter = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+      expect(versionAfter).toBe(7);
 
     const tablesAfter = (store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(t => t.name);
     expect(tablesAfter).not.toContain('toolkit_cache_entries');
@@ -70,9 +75,10 @@ describe('StateSchema v6 Migration and Downgrade', () => {
 
     // Re-migrate to v6
     migratePrincipalSchema(store.database);
-    const versionReMigrated = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-    expect(versionReMigrated).toBe(6);
-
-    store.close();
+      const versionReMigrated = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+      expect(versionReMigrated).toBe(8);
+    } finally {
+      store.close();
+    }
   });
 });

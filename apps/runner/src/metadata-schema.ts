@@ -11,7 +11,7 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number };
-    if (row.version === 4) {
+    if (row.version === 5) {
       database.exec('COMMIT');
       return;
     }

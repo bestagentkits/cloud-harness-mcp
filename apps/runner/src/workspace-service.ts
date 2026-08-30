@@ -1,13 +1,15 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
+  AgentProxyOperationSchema,
   HarnessError,
   InternalRunnerRequestSchema,
   RunnerOperationSchema,
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
+  type AgentProxyOperation,
   type RunnerConfig,
   type InternalRunnerOperation,
   type RunnerOperation,
@@ -28,11 +30,14 @@ import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
+import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
-const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING']);
+import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
+import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
@@ -47,6 +52,8 @@ function availableLifecycleActions(status: WorkspaceRecord['status'], canRenewLe
       return canRenewLease
         ? ['workspace_recover', 'workspace_lease_renew', 'workspace_close']
         : ['workspace_recover', 'workspace_close'];
+    case 'NETWORK_QUARANTINED':
+      return ['workspace_recover', 'workspace_close', 'workspace_context'];
     case 'CREATING':
     case 'REAPING':
       return ['workspace_status'];
@@ -69,6 +76,9 @@ function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilit
   if (record.status === 'EXPIRED_RECOVERABLE') {
     leaseState = 'EXPIRED_RECOVERABLE';
     leaseWarnings.push('Workspace lease has expired. Work is retained in recoverable grace state.');
+  } else if (record.status === 'NETWORK_QUARANTINED') {
+    leaseState = 'EXPIRED';
+    leaseWarnings.push('Workspace is quarantined due to network security policy drift. Work is retained and recoverable after policy reconciliation.');
   } else if (record.status === 'CLOSED' || record.status === 'FAILED') {
     leaseState = 'EXPIRED';
   } else if (remainingLeaseMs <= 300_000 && record.status === 'ACTIVE') {
@@ -85,7 +95,7 @@ function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilit
     repositoryUrl: record.repositoryUrl,
     ref: record.repositoryRef,
     status: record.status,
-    networkMode: record.networkMode,
+    networkProfile: record.networkProfile,
     createdAt: new Date(record.createdAt).toISOString(),
     lastActivityAt: new Date(record.lastActivityAt).toISOString(),
     expiresAt: new Date(record.expiresAt).toISOString(),
@@ -120,19 +130,40 @@ export class WorkspaceService {
   readonly toolkitCacheManager: ToolkitCacheManager;
   readonly toolkitService: ToolkitService;
 
+  public readonly networkProfileManager: NetworkProfileManager;
+  private readonly agentManager?: AgentManager | undefined;
+  private readonly metadata?: MetadataStore | undefined;
   constructor(
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
-    private readonly metadata?: MetadataStore,
+    metadataOrDependencies?: MetadataStore | (Omit<AgentManagerDependencies, 'toolExecutor'> & { manager?: AgentManager }),
     private readonly githubInstallations?: GitHubInstallationStore,
     private readonly githubBinding?: GitHubBindingService,
-    private readonly artifacts?: ArtifactStore
+    private readonly artifacts?: ArtifactStore,
+    agentDependencies?: Omit<AgentManagerDependencies, 'toolExecutor'> & { manager?: AgentManager }
   ) {
+    let metadata: MetadataStore | undefined;
+    let agentDeps = agentDependencies;
+    if (metadataOrDependencies && ('manager' in metadataOrDependencies || 'launcher' in metadataOrDependencies || 'gateway' in metadataOrDependencies)) {
+      agentDeps = metadataOrDependencies as Omit<AgentManagerDependencies, 'toolExecutor'> & { manager?: AgentManager };
+    } else {
+      metadata = metadataOrDependencies as MetadataStore | undefined;
+    }
+    this.metadata = metadata;
+    this.instanceId = store.instanceId();
+    const { manager, ...managerDependencies } = agentDeps ?? {};
+    this.agentManager = manager ?? (config.agents
+      ? new AgentManager(config.agents, store, {
+          ...managerDependencies,
+          toolExecutor: async (request) => await this.executeAgentProxy(request)
+        })
+      : undefined);
     this.instanceId = store.instanceId();
     this.store.reconcileRunningTasks(this.bootId, Date.now());
     this.store.reconcilePendingGitOperations(Date.now());
     this.operations = new OperationManager(this.store, this.bootId);
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
+    this.networkProfileManager = new NetworkProfileManager(this.config);
     this.repoCacheManager = new RepositoryCacheManager(this.config.repoCacheRoot, this.store, this.config.allowedGitHosts, this.config.executorImage, this.instanceId);
     const cacheRoot = this.config.toolkitCacheRoot || '/var/lib/cloud-harness/cache/toolkits';
     const provNet = this.config.provisioningNetwork || 'cloud-harness-mcp_provisioning';
@@ -252,9 +283,43 @@ export class WorkspaceService {
     }
     await mkdir(this.config.jobsRoot, { recursive: true, mode: 0o700 });
     for (const record of this.store.active()) {
+      if (record.status === 'NETWORK_QUARANTINED') {
+        if (record.containerName) {
+          try {
+            await removeContainer(record.containerName);
+            this.store.update(record.id, { containerName: null });
+          } catch {
+            // retain record.containerName for retry
+          }
+        }
+        continue;
+      }
       if (record.status === 'CREATING') await this.closeRecord(record, 'runner restarted during workspace creation');
       else if (!record.containerName || !(await inspectContainer(record.containerName))) await this.closeRecord(record, 'executor missing during startup reconciliation');
       else {
+        const inspection = await inspectContainer(record.containerName);
+        const hostConfig = inspection?.HostConfig as { NetworkMode?: string } | undefined;
+        const expectedNetwork = record.networkProfile === 'network-none' ? 'none' : (this.config.dependencyNetworkName ?? 'cloud-harness-dependency-access');
+        if (hostConfig?.NetworkMode !== expectedNetwork) {
+          await removeContainer(record.containerName).catch(() => undefined);
+          if (record.networkProfile === 'dependency-access') {
+            const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
+            if (!readiness.ok) {
+              this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
+              continue;
+            }
+          }
+          await this.ensureActiveExecutor(record);
+          continue;
+        }
+        if (record.networkProfile === 'dependency-access') {
+          const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
+          if (!readiness.ok) {
+            await removeContainer(record.containerName).catch(() => undefined);
+            this.store.update(record.id, { containerName: null, status: 'NETWORK_QUARANTINED', error: `dependency-access network unavailable: ${readiness.reason}` });
+            continue;
+          }
+        }
         const restarted = await runDocker(['restart', record.containerName], { timeoutMs: 30_000, maxBytes: 65_536 });
         if (restarted.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'executor restart reconciliation failed', 503, true);
       }
@@ -262,6 +327,7 @@ export class WorkspaceService {
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
     await this.reconcileContainers();
     await this.reconcileJobDirectories();
+    await this.agentManager?.start();
     this.reaper = setInterval(() => {
       if (this.reaperRunning) return;
       this.reaperRunning = true;
@@ -270,10 +336,15 @@ export class WorkspaceService {
     this.reaper.unref();
   }
 
-  async stop(): Promise<void> {
-    if (this.reaper) clearInterval(this.reaper);
+  beginShutdown(): void {
+    this.agentManager?.fence();
   }
 
+  async stop(): Promise<void> {
+    this.beginShutdown();
+    clearInterval(this.reaper);
+    await this.agentManager?.stop();
+  }
   private async reconcileContainers(): Promise<void> {
     const managed = await runDocker([
       'ps', '-a', '--filter', 'label=cloud-harness.managed=true',
@@ -530,6 +601,8 @@ export class WorkspaceService {
       useEnvFile = true;
     }
     try {
+      await this.networkProfileManager.ensureProfileReady(record.networkProfile);
+      const networkArgs = this.networkProfileManager.dockerLaunchArgs(record.networkProfile);
       const args = [
         'create', '--name', name,
         '--label', 'cloud-harness.managed=true', '--label', `cloud-harness.instance=${this.instanceId}`,
@@ -538,7 +611,7 @@ export class WorkspaceService {
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
         '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256',
         '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024',
-        '--network', record.networkMode,
+        ...networkArgs,
         '--volume', `${repositoryPath}:/workspace:rw`,
         '--volume', `${toolsPath}:/opt/user-tools:rw`,
         '--volume', `${cachePath}:/var/cache/harness:rw`,
@@ -574,7 +647,14 @@ export class WorkspaceService {
   }
 
   private async ensureActiveExecutor(record: WorkspaceRecord): Promise<WorkspaceRecord> {
-    if (record.containerName) {
+    // Dependency-access requires a fresh attestation before reuse; a quarantined
+    // record must never resume its existing container. Force removal and rebuild
+    // through createExecutor (which re-attests) instead of reusing a container
+    // that may sit behind a drifted firewall.
+    const mustRebuild = record.networkProfile === 'dependency-access' || record.status === 'NETWORK_QUARANTINED';
+    if (record.containerName && mustRebuild) {
+      await removeContainer(record.containerName).catch(() => undefined);
+    } else if (record.containerName) {
       const inspected = await inspectContainer(record.containerName);
       if (inspected) {
         const state = inspected.State as { Running?: boolean } | undefined;
@@ -610,8 +690,10 @@ export class WorkspaceService {
       throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
     }
     const containerName = await this.createExecutor(record, repositoryPath, validatedWorkspaceEnvironment(environment));
-    const updated = this.store.updateFenced(record.id, record.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
-      containerName
+    const updated = this.store.updateFenced(record.id, record.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'], {
+      containerName,
+      status: 'ACTIVE',
+      error: null
     });
     if (!updated) {
       await removeContainer(containerName).catch(() => undefined);
@@ -640,7 +722,7 @@ export class WorkspaceService {
       id: workspaceId, ownerId, idempotencyKey: parsed.idempotencyKey, repositoryUrl: url.toString(),
       repositoryRef: parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
       environmentId: parsed.environmentId ?? null,
-      status: 'CREATING', networkMode: parsed.networkMode ?? this.config.networkMode, createdAt: now,
+      status: 'CREATING', networkProfile: parsed.networkProfile ?? this.config.networkProfile, createdAt: now,
       lastActivityAt: now, expiresAt: this.expiry(now, now), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
       mutationLockedUntil: null, generation: 1, error: null, requestFingerprint
     };
@@ -759,11 +841,10 @@ export class WorkspaceService {
         const skillMd = join(srcSkill, 'SKILL.md');
         if (!existsSync(skillMd)) continue;
 
-        const content = await readFile(skillMd, 'utf8');
-        const hash = createHash('sha256').update(content).digest('hex');
+        const digest = computeFullTreeDigest(srcSkill).bundleSha256;
 
         const prior = seenSkills.get(entry.name);
-        if (prior && prior.contentHash !== hash) {
+        if (prior && prior.contentHash !== digest) {
           throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${entry.name} is defined with conflicting content in multiple toolkits`, 409, false);
         }
 
@@ -771,7 +852,7 @@ export class WorkspaceService {
         if (!existsSync(destSkill)) {
           await cp(srcSkill, destSkill, { recursive: true });
         }
-        seenSkills.set(entry.name, { bundlePath: item.path, contentHash: hash });
+        seenSkills.set(entry.name, { bundlePath: item.path, contentHash: digest });
       }
     }
   }
@@ -782,7 +863,29 @@ export class WorkspaceService {
     repositoryPath: string
   ): Promise<string[]> {
     const changedPaths: string[] = [];
-    const targetSkillsRoot = join(repositoryPath, '.cloud-harness', 'skills');
+    const realRepoPath = realpathSync(repositoryPath);
+    const cloudHarnessDir = join(repositoryPath, '.cloud-harness');
+    if (existsSync(cloudHarnessDir)) {
+      const st = lstatSync(cloudHarnessDir);
+      if (st.isSymbolicLink()) {
+        throw new HarnessError('INVALID_INPUT', 'repository contains .cloud-harness as a symbolic link', 400, false);
+      }
+      const realCloudHarness = realpathSync(cloudHarnessDir);
+      if (!realCloudHarness.startsWith(realRepoPath)) {
+        throw new HarnessError('INVALID_INPUT', '.cloud-harness escapes repository root', 400, false);
+      }
+    }
+    const targetSkillsRoot = join(cloudHarnessDir, 'skills');
+    if (existsSync(targetSkillsRoot)) {
+      const st = lstatSync(targetSkillsRoot);
+      if (st.isSymbolicLink()) {
+        throw new HarnessError('INVALID_INPUT', 'repository contains .cloud-harness/skills as a symbolic link', 400, false);
+      }
+      const realSkills = realpathSync(targetSkillsRoot);
+      if (!realSkills.startsWith(realRepoPath)) {
+        throw new HarnessError('INVALID_INPUT', '.cloud-harness/skills escapes repository root', 400, false);
+      }
+    }
     await mkdir(targetSkillsRoot, { recursive: true, mode: 0o755 });
 
     for (const item of workspaceBundlePaths) {
@@ -796,9 +899,13 @@ export class WorkspaceService {
         const destSkill = join(targetSkillsRoot, entry.name);
 
         if (existsSync(destSkill)) {
-          const srcMd = await readFile(join(srcSkill, 'SKILL.md'), 'utf8');
-          const destMd = await readFile(join(destSkill, 'SKILL.md'), 'utf8');
-          if (srcMd !== destMd) {
+          const st = lstatSync(destSkill);
+          if (st.isSymbolicLink()) {
+            throw new HarnessError('INVALID_INPUT', `target skill path ${entry.name} is a symbolic link`, 400, false);
+          }
+          const srcDigest = computeFullTreeDigest(srcSkill).bundleSha256;
+          const destDigest = computeFullTreeDigest(destSkill).bundleSha256;
+          if (srcDigest !== destDigest) {
             throw new HarnessError('CONFLICT', `Workspace skill patch conflict for ${entry.name}: target exists with different content`, 409, false);
           }
         } else {
@@ -923,7 +1030,7 @@ export class WorkspaceService {
           sessions: true,
           deployments: true,
           privileged,
-          networkMode: record.networkMode
+          networkProfile: record.networkProfile
         }
       },
       permissions: {
@@ -984,6 +1091,10 @@ export class WorkspaceService {
       if (allowRecoverable) return record;
       throw new HarnessError('EXPIRED', 'workspace is expired and in recoverable grace state; use workspace_recover or workspace_lease_renew', 410);
     }
+    if (record.status === 'NETWORK_QUARANTINED') {
+      if (allowRecoverable) return record;
+      throw new HarnessError('DEPENDENCY_EGRESS_UNAVAILABLE', `workspace is quarantined due to network security policy drift (${record.error ?? 'firewall attestation failed'}); use workspace_recover after policy reconciliation or workspace_close`, 503, false);
+    }
     if (active && record.status !== 'ACTIVE') {
       throw new HarnessError(record.status === 'CLOSED' ? 'EXPIRED' : 'CONFLICT', `workspace is ${record.status.toLowerCase()}`, 409);
     }
@@ -1003,7 +1114,7 @@ export class WorkspaceService {
   }
 
   private touch(record: WorkspaceRecord): WorkspaceRecord {
-    if (record.status === 'EXPIRED_RECOVERABLE') return record;
+    if (record.status === 'EXPIRED_RECOVERABLE' || record.status === 'NETWORK_QUARANTINED') return record;
     const now = Date.now();
     const touched = this.store.updateFenced(record.id, record.generation, ['ACTIVE'], {
       lastActivityAt: now,
@@ -1589,6 +1700,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const normalizedCwd = input.cwd.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
     const workdir = normalizedCwd === '.' ? '/workspace' : `/workspace/${normalizedCwd}`;
     try {
+      await this.networkProfileManager.ensureProfileReady(record.networkProfile);
       const result = await runDocker([
         'run', '-i', '--rm', '--name', privName,
         '--label', 'cloud-harness.managed=true',
@@ -1596,7 +1708,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         '--label', `cloud-harness.workspace=${record.id}`,
         '--label', 'cloud-harness.role=priv-exec',
         '--label', 'cloud-harness.ephemeral=true',
-        '--network', record.networkMode,
+        ...this.networkProfileManager.dockerLaunchArgs(record.networkProfile),
         '--user', '0:0',
         '--workdir', workdir,
         '--pids-limit', '256',
@@ -2054,10 +2166,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           const newExpires = Math.min(activeRecord.hardExpiresAt, now + extSec * 1000);
           let updated: WorkspaceRecord | undefined;
           try {
-            updated = this.store.updateFenced(activeRecord.id, activeRecord.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
+            updated = this.store.updateFenced(activeRecord.id, activeRecord.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'], {
               status: 'ACTIVE',
               lastActivityAt: now,
-              expiresAt: newExpires
+              expiresAt: newExpires,
+              error: null
             });
           } catch (err) {
             if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
@@ -2144,6 +2257,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           this.store.releaseMutationLease(rec.id, rec.generation);
         }
       }
+    }
+    if (AgentManager.isPublicOperation(operation)) {
+      if (!this.agentManager) throw new HarnessError('UNAVAILABLE', 'agent execution is not configured', 503, false);
+      const targetWorkspace = this.requireWorkspace(ownerId, workspaceId, false, true);
+      return await this.agentManager.dispatch(ownerId, targetWorkspace, operation, validated);
     }
 
     const record = this.touch(this.requireWorkspace(ownerId, workspaceId, true, false));
@@ -3350,6 +3468,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
     }
     try {
+      await this.agentManager?.stopWorkspace(claimed.ownerId, claimed.id, reason);
       await this.operations.stopWorkspace(claimed.id, claimed.ownerId);
     } catch (stopErr) {
       this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
@@ -3410,6 +3529,77 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   private async reapExpired(): Promise<void> {
     const now = Date.now();
+    const hasDependencyWorkspaces = this.store.active().some((r) => r.status === 'ACTIVE' && r.networkProfile === 'dependency-access');
+    if (hasDependencyWorkspaces) {
+      const attestation = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
+      if (!attestation.ok) {
+        for (const record of this.store.active()) {
+          if (record.status === 'ACTIVE' && record.networkProfile === 'dependency-access') {
+            // 1. Atomically fence the workspace record to NETWORK_QUARANTINED first so no new execution can start
+            const fenced = this.store.updateFenced(record.id, record.generation, ['ACTIVE'], {
+              status: 'NETWORK_QUARANTINED',
+              lastActivityAt: now,
+              error: `host firewall policy drift detected: ${attestation.reason}`
+            });
+            if (!fenced) continue;
+
+            // 2. Stop and remove all containers carrying this workspace's label, including privileged ephemerals
+            const labeled = await runDocker([
+              'ps', '-a', '--filter', `label=cloud-harness.workspace=${record.id}`, '--format', '{{.Names}}'
+            ], { timeoutMs: 30_000, maxBytes: 1_048_576 }).catch(() => ({ exitCode: 1, stdout: '', stderr: '', truncated: false }));
+            const names = new Set<string>(labeled.stdout.split('\n').map((n) => n.trim()).filter(Boolean));
+            if (fenced.containerName) names.add(fenced.containerName);
+            let allRemoved = true;
+            for (const name of names) {
+              try {
+                await removeContainer(name);
+              } catch {
+                allRemoved = false;
+              }
+            }
+            if (allRemoved) {
+              this.store.update(record.id, { containerName: null });
+            }
+
+            // 3. Emit audit event (best-effort; observability failure must not abort security fencing/cleanup)
+            try {
+              this.metadata?.recordAudit(
+                record.ownerId,
+                'network_profile.drift_detected',
+                'workspace',
+                record.id,
+                fenced.generation,
+                { profile: record.networkProfile, containersRemoved: allRemoved }
+              );
+            } catch {
+              // Ignore audit failure to ensure subsequent workspaces are fenced
+            }
+          }
+        }
+      }
+    }
+    // Retry forced removal for quarantined workspaces whose container removal
+    // previously failed, so an unfiltered executor cannot linger.
+    for (const record of this.store.active()) {
+      if (record.status === 'NETWORK_QUARANTINED') {
+        const labeled = await runDocker([
+          'ps', '-a', '--filter', `label=cloud-harness.workspace=${record.id}`, '--format', '{{.Names}}'
+        ], { timeoutMs: 30_000, maxBytes: 1_048_576 }).catch(() => ({ exitCode: 1, stdout: '', stderr: '', truncated: false }));
+        const names = new Set<string>(labeled.stdout.split('\n').map((n) => n.trim()).filter(Boolean));
+        if (record.containerName) names.add(record.containerName);
+        let allRemoved = true;
+        for (const name of names) {
+          try {
+            await removeContainer(name);
+          } catch {
+            allRemoved = false;
+          }
+        }
+        if (allRemoved && record.containerName) {
+          this.store.update(record.id, { containerName: null });
+        }
+      }
+    }
     for (const record of this.store.active()) {
       if (record.status === 'ACTIVE' && (record.expiresAt <= now || record.hardExpiresAt <= now)) {
         const claimed = this.store.claimForExpiry(record.id, record.generation);
@@ -3522,6 +3712,34 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       truncated: hasMore,
       cursor: nextCursor
     };
+  }
+  private async executeAgentProxy(request: Parameters<AgentManagerDependencies['toolExecutor']>[0]): Promise<RunnerResponse> {
+    const operation = AgentProxyOperationSchema.parse(request.operation) as AgentProxyOperation;
+    const validated = TOOL_SCHEMA_BY_NAME[operation].parse(request.toolInput) as Record<string, unknown>;
+    const before = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
+    if (before.generation !== request.workspaceGeneration || before.networkProfile !== 'network-none') {
+      throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
+    }
+    const result = await this.runWorker(before, operation, validated, request.signal);
+    const after = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
+    if (after.generation !== request.workspaceGeneration || after.networkProfile !== 'network-none') {
+      throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
+    }
+    const violation = await this.resourceViolation(after);
+    if (violation) {
+      void this.closeRecord(after, violation).catch(() => undefined);
+      throw new HarnessError('LIMIT_EXCEEDED', `${violation}; workspace cleanup started`, 507, false);
+    }
+    return result;
+  }
+
+  private requireWorkspaceForAgent(ownerId: string, workspaceId: string): WorkspaceRecord {
+    const record = this.store.byId(workspaceId);
+    if (!record || record.ownerId !== ownerId) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
+    if (record.status !== 'ACTIVE' || record.expiresAt <= Date.now()) {
+      throw new HarnessError('EXPIRED', 'workspace is not active', 410, false);
+    }
+    return record;
   }
 }
 

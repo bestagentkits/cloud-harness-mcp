@@ -2,7 +2,14 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const MANIFESTS = ['package.json', 'apps/api/package.json', 'apps/runner/package.json', 'packages/contracts/package.json'];
+const MANIFESTS = [
+  'package.json',
+  'apps/api/package.json',
+  'apps/runner/package.json',
+  'packages/contracts/package.json',
+  'apps/agent-runtime/package.json',
+  'apps/model-gateway/package.json'
+];
 const PLUGIN_MANIFESTS = [
   'plugins/cloud-harness/.claude-plugin/plugin.json',
   'plugins/cloud-harness/.codex-plugin/plugin.json'
@@ -58,11 +65,12 @@ export function updateReleaseVersion(version, root = process.cwd()) {
   }
   lockfile.version = version;
   writeJson(lockfilePath, lockfile);
-
   const serverPath = resolve(root, 'apps/api/src/mcp-server.ts');
   const serverSource = readFileSync(serverPath, 'utf8');
+  if (!/(name: 'cloud-harness-mcp', version: ')[^']+(')/.test(serverSource)) {
+    throw new Error('Could not locate the MCP server version.');
+  }
   const updatedServerSource = serverSource.replace(/(name: 'cloud-harness-mcp', version: ')[^']+(')/, `$1${version}$2`);
-  if (updatedServerSource === serverSource) throw new Error('Could not locate the MCP server version.');
   writeFileSync(serverPath, updatedServerSource);
 }
 
