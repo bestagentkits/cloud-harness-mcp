@@ -1,3 +1,15 @@
+# [0.34.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.3...v0.34.0) (2026-08-30)
+
+
+### Bug Fixes
+
+* **runner:** adapt agent tests and repository to network profile and schema v7 ([d9ac32b](https://github.com/bestagentkits/cloud-harness-mcp/commit/d9ac32bd46b6231743a7750ddbae25af67b53068))
+
+
+### Features
+
+* **agent:** add bounded Pi coding subagents ([7860dc1](https://github.com/bestagentkits/cloud-harness-mcp/commit/7860dc15137e7fadb9ac24358e9e321c1a07f727))
+
 ## [0.33.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.2...v0.33.3) (2026-08-30)
 
 
