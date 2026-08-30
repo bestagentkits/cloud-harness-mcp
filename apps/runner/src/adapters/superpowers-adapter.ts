@@ -101,30 +101,14 @@ export class SuperpowersAdapter {
       }
     }
 
-    // Extract using-superpowers as context bootstrap if present
-    const contextDir = join(stagingDir, 'context');
-    await mkdir(contextDir, { recursive: true });
-
-    const bootstrapSource = join(skillsTargetDir, 'using-superpowers', 'SKILL.md');
-    if (existsSync(bootstrapSource)) {
-      const bootstrapContent = await readFile(bootstrapSource, 'utf8');
-      await writeFile(join(contextDir, 'bootstrap.md'), bootstrapContent, 'utf8');
-    }
-
     await rm(rawExtractDir, { recursive: true, force: true });
 
     const manifest = {
       id: SuperpowersAdapter.ID,
       resolvedRevision: ref,
       adapterVersion: SuperpowersAdapter.ADAPTER_VERSION,
-      skills: normalizedSkills,
-      capabilities: {
-        skills: 'supported',
-        bootstrapContext: 'context-ready',
-        nativeHooks: 'unsupported'
-      }
+      skills: normalizedSkills
     };
-
     await writeFile(join(stagingDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
 
     validateStagingDir(stagingDir);

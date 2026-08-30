@@ -49,7 +49,6 @@ export function computeWorkspaceOpenFingerprint(input: {
   networkProfile?: string | undefined;
   toolkits?: ToolkitSelection[] | undefined;
   allowToolkitWorkspaceChanges?: boolean | undefined;
-  confirmToolkitSecretUse?: boolean | undefined;
 }): string {
   const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) => {
     const idA = a.kind === 'git' ? a.instanceId : a.id;
@@ -62,8 +61,7 @@ export function computeWorkspaceOpenFingerprint(input: {
     environmentId: input.environmentId ?? null,
     networkProfile: input.networkProfile ?? 'network-none',
     toolkits: canonicalToolkits,
-    allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false,
-    confirmToolkitSecretUse: input.confirmToolkitSecretUse ?? false
+    allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
