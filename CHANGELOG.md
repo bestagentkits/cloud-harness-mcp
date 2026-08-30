@@ -1,3 +1,10 @@
+# [0.29.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.28.1...v0.29.0) (2026-08-30)
+
+
+### Features
+
+* **runner:** make repository, task, and artifact state durable ([#14](https://github.com/bestagentkits/cloud-harness-mcp/issues/14)) ([f532a1a](https://github.com/bestagentkits/cloud-harness-mcp/commit/f532a1a6c1c7f86cadb829ddfea0154fa3628713))
+
 ## [0.28.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.28.0...v0.28.1) (2026-08-30)
 
 
