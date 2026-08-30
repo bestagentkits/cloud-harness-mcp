@@ -95,6 +95,9 @@ describe('HostFirewallAttestor', () => {
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -125,6 +128,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -165,6 +171,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -194,6 +203,15 @@ COMMIT
       const missingRfc1918 = validIptables.replace('-A CHM-EGRESS-v1 -d 10.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited', '');
       expect(attestor.parseFirewallRules(missingRfc1918).ok).toBe(false);
 
+      const missingMulticast = validIptables.replace('-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited', '');
+      expect(attestor.parseFirewallRules(missingMulticast).ok).toBe(false);
+
+      const missingClassE = validIptables.replace('-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited', '');
+      expect(attestor.parseFirewallRules(missingClassE).ok).toBe(false);
+
+      const missingCurrentNet = validIptables.replace('-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited', '');
+      expect(attestor.parseFirewallRules(missingCurrentNet).ok).toBe(false);
+
       const missingPort443 = validIptables.replace('-A CHM-EGRESS-v1 -p tcp -m tcp --dport 443 -j ACCEPT', '');
       expect(attestor.parseFirewallRules(missingPort443).ok).toBe(false);
 
@@ -219,6 +237,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
@@ -247,6 +268,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
@@ -274,6 +298,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
@@ -302,6 +329,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
@@ -333,6 +363,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
@@ -375,6 +408,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -417,6 +453,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
@@ -445,6 +484,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
@@ -482,6 +524,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
@@ -516,6 +561,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -561,6 +609,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -606,6 +657,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -652,6 +706,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -697,6 +754,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
@@ -743,6 +803,9 @@ COMMIT
 -A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
 -A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
