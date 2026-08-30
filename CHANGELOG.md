@@ -1,3 +1,10 @@
+## [0.28.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.28.0...v0.28.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **secrets:** enforce 4-byte minimum, optimize stream redactor, and harden snapshot integrity ([#118](https://github.com/bestagentkits/cloud-harness-mcp/issues/118)) ([176c213](https://github.com/bestagentkits/cloud-harness-mcp/commit/176c213c866daca1ffd3aaa3d61909f7076fb89e))
+
 # [0.28.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.27.0...v0.28.0) (2026-08-30)
 
 
