@@ -1,3 +1,23 @@
+# [0.35.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.34.0...v0.35.0) (2026-08-30)
+
+
+### Bug Fixes
+
+* **runner:** full canonical workspace open fingerprint and strict toolkit cache root ([#141](https://github.com/bestagentkits/cloud-harness-mcp/issues/141)) ([f06adf1](https://github.com/bestagentkits/cloud-harness-mcp/commit/f06adf18c4d4e886ebb5a690c398a561f9c34e99))
+* **runner:** harden toolkit acquisition failure boundaries, staging limits, and unready mirror handling ([#140](https://github.com/bestagentkits/cloud-harness-mcp/issues/140)) ([c978797](https://github.com/bestagentkits/cloud-harness-mcp/commit/c9787974d837aafc63e36c2d318de446ca2d87b1))
+* **runner:** remove premature constructor mkdir in ToolkitCacheManager ([#143](https://github.com/bestagentkits/cloud-harness-mcp/issues/143)) ([9e7c3d9](https://github.com/bestagentkits/cloud-harness-mcp/commit/9e7c3d9a0bc243b19a6aee4890ea1dc59d71d991))
+* **runner:** remove unused crypto import from secret-metadata-store ([#139](https://github.com/bestagentkits/cloud-harness-mcp/issues/139)) ([2227a05](https://github.com/bestagentkits/cloud-harness-mcp/commit/2227a059a596f0ea3a8fa04197bc3ff84470ecb9))
+* **runner:** strictly validate relative staging containment and count symlinks against maxFiles ([#142](https://github.com/bestagentkits/cloud-harness-mcp/issues/142)) ([fa5cf39](https://github.com/bestagentkits/cloud-harness-mcp/commit/fa5cf39401af11ae1a978883ba0fb36aa80e9c1a))
+* **toolkits:** code review remediation, symlink containment, and lint cleanup ([#138](https://github.com/bestagentkits/cloud-harness-mcp/issues/138)) ([41aaeb0](https://github.com/bestagentkits/cloud-harness-mcp/commit/41aaeb04f98c52218d40d547a975d3dbf6fc3d92))
+* **worker:** copy to immutable snapshot before digest computation to prevent TOCTOU race ([#144](https://github.com/bestagentkits/cloud-harness-mcp/issues/144)) ([276e3b6](https://github.com/bestagentkits/cloud-harness-mcp/commit/276e3b61b0d241718ffa58f8701aff9ea44606a7))
+* **worker:** enforce recursive read-only permissions on snapshot tree before execution ([#145](https://github.com/bestagentkits/cloud-harness-mcp/issues/145)) ([0222047](https://github.com/bestagentkits/cloud-harness-mcp/commit/0222047e8e1c9e0cad632a26fd358f4349233aad))
+* **worker:** preserve exact file modes and dereference verbatim snapshot in skills_run ([#146](https://github.com/bestagentkits/cloud-harness-mcp/issues/146)) ([4eb133b](https://github.com/bestagentkits/cloud-harness-mcp/commit/4eb133bcb0676e1688781c2c9a1202544f9d24e7))
+
+
+### Features
+
+* **toolkits:** support third-party agent toolkits with runner CAS and provisioning firewall ([#137](https://github.com/bestagentkits/cloud-harness-mcp/issues/137)) ([5610f29](https://github.com/bestagentkits/cloud-harness-mcp/commit/5610f294673936173d27c0e31a5ec586e1675f29))
+
 # [0.34.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.3...v0.34.0) (2026-08-30)
 
 
