@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,20 +26,20 @@ const budget: AgentBudget = {
 function limits(overrides: Partial<RunnerAgentLimits> = {}): RunnerAgentLimits {
   return RunnerAgentLimitsSchema.parse(overrides);
 }
-function workspace(ownerId = 'owner', networkMode: WorkspaceRecord['networkMode'] = 'none', idSuffix?: string): WorkspaceRecord {
+function workspace(ownerId = 'owner', networkProfile: WorkspaceRecord['networkProfile'] = 'network-none', idSuffix?: string): WorkspaceRecord {
   const now = Date.now();
-  const id = idSuffix ? `ws_${idSuffix.padEnd(24, 'w')}` : `ws_${randomBytes(12).toString('hex')}`;
+  const id = idSuffix ? `ws_${idSuffix.repeat(24)}` : `ws_${'w'.repeat(24)}`;
   return {
     id,
     ownerId,
-    idempotencyKey: `workspace-${id}`,
+    idempotencyKey: `idem-${id}`,
     repositoryUrl: 'https://github.com/example/repository.git',
     repositoryRef: null,
     containerName: 'executor',
     workspacePath: `/tmp/${id}`,
     environmentId: null,
     status: 'ACTIVE',
-    networkMode,
+    networkProfile,
     createdAt: now,
     lastActivityAt: now,
     expiresAt: now + 600_000,
@@ -132,7 +131,7 @@ describe('AgentStateRepository', () => {
     expect(() => repository.reserveSpawn(reservation(workspaceRecord, 'c', { workspaceGeneration: 2 }))).toThrow('workspace was not found');
     expect(() => repository.reserveSpawn(reservation(workspaceRecord, 'd', { parentAgentId: first.id }))).toThrow('agent was not found');
     const otherOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'other' });
-    const otherWorkspace = workspace(otherOwner);
+    const otherWorkspace = workspace(otherOwner, 'network-none', 'other');
     store.create(otherWorkspace);
     expect(() => repository.reserveSpawn(reservation(otherWorkspace, 'e', { parentAgentId: first.id }))).toThrow('agent was not found');
     store.close();
@@ -143,7 +142,7 @@ describe('AgentStateRepository', () => {
     const store = new StateStore(join(directory, 'state.db'));
     openStores.push(store);
     const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
-    const workspaceRecord = workspace(ownerId, 'bridge');
+    const workspaceRecord = workspace(ownerId, 'dependency-access');
     store.create(workspaceRecord);
     const repository = new AgentStateRepository(store.database, limits());
     expect(() => repository.reserveSpawn(reservation(workspaceRecord))).toThrow('not eligible');

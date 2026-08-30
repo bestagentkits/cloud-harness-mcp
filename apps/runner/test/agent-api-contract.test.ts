@@ -35,7 +35,7 @@ function setup() {
   const record: WorkspaceRecord = {
     id: `ws_${'w'.repeat(24)}`, ownerId, idempotencyKey: 'workspace-key',
     repositoryUrl: 'https://github.com/example/repository.git', repositoryRef: null,
-    containerName: null, workspacePath, environmentId: null, status: 'ACTIVE', networkMode: 'none',
+    containerName: null, workspacePath, environmentId: null, status: 'ACTIVE', networkProfile: 'network-none',
     createdAt: now, lastActivityAt: now, expiresAt: now + 300_000, hardExpiresAt: now + 3_600_000,
     gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null
   };
