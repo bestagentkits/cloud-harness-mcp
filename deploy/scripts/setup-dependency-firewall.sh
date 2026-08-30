@@ -92,15 +92,22 @@ $SUDO iptables -w 10 -I DOCKER-USER 1 -i "$BRIDGE_IF" -j "$EGRESS_CHAIN"
 
 dedup_jump() {
   local chain="$1"
-  while :; do
+  local target="$2"
+  while true; do
     local nums
-    nums=$($SUDO iptables -w 10 -L "$chain" --line-numbers -n | awk -v ifc="$BRIDGE_IF" -v tgt="$2" '$2==tgt && $0 ~ ("in "ifc) {print $1}')
+    nums=$($SUDO iptables -w 10 -L "$chain" --line-numbers -n | awk -v ifc="$BRIDGE_IF" -v tgt="$target" '$2==tgt && $0 ~ ("in "ifc) {print $1}')
     local count
-    count=$(printf '%s\n' "$nums" | grep -c .)
-    [ "$count" -le 1 ] && break
+    count=$(echo "$nums" | wc -w)
+    if [ "$count" -le 1 ]; then
+      break
+    fi
     local last
-    last=$(printf '%s\n' "$nums" | tail -n1)
-    $SUDO iptables -w 10 -D "$chain" "$last" || break
+    last=$(echo "$nums" | awk '{print $NF}')
+    if [ -n "$last" ]; then
+      $SUDO iptables -w 10 -D "$chain" "$last" || break
+    else
+      break
+    fi
   done
 }
 dedup_jump INPUT "$INPUT_CHAIN"
