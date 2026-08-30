@@ -8,6 +8,7 @@ import { StateStore } from '../src/state-store.js';
 import { resolveOwnerPrincipal } from '../src/principal-store.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import { ToolkitService } from '../src/toolkit-service.js';
+import { computeWorkspaceOpenFingerprint } from '../src/workspace-service.js';
 
 describe('Toolkit Mount Injection, Projection & Idempotency Fingerprint', () => {
   let tmpDir: string;
@@ -56,6 +57,40 @@ describe('Toolkit Mount Injection, Projection & Idempotency Fingerprint', () => 
       { kind: 'preset', id: 'mattpocock/skills', scope: 'workspace' }
     ]);
     expect(fp3).not.toBe(fp1);
+
+    // Verify computeWorkspaceOpenFingerprint covers repository, ref, network, environment, and toolkits
+    const baseInput = {
+      repositoryUrl: 'https://github.com/org/repo.git',
+      ref: 'main',
+      environmentId: 'env_12345678901234567890',
+      networkProfile: 'network-none',
+      toolkits: [{ kind: 'preset' as const, id: 'mattpocock/skills' as const, scope: 'owner' as const }]
+    };
+
+    const wsFp1 = computeWorkspaceOpenFingerprint(baseInput);
+    const wsFp2 = computeWorkspaceOpenFingerprint({
+      ...baseInput,
+      ref: 'v2.0.0'
+    });
+    expect(wsFp2).not.toBe(wsFp1);
+
+    const wsFp3 = computeWorkspaceOpenFingerprint({
+      ...baseInput,
+      repositoryUrl: 'https://github.com/org/other-repo.git'
+    });
+    expect(wsFp3).not.toBe(wsFp1);
+
+    const wsFp4 = computeWorkspaceOpenFingerprint({
+      ...baseInput,
+      networkProfile: 'dependency-access'
+    });
+    expect(wsFp4).not.toBe(wsFp1);
+
+    const wsFp5 = computeWorkspaceOpenFingerprint({
+      ...baseInput,
+      environmentId: 'env_different9876543210'
+    });
+    expect(wsFp5).not.toBe(wsFp1);
   });
 
   it('detects same-tier skill collisions with differing content', async () => {

@@ -14,7 +14,8 @@ import {
   type InternalRunnerOperation,
   type RunnerOperation,
   type RunnerResponse,
-  type WorkspaceCapabilityResult
+  type WorkspaceCapabilityResult,
+  type ToolkitSelection
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
@@ -41,6 +42,32 @@ const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', '
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
+export function computeWorkspaceOpenFingerprint(input: {
+  repositoryUrl: string | URL;
+  ref?: string | undefined;
+  environmentId?: string | undefined;
+  networkProfile?: string | undefined;
+  toolkits?: ToolkitSelection[] | undefined;
+  allowToolkitWorkspaceChanges?: boolean | undefined;
+  confirmToolkitSecretUse?: boolean | undefined;
+}): string {
+  const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) => {
+    const idA = a.kind === 'git' ? a.instanceId : a.id;
+    const idB = b.kind === 'git' ? b.instanceId : b.id;
+    return idA.localeCompare(idB);
+  });
+  const payload = {
+    repositoryUrl: String(input.repositoryUrl),
+    ref: input.ref ?? null,
+    environmentId: input.environmentId ?? null,
+    networkProfile: input.networkProfile ?? 'network-none',
+    toolkits: canonicalToolkits,
+    allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false,
+    confirmToolkitSecretUse: input.confirmToolkitSecretUse ?? false
+  };
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
 
 function availableLifecycleActions(status: WorkspaceRecord['status'], canRenewLease: boolean): string[] {
   switch (status) {
@@ -165,7 +192,7 @@ export class WorkspaceService {
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
     this.networkProfileManager = new NetworkProfileManager(this.config);
     this.repoCacheManager = new RepositoryCacheManager(this.config.repoCacheRoot, this.store, this.config.allowedGitHosts, this.config.executorImage, this.instanceId);
-    const cacheRoot = this.config.toolkitCacheRoot || '/var/lib/cloud-harness/cache/toolkits';
+    const cacheRoot = this.config.toolkitCacheRoot || (this.config.jobsRoot && !this.config.jobsRoot.startsWith('/var/lib') ? join(this.config.jobsRoot, 'toolkit-cache') : '/var/lib/cloud-harness/cache/toolkits');
     const provNet = this.config.provisioningNetwork || 'cloud-harness-mcp_provisioning';
     this.toolkitCacheManager = new ToolkitCacheManager(cacheRoot, this.store);
     const proxyOpts = this.config.toolkitEgressProxy ? { toolkitEgressProxy: this.config.toolkitEgressProxy } : {};
@@ -704,7 +731,7 @@ export class WorkspaceService {
 
   async open(ownerId: string, input: Record<string, unknown>): Promise<RunnerResponse> {
     const parsed = TOOL_SCHEMA_BY_NAME.workspace_open.parse(input);
-    const requestFingerprint = this.toolkitService.computeRequestFingerprint(parsed.toolkits);
+    const requestFingerprint = computeWorkspaceOpenFingerprint(parsed);
     const prior = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
     if (prior) {
       if (prior.requestFingerprint && prior.requestFingerprint !== requestFingerprint) {
