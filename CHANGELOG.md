@@ -1,3 +1,10 @@
+## [0.33.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.0...v0.33.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **security:** reject early RETURN and indirect jumps in INPUT target chain ([#132](https://github.com/bestagentkits/cloud-harness-mcp/issues/132)) ([c031764](https://github.com/bestagentkits/cloud-harness-mcp/commit/c031764560c0b497681510c14e84481b6aaa0ef6))
+
 # [0.33.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.32.0...v0.33.0) (2026-08-30)
 
 
