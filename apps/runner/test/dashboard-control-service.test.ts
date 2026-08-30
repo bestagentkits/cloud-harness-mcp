@@ -113,6 +113,12 @@ describe('dashboard control service', () => {
     await expect(controls.execute(request('secret_create', {
       environmentId, name: 'APP_TOKEN', value: 'not-persisted', expectedGeneration: 0
     }))).rejects.toMatchObject({ code: 'UNAVAILABLE', status: 503 });
+
+    const globalListed = await controls.execute(request('global_secret_list', {}));
+    expect(globalListed.data).toEqual({ secrets: [], readiness: { ready: false, error: 'secret keyring is unavailable' } });
+    await expect(controls.execute(request('global_secret_create', {
+      name: 'GLOBAL_TOKEN', value: 'not-persisted', expectedGeneration: 0
+    }))).rejects.toMatchObject({ code: 'UNAVAILABLE', status: 503 });
   });
 
   it('snapshots bounded workspace content and does not expose storage paths', async () => {

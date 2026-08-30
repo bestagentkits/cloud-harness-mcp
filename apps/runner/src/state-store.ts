@@ -241,7 +241,7 @@ export class StateStore {
       CREATE INDEX IF NOT EXISTS workspace_secret_snapshots_ws ON workspace_secret_snapshots(workspace_id);
       CREATE TABLE IF NOT EXISTS workspace_secret_snapshot_headers (
         workspace_id TEXT PRIMARY KEY,
-        environment_id TEXT NOT NULL,
+        environment_id TEXT,
         item_count INTEGER NOT NULL,
         created_at INTEGER NOT NULL
       );
@@ -297,15 +297,14 @@ export class StateStore {
 
   saveSecretSnapshot(
     workspaceId: string,
-    environmentId: string,
-    secrets: Array<{ name: string; version: number; envelope: EncryptedSecret }>
+    secrets: Array<{ name: string; version: number; environmentId: string; envelope: EncryptedSecret }>
   ): void {
     this.database.exec('BEGIN IMMEDIATE');
     try {
       this.database.prepare(`
         INSERT OR REPLACE INTO workspace_secret_snapshot_headers (workspace_id, environment_id, item_count, created_at)
         VALUES (?, ?, ?, ?)
-      `).run(workspaceId, environmentId, secrets.length, Date.now());
+      `).run(workspaceId, secrets[0]?.environmentId ?? 'global', secrets.length, Date.now());
       const stmt = this.database.prepare(`
         INSERT OR REPLACE INTO workspace_secret_snapshots (workspace_id, environment_id, name, version, key_version, nonce, ciphertext, auth_tag)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -313,7 +312,7 @@ export class StateStore {
       for (const secret of secrets) {
         stmt.run(
           workspaceId,
-          environmentId,
+          secret.environmentId,
           secret.name,
           secret.version,
           secret.envelope.keyVersion,

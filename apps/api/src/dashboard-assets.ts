@@ -33,6 +33,7 @@ export function createDashboardAssetsRouter(): Router {
     '/workspaces/:workspaceId/runtime',
     '/projects',
     '/projects/:projectId',
+    '/secrets',
     '/artifacts',
     '/audit',
     '/github',

@@ -42,6 +42,15 @@ export class DashboardControlService {
         case 'secret_update': return mutation('Secret reference updated', this.secrets().updateMetadata(principalId, parsed.input.environmentId, parsed.input.name, parsed.input.description ?? null, parsed.input.expectedGeneration));
         case 'secret_delete': return mutation('Secret reference deleted', this.secrets().delete(principalId, parsed.input.environmentId, parsed.input.name, parsed.input.expectedGeneration));
         case 'secret_bulk_apply': return ok('Secrets bulk applied', { secrets: this.secrets().bulkApply(principalId, parsed.input.environmentId, parsed.input.items) });
+        case 'global_secret_list': return ok('Global secrets listed', {
+          secrets: this.metadata.listGlobalSecrets(principalId),
+          readiness: this.metadata.secretReadiness()
+        });
+        case 'global_secret_create': return mutation('Global secret created', this.secrets().globalCreate(principalId, parsed.input.name, parsed.input.value, 0, parsed.input.description ?? null));
+        case 'global_secret_rotate': return mutation('Global secret rotated', this.secrets().globalRotate(principalId, parsed.input.name, parsed.input.value, parsed.input.expectedGeneration, parsed.input.description));
+        case 'global_secret_update': return mutation('Global secret updated', this.secrets().globalUpdateMetadata(principalId, parsed.input.name, parsed.input.description ?? null, parsed.input.expectedGeneration));
+        case 'global_secret_delete': return mutation('Global secret deleted', this.secrets().globalDelete(principalId, parsed.input.name, parsed.input.expectedGeneration));
+        case 'global_secret_bulk_apply': return ok('Global secrets bulk applied', { secrets: this.secrets().globalBulkApply(principalId, parsed.input.items) });
         case 'audit_list': {
           const events = this.metadata.listAudit(principalId, parsed.input.limit, parsed.input.cursor);
           return ok('Audit events listed', { events }, events.length === parsed.input.limit ? events.at(-1)?.id : undefined);

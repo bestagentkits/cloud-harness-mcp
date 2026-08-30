@@ -3,7 +3,7 @@ import {
   apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
   parseDotEnv, renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm, validateSecretClient
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderGitHub, renderOverview, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
 
 class FakeElement {
   hidden = false;
@@ -402,5 +402,25 @@ export STRIPE_SECRET=whsec_abc
     expect(html).toContain('Bulk import .env');
     expect(html).toContain('Export .env.example');
     expect(html).toContain('class="update-secret-desc-form');
+  });
+
+  it('renders global secrets list, description, rotate, bulk import, and export affordances', () => {
+    const secrets = [{
+      id: 'gsec_001',
+      name: 'GLOBAL_API_KEY',
+      description: 'Shared across all workspaces',
+      state: 'ACTIVE',
+      version: 1,
+      generation: 1
+    }];
+    const html = renderGlobalSecrets(secrets, { ready: true });
+    expect(html).toContain('Global Secrets');
+    expect(html).toContain('GLOBAL_API_KEY');
+    expect(html).toContain('Shared across all workspaces');
+    expect(html).toContain('Bulk import .env');
+    expect(html).toContain('Export .env.example');
+    expect(html).toContain('id="create-global-secret-form"');
+    expect(html).toContain('class="rotate-global-secret-form');
+    expect(html).toContain('class="update-global-secret-desc-form');
   });
 });

@@ -41,7 +41,9 @@ const name = z.string().trim().min(1).max(100);
 export const MetadataRunnerOperationSchema = z.enum([
   'project_list', 'project_create', 'project_update', 'project_delete',
   'environment_list', 'environment_create', 'environment_update', 'environment_delete',
-  'secret_list', 'secret_create', 'secret_rotate', 'secret_update', 'secret_delete', 'secret_bulk_apply', 'audit_list',
+  'secret_list', 'secret_create', 'secret_rotate', 'secret_update', 'secret_delete', 'secret_bulk_apply',
+  'global_secret_list', 'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
+  'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject'
@@ -63,6 +65,20 @@ const metadataInputs = {
   secret_delete: z.object({ environmentId: internalId('env'), name: SecretNameSchema, expectedGeneration: generation }).strict(),
   secret_bulk_apply: z.object({
     environmentId: internalId('env'),
+    items: z.array(z.object({
+      name: SecretNameSchema,
+      value: SecretValueSchema,
+      description: SecretDescriptionSchema.optional(),
+      action: z.enum(['create', 'rotate']),
+      expectedGeneration: z.number().int().min(0)
+    })).min(1).max(200)
+  }).strict(),
+  global_secret_list: z.object({}).strict(),
+  global_secret_create: z.object({ name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: z.literal(0) }).strict(),
+  global_secret_rotate: z.object({ name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: generation }).strict(),
+  global_secret_update: z.object({ name: SecretNameSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: generation }).strict(),
+  global_secret_delete: z.object({ name: SecretNameSchema, expectedGeneration: generation }).strict(),
+  global_secret_bulk_apply: z.object({
     items: z.array(z.object({
       name: SecretNameSchema,
       value: SecretValueSchema,
@@ -114,6 +130,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('project_list'), metadataRequest('project_create'), metadataRequest('project_update'), metadataRequest('project_delete'),
   metadataRequest('environment_list'), metadataRequest('environment_create'), metadataRequest('environment_update'), metadataRequest('environment_delete'),
   metadataRequest('secret_list'), metadataRequest('secret_create'), metadataRequest('secret_rotate'), metadataRequest('secret_update'), metadataRequest('secret_delete'), metadataRequest('secret_bulk_apply'),
+  metadataRequest('global_secret_list'), metadataRequest('global_secret_create'), metadataRequest('global_secret_rotate'), metadataRequest('global_secret_update'), metadataRequest('global_secret_delete'), metadataRequest('global_secret_bulk_apply'),
   metadataRequest('audit_list'), metadataRequest('artifact_list'), metadataRequest('artifact_snapshot'),
   metadataRequest('artifact_read'), metadataRequest('artifact_restore'), metadataRequest('artifact_delete'),
   metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'),
