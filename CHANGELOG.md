@@ -1,3 +1,10 @@
+## [0.33.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.2...v0.33.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* **security:** explicitly deny multicast (224/4), class E (240/4), and 0/8 in egress chain ([#134](https://github.com/bestagentkits/cloud-harness-mcp/issues/134)) ([e7f452e](https://github.com/bestagentkits/cloud-harness-mcp/commit/e7f452e3ab30ca9eaea19f8d49a3661d6b3317f8))
+
 ## [0.33.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.1...v0.33.2) (2026-08-30)
 
 
