@@ -405,4 +405,69 @@ describe('Durable Task Engine & Restart Reconciliation', () => {
       store.close();
     }
   });
+  it('awaits child process exit and captures late output emitted during SIGTERM', async () => {
+    const dir = tempDir();
+    const dbPath = join(dir, 'state.sqlite');
+    const store = new StateStore(dbPath);
+    const ops = new OperationManager(store, 'boot_term_test');
+
+    try {
+      const ownerId = store.resolvePrincipal({ kind: 'external', issuer: 'https://issuer.com', subject: 'user-task-term' });
+      store.create({
+        id: 'ws_term',
+        ownerId,
+        idempotencyKey: 'ik_ws_term',
+        repositoryUrl: 'https://github.com/org/repo',
+        repositoryRef: null,
+        containerName: null,
+        workspacePath: dir,
+        status: 'ACTIVE',
+        networkMode: 'none',
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        hardExpiresAt: Date.now() + 7200_000,
+        gitAuthorName: null,
+        gitAuthorEmail: null,
+        mutationLockedUntil: null,
+        generation: 1,
+        error: null
+      });
+
+      const task = ops.runTask('ws_term', 'c1', '.', 'worker', 'ik_term_1', 60000, 65536, [], ownerId, dir);
+      expect(task.logPath).toBeDefined();
+
+      // Mock a live child that emits late output when receiving SIGTERM before closing
+      const { EventEmitter } = await import('node:events');
+      const fakeChild = new EventEmitter() as any;
+      fakeChild.exitCode = null;
+      fakeChild.signalCode = null;
+      fakeChild.killed = false;
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.stderr = new EventEmitter();
+      fakeChild.kill = (signal?: string) => {
+        fakeChild.killed = true;
+        if (signal === 'SIGTERM') {
+          setTimeout(() => {
+            // Late output emitted during SIGTERM handler
+            fakeChild.stdout.emit('data', Buffer.from('Final flush before exit.\n'));
+            fakeChild.exitCode = 0;
+            fakeChild.emit('close', 0);
+            fakeChild.emit('exit', 0);
+          }, 50);
+        }
+      };
+
+      (ops as any).track(task, fakeChild, 65536);
+      task.child = fakeChild;
+      task.status = 'running';
+
+      await ops.stopWorkspace('ws_term', ownerId);
+
+      const page = ops.viewSince(task, '0');
+      expect(page.data.output).toContain('Final flush before exit.');
+    } finally {
+      store.close();
+    }
+  });
 });

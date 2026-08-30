@@ -2851,7 +2851,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         claimed = this.store.byId(claimed.id)!;
       }
     }
-    await this.operations.stopWorkspace(claimed.id, claimed.ownerId);
+    try {
+      await this.operations.stopWorkspace(claimed.id, claimed.ownerId);
+    } catch (stopErr) {
+      this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
+        status: 'EXPIRED_RECOVERABLE',
+        lastActivityAt: Date.now(),
+        error: `Workspace stop failed: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`
+      });
+      throw stopErr;
+    }
     if (this.artifacts) {
       const tasks = this.store.listDurableTasks(claimed.ownerId, claimed.id);
       for (const t of tasks) {
