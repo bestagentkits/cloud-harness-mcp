@@ -4,8 +4,9 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { RepositoryCacheManager } from '../repository-cache-manager.js';
 import { validateRepositoryUrl } from '../repository-policy.js';
+import { HarnessError } from '@cloud-harness/contracts';
 import { runDocker } from '../docker-engine.js';
-import { computeFullTreeDigest, type ToolkitAdapterResult } from './mattpocock-adapter.js';
+import { computeFullTreeDigest, validateStagingDir, type ToolkitAdapterResult } from './mattpocock-adapter.js';
 
 export class DeclarativeGitAdapter {
   static readonly ADAPTER_VERSION = 1;
@@ -51,12 +52,16 @@ export class DeclarativeGitAdapter {
     }
 
     const proxyOpts = this.toolkitEgressProxy ? { network: this.provisioningNetwork, httpProxy: this.toolkitEgressProxy } : { network: this.provisioningNetwork };
-    const { cachePath } = await this.repoCacheManager.acquireCacheMirror(ownerId, spec.url, undefined, options?.signal, proxyOpts);
+    const mirror = await this.repoCacheManager.acquireCacheMirror(ownerId, spec.url, undefined, options?.signal, proxyOpts);
+    if (!mirror.isReady) {
+      throw new HarnessError('UNAVAILABLE', 'Repository mirror acquisition is not ready', 503, true);
+    }
+    const cachePath = mirror.cachePath;
     const rawExtractDir = join(stagingDir, '__raw_repo');
     await mkdir(rawExtractDir, { recursive: true });
 
     const helperName = `chm-git-extract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    await runDocker([
+    const extractResult = await runDocker([
       'run', '--rm', '--name', helperName,
       '--network', 'none', '--user', '10001:10001', '--read-only',
       '--volume', `${cachePath}:/repo:ro`,
@@ -65,7 +70,9 @@ export class DeclarativeGitAdapter {
       '-c', 'git --git-dir=/repo archive --format=tar -- "$1" | tar -x -C /extract',
       'archive-helper', ref
     ], { timeoutMs: 60_000, ...(options?.signal ? { signal: options.signal } : {}) });
-
+    if (extractResult.exitCode !== 0) {
+      throw new HarnessError('EXECUTION_FAILED', `Toolkit archive extraction failed with exit code ${extractResult.exitCode}: ${extractResult.stderr}`, 500, false);
+    }
     const canonicalBase = realpathSync(rawExtractDir);
     const searchRoot = spec.subdirectory ? resolve(canonicalBase, spec.subdirectory) : canonicalBase;
 
@@ -144,6 +151,7 @@ export class DeclarativeGitAdapter {
 
     await writeFile(join(stagingDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
 
+    validateStagingDir(stagingDir);
     const digestInfo = computeFullTreeDigest(stagingDir);
 
     return {

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync } from 'node:fs';
 import { mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { StateStore, ToolkitCacheEntryRecord } from './state-store.js';
 
@@ -26,10 +27,16 @@ export class ToolkitCacheManager {
   private readonly inFlight = new Map<string, Promise<CachedToolkitBundle>>();
 
   constructor(root: string | undefined, store: StateStore) {
-    this.root = root || '/var/lib/cloud-harness/cache/toolkits';
+    this.root = root || (process.env.TOOLKIT_CACHE_ROOT || join(tmpdir(), 'cloud-harness-toolkit-cache'));
     this.store = store;
-    mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    mkdirSync(join(this.root, 'staging'), { recursive: true, mode: 0o700 });
+    try {
+      mkdirSync(this.root, { recursive: true, mode: 0o700 });
+      mkdirSync(join(this.root, 'staging'), { recursive: true, mode: 0o700 });
+    } catch {
+      this.root = join(tmpdir(), 'cloud-harness-toolkit-cache');
+      mkdirSync(this.root, { recursive: true, mode: 0o700 });
+      mkdirSync(join(this.root, 'staging'), { recursive: true, mode: 0o700 });
+    }
   }
 
   computeCacheKey(ownerId: string, spec: ToolkitAcquisitionSpec): string {

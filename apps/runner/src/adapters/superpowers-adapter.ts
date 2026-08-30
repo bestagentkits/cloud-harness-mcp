@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { HarnessError } from '@cloud-harness/contracts';
 import type { RepositoryCacheManager } from '../repository-cache-manager.js';
 import { runDocker } from '../docker-engine.js';
-import { computeFullTreeDigest, type ToolkitAdapterResult } from './mattpocock-adapter.js';
+import { computeFullTreeDigest, validateStagingDir, type ToolkitAdapterResult } from './mattpocock-adapter.js';
 
 export class SuperpowersAdapter {
   static readonly ID = 'obra/superpowers';
@@ -45,13 +46,17 @@ export class SuperpowersAdapter {
     }
 
     const proxyOpts = this.toolkitEgressProxy ? { network: this.provisioningNetwork, httpProxy: this.toolkitEgressProxy } : { network: this.provisioningNetwork };
-    const { cachePath } = await this.repoCacheManager.acquireCacheMirror(ownerId, repoUrl, undefined, options?.signal, proxyOpts);
+    const mirror = await this.repoCacheManager.acquireCacheMirror(ownerId, repoUrl, undefined, options?.signal, proxyOpts);
+    if (!mirror.isReady) {
+      throw new HarnessError('UNAVAILABLE', 'Repository mirror acquisition is not ready', 503, true);
+    }
+    const cachePath = mirror.cachePath;
 
     const rawExtractDir = join(stagingDir, '__raw_repo');
     await mkdir(rawExtractDir, { recursive: true });
 
     const helperName = `chm-sp-extract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    await runDocker([
+    const extractResult = await runDocker([
       'run', '--rm', '--name', helperName,
       '--network', 'none', '--user', '10001:10001', '--read-only',
       '--volume', `${cachePath}:/repo:ro`,
@@ -60,6 +65,9 @@ export class SuperpowersAdapter {
       '-c', 'git --git-dir=/repo archive --format=tar -- "$1" | tar -x -C /extract',
       'archive-helper', ref
     ], { timeoutMs: 60_000, ...(options?.signal ? { signal: options.signal } : {}) });
+    if (extractResult.exitCode !== 0) {
+      throw new HarnessError('EXECUTION_FAILED', `Toolkit archive extraction failed with exit code ${extractResult.exitCode}: ${extractResult.stderr}`, 500, false);
+    }
 
     const skillsTargetDir = join(stagingDir, 'skills');
     await mkdir(skillsTargetDir, { recursive: true });
@@ -119,6 +127,7 @@ export class SuperpowersAdapter {
 
     await writeFile(join(stagingDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
 
+    validateStagingDir(stagingDir);
     const digestInfo = computeFullTreeDigest(stagingDir);
 
     return {

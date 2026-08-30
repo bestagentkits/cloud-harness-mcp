@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync, readdirSync } from 'node:fs';
+import { lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { HarnessError } from '@cloud-harness/contracts';
 import type { RepositoryCacheManager } from '../repository-cache-manager.js';
 import { runDocker } from '../docker-engine.js';
 
@@ -66,6 +67,39 @@ export function computeFullTreeDigest(rootDir: string): { bundleSha256: string; 
   };
 }
 
+export function validateStagingDir(stagingDir: string, maxFiles = 1000, maxBytes = 67_108_864): void {
+  const canonicalRoot = realpathSync(stagingDir);
+  let totalFiles = 0;
+  let totalBytes = 0;
+
+  function walk(currentDir: string): void {
+    const items = readdirSync(currentDir, { withFileTypes: true });
+    for (const item of items) {
+      const fullPath = join(currentDir, item.name);
+      if (item.isSymbolicLink()) {
+        const linkTarget = realpathSync(fullPath);
+        if (!linkTarget.startsWith(canonicalRoot)) {
+          throw new HarnessError('INVALID_INPUT', `Symbolic link ${item.name} escapes staging directory root`, 400, false);
+        }
+      } else if (item.isDirectory()) {
+        walk(fullPath);
+      } else if (item.isFile()) {
+        totalFiles++;
+        const st = lstatSync(fullPath);
+        totalBytes += st.size;
+        if (totalFiles > maxFiles) {
+          throw new HarnessError('LIMIT_EXCEEDED', `Staging directory exceeds maximum file count of ${maxFiles}`, 400, false);
+        }
+        if (totalBytes > maxBytes) {
+          throw new HarnessError('LIMIT_EXCEEDED', `Staging directory exceeds maximum byte size of ${maxBytes}`, 400, false);
+        }
+      }
+    }
+  }
+
+  walk(stagingDir);
+}
+
 export class MattPocockAdapter {
   static readonly ID = 'mattpocock/skills';
   static readonly ADAPTER_VERSION = 1;
@@ -105,13 +139,17 @@ export class MattPocockAdapter {
     }
 
     const proxyOpts = this.toolkitEgressProxy ? { network: this.provisioningNetwork, httpProxy: this.toolkitEgressProxy } : { network: this.provisioningNetwork };
-    const { cachePath } = await this.repoCacheManager.acquireCacheMirror(ownerId, repoUrl, undefined, options?.signal, proxyOpts);
+    const mirror = await this.repoCacheManager.acquireCacheMirror(ownerId, repoUrl, undefined, options?.signal, proxyOpts);
+    if (!mirror.isReady) {
+      throw new HarnessError('UNAVAILABLE', 'Repository mirror acquisition is not ready', 503, true);
+    }
+    const cachePath = mirror.cachePath;
     const rawExtractDir = join(stagingDir, '__raw_repo');
     await mkdir(rawExtractDir, { recursive: true });
 
     // Extract bare git mirror contents safely using positional parameter to eliminate shell injection
     const helperName = `chm-mp-extract-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    await runDocker([
+    const extractResult = await runDocker([
       'run', '--rm', '--name', helperName,
       '--network', 'none', '--user', '10001:10001', '--read-only',
       '--volume', `${cachePath}:/repo:ro`,
@@ -120,7 +158,9 @@ export class MattPocockAdapter {
       '-c', 'git --git-dir=/repo archive --format=tar -- "$1" | tar -x -C /extract',
       'archive-helper', ref
     ], { timeoutMs: 60_000, ...(options?.signal ? { signal: options.signal } : {}) });
-
+    if (extractResult.exitCode !== 0) {
+      throw new HarnessError('EXECUTION_FAILED', `Toolkit archive extraction failed with exit code ${extractResult.exitCode}: ${extractResult.stderr}`, 500, false);
+    }
     // Recursively find all directories containing SKILL.md
     const discoveredSkills: Array<{ name: string; sourceDir: string }> = [];
 
@@ -180,6 +220,7 @@ export class MattPocockAdapter {
 
     await writeFile(join(stagingDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
 
+    validateStagingDir(stagingDir);
     const digestInfo = computeFullTreeDigest(stagingDir);
 
     return {
