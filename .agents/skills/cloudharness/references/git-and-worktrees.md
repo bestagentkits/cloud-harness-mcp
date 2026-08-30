@@ -53,8 +53,13 @@ Read branch, index, and working-tree status for `workspaceId`.
 <!-- cloudharness-tool:git_commit -->
 ### `git_commit`
 
-- Required: `workspaceId`, `message` (1–10,000 characters), `authorName`
-  (1–200), and valid `authorEmail`; `all` defaults to `false`.
+- Required: `workspaceId`, `message` (1–10,000 characters); `all` defaults to
+  `false`. `authorName`/`authorEmail` are optional and fall back to the
+  configured or default Git identity.
+- Optional `expectedHeadOid` is a compare-and-set guard: the commit is rejected
+  with `STALE_HEAD` if the current HEAD no longer matches. Optional
+  `idempotencyKey` makes a lost-response retry safe; a same-key replay does not
+  create a second commit.
 - `all: true` runs an all-path staging step and includes untracked files as well
   as tracked modifications/deletions. Inspect status for secrets and unrelated
   files first. The tool creates a local commit and does not sign or push it.
@@ -91,6 +96,10 @@ Transactionally stage changes, run preflights, commit, and push to origin in one
 - Required: `commitMessage` (1–10,000 characters).
 - Optional: `workspaceId`, `paths`, `all` (default true), `branch`, `push` (default true), `authorName`, `authorEmail`, `preflight`, `idempotencyKey`.
 - Returns commit SHA, target branch, push result, and final workspace status.
+- Provide `idempotencyKey` before the first call. Finalize is crash-durable: a
+  commit may exist even when the push outcome is unknown. On a same-key retry
+  after `UNKNOWN_REMOTE_STATE`, the service reconciles against the destination
+  ref and returns `alreadyFinalized: true` instead of pushing again.
 
 <!-- cloudharness-example:workspace_finalize
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","commitMessage":"feat(core): implement feature","push":true}
@@ -127,6 +136,12 @@ URL. Network access for these tools is separate from executor egress.
   syntax are rejected.
 - Force-with-lease requires `expectedRemoteOid`, a lowercase 40- or 64-hex
   object ID. With a refspec it also requires an explicit destination branch.
+- Supply `idempotencyKey` on the initial push, not only after a failure. If the
+  network drops mid-push the result is `UNKNOWN_REMOTE_STATE` with
+  `resumeAction: "reconcile_push"`; retry the identical request with the same
+  key. The service checks the destination ref's remote OID before deciding
+  whether another push is needed, returning `alreadyFinalized: true` when the
+  earlier push had already landed.
 - Push changes an external repository. Verify the target ref and inspect the
   returned result; a local commit is not evidence of a successful push.
 
