@@ -200,28 +200,58 @@ export class HostFirewallAttestor {
       return { ok: false, reason: 'egress chain must end with terminal REJECT or DROP' };
     }
 
-    // 5. NAT table is mandatory: scoped masquerade for allowed egress, no broad rule
+    // 5. NAT table is mandatory: scoped masquerade for allowed egress in dedicated chain or direct scoped rules
     const natIndex = lines.indexOf('*nat');
     if (natIndex === -1) {
       return { ok: false, reason: 'nat table section missing; scoped MASQUERADE rules are required' };
     }
     const natLines = lines.slice(natIndex);
-    const postroutingRules = natLines.filter((l) => l.startsWith('-A POSTROUTING') && l.includes(`-s ${this.bridgeSubnet}`));
-    if (postroutingRules.length === 0) {
-      return { ok: false, reason: `no scoped MASQUERADE rules found for '${this.bridgeSubnet}' in nat table` };
+    const postroutingRules = natLines.filter((l) => l.startsWith('-A POSTROUTING'));
+    const subnetJumps = postroutingRules.filter((l) => l.includes(`-s ${this.bridgeSubnet}`));
+    if (subnetJumps.length === 0) {
+      return { ok: false, reason: `no scoped MASQUERADE or NAT jump rules found for '${this.bridgeSubnet}' in nat table` };
     }
-    const broadMasq = postroutingRules.some((l) => l.includes('-j MASQUERADE') && !l.includes('--dport') && !l.includes('-p'));
-    if (broadMasq) {
-      return { ok: false, reason: `broad unconstrained MASQUERADE rule found for '${this.bridgeSubnet}' in nat table` };
+
+    const firstJump = subnetJumps[0];
+    const natTarget = firstJump?.match(/-j\s+([A-Za-z0-9_-]+)/)?.[1];
+    if (!natTarget || natTarget === 'ACCEPT' || natTarget === 'RETURN') {
+      return { ok: false, reason: `invalid or broad target jump for subnet '${this.bridgeSubnet}' in POSTROUTING` };
     }
-    const hasWebMasq = postroutingRules.some((l) => l.includes('-j MASQUERADE') && (l.includes('80') || l.includes('443')));
+
+    let targetRules: string[];
+    if (natTarget === 'MASQUERADE') {
+      // Direct scoped masquerade rules in POSTROUTING
+      targetRules = subnetJumps;
+    } else {
+      // Jump to a dedicated NAT chain (e.g. CHM-NAT-v1)
+      targetRules = natLines.filter((l) => l.startsWith(`-A ${natTarget}`));
+      if (targetRules.length === 0) {
+        return { ok: false, reason: `nat target chain '${natTarget}' has no rules` };
+      }
+    }
+
+    // Validate that every single rule in target is an authorized scoped MASQUERADE rule
+    for (const rule of targetRules) {
+      if (rule.includes('-j MASQUERADE')) {
+        const isWebMasq = rule.includes('-p tcp') && (rule.includes('--dports 80,443') || rule.includes('--dport 80') || rule.includes('--dport 443')) && !rule.includes('-d ');
+        const isDnsMasq = this.dnsResolvers.some((r) => rule.includes(`-d ${r}`)) && (rule.includes('-p udp') || rule.includes('-p tcp')) && rule.includes('--dport 53');
+        if (!isWebMasq && !isDnsMasq) {
+          return { ok: false, reason: `nat target contains unauthorized or widened MASQUERADE rule: ${rule}` };
+        }
+      } else if (rule.includes('-j ACCEPT')) {
+        return { ok: false, reason: `nat target must not contain broad ACCEPT rules: ${rule}` };
+      }
+    }
+
+    const hasWebMasq = targetRules.some((l) => l.includes('-j MASQUERADE') && (l.includes('80') || l.includes('443')));
     if (!hasWebMasq) {
       return { ok: false, reason: `missing scoped HTTP/HTTPS MASQUERADE rule for '${this.bridgeSubnet}'` };
     }
     for (const resolver of this.dnsResolvers) {
-      const hasDnsMasq = postroutingRules.some((l) => l.includes('-j MASQUERADE') && l.includes(`-d ${resolver}`) && l.includes('--dport 53'));
-      if (!hasDnsMasq) {
-        return { ok: false, reason: `missing scoped DNS MASQUERADE rule for resolver '${resolver}'` };
+      const hasDnsUdpMasq = targetRules.some((l) => l.includes('-j MASQUERADE') && l.includes(`-d ${resolver}`) && l.includes('-p udp') && l.includes('--dport 53'));
+      const hasDnsTcpMasq = targetRules.some((l) => l.includes('-j MASQUERADE') && l.includes(`-d ${resolver}`) && l.includes('-p tcp') && l.includes('--dport 53'));
+      if (!hasDnsUdpMasq || !hasDnsTcpMasq) {
+        return { ok: false, reason: `missing scoped UDP/TCP DNS MASQUERADE rule for resolver '${resolver}'` };
       }
     }
 

@@ -3321,13 +3321,20 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (!attestation.ok) {
         for (const record of this.store.active()) {
           if (record.status === 'ACTIVE' && record.networkProfile === 'dependency-access') {
-            // Fence every container carrying this workspace's label, including
-            // privileged ephemeral executors, not only the primary container.
+            // 1. Atomically fence the workspace record to NETWORK_QUARANTINED first so no new execution can start
+            const fenced = this.store.updateFenced(record.id, record.generation, ['ACTIVE'], {
+              status: 'NETWORK_QUARANTINED',
+              lastActivityAt: now,
+              error: `host firewall policy drift detected: ${attestation.reason}`
+            });
+            if (!fenced) continue;
+
+            // 2. Stop and remove all containers carrying this workspace's label, including privileged ephemerals
             const labeled = await runDocker([
               'ps', '-a', '--filter', `label=cloud-harness.workspace=${record.id}`, '--format', '{{.Names}}'
             ], { timeoutMs: 30_000, maxBytes: 1_048_576 }).catch(() => ({ exitCode: 1, stdout: '', stderr: '', truncated: false }));
             const names = new Set<string>(labeled.stdout.split('\n').map((n) => n.trim()).filter(Boolean));
-            if (record.containerName) names.add(record.containerName);
+            if (fenced.containerName) names.add(fenced.containerName);
             let allRemoved = true;
             for (const name of names) {
               try {
@@ -3336,17 +3343,17 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
                 allRemoved = false;
               }
             }
-            this.store.update(record.id, {
-              containerName: allRemoved ? null : record.containerName,
-              status: 'NETWORK_QUARANTINED',
-              error: `host firewall policy drift detected: ${attestation.reason}${allRemoved ? '' : ' (container stop/removal pending)'}`
-            });
+            if (allRemoved) {
+              this.store.update(record.id, { containerName: null });
+            }
+
+            // 3. Emit audit event
             this.metadata?.recordAudit(
               record.ownerId,
               'network_profile.drift_detected',
               'workspace',
               record.id,
-              record.generation,
+              fenced.generation,
               { profile: record.networkProfile, containersRemoved: allRemoved }
             );
           }
@@ -3356,12 +3363,22 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     // Retry forced removal for quarantined workspaces whose container removal
     // previously failed, so an unfiltered executor cannot linger.
     for (const record of this.store.active()) {
-      if (record.status === 'NETWORK_QUARANTINED' && record.containerName) {
-        try {
-          await removeContainer(record.containerName);
+      if (record.status === 'NETWORK_QUARANTINED') {
+        const labeled = await runDocker([
+          'ps', '-a', '--filter', `label=cloud-harness.workspace=${record.id}`, '--format', '{{.Names}}'
+        ], { timeoutMs: 30_000, maxBytes: 1_048_576 }).catch(() => ({ exitCode: 1, stdout: '', stderr: '', truncated: false }));
+        const names = new Set<string>(labeled.stdout.split('\n').map((n) => n.trim()).filter(Boolean));
+        if (record.containerName) names.add(record.containerName);
+        let allRemoved = true;
+        for (const name of names) {
+          try {
+            await removeContainer(name);
+          } catch {
+            allRemoved = false;
+          }
+        }
+        if (allRemoved && record.containerName) {
           this.store.update(record.id, { containerName: null });
-        } catch {
-          // keep containerName for the next retry
         }
       }
     }
