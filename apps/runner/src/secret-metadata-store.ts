@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { validateSecretDescription, validateSecretName, validateSecretValue, type SecretPurpose } from '@cloud-harness/contracts';
 import { appendAudit, opaqueId, secretView, transaction, type SecretView } from './metadata-records.js';
