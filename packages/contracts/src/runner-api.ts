@@ -15,8 +15,8 @@ export const RunnerOperationSchema = z.enum([
   'git_identity_status', 'git_identity_set',
   'worktrees_list', 'worktrees_create', 'worktrees_remove',
   'skills_list', 'skills_read', 'skills_run',
-  'hooks_list', 'hooks_run',
-  'memories_list', 'memories_read', 'memories_write',
+  'hooks_list', 'hooks_run', 'hooks_activate', 'hooks_deactivate',
+  'memories_list', 'memories_read', 'memories_write', 'memories_search', 'memories_delete',
   'deployments_list', 'deployments_run',
   'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
   'github_action',
@@ -113,3 +113,64 @@ export type WorkspaceCapabilities = z.infer<typeof WorkspaceCapabilitiesSchema>;
 export type RepositoryPermissions = z.infer<typeof RepositoryPermissionsSchema>;
 export type RepositoryOperations = z.infer<typeof RepositoryOperationsSchema>;
 export type WorkspaceCapabilityResult = z.infer<typeof WorkspaceCapabilityResultSchema>;
+
+export const ProvenanceSourceSchema = z.enum(['built-in', 'owner', 'workspace', 'repository']);
+export const TrustClassSchema = z.enum(['trusted-control-plane', 'owner-controlled', 'untrusted-executor']);
+export const MutabilitySchema = z.enum(['release', 'owner', 'workspace-process', 'repository-commit']);
+
+export const ProvenanceSchema = z.object({
+  source: ProvenanceSourceSchema,
+  trust: TrustClassSchema,
+  mutableBy: MutabilitySchema,
+  path: z.string().optional(),
+  contentSha256: z.string().length(64),
+  discoveredAt: z.string().datetime()
+}).strict();
+
+export const ContextClientSchema = z.enum(['all', 'claude', 'codex', 'cursor', 'aider']);
+export const ContextKindSchema = z.enum(['instruction', 'language-manifest', 'test-command', 'skill-summary']);
+
+export const ContextManifestItemSchema = z.object({
+  id: z.string().min(1).max(120),
+  kind: ContextKindSchema,
+  format: z.string().max(80),
+  clients: z.array(ContextClientSchema),
+  path: z.string().optional(),
+  appliesTo: z.string().max(256).optional(),
+  activeForClient: z.boolean().default(true),
+  contentSha256: z.string().length(64),
+  byteCount: z.number().int().min(0),
+  excerpt: z.string().max(8192).optional(),
+  references: z.array(z.string().max(256)).optional(),
+  provenance: ProvenanceSchema
+}).strict();
+
+export const ContextManifestSchema = z.object({
+  contractVersion: z.literal(1).default(1),
+  returnedBytes: z.number().int().min(0),
+  scannedFiles: z.number().int().min(0),
+  scannedSourceBytes: z.number().int().min(0),
+  truncated: z.boolean().default(false),
+  truncationReasons: z.array(z.string().max(100)).default([]),
+  cursor: z.string().max(256).optional(),
+  items: z.array(ContextManifestItemSchema),
+  warnings: z.array(z.object({
+    code: z.string().max(80),
+    path: z.string().optional(),
+    message: z.string().max(512)
+  })).default([])
+}).strict();
+
+export const MemoryScopeSchema = z.enum(['owner', 'repository', 'workspace']);
+export const HookEventSchema = z.enum(['on_workspace_open', 'post_checkout', 'pre_commit', 'post_commit', 'manual']);
+
+export type ProvenanceSource = z.infer<typeof ProvenanceSourceSchema>;
+export type TrustClass = z.infer<typeof TrustClassSchema>;
+export type Mutability = z.infer<typeof MutabilitySchema>;
+export type Provenance = z.infer<typeof ProvenanceSchema>;
+export type ContextClient = z.infer<typeof ContextClientSchema>;
+export type ContextKind = z.infer<typeof ContextKindSchema>;
+export type ContextManifestItem = z.infer<typeof ContextManifestItemSchema>;
+export type ContextManifest = z.infer<typeof ContextManifestSchema>;
+export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
+export type HookEvent = z.infer<typeof HookEventSchema>;

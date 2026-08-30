@@ -167,6 +167,48 @@ export class WorkspaceService {
     if (!this.artifacts) throw new HarnessError('UNAVAILABLE', 'artifact store is unavailable', 503);
     return this.artifacts;
   }
+  private async runLifecycleHooks(
+    record: WorkspaceRecord,
+    event: 'pre_commit' | 'post_commit' | 'post_checkout' | 'on_workspace_open',
+    signal?: AbortSignal
+  ): Promise<void> {
+    const activations = this.store.getActiveHookActivations(record.ownerId, record.id);
+    const act = activations.find((a) => a.event === event);
+    if (!act) return;
+
+    let listRes: RunnerResponse;
+    try {
+      listRes = await this.runWorker(record, 'hooks_list', { event }, signal);
+    } catch {
+      return;
+    }
+    if (!listRes.ok || !listRes.data || typeof listRes.data !== 'object') return;
+    const manifestSha = (listRes.data as Record<string, unknown>).manifestSha256;
+    if (manifestSha !== act.manifestSha256) {
+      return;
+    }
+
+    const hooks = ((listRes.data as Record<string, unknown>).hooks || []) as Array<{ name: string; failurePolicy?: string }>;
+    for (const h of hooks) {
+      let runRes: RunnerResponse;
+      try {
+        runRes = await this.runWorker(record, 'hooks_run', {
+          name: h.name,
+          expectedManifestSha256: act.manifestSha256
+        }, signal);
+      } catch (err: unknown) {
+        if (event === 'pre_commit' && h.failurePolicy === 'block') {
+          throw new HarnessError('HOOK_FAILED', `pre_commit hook "${h.name}" failed: ${err instanceof Error ? err.message : String(err)}`, 400, false);
+        }
+        continue;
+      }
+      if (!runRes.ok) {
+        if (event === 'pre_commit' && h.failurePolicy === 'block') {
+          throw new HarnessError('HOOK_FAILED', `pre_commit hook "${h.name}" failed: ${runRes.message}`, 400, false);
+        }
+      }
+    }
+  }
 
   async start(): Promise<void> {
     if ((this.config.authMode ?? 'owner-bearer') === 'cloudflare-access') {
@@ -2000,6 +2042,69 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         email: record.gitAuthorEmail || 'agent@cloud-harness.local'
       };
       const caps = this.computeWorkspaceCapabilities(record);
+      let manifest: unknown = undefined;
+      try {
+        const scanRes = await this.runWorker(record, 'workspace_context', validated, signal);
+        if (scanRes.ok && scanRes.data && typeof scanRes.data === 'object' && 'manifest' in scanRes.data) {
+          const rawManifest = scanRes.data.manifest as Record<string, unknown>;
+          const rawItems = Array.isArray(rawManifest.items) ? rawManifest.items : [];
+          const maxBytes = Math.min(Math.max(Number((validated as { maxBytes?: number }).maxBytes || 32768), 4096), 131072);
+          const sanitizedItems = [];
+          let accumulatedBytes = 0;
+          let truncated = Boolean(rawManifest.truncated);
+          const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
+
+          for (const rawItem of rawItems as Record<string, unknown>[]) {
+            const pathStr = typeof rawItem.path === 'string' ? rawItem.path : undefined;
+            const hashStr = typeof rawItem.contentSha256 === 'string' && rawItem.contentSha256.length === 64
+              ? rawItem.contentSha256
+              : '0'.repeat(64);
+            const item = {
+              id: typeof rawItem.id === 'string' ? rawItem.id : `ctx_${hashStr.slice(0, 12)}`,
+              kind: typeof rawItem.kind === 'string' ? rawItem.kind : 'instruction',
+              format: typeof rawItem.format === 'string' ? rawItem.format : 'plain',
+              clients: Array.isArray(rawItem.clients) ? rawItem.clients : ['all'],
+              path: pathStr,
+              appliesTo: typeof rawItem.appliesTo === 'string' ? rawItem.appliesTo : undefined,
+              activeForClient: Boolean(rawItem.activeForClient ?? true),
+              contentSha256: hashStr,
+              byteCount: typeof rawItem.byteCount === 'number' ? rawItem.byteCount : 0,
+              excerpt: typeof rawItem.excerpt === 'string' ? rawItem.excerpt.slice(0, 8192) : undefined,
+              references: Array.isArray(rawItem.references) ? rawItem.references : undefined,
+              provenance: {
+                source: 'repository',
+                trust: 'untrusted-executor',
+                mutableBy: 'repository-commit',
+                path: pathStr,
+                contentSha256: hashStr,
+                discoveredAt: new Date().toISOString()
+              }
+            };
+            const itemBytes = Buffer.byteLength(JSON.stringify(item));
+            if (accumulatedBytes + itemBytes > maxBytes) {
+              truncated = true;
+              if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
+              break;
+            }
+            sanitizedItems.push(item);
+            accumulatedBytes += itemBytes;
+          }
+
+          manifest = {
+            contractVersion: 1,
+            returnedBytes: accumulatedBytes,
+            scannedFiles: typeof rawManifest.scannedFiles === 'number' ? rawManifest.scannedFiles : sanitizedItems.length,
+            scannedSourceBytes: typeof rawManifest.scannedSourceBytes === 'number' ? rawManifest.scannedSourceBytes : accumulatedBytes,
+            truncated,
+            truncationReasons,
+            cursor: typeof rawManifest.cursor === 'string' ? rawManifest.cursor : undefined,
+            items: sanitizedItems,
+            warnings: Array.isArray(rawManifest.warnings) ? rawManifest.warnings : []
+          };
+        }
+      } catch {
+        // manifest scanning is non-blocking
+      }
       return {
         ok: true,
         message: 'Workspace context',
@@ -2009,10 +2114,163 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           gitIdentity,
           capabilities: caps.capabilities,
           permissions: caps.permissions,
-          operations: caps.operations
+          operations: caps.operations,
+          ...(manifest ? { manifest } : {})
         },
         truncated: false
       };
+    }
+    if (operation === 'memories_write') {
+      const scope = (validated.scope || 'workspace') as 'owner' | 'repository' | 'workspace';
+      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const expectedGen = typeof validated.expectedGeneration === 'number' ? validated.expectedGeneration : 0;
+      let mem;
+      try {
+        if (expectedGen === 0) {
+          mem = this.store.createMemory({
+            principalId: ownerId,
+            scope,
+            repositoryKey: repoKey,
+            workspaceId: scope === 'workspace' ? record.id : null,
+            name: validated.name as string,
+            content: validated.content as string,
+            ...(Array.isArray(validated.tags) ? { tags: validated.tags as string[] } : {}),
+            ...(typeof validated.retentionSeconds === 'number' ? { retentionSeconds: validated.retentionSeconds } : {})
+          });
+        } else {
+          mem = this.store.updateMemory({
+            principalId: ownerId,
+            ...(typeof validated.name === 'string' ? { name: validated.name } : {}),
+            scope,
+            repositoryKey: repoKey,
+            workspaceId: scope === 'workspace' ? record.id : null,
+            content: validated.content as string,
+            ...(Array.isArray(validated.tags) ? { tags: validated.tags as string[] } : {}),
+            ...(typeof validated.retentionSeconds === 'number' ? { retentionSeconds: validated.retentionSeconds } : {}),
+            expectedGeneration: expectedGen
+          });
+        }
+        this.auditWorkspaceMutation(ownerId, 'memory.written', record, { name: String(validated.name), scope, generation: mem.generation });
+      } catch (err: unknown) {
+        if (err instanceof Error && (err.message.includes('conflict') || err.message.includes('already exists'))) {
+          throw new HarnessError('CONFLICT', err.message, 409, false);
+        }
+        throw err;
+      }
+      return { ok: true, message: 'Memory note saved', data: mem, truncated: false };
+    }
+    if (operation === 'memories_read') {
+      const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
+      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const mem = this.store.readMemory({
+        principalId: ownerId,
+        ...(typeof validated.memoryId === 'string' ? { id: validated.memoryId } : {}),
+        ...(typeof validated.name === 'string' ? { name: validated.name } : {}),
+        ...(scope ? { scope } : {}),
+        repositoryKey: repoKey,
+        workspaceId: record.id
+      });
+      if (!mem) {
+        throw new HarnessError('NOT_FOUND', 'memory note not found', 404, false);
+      }
+      return { ok: true, message: 'Memory note read', data: mem, truncated: false };
+    }
+    if (operation === 'memories_list') {
+      const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
+      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const { memories, nextCursor } = this.store.listMemories({
+        principalId: ownerId,
+        ...(scope ? { scope } : {}),
+        repositoryKey: repoKey,
+        workspaceId: record.id,
+        ...(Array.isArray(validated.tags) ? { tags: validated.tags as string[] } : {}),
+        ...(typeof validated.limit === 'number' ? { limit: validated.limit } : {}),
+        ...(typeof validated.cursor === 'string' ? { cursor: validated.cursor } : {})
+      });
+      return {
+        ok: true,
+        message: `Found ${memories.length} memories`,
+        data: { memories: memories.map(m => ({ id: m.id, name: m.name, scope: m.scope, tags: m.tags, generation: m.generation, provenance: m.provenance })) },
+        truncated: Boolean(nextCursor),
+        ...(nextCursor ? { cursor: nextCursor } : {})
+      };
+    }
+    if (operation === 'memories_search') {
+      const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
+      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      const { memories, nextCursor } = this.store.searchMemories({
+        principalId: ownerId,
+        query: validated.query as string,
+        ...(scope ? { scope } : {}),
+        repositoryKey: repoKey,
+        workspaceId: record.id,
+        ...(Array.isArray(validated.tags) ? { tags: validated.tags as string[] } : {}),
+        ...(typeof validated.limit === 'number' ? { limit: validated.limit } : {}),
+        ...(typeof validated.cursor === 'string' ? { cursor: validated.cursor } : {})
+      });
+      return {
+        ok: true,
+        message: `Found ${memories.length} matching memories`,
+        data: { memories },
+        truncated: Boolean(nextCursor),
+        ...(nextCursor ? { cursor: nextCursor } : {})
+      };
+    }
+    if (operation === 'memories_delete') {
+      const scope = validated.scope as 'owner' | 'repository' | 'workspace' | undefined;
+      const repoKey = scope === 'repository' ? createHash('sha256').update(record.repositoryUrl.toLowerCase()).digest('hex') : null;
+      try {
+        this.store.deleteMemory({
+          principalId: ownerId,
+          ...(typeof validated.memoryId === 'string' ? { id: validated.memoryId } : {}),
+          ...(typeof validated.name === 'string' ? { name: validated.name } : {}),
+          ...(scope ? { scope } : {}),
+          repositoryKey: repoKey,
+          workspaceId: record.id,
+          expectedGeneration: (validated.expectedGeneration as number) || 1
+        });
+        this.auditWorkspaceMutation(ownerId, 'memory.deleted', record, {
+          ...(typeof validated.memoryId === 'string' ? { memoryId: validated.memoryId } : {}),
+          ...(typeof validated.name === 'string' ? { name: validated.name } : {})
+        });
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message.includes('conflict')) {
+          throw new HarnessError('CONFLICT', err.message, 409, false);
+        }
+        if (err instanceof Error && err.message.includes('not found')) {
+          throw new HarnessError('NOT_FOUND', err.message, 404, false);
+        }
+        throw err;
+      }
+      return { ok: true, message: 'Memory note deleted', data: { deleted: true }, truncated: false };
+    }
+    if (operation === 'hooks_activate') {
+      const events = validated.events as string[];
+      const results = [];
+      for (const ev of events) {
+        const act = this.store.activateHook({
+          principalId: ownerId,
+          workspaceId: record.id,
+          event: ev,
+          manifestSha256: validated.manifestSha256 as string,
+          ...(typeof validated.retentionSeconds === 'number' ? { retentionSeconds: validated.retentionSeconds } : {})
+        });
+        results.push(act);
+      }
+      this.auditWorkspaceMutation(ownerId, 'hook.activated', record, { events: Array.isArray(validated.events) ? (validated.events as string[]).join(',') : '', manifestSha256: String(validated.manifestSha256) });
+      return { ok: true, message: 'Hooks activated', data: { activations: results }, truncated: false };
+    }
+    if (operation === 'hooks_deactivate') {
+      const events = validated.events as string[] | undefined;
+      if (events && events.length > 0) {
+        for (const ev of events) {
+          this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id, event: ev });
+        }
+      } else {
+        this.store.deactivateHook({ principalId: ownerId, workspaceId: record.id });
+      }
+      this.auditWorkspaceMutation(ownerId, 'hook.deactivated', record, { ...(events ? { events: events.join(',') } : { all: true }) });
+      return { ok: true, message: 'Hooks deactivated', data: { deactivated: true }, truncated: false };
     }
     if (operation === 'files_write_batch') {
       const idempotencyKey = validated.idempotencyKey as string | undefined;
@@ -2164,7 +2422,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           };
         }
 
-        // Step 4: Resolve Git author & Commit
+        // Step 4: Run pre_commit lifecycle hooks, resolve Git author & Commit
+        await this.runLifecycleHooks(record, 'pre_commit', signal);
+
         const storedIdentity = this.store.getGitIdentity(ownerId);
         const authorName = (validated.authorName as string | undefined) || record.gitAuthorName || storedIdentity?.name || 'Cloud Harness Agent';
         const authorEmail = (validated.authorEmail as string | undefined) || record.gitAuthorEmail || storedIdentity?.email || 'agent@cloud-harness.local';
@@ -2185,6 +2445,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             truncated: false
           };
         }
+        await this.runLifecycleHooks(record, 'post_commit', signal);
 
         const logResult = await this.runWorker(record, 'git_log', { limit: 1 }, signal);
         const commitSha = (logResult.data && typeof logResult.data === 'object' && 'output' in logResult.data && typeof logResult.data.output === 'string') ? logResult.data.output.split('\t')?.[0] || '' : '';
@@ -2535,7 +2796,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       let result: RunnerResponse;
       try {
+        await this.runLifecycleHooks(record, 'pre_commit', signal);
         result = await this.runWorker(record, 'git_commit', validated, signal);
+        if (result.ok) {
+          await this.runLifecycleHooks(record, 'post_commit', signal);
+        }
       } catch (err: unknown) {
         if (idempotencyKey && err instanceof HarnessError) {
           this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }), currentHeadOid);
@@ -2915,6 +3180,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (claimed.containerName) await removeContainer(claimed.containerName);
     await this.safeRemovePath(claimed.workspacePath);
     this.store.deleteSecretSnapshot(claimed.id);
+    this.store.reapWorkspaceMemories(claimed.ownerId, claimed.id);
     this.redactorCache.delete(claimed.id);
     const closed = this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'CLOSED', containerName: null, error: reason, expiresAt: Date.now() });
     if (!closed) {

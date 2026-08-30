@@ -3,578 +3,794 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Brainstorm Brief | Secrets Management, Discovery & Zero-Leakage Injection — Cloud Harness MCP</title>
+  <title>Brainstorm Brief | Issue #15: Provenance-Aware Workspace Context, Skills, Memories & Hooks — Cloud Harness MCP</title>
   <style>
     :root {
       --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
-      --canvas: oklch(0.18 0.015 250);
-      --surface: oklch(0.22 0.02 250);
-      --surface-raised: oklch(0.26 0.025 250);
-      --surface-overlay: oklch(0.30 0.03 250);
-      --line: oklch(0.32 0.02 250);
-      --line-strong: oklch(0.42 0.03 250);
-      --ink: oklch(0.92 0.01 250);
-      --ink-muted: oklch(0.68 0.02 250);
-      --accent: oklch(0.78 0.16 62);
-      --accent-strong: oklch(0.85 0.18 62);
-      --accent-soft: oklch(0.32 0.08 62);
-      --on-accent: oklch(0.15 0.02 250);
-      --success: oklch(0.75 0.16 155);
-      --warning: oklch(0.82 0.15 100);
-      --danger: oklch(0.65 0.22 27);
-      --danger-soft: oklch(0.28 0.08 27);
+      --canvas: #0f1117;
+      --surface: #161922;
+      --surface-raised: #1e2230;
+      --surface-overlay: #262c3e;
+      --line: #2e354a;
+      --line-strong: #3f4966;
+      --ink: #e6edf3;
+      --ink-muted: #8b949e;
+      --accent: #38bdf8;
+      --accent-strong: #0ea5e9;
+      --accent-soft: rgba(56, 189, 248, 0.15);
+      --on-accent: #0f172a;
+      --success: #34d399;
+      --success-soft: rgba(52, 211, 153, 0.15);
+      --warning: #fbbf24;
+      --warning-soft: rgba(251, 191, 36, 0.15);
+      --danger: #f87171;
+      --danger-soft: rgba(248, 113, 113, 0.15);
+      --purple: #c084fc;
+      --purple-soft: rgba(192, 132, 252, 0.15);
       --radius-sm: 4px;
-      --radius-md: 6px;
-      --radius-lg: 10px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --shadow: 0 4px 20px rgba(0,0,0,0.35);
     }
     [data-theme="light"] {
-      --canvas: oklch(0.96 0.005 250);
-      --surface: oklch(1.0 0 0);
-      --surface-raised: oklch(0.94 0.01 250);
-      --surface-overlay: oklch(0.90 0.015 250);
-      --line: oklch(0.86 0.01 250);
-      --line-strong: oklch(0.75 0.02 250);
-      --ink: oklch(0.18 0.02 250);
-      --ink-muted: oklch(0.46 0.02 250);
-      --accent: oklch(0.68 0.16 62);
-      --accent-strong: oklch(0.60 0.18 62);
-      --accent-soft: oklch(0.90 0.06 62);
-      --on-accent: oklch(0.98 0 0);
+      --canvas: #f8fafc;
+      --surface: #ffffff;
+      --surface-raised: #f1f5f9;
+      --surface-overlay: #e2e8f0;
+      --line: #cbd5e1;
+      --line-strong: #94a3b8;
+      --ink: #0f172a;
+      --ink-muted: #64748b;
+      --accent: #0284c7;
+      --accent-strong: #0369a1;
+      --accent-soft: rgba(2, 132, 199, 0.12);
+      --on-accent: #ffffff;
+      --success: #059669;
+      --success-soft: rgba(5, 150, 105, 0.12);
+      --warning: #d97706;
+      --warning-soft: rgba(217, 119, 6, 0.12);
+      --danger: #dc2626;
+      --danger-soft: rgba(220, 38, 38, 0.12);
+      --purple: #9333ea;
+      --purple-soft: rgba(147, 51, 234, 0.12);
+      --shadow: 0 4px 20px rgba(0,0,0,0.08);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: var(--font-sans);
       background-color: var(--canvas);
       color: var(--ink);
-      line-height: 1.55;
+      line-height: 1.6;
       font-size: 14px;
-      padding-bottom: 4rem;
+      padding-bottom: 5rem;
     }
-    .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0.85rem 1.5rem;
-      background: var(--surface);
+    header {
+      background: linear-gradient(180deg, var(--surface-raised) 0%, var(--surface) 100%);
       border-bottom: 1px solid var(--line);
+      padding: 2.5rem 2rem 2rem;
       position: sticky;
       top: 0;
       z-index: 100;
+      backdrop-filter: blur(12px);
     }
-    .brand-wrap { display: flex; align-items: center; gap: 0.75rem; }
-    .brand { font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; font-size: 14px; }
+    .header-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1.5rem;
+    }
+    .badge-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
     .badge {
-      background: var(--accent-soft);
-      color: var(--accent);
-      border: 1px solid var(--accent);
-      padding: 0.15rem 0.5rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2rem 0.6rem;
       border-radius: var(--radius-sm);
-      font-size: 11px;
+      font-size: 0.75rem;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.04em;
+    }
+    .badge-accent { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
+    .badge-success { background: var(--success-soft); color: var(--success); border: 1px solid var(--success); }
+    .badge-warning { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
+    .badge-purple { background: var(--purple-soft); color: var(--purple); border: 1px solid var(--purple); }
+    .badge-danger { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
+    h1 {
+      font-size: 1.85rem;
+      font-weight: 700;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+      margin-bottom: 0.4rem;
+    }
+    .subtitle {
+      color: var(--ink-muted);
+      font-size: 0.95rem;
     }
     .theme-toggle {
       background: var(--surface-raised);
       border: 1px solid var(--line);
       color: var(--ink);
-      padding: 0.35rem 0.75rem;
-      border-radius: var(--radius-sm);
-      font-size: 12px;
+      padding: 0.5rem 0.9rem;
+      border-radius: var(--radius-md);
       cursor: pointer;
-    }
-    .container { max-width: 1160px; margin: 2rem auto; padding: 0 1.5rem; display: grid; gap: 2rem; }
-    .header-banner {
-      background: var(--surface);
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius-md);
-      padding: 1.5rem;
-      position: relative;
-    }
-    .header-banner::before {
-      content: "";
-      position: absolute;
-      top: -1px; left: -1px; width: 14px; height: 14px;
-      border-top: 3px solid var(--accent);
-      border-left: 3px solid var(--accent);
-    }
-    .header-banner::after {
-      content: "";
-      position: absolute;
-      bottom: -1px; right: -1px; width: 14px; height: 14px;
-      border-bottom: 3px solid var(--accent);
-      border-right: 3px solid var(--accent);
-    }
-    .eyebrow {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--accent);
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      margin-bottom: 0.4rem;
-    }
-    h1 { font-size: 1.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.5rem; }
-    .lead { font-size: 1rem; color: var(--ink-muted); max-width: 860px; }
-    
-    .panel {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: 1.25rem;
-      display: grid;
-      gap: 1rem;
-    }
-    .panel-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid var(--line);
-      padding-bottom: 0.75rem;
-    }
-    .panel-title {
-      font-size: 1.1rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; }
-    .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
-
-    .card {
-      background: var(--surface-raised);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      padding: 1rem;
-    }
-    .card h3 { font-size: 0.95rem; font-weight: 700; margin-bottom: 0.4rem; color: var(--accent); }
-    .card p, .card ul { font-size: 0.85rem; color: var(--ink-muted); }
-    .card ul { padding-left: 1.2rem; display: grid; gap: 0.25rem; }
-
-    .contract-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1rem;
-    }
-    .contract-tile {
-      background: var(--surface-raised);
-      border-left: 3px solid var(--accent);
-      padding: 1rem;
-      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-    }
-    .contract-tile.danger { border-left-color: var(--danger); }
-    .contract-tile.success { border-left-color: var(--success); }
-    .contract-tile.warning { border-left-color: var(--warning); }
-    .contract-tile h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem; color: var(--ink); }
-
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      padding: 0.15rem 0.5rem;
-      border-radius: 12px;
-      font-size: 11px;
-      font-weight: 600;
-      background: var(--surface-overlay);
-      border: 1px solid var(--line-strong);
-    }
-    .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-    .pill.success::before { background: var(--success); }
-    .pill.danger::before { background: var(--danger); }
-    .pill.warning::before { background: var(--warning); }
-
-    /* Architecture diagram */
-    .diagram-container {
-      background: var(--canvas);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      padding: 1rem;
-      overflow-x: auto;
-    }
-    svg text { font-family: var(--font-mono); }
-
-    /* Mockups */
-    .mockup-window {
-      background: var(--canvas);
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
-    }
-    .mockup-bar {
-      background: var(--surface-raised);
-      padding: 0.5rem 1rem;
-      border-bottom: 1px solid var(--line);
+      font-size: 0.85rem;
+      font-weight: 500;
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      font-size: 12px;
+      transition: all 0.2s;
     }
-    .mockup-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); }
-    .mockup-content { padding: 1.5rem; display: grid; gap: 1rem; }
-    
-    .table-container { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 0.65rem 0.75rem; text-align: left; border-bottom: 1px solid var(--line); }
-    th { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-muted); background: var(--surface-raised); }
-    tr:hover td { background: var(--surface-raised); }
-
-    .callout {
-      border: 1px solid var(--accent);
-      background: var(--accent-soft);
-      padding: 1rem;
-      border-radius: var(--radius-sm);
-      font-size: 13px;
+    .theme-toggle:hover {
+      background: var(--surface-overlay);
+      border-color: var(--line-strong);
     }
-    .callout.danger {
-      border-color: var(--danger);
-      background: var(--danger-soft);
-      color: var(--ink);
+    main {
+      max-width: 1200px;
+      margin: 2rem auto 0;
+      padding: 0 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 2.5rem;
     }
-    .callout-title { font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; margin-bottom: 0.25rem; }
-
-    .annotation-badge {
-      display: inline-block;
-      background: var(--accent);
-      color: var(--on-accent);
-      font-size: 10px;
-      font-weight: 800;
-      padding: 2px 6px;
-      border-radius: 10px;
-      vertical-align: middle;
-      margin-left: 4px;
-    }
-
-    .diff-box {
+    .card {
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      padding: 0.75rem;
-      font-family: var(--font-mono);
-      font-size: 12px;
+      border-radius: var(--radius-lg);
+      padding: 1.75rem;
+      box-shadow: var(--shadow);
     }
-    .diff-line { padding: 2px 0; }
-    .diff-add { color: var(--success); }
-    .diff-del { color: var(--danger); }
-    .diff-rot { color: var(--warning); }
-    .diff-err { color: var(--danger); font-weight: 700; }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.25rem;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+    }
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+    }
+    .contract-box {
+      background: var(--surface-raised);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+    }
+    .contract-box h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .contract-box ul {
+      list-style-position: inside;
+      color: var(--ink);
+      font-size: 0.88rem;
+    }
+    .contract-box li {
+      margin-bottom: 0.4rem;
+    }
+    .table-container {
+      overflow-x: auto;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--line);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      text-align: left;
+    }
+    th {
+      background: var(--surface-raised);
+      color: var(--ink-muted);
+      font-weight: 600;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--line);
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface-raised); }
+    .winner-row td {
+      background: var(--accent-soft);
+      font-weight: 600;
+    }
+    .svg-container {
+      background: var(--surface-raised);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 1.5rem;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow-x: auto;
+    }
+    .mockup-window {
+      background: #090d16;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    }
+    .mockup-titlebar {
+      background: #151a28;
+      border-bottom: 1px solid var(--line);
+      padding: 0.6rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .mockup-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .dot-red { background: #ef4444; }
+    .dot-yellow { background: #f59e0b; }
+    .dot-green { background: #10b981; }
+    .mockup-body {
+      padding: 1.25rem;
+      color: #e2e8f0;
+      overflow-x: auto;
+    }
+    .token-key { color: #38bdf8; }
+    .token-str { color: #34d399; }
+    .token-num { color: #f59e0b; }
+    .token-bool { color: #c084fc; }
+    .token-tag {
+      display: inline-block;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      margin-left: 0.4rem;
+    }
+    .tag-untrusted { background: rgba(239, 68, 68, 0.25); color: #fca5a5; border: 1px solid #ef4444; }
+    .tag-owner { background: rgba(56, 189, 248, 0.25); color: #7dd3fc; border: 1px solid #0284c7; }
+    .tag-builtin { background: rgba(192, 132, 252, 0.25); color: #e9d5ff; border: 1px solid #9333ea; }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 1rem 1.25rem;
+      border-radius: 0 var(--radius-md) var(--radius-md) 0;
+      margin: 1rem 0;
+    }
+    .callout-warning {
+      border-left-color: var(--warning);
+      background: var(--warning-soft);
+    }
+    .callout-title {
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand-wrap">
-      <span class="brand">Cloud Harness</span>
-      <span class="badge">Brainstorm Brief · --ultra --advice (Augmented)</span>
+
+<header>
+  <div class="header-inner">
+    <div>
+      <div class="badge-bar">
+        <span class="badge badge-accent">Issue #15</span>
+        <span class="badge badge-success">Ultra Verifier: 5/5 Passed</span>
+        <span class="badge badge-purple">Supervisor: Kongming</span>
+        <span class="badge badge-warning">Priority: P2</span>
+        <span class="badge badge-accent">Phase: Brainstorm Contract</span>
+      </div>
+      <h1>Provenance-Aware Workspace Context, Skills, Memories & Hooks</h1>
+      <p class="subtitle">Cloud Harness MCP — Vendor-Neutral Portable AI Coding Context with Immutable Provenance & Sandboxed Execution</p>
     </div>
-    <button id="theme-btn" class="theme-toggle" type="button">Toggle Theme</button>
-  </header>
+    <button class="theme-toggle" onclick="toggleTheme()">
+      <span id="theme-icon">🌙</span> <span id="theme-text">Toggle Theme</span>
+    </button>
+  </div>
+</header>
 
-  <main class="container">
-    <section class="header-banner">
-      <p class="eyebrow">CloudHarness MCP · Architecture & Design Brief</p>
-      <h1>Secrets & Credentials Management: Description, MCP Discovery & Zero-Leakage Injection</h1>
-      <p class="lead">Đặc tả kiến trúc hoàn chỉnh cho tính năng quản lý Secret có Description, công cụ khám phá MCP <code>secrets_list</code> (hoàn toàn không lộ value), bộ lọc Aho-Corasick Ingest-time Redaction Engine tự động che dấu secret trong output command, và cơ chế khôi phục workspace an toàn.</p>
-    </section>
+<main>
 
-    <!-- SECTION 1: CONTRACT -->
-    <section class="panel">
-      <div class="panel-header">
-        <h2 class="panel-title">1. Bounded Delivery Contract (Khung Giao Ước)</h2>
-        <span class="pill success">Best-of-5 + Kongming Verified</span>
+  <!-- SUMMARY & DECISION BANNER -->
+  <section class="card">
+    <div class="card-header">
+      <div class="card-title">
+        <span>🏆</span> Executive Decision: Winning Candidate Selected
       </div>
-      <div class="contract-grid">
-        <div class="contract-tile">
-          <h3>Outcome (Mục tiêu sau cùng)</h3>
-          <p>Operator quản lý Secrets theo Environment kèm trường <strong>Description</strong> (mô tả nền tảng, tài khoản); AI Agent qua MCP có công cụ <code>secrets_list</code> để khám phá danh sách biến môi trường sẵn có (tên + mô tả, không value); khi chạy lệnh (<code>exec_run</code>, <code>tasks_run</code>, <code>shell_io</code>), secret được inject an toàn vào container và tự động kiểm duyệt (redact) <code>[REDACTED_SECRET: NAME]</code> trên toàn bộ stdout/stderr để không bao giờ lộ vào transcript cuộc hội thoại.</p>
-        </div>
-        <div class="contract-tile danger">
-          <h3>Constraints (Ràng buộc an toàn)</h3>
-          <ul>
-            <li><strong>Physical No-Decrypt on Discovery:</strong> <code>secrets_list</code> chỉ truy vấn bảng <code>secret_references</code>, tuyệt đối không gọi <code>environmentValues()</code> hay Keyring.</li>
-            <li><strong>Ingest-Time Redaction:</strong> Khử secret tại thời điểm nhận byte stream trong Runner trước khi ghi vào buffer, đảm bảo toàn vẹn không gian cursor (byte-offset pagination).</li>
-            <li><strong>Strict Description Limit:</strong> <code>description</code> là plain text non-secret, tối đa 500 ký tự, không bao giờ được đưa vào container env.</li>
-            <li><strong>Metadata Migration v2 -> v3:</strong> Thêm cột <code>description TEXT</code> có kiểm soát downgrade/idempotency.</li>
-          </ul>
-        </div>
-        <div class="contract-tile warning">
-          <h3>Non-goals (Phạm vi từ chối)</h3>
-          <ul>
-            <li>Không hỗ trợ giải mã hay hiển thị giá trị secret trong bất kỳ công cụ MCP nào.</li>
-            <li>Không làm full-text search engine phức tạp (dùng case-insensitive substring search cho query).</li>
-            <li>Không redacting input do agent tự gõ (agent chịu trách nhiệm về câu lệnh nó viết).</li>
-          </ul>
-        </div>
-        <div class="contract-tile success">
-          <h3>Acceptance Criteria (Tiêu chí nghiệm thu)</h3>
-          <ul>
-            <li><strong>AC1:</strong> Database schema migration v2 -> v3 thêm cột <code>description</code> vào <code>secret_references</code>; <code>SecretView</code> và API CRUD cập nhật đầy đủ.</li>
-            <li><strong>AC2:</strong> Thêm tool MCP <code>secrets_list</code>: trả về danh sách <code>{name, description, environmentId, version, updatedAt}</code>, hỗ trợ filter <code>query</code>.</li>
-            <li><strong>AC3:</strong> Bulk .env Import tự động trích xuất các comment <code># ...</code> liền kề phía trên làm <code>description</code> của secret.</li>
-            <li><strong>AC4:</strong> Ingest-Time Output Redaction: Lệnh <code>echo $STRIPE_KEY</code> trả về <code>[REDACTED_SECRET: STRIPE_KEY]</code> trên cả text và structuredContent của tool response.</li>
-            <li><strong>AC5:</strong> Persist <code>environment_id</code> vào <code>WorkspaceRecord</code>, đảm bảo recovery khôi phục container đầy đủ secret.</li>
-          </ul>
-        </div>
+      <span class="badge badge-success">Selected: Candidate B (77/80)</span>
+    </div>
+    <div class="callout">
+      <div class="callout-title">
+        <span>🎯</span> Core Architectural Direction: Bounded Passive Scanner + Lightweight Hybrid State Store
       </div>
-    </section>
-
-    <!-- SECTION 2: ARCHITECTURE & REDACTION FLOW -->
-    <section class="panel">
-      <div class="panel-header">
-        <h2 class="panel-title">2. Sơ đồ Luồng MCP Discovery & Ingest-Time Output Redaction</h2>
-        <span class="pill">Zero-Leakage Streaming Architecture</span>
+      <p>
+        Cloud Harness MCP adopts a <strong>split-plane provenance architecture</strong>:
+        <strong>(1) Worker Passive Scanner</strong> discovers instruction files (<code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>.cursorrules</code>, <code>.aider.conf.yml</code>), language manifests, and test declarations with strict zero-execution, bounded byte budgets;
+        <strong>(2) Runner Provenance Resolver</strong> assigns non-forgeable trust layers (<code>built-in &gt; owner &gt; workspace &gt; repository</code>);
+        <strong>(3) Principal-Qualified SQLite</strong> manages durable scoped memories (owner, repository, workspace) with optimistic concurrency (CAS), tags, TTL, and atomic audit logging;
+        <strong>(4) Declarative Hooks Registry</strong> requires exact SHA-256 digest activation before running in a short-lived, no-network, no-secret executor container.
+      </p>
+    </div>
+    <div class="grid-4" style="margin-top: 1.25rem;">
+      <div class="contract-box">
+        <h3><span>🛡️</span> Zero Execution on Scan</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Passive discovery performs NO shell invocations, package scripts, or dynamic code evaluation.</p>
       </div>
-      <div class="diagram-container">
-        <svg viewBox="0 0 980 400" width="100%" height="400" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-              <path d="M 0 1 L 8 5 L 0 9 z" fill="var(--accent)" />
-            </marker>
-          </defs>
-
-          <!-- Actors -->
-          <rect x="20" y="20" width="150" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-          <text x="95" y="42" fill="var(--ink)" font-size="11" font-weight="700" text-anchor="middle">LLM AGENT / CLIENT</text>
-          <line x1="95" y1="56" x2="95" y2="380" stroke="var(--line)" stroke-dasharray="4" />
-
-          <rect x="210" y="20" width="160" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-          <text x="290" y="42" fill="var(--ink)" font-size="11" font-weight="700" text-anchor="middle">MCP SERVER (API)</text>
-          <line x1="290" y1="56" x2="290" y2="380" stroke="var(--line)" stroke-dasharray="4" />
-
-          <rect x="420" y="20" width="170" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-          <text x="505" y="42" fill="var(--ink)" font-size="11" font-weight="700" text-anchor="middle">RUNNER (SERVICE)</text>
-          <line x1="505" y1="56" x2="505" y2="380" stroke="var(--line)" stroke-dasharray="4" />
-
-          <rect x="630" y="20" width="160" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-          <text x="710" y="42" fill="var(--accent)" font-size="11" font-weight="700" text-anchor="middle">REDACTION ENGINE</text>
-          <line x1="710" y1="56" x2="710" y2="380" stroke="var(--line)" stroke-dasharray="4" />
-
-          <rect x="830" y="20" width="130" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-          <text x="895" y="42" fill="var(--success)" font-size="11" font-weight="700" text-anchor="middle">DOCKER WORKSPACE</text>
-          <line x1="895" y1="56" x2="895" y2="380" stroke="var(--line)" stroke-dasharray="4" />
-
-          <!-- Flow 1: secrets_list -->
-          <line x1="95" y1="80" x2="285" y2="80" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="190" y="72" fill="var(--ink)" font-size="10" text-anchor="middle">1. secrets_list(query="stripe")</text>
-
-          <line x1="290" y1="105" x2="500" y2="105" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="395" y="98" fill="var(--ink)" font-size="10" text-anchor="middle">2. Query secret_references (Metadata Only)</text>
-
-          <line x1="290" y1="130" x2="100" y2="130" stroke="var(--success)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="190" y="124" fill="var(--success)" font-size="10" text-anchor="middle">3. Return [{name:"STRIPE_KEY", desc:"Staging API Key"}]</text>
-
-          <!-- Flow 2: exec_run -->
-          <line x1="95" y1="175" x2="285" y2="175" stroke="var(--warning)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="190" y="167" fill="var(--warning)" font-size="10" text-anchor="middle">4. exec_run(command="echo $STRIPE_KEY; npm test")</text>
-
-          <line x1="290" y1="200" x2="500" y2="200" stroke="var(--warning)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="395" y="192" fill="var(--warning)" font-size="10" text-anchor="middle">5. Dispatch command to container</text>
-
-          <line x1="505" y1="225" x2="890" y2="225" stroke="var(--warning)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="700" y="217" fill="var(--ink-muted)" font-size="10" text-anchor="middle">6. Exec inside container with injected env</text>
-
-          <!-- Flow 3: stdout capture & redaction -->
-          <line x1="895" y1="260" x2="715" y2="260" stroke="var(--danger)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="805" y="252" fill="var(--danger)" font-size="10" text-anchor="middle">7. Raw stdout: "sk_test_123456789..."</text>
-
-          <rect x="635" y="280" width="150" height="30" rx="3" fill="var(--surface-overlay)" stroke="var(--accent)" />
-          <text x="710" y="299" fill="var(--accent)" font-size="10" text-anchor="middle">Aho-Corasick Match & Redact</text>
-
-          <line x1="710" y1="330" x2="295" y2="330" stroke="var(--success)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="500" y="322" fill="var(--success)" font-size="10" text-anchor="middle">8. Sanitized output: "[REDACTED_SECRET: STRIPE_KEY]"</text>
-
-          <line x1="290" y1="360" x2="100" y2="360" stroke="var(--success)" stroke-width="2" marker-end="url(#arrow)" />
-          <text x="190" y="352" fill="var(--success)" font-size="10" text-anchor="middle">9. Return safe ToolResult to Agent</text>
-        </svg>
+      <div class="contract-box">
+        <h3><span>🏷️</span> Immutable Provenance</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Runner assigns trust labels from isolation boundaries. Repository files cannot forge owner authority.</p>
       </div>
-    </section>
+      <div class="contract-box">
+        <h3><span>🧠</span> Scoped SQLite Memory</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Principal, repository, and workspace scopes with generation guards, TTL expiry, and tag search.</p>
+      </div>
+      <div class="contract-box">
+        <h3><span>🔒</span> Digest-Pinned Hooks</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Named lifecycle events (<code>pre_commit</code>, <code>post_checkout</code>) execute only in ephemeral sandboxes with exact digest matching.</p>
+      </div>
+    </div>
+  </section>
 
-    <!-- SECTION 3: MOCKUPS WITH DESCRIPTION & BULK .ENV -->
-    <section class="panel">
-      <div class="panel-header">
-        <h2 class="panel-title">3. Giao diện Dashboard Quản lý Description & Bulk .env</h2>
-        <span class="pill">Enhanced UI Spec</span>
+  <!-- 4 CONTRACT FIELDS -->
+  <section class="card">
+    <div class="card-header">
+      <div class="card-title">
+        <span>📋</span> Bounded Delivery Contract (4 Inviolable Fields)
+      </div>
+      <span class="badge badge-accent">Authoritative Spec</span>
+    </div>
+    <div class="grid-2">
+      <!-- 1. OUTCOME -->
+      <div class="contract-box">
+        <h3><span>🎯</span> 1. Outcome (End State)</h3>
+        <ul>
+          <li><strong>Universal Context Manifest:</strong> <code>workspace_context</code> returns a bounded, vendor-neutral manifest of known allowlisted instruction files discovered within declared scan bounds (such as <code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>.cursor/rules/*.mdc</code>, <code>.aider.conf.yml</code>), language manifests (<code>package.json</code>, <code>Cargo.toml</code>, etc.), declared test commands, and skill summaries across Claude, Codex, Cursor, and Aider.</li>
+          <li><strong>Explicit Provenance Attribution:</strong> Every returned item clearly identifies its source (<code>built-in</code>, <code>owner</code>, <code>workspace</code>, <code>repository</code>), trust level, content SHA-256, and mutation authority.</li>
+          <li><strong>Deterministic Skill Precedence:</strong> Same-name skills resolve in exact order <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidates fully visible.</li>
+          <li><strong>Durable Scoped Memories:</strong> Principal, repository, and workspace memories with CAS generation concurrency, TTL cleanup, tag filtering, and deletion.</li>
+          <li><strong>Safe Lifecycle Hooks:</strong> Declarative event registry with exact digest-pinned activation, sandboxed executor isolation, and strict pre-commit veto semantics.</li>
+        </ul>
       </div>
 
+      <!-- 2. CONSTRAINTS -->
+      <div class="contract-box">
+        <h3><span>⛓️</span> 2. Constraints & Boundaries</h3>
+        <ul>
+          <li><strong>Untrusted Repository Data:</strong> All checkout text, instructions, and scripts are treated as untrusted data. No repository text can elevate itself to system policy or forge owner provenance.</li>
+          <li><strong>Byte-Budget Hard Caps:</strong> 32 KiB default (128 KiB max) for context manifests; 64 KiB max per memory note; max 256 scanned candidate files with 250ms deadline.</li>
+          <li><strong>Principal Isolation (#13):</strong> Every SQLite query and memory record is strictly scoped by server-derived <code>principal_id</code>. Zero cross-principal leakage.</li>
+          <li><strong>Executor Confinement:</strong> All skill/hook execution runs as unprivileged UID in isolated container with <code>networkMode: none</code> by default, zero access to broker tokens or Docker socket.</li>
+          <li><strong>Schema Migration:</strong> Metadata SQLite schema upgrades cleanly v4 &rarr; v5 with atomic transactions and downgrade refusal safety.</li>
+        </ul>
+      </div>
+
+      <!-- 3. NON-GOALS -->
+      <div class="contract-box">
+        <h3><span>🚫</span> 3. Non-Goals (Strictly Out of Scope)</h3>
+        <ul>
+          <li><strong>No Agent Reasoning Stream:</strong> Context manifest is strictly passive, bounded static file discovery; reasoning traces or active execution logs are not context primitives.</li>
+          <li><strong>No LLM Semantic Vector Embeddings:</strong> No runner-hosted vector databases, semantic RAG, or embeddings calculation.</li>
+          <li><strong>No Automatic Prompt Merging:</strong> Does NOT concatenate conflicting instruction files (e.g. <code>CLAUDE.md</code> + <code>AGENTS.md</code>) into one synthetic document.</li>
+          <li><strong>No Host-Level Hook Execution:</strong> Hooks never execute on the host OS and never receive control-plane broker credentials.</li>
+          <li><strong>No Cross-Principal Sharing:</strong> No collaborative multi-tenant memory sharing or public memory publishing.</li>
+          <li><strong>No Skill Marketplace:</strong> No dynamic remote package resolution, npm installation, or remote downloading of unreviewed skills.</li>
+        </ul>
+      </div>
+
+      <!-- 4. ACCEPTANCE CRITERIA -->
+      <div class="contract-box">
+        <h3><span>✅</span> 4. Observable Acceptance Criteria</h3>
+        <ul>
+          <li><strong>Passive Discovery Proof:</strong> Sentinel executable referenced in manifests remains completely untouched during all context, skill, memory, and hook scan operations.</li>
+          <li><strong>Adversarial Output-Boundary & Prompt-Injection Containment:</strong> An adversarial repository containing fake <code>SYSTEM</code> headers, forged provenance fields (<code>source: built-in</code>, <code>source: owner</code>), fake delimiters/NUL bytes, and prompt-injection instructions MUST:
+            <br>&bull; In <code>structuredContent</code>: remain strictly nested within <code>result.data</code> under <code>trust: "untrusted-executor"</code>;
+            <br>&bull; In text projection: be rendered by a dedicated provenance-aware formatter using trusted boundary labels/delimiters and JSON-escaped strings (or serialized JSON blocks) rather than raw string flattening;
+            <br>&bull; Never escape into top-level message, header, tool description, or audit fields, and create zero persistent/privileged SQLite memory records.
+          </li>
+          <li><strong>Precedence Verification:</strong> 4 same-name skill fixtures resolve strictly to <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidate visibility.</li>
+          <li><strong>Concurrency Guard:</strong> <code>memories_write</code> and <code>memories_delete</code> with mismatched <code>expectedGeneration</code> fail immediately with <code>CONFLICT</code>.</li>
+          <li><strong>TTL & Expiry Reaping:</strong> Expired memories are invisible immediately and reaped; workspace memories vanish on workspace closure; owner memories persist across restarts.</li>
+          <li><strong>Digest Pin Invalidation:</strong> Modifying a hook script file immediately invalidates its activation digest and blocks execution before process spawn.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARCHITECTURE & WORKFLOW DIAGRAMS -->
+  <section class="card">
+    <div class="card-header">
+      <div class="card-title">
+        <span>🏗️</span> System Architecture & Provenance Resolution Flow
+      </div>
+      <span class="badge badge-purple">Interactive Vector Flow</span>
+    </div>
+    
+    <div class="svg-container">
+      <svg width="960" height="420" viewBox="0 0 960 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Background grid styling -->
+        <defs>
+          <linearGradient id="grad-client" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#0284c7" stop-opacity="0.3"/>
+            <stop offset="100%" stop-color="#0369a1" stop-opacity="0.1"/>
+          </linearGradient>
+          <linearGradient id="grad-runner" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#0284c7" stop-opacity="0.08"/>
+          </linearGradient>
+          <linearGradient id="grad-worker" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#34d399" stop-opacity="0.2"/>
+            <stop offset="100%" stop-color="#059669" stop-opacity="0.05"/>
+          </linearGradient>
+          <linearGradient id="grad-sqlite" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#c084fc" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#7e22ce" stop-opacity="0.08"/>
+          </linearGradient>
+          <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+            <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.4"/>
+          </filter>
+        </defs>
+
+        <!-- BOUNDARY ZONES -->
+        <!-- MCP Client Zone -->
+        <rect x="20" y="30" width="180" height="360" rx="10" fill="url(#grad-client)" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <text x="35" y="60" fill="#38bdf8" font-family="system-ui" font-size="13" font-weight="700">MCP CLIENTS</text>
+        <rect x="35" y="85" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
+        <text x="50" y="115" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Claude / Codex</text>
+        <rect x="35" y="150" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
+        <text x="50" y="180" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Cursor / Aider</text>
+        <rect x="35" y="215" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
+        <text x="50" y="245" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Generic MCP Tools</text>
+
+        <!-- RUNNER CONTROL PLANE ZONE -->
+        <rect x="240" y="30" width="440" height="360" rx="10" fill="url(#grad-runner)" stroke="#38bdf8" stroke-width="2"/>
+        <text x="260" y="60" fill="#38bdf8" font-family="system-ui" font-size="14" font-weight="700">TRUSTED RUNNER CONTROL PLANE (apps/runner)</text>
+
+        <!-- Runner Components -->
+        <rect x="260" y="85" width="200" height="75" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="275" y="110" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Provenance & Precedence</text>
+        <text x="275" y="130" fill="#94a3b8" font-family="system-ui" font-size="10">Resolver: built-in &gt; owner</text>
+        <text x="275" y="145" fill="#94a3b8" font-family="system-ui" font-size="10">&gt; workspace &gt; repository</text>
+
+        <rect x="260" y="175" width="200" height="85" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="275" y="200" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Context Budget Manager</text>
+        <text x="275" y="220" fill="#94a3b8" font-family="system-ui" font-size="10">Hard Cap: 32 KiB / 128 KiB</text>
+        <text x="275" y="235" fill="#94a3b8" font-family="system-ui" font-size="10">Deterministic Truncation & Cursors</text>
+        <text x="275" y="250" fill="#94a3b8" font-family="system-ui" font-size="10">No Prompt Merging</text>
+
+        <rect x="260" y="275" width="200" height="95" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="275" y="300" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Hook Lifecycle Controller</text>
+        <text x="275" y="320" fill="#94a3b8" font-family="system-ui" font-size="10">Exact Digest Verification</text>
+        <text x="275" y="335" fill="#94a3b8" font-family="system-ui" font-size="10">Pre-commit Veto Enforcer</text>
+        <text x="275" y="350" fill="#94a3b8" font-family="system-ui" font-size="10">Audit Event Publisher (#10)</text>
+
+        <!-- SQLite Box inside Runner -->
+        <rect x="480" y="85" width="180" height="285" rx="8" fill="url(#grad-sqlite)" stroke="#c084fc" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="500" y="115" fill="#c084fc" font-family="system-ui" font-size="13" font-weight="700">SQLite StateStore v5</text>
+        <rect x="495" y="135" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
+        <text x="505" y="158" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">memories (Scoped)</text>
+        <rect x="495" y="185" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
+        <text x="505" y="208" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">memory_tags</text>
+        <rect x="495" y="235" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
+        <text x="505" y="258" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">hook_activations</text>
+        <rect x="495" y="285" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
+        <text x="505" y="308" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">audit_events (#10)</text>
+
+        <!-- WORKER EXECUTOR ZONE -->
+        <rect x="710" y="30" width="230" height="360" rx="10" fill="url(#grad-worker)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <text x="730" y="60" fill="#34d399" font-family="system-ui" font-size="13" font-weight="700">EXECUTOR (worker)</text>
+        
+        <rect x="725" y="85" width="200" height="95" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
+        <text x="740" y="110" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Passive File Scanner</text>
+        <text x="740" y="130" fill="#d1fae5" font-family="system-ui" font-size="9.5">• AGENTS.md, CLAUDE.md</text>
+        <text x="740" y="145" fill="#d1fae5" font-family="system-ui" font-size="9.5">• .cursor/rules, package.json</text>
+        <text x="740" y="160" fill="#fca5a5" font-family="system-ui" font-size="9.5">ZERO EXECUTION ON SCAN</text>
+
+        <rect x="725" y="195" width="200" height="75" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
+        <text x="740" y="220" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Sandboxed Hook Runner</text>
+        <text x="740" y="240" fill="#d1fae5" font-family="system-ui" font-size="9.5">• networkMode: none</text>
+        <text x="740" y="255" fill="#d1fae5" font-family="system-ui" font-size="9.5">• Read-only mounts & caps</text>
+
+        <rect x="725" y="285" width="200" height="85" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
+        <text x="740" y="310" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Legacy File Projection</text>
+        <text x="740" y="330" fill="#d1fae5" font-family="system-ui" font-size="9.5">• .cloud-harness/memories/</text>
+        <text x="740" y="345" fill="#fca5a5" font-family="system-ui" font-size="9.5">Read-Only Untrusted Projection</text>
+
+        <!-- CONNECTORS / ARROWS -->
+        <!-- Client to Runner -->
+        <path d="M 200 120 L 260 120" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+        <path d="M 260 210 L 200 210" stroke="#34d399" stroke-width="2" stroke-dasharray="3 3"/>
+        
+        <!-- Runner to Worker Scan -->
+        <path d="M 460 130 L 725 130" stroke="#34d399" stroke-width="2"/>
+        <text x="530" y="125" fill="#a7f3d0" font-family="system-ui" font-size="9" font-weight="600">Passive Scan (Zero Exec)</text>
+
+        <!-- Runner to Worker Hook Exec -->
+        <path d="M 460 320 L 725 230" stroke="#f59e0b" stroke-width="2"/>
+        <text x="520" y="270" fill="#fde68a" font-family="system-ui" font-size="9" font-weight="600">Digest-Pinned Exec (No-Net)</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ULTRA VERIFIER BENCHMARK & COMPARISON -->
+  <section class="card">
+    <div class="card-header">
+      <div class="card-title">
+        <span>🔬</span> Ultra Verifier Mode: Best-of-5 Evaluation & Rubric Scoring
+      </div>
+      <span class="badge badge-purple">Scored by Kongming</span>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Candidate Architecture Focus</th>
+            <th>Faithfulness (/20)</th>
+            <th>Evidence (/20)</th>
+            <th>Acceptance (/20)</th>
+            <th>Trade-offs (/20)</th>
+            <th>Total (/80)</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="winner-row">
+            <td><strong>#1</strong></td>
+            <td><strong>Candidate B: Client-Portability & Minimalist Engine</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Bounded passive scanner, multi-client adapters (Claude/Codex/Cursor/Aider), lightweight hybrid SQLite store, UTF-8 byte budgets.</span></td>
+            <td><strong>20</strong></td>
+            <td><strong>18</strong></td>
+            <td><strong>19</strong></td>
+            <td><strong>20</strong></td>
+            <td><strong>77</strong></td>
+            <td><span class="badge badge-success">WINNER</span></td>
+          </tr>
+          <tr>
+            <td>#2</td>
+            <td><strong>Candidate C: Developer-Experience & Scalable Context</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">In-memory layered manifest cache, adaptive token budgeting, rich FTS5 tag/scope memory queries, sandboxed hooks.</span></td>
+            <td>19</td>
+            <td>19</td>
+            <td>19</td>
+            <td>19</td>
+            <td>76</td>
+            <td><span class="badge badge-accent">Runner-Up</span></td>
+          </tr>
+          <tr>
+            <td>#3</td>
+            <td><strong>Candidate E: Threat-Model Containment & Production Governance</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">STRIDE threat modeling, approval grant tokens for persistent writes, durable pre-execution run state with INTERRUPTED recovery.</span></td>
+            <td>17</td>
+            <td>19</td>
+            <td>19</td>
+            <td>20</td>
+            <td>75</td>
+            <td><span class="badge badge-warning">Strong Threat Model</span></td>
+          </tr>
+          <tr>
+            <td>#4</td>
+            <td><strong>Candidate A: Security-First & HMAC Cryptographic Provenance</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Split-plane runner authority, HMAC-SHA-256 provenance integrity tags, provenance keyring, out-of-checkout workspace storage.</span></td>
+            <td>17</td>
+            <td>17</td>
+            <td>20</td>
+            <td>19</td>
+            <td>73</td>
+            <td><span class="badge badge-warning">Over-Engineered Crypto</span></td>
+          </tr>
+          <tr>
+            <td>#5</td>
+            <td><strong>Candidate D: Zero-Friction Backward Compatibility & Schema Evolution</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Expand-migrate-contract overlay, separate new mutation tools (memories_put/query) to avoid rolling deploy field stripping, v5-to-v4 downgrade guards.</span></td>
+            <td>15</td>
+            <td>18</td>
+            <td>18</td>
+            <td>20</td>
+            <td>71</td>
+            <td><span class="badge badge-danger">Excessive Operations</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout callout-warning" style="margin-top: 1.5rem;">
+      <div class="callout-title">
+        <span>💡</span> Kongming Verifier Synthesis: Key Lessons to Adopt from Other Candidates
+      </div>
+      <p style="font-size: 0.85rem;">
+        While Candidate B is the single winner, the final implementation plan must incorporate key hardening elements:
+        <strong>(1) From Candidate D:</strong> Safe rolling upgrades with feature negotiation so old runners don't strip new mutation parameters;
+        <strong>(2) From Candidate 3:</strong> Snapshot-bound cursors for deterministic pagination;
+        <strong>(3) From Candidate 5:</strong> Durable pre-execution <code>REQUESTED</code> status for long lifecycle hooks to handle runner restarts without silent state corruption.
+      </p>
+    </div>
+  </section>
+
+  <!-- UI / UX MOCKUPS & TOOL OUTPUT CONTRACT -->
+  <section class="card">
+    <div class="card-header">
+      <div class="card-title">
+        <span>💻</span> UI/UX Mockups: Enriched MCP Tool Responses with Provenance Badges
+      </div>
+      <span class="badge badge-accent">MCP JSON Envelopes</span>
+    </div>
+
+    <div class="grid-2">
+      <!-- Mockup 1: workspace_context -->
       <div class="mockup-window">
-        <div class="mockup-bar">
-          <span class="mockup-dot"></span>
-          <span class="mockup-dot"></span>
-          <span class="mockup-dot"></span>
-          <span class="mono">Dashboard: /projects/prj_ecommerce_core / env_production</span>
+        <div class="mockup-titlebar">
+          <span class="mockup-dot dot-red"></span>
+          <span class="mockup-dot dot-yellow"></span>
+          <span class="mockup-dot dot-green"></span>
+          <span style="color: #94a3b8; margin-left: 0.5rem;">MCP Tool: workspace_context</span>
         </div>
-        <div class="mockup-content">
-          <!-- Environment Secret Table with Description -->
-          <div class="card" style="border-left: 4px solid var(--accent); background: var(--surface);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-              <div>
-                <h3 style="font-size: 1.1rem; color: var(--ink);">Production Secrets</h3>
-                <p class="mono" style="font-size: 11px;">env_prod_8829f0a · 3 Secrets Configured · Write-Only</p>
-              </div>
-              <div style="display: flex; gap: 0.5rem;">
-                <button type="button" class="theme-toggle" style="border-color: var(--accent); color: var(--accent);">Bulk Import .env</button>
-                <button type="button" class="theme-toggle">Export .env.example</button>
-              </div>
-            </div>
-
-            <div class="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Variable Name</th>
-                    <th>Description (Platform / Purpose) <span class="annotation-badge">D1</span></th>
-                    <th>State</th>
-                    <th>Version</th>
-                    <th>Actions <span class="annotation-badge">D2</span></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><strong class="mono">DATABASE_URL</strong></td>
-                    <td><span style="color: var(--ink);">Supabase PostgreSQL Staging (Account: infra-team)</span></td>
-                    <td><span class="pill success">Active</span></td>
-                    <td class="mono">v3 (gen 4)</td>
-                    <td>
-                      <div style="display: flex; gap: 0.3rem;">
-                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Edit Desc</button>
-                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Rotate</button>
-                        <button type="button" class="theme-toggle" style="color: var(--danger); padding: 3px 6px;">Del</button>
-                      </div>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td><strong class="mono">STRIPE_SECRET_KEY</strong></td>
-                    <td><span style="color: var(--ink);">Stripe Payments API (US Entity, Test Mode)</span></td>
-                    <td><span class="pill success">Active</span></td>
-                    <td class="mono">v1 (gen 1)</td>
-                    <td>
-                      <div style="display: flex; gap: 0.3rem;">
-                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Edit Desc</button>
-                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Rotate</button>
-                        <button type="button" class="theme-toggle" style="color: var(--danger); padding: 3px 6px;">Del</button>
-                      </div>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td><strong class="mono">ALGOLIA_API_KEY</strong></td>
-                    <td><span style="color: var(--ink-muted); font-style: italic;">No description provided</span></td>
-                    <td><span class="pill success">Active</span></td>
-                    <td class="mono">v1 (gen 1)</td>
-                    <td>
-                      <div style="display: flex; gap: 0.3rem;">
-                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">+ Add Desc</button>
-                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Rotate</button>
-                        <button type="button" class="theme-toggle" style="color: var(--danger); padding: 3px 6px;">Del</button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <!-- Single Create Form with Description -->
-            <div style="margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.5rem;">
-              <span style="font-weight: 700; font-size: 11px; text-transform: uppercase; color: var(--ink-muted);">Add Single Secret:</span>
-              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                <input type="text" placeholder="NAME (e.g. AWS_ACCESS_KEY)" class="mono" style="padding: 6px 8px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 12px; width: 180px;">
-                <input type="password" placeholder="Write-only value" class="mono" style="padding: 6px 8px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 12px; width: 200px;">
-                <input type="text" placeholder="Optional description (e.g. AWS S3 Media Bucket)" style="padding: 6px 8px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 12px; flex: 1; min-width: 220px;">
-                <button type="button" class="theme-toggle" style="background: var(--accent); color: var(--on-accent); font-weight: 600;">+ Create</button>
-              </div>
-            </div>
-          </div>
+        <div class="mockup-body">
+<pre>{
+  <span class="token-key">"ok"</span>: <span class="token-bool">true</span>,
+  <span class="token-key">"data"</span>: {
+    <span class="token-key">"workspace"</span>: { <span class="token-key">"workspaceId"</span>: <span class="token-str">"ws_9f8e7d6c5b"</span>, <span class="token-key">"status"</span>: <span class="token-str">"ACTIVE"</span> },
+    <span class="token-key">"branch"</span>: <span class="token-str">"feat/issue-15"</span>,
+    <span class="token-key">"manifest"</span>: {
+      <span class="token-key">"contractVersion"</span>: <span class="token-num">1</span>,
+      <span class="token-key">"returnedBytes"</span>: <span class="token-num">12450</span>,
+      <span class="token-key">"truncated"</span>: <span class="token-bool">false</span>,
+      <span class="token-key">"items"</span>: [
+        {
+          <span class="token-key">"id"</span>: <span class="token-str">"ctx_claude_root"</span>,
+          <span class="token-key">"kind"</span>: <span class="token-str">"instruction"</span>,
+          <span class="token-key">"format"</span>: <span class="token-str">"claude"</span>,
+          <span class="token-key">"path"</span>: <span class="token-str">"CLAUDE.md"</span>,
+          <span class="token-key">"provenance"</span>: {
+            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">UNTRUSTED</span>,
+            <span class="token-key">"trust"</span>: <span class="token-str">"untrusted-executor"</span>,
+            <span class="token-key">"mutableBy"</span>: <span class="token-str">"repository-commit"</span>,
+            <span class="token-key">"contentSha256"</span>: <span class="token-str">"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"</span>
+          }
+        },
+        {
+          <span class="token-key">"id"</span>: <span class="token-str">"ctx_agents_portable"</span>,
+          <span class="token-key">"kind"</span>: <span class="token-str">"instruction"</span>,
+          <span class="token-key">"format"</span>: <span class="token-str">"codex"</span>,
+          <span class="token-key">"path"</span>: <span class="token-str">"AGENTS.md"</span>,
+          <span class="token-key">"provenance"</span>: {
+            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">UNTRUSTED</span>
+          }
+        }
+      ]
+    }
+  }
+}</pre>
         </div>
       </div>
-    </section>
 
-    <!-- SECTION 4: DETAILED TECHNICAL BREAKDOWN -->
-    <section class="panel">
-      <div class="panel-header">
-        <h2 class="panel-title">4. Chi Tiết Kỹ Thuật (Technical Specifications)</h2>
-        <span class="pill">Database, Tooling & Engine</span>
-      </div>
-
-      <div class="grid-3">
-        <div class="card">
-          <h3>1. SQLite Migration (v2 -> v3)</h3>
-          <ul>
-            <li>File: <code>apps/runner/src/metadata-schema.ts</code></li>
-            <li>Nâng version ladder lên <strong>3</strong>.</li>
-            <li>DDL: <code>ALTER TABLE secret_references ADD COLUMN description TEXT;</code></li>
-            <li>Cập nhật <code>metadata-records.ts</code>: <code>SecretRow.description</code>, <code>SecretView.description: string | null</code>.</li>
-            <li>Thêm endpoint <code>secret_update</code> cho phép sửa description mà không cần nhập lại secret value.</li>
-          </ul>
+      <!-- Mockup 2: skills_list & memories_search -->
+      <div class="mockup-window">
+        <div class="mockup-titlebar">
+          <span class="mockup-dot dot-red"></span>
+          <span class="mockup-dot dot-yellow"></span>
+          <span class="mockup-dot dot-green"></span>
+          <span style="color: #94a3b8; margin-left: 0.5rem;">MCP Tool: skills_list (Precedence Resolution)</span>
         </div>
-
-        <div class="card">
-          <h3>2. MCP Tool: secrets_list</h3>
-          <ul>
-            <li>File: <code>packages/contracts/src/tool-schemas.ts</code></li>
-            <li>Schema: <code>{ ...workspace, environmentId?, query?, cursor?, limit? }</code>.</li>
-            <li>Annotations: <code>readOnlyHint: true</code>, <code>idempotentHint: true</code>.</li>
-            <li>Output Schema: <code>{ secrets: [{ name, description, environmentId, version, updatedAt }] }</code>.</li>
-            <li>Đảm bảo tuyệt đối không có trường value trong output contract.</li>
-          </ul>
-        </div>
-
-        <div class="card">
-          <h3>3. Ingest-Time Output Redaction</h3>
-          <ul>
-            <li>File: <code>apps/runner/src/operation-manager.ts</code> & <code>workspace-service.ts</code>.</li>
-            <li>Xây dựng Aho-Corasick automaton từ danh sách <code>(name, value)</code> snapshot lúc mở workspace.</li>
-            <li>Khử trực tiếp trên stream chunks của <code>stdout/stderr</code> trước khi tính toán byte offset của cursor.</li>
-            <li>Sanitize string trên <code>runWorker</code> result và các điểm dựng <code>HarnessError.message</code>.</li>
-          </ul>
+        <div class="mockup-body">
+<pre>{
+  <span class="token-key">"ok"</span>: <span class="token-bool">true</span>,
+  <span class="token-key">"data"</span>: {
+    <span class="token-key">"skills"</span>: [
+      {
+        <span class="token-key">"name"</span>: <span class="token-str">"cloudharness"</span>,
+        <span class="token-key">"selectedSource"</span>: <span class="token-str">"built-in"</span> <span class="token-tag tag-builtin">BUILT-IN</span>,
+        <span class="token-key">"contentSha256"</span>: <span class="token-str">"9a8b7c6d5e4f3a2b..."</span>,
+        <span class="token-key">"shadowed"</span>: [
+          {
+            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">SHADOWED</span>,
+            <span class="token-key">"root"</span>: <span class="token-str">".agents/skills"</span>,
+            <span class="token-key">"reason"</span>: <span class="token-str">"Overridden by higher-precedence built-in skill"</span>
+          }
+        ]
+      },
+      {
+        <span class="token-key">"name"</span>: <span class="token-str">"project-deploy"</span>,
+        <span class="token-key">"selectedSource"</span>: <span class="token-str">"owner"</span> <span class="token-tag tag-owner">OWNER-ASSERTED</span>,
+        <span class="token-key">"mutableBy"</span>: <span class="token-str">"owner"</span>
+      }
+    ]
+  }
+}</pre>
         </div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <!-- SECTION 5: IMPLEMENTATION PHASES -->
-    <section class="panel">
-      <div class="panel-header">
-        <h2 class="panel-title">5. Kế Hoạch Triển Khai Hoàn Chỉnh (3-Phase Plan)</h2>
-        <span class="pill success">Ready for ak:plan</span>
+  <!-- PHASED IMPLEMENTATION ROADMAP -->
+  <section class="card">
+    <div class="card-header">
+      <div class="card-title">
+        <span>🗺️</span> Phased Implementation & Delivery Roadmap
       </div>
-      <div class="grid-3">
-        <div class="card">
-          <h3 style="color: var(--accent);">Phase 1: Persistence & Policy</h3>
-          <ul>
-            <li>Tạo <code>secret-policy.ts</code> (chặn biến cấm).</li>
-            <li>Migration SQLite v2 -> v3 (thêm <code>description</code>).</li>
-            <li>Thêm <code>environment_id</code> vào <code>WorkspaceRecord</code> (sửa lỗi recovery).</li>
-            <li>Thêm <code>secret_update</code> API & cập nhật CRUD.</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3 style="color: var(--accent);">Phase 2: MCP Tool & Redaction</h3>
-          <ul>
-            <li>Đăng ký tool MCP <code>secrets_list</code> trong contracts.</li>
-            <li>Cài đặt Aho-Corasick Ingest-time Redaction Engine trong Runner.</li>
-            <li>Tích hợp redaction vào <code>exec_run</code>, <code>tasks_status</code>, <code>shell_io</code>, <code>sessions_io</code>, và error messages.</li>
-            <li>Viết test kiểm thử khử chuỗi và bảo toàn cursor.</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3 style="color: var(--accent);">Phase 3: Dashboard UI & Bulk .env</h3>
-          <ul>
-            <li>Cập nhật Secret Table hiển thị Description và form Edit Description.</li>
-            <li>Cải tiến Bulk .env Parser tự động lấy comment làm Description.</li>
-            <li>Tạo Export <code>.env.example</code> manifest.</li>
-            <li>Chạy kiểm thử UI contract và visual test.</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-  </main>
+      <span class="badge badge-accent">6 Implementation Phases</span>
+    </div>
 
-  <script>
-    const themeBtn = document.getElementById('theme-btn');
-    themeBtn.addEventListener('click', () => {
-      const current = document.documentElement.getAttribute('data-theme');
-      const next = current === 'dark' ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', next);
-    });
-  </script>
+    <div class="grid-3">
+      <div class="contract-box">
+        <h3><span>1️⃣</span> Phase 1: Contracts & Threat Model</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Define Zod schemas in <code>runner-api.ts</code> and <code>tool-schemas.ts</code>: <code>ProvenanceSchema</code>, <code>ContextManifestItem</code>, <code>MemoryDescriptor</code>, <code>HookEvent</code>, and budget bounds.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>2️⃣</span> Phase 2: Passive Worker Scanner</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Implement zero-execution file discovery in <code>worker/harness-worker.mjs</code> for Claude, Codex, Cursor, Aider instruction files, and language manifests.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>3️⃣</span> Phase 3: Precedence & Skill Resolver</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Build runner resolver for <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidate visibility and SHA-256 digest execution checks.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>4️⃣</span> Phase 4: Scoped SQLite Memory</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Migrate <code>StateStore</code> schema v5: <code>memories</code>, <code>memory_tags</code> with principal/repo/workspace scoping, CAS generation, TTL, search, and delete.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>5️⃣</span> Phase 5: Declarative Hooks & Sandbox</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Implement JSON manifest parser, digest-pinned activation, and short-lived no-network executor container runs for <code>pre_commit</code> and <code>post_checkout</code>.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>6️⃣</span> Phase 6: Hardening & Verification</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Run prompt-injection fixtures, restart/crash tests, output boundary assertions, sync docs/skills, and execute full Docker/CI gates.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  function toggleTheme() {
+    const html = document.documentElement;
+    const current = html.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    document.getElementById('theme-icon').textContent = next === 'dark' ? '🌙' : '☀️';
+  }
+</script>
+
 </body>
 </html>

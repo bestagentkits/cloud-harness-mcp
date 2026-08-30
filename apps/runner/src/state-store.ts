@@ -25,7 +25,34 @@ export type {
   PrincipalRelinkResult,
   PrincipalSelector
 } from './principal-store.js';
-export { downgradeStateSchemaToV3 } from './principal-store.js';
+export { downgradeStateSchemaToV3, downgradeStateSchemaToV4 } from './principal-store.js';
+
+export type MemoryRecord = {
+  id: string;
+  principalId: string;
+  scope: 'owner' | 'repository' | 'workspace';
+  repositoryKey: string | null;
+  workspaceId: string | null;
+  name: string;
+  content: string;
+  contentSha256: string;
+  tags: string[];
+  generation: number;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+  deletedAt: number | null;
+  provenance: Record<string, unknown>;
+};
+
+export type HookActivationRecord = {
+  principalId: string;
+  workspaceId: string;
+  event: string;
+  manifestSha256: string;
+  createdAt: number;
+  expiresAt: number;
+};
 
 export type RepoCacheStatus = 'INITIALIZING' | 'READY' | 'UPDATING' | 'FAILED' | 'DISABLED';
 export type RepoCacheRecord = {
@@ -1299,6 +1326,534 @@ export class StateStore {
     return Number(pushResult.changes) + Number(commitResult.changes);
   }
 
+
+  createMemory(params: {
+    principalId: string;
+    scope: 'owner' | 'repository' | 'workspace';
+    repositoryKey?: string | null;
+    workspaceId?: string | null;
+    name: string;
+    content: string;
+    tags?: string[];
+    retentionSeconds?: number;
+  }): MemoryRecord {
+    const now = Date.now();
+    const id = `mem_${randomBytes(16).toString('base64url')}`;
+    const contentSha256 = createHash('sha256').update(params.content).digest('hex');
+    const ttl = params.retentionSeconds ? params.retentionSeconds * 1000 : (90 * 86_400_000);
+    const expiresAt = now + ttl;
+    const provenance = {
+      source: params.scope === 'owner' ? 'owner' : params.scope === 'repository' ? 'repository' : 'workspace',
+      trust: params.scope === 'owner' ? 'owner-controlled' : 'untrusted-executor',
+      mutableBy: params.scope === 'owner' ? 'owner' : params.scope === 'repository' ? 'repository-commit' : 'workspace-process',
+      contentSha256,
+      discoveredAt: new Date(now).toISOString()
+    };
+
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      // Check conflict on active name in scope
+      let conflictQuery = '';
+      const conflictArgs: (string | number | null)[] = [params.principalId, params.name];
+      if (params.scope === 'owner') {
+        conflictQuery = 'SELECT id FROM memories WHERE principal_id = ? AND name = ? AND scope = \'owner\' AND deleted_at IS NULL AND expires_at > ?';
+        conflictArgs.push(now);
+      } else if (params.scope === 'repository') {
+        conflictQuery = 'SELECT id FROM memories WHERE principal_id = ? AND name = ? AND repository_key = ? AND scope = \'repository\' AND deleted_at IS NULL AND expires_at > ?';
+        conflictArgs.splice(2, 0, params.repositoryKey ?? null);
+        conflictArgs.push(now);
+      } else {
+        conflictQuery = 'SELECT id FROM memories WHERE principal_id = ? AND name = ? AND workspace_id = ? AND scope = \'workspace\' AND deleted_at IS NULL AND expires_at > ?';
+        conflictArgs.splice(2, 0, params.workspaceId ?? null);
+        conflictArgs.push(now);
+      }
+
+      const existing = this.database.prepare(conflictQuery).get(...conflictArgs);
+      if (existing) {
+        throw new Error('memory note already exists with this name in the given scope');
+      }
+
+      this.database.prepare(`
+        INSERT INTO memories
+        (id, principal_id, scope, repository_key, workspace_id, name, content, content_sha256, generation, created_at, updated_at, expires_at, deleted_at, provenance_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?)
+      `).run(
+        id, params.principalId, params.scope, params.repositoryKey ?? null, params.workspaceId ?? null,
+        params.name, params.content, contentSha256, now, now, expiresAt, JSON.stringify(provenance)
+      );
+
+      const tags = (params.tags || []).map(t => t.toLowerCase().trim()).filter(Boolean);
+      for (const tag of tags) {
+        this.database.prepare('INSERT OR IGNORE INTO memory_tags (principal_id, memory_id, tag) VALUES (?, ?, ?)')
+          .run(params.principalId, id, tag);
+      }
+
+      this.database.exec('COMMIT');
+      return {
+        id,
+        principalId: params.principalId,
+        scope: params.scope,
+        repositoryKey: params.repositoryKey ?? null,
+        workspaceId: params.workspaceId ?? null,
+        name: params.name,
+        content: params.content,
+        contentSha256,
+        tags,
+        generation: 1,
+        createdAt: now,
+        updatedAt: now,
+        expiresAt,
+        deletedAt: null,
+        provenance
+      };
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  updateMemory(params: {
+    principalId: string;
+    id?: string;
+    name?: string;
+    scope?: 'owner' | 'repository' | 'workspace';
+    repositoryKey?: string | null;
+    workspaceId?: string | null;
+    content: string;
+    tags?: string[];
+    retentionSeconds?: number;
+    expectedGeneration: number;
+  }): MemoryRecord {
+    const now = Date.now();
+    const contentSha256 = createHash('sha256').update(params.content).digest('hex');
+    const ttl = params.retentionSeconds ? params.retentionSeconds * 1000 : (90 * 86_400_000);
+    const expiresAt = now + ttl;
+
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      let row: any = null;
+      if (params.id) {
+        row = this.database.prepare(`
+          SELECT * FROM memories
+          WHERE id = ? AND principal_id = ? AND deleted_at IS NULL AND expires_at > ?
+        `).get(params.id, params.principalId, now);
+      } else if (params.name && params.scope) {
+        let query = 'SELECT * FROM memories WHERE principal_id = ? AND name = ? AND scope = ? AND deleted_at IS NULL AND expires_at > ?';
+        const args: (string | number | null)[] = [params.principalId, params.name, params.scope, now];
+        if (params.scope === 'repository') {
+          query = 'SELECT * FROM memories WHERE principal_id = ? AND name = ? AND scope = ? AND repository_key = ? AND deleted_at IS NULL AND expires_at > ?';
+          args.splice(3, 0, params.repositoryKey ?? null);
+        } else if (params.scope === 'workspace') {
+          query = 'SELECT * FROM memories WHERE principal_id = ? AND name = ? AND scope = ? AND workspace_id = ? AND deleted_at IS NULL AND expires_at > ?';
+          args.splice(3, 0, params.workspaceId ?? null);
+        }
+        row = this.database.prepare(query).get(...args);
+      }
+
+      if (!row) {
+        throw new Error('memory note not found');
+      }
+
+      if (row.generation !== params.expectedGeneration) {
+        throw new Error(`memory generation conflict: expected ${params.expectedGeneration}, current is ${row.generation}`);
+      }
+
+      const nextGen = row.generation + 1;
+      const prov = JSON.parse(row.provenance_json);
+      prov.contentSha256 = contentSha256;
+      prov.discoveredAt = new Date(now).toISOString();
+
+      this.database.prepare(`
+        UPDATE memories
+        SET content = ?, content_sha256 = ?, generation = ?, updated_at = ?, expires_at = ?, provenance_json = ?
+        WHERE id = ? AND generation = ?
+      `).run(params.content, contentSha256, nextGen, now, expiresAt, JSON.stringify(prov), row.id, row.generation);
+
+      const tags = (params.tags || []).map(t => t.toLowerCase().trim()).filter(Boolean);
+      this.database.prepare('DELETE FROM memory_tags WHERE memory_id = ?').run(row.id);
+      for (const tag of tags) {
+        this.database.prepare('INSERT OR IGNORE INTO memory_tags (principal_id, memory_id, tag) VALUES (?, ?, ?)')
+          .run(params.principalId, row.id, tag);
+      }
+
+      this.database.exec('COMMIT');
+      return {
+        id: row.id,
+        principalId: row.principal_id,
+        scope: row.scope,
+        repositoryKey: row.repository_key,
+        workspaceId: row.workspace_id,
+        name: row.name,
+        content: params.content,
+        contentSha256,
+        tags,
+        generation: nextGen,
+        createdAt: row.created_at,
+        updatedAt: now,
+        expiresAt,
+        deletedAt: null,
+        provenance: prov
+      };
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  deleteMemory(params: {
+    principalId: string;
+    id?: string;
+    name?: string;
+    scope?: 'owner' | 'repository' | 'workspace';
+    repositoryKey?: string | null;
+    workspaceId?: string | null;
+    expectedGeneration: number;
+  }): boolean {
+    const now = Date.now();
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      let row: any = null;
+      if (params.id) {
+        row = this.database.prepare(`
+          SELECT * FROM memories WHERE id = ? AND principal_id = ? AND deleted_at IS NULL
+        `).get(params.id, params.principalId);
+      } else if (params.name) {
+        row = this.database.prepare(`
+          SELECT * FROM memories WHERE name = ? AND principal_id = ? AND deleted_at IS NULL
+        `).get(params.name, params.principalId);
+      }
+      if (!row) {
+        throw new Error('memory note not found');
+      }
+      if (row.generation !== params.expectedGeneration) {
+        throw new Error(`memory generation conflict: expected ${params.expectedGeneration}, current is ${row.generation}`);
+      }
+      this.database.prepare('UPDATE memories SET deleted_at = ? WHERE id = ?').run(now, row.id);
+      this.database.exec('COMMIT');
+      return true;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  readMemory(params: {
+    principalId: string;
+    id?: string;
+    name?: string;
+    scope?: 'owner' | 'repository' | 'workspace';
+    repositoryKey?: string | null;
+    workspaceId?: string | null;
+  }): MemoryRecord | null {
+    const now = Date.now();
+    let query = 'SELECT * FROM memories WHERE principal_id = ? AND deleted_at IS NULL AND expires_at > ?';
+    const args: (string | number | null)[] = [params.principalId, now];
+    if (params.id) {
+      query += ' AND id = ?';
+      args.push(params.id);
+    } else if (params.name) {
+      query += ' AND name = ?';
+      args.push(params.name);
+    } else {
+      return null;
+    }
+
+    if (params.scope) {
+      query += ' AND scope = ?';
+      args.push(params.scope);
+      if (params.scope === 'repository' && params.repositoryKey) {
+        query += ' AND repository_key = ?';
+        args.push(params.repositoryKey);
+      } else if (params.scope === 'workspace' && params.workspaceId) {
+        query += ' AND workspace_id = ?';
+        args.push(params.workspaceId);
+      }
+    } else if (params.repositoryKey || params.workspaceId) {
+      query += ' AND (scope = \'owner\'';
+      if (params.repositoryKey) {
+        query += ' OR (scope = \'repository\' AND repository_key = ?)';
+        args.push(params.repositoryKey);
+      }
+      if (params.workspaceId) {
+        query += ' OR (scope = \'workspace\' AND workspace_id = ?)';
+        args.push(params.workspaceId);
+      }
+      query += ')';
+    }
+
+    query += ' ORDER BY updated_at DESC LIMIT 1';
+    const row = this.database.prepare(query).get(...args) as any;
+    if (!row) return null;
+    const tagRows = this.database.prepare('SELECT tag FROM memory_tags WHERE memory_id = ?').all(row.id) as { tag: string }[];
+    return {
+      id: row.id,
+      principalId: row.principal_id,
+      scope: row.scope,
+      repositoryKey: row.repository_key,
+      workspaceId: row.workspace_id,
+      name: row.name,
+      content: row.content,
+      contentSha256: row.content_sha256,
+      tags: tagRows.map((t) => t.tag),
+      generation: row.generation,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      expiresAt: row.expires_at,
+      deletedAt: row.deleted_at,
+      provenance: JSON.parse(row.provenance_json)
+    };
+  }
+
+  listMemories(params: {
+    principalId: string;
+    scope?: 'owner' | 'repository' | 'workspace';
+    repositoryKey?: string | null;
+    workspaceId?: string | null;
+    tags?: string[];
+    tagMatch?: 'all' | 'any';
+    limit?: number;
+    cursor?: string;
+  }): { memories: MemoryRecord[]; nextCursor?: string } {
+    const now = Date.now();
+    const limit = Math.min(Math.max(params.limit || 50, 1), 100);
+    const offset = Number(params.cursor || 0);
+
+    let query = 'SELECT * FROM memories WHERE principal_id = ? AND deleted_at IS NULL AND expires_at > ?';
+    const args: (string | number | null)[] = [params.principalId, now];
+
+    if (params.scope) {
+      query += ' AND scope = ?';
+      args.push(params.scope);
+      if (params.scope === 'repository' && params.repositoryKey) {
+        query += ' AND repository_key = ?';
+        args.push(params.repositoryKey);
+      } else if (params.scope === 'workspace' && params.workspaceId) {
+        query += ' AND workspace_id = ?';
+        args.push(params.workspaceId);
+      }
+    } else if (params.repositoryKey || params.workspaceId) {
+      query += ' AND (scope = \'owner\'';
+      if (params.repositoryKey) {
+        query += ' OR (scope = \'repository\' AND repository_key = ?)';
+        args.push(params.repositoryKey);
+      }
+      if (params.workspaceId) {
+        query += ' OR (scope = \'workspace\' AND workspace_id = ?)';
+        args.push(params.workspaceId);
+      }
+      query += ')';
+    } else {
+      query += ' AND scope = \'owner\'';
+    }
+
+    const cleanTags = (params.tags || []).map((t) => t.toLowerCase().trim()).filter(Boolean);
+    if (cleanTags.length > 0) {
+      const placeholders = cleanTags.map(() => '?').join(',');
+      if (params.tagMatch === 'any') {
+        query += ` AND id IN (SELECT memory_id FROM memory_tags WHERE tag IN (${placeholders}))`;
+        args.push(...cleanTags);
+      } else {
+        query += ` AND id IN (SELECT memory_id FROM memory_tags WHERE tag IN (${placeholders}) GROUP BY memory_id HAVING COUNT(DISTINCT tag) = ${cleanTags.length})`;
+        args.push(...cleanTags);
+      }
+    }
+
+    query += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?';
+    args.push(limit + 1, offset);
+
+    const rows = this.database.prepare(query).all(...args) as any[];
+    const page = rows.slice(0, limit);
+    const nextCursor = rows.length > limit ? String(offset + limit) : undefined;
+
+    const memories = page.map((row) => {
+      const tagRows = this.database.prepare('SELECT tag FROM memory_tags WHERE memory_id = ?').all(row.id) as { tag: string }[];
+      return {
+        id: row.id,
+        principalId: row.principal_id,
+        scope: row.scope,
+        repositoryKey: row.repository_key,
+        workspaceId: row.workspace_id,
+        name: row.name,
+        content: row.content,
+        contentSha256: row.content_sha256,
+        tags: tagRows.map((t) => t.tag),
+        generation: row.generation,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        expiresAt: row.expires_at,
+        deletedAt: row.deleted_at,
+        provenance: JSON.parse(row.provenance_json)
+      };
+    });
+
+    return {
+      memories,
+      ...(nextCursor ? { nextCursor } : {})
+    };
+  }
+
+  searchMemories(params: {
+    principalId: string;
+    query: string;
+    scope?: 'owner' | 'repository' | 'workspace';
+    repositoryKey?: string | null;
+    workspaceId?: string | null;
+    tags?: string[];
+    tagMatch?: 'all' | 'any';
+    limit?: number;
+    cursor?: string;
+  }): { memories: MemoryRecord[]; nextCursor?: string } {
+    const now = Date.now();
+    const limit = Math.min(Math.max(params.limit || 20, 1), 50);
+    const offset = Number(params.cursor || 0);
+    const tokens = params.query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+
+    let sql = 'SELECT * FROM memories WHERE principal_id = ? AND deleted_at IS NULL AND expires_at > ?';
+    const args: (string | number | null)[] = [params.principalId, now];
+
+    if (params.scope) {
+      sql += ' AND scope = ?';
+      args.push(params.scope);
+      if (params.scope === 'repository' && params.repositoryKey) {
+        sql += ' AND repository_key = ?';
+        args.push(params.repositoryKey);
+      } else if (params.scope === 'workspace' && params.workspaceId) {
+        sql += ' AND workspace_id = ?';
+        args.push(params.workspaceId);
+      }
+    } else if (params.repositoryKey || params.workspaceId) {
+      sql += ' AND (scope = \'owner\'';
+      if (params.repositoryKey) {
+        sql += ' OR (scope = \'repository\' AND repository_key = ?)';
+        args.push(params.repositoryKey);
+      }
+      if (params.workspaceId) {
+        sql += ' OR (scope = \'workspace\' AND workspace_id = ?)';
+        args.push(params.workspaceId);
+      }
+      sql += ')';
+    } else {
+      sql += ' AND scope = \'owner\'';
+    }
+
+    const cleanTags = (params.tags || []).map((t) => t.toLowerCase().trim()).filter(Boolean);
+    if (cleanTags.length > 0) {
+      const placeholders = cleanTags.map(() => '?').join(',');
+      if (params.tagMatch === 'any') {
+        sql += ` AND id IN (SELECT memory_id FROM memory_tags WHERE tag IN (${placeholders}))`;
+        args.push(...cleanTags);
+      } else {
+        sql += ` AND id IN (SELECT memory_id FROM memory_tags WHERE tag IN (${placeholders}) GROUP BY memory_id HAVING COUNT(DISTINCT tag) = ${cleanTags.length})`;
+        args.push(...cleanTags);
+      }
+    }
+
+    for (const token of tokens) {
+      sql += ' AND (instr(lower(name), ?) > 0 OR instr(lower(content), ?) > 0)';
+      args.push(token, token);
+    }
+
+    sql += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?';
+    args.push(limit + 1, offset);
+
+    const rows = this.database.prepare(sql).all(...args) as any[];
+    const page = rows.slice(0, limit);
+    const nextCursor = rows.length > limit ? String(offset + limit) : undefined;
+
+    const memories = page.map((row) => {
+      const tagRows = this.database.prepare('SELECT tag FROM memory_tags WHERE memory_id = ?').all(row.id) as { tag: string }[];
+      return {
+        id: row.id,
+        principalId: row.principal_id,
+        scope: row.scope,
+        repositoryKey: row.repository_key,
+        workspaceId: row.workspace_id,
+        name: row.name,
+        content: row.content,
+        contentSha256: row.content_sha256,
+        tags: tagRows.map((t) => t.tag),
+        generation: row.generation,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        expiresAt: row.expires_at,
+        deletedAt: row.deleted_at,
+        provenance: JSON.parse(row.provenance_json)
+      };
+    });
+
+    return {
+      memories,
+      ...(nextCursor ? { nextCursor } : {})
+    };
+  }
+  reapWorkspaceMemories(principalId: string, workspaceId: string): number {
+    const res = this.database.prepare('DELETE FROM memories WHERE principal_id = ? AND workspace_id = ? AND scope = \'workspace\'')
+      .run(principalId, workspaceId);
+    this.database.prepare('DELETE FROM hook_activations WHERE principal_id = ? AND workspace_id = ?')
+      .run(principalId, workspaceId);
+    return Number(res.changes);
+  }
+
+  activateHook(params: {
+    principalId: string;
+    workspaceId: string;
+    event: string;
+    manifestSha256: string;
+    retentionSeconds?: number;
+  }): HookActivationRecord {
+    const now = Date.now();
+    const ttl = params.retentionSeconds ? params.retentionSeconds * 1000 : (30 * 86_400_000);
+    const expiresAt = now + ttl;
+
+    this.database.prepare(`
+      INSERT INTO hook_activations (principal_id, workspace_id, event, manifest_sha256, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(principal_id, workspace_id, event) DO UPDATE SET
+        manifest_sha256 = excluded.manifest_sha256,
+        expires_at = excluded.expires_at
+    `).run(params.principalId, params.workspaceId, params.event, params.manifestSha256, now, expiresAt);
+
+    return {
+      principalId: params.principalId,
+      workspaceId: params.workspaceId,
+      event: params.event,
+      manifestSha256: params.manifestSha256,
+      createdAt: now,
+      expiresAt
+    };
+  }
+
+  deactivateHook(params: {
+    principalId: string;
+    workspaceId: string;
+    event?: string;
+  }): boolean {
+    if (params.event) {
+      const res = this.database.prepare('DELETE FROM hook_activations WHERE principal_id = ? AND workspace_id = ? AND event = ?')
+        .run(params.principalId, params.workspaceId, params.event);
+      return Number(res.changes) > 0;
+    }
+    const res = this.database.prepare('DELETE FROM hook_activations WHERE principal_id = ? AND workspace_id = ?')
+      .run(params.principalId, params.workspaceId);
+    return Number(res.changes) > 0;
+  }
+
+  getActiveHookActivations(principalId: string, workspaceId: string): HookActivationRecord[] {
+    const now = Date.now();
+    const rows = this.database.prepare(`
+      SELECT * FROM hook_activations
+      WHERE principal_id = ? AND workspace_id = ? AND expires_at > ?
+    `).all(principalId, workspaceId, now) as any[];
+
+    return rows.map(r => ({
+      principalId: r.principal_id,
+      workspaceId: r.workspace_id,
+      event: r.event,
+      manifestSha256: r.manifest_sha256,
+      createdAt: r.created_at,
+      expiresAt: r.expires_at
+    }));
+  }
   close(): void {
     this.database.close();
   }

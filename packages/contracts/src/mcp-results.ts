@@ -20,7 +20,9 @@ export const ErrorCodeSchema = z.enum([
   'GITHUB_ACTION_FAILED',
   'UNKNOWN_REMOTE_STATE',
   'STALE_HEAD',
-  'RUNNER_RESTARTED'
+  'RUNNER_RESTARTED',
+  'HOOK_FAILED',
+  'EXECUTION_FAILED'
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const ToolResultSchema = z.object({

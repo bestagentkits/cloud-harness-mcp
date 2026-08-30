@@ -43,7 +43,8 @@ See [Git and worktrees](git-and-worktrees.md).
 See [repository automation](repository-automation.md).
 
 `skills_list` `skills_read` `skills_run` `hooks_list` `hooks_run`
-`memories_list` `memories_read` `memories_write` `deployments_list`
+`hooks_activate` `hooks_deactivate` `memories_list` `memories_read`
+`memories_write` `memories_search` `memories_delete` `deployments_list`
 `deployments_run`
 
 ## Retained artifacts

@@ -2,7 +2,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { StateStore, downgradeStateSchemaToV3 } from '../src/state-store.js';
+import { StateStore, downgradeStateSchemaToV3, downgradeStateSchemaToV4 } from '../src/state-store.js';
 
 const tempDbPath = () => join(tmpdir(), `test-state-v4-${randomBytes(8).toString('hex')}.sqlite`);
 
@@ -12,7 +12,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     const store = new StateStore(dbPath);
     try {
       const version = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(version).toBe(4);
+      expect(version).toBe(5);
     } finally {
       store.close();
     }
@@ -261,6 +261,8 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+      downgradeStateSchemaToV4(store.database);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(4);
       downgradeStateSchemaToV3(store.database);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(3);
