@@ -423,5 +423,50 @@ COMMIT
       expect(result.ok).toBe(false);
       expect(result.reason).toContain('unauthorized or widened MASQUERADE rule');
     });
+
+    it('rejects broad MASQUERADE preceding POSTROUTING jump in nat table', () => {
+      const precedingNat = `
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:DOCKER-USER - [0:0]
+:CHM-INPUT-v1 - [0:0]
+:CHM-EGRESS-v1 - [0:0]
+-A FORWARD -j DOCKER-USER
+-A INPUT -i chm-egress0 -j CHM-INPUT-v1
+-A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
+-A CHM-INPUT-v1 -j REJECT --reject-with icmp-port-unreachable
+-A CHM-EGRESS-v1 -m conntrack --ctstate ESTABLISHED -j ACCEPT
+-A CHM-EGRESS-v1 -d 169.254.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 10.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 172.16.0.0/12 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 1.1.1.1/32 -p tcp -m tcp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -p tcp -m tcp --dport 80 -j ACCEPT
+-A CHM-EGRESS-v1 -p tcp -m tcp --dport 443 -j ACCEPT
+-A CHM-EGRESS-v1 -j REJECT --reject-with icmp-port-unreachable
+COMMIT
+*nat
+:POSTROUTING ACCEPT [0:0]
+:CHM-NAT-v1 - [0:0]
+-A POSTROUTING -j MASQUERADE
+-A POSTROUTING -s 172.30.240.0/24 -j CHM-NAT-v1
+-A CHM-NAT-v1 -p tcp -m multiport --dports 80,443 -j MASQUERADE
+-A CHM-NAT-v1 -p udp -d 8.8.8.8/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p tcp -d 8.8.8.8/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p udp -d 1.1.1.1/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p tcp -d 1.1.1.1/32 --dport 53 -j MASQUERADE
+COMMIT
+      `;
+      const result = attestor.parseFirewallRules(precedingNat);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toContain('broad MASQUERADE or ACCEPT rule precedes POSTROUTING jump');
+    });
   });
 });

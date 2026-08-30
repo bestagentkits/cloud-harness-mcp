@@ -211,13 +211,21 @@ export class HostFirewallAttestor {
     if (subnetJumps.length === 0) {
       return { ok: false, reason: `no scoped MASQUERADE or NAT jump rules found for '${this.bridgeSubnet}' in nat table` };
     }
-
     const firstJump = subnetJumps[0];
+    const firstJumpIdx = postroutingRules.indexOf(firstJump!);
+
+    // Ensure no earlier rule in POSTROUTING applies broad masquerade or accept before our subnet jump
+    const priorBroadNat = postroutingRules.slice(0, firstJumpIdx).some((l) =>
+      (l.includes('-j MASQUERADE') || l.includes('-j ACCEPT')) && (!l.includes('-s ') || l.includes(`-s ${this.bridgeSubnet}`))
+    );
+    if (priorBroadNat) {
+      return { ok: false, reason: `broad MASQUERADE or ACCEPT rule precedes POSTROUTING jump for '${this.bridgeSubnet}'` };
+    }
+
     const natTarget = firstJump?.match(/-j\s+([A-Za-z0-9_-]+)/)?.[1];
     if (!natTarget || natTarget === 'ACCEPT' || natTarget === 'RETURN') {
       return { ok: false, reason: `invalid or broad target jump for subnet '${this.bridgeSubnet}' in POSTROUTING` };
     }
-
     let targetRules: string[];
     if (natTarget === 'MASQUERADE') {
       // Direct scoped masquerade rules in POSTROUTING
