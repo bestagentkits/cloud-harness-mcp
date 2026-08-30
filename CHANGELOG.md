@@ -1,3 +1,10 @@
+# [0.32.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.31.1...v0.32.0) (2026-08-30)
+
+
+### Features
+
+* **context:** add provenance-aware workspace context, skills, memories, and hooks ([#15](https://github.com/bestagentkits/cloud-harness-mcp/issues/15)) ([a869ea6](https://github.com/bestagentkits/cloud-harness-mcp/commit/a869ea6cda24f25b1e37dcae75788a43c082c5d2))
+
 ## [0.31.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.31.0...v0.31.1) (2026-08-30)
 
 

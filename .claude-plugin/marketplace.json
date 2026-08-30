@@ -11,7 +11,7 @@
       "name": "cloud-harness",
       "source": "./plugins/cloud-harness",
       "description": "Operate private Cloud Harness MCP coding workspaces safely.",
-      "version": "0.31.1"
+      "version": "0.32.0"
     }
   ]
 }
