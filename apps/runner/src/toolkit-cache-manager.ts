@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync } from 'node:fs';
 import { mkdir, readdir, rename, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { StateStore, ToolkitCacheEntryRecord } from './state-store.js';
 
@@ -26,17 +25,12 @@ export class ToolkitCacheManager {
   private readonly store: StateStore;
   private readonly inFlight = new Map<string, Promise<CachedToolkitBundle>>();
 
-  constructor(root: string | undefined, store: StateStore) {
-    this.root = root || (process.env.TOOLKIT_CACHE_ROOT || join(tmpdir(), 'cloud-harness-toolkit-cache'));
+  constructor(root: string, store: StateStore) {
+    if (!root) throw new Error('toolkit cache root is required');
+    this.root = root;
     this.store = store;
-    try {
-      mkdirSync(this.root, { recursive: true, mode: 0o700 });
-      mkdirSync(join(this.root, 'staging'), { recursive: true, mode: 0o700 });
-    } catch {
-      this.root = join(tmpdir(), 'cloud-harness-toolkit-cache');
-      mkdirSync(this.root, { recursive: true, mode: 0o700 });
-      mkdirSync(join(this.root, 'staging'), { recursive: true, mode: 0o700 });
-    }
+    mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    mkdirSync(join(this.root, 'staging'), { recursive: true, mode: 0o700 });
   }
 
   computeCacheKey(ownerId: string, spec: ToolkitAcquisitionSpec): string {
