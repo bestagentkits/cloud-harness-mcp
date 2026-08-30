@@ -31,14 +31,16 @@ EGRESS_CHAIN="CHM-EGRESS-$VERSION"
 
 TMP_RESTORE=$(mktemp /tmp/chm-firewall-restore.XXXXXX)
 trap 'rm -f "$TMP_RESTORE"' EXIT
-
 {
   echo "*filter"
+  echo ":INPUT ACCEPT [0:0]"
+  echo ":FORWARD ACCEPT [0:0]"
+  echo ":OUTPUT ACCEPT [0:0]"
+  echo ":DOCKER-USER - [0:0]"
   echo ":$INPUT_CHAIN - [0:0]"
   echo ":$EGRESS_CHAIN - [0:0]"
   echo "-F $INPUT_CHAIN"
   echo "-F $EGRESS_CHAIN"
-  
   # INPUT chain: Reject any traffic from bridge to host/gateway
   echo "-A $INPUT_CHAIN -j REJECT --reject-with icmp-port-unreachable"
   
@@ -67,6 +69,10 @@ trap 'rm -f "$TMP_RESTORE"' EXIT
   echo "COMMIT"
   
   echo "*nat"
+  echo ":PREROUTING ACCEPT [0:0]"
+  echo ":INPUT ACCEPT [0:0]"
+  echo ":OUTPUT ACCEPT [0:0]"
+  echo ":POSTROUTING ACCEPT [0:0]"
   echo "-A POSTROUTING -s $SUBNET -p tcp -m multiport --dports 80,443 -j MASQUERADE"
   for resolver in $DNS_RESOLVERS; do
     echo "-A POSTROUTING -s $SUBNET -p udp -d $resolver --dport 53 -j MASQUERADE"
