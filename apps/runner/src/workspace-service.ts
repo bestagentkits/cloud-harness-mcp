@@ -587,6 +587,8 @@ export class WorkspaceService {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'workspace creation failed';
       this.store.updateFenced(workspaceId, record.generation, ['CREATING'], { status: 'FAILED', error: message.slice(0, 2_000) });
+      this.store.deleteSecretSnapshot(workspaceId);
+      this.redactorCache.delete(workspaceId);
       await this.safeRemovePath(record.workspacePath);
       throw error;
     }
@@ -2564,9 +2566,12 @@ export class WorkspaceService {
   private secretsList(ownerId: string, input: Record<string, unknown>): RunnerResponse {
     const parsed = TOOL_SCHEMA_BY_NAME.secrets_list.parse(input);
     let environmentId = parsed.environmentId;
-    if (!environmentId && parsed.workspaceId) {
+    if (parsed.workspaceId) {
       const ws = this.store.byOwnerAndId(ownerId, parsed.workspaceId);
-      if (ws?.environmentId) environmentId = ws.environmentId;
+      if (!ws) {
+        throw new HarnessError('NOT_FOUND', 'workspace not found', 404, false);
+      }
+      if (!environmentId && ws.environmentId) environmentId = ws.environmentId;
     }
     if (!environmentId) {
       const activeWorkspaces = this.store.active().filter((w) => w.ownerId === ownerId && w.environmentId);

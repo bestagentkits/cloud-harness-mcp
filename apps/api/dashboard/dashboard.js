@@ -191,9 +191,13 @@ export function parseDotEnv(text) {
 const FORBIDDEN_CLIENT_NAMES = new Set([
   'PATH', 'HOME', 'SHELL', 'USER', 'LOGNAME', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT',
   'AUTHORIZATION', 'OWNER_ID', 'RUNNER_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'SECRET_KEYRING',
+  'SECRET_KEYRING_FILE', 'STATE_DB', 'JOBS_ROOT', 'DOCKER_HOST',
   'LD_PRELOAD', 'LD_LIBRARY_PATH'
 ]);
-const FORBIDDEN_CLIENT_PREFIXES = ['HARNESS_', 'CH_', 'CLOUDFLARE_', 'CF_', 'GITHUB_APP_', 'ACCESS_', 'RUNNER_', 'DOCKER_', 'XDG_', 'NPM_CONFIG_', 'UV_', 'BUN_', 'PNPM_'];
+const FORBIDDEN_CLIENT_PREFIXES = [
+  'HARNESS_', 'CH_', 'CLOUDFLARE_', 'CF_', 'GITHUB_APP_', 'ACCESS_', 'RUNNER_', 'DOCKER_',
+  'XDG_', 'NPM_', 'NPM_CONFIG_', 'UV_', 'BUN_', 'PNPM_', 'GIT_', 'LD_'
+];
 
 export function validateSecretClient(name, value) {
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,99}$/.test(name)) return 'name must be an environment-style identifier';
@@ -202,7 +206,9 @@ export function validateSecretClient(name, value) {
   for (const prefix of FORBIDDEN_CLIENT_PREFIXES) {
     if (upper.startsWith(prefix)) return `reserved prefix ${prefix}`;
   }
-  if (!value || value.includes('\0')) return 'value cannot be empty or contain null bytes';
+  if (!value || value.length < 4 || value.includes('\0') || value.includes('\n') || value.includes('\r')) {
+    return 'value must be at least 4 characters without null or newline characters';
+  }
   return null;
 }
 
@@ -244,8 +250,9 @@ export function initializeDashboard() {
     if (bulkDialog && bulkDialog.open) bulkDialog.close();
   }
   document.querySelector('#cancel-bulk-import')?.addEventListener('click', () => closeBulkImport());
+  bulkDialog?.addEventListener('cancel', () => closeBulkImport());
+  bulkDialog?.addEventListener('close', () => closeBulkImport());
   bulkInput?.addEventListener('input', () => {
-    if (!currentBulkEnvironment || !bulkPreview) return;
     const parsed = parseDotEnv(bulkInput.value);
     if (!parsed.length) {
       bulkPreview.innerHTML = '<span class="diff-skip">No variable assignments found.</span>';
@@ -298,7 +305,7 @@ export function initializeDashboard() {
       validItems.push({
         name: item.name,
         value: item.value,
-        description: item.description,
+        ...(item.description ? { description: item.description } : {}),
         action: prev ? 'rotate' : 'create',
         expectedGeneration: prev ? Number(prev.generation) : 0
       });
