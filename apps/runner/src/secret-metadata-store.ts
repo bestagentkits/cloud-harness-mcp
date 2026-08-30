@@ -1,4 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
+import {
+  validateSecretDescription,
+  validateSecretName,
+  validateSecretValue
+} from '@cloud-harness/contracts';
 import { appendAudit, opaqueId, secretView, transaction, type SecretView } from './metadata-records.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
@@ -16,9 +21,9 @@ type VersionRow = {
 };
 
 const normalizedName = (name: string): string => {
-  const value = name.trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]{0,99}$/.test(value)) throw new Error('secret name must be an environment-style identifier');
-  return value;
+  const validation = validateSecretName(name);
+  if (!validation.ok) throw new Error(validation.error);
+  return validation.name;
 };
 
 const envelope = (row: VersionRow): EncryptedSecret => ({
@@ -45,54 +50,160 @@ export class SecretMetadataStore {
   }
 
   environmentValues(principalId: string, environmentId: string): Record<string, string> {
-    if (!this.hasActiveEnvironment(principalId, environmentId)) return {};
+    const snapshot = this.environmentSecretSnapshot(principalId, environmentId);
+    return this.snapshotValues(principalId, environmentId, snapshot);
+  }
+
+  environmentSecretSnapshot(principalId: string, environmentId: string): Array<{ secretReferenceId: string; name: string; version: number }> {
+    if (!this.hasActiveEnvironment(principalId, environmentId)) return [];
+    const rows = this.database.prepare(`SELECT refs.id AS secret_reference_id, refs.name, refs.current_version AS version
+      FROM secret_references refs
+      WHERE refs.principal_id = ? AND refs.environment_id = ? AND refs.state = 'ACTIVE'
+      ORDER BY refs.name`).all(principalId, environmentId) as Array<{ secret_reference_id: string; name: string; version: number }>;
+    return rows.map((r) => ({
+      secretReferenceId: r.secret_reference_id,
+      name: r.name,
+      version: r.version
+    }));
+  }
+  environmentSecretEnvelopes(principalId: string, environmentId: string): Array<{ name: string; version: number; envelope: EncryptedSecret }> {
+    if (!this.hasActiveEnvironment(principalId, environmentId)) return [];
     const rows = this.database.prepare(`SELECT versions.*, refs.environment_id, refs.name, refs.generation
       FROM secret_references refs JOIN secret_versions versions
         ON versions.principal_id = refs.principal_id AND versions.secret_reference_id = refs.id
         AND versions.version = refs.current_version
       WHERE refs.principal_id = ? AND refs.environment_id = ? AND refs.state = 'ACTIVE'
       ORDER BY refs.name`).all(principalId, environmentId) as VersionRow[];
-    return Object.fromEntries(rows.map((row) => [row.name, this.keyring.decrypt(envelope(row), {
-      principalId, environmentId, name: row.name, version: row.version
-    })]));
+    return rows.map((r) => ({
+      name: r.name,
+      version: r.version,
+      envelope: envelope(r)
+    }));
   }
 
-  create(principalId: string, environmentId: string, name: string, value: string, expectedGeneration: 0): SecretView | undefined {
-    if (expectedGeneration !== 0) return undefined;
-    return transaction(this.database, () => {
-      if (!this.hasActiveEnvironment(principalId, environmentId)) return undefined;
-      const secretName = normalizedName(name);
-      if (this.database.prepare('SELECT 1 FROM secret_references WHERE principal_id = ? AND environment_id = ? AND name = ?').get(principalId, environmentId, secretName)) return undefined;
-      const id = opaqueId('sec');
-      const now = Date.now();
-      const encrypted = this.keyring.encrypt(value, { principalId, environmentId, name: secretName, version: 1 });
-      this.database.prepare(`INSERT INTO secret_references
-        (id, principal_id, environment_id, name, state, current_version, generation, created_at, updated_at, deleted_at)
-        VALUES (?, ?, ?, ?, 'ACTIVE', 1, 1, ?, ?, NULL)`).run(id, principalId, environmentId, secretName, now, now);
-      this.insertVersion(principalId, id, 1, encrypted, now);
-      appendAudit(this.database, principalId, 'secret.created', 'secret', id, 1, { environmentId, version: 1 }, now);
-      return this.byName(principalId, environmentId, secretName)!;
+  decryptEnvelope(principalId: string, environmentId: string, name: string, version: number, encrypted: EncryptedSecret): string {
+    return this.keyring.decrypt(encrypted, { principalId, environmentId, name, version });
+  }
+  reencryptSnapshotItem(item: {
+    environmentId: string;
+    ownerId: string;
+    name: string;
+    version: number;
+    envelope: EncryptedSecret;
+  }): EncryptedSecret {
+    if (item.envelope.keyVersion === this.keyring.activeVersion) {
+      return item.envelope;
+    }
+    return this.keyring.reencrypt(item.envelope, {
+      principalId: item.ownerId,
+      environmentId: item.environmentId,
+      name: item.name,
+      version: item.version
     });
   }
 
-  rotate(principalId: string, environmentId: string, name: string, value: string, expectedGeneration: number): SecretView | undefined {
+
+
+  snapshotValues(
+    principalId: string,
+    environmentId: string,
+    snapshot: Array<{ secretReferenceId: string; name: string; version: number }>
+  ): Record<string, string> {
+    if (!snapshot.length) return {};
+    const results: Record<string, string> = {};
+    for (const item of snapshot) {
+      const row = this.database.prepare(`SELECT versions.*, refs.environment_id, refs.name, refs.generation
+        FROM secret_versions versions JOIN secret_references refs
+          ON versions.principal_id = refs.principal_id AND versions.secret_reference_id = refs.id
+        WHERE versions.principal_id = ? AND versions.secret_reference_id = ? AND versions.version = ?`).get(
+        principalId, item.secretReferenceId, item.version
+      ) as VersionRow | undefined;
+      if (row) {
+        results[item.name] = this.keyring.decrypt(envelope(row), {
+          principalId, environmentId, name: item.name, version: item.version
+        });
+      }
+    }
+    return results;
+  }
+
+  create(
+    principalId: string,
+    environmentId: string,
+    name: string,
+    value: string,
+    expectedGeneration: 0 = 0,
+    description: string | null = null
+  ): SecretView | undefined {
+    return transaction(this.database, () => this.createInTransaction(principalId, environmentId, name, value, expectedGeneration, description));
+  }
+
+  rotate(
+    principalId: string,
+    environmentId: string,
+    name: string,
+    value: string,
+    expectedGeneration: number,
+    description?: string | null
+  ): SecretView | undefined {
+    return transaction(this.database, () => this.rotateInTransaction(principalId, environmentId, name, value, expectedGeneration, description));
+  }
+
+  updateMetadata(
+    principalId: string,
+    environmentId: string,
+    name: string,
+    description: string | null,
+    expectedGeneration: number
+  ): SecretView | undefined {
+    const secretName = normalizedName(name);
+    const descCheck = validateSecretDescription(description);
+    if (!descCheck.ok) throw new Error(descCheck.error);
+
     return transaction(this.database, () => {
       if (!this.hasActiveEnvironment(principalId, environmentId)) return undefined;
-      const secretName = normalizedName(name);
       const current = this.byName(principalId, environmentId, secretName);
       if (!current || current.state !== 'ACTIVE' || current.generation !== expectedGeneration) return undefined;
-      const version = current.version + 1;
       const now = Date.now();
-      const encrypted = this.keyring.encrypt(value, { principalId, environmentId, name: secretName, version });
-      this.insertVersion(principalId, current.id, version, encrypted, now);
       const result = this.database.prepare(`UPDATE secret_references
-        SET current_version = ?, generation = generation + 1, updated_at = ?
+        SET description = ?, generation = generation + 1, updated_at = ?
         WHERE principal_id = ? AND id = ? AND generation = ? AND state = 'ACTIVE'`)
-        .run(version, now, principalId, current.id, expectedGeneration);
-      if (result.changes !== 1) throw new Error('secret generation changed during rotation');
+        .run(descCheck.description, now, principalId, current.id, expectedGeneration);
+      if (result.changes !== 1) throw new Error('secret generation changed during metadata update');
       const updated = this.byName(principalId, environmentId, secretName)!;
-      appendAudit(this.database, principalId, 'secret.rotated', 'secret', current.id, updated.generation, { environmentId, version }, now);
+      appendAudit(this.database, principalId, 'secret.updated', 'secret', current.id, updated.generation, { environmentId, version: current.version }, now);
       return updated;
+    });
+  }
+
+  bulkApply(
+    principalId: string,
+    environmentId: string,
+    items: Array<{
+      name: string;
+      value: string;
+      description?: string | null | undefined;
+      action: 'create' | 'rotate';
+      expectedGeneration: number;
+    }>
+  ): SecretView[] {
+    return transaction(this.database, () => {
+      if (!this.hasActiveEnvironment(principalId, environmentId)) {
+        throw new Error('environment is unavailable');
+      }
+      const results: SecretView[] = [];
+      for (const item of items) {
+        if (item.action === 'create') {
+          const created = this.createInTransaction(principalId, environmentId, item.name, item.value, 0, item.description ?? null);
+          if (!created) throw new Error(`failed to create secret ${item.name}: already exists or generation conflict`);
+          results.push(created);
+        } else if (item.action === 'rotate') {
+          const rotated = this.rotateInTransaction(principalId, environmentId, item.name, item.value, item.expectedGeneration, item.description);
+          if (!rotated) throw new Error(`failed to rotate secret ${item.name}: generation conflict or not found`);
+          results.push(rotated);
+        }
+      }
+      return results;
     });
   }
 
@@ -143,6 +254,67 @@ export class SecretMetadataStore {
       });
     }
     return changed;
+  }
+
+  private createInTransaction(
+    principalId: string,
+    environmentId: string,
+    name: string,
+    value: string,
+    expectedGeneration: 0 = 0,
+    description: string | null = null
+  ): SecretView | undefined {
+    if (expectedGeneration !== 0) return undefined;
+    const secretName = normalizedName(name);
+    const valCheck = validateSecretValue(value);
+    if (!valCheck.ok) throw new Error(valCheck.error);
+    const descCheck = validateSecretDescription(description);
+    if (!descCheck.ok) throw new Error(descCheck.error);
+
+    if (!this.hasActiveEnvironment(principalId, environmentId)) return undefined;
+    if (this.database.prepare('SELECT 1 FROM secret_references WHERE principal_id = ? AND environment_id = ? AND name = ?').get(principalId, environmentId, secretName)) return undefined;
+    const id = opaqueId('sec');
+    const now = Date.now();
+    const encrypted = this.keyring.encrypt(valCheck.value, { principalId, environmentId, name: secretName, version: 1 });
+    this.database.prepare(`INSERT INTO secret_references
+      (id, principal_id, environment_id, name, description, state, current_version, generation, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, 'ACTIVE', 1, 1, ?, ?, NULL)`).run(id, principalId, environmentId, secretName, descCheck.description, now, now);
+    this.insertVersion(principalId, id, 1, encrypted, now);
+    appendAudit(this.database, principalId, 'secret.created', 'secret', id, 1, { environmentId, version: 1 }, now);
+    return this.byName(principalId, environmentId, secretName)!;
+  }
+
+  private rotateInTransaction(
+    principalId: string,
+    environmentId: string,
+    name: string,
+    value: string,
+    expectedGeneration: number,
+    description?: string | null
+  ): SecretView | undefined {
+    const secretName = normalizedName(name);
+    const valCheck = validateSecretValue(value);
+    if (!valCheck.ok) throw new Error(valCheck.error);
+    const descCheck = description !== undefined ? validateSecretDescription(description) : undefined;
+    if (descCheck && !descCheck.ok) throw new Error(descCheck.error);
+
+    if (!this.hasActiveEnvironment(principalId, environmentId)) return undefined;
+    const current = this.byName(principalId, environmentId, secretName);
+    if (!current || current.state !== 'ACTIVE') return undefined;
+    if (current.generation !== expectedGeneration) return undefined;
+    const version = current.version + 1;
+    const now = Date.now();
+    const encrypted = this.keyring.encrypt(valCheck.value, { principalId, environmentId, name: secretName, version });
+    this.insertVersion(principalId, current.id, version, encrypted, now);
+    const finalDesc = descCheck ? descCheck.description : current.description;
+    const result = this.database.prepare(`UPDATE secret_references
+      SET current_version = ?, description = ?, generation = generation + 1, updated_at = ?
+      WHERE principal_id = ? AND id = ? AND generation = ? AND state = 'ACTIVE'`)
+      .run(version, finalDesc, now, principalId, current.id, current.generation);
+    if (result.changes !== 1) throw new Error('secret generation changed during rotation');
+    const updated = this.byName(principalId, environmentId, secretName)!;
+    appendAudit(this.database, principalId, 'secret.rotated', 'secret', current.id, updated.generation, { environmentId, version }, now);
+    return updated;
   }
 
   private byName(principalId: string, environmentId: string, name: string): SecretView | undefined {

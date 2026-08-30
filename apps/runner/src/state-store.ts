@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { RunnerPrincipalSelectorSchema } from '@cloud-harness/contracts';
+import type { EncryptedSecret } from './secret-keyring.js';
 import {
   applyLegacyPrincipalMapping,
   applyPrincipalRelinks,
@@ -33,6 +34,7 @@ export type WorkspaceRecord = {
   repositoryRef: string | null;
   containerName: string | null;
   workspacePath: string;
+  environmentId: string | null;
   status: 'CREATING' | 'ACTIVE' | 'REAPING' | 'CLOSED' | 'FAILED' | 'EXPIRED_RECOVERABLE';
   networkMode: 'none' | 'bridge';
   createdAt: number;
@@ -89,7 +91,7 @@ const fromPrivilegeGrantRow = (row: PrivilegeGrantRow): PrivilegeGrantRecord => 
 
 type Row = {
   id: string; owner_id: string; idempotency_key: string; repository_url: string; repository_ref: string | null;
-  container_name: string | null; workspace_path: string; status: WorkspaceRecord['status']; network_mode: 'none' | 'bridge';
+  container_name: string | null; workspace_path: string; environment_id?: string | null; status: WorkspaceRecord['status']; network_mode: 'none' | 'bridge';
   created_at: number; last_activity_at: number; expires_at: number; hard_expires_at?: number | null;
   git_author_name?: string | null; git_author_email?: string | null; mutation_locked_until?: number | null;
   generation: number; error: string | null;
@@ -98,6 +100,7 @@ type Row = {
 const fromRow = (row: Row): WorkspaceRecord => ({
   id: row.id, ownerId: row.owner_id, idempotencyKey: row.idempotency_key, repositoryUrl: row.repository_url,
   repositoryRef: row.repository_ref, containerName: row.container_name, workspacePath: row.workspace_path,
+  environmentId: row.environment_id ?? null,
   status: row.status, networkMode: row.network_mode, createdAt: row.created_at, lastActivityAt: row.last_activity_at,
   expiresAt: row.expires_at, hardExpiresAt: row.hard_expires_at ?? (row.created_at + 14_400_000),
   gitAuthorName: row.git_author_name ?? null, gitAuthorEmail: row.git_author_email ?? null,
@@ -156,6 +159,29 @@ export class StateStore {
     if (!cols.includes('mutation_lock_count')) {
       this.database.exec('ALTER TABLE workspaces ADD COLUMN mutation_lock_count INTEGER NOT NULL DEFAULT 0;');
     }
+    if (!cols.includes('environment_id')) {
+      this.database.exec('ALTER TABLE workspaces ADD COLUMN environment_id TEXT;');
+    }
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_secret_snapshots (
+        workspace_id TEXT NOT NULL,
+        environment_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        key_version INTEGER NOT NULL,
+        nonce BLOB NOT NULL,
+        ciphertext BLOB NOT NULL,
+        auth_tag BLOB NOT NULL,
+        PRIMARY KEY(workspace_id, name)
+      );
+      CREATE INDEX IF NOT EXISTS workspace_secret_snapshots_ws ON workspace_secret_snapshots(workspace_id);
+      CREATE TABLE IF NOT EXISTS workspace_secret_snapshot_headers (
+        workspace_id TEXT PRIMARY KEY,
+        environment_id TEXT NOT NULL,
+        item_count INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS preferred_workspaces (owner_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS git_identities (owner_id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
@@ -180,8 +206,8 @@ export class StateStore {
 
   create(record: WorkspaceRecord): void {
     this.database.prepare(`INSERT INTO workspaces
-      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, generation, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, generation, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         record.id,
         record.ownerId,
@@ -190,6 +216,7 @@ export class StateStore {
         record.repositoryRef ?? null,
         record.containerName ?? null,
         record.workspacePath,
+        record.environmentId ?? null,
         record.status,
         record.networkMode,
         record.createdAt,
@@ -202,6 +229,140 @@ export class StateStore {
         record.generation ?? 1,
         record.error ?? null
       );
+  }
+
+  saveSecretSnapshot(
+    workspaceId: string,
+    environmentId: string,
+    secrets: Array<{ name: string; version: number; envelope: EncryptedSecret }>
+  ): void {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare(`
+        INSERT OR REPLACE INTO workspace_secret_snapshot_headers (workspace_id, environment_id, item_count, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(workspaceId, environmentId, secrets.length, Date.now());
+      const stmt = this.database.prepare(`
+        INSERT OR REPLACE INTO workspace_secret_snapshots (workspace_id, environment_id, name, version, key_version, nonce, ciphertext, auth_tag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const secret of secrets) {
+        stmt.run(
+          workspaceId,
+          environmentId,
+          secret.name,
+          secret.version,
+          secret.envelope.keyVersion,
+          secret.envelope.nonce,
+          secret.envelope.ciphertext,
+          secret.envelope.authTag
+        );
+      }
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  getSecretSnapshot(workspaceId: string): {
+    initialized: boolean;
+    environmentId?: string;
+    secrets: Array<{ name: string; version: number; envelope: EncryptedSecret; environmentId: string }>;
+  } {
+    const header = this.database.prepare(`
+      SELECT environment_id, item_count FROM workspace_secret_snapshot_headers WHERE workspace_id = ?
+    `).get(workspaceId) as { environment_id: string; item_count: number } | undefined;
+    if (!header) {
+      return { initialized: false, secrets: [] };
+    }
+    const rows = this.database.prepare(`
+      SELECT name, version, key_version, nonce, ciphertext, auth_tag, environment_id
+      FROM workspace_secret_snapshots
+      WHERE workspace_id = ?
+      ORDER BY name
+    `).all(workspaceId) as Array<{
+      name: string;
+      version: number;
+      key_version: number;
+      nonce: Uint8Array;
+      ciphertext: Uint8Array;
+      auth_tag: Uint8Array;
+      environment_id: string;
+    }>;
+    return {
+      initialized: true,
+      environmentId: header.environment_id,
+      secrets: rows.map((r) => ({
+        name: r.name,
+        version: r.version,
+        environmentId: r.environment_id,
+        envelope: {
+          keyVersion: r.key_version,
+          nonce: Buffer.from(r.nonce),
+          ciphertext: Buffer.from(r.ciphertext),
+          authTag: Buffer.from(r.auth_tag)
+        }
+      }))
+    };
+  }
+  deleteSecretSnapshot(workspaceId: string): void {
+    this.database.prepare('DELETE FROM workspace_secret_snapshots WHERE workspace_id = ?').run(workspaceId);
+    this.database.prepare('DELETE FROM workspace_secret_snapshot_headers WHERE workspace_id = ?').run(workspaceId);
+  }
+
+  reencryptSnapshots(
+    reencryptFn: (item: {
+      workspaceId: string;
+      environmentId: string;
+      ownerId: string;
+      name: string;
+      version: number;
+      envelope: EncryptedSecret;
+    }) => EncryptedSecret
+  ): number {
+    const rows = this.database.prepare(`
+      SELECT s.*, w.owner_id
+      FROM workspace_secret_snapshots s
+      JOIN workspaces w ON w.id = s.workspace_id
+    `).all() as Array<{
+      workspace_id: string;
+      environment_id: string;
+      name: string;
+      version: number;
+      key_version: number;
+      nonce: Uint8Array;
+      ciphertext: Uint8Array;
+      auth_tag: Uint8Array;
+      owner_id: string;
+    }>;
+
+    let updated = 0;
+    for (const row of rows) {
+      const envelope: EncryptedSecret = {
+        keyVersion: row.key_version,
+        nonce: Buffer.from(row.nonce),
+        ciphertext: Buffer.from(row.ciphertext),
+        authTag: Buffer.from(row.auth_tag)
+      };
+      const next = reencryptFn({
+        workspaceId: row.workspace_id,
+        environmentId: row.environment_id,
+        ownerId: row.owner_id,
+        name: row.name,
+        version: row.version,
+        envelope
+      });
+      if (next.keyVersion !== row.key_version) {
+        this.database.prepare(`
+          UPDATE workspace_secret_snapshots
+          SET key_version = ?, nonce = ?, ciphertext = ?, auth_tag = ?
+          WHERE workspace_id = ? AND name = ?
+        `).run(next.keyVersion, next.nonce, next.ciphertext, next.authTag, row.workspace_id, row.name);
+        updated++;
+      }
+    }
+    return updated;
   }
   byId(id: string): WorkspaceRecord | undefined {
     const row = this.database.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as Row | undefined;

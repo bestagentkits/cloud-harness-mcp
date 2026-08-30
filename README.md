@@ -212,11 +212,13 @@ of those specs in [`mcp-server.ts`](apps/api/src/mcp-server.ts).
 
 ### Workspace lifecycle
 
-`workspace_open`, `workspace_list`, `workspace_status`, `workspace_close`
+`workspace_open`, `workspace_list`, `workspace_status`, `workspace_capabilities`,
+`workspace_lease_renew`, `workspace_recover`, `workspace_context`,
+`workspace_set_active`, `workspace_close`, `secrets_list`
 
 ### Files and code intelligence
 
-`files_list`, `files_read`, `files_write`, `files_apply_patch`, `files_delete`,
+`files_list`, `files_read`, `files_write`, `files_write_batch`, `files_apply_patch`, `files_delete`,
 `files_move`, `files_mkdir`, `grep_search`, `symbols_search`,
 `symbols_references`
 
@@ -224,13 +226,15 @@ of those specs in [`mcp-server.ts`](apps/api/src/mcp-server.ts).
 
 `exec_run`, `shell_open`, `shell_io`, `shell_close`, `sessions_list`,
 `sessions_open`, `sessions_io`, `sessions_close`, `tasks_list`, `tasks_run`,
-`tasks_status`, `tasks_cancel`, `tasks_graph`
+`tasks_status`, `tasks_cancel`, `tasks_graph`, `operation_status`,
+`operation_cancel`, `operation_wait`
 
 ### Git and worktrees
 
 `git_status`, `git_diff`, `git_log`, `git_branch`, `git_checkout`, `git_add`,
-`git_commit`, `git_fetch`, `git_pull`, `git_push`, `git_merge`, `git_rebase`,
-`worktrees_list`, `worktrees_create`, `worktrees_remove`
+`git_commit`, `git_identity_status`, `git_identity_set`, `workspace_finalize`,
+`git_fetch`, `git_pull`, `git_push`, `git_merge`, `git_rebase`,
+`worktrees_list`, `worktrees_create`, `worktrees_remove`, `github_action`
 
 ### Repository extensions
 
@@ -238,6 +242,10 @@ of those specs in [`mcp-server.ts`](apps/api/src/mcp-server.ts).
 `memories_list`, `memories_read`, `memories_write`, `deployments_list`,
 `deployments_run`
 
+### Retained artifacts
+
+`artifacts_snapshot`, `artifacts_list`, `artifacts_read`, `artifacts_restore`,
+`artifacts_delete`
 ## Install the Cloud Harness skill
 
 Install the self-contained `cloudharness` operating skill directly from this

@@ -294,10 +294,10 @@ td time, th time { white-space: nowrap; }
 .record-heading time { color: var(--ink-muted); font-size: var(--text-13); font-variant-numeric: tabular-nums; }
 .record-list > li { min-width: 0; }
 
-.secret-reference { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(16rem, 2fr) auto; align-items: end; gap: var(--space-3); border-block-start: 1px solid var(--line); padding-block-start: var(--space-4); }
+.secret-reference { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(14rem, 1.5fr) minmax(14rem, 1.5fr) auto; align-items: end; gap: var(--space-3); border-block-start: 1px solid var(--line); padding-block-start: var(--space-4); }
 .secret-reference > div { display: grid; gap: var(--space-2); }
 .secret-reference small { color: var(--ink-muted); }
-
+.secret-desc { color: var(--ink-muted); font-size: var(--text-13); margin: 0; word-break: break-word; }
 .stack-form { display: grid; gap: var(--space-3); align-items: stretch; max-width: 42rem; margin-block: var(--space-4); }
 .stack-form label, .inline-form label { display: grid; gap: var(--space-1); }
 .inline-form { align-items: end; }
@@ -350,6 +350,12 @@ dialog::backdrop { background: oklch(0.14 0.02 255 / .55); }
 .api-key-card { display: grid; gap: var(--space-3); }
 .api-key-secret { display: block; width: 100%; margin-block: var(--space-2); }
 #api-key-reveal-dialog { width: min(36rem, calc(100vw - 2 * var(--space-4))); }
+#bulk-import-dialog { width: min(46rem, calc(100vw - 2 * var(--space-4))); }
+.bulk-diff-preview { display: grid; gap: var(--space-1); max-height: 12rem; overflow-y: auto; padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: var(--text-12); margin-block: var(--space-2); }
+.bulk-diff-preview .diff-add { color: var(--success); }
+.bulk-diff-preview .diff-rot { color: var(--warning); }
+.bulk-diff-preview .diff-skip { color: var(--ink-muted); }
+.bulk-diff-preview .diff-err { color: var(--danger); font-weight: 600; }
 
 .drawer-close { display: block; margin-inline-start: auto; margin-block-end: var(--space-4); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }

@@ -8,14 +8,16 @@ JSON input and returns the common structured result envelope described in
 
 See [workspace lifecycle and results](workspace-lifecycle-and-results.md).
 
-`workspace_open` `workspace_list` `workspace_status` `workspace_close`
+`workspace_open` `workspace_list` `workspace_status` `workspace_capabilities`
+`workspace_close` `workspace_lease_renew` `workspace_recover`
+`workspace_context` `workspace_set_active`
 
 ## Files and code search
 
 See [files and search](files-and-search.md).
 
-`files_list` `files_read` `files_write` `files_apply_patch` `files_delete`
-`files_move` `files_mkdir` `grep_search` `symbols_search`
+`files_list` `files_read` `files_write` `files_write_batch` `files_apply_patch`
+`files_delete` `files_move` `files_mkdir` `grep_search` `symbols_search`
 `symbols_references`
 
 ## Execution and managed processes
@@ -24,15 +26,17 @@ See [execution and tasks](execution-and-tasks.md).
 
 `exec_run` `shell_open` `shell_io` `shell_close` `sessions_list`
 `sessions_open` `sessions_io` `sessions_close` `tasks_list` `tasks_run`
-`tasks_status` `tasks_cancel` `tasks_graph`
+`tasks_status` `tasks_cancel` `tasks_graph` `operation_status`
+`operation_cancel` `operation_wait`
 
 ## Git and worktrees
 
 See [Git and worktrees](git-and-worktrees.md).
 
 `git_status` `git_diff` `git_log` `git_branch` `git_checkout` `git_add`
-`git_commit` `git_fetch` `git_pull` `git_push` `git_merge` `git_rebase`
-`worktrees_list` `worktrees_create` `worktrees_remove`
+`git_commit` `git_identity_status` `git_identity_set` `workspace_finalize`
+`git_fetch` `git_pull` `git_push` `git_merge` `git_rebase` `worktrees_list`
+`worktrees_create` `worktrees_remove` `github_action`
 
 ## Repository automation and memory
 
@@ -48,10 +52,11 @@ See [retained artifacts](artifacts.md).
 
 `artifacts_snapshot` `artifacts_list` `artifacts_read` `artifacts_restore`
 `artifacts_delete`
+
 ## Shared input rules
 
-- `workspaceId`, `shellId`, `sessionId`, and `taskId` are opaque handles. Copy
-  them exactly from results; never derive them from names or paths.
+- `workspaceId`, `shellId`, `sessionId`, `taskId`, and `operationId` are opaque
+  handles. Copy them exactly from results; never derive them from names or paths.
 - Paths are workspace-relative, at most 1,024 characters, and cannot be
   absolute, contain NUL, use a Windows drive prefix, or include `..` segments.
 - Entry paths for move/delete/mkdir must identify something below the workspace

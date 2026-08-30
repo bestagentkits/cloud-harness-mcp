@@ -19,18 +19,18 @@ await mkdir(publicDir, { recursive: true });
 const CATEGORIES = [
   {
     title: 'Workspace Lifecycle',
-    description: 'Tools for opening, inspecting, listing, and closing isolated TTL-bound workspaces.',
-    names: ['workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context', 'workspace_lease_renew', 'workspace_recover', 'workspace_close']
+    description: 'Tools for opening, inspecting, listing, secrets discovery, and closing isolated TTL-bound workspaces.',
+    names: ['workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context', 'workspace_set_active', 'workspace_lease_renew', 'workspace_recover', 'workspace_close', 'secrets_list']
   },
   {
     title: 'Files and Code Intelligence',
     description: 'Tools for navigating directory trees, reading/writing files, structural search, and symbol analysis.',
-    names: ['files_list', 'files_read', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references']
+    names: ['files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references']
   },
   {
     title: 'Commands and Shells',
-    description: 'Tools for running isolated non-root commands and persistent interactive PTY shell sessions.',
-    names: ['exec_run', 'shell_open', 'shell_io', 'shell_close']
+    description: 'Tools for running isolated non-root commands, operations, and persistent interactive PTY shell sessions.',
+    names: ['exec_run', 'shell_open', 'shell_io', 'shell_close', 'operation_status', 'operation_cancel', 'operation_wait']
   },
   {
     title: 'Sessions and Tasks',
@@ -39,8 +39,8 @@ const CATEGORIES = [
   },
   {
     title: 'Git and Worktrees',
-    description: 'Local repository version control, branch management, worktree isolation, and credential-isolated origin transfer.',
-    names: ['git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_list', 'worktrees_create', 'worktrees_remove', 'github_action']
+    description: 'Local repository version control, branch management, worktree isolation, Git identity, and credential-isolated origin transfer.',
+    names: ['git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_add', 'git_commit', 'git_identity_status', 'git_identity_set', 'workspace_finalize', 'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'worktrees_list', 'worktrees_create', 'worktrees_remove', 'github_action']
   },
   {
     title: 'Repository Extensions',

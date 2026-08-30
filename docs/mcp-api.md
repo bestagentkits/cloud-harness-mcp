@@ -122,6 +122,10 @@ workspace. This makes a lost response recoverable without duplicating work.
     expose an `availableActions` string array listing valid lifecycle operations
     (e.g., `['workspace_recover', 'workspace_lease_renew', 'workspace_close']` for
     `EXPIRED_RECOVERABLE` workspaces) to remove guesswork for MCP clients.
+- `secrets_list` discovers available environment secret names and descriptions without revealing secret values:
+  - **Value-Free Discovery:** Returns `{ name, description, environmentId, version, updatedAt }[]`. Values are write-only and physically unqueried by MCP tools.
+  - **Precedence Resolution:** Resolves from explicit `environmentId`, or defaults to the workspace's pinned environment, or the active workspace's environment.
+  - **Output Redaction (Defense-in-Depth):** When commands (`exec_run`, `tasks_status`, `shell_io`, `sessions_io`) or error messages emit injected secret values, the runner's ingest-time stream redactor sanitizes exact matches to `[REDACTED_SECRET: <NAME>]` before buffering, preserving monotonic byte cursor offsets without leaking secret plaintext into MCP conversation transcripts.
 - `operation_status`, `operation_cancel`, and `operation_wait` provide observable,
   cancellable, and reconnectable management of long-running operations.
 - `symbols_search` uses Universal Ctags to find definitions. It is not a

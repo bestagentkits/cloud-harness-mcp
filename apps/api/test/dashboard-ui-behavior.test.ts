@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
-  renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm
+  parseDotEnv, renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm, validateSecretClient
 } from '../dashboard/dashboard.js';
 import { renderApiKeyIndex, renderGitHub, renderOverview, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
 
@@ -341,5 +341,65 @@ describe('dashboard UI behavior', () => {
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('data-copy="https://api.example.com/mcp&quot;&gt;&lt;script&gt;"');
     expect(html).toContain('Never');
+  });
+  it('parses .env files with comment-to-description extraction and quote handling', () => {
+    const sample = `
+# Database connection for staging
+# Account: infra-team
+DATABASE_URL="postgresql://user:pass@db:5432/app"
+
+# Unrelated section header
+
+API_KEY='sk_live_12345'
+export STRIPE_SECRET=whsec_abc
+`;
+    const parsed = parseDotEnv(sample);
+    expect(parsed).toHaveLength(3);
+    expect(parsed[0]).toEqual({
+      name: 'DATABASE_URL',
+      value: 'postgresql://user:pass@db:5432/app',
+      description: 'Database connection for staging / Account: infra-team'
+    });
+    expect(parsed[1]).toEqual({
+      name: 'API_KEY',
+      value: 'sk_live_12345',
+      description: null
+    });
+    expect(parsed[2]).toEqual({
+      name: 'STRIPE_SECRET',
+      value: 'whsec_abc',
+      description: null
+    });
+  });
+
+  it('validates secret names and values client-side against reserved identifiers', () => {
+    expect(validateSecretClient('VALID_KEY', 'valid_value')).toBeNull();
+    expect(validateSecretClient('PATH', 'val')).toContain('reserved');
+    expect(validateSecretClient('HARNESS_TOKEN', 'val')).toContain('reserved prefix');
+    expect(validateSecretClient('123_INVALID', 'val')).toContain('identifier');
+    expect(validateSecretClient('EMPTY_VAL', '')).toContain('empty');
+  });
+
+  it('renders secret descriptions, bulk import and export affordances in project detail', () => {
+    const project = { id: 'prj_123', name: 'Core Project', generation: 1 };
+    const environments = [{
+      id: 'env_456',
+      name: 'Staging',
+      generation: 2,
+      secrets: [{
+        id: 'sec_789',
+        name: 'SUPABASE_KEY',
+        description: 'Supabase API key',
+        state: 'ACTIVE',
+        version: 1,
+        generation: 1
+      }]
+    }];
+    const html = renderProjectDetail(project, environments);
+    expect(html).toContain('SUPABASE_KEY');
+    expect(html).toContain('Supabase API key');
+    expect(html).toContain('Bulk import .env');
+    expect(html).toContain('Export .env.example');
+    expect(html).toContain('class="update-secret-desc-form');
   });
 });

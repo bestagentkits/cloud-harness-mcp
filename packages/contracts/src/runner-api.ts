@@ -19,7 +19,8 @@ export const RunnerOperationSchema = z.enum([
   'memories_list', 'memories_read', 'memories_write',
   'deployments_list', 'deployments_run',
   'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
-  'github_action'
+  'github_action',
+  'secrets_list'
 ]);
 
 export const ExternalPrincipalSchema = z.object({

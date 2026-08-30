@@ -161,6 +161,18 @@ export class LocalWorkspaceBackend implements OperationBackend {
         truncated: false
       };
     }
+    if (operation === 'secrets_list') {
+      return {
+        ok: false,
+        message: 'secrets_list is unsupported in local stdio mode because retained environment secrets require remote runner storage',
+        error: {
+          code: 'INVALID_INPUT',
+          message: 'secrets_list is unsupported in local stdio mode because retained environment secrets require remote runner storage',
+          retryable: false
+        },
+        truncated: false
+      };
+    }
 
     if (operation === 'workspace_capabilities') {
       if (input.workspaceId && input.workspaceId !== this.workspaceId) {
