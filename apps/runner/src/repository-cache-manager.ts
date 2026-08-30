@@ -35,12 +35,12 @@ export class RepositoryCacheManager {
 
   async acquireCacheMirror(
     ownerId: string,
-    rawRepositoryUrl: string,
+    repositoryUrl: string,
     token?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: { network?: string; httpProxy?: string }
   ): Promise<{ cachePath: string; isReady: boolean }> {
-    const validatedUrl = await validateRepositoryUrl(rawRepositoryUrl, this.allowedGitHosts);
-    const repositoryUrl = validatedUrl.toString();
+    await validateRepositoryUrl(repositoryUrl, this.allowedGitHosts);
     const urlHash = createHash('sha256').update(repositoryUrl.toLowerCase().trim()).digest('hex');
     const cachePath = join(this.cacheRoot, ownerId, `${urlHash}.git`);
     const ownerDir = join(this.cacheRoot, ownerId);
@@ -83,14 +83,22 @@ case \${1:-} in
   *) printf '%s\\n' "$CLOUD_HARNESS_GIT_TOKEN" ;;
 esac
 `;
+      const network = options?.network || 'bridge';
+      const proxyEnvs = options?.httpProxy ? [
+        '--env', `HTTP_PROXY=${options.httpProxy}`,
+        '--env', `HTTPS_PROXY=${options.httpProxy}`,
+        '--env', `ALL_PROXY=${options.httpProxy}`,
+        '--env', 'NO_PROXY=localhost,127.0.0.1'
+      ] : [];
       const result = await runDocker([
         'run', '-i', '--rm', '--name', helperName,
         '--label', 'cloud-harness.role=cache-helper', '--label', 'cloud-harness.ephemeral=true',
         '--label', `cloud-harness.instance=${this.instanceId}`,
-        '--network', 'bridge', '--user', '10001:10001', '--read-only',
+        '--network', network, '--user', '10001:10001', '--read-only',
         '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
         '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
         '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
+        ...proxyEnvs,
         '--volume', `${ownerDir}:/cache`,
         '--entrypoint', '/bin/bash', this.executorImage,
         '-c',

@@ -52,6 +52,7 @@
           <label for="status">State</label><select id="status" name="status"><option value="">All</option><option>CREATING</option><option>ACTIVE</option><option>REAPING</option><option>CLOSED</option><option>FAILED</option></select>
           <button type="submit">Apply filters</button>
         </form>
+        <button id="open-workspace-btn" type="button" class="accent-btn">Open workspace</button>
         <button id="refresh" type="button">Refresh</button><span id="last-updated"></span>
       </div>
       <section id="content" aria-labelledby="workspace-list-heading" aria-busy="true"><h2 id="workspace-list-heading">Workspace list</h2><p>Loading workspaces…</p></section>
@@ -90,6 +91,29 @@
       <div id="bulk-import-preview" class="bulk-diff-preview" aria-live="polite"></div>
       <p id="bulk-import-status" class="status-message" aria-live="polite"></p>
       <div class="dialog-actions"><button type="button" id="cancel-bulk-import">Cancel</button><button type="submit" id="submit-bulk-import">Apply import</button></div>
+    </form>
+  </dialog>
+  <dialog id="open-workspace-dialog" aria-labelledby="open-workspace-title" aria-describedby="open-workspace-description">
+    <h2 id="open-workspace-title">Open new workspace</h2>
+    <p id="open-workspace-description">Clone an approved repository into an isolated, TTL-limited remote workspace.</p>
+    <form id="open-workspace-form" class="stack-form">
+      <label for="open-repo-url">Repository HTTPS URL</label>
+      <input id="open-repo-url" name="repositoryUrl" type="url" placeholder="https://github.com/org/repo" required>
+      <label for="open-repo-ref">Branch or Commit Ref (optional)</label>
+      <input id="open-repo-ref" name="ref" placeholder="main">
+      <label for="open-network-mode">Network Mode</label>
+      <select id="open-network-mode" name="networkMode">
+        <option value="none" selected>none (Air-gapped isolation)</option>
+        <option value="bridge">bridge (Outbound egress enabled)</option>
+      </select>
+      <div class="form-section-title">Agent Toolkits & Skills (Optional)</div>
+      <div id="toolkits-selection-grid" class="toolkits-grid" role="group" aria-label="Available Toolkits"></div>
+      <div id="open-workspace-preview" class="preflight-box" aria-live="polite"></div>
+      <p id="open-workspace-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-open-workspace">Cancel</button>
+        <button type="submit" id="submit-open-workspace" class="accent-btn">Launch workspace</button>
+      </div>
     </form>
   </dialog>
   <script type="module" src="/dashboard/assets/dashboard.js"></script>

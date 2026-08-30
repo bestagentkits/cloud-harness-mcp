@@ -74,18 +74,36 @@ services:
       RUNNER_HOST: 0.0.0.0
       RUNNER_PORT: 3001
       MCP_BEARER_TOKEN: ""
+      TOOLKIT_EGRESS_PROXY: http://provisioning-proxy:3128
+      PROVISIONING_NETWORK: cloud-harness-mcp_provisioning
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_JOBS_ROOT:-/var/lib/cloud-harness/jobs}:${JOBS_ROOT:-/var/lib/cloud-harness/jobs}
       - ${HOST_STATE_ROOT:-/var/lib/cloud-harness/state}:/var/lib/cloud-harness/state
       - ${HOST_ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}:${ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}
       - ${HOST_REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}:${REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}
+      - ${HOST_TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}:${TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}
     networks: [control, runner-egress]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
       interval: 10s
       timeout: 3s
       retries: 6
+
+  provisioning-proxy:
+    image: cloud-harness-api:local
+    restart: unless-stopped
+    command: ["node", "/app/deploy/provisioning-proxy.mjs"]
+    environment:
+      PROVISIONING_PROXY_HOST: 0.0.0.0
+      PROVISIONING_PROXY_PORT: 3128
+      ALLOWED_HOSTS: ${ALLOWED_GIT_HOSTS:-github.com},agentkit.best,releases.agentkit.best,api.github.com,objects.githubusercontent.com
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=8m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [provisioning, runner-egress]
 
   executor-image:
     image: cloud-harness-executor:local
@@ -106,3 +124,5 @@ networks:
     driver: bridge
   runner-egress:
     driver: bridge
+  provisioning:
+    internal: true

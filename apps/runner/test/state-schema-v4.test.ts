@@ -13,7 +13,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     const store = new StateStore(dbPath);
     try {
       const version = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(version).toBe(5);
+      expect(version).toBe(6);
     } finally {
       store.close();
     }
@@ -262,7 +262,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
       downgradeStateSchemaToV4(store.database);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(4);
       downgradeStateSchemaToV3(store.database);
@@ -310,7 +310,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       // Upgrade to v4
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
 
       // Verify row was migrated into git_operation_idempotency
       const migratedRow = store.getGitOperation(p, wsId, 'ik_legacy_fin_1');
@@ -435,7 +435,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       // Upgrade to schema version 4: MUST NOT throw foreign key constraint error!
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
 
       // Prior to principal mapping, git_operation_idempotency should NOT have the row (since FK to principals is enforced)
       const unmappedGitOp = store.database.prepare(

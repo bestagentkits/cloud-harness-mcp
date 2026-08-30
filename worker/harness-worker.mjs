@@ -161,26 +161,28 @@ async function git(args, options = {}) {
 async function computeSkillBundleDigest(skillDir, skillMdFile) {
   const parts = [];
   try {
-    const skillMdRaw = await readFile(skillMdFile);
-    parts.push(`SKILL.md:${sha256(skillMdRaw)}`);
-  } catch {
-    parts.push('SKILL.md:missing');
-  }
-
-  const scriptsDir = join(skillDir, 'scripts');
-  try {
-    const scriptEntries = (await readdir(scriptsDir, { withFileTypes: true }))
-      .filter(e => e.isFile())
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of scriptEntries) {
-      const scriptFile = join(scriptsDir, entry.name);
-      try {
-        const raw = await readFile(scriptFile);
-        parts.push(`scripts/${entry.name}:${sha256(raw)}`);
-      } catch { /* skip */ }
+    async function walk(dir, rel) {
+      const entries = await readdir(dir, { withFileTypes: true });
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        const full = join(dir, entry.name);
+        const nextRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          await walk(full, nextRel);
+        } else if (entry.isFile()) {
+          try {
+            const raw = await readFile(full);
+            const st = await stat(full);
+            const mode = (st.mode & 0o777).toString(8);
+            parts.push(`${nextRel}:${st.size}:${mode}:${sha256(raw)}`);
+          } catch { /* skip */ }
+        }
+      }
     }
-  } catch { /* scripts dir absent */ }
-
+    await walk(skillDir, '');
+  } catch {
+    parts.push('missing');
+  }
   return sha256(parts.join('\n'));
 }
 
@@ -1214,17 +1216,26 @@ const handlers = {
       return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
     }
 
-    const result = await command(scriptPath, input.args ?? [], { timeoutMs: input.timeoutMs });
-    if (result.exitCode !== 0) {
-      return {
-        ok: false,
-        message: `Skill script exited with ${result.exitCode}`,
-        data: result,
-        error: { code: 'EXECUTION_FAILED', message: `Skill script exited with ${result.exitCode}`, retryable: false },
-        truncated: result.truncated
-      };
+    const runId = `run-${Date.now()}-${randomBytes(4).toString('hex')}`;
+    const snapDir = `/tmp/cloud-harness-exec/${runId}`;
+    await mkdir(snapDir, { recursive: true, mode: 0o700 });
+    const snapScriptPath = join(snapDir, input.script);
+    await writeFile(snapScriptPath, scriptContent, { mode: 0o700 });
+    try {
+      const result = await command(snapScriptPath, input.args ?? [], { timeoutMs: input.timeoutMs });
+      if (result.exitCode !== 0) {
+        return {
+          ok: false,
+          message: `Skill script exited with ${result.exitCode}`,
+          data: result,
+          error: { code: 'EXECUTION_FAILED', message: `Skill script exited with ${result.exitCode}`, retryable: false },
+          truncated: result.truncated
+        };
+      }
+      return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
+    } finally {
+      await rm(snapDir, { recursive: true, force: true }).catch(() => undefined);
     }
-    return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
   },
   async hooks_list(input = {}) {
     const { manifestSha256, hooks } = await hookEntries();

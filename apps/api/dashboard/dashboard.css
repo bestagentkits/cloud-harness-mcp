@@ -357,6 +357,16 @@ dialog::backdrop { background: oklch(0.14 0.02 255 / .55); }
 .bulk-diff-preview .diff-skip { color: var(--ink-muted); }
 .bulk-diff-preview .diff-err { color: var(--danger); font-weight: 600; }
 
+#open-workspace-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); }
+.form-section-title { font-family: var(--font-mono); font-size: var(--text-12); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-muted); margin-block: var(--space-3) var(--space-2); }
+.toolkits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-3); margin-block-end: var(--space-3); }
+.toolkit-card-select { display: grid; gap: var(--space-2); padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; position: relative; transition: border-color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out); }
+.toolkit-card-select:hover { border-color: var(--line-strong); }
+.toolkit-card-select.selected { border-color: var(--accent-line); background: var(--accent-soft); }
+.toolkit-card-select .check-indicator { position: absolute; top: var(--space-2); right: var(--space-2); width: 1.125rem; height: 1.125rem; border-radius: var(--radius-sm); border: 1px solid var(--line-strong); display: flex; align-items: center; justify-content: center; font-size: var(--text-11); font-weight: 700; }
+.toolkit-card-select.selected .check-indicator { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.preflight-box { padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: var(--text-12); font-family: var(--font-mono); line-height: 1.5; margin-block: var(--space-2); }
+
 .drawer-close { display: block; margin-inline-start: auto; margin-block-end: var(--space-4); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .topbar-menu { display: none; }

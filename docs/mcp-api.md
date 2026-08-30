@@ -42,6 +42,11 @@ The lifecycle contract is owned by
    optional ref, and a fresh idempotency key. To inject a retained dashboard
    environment, select its opaque ID and explicitly confirm the injection in
    the same request; omitting either injects nothing.
+   To pre-install agent toolkits (e.g. `mattpocock/skills`, `obra/superpowers`,
+   or custom Git repos), provide the `toolkits` parameter. Default `owner`
+   scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills` without
+   polluting git status; `workspace` scope materializes files into
+   `.cloud-harness/skills` with `allowToolkitWorkspaceChanges: true`.
 2. Subsequent tool calls can omit `workspaceId` when exactly one active
    workspace is open. The runner automatically resolves the active workspace,
    or returns a structured `CONFLICT` ambiguity error if multiple exist.

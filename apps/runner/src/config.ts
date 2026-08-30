@@ -58,6 +58,11 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     artifactRetentionSeconds: process.env.ARTIFACT_RETENTION_SECONDS,
     enableRepoCache: process.env.ENABLE_REPO_CACHE,
     repoCacheRoot: process.env.REPO_CACHE_ROOT,
+    enableToolkitCache: process.env.ENABLE_TOOLKIT_CACHE,
+    toolkitCacheRoot: process.env.TOOLKIT_CACHE_ROOT,
+    toolkitNetworkPolicy: process.env.TOOLKIT_NETWORK_POLICY,
+    toolkitEgressProxy: process.env.TOOLKIT_EGRESS_PROXY,
+    provisioningNetwork: process.env.PROVISIONING_NETWORK,
     secretKeyring,
     legacyPrincipalMapping: legacyOwnerId || legacyIssuer || legacySubject ? {
       legacyOwnerId,

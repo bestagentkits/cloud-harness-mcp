@@ -22,6 +22,65 @@ const gitRefspec = z.string().min(1).max(512).refine((value) => {
 }, 'invalid Git branch push refspec');
 const sessionName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
 const EnvironmentIdSchema = z.string().regex(/^env_[A-Za-z0-9_-]{20,80}$/);
+const SkillFilterSchema = z.object({
+  include: z.array(z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/)).max(128).optional(),
+  exclude: z.array(z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/)).max(128).optional()
+}).strict().superRefine((val, ctx) => {
+  if (val.include && val.exclude) {
+    ctx.addIssue({ code: 'custom', message: 'include and exclude cannot both be specified' });
+  }
+});
+
+const ToolkitSecretRefSchema = z.object({
+  scope: z.enum(['global', 'environment']),
+  environmentId: EnvironmentIdSchema.optional(),
+  name: z.literal('AGENTKIT_API_KEY')
+}).strict().superRefine((val, ctx) => {
+  if (val.scope === 'environment' && !val.environmentId) {
+    ctx.addIssue({ code: 'custom', path: ['environmentId'], message: 'environmentId is required when secret scope is environment' });
+  }
+});
+
+export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('preset'),
+    instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).optional(),
+    id: z.enum(['mattpocock/skills', 'obra/superpowers']),
+    version: z.string().max(80).optional(),
+    scope: z.enum(['owner', 'workspace']).default('owner'),
+    skills: SkillFilterSchema.optional(),
+    activation: z.enum(['skills-only', 'toolkit-default']).default('toolkit-default'),
+    config: z.discriminatedUnion('presetId', [
+      z.object({
+        presetId: z.literal('obra/superpowers'),
+        clientTargets: z.array(z.enum(['claude', 'codex', 'cursor', 'all'])).max(5).default(['all'])
+      }).strict(),
+      z.object({
+        presetId: z.literal('mattpocock/skills')
+      }).strict()
+    ]).optional()
+  }).strict().superRefine((val, ctx) => {
+    if (val.config && val.config.presetId !== val.id) {
+      ctx.addIssue({ code: 'custom', path: ['config'], message: `config presetId must match preset id (${val.id})` });
+    }
+  }),
+  z.object({
+    kind: z.literal('git'),
+    instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
+    url: z.string().url().refine((val) => val.startsWith('https://'), 'Git toolkit URL must use HTTPS'),
+    ref: gitObjectId.optional(),
+    subdirectory: relativePath.optional(),
+    scope: z.enum(['owner', 'workspace']).default('owner'),
+    skills: SkillFilterSchema.optional(),
+    layout: z.object({
+      skillRoots: z.array(relativePath).max(16).default(['skills']),
+      recursive: z.boolean().default(true)
+    }).strict().default({ skillRoots: ['skills'], recursive: true }),
+    activation: z.literal('skills-only').default('skills-only')
+  }).strict()
+]);
+
+export type ToolkitSelection = z.infer<typeof ToolkitSelectionSchema>;
 
 const githubActionUnion = z.discriminatedUnion('action', [
   z.object({
@@ -207,10 +266,29 @@ const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
     networkMode: z.enum(['none', 'bridge']).optional(), environmentId: EnvironmentIdSchema.optional(),
-    confirmEnvironmentInjection: z.literal(true).optional()
+    confirmEnvironmentInjection: z.literal(true).optional(),
+    toolkits: z.array(ToolkitSelectionSchema).max(8).default([]),
+    allowToolkitWorkspaceChanges: z.literal(true).optional(),
+    confirmToolkitSecretUse: z.literal(true).optional()
   }).superRefine((input, context) => {
     if (Boolean(input.environmentId) !== Boolean(input.confirmEnvironmentInjection)) {
       context.addIssue({ code: 'custom', path: ['confirmEnvironmentInjection'], message: 'environment injection requires an explicit environment selection and confirmation' });
+    }
+    const hasWorkspaceScope = input.toolkits.some((t) => t.scope === 'workspace');
+    if (hasWorkspaceScope && !input.allowToolkitWorkspaceChanges) {
+      context.addIssue({ code: 'custom', path: ['allowToolkitWorkspaceChanges'], message: 'workspace-scope toolkits require allowToolkitWorkspaceChanges confirmation' });
+    }
+    const hasSecretUse = input.toolkits.some((t) => t.kind === 'preset' && 'apiKey' in (t.config ?? {}) && Boolean((t.config as { apiKey?: unknown })?.apiKey));
+    if (hasSecretUse && !input.confirmToolkitSecretUse) {
+      context.addIssue({ code: 'custom', path: ['confirmToolkitSecretUse'], message: 'toolkits requiring secrets require confirmToolkitSecretUse confirmation' });
+    }
+    const instanceIds = new Set<string>();
+    for (const t of input.toolkits) {
+      const key = t.kind === 'git' ? t.instanceId : (t.instanceId || t.id);
+      if (instanceIds.has(key)) {
+        context.addIssue({ code: 'custom', path: ['toolkits'], message: `duplicate toolkit instance or id: ${key}` });
+      }
+      instanceIds.add(key);
     }
   }),
   workspace_list: z.object(pagination),

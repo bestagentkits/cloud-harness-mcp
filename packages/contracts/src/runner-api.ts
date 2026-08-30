@@ -118,13 +118,25 @@ export const ProvenanceSourceSchema = z.enum(['built-in', 'owner', 'workspace', 
 export const TrustClassSchema = z.enum(['trusted-control-plane', 'owner-controlled', 'untrusted-executor']);
 export const MutabilitySchema = z.enum(['release', 'owner', 'workspace-process', 'repository-commit']);
 
+export const ToolkitVerificationSchema = z.enum(['built-in', 'catalog-pinned', 'custom-unverified']);
+export const ToolkitOriginSchema = z.object({
+  kind: z.literal('toolkit'),
+  instanceId: z.string().max(80),
+  toolkitId: z.string().max(120),
+  resolvedRevision: z.string().max(120).optional(),
+  bundleSha256: z.string().length(64),
+  adapterVersion: z.number().int().min(1),
+  verification: ToolkitVerificationSchema
+}).strict();
+
 export const ProvenanceSchema = z.object({
   source: ProvenanceSourceSchema,
   trust: TrustClassSchema,
   mutableBy: MutabilitySchema,
   path: z.string().optional(),
   contentSha256: z.string().length(64),
-  discoveredAt: z.string().datetime()
+  discoveredAt: z.string().datetime(),
+  origin: ToolkitOriginSchema.optional()
 }).strict();
 
 export const ContextClientSchema = z.enum(['all', 'claude', 'codex', 'cursor', 'aider']);
@@ -164,6 +176,37 @@ export const ContextManifestSchema = z.object({
 export const MemoryScopeSchema = z.enum(['owner', 'repository', 'workspace']);
 export const HookEventSchema = z.enum(['on_workspace_open', 'post_checkout', 'pre_commit', 'post_commit', 'manual']);
 
+
+export const ToolkitScopeSchema = z.enum(['owner', 'workspace']);
+export const ToolkitStatusSchema = z.enum(['ready', 'failed']);
+export const ToolkitActivationSchema = z.enum(['skills-only', 'toolkit-default']);
+export const ToolkitCompatibilityLevelSchema = z.enum(['provisioned', 'discoverable', 'context-ready', 'auto-activated']);
+
+export const ToolkitLockItemSchema = z.object({
+  instanceId: z.string().max(80),
+  id: z.string().max(120),
+  requestedVersion: z.string().nullable().optional(),
+  resolvedVersion: z.string().max(120),
+  resolvedRevision: z.string().max(120),
+  bundleSha256: z.string().length(64),
+  adapterVersion: z.number().int().min(1),
+  scope: ToolkitScopeSchema,
+  status: ToolkitStatusSchema,
+  cache: z.enum(['hit', 'miss']),
+  activation: z.string().max(80),
+  skillsCount: z.number().int().min(0),
+  verification: ToolkitVerificationSchema,
+  compatibility: ToolkitCompatibilityLevelSchema.optional(),
+  warnings: z.array(z.string().max(256)).optional()
+}).strict();
+
+export const WorkspaceToolkitsLockSchema = z.object({
+  requestFingerprint: z.string().length(64),
+  items: z.array(ToolkitLockItemSchema),
+  repositoryChanges: z.array(z.string().max(256)),
+  executorNetworkMode: z.enum(['none', 'bridge']),
+  provisioningNetworkUsed: z.boolean()
+}).strict();
 export type ProvenanceSource = z.infer<typeof ProvenanceSourceSchema>;
 export type TrustClass = z.infer<typeof TrustClassSchema>;
 export type Mutability = z.infer<typeof MutabilitySchema>;
@@ -174,3 +217,11 @@ export type ContextManifestItem = z.infer<typeof ContextManifestItemSchema>;
 export type ContextManifest = z.infer<typeof ContextManifestSchema>;
 export type MemoryScope = z.infer<typeof MemoryScopeSchema>;
 export type HookEvent = z.infer<typeof HookEventSchema>;
+export type ToolkitVerification = z.infer<typeof ToolkitVerificationSchema>;
+export type ToolkitOrigin = z.infer<typeof ToolkitOriginSchema>;
+export type ToolkitScope = z.infer<typeof ToolkitScopeSchema>;
+export type ToolkitStatus = z.infer<typeof ToolkitStatusSchema>;
+export type ToolkitActivation = z.infer<typeof ToolkitActivationSchema>;
+export type ToolkitCompatibilityLevel = z.infer<typeof ToolkitCompatibilityLevelSchema>;
+export type ToolkitLockItem = z.infer<typeof ToolkitLockItemSchema>;
+export type WorkspaceToolkitsLock = z.infer<typeof WorkspaceToolkitsLockSchema>;

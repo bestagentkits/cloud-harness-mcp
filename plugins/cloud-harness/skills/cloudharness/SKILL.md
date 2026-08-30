@@ -37,6 +37,8 @@ not require a source checkout.
    When project-specific environment credentials are also required, provide
    `environmentId` with `confirmEnvironmentInjection: true` (environment secrets
    override global secrets on key name collision).
+   To mount agent skills or toolkits (such as `mattpocock/skills`, `obra/superpowers`,
+   or custom Git repos), pass `toolkits: [{ kind: 'preset', id: '...' }]` during `workspace_open`.
 2. **Open and set active context.** Call `workspace_open` with a fresh
    idempotency key. Preserve the returned opaque `workspaceId` exactly. Call
    `workspace_set_active` to establish default workspace context.

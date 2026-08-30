@@ -150,8 +150,31 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
 
       UPDATE metadata_schema_meta SET version = 4 WHERE singleton = 1;
     `);
+    const postV4 = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
+    if (postV4 === 4) database.exec(`
+      ALTER TABLE secret_references ADD COLUMN purpose TEXT NOT NULL DEFAULT 'runtime' CHECK (purpose IN ('runtime', 'provisioning'));
+      ALTER TABLE global_secret_references ADD COLUMN purpose TEXT NOT NULL DEFAULT 'runtime' CHECK (purpose IN ('runtime', 'provisioning'));
+      UPDATE metadata_schema_meta SET version = 5 WHERE singleton = 1;
+    `);
     const migrated = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
-    if (migrated !== 4) throw new Error(`unsupported metadata schema version ${migrated}`);
+    if (migrated !== 5) throw new Error(`unsupported metadata schema version ${migrated}`);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function downgradeMetadataSchemaToV4(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+    if (!row || row.version !== 5) throw new Error('metadata schema must be version 5 before downgrade');
+    database.exec(`
+      ALTER TABLE secret_references DROP COLUMN purpose;
+      ALTER TABLE global_secret_references DROP COLUMN purpose;
+      UPDATE metadata_schema_meta SET version = 4 WHERE singleton = 1;
+    `);
     database.exec('COMMIT');
   } catch (error) {
     database.exec('ROLLBACK');
@@ -160,6 +183,10 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
 }
 
 export function downgradeMetadataSchemaToV3(database: DatabaseSync): void {
+  const check = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+  if (check?.version === 5) {
+    downgradeMetadataSchemaToV4(database);
+  }
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
@@ -177,6 +204,10 @@ export function downgradeMetadataSchemaToV3(database: DatabaseSync): void {
 }
 
 export function downgradeMetadataSchemaToV2(database: DatabaseSync): void {
+  const check = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+  if (check?.version === 5) {
+    downgradeMetadataSchemaToV4(database);
+  }
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
@@ -199,10 +230,14 @@ export function downgradeMetadataSchemaToV2(database: DatabaseSync): void {
 }
 
 export function downgradeMetadataSchemaToV1(database: DatabaseSync): void {
+  const check = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+  if (check?.version === 5) {
+    downgradeMetadataSchemaToV4(database);
+  }
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
-    if (!row || (row.version !== 2 && row.version !== 3 && row.version !== 4)) throw new Error('metadata schema must be version 2, 3, or 4 before downgrade');
+    if (!row || (row.version !== 2 && row.version !== 3 && row.version !== 4 && row.version !== 5)) throw new Error('metadata schema must be version 2, 3, 4, or 5 before downgrade');
     if (row.version === 4) {
       database.exec(`
         DROP TABLE IF EXISTS global_secret_versions;
@@ -210,10 +245,14 @@ export function downgradeMetadataSchemaToV1(database: DatabaseSync): void {
       `);
     }
     if (row.version >= 3) {
-      database.exec('ALTER TABLE secret_references DROP COLUMN description;');
+      database.exec(`
+        ALTER TABLE secret_references DROP COLUMN description;
+      `);
     }
     database.exec(`
-      DROP TABLE api_keys;
+      DROP TABLE IF EXISTS api_keys;
+      DROP INDEX IF EXISTS api_keys_principal_created;
+      DROP INDEX IF EXISTS api_keys_active_expiry;
       UPDATE metadata_schema_meta SET version = 1 WHERE singleton = 1;
     `);
     database.exec('COMMIT');

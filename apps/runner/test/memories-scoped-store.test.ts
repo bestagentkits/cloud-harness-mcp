@@ -44,16 +44,15 @@ describe('Scoped SQLite Memories Store & Schema v5', () => {
   it('migrates state schema to v5 and handles guarded downgrade', async () => {
     const { store } = await createTestStore();
     const versionRow = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-    expect(versionRow.version).toBe(5);
+    expect(versionRow.version).toBe(6);
 
     // Empty downgrade to v4 succeeds
     downgradeStateSchemaToV4(store.database);
     const v4Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
     expect(v4Row.version).toBe(4);
-    // Re-migrating to v5 succeeds
+    // Re-migrating to v6 succeeds
     migratePrincipalSchema(store.database);
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
-
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
     // Create a memory row
     store.createMemory({
       principalId: 'p_user1',

@@ -254,13 +254,80 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         UPDATE schema_meta SET version = 5;
       `);
     });
+    version = 5;
+  }
+  if (version === 5) {
+    transaction(database, () => {
+      const workspaceCols = (database.prepare('PRAGMA table_info(workspaces)').all() as { name: string }[]).map((c) => c.name);
+      if (!workspaceCols.includes('request_fingerprint')) {
+        database.exec('ALTER TABLE workspaces ADD COLUMN request_fingerprint TEXT;');
+      }
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS toolkit_cache_entries (
+          cache_key TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          source_identity TEXT NOT NULL,
+          resolved_revision TEXT NOT NULL,
+          adapter_version INTEGER NOT NULL,
+          bundle_sha256 TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('INITIALIZING', 'READY', 'FAILED')),
+          byte_count INTEGER NOT NULL,
+          file_count INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          last_used_at INTEGER NOT NULL,
+          error_summary TEXT
+        );
+        CREATE INDEX IF NOT EXISTS toolkit_cache_owner_lookup ON toolkit_cache_entries(owner_id, bundle_sha256);
+
+        CREATE TABLE IF NOT EXISTS workspace_toolkits (
+          workspace_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          toolkit_id TEXT NOT NULL,
+          scope TEXT NOT NULL CHECK(scope IN ('owner', 'workspace')),
+          requested_json TEXT NOT NULL,
+          resolved_json TEXT NOT NULL,
+          bundle_sha256 TEXT NOT NULL,
+          PRIMARY KEY(workspace_id, ordinal),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS ws_toolkits_owner_ws ON workspace_toolkits(owner_id, workspace_id);
+
+        UPDATE schema_meta SET version = 6;
+      `);
+    });
     return;
   }
-  if (version !== 5) throw new Error(`unsupported state schema version ${version}`);
+  if (version !== 6) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 6) throw new Error(`state schema must be version 6 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const cacheCount = (database.prepare('SELECT count(*) as count FROM toolkit_cache_entries').get() as { count: number }).count;
+    const wsCount = (database.prepare('SELECT count(*) as count FROM workspace_toolkits').get() as { count: number }).count;
+    if (cacheCount > 0 || wsCount > 0) {
+      throw new Error('cannot downgrade state schema to v5: toolkit tables contain active records (export or discard required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      DROP TABLE IF EXISTS workspace_toolkits;
+      DROP TABLE IF EXISTS toolkit_cache_entries;
+      DROP INDEX IF EXISTS ws_toolkits_owner_ws;
+      DROP INDEX IF EXISTS toolkit_cache_owner_lookup;
+      UPDATE schema_meta SET version = 5;
+    `);
+  });
 }
 
 export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 6) {
+    downgradeStateSchemaToV5(database, allowDataLoss);
+    version = 5;
+  }
   if (version !== 5) throw new Error(`state schema must be version 5 before downgrade, got ${version}`);
   if (!allowDataLoss) {
     const memCount = (database.prepare('SELECT count(*) as count FROM memories').get() as { count: number }).count;
