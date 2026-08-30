@@ -186,6 +186,15 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         );
         CREATE INDEX IF NOT EXISTS git_op_idempotency_lookup ON git_operation_idempotency(owner_id, workspace_id, operation, created_at DESC);
 
+        INSERT OR IGNORE INTO git_operation_idempotency (
+          owner_id, workspace_id, idempotency_key, operation, request_fingerprint,
+          status, result_json, created_at, finished_at
+        )
+        SELECT f.owner_id, f.workspace_id, f.idempotency_key, 'finalize', '',
+          'SUCCEEDED', f.result_json, f.created_at, f.created_at
+        FROM finalize_idempotency f
+        WHERE EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_id = f.owner_id AND w.id = f.workspace_id)
+          AND EXISTS (SELECT 1 FROM principals p WHERE p.id = f.owner_id);
         UPDATE schema_meta SET version = 4;
       `);
     });
@@ -424,7 +433,24 @@ function resolveExternalPrincipalInTransaction(
     principalId, selector.issuer, selector.subject, selector.email ?? null, selector.name ?? null,
     legacyOwnerId ?? null, now, now
   );
-  if (legacyOwnerId) database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
+  if (legacyOwnerId) {
+    database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
+    try {
+      database.prepare('UPDATE finalize_idempotency SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
+      database.prepare(`
+        INSERT OR IGNORE INTO git_operation_idempotency (
+          owner_id, workspace_id, idempotency_key, operation, request_fingerprint,
+          status, result_json, created_at, finished_at
+        )
+        SELECT f.owner_id, f.workspace_id, f.idempotency_key, 'finalize', '',
+          'SUCCEEDED', f.result_json, f.created_at, f.created_at
+        FROM finalize_idempotency f
+        WHERE f.owner_id = ?
+          AND EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_id = f.owner_id AND w.id = f.workspace_id)
+          AND EXISTS (SELECT 1 FROM principals p WHERE p.id = f.owner_id);
+      `).run(principalId);
+    } catch { /* ignore if tables do not exist yet */ }
+  }
   return principalId;
 }
 

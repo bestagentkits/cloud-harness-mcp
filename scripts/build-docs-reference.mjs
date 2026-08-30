@@ -97,8 +97,8 @@ function formatTypeAndConstraints(prop) {
 function renderToolMarkdown(spec) {
   // Use Zod 4 native toJSONSchema
   const jsonSchema = typeof spec.inputSchema.toJSONSchema === 'function'
-    ? spec.inputSchema.toJSONSchema()
-    : z.toJSONSchema(spec.inputSchema);
+    ? spec.inputSchema.toJSONSchema({ io: 'input' })
+    : z.toJSONSchema(spec.inputSchema, { io: 'input' });
 
   let properties = jsonSchema.properties || {};
   let required = new Set(jsonSchema.required || []);

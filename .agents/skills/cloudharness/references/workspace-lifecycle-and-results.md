@@ -24,6 +24,10 @@ in standard text content, while `structuredContent` carries the machine envelope
 256 characters. Not every truncated operation supports continuation; if no
 cursor is returned, narrow the request rather than inventing one.
 
+On failure `error` may also carry actionable detail fields: `resumeAction`
+(the safe next step, e.g. `reconcile_push`), and the compare-and-set operands
+`currentHeadOid`/`expectedHeadOid` and `currentRemoteOid`/`expectedRemoteOid`.
+
 ## Error codes
 
 | Code | Response |
@@ -39,14 +43,29 @@ cursor is returned, narrow the request rather than inventing one.
 | `CANCELLED` | Inspect current files/Git/process state before deciding next action. |
 | `UNAVAILABLE` | Retry only when marked retryable and after checking external prerequisites. |
 | `INTERNAL_ERROR` | Preserve bounded evidence and stop repeated retries. |
+| `UNKNOWN_REMOTE_STATE` | A push or finalize was interrupted before its remote outcome was confirmed. Do not start a new mutation; follow `error.resumeAction` and retry the identical request with the same idempotency key so the service reconciles against the destination ref. |
+| `STALE_HEAD` | `git_commit` `expectedHeadOid` no longer matches HEAD; inspect the returned `currentHeadOid`/`expectedHeadOid`, rebuild on the new base, then retry. A diverged remote ref on `git_push` force-with-lease returns `CONFLICT` with current/expected remote OIDs instead. |
+| `RUNNER_RESTARTED` | An in-flight task was interrupted by a runner restart and its record is terminal. Re-list/read task state; start fresh work rather than resuming the old process. |
 
 ## Idempotency keys
 
-Keys are 8–128 characters and may contain ASCII letters, digits, `.`, `_`, `:`,
-and `-`. Use a fresh semantic key for a new resource. Reuse the same key only to
-recover a lost response from `workspace_open`, `shell_open`, `sessions_open`, or
-`tasks_run`. Reuse returns the previously created resource in that workspace;
-it does not create a replacement.
+Use a fresh semantic key for each new resource or intended mutation. A key of
+8–128 characters using ASCII letters, digits, `.`, `_`, `:`, and `-` is the
+recommended safe subset; creation ops and `workspace_finalize` enforce it, while
+`git_commit` and `git_push` accept a broader 1–256-character string.
+
+Reuse the same key only to recover the identical operation with identical
+parameters after a lost response or an `UNKNOWN_REMOTE_STATE`:
+
+- Creation ops (`workspace_open`, `shell_open`, `sessions_open`, `tasks_run`)
+  return the previously created resource; reuse never creates a replacement.
+- Git mutations (`git_commit`, `git_push`, `workspace_finalize`) take the key
+  before the first attempt and reuse it to reconcile an unverified outcome. A
+  same-key replay reporting `alreadyFinalized: true` is confirmed success; do
+  not issue another mutation.
+
+Changing the operation or its parameters requires a new key; a mismatched reuse
+returns `CONFLICT`.
 
 ## Workspace operations
 
@@ -184,10 +203,12 @@ List available global and environment secret names and descriptions without reve
 - Active workspace calls refresh idle expiry but cannot extend beyond the
   configured absolute lifetime.
 - Workspace metadata is durable; executor files exist only until close/expiry.
-- Shell, session, task handles and buffered output are in runner memory. After a
-  runner restart, surviving executors are restarted so lost processes do not
-  continue invisibly; old process handles are not recoverable.
-- Closing a workspace evicts every shell/session/task record for that workspace.
+- Task records and their bounded output are durable: they remain queryable via
+  `tasks_list`/`tasks_status` across a runner restart. An interrupted task
+  process is not resumed and becomes terminal with `RUNNER_RESTARTED`; its
+  output may be retained as an artifact during workspace cleanup.
+- Shell and session handles and buffered output live in runner memory only.
+  After a runner restart those interactive processes and handles are gone.
 - If a workspace is `EXPIRED`, never reuse its handle. Open a new authorized
   workspace and reconstruct state from durable repository history.
 
@@ -197,5 +218,7 @@ List available global and environment secret names and descriptions without reve
 2. Recheck workspace status.
 3. Inspect the affected file, Git state, task list, or external result.
 4. Retry only when the desired effect is absent and the operation is safe.
-5. For create operations with an idempotency key, reuse the original key.
+5. For a lost creation response, reuse its original idempotency key; for an
+   unverified `git_push`/`workspace_finalize` outcome, retry the identical
+   request with the same key so the service reconciles instead of re-pushing.
 6. Report any outcome that remains unverifiable.

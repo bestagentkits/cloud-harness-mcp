@@ -104,6 +104,10 @@ only ASCII letters, digits, `.`, `_`, and `-`, with length 1–80.
   prevent unsafe blind continuation.
 - Reuse the key only to recover the same task creation. A timeout can leave
   file or external effects made before process termination.
+- Task records and bounded output are durable. After a runner restart, query
+  them with `tasks_list`/`tasks_status` rather than re-running; an interrupted
+  task becomes terminal with `RUNNER_RESTARTED` and is not resumed. Retained
+  task output may later be discovered through the artifact tools.
 
 <!-- cloudharness-example:tasks_run
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","command":"npm run verify","cwd":".","idempotencyKey":"verify-20260817-01","timeoutMs":900000,"dependsOn":[]}
@@ -173,4 +177,5 @@ Wait for an operation to reach a terminal state with a server timeout.
 2. For timeout, cancellation, or disconnect, inspect status and side effects.
 3. Poll with the latest cursor; never derive or share cursors across handles.
 4. Close shells/sessions and cancel unwanted tasks before closing a workspace.
-5. After a runner restart, assume old interactive process handles are gone.
+5. After a runner restart, interactive shell/session handles are gone, but task
+   records and output persist; re-read task state before restarting work.

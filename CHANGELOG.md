@@ -1,3 +1,17 @@
+## [0.31.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.31.0...v0.31.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **mcp:** flatten github_action input schema and enforce capability consistency ([#112](https://github.com/bestagentkits/cloud-harness-mcp/issues/112)) ([#123](https://github.com/bestagentkits/cloud-harness-mcp/issues/123)) ([5b79641](https://github.com/bestagentkits/cloud-harness-mcp/commit/5b796419670fcc78c2f34d3c63a240e6b79148f4))
+
+# [0.31.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.30.0...v0.31.0) (2026-08-30)
+
+
+### Features
+
+* **runner:** add legacy finalize idempotency migration and cross-operation protection ([#14](https://github.com/bestagentkits/cloud-harness-mcp/issues/14)) ([#122](https://github.com/bestagentkits/cloud-harness-mcp/issues/122)) ([1220739](https://github.com/bestagentkits/cloud-harness-mcp/commit/1220739f6c846e1e370e20c31be35b838d92f74e))
+
 # [0.30.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.29.1...v0.30.0) (2026-08-30)
 
 

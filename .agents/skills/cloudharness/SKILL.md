@@ -55,6 +55,9 @@ not require a source checkout.
    - Use `exec_run` for synchronous, bounded single commands.
    - Use `tasks_run` with `dependsOn` for background builds, tests, or multi-step
      task graphs. Monitor progress via `tasks_status` or `operation_wait`.
+   - Task records and output survive a runner restart (`tasks_list` /
+     `tasks_status`); an interrupted task ends as `RUNNER_RESTARTED`. Interactive
+     `shell_*` / `sessions_*` handles do not survive restart.
    - Use interactive `shell_*` or `sessions_*` only when terminal state is required.
    - For `privileged: true` commands in Cloudflare Access mode, expect
      `PRIVILEGE_APPROVAL_REQUIRED` and wait for the operator to approve the
@@ -65,6 +68,13 @@ not require a source checkout.
    - Inspect status and diff using `git_status` and `git_diff`.
    - Use `workspace_finalize` for streamlined transactional staging, preflight
      diff checks, committing, and pushing to origin in a single step.
+   - Pass an `idempotencyKey` on `git_commit`, `git_push`, and
+     `workspace_finalize`. On `UNKNOWN_REMOTE_STATE`, retry the identical request
+     with the same key to reconcile; treat `alreadyFinalized: true` as success
+     and never re-push. `git_commit` `expectedHeadOid` is a HEAD compare-and-set
+     returning `STALE_HEAD` on mismatch; `git_push` `expectedRemoteOid`
+     (force-with-lease) returns `CONFLICT` with current/expected remote OIDs
+     when the remote ref has moved.
    - Use `github_action` for brokered issue and pull request operations.
 8. **Manage lifecycle and lease.** If work approaches the idle timeout, call
    `workspace_lease_renew`. If disconnected or recovering unpushed work, call
@@ -102,8 +112,14 @@ not require a source checkout.
 - `bridge` enables broad egress; it is not an allowlist or strong isolation.
 - Arbitrary commands, interactive I/O, tasks, skill scripts, hooks, and
   deployments execute repository-controlled code. Review intent and scope.
-- Do not retry an unknown mutation blindly. Only creation operations documented
-  as idempotent should reuse the same key after a lost response.
+- Do not retry an unknown mutation blindly. Only an operation whose tool
+  reference documents same-key replay may reuse the original key, and only with
+  identical parameters — for example the creation ops, `files_write_batch`, the
+  Git mutations `git_commit`, `git_push`, `workspace_finalize`, and brokered
+  GitHub mutations that accept an `idempotencyKey`. An unverified push outcome
+  (e.g. `UNKNOWN_REMOTE_STATE`) must be resolved by same-key reconciliation,
+  never a blind re-push. Any other operation, or a changed request, needs a
+  new key.
 - Do not claim a push, private clone, deployment, or production outcome without
   current owner-authorized evidence from the corresponding operation.
 

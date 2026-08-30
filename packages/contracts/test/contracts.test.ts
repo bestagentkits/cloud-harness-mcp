@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 import {
   ApiConfigSchema,
@@ -8,6 +9,7 @@ import {
   RunnerConfigSchema,
   RunnerRequestSchema,
   TOOL_SCHEMA_BY_NAME,
+  TOOL_SPECS,
   ToolResultSchema,
   WorkspaceCapabilityResultSchema,
   WorkspaceIdSchema
@@ -243,6 +245,27 @@ describe('contracts', () => {
       prNumber: 10
     })).toThrow();
 
+    expect(() => TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'pr_update',
+      prNumber: 10,
+      state: 'all'
+    })).toThrow();
+
+    expect(() => TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'issue_update',
+      issueNumber: 10,
+      state: 'all'
+    })).toThrow();
+
+    const strippedPrList = TOOL_SCHEMA_BY_NAME.github_action.parse({
+      action: 'pr_list',
+      title: 'ignored',
+      prNumber: 10
+    }) as Record<string, unknown>;
+    expect(strippedPrList.title).toBeUndefined();
+    expect(strippedPrList.prNumber).toBeUndefined();
+    expect(strippedPrList.limit).toBe(20);
+    expect(strippedPrList.state).toBe('open');
     expect(TOOL_SCHEMA_BY_NAME.github_action.parse({
       action: 'pr_comment',
       prNumber: 10,
@@ -471,5 +494,90 @@ describe('contracts', () => {
     })).toMatchObject({
       events: ['pre_commit']
     });
+  });
+  it('enforces capability consistency between advertised GitHub operations and exposed github_action tool', () => {
+    const githubOps = [
+      'issueList',
+      'issueView',
+      'issueCreate',
+      'issueComment',
+      'issueUpdate',
+      'issuePublish',
+      'labelCreate',
+      'pullRequestList',
+      'pullRequestView',
+      'pullRequestCreate'
+    ] as const;
+
+    const ghSpec = TOOL_SPECS.find((tool) => tool.name === 'github_action');
+    expect(ghSpec).toBeDefined();
+    expect(ghSpec?.destructive).toBe(true);
+    expect(ghSpec?.openWorld).toBe(true);
+    expect(ghSpec?.readOnly).toBe(false);
+
+    // If any GitHub operation is authorized in a capability profile, github_action must exist in TOOL_SPECS
+    for (const op of githubOps) {
+      const sampleCaps = WorkspaceCapabilityResultSchema.parse({
+        workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaa',
+        repository: 'owner/repo',
+        repositoryUrl: 'https://github.com/owner/repo',
+        capabilities: {
+          repository: {
+            read: true,
+            push: true,
+            issuesRead: op.startsWith('issue'),
+            issuesWrite: op.startsWith('issue') && op !== 'issueList' && op !== 'issueView',
+            pullRequestsRead: op.startsWith('pullRequest'),
+            pullRequestsWrite: op === 'pullRequestCreate'
+          },
+          workspace: {
+            shell: true,
+            tasks: true,
+            sessions: true,
+            deployments: true,
+            privileged: false,
+            networkMode: 'none'
+          }
+        },
+        permissions: {
+          contents: { read: true, write: true },
+          issues: { read: op.startsWith('issue'), write: op.startsWith('issue') && op !== 'issueList' && op !== 'issueView' },
+          pullRequests: { read: op.startsWith('pullRequest'), write: op === 'pullRequestCreate' }
+        },
+        operations: {
+          gitFetch: true,
+          gitPull: true,
+          gitPush: true,
+          issueList: op === 'issueList',
+          issueView: op === 'issueView',
+          issueCreate: op === 'issueCreate',
+          issueComment: op === 'issueComment',
+          issueUpdate: op === 'issueUpdate',
+          issuePublish: op === 'issuePublish',
+          labelCreate: op === 'labelCreate',
+          pullRequestList: op === 'pullRequestList',
+          pullRequestView: op === 'pullRequestView',
+          pullRequestCreate: op === 'pullRequestCreate',
+          execRun: true,
+          privilegedExec: false,
+          deploymentsRun: true
+        }
+      });
+
+      if (sampleCaps.operations[op]) {
+        expect(TOOL_SPECS.some((t) => t.name === 'github_action')).toBe(true);
+      }
+    }
+  });
+
+  it('ensures all registered TOOL_SPECS emit top-level object schemas with properties for client ingestion', () => {
+    for (const spec of TOOL_SPECS) {
+      const jsonSchema = typeof spec.inputSchema.toJSONSchema === 'function'
+        ? spec.inputSchema.toJSONSchema({ io: 'input' })
+        : z.toJSONSchema(spec.inputSchema, { io: 'input' });
+      expect(jsonSchema.type, `tool ${spec.name} must have type: object`).toBe('object');
+      expect(jsonSchema.properties, `tool ${spec.name} must have top-level properties`).toBeDefined();
+      expect(Object.keys(jsonSchema.properties || {}).length, `tool ${spec.name} must have at least one property`).toBeGreaterThan(0);
+    }
   });
 });
