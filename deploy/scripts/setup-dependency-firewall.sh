@@ -50,6 +50,8 @@ trap 'rm -f "$TMP_RESTORE"' EXIT
   echo "-A $EGRESS_CHAIN -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited"
   echo "-A $EGRESS_CHAIN -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited"
   echo "-A $EGRESS_CHAIN -d 0.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited"
+  echo "-A $EGRESS_CHAIN -d 224.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited"
+  echo "-A $EGRESS_CHAIN -d 240.0.0.0/4 -j REJECT --reject-with icmp-admin-prohibited"
   
   for resolver in $DNS_RESOLVERS; do
     echo "-A $EGRESS_CHAIN -p udp -d $resolver --dport 53 -j ACCEPT"

@@ -145,7 +145,17 @@ export class HostFirewallAttestor {
     }
 
     // Required deny CIDRs
-    const requiredDenyCidrs = ['169.254.0.0/16', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '100.64.0.0/10'];
+    const requiredDenyCidrs = [
+      '169.254.0.0/16',
+      '10.0.0.0/8',
+      '172.16.0.0/12',
+      '192.168.0.0/16',
+      '127.0.0.0/8',
+      '100.64.0.0/10',
+      '0.0.0.0/8',
+      '224.0.0.0/4',
+      '240.0.0.0/4'
+    ];
     const denyIndices: number[] = [];
     for (const cidr of requiredDenyCidrs) {
       const idx = egressRules.findIndex((l) => l.includes(`-d ${cidr}`) && (l.includes('-j REJECT') || l.includes('-j DROP')));

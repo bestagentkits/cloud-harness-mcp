@@ -122,6 +122,9 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       { label: 'metadata', command: 'curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://169.254.169.254/ || echo BLOCKED' },
       { label: 'rfc1918-canary', command: 'curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://10.88.0.10/ || echo BLOCKED' },
       { label: 'private-192', command: 'curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://192.168.0.1/ || echo BLOCKED' },
+      { label: 'multicast-224', command: 'curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://224.0.0.1/ || echo BLOCKED' },
+      { label: 'reserved-240', command: 'curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://240.0.0.1/ || echo BLOCKED' },
+      { label: 'current-0', command: 'curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://0.0.0.1/ || echo BLOCKED' },
       { label: 'disallowed-port', command: 'curl -s -o /dev/null -w "%{http_code}" --max-time 4 http://93.184.216.34:22/ || echo BLOCKED' }
     ];
     for (const probe of negativeProbes) {
