@@ -186,6 +186,15 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         );
         CREATE INDEX IF NOT EXISTS git_op_idempotency_lookup ON git_operation_idempotency(owner_id, workspace_id, operation, created_at DESC);
 
+        INSERT OR IGNORE INTO git_operation_idempotency (
+          owner_id, workspace_id, idempotency_key, operation, request_fingerprint,
+          status, result_json, created_at, finished_at
+        )
+        SELECT f.owner_id, f.workspace_id, f.idempotency_key, 'finalize', '',
+          'SUCCEEDED', f.result_json, f.created_at, f.created_at
+        FROM finalize_idempotency f
+        WHERE EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_id = f.owner_id AND w.id = f.workspace_id);
+
         UPDATE schema_meta SET version = 4;
       `);
     });

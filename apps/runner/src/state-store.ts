@@ -660,20 +660,27 @@ export class StateStore {
   }
 
   getFinalizeIdempotency(ownerId: string, workspaceId: string, key: string): string | undefined {
+    const gitOp = this.getGitOperation(ownerId, workspaceId, key);
+    if (gitOp?.resultJson) return gitOp.resultJson;
     const row = this.database.prepare('SELECT result_json FROM finalize_idempotency WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?').get(ownerId, workspaceId, key) as { result_json: string } | undefined;
     return row?.result_json;
   }
 
   setFinalizeIdempotency(ownerId: string, workspaceId: string, key: string, resultJson: string): void {
+    const now = Date.now();
     this.database.prepare('INSERT OR REPLACE INTO finalize_idempotency(owner_id, workspace_id, idempotency_key, result_json, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(ownerId, workspaceId, key, resultJson, Date.now());
+      .run(ownerId, workspaceId, key, resultJson, now);
+    this.database.prepare(`
+      INSERT OR REPLACE INTO git_operation_idempotency
+      (owner_id, workspace_id, idempotency_key, operation, request_fingerprint, target_ref,
+       expected_remote_oid, local_commit_sha, status, result_json, error_json, created_at, finished_at)
+      VALUES (?, ?, ?, 'finalize', '', NULL, NULL, NULL, 'SUCCEEDED', ?, NULL, ?, ?)
+    `).run(ownerId, workspaceId, key, resultJson, now, now);
   }
-
   getBatchWriteIdempotency(ownerId: string, workspaceId: string, key: string): string | undefined {
     const row = this.database.prepare('SELECT result_json FROM batch_write_idempotency WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?').get(ownerId, workspaceId, key) as { result_json: string } | undefined;
     return row?.result_json;
   }
-
   setBatchWriteIdempotency(ownerId: string, workspaceId: string, key: string, resultJson: string): void {
     this.database.prepare('INSERT OR REPLACE INTO batch_write_idempotency(owner_id, workspace_id, idempotency_key, result_json, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(ownerId, workspaceId, key, resultJson, Date.now());
@@ -1211,6 +1218,51 @@ export class StateStore {
     try {
       const existing = this.getGitOperation(record.ownerId, record.workspaceId, record.idempotencyKey);
       if (!existing) {
+        let legacyResultJson: string | undefined;
+        let legacyCreatedAt = record.createdAt;
+        if (record.operation === 'finalize') {
+          try {
+            const legacy = this.database.prepare(
+              'SELECT result_json, created_at FROM finalize_idempotency WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?'
+            ).get(record.ownerId, record.workspaceId, record.idempotencyKey) as { result_json: string; created_at: number } | undefined;
+            if (legacy) {
+              legacyResultJson = legacy.result_json;
+              legacyCreatedAt = legacy.created_at;
+            }
+          } catch { /* ignore if table absent */ }
+        }
+
+        if (legacyResultJson) {
+          this.database.prepare(`
+            INSERT INTO git_operation_idempotency
+            (owner_id, workspace_id, idempotency_key, operation, request_fingerprint, target_ref,
+             expected_remote_oid, local_commit_sha, status, result_json, error_json, created_at, finished_at)
+            VALUES (?, ?, ?, 'finalize', '', NULL, NULL, NULL, 'SUCCEEDED', ?, NULL, ?, ?)
+          `).run(
+            record.ownerId, record.workspaceId, record.idempotencyKey,
+            legacyResultJson, legacyCreatedAt, legacyCreatedAt
+          );
+          this.database.exec('COMMIT;');
+          return {
+            action: 'REPLAY_SUCCEEDED',
+            existing: {
+              ownerId: record.ownerId,
+              workspaceId: record.workspaceId,
+              idempotencyKey: record.idempotencyKey,
+              operation: 'finalize',
+              requestFingerprint: '',
+              targetRef: null,
+              expectedRemoteOid: null,
+              localCommitSha: null,
+              status: 'SUCCEEDED',
+              resultJson: legacyResultJson,
+              errorJson: null,
+              createdAt: legacyCreatedAt,
+              finishedAt: legacyCreatedAt
+            }
+          };
+        }
+
         this.database.prepare(`
           INSERT INTO git_operation_idempotency
           (owner_id, workspace_id, idempotency_key, operation, request_fingerprint, target_ref,
@@ -1226,6 +1278,12 @@ export class StateStore {
       }
 
       this.database.exec('COMMIT;');
+      if (existing.operation !== record.operation) {
+        return { action: 'FINGERPRINT_CONFLICT', existing };
+      }
+      if (existing.operation === 'finalize' && record.operation === 'finalize' && existing.status === 'SUCCEEDED' && existing.requestFingerprint === '') {
+        return { action: 'REPLAY_SUCCEEDED', existing };
+      }
       if (existing.requestFingerprint !== record.requestFingerprint) {
         return { action: 'FINGERPRINT_CONFLICT', existing };
       }
