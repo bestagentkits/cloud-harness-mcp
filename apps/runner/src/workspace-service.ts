@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, mkdir, readdir, realpath, rm, stat, statfs } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
@@ -26,7 +26,8 @@ import { validateRepositoryUrl } from './repository-policy.js';
 import type { GitOperationStatus, PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
-const opaqueId = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
+import { opaqueId } from './metadata-records.js';
+import { classifyGitHubFailure } from './github-error-classifier.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING']);
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
@@ -1089,18 +1090,30 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       .digest('hex');
 
     if (idempotencyKey) {
-      const existingOp = this.store.getGitOperation(record.ownerId, record.id, idempotencyKey);
-      if (existingOp) {
-        if (existingOp.requestFingerprint !== requestFingerprint) {
-          throw new HarnessError('CONFLICT', 'Idempotency key reused with different push parameters', 409, false);
-        }
-        if (existingOp.status === 'SUCCEEDED' && existingOp.resultJson) {
-          const parsed = JSON.parse(existingOp.resultJson) as RunnerResponse;
-          return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
-        }
-        if (existingOp.status === 'PENDING') {
-          throw new HarnessError('CONFLICT', 'Git push operation with this idempotency key is already in progress', 409, true);
-        }
+      const claim = this.store.acquireGitOperation({
+        ownerId: record.ownerId,
+        workspaceId: record.id,
+        idempotencyKey,
+        operation: 'push',
+        requestFingerprint,
+        targetRef: refspec,
+        expectedRemoteOid: expectedRemoteOid ?? null,
+        localCommitSha: currentLocalHead,
+        createdAt: Date.now()
+      });
+
+      if (claim.action === 'FINGERPRINT_CONFLICT') {
+        throw new HarnessError('CONFLICT', 'Idempotency key reused with different push parameters', 409, false);
+      }
+      if (claim.action === 'IN_FLIGHT') {
+        throw new HarnessError('CONFLICT', 'Git push operation with this idempotency key is already in progress', 409, true);
+      }
+      if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
+        const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+        return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
+      }
+      if (claim.action === 'RECONCILE_REQUIRED' && claim.existing) {
+        const existingOp = claim.existing;
         if (existingOp.status === 'UNKNOWN_REMOTE_STATE') {
           const targetBranchName = branch || (refspec.includes(':') ? refspec.split(':')[1]?.replace(/^refs\/heads\//, '') : refspec.replace(/^refs\/heads\//, '')) || 'main';
           const remoteOid = await this.probeRemoteRefOid(record, targetBranchName, token, signal);
@@ -1128,19 +1141,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             });
           }
           this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
+        } else {
+          this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
         }
-      } else {
-        this.store.recordGitOperationPending({
-          ownerId: record.ownerId,
-          workspaceId: record.id,
-          idempotencyKey,
-          operation: 'push',
-          requestFingerprint,
-          targetRef: refspec,
-          expectedRemoteOid: expectedRemoteOid ?? null,
-          localCommitSha: currentLocalHead,
-          createdAt: Date.now()
-        });
       }
     }
 
@@ -1388,6 +1391,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       });
     } catch (err: unknown) {
       if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
+        if (isWrite) {
+          this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
+            repository: record.repositoryUrl,
+            action,
+            success: false,
+            errorCode: 'REPOSITORY_OPERATION_NOT_AUTHORIZED'
+          });
+        }
         throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
           operation: `github_action.${action}`,
           repository: repoStr ?? undefined,
@@ -1397,6 +1408,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       throw err;
     }
     if (!token) {
+      if (isWrite) {
+        this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
+          repository: record.repositoryUrl,
+          action,
+          success: false,
+          errorCode: 'REPOSITORY_OPERATION_NOT_AUTHORIZED'
+        });
+      }
       throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', `No GitHub App installation available for ${record.repositoryUrl}`, 403, false, {
         operation: `github_action.${action}`,
         repository: repoStr ?? undefined,
@@ -1437,10 +1456,26 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         ...(signal ? { signal } : {})
       });
 
+      if (result.exitCode === 0) {
+        return {
+          ok: true,
+          message: `GitHub ${action} successful`,
+          data: { output: result.stdout || result.stderr },
+          truncated: result.truncated
+        };
+      }
+
+      const classified = classifyGitHubFailure(result.stderr, result.stdout, action);
       return {
-        ok: result.exitCode === 0,
-        message: (result.exitCode === 0 ? `GitHub ${action} successful` : `GitHub ${action} failed: ${result.stderr}`).slice(0, 2_000),
+        ok: false,
+        message: classified.message,
         data: { output: result.stdout || result.stderr },
+        error: {
+          code: classified.code,
+          message: classified.message,
+          retryable: classified.retryable,
+          ...(classified.retryAfterMs ? { retryAfterMs: classified.retryAfterMs } : {})
+        },
         truncated: result.truncated
       };
     } finally {
@@ -2183,6 +2218,32 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         ]; break;
       }
       const result = await this.runBrokeredGitHubAction(record, action, args, signal);
+      const isWrite = ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
+      if (isWrite) {
+        const details: Record<string, string | number | boolean> = {
+          repository: record.repositoryUrl,
+          action,
+          success: result.ok
+        };
+        if (typeof validated.prNumber === 'number') details.prNumber = validated.prNumber;
+        if (typeof validated.issueNumber === 'number') details.issueNumber = validated.issueNumber;
+        if (typeof validated.commentId === 'number') details.commentId = validated.commentId;
+        if (typeof validated.draft === 'boolean') details.draft = validated.draft;
+        if (typeof validated.state === 'string') details.state = validated.state;
+        if (typeof validated.idempotencyKey === 'string') details.idempotencyKey = validated.idempotencyKey;
+        if (typeof validated.name === 'string' && action === 'label_create') details.labelName = validated.name;
+        if (result.ok && (action === 'pr_create' || action === 'issue_create')) {
+          const match = String((result.data as Record<string, unknown>)?.output ?? '').match(/\/(?:pull|issues)\/(\d+)/);
+          if (match && match[1]) {
+            if (action === 'pr_create') details.createdPrNumber = Number(match[1]);
+            if (action === 'issue_create') details.createdIssueNumber = Number(match[1]);
+          }
+        }
+        if (!result.ok && result.error?.code) {
+          details.errorCode = result.error.code;
+        }
+        this.auditWorkspaceOutcome(ownerId, `github_action.${action}`, record, details);
+      }
       if ((action === 'pr_comment' || action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey && result.ok) {
         this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result), fingerprint);
       }
@@ -2315,6 +2376,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             expectedHeadOid: expectedHeadOid ?? null
           }))
           .digest('hex');
+
         const existing = this.store.getGitOperation(ownerId, record.id, idempotencyKey);
         if (existing) {
           if (existing.requestFingerprint !== requestFingerprint) {
@@ -2341,7 +2403,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
 
       if (idempotencyKey && requestFingerprint) {
-        this.store.recordGitOperationPending({
+        const claim = this.store.acquireGitOperation({
           ownerId,
           workspaceId: record.id,
           idempotencyKey,
@@ -2352,6 +2414,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           localCommitSha: currentHeadOid,
           createdAt: Date.now()
         });
+        if (claim.action === 'FINGERPRINT_CONFLICT') {
+          throw new HarnessError('CONFLICT', 'Idempotency key reused with different commit parameters', 409, false);
+        }
+        if (claim.action === 'IN_FLIGHT') {
+          throw new HarnessError('CONFLICT', 'Git commit operation with this idempotency key is already in progress', 409, true);
+        }
+        if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
+          const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+          return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
+        }
       }
       let result: RunnerResponse;
       try {
@@ -2686,14 +2758,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         claimed = this.store.byId(claimed.id)!;
       }
     }
-    this.operations.stopWorkspace(claimed.id);
+    await this.operations.stopWorkspace(claimed.id, claimed.ownerId);
     if (this.artifacts) {
       const tasks = this.store.listDurableTasks(claimed.ownerId, claimed.id);
       for (const t of tasks) {
-        if (t.logPath && existsSync(t.logPath) && !t.outputArtifactId && t.outputBytes > 0) {
-          try {
-            const content = readFileSync(t.logPath);
-            if (content.length > 0 && content.length <= this.config.maxArtifactBytes) {
+        if (t.logPath && existsSync(t.logPath) && !t.outputArtifactId) {
+          const fileSize = statSync(t.logPath).size;
+          if (fileSize > 0) {
+            const rawContent = readFileSync(t.logPath);
+            const content = rawContent.length <= this.config.maxArtifactBytes
+              ? rawContent
+              : rawContent.subarray(0, this.config.maxArtifactBytes);
+            try {
               const artifact = this.artifacts.create(claimed.ownerId, {
                 logicalName: `task-output-${t.id}.log`,
                 content,
@@ -2704,9 +2780,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
                   art.generation, { sizeBytes: art.sizeBytes, taskId: t.id }
                 );
               });
-              this.store.updateDurableTaskStatus(t.id, t.generation, { outputArtifactId: artifact.artifactId });
+              this.store.updateDurableTaskStatus(t.id, t.generation, { outputArtifactId: artifact.artifactId, outputBytes: fileSize });
+            } catch (spoolErr) {
+              throw new HarnessError('UNAVAILABLE', `Failed to archive task output for task ${t.id} during close: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`, 503, true);
             }
-          } catch { /* ignore artifact spooling error on close */ }
+          }
         }
       }
     }

@@ -84,6 +84,9 @@ workspace. This makes a lost response recoverable without duplicating work.
   idempotency support. `issue_publish` provides a single brokered request
   that posts a comment and adds or removes labels (with automatic missing-label creation).
   Tokens are supplied exclusively via stdin and are never written to workspace files.
+  All write actions emit structured `github_action.<action>` events in `audit_events`.
+  Failures return typed machine-actionable error codes (`GITHUB_RATE_LIMITED` with retryAfterMs,
+  `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`).
   Comment, label, and publish mutations support idempotency keys.
 - Output pagination for tools such as `files_read`, `git_diff`, and `git_log` uses
   snapshot-bound continuation cursors. The cursor is bound to content hashes or commit

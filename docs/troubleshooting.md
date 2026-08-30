@@ -76,9 +76,9 @@ a lost response; do not create a second key until the first result is resolved.
   unified diff.
 - `EXPIRED` or a closed workspace: open a new workspace. The old job directory
   is intentionally removed.
-- Missing shell/session/task after a runner restart: these handles, buffered
-  output, and task dependency state are in memory and cannot be recovered. The
-  workspace and its files may still be active.
+- Missing shell/session handle after a runner restart: interactive PTY streams
+  are in memory and cannot be reconnected. Background task metadata and output
+  logs persist across restarts and can be inspected via `tasks_status` or `tasks_list`.
 - A dependency download, arbitrary network command, or networked deployment
   fails in a `none` workspace: open a new owner-approved `bridge` workspace if
   egress is necessary and accept the weaker boundary. Remote Git fetch/pull/push

@@ -594,31 +594,63 @@ export class OperationManager {
     this.settleTask(record);
     return record;
   }
-  stopWorkspace(workspaceId: string, ownerId?: string): void {
+  async stopWorkspace(workspaceId: string, ownerId?: string): Promise<void> {
     const now = Date.now();
-    for (const record of this.records(workspaceId)) {
-      if (record.status === 'running' || record.status === 'queued') {
-        record.status = 'cancelled';
-        record.finishedAt = now;
-        record.child?.kill();
-        if (this.store && this.tasks.has(record.id)) {
-          try {
-            const current = this.store.getDurableTask(ownerId ?? record.ownerId ?? '', record.workspaceId, record.id);
-            const gen = current?.generation ?? record.generation ?? 1;
-            let outputBytes = record.outputBytes ?? record.output.length;
-            if (record.logPath && existsSync(record.logPath)) {
-              try { outputBytes = statSync(record.logPath).size; } catch { /* ignore */ }
+    const activeRecords = this.records(workspaceId).filter(
+      (record) => record.status === 'running' || record.status === 'queued'
+    );
+    const exitPromises: Promise<void>[] = [];
+
+    for (const record of activeRecords) {
+      record.status = 'cancelled';
+      record.finishedAt = now;
+      if (record.child && !record.child.killed) {
+        const child = record.child;
+        const exitPromise = new Promise<void>((resolve) => {
+          let resolved = false;
+          const done = () => {
+            if (!resolved) {
+              resolved = true;
+              resolve();
             }
-            this.store.updateDurableTaskStatus(record.id, gen, {
-              status: 'CANCELLED',
-              finishedAt: now,
-              outputBytes
-            });
-            record.generation = gen + 1;
-          } catch { /* ignore */ }
-        }
+          };
+          child.once('close', done);
+          child.once('exit', done);
+          setTimeout(() => {
+            if (!resolved) {
+              try { child.kill('SIGKILL'); } catch { /* ignore */ }
+              done();
+            }
+          }, 1_000).unref();
+        });
+        exitPromises.push(exitPromise);
+        try { child.kill('SIGTERM'); } catch { /* ignore */ }
       }
     }
+
+    if (exitPromises.length > 0) {
+      await Promise.all(exitPromises);
+    }
+
+    for (const record of activeRecords) {
+      if (this.store && this.tasks.has(record.id)) {
+        try {
+          const current = this.store.getDurableTask(ownerId ?? record.ownerId ?? '', record.workspaceId, record.id);
+          const gen = current?.generation ?? record.generation ?? 1;
+          let outputBytes = record.outputBytes ?? record.output.length;
+          if (record.logPath && existsSync(record.logPath)) {
+            try { outputBytes = statSync(record.logPath).size; } catch { /* ignore */ }
+          }
+          this.store.updateDurableTaskStatus(record.id, gen, {
+            status: 'CANCELLED',
+            finishedAt: now,
+            outputBytes
+          });
+          record.generation = gen + 1;
+        } catch { /* ignore */ }
+      }
+    }
+
     for (const op of this.genericOperations.values()) {
       if (op.workspaceId === workspaceId) {
         if (op.status === 'running' || op.status === 'queued') {

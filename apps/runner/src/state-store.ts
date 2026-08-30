@@ -1030,6 +1030,55 @@ export class StateStore {
     };
   }
 
+  acquireGitOperation(record: {
+    ownerId: string;
+    workspaceId: string;
+    idempotencyKey: string;
+    operation: GitOperationKind;
+    requestFingerprint: string;
+    targetRef?: string | null;
+    expectedRemoteOid?: string | null;
+    localCommitSha?: string | null;
+    createdAt: number;
+  }): {
+    action: 'ACQUIRED' | 'REPLAY_SUCCEEDED' | 'FINGERPRINT_CONFLICT' | 'IN_FLIGHT' | 'RECONCILE_REQUIRED';
+    existing?: GitOperationRecord;
+  } {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const existing = this.getGitOperation(record.ownerId, record.workspaceId, record.idempotencyKey);
+      if (!existing) {
+        this.database.prepare(`
+          INSERT INTO git_operation_idempotency
+          (owner_id, workspace_id, idempotency_key, operation, request_fingerprint, target_ref,
+           expected_remote_oid, local_commit_sha, status, result_json, error_json, created_at, finished_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, NULL, ?, NULL)
+        `).run(
+          record.ownerId, record.workspaceId, record.idempotencyKey, record.operation,
+          record.requestFingerprint, record.targetRef ?? null, record.expectedRemoteOid ?? null,
+          record.localCommitSha ?? null, record.createdAt
+        );
+        this.database.exec('COMMIT;');
+        return { action: 'ACQUIRED' };
+      }
+
+      this.database.exec('COMMIT;');
+      if (existing.requestFingerprint !== record.requestFingerprint) {
+        return { action: 'FINGERPRINT_CONFLICT', existing };
+      }
+      if (existing.status === 'SUCCEEDED') {
+        return { action: 'REPLAY_SUCCEEDED', existing };
+      }
+      if (existing.status === 'PENDING') {
+        return { action: 'IN_FLIGHT', existing };
+      }
+      return { action: 'RECONCILE_REQUIRED', existing };
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore */ }
+      throw error;
+    }
+  }
+
   recordGitOperationPending(record: Omit<GitOperationRecord, 'status' | 'resultJson' | 'errorJson' | 'finishedAt'>): GitOperationRecord {
     this.database.prepare(`
       INSERT INTO git_operation_idempotency
