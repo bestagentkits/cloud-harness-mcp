@@ -1,3 +1,10 @@
+## [0.33.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.1...v0.33.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* **security:** exact FORWARD/INPUT jump matching and network-guard deploy recording ([#133](https://github.com/bestagentkits/cloud-harness-mcp/issues/133)) ([2f4bc5a](https://github.com/bestagentkits/cloud-harness-mcp/commit/2f4bc5afdbd3797198ff89877d017d21bb28a7b4))
+
 ## [0.33.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.33.0...v0.33.1) (2026-08-30)
 
 
