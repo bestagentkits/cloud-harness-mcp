@@ -1,3 +1,10 @@
+# [0.31.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.30.0...v0.31.0) (2026-08-30)
+
+
+### Features
+
+* **runner:** add legacy finalize idempotency migration and cross-operation protection ([#14](https://github.com/bestagentkits/cloud-harness-mcp/issues/14)) ([#122](https://github.com/bestagentkits/cloud-harness-mcp/issues/122)) ([1220739](https://github.com/bestagentkits/cloud-harness-mcp/commit/1220739f6c846e1e370e20c31be35b838d92f74e))
+
 # [0.30.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.29.1...v0.30.0) (2026-08-30)
 
 
