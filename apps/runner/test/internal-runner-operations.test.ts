@@ -24,7 +24,7 @@ function fixture() {
   const record: WorkspaceRecord = {
     id: `ws_${'a'.repeat(24)}`, ownerId, idempotencyKey: 'dashboard-workspace',
     repositoryUrl: 'https://github.com/example/repo.git', repositoryRef: null,
-    containerName: null, workspacePath, status: 'ACTIVE', networkMode: 'none',
+    containerName: null, workspacePath, status: 'ACTIVE', networkProfile: 'network-none',
     createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, generation: 4, error: null
   };
   store.create(record);

@@ -183,10 +183,16 @@ workspace. This makes a lost response recoverable without duplicating work.
   explicitly applied Access subject relink. Expiry and revocation are checked
   on every request; `lastUsedAt` is coalesced telemetry and never an
   authorization input.
-- Executors have no network by default. Dependency installation, arbitrary
-  commands, and repository-defined deployments that need network access require
-  an explicitly requested/configured `bridge` workspace, which is a weaker
-  security boundary. Remote Git fetch, pull, and push do not require executor
+- Executors have no network by default (`networkProfile: "network-none"`).
+  Dependency installation, arbitrary networked commands, and repository-defined
+  deployments that need egress require an explicitly requested
+  `networkProfile: "dependency-access"` workspace. That profile permits only
+  public DNS and public TCP 80/443 and blocks loopback-to-host,
+  Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges below
+  the executor; it is a weaker boundary that still permits public exfiltration
+  and fails closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) when host firewall
+  attestation is unavailable. The legacy `networkMode` argument is rejected
+  with `INVALID_INPUT`. Remote Git fetch, pull, and push do not require executor
   networking: the runner stages them through ephemeral transfer helpers.
 - Remote Git is deliberately limited to the validated credential-free
   `origin`. Fetch and pull download into a sibling transfer repository, then

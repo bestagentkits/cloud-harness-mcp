@@ -4,6 +4,8 @@ import {
   ApiConfigSchema,
   ContextManifestItemSchema,
   ContextManifestSchema,
+  ErrorCodeSchema,
+  ExecutorNetworkProfileSchema,
   HarnessError,
   ProvenanceSchema,
   RunnerConfigSchema,
@@ -12,7 +14,8 @@ import {
   TOOL_SPECS,
   ToolResultSchema,
   WorkspaceCapabilityResultSchema,
-  WorkspaceIdSchema
+  WorkspaceIdSchema,
+  WorkspaceNetworkExposureSchema
 } from '../src/index.js';
 const commonApiConfig = {
   runnerToken: 'another-token-that-is-long-enough-1234',
@@ -365,7 +368,7 @@ describe('contracts', () => {
           sessions: true,
           deployments: true,
           privileged: false,
-          networkMode: 'none'
+          networkProfile: 'network-none'
         }
       },
       permissions: {
@@ -395,6 +398,37 @@ describe('contracts', () => {
     expect(parsed.capabilities.repository.push).toBe(true);
     expect(parsed.permissions.contents.write).toBe(true);
     expect(parsed.operations.gitPush).toBe(true);
+  });
+
+  it('validates executor network profile schemas and legacy rejection', () => {
+    expect(ExecutorNetworkProfileSchema.parse('network-none')).toBe('network-none');
+    expect(ExecutorNetworkProfileSchema.parse('dependency-access')).toBe('dependency-access');
+    expect(() => ExecutorNetworkProfileSchema.parse('none')).toThrow();
+    expect(() => ExecutorNetworkProfileSchema.parse('bridge')).toThrow();
+
+    expect(WorkspaceNetworkExposureSchema.parse('local-host')).toBe('local-host');
+    expect(WorkspaceNetworkExposureSchema.parse('network-none')).toBe('network-none');
+
+    expect(ErrorCodeSchema.parse('DEPENDENCY_EGRESS_UNAVAILABLE')).toBe('DEPENDENCY_EGRESS_UNAVAILABLE');
+
+    const validOpen = TOOL_SCHEMA_BY_NAME.workspace_open.parse({
+      repositoryUrl: 'https://github.com/owner/repo.git',
+      idempotencyKey: 'idempotency-123',
+      networkProfile: 'dependency-access'
+    });
+    expect(validOpen.networkProfile).toBe('dependency-access');
+
+    expect(() => TOOL_SCHEMA_BY_NAME.workspace_open.parse({
+      repositoryUrl: 'https://github.com/owner/repo.git',
+      idempotencyKey: 'idempotency-123',
+      networkMode: 'bridge'
+    })).toThrow(/networkMode was replaced by networkProfile/);
+
+    expect(() => TOOL_SCHEMA_BY_NAME.workspace_open.parse({
+      repositoryUrl: 'https://github.com/owner/repo.git',
+      idempotencyKey: 'idempotency-123',
+      networkMode: 'none'
+    })).toThrow(/networkMode was replaced by networkProfile/);
   });
 
   it('validates provenance, context manifest, scoped memories, and hooks schemas', () => {
@@ -550,7 +584,7 @@ describe('contracts', () => {
             sessions: true,
             deployments: true,
             privileged: false,
-            networkMode: 'none'
+            networkProfile: 'network-none'
           }
         },
         permissions: {

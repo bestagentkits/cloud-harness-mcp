@@ -80,3 +80,14 @@ export async function inspectContainer(name: string): Promise<Record<string, unk
   const parsed = JSON.parse(result.stdout) as Record<string, unknown>[];
   return parsed[0];
 }
+
+export async function inspectNetwork(name: string): Promise<Record<string, unknown> | undefined> {
+  const result = await runDocker(['network', 'inspect', name], { timeoutMs: 10_000 });
+  if (result.exitCode !== 0) return undefined;
+  try {
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>[];
+    return parsed[0];
+  } catch {
+    return undefined;
+  }
+}

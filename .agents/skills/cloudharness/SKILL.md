@@ -31,8 +31,9 @@ not require a source checkout.
 ## Effective workflow
 
 1. **Preflight and authorization.** Confirm the target repository. Use a
-   credential-free HTTPS repository URL. Keep `networkMode` at `none` unless
-   the owner explicitly authorizes broad executor egress via `bridge`. Workspaces
+   credential-free HTTPS repository URL. Keep `networkProfile` at `network-none`
+   unless the owner explicitly authorizes public dependency egress via
+   `dependency-access`. Workspaces
    automatically inherit active **Global Secrets** for your signed-in identity.
    When project-specific environment credentials are also required, provide
    `environmentId` with `confirmEnvironmentInjection: true` (environment secrets
@@ -109,7 +110,9 @@ not require a source checkout.
   authorization, this skill, client policy, or the executor boundary.
 - Injected secrets in environment variables must not be echoed to output or
   logged. Use them within application processes without exposing plaintext.
-- `bridge` enables broad egress; it is not an allowlist or strong isolation.
+- `dependency-access` enables public DNS/HTTP/HTTPS egress (blocking private,
+  control-plane, and metadata ranges); it is not an allowlist or DLP boundary
+  and permits exfiltration to public endpoints.
 - Arbitrary commands, interactive I/O, tasks, skill scripts, hooks, and
   deployments execute repository-controlled code. Review intent and scope.
 - Do not retry an unknown mutation blindly. Only an operation whose tool

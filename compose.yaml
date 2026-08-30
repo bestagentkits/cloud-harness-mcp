@@ -95,6 +95,14 @@ services:
     profiles: [images]
     command: ["true"]
 
+  network-guard-image:
+    image: cloud-harness-network-guard:local
+    build:
+      context: .
+      dockerfile: docker/network-guard.Dockerfile
+    profiles: [images]
+    command: ["true"]
+
 networks:
   frontend:
     internal: true

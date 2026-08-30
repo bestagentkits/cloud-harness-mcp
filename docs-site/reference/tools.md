@@ -39,7 +39,8 @@ Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding 
 | `repositoryUrl` | `string` | **Yes** | format: `uri` |
 | `ref` | `string` | No | length: 1–255 |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
-| `networkMode` | `"none"` \| `"bridge"` | No | — |
+| `networkProfile` | `"network-none"` \| `"dependency-access"` | No | — |
+| `networkMode` | `any` | No | — |
 | `environmentId` | `string` | No | pattern: `^env_[A-Za-z0-9_-]{20,80}$` |
 | `confirmEnvironmentInjection` | `true` | No | — |
 

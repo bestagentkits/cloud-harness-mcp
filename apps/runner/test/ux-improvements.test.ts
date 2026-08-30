@@ -68,7 +68,7 @@ function createWorkspaceRecord(ownerId: string, overrides: Partial<WorkspaceReco
     containerName: 'chm-test-container',
     workspacePath: '/tmp/test-workspace',
     status: 'ACTIVE',
-    networkMode: 'none',
+    networkProfile: 'network-none',
     createdAt: now,
     lastActivityAt: now,
     expiresAt: now + 3_600_000,

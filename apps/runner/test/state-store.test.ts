@@ -10,7 +10,7 @@ afterEach(() => { for (const path of temporaryDirectories.splice(0)) rmSync(path
 
 function record(): WorkspaceRecord {
   const now = Date.now();
-  return { id: `ws_${'a'.repeat(24)}`, ownerId: 'owner', idempotencyKey: 'request-1234', repositoryUrl: 'https://github.com/modelcontextprotocol/typescript-sdk.git', repositoryRef: null, containerName: null, workspacePath: '/tmp/example', status: 'CREATING', networkMode: 'none', createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, generation: 1, error: null };
+  return { id: `ws_${'a'.repeat(24)}`, ownerId: 'owner', idempotencyKey: 'request-1234', repositoryUrl: 'https://github.com/modelcontextprotocol/typescript-sdk.git', repositoryRef: null, containerName: null, workspacePath: '/tmp/example', status: 'CREATING', networkProfile: 'network-none', createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, hardExpiresAt: now + 14_400_000, gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null };
 }
 
 describe('StateStore', () => {
@@ -68,17 +68,132 @@ describe('StateStore', () => {
        network_mode, created_at, last_activity_at, expires_at, generation, error)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       workspace.id, workspace.ownerId, workspace.idempotencyKey, workspace.repositoryUrl, workspace.repositoryRef,
-      workspace.containerName, workspace.workspacePath, workspace.status, workspace.networkMode, workspace.createdAt,
+      workspace.containerName, workspace.workspacePath, workspace.status, 'none', workspace.createdAt,
       workspace.lastActivityAt, workspace.expiresAt, workspace.generation, workspace.error
     );
     legacy.close();
 
     const store = new StateStore(path);
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
     expect(store.legacyWorkspaceOwnerIds()).toEqual(['owner']);
     expect(store.byOwnerAndId('owner', workspace.id)?.id).toBe(workspace.id);
+    expect(store.byOwnerAndId('owner', workspace.id)?.networkProfile).toBe('network-none');
     expect(store.byOwnerAndId('other-owner', workspace.id)).toBeUndefined();
     store.close();
+  });
+
+  it('migrates schema v4 to v5 and preserves foreign key child rows', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-v4-'));
+    temporaryDirectories.push(directory);
+    const path = join(directory, 'state.db');
+    const db = new DatabaseSync(path);
+    // Create v4 schema
+    db.exec(`
+      CREATE TABLE schema_meta (version INTEGER NOT NULL);
+      INSERT INTO schema_meta(version) VALUES (4);
+      CREATE TABLE runtime_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE principals (
+        id TEXT PRIMARY KEY, issuer TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, name TEXT, legacy_owner_id TEXT UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(issuer, subject)
+      );
+      CREATE TABLE workspaces (
+        id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+        repository_url TEXT NOT NULL, repository_ref TEXT, container_name TEXT, workspace_path TEXT NOT NULL,
+        status TEXT NOT NULL, network_mode TEXT NOT NULL, created_at INTEGER NOT NULL,
+        last_activity_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, mutation_lock_count INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 1,
+        error TEXT, UNIQUE(owner_id, idempotency_key)
+      );
+      CREATE UNIQUE INDEX workspaces_owner_id_id ON workspaces(owner_id, id);
+      CREATE TABLE durable_tasks (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+        name TEXT, command TEXT NOT NULL, cwd TEXT NOT NULL DEFAULT '.',
+        status TEXT NOT NULL CHECK(status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'BLOCKED')),
+        idempotency_key TEXT, request_fingerprint TEXT, boot_id TEXT NOT NULL, exit_code INTEGER, error_code TEXT, error_message TEXT,
+        timeout_ms INTEGER NOT NULL DEFAULT 300000, max_bytes INTEGER NOT NULL DEFAULT 67108864, log_path TEXT NOT NULL,
+        output_bytes INTEGER NOT NULL DEFAULT 0, output_artifact_id TEXT, created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER, generation INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+        UNIQUE(owner_id, workspace_id, idempotency_key)
+      );
+      CREATE TABLE git_operation_idempotency (
+        owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+        operation TEXT NOT NULL CHECK(operation IN ('push', 'commit', 'finalize')), request_fingerprint TEXT NOT NULL, target_ref TEXT,
+        expected_remote_oid TEXT, local_commit_sha TEXT, status TEXT NOT NULL CHECK(status IN ('PENDING', 'SUCCEEDED', 'UNKNOWN_REMOTE_STATE', 'CONFLICT', 'FAILED')),
+        result_json TEXT, error_json TEXT, created_at INTEGER NOT NULL, finished_at INTEGER,
+        PRIMARY KEY(owner_id, workspace_id, idempotency_key),
+        FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE
+      );
+    `);
+    const now = Date.now();
+    const principalId = 'principal_1';
+    const principal2Id = 'principal_2';
+    db.prepare('INSERT INTO principals (id, issuer, subject, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(principalId, 'https://issuer.com', 'sub1', now, now);
+    db.prepare('INSERT INTO principals (id, issuer, subject, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(principal2Id, 'https://issuer.com', 'sub2', now, now);
+    const ws1Id = `ws_${'1'.repeat(24)}`;
+    const ws2Id = `ws_${'2'.repeat(24)}`;
+    db.prepare(`INSERT INTO workspaces (id, owner_id, idempotency_key, repository_url, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, mutation_lock_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      ws1Id, principalId, 'idem-1', 'https://github.com/repo1.git', '/tmp/ws1', 'ACTIVE', 'none', now, now, now + 60000, 3
+    );
+    db.prepare(`INSERT INTO workspaces (id, owner_id, idempotency_key, repository_url, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, mutation_lock_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      ws2Id, principal2Id, 'idem-2', 'https://github.com/repo2.git', '/tmp/ws2', 'ACTIVE', 'bridge', now, now, now + 60000, 0
+    );
+    db.prepare(`INSERT INTO durable_tasks (id, workspace_id, owner_id, command, status, boot_id, log_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      'task_1', ws1Id, principalId, 'npm test', 'SUCCEEDED', 'boot_1', '/tmp/task1.log', now
+    );
+    db.prepare(`INSERT INTO git_operation_idempotency (owner_id, workspace_id, idempotency_key, operation, request_fingerprint, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+      principalId, ws1Id, 'git-idem-1', 'push', 'fp-1', 'SUCCEEDED', now
+    );
+    db.close();
+
+    // Open with StateStore which triggers v4 -> v5 migration
+    const store = new StateStore(path);
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
+
+    const ws1 = store.byId(ws1Id);
+    expect(ws1?.networkProfile).toBe('network-none');
+    const ws2 = store.byId(ws2Id);
+    expect(ws2?.networkProfile).toBe('dependency-access');
+
+    const ws1Row = store.database.prepare('SELECT * FROM workspaces WHERE id = ?').get(ws1Id) as { network_profile: string; mutation_lock_count: number };
+    expect(ws1Row?.network_profile).toBe('network-none');
+    expect(ws1Row?.mutation_lock_count).toBe(3);
+
+    // Verify child rows survived without deletion
+    const task = store.database.prepare('SELECT * FROM durable_tasks WHERE id = ?').get('task_1') as { id: string };
+    expect(task?.id).toBe('task_1');
+
+    const gitOp = store.database.prepare('SELECT * FROM git_operation_idempotency WHERE workspace_id = ?').get(ws1Id) as { idempotency_key: string };
+    expect(gitOp?.idempotency_key).toBe('git-idem-1');
+
+    store.close();
+  });
+
+  it('rejects unknown network_mode values during v4 to v5 migration', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-invalid-net-'));
+    temporaryDirectories.push(directory);
+    const path = join(directory, 'state.db');
+    const db = new DatabaseSync(path);
+    db.exec(`
+      CREATE TABLE schema_meta (version INTEGER NOT NULL);
+      INSERT INTO schema_meta(version) VALUES (4);
+      CREATE TABLE runtime_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE principals (
+        id TEXT PRIMARY KEY, issuer TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, name TEXT, legacy_owner_id TEXT UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(issuer, subject)
+      );
+      CREATE TABLE workspaces (
+        id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+        repository_url TEXT NOT NULL, repository_ref TEXT, container_name TEXT, workspace_path TEXT NOT NULL,
+        status TEXT NOT NULL, network_mode TEXT NOT NULL, created_at INTEGER NOT NULL,
+        last_activity_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, generation INTEGER NOT NULL DEFAULT 1,
+        error TEXT, UNIQUE(owner_id, idempotency_key)
+      );
+    `);
+    const now = Date.now();
+    db.prepare('INSERT INTO principals (id, issuer, subject, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run('p1', 'https://issuer.com', 'sub1', now, now);
+    db.prepare(`INSERT INTO workspaces (id, owner_id, idempotency_key, repository_url, workspace_path, status, network_mode, created_at, last_activity_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      'ws_inv', 'p1', 'idem-inv', 'https://github.com/repo.git', '/tmp/wsinv', 'ACTIVE', 'invalid-mode', now, now, now + 60000
+    );
+    db.close();
+
+    expect(() => new StateStore(path)).toThrow(/invalid legacy network_mode in migration/);
   });
 
   it('resolves external principals to one stable opaque identity across restarts and connections', async () => {

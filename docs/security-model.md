@@ -123,11 +123,28 @@ capabilities, `no-new-privileges`, bounded CPU/memory/PIDs/file descriptors,
 bounded per-operation and aggregate retained output, bounded operation-handle
 counts, and TTL cleanup. Only the workspace repository mount is writable.
 
-Network mode is `none` by default. This blocks ordinary executor egress,
-including dependency installation and networked repository commands. Owner
-opt-in `bridge` networking enables broad container egress and weakens
-protection against exfiltration, SSRF, callbacks, dependency scripts, and
-repository-defined deployment commands. It is not an allowlisted proxy.
+The default executor network profile is `network-none`, which blocks all
+executor egress, including dependency installation and networked repository
+commands. The owner opt-in `dependency-access` profile is enforced below MCP
+tool policy: the executor attaches only to a dedicated managed Docker bridge
+(`chm-egress0`) with inter-container communication disabled and Docker's
+default masquerade off, and a transactional host firewall (installed via a
+single `iptables-restore` commit and verified through an ephemeral
+`NET_ADMIN`-only network-guard container) permits only public DNS and public
+TCP 80/443. The managed jump is the first rule of both `INPUT` and
+`DOCKER-USER`, and forbidden destination classes — loopback-to-host,
+Docker/control-plane, RFC 1918, carrier-grade NAT, link-local, and
+cloud-metadata (`169.254.169.254`) — are rejected before the allowed ports.
+IPv6 is disabled on the bridge. The runner attests the Docker network and the
+exact ordered host ruleset before every dependency executor start and during
+periodic reaper reconciliation; on drift it fences the workspace to
+`NETWORK_QUARANTINED`, stops the executor, and retains its data for recovery
+after policy reconciliation. If attestation is unavailable the profile fails
+closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge
+egress. `dependency-access` is not an allowlisted proxy or DLP boundary: it
+still permits exfiltration and callbacks to public endpoints. Production
+enforcement targets Linux with the Docker iptables backend; the host firewall
+is a trusted operator-owned control outside the executor's authority.
 
 Repository opening accepts only credential-free HTTPS URLs on configured
 hosts and rejects private/link-local resolutions. The clone helper disables

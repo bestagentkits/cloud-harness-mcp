@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WorkspaceNetworkExposureSchema } from './identifiers.js';
 import { ToolResultSchema } from './mcp-results.js';
 
 export const RunnerOperationSchema = z.enum([
@@ -68,7 +69,7 @@ export const WorkspaceCapabilitiesSchema = z.object({
   sessions: z.boolean(),
   deployments: z.boolean(),
   privileged: z.boolean().default(false),
-  networkMode: z.string()
+  networkProfile: WorkspaceNetworkExposureSchema
 }).passthrough();
 
 export const RepositoryPermissionsSchema = z.object({

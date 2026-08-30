@@ -85,7 +85,7 @@ function fixture() {
     maxOutputBytes: 262144,
     maxWorkspaceBytes: 104857600,
     minFreeBytes: 1048576,
-    networkMode: 'none',
+    networkProfile: 'network-none',
     allowedGitHosts: ['github.com'],
     executorImage: 'cloud-harness-executor:test'
   } as RunnerConfig;

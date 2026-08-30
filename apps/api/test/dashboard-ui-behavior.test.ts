@@ -160,7 +160,7 @@ describe('dashboard UI behavior', () => {
       event.currentTarget = null;
       return {
         workspaceId: `ws_${'a'.repeat(24)}`, repositoryUrl: 'https://github.com/acme/control-plane.git', status: 'ACTIVE',
-        networkMode: 'none', createdAt: '2026-08-17T00:00:00Z', lastActivityAt: '2026-08-17T00:01:00Z', expiresAt: '2026-08-17T01:00:00Z', version: 3
+        networkProfile: 'network-none', createdAt: '2026-08-17T00:00:00Z', lastActivityAt: '2026-08-17T00:01:00Z', expiresAt: '2026-08-17T01:00:00Z', version: 3
       };
     });
 
