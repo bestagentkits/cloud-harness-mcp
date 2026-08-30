@@ -1,3 +1,10 @@
+## [0.35.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.35.0...v0.35.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **toolkits:** align preset schema, lock metadata, and superpowers adapter with open-source scope ([#149](https://github.com/bestagentkits/cloud-harness-mcp/issues/149)) ([5a0d656](https://github.com/bestagentkits/cloud-harness-mcp/commit/5a0d65630aaa147cbcc8c78ad3ee2639b5a629b4))
+
 # [0.35.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.34.0...v0.35.0) (2026-08-30)
 
 
