@@ -62,10 +62,6 @@ trap 'rm -f "$TMP_RESTORE"' EXIT
   echo "-A $EGRESS_CHAIN -p tcp --dport 80 -j ACCEPT"
   echo "-A $EGRESS_CHAIN -p tcp --dport 443 -j ACCEPT"
   echo "-A $EGRESS_CHAIN -j REJECT --reject-with icmp-port-unreachable"
-  
-  # Atomically ensure jump rules at Rule 1
-  echo "-I INPUT 1 -i $BRIDGE_IF -j $INPUT_CHAIN"
-  echo "-I DOCKER-USER 1 -i $BRIDGE_IF -j $EGRESS_CHAIN"
   echo "COMMIT"
   
   echo "*nat"
@@ -87,12 +83,12 @@ if ! $SUDO iptables-restore --test < "$TMP_RESTORE"; then
   exit 1
 fi
 
-# 4. Commit atomic transaction under xtables lock
 $SUDO iptables-restore -w 10 --noflush < "$TMP_RESTORE"
 
-# 5. Deduplicate jump rules created by earlier runs. The restore inserted the
-# authoritative jump at position 1, so remove any *later* duplicate (highest
-# line number first) and never the position-1 rule that guarantees precedence.
+# 5. Head-insert jump rules at Rule 1 in INPUT and DOCKER-USER
+$SUDO iptables -w 10 -I INPUT 1 -i "$BRIDGE_IF" -j "$INPUT_CHAIN"
+$SUDO iptables -w 10 -I DOCKER-USER 1 -i "$BRIDGE_IF" -j "$EGRESS_CHAIN"
+
 dedup_jump() {
   local chain="$1"
   while :; do
