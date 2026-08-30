@@ -47,6 +47,23 @@ for (const service of ['api', 'runner', 'ingress']) {
   }
 }
 
+const tunnelResult = spawnSync('docker', [
+  'compose', '-f', 'compose.yaml', '-f', 'compose.production.yaml', '-f', 'deploy/cloudflare-tunnel/compose.tunnel.yaml', 'config', '--format', 'json'
+], {
+  cwd: process.cwd(),
+  encoding: 'utf8',
+  env: { ...process.env, CLOUD_HARNESS_ENV_FILE: '.env.example', CLOUDFLARE_TUNNEL_TOKEN: 'dummy-token' }
+});
+
+if (tunnelResult.status !== 0) throw new Error(tunnelResult.stderr || 'tunnel Compose config failed');
+const tunnelConfig = JSON.parse(tunnelResult.stdout);
+const tunnelServices = tunnelConfig.services;
+requireBoundary(Boolean(tunnelServices.cloudflared), 'tunnel Compose must declare cloudflared service');
+requireBoundary(!tunnelServices.cloudflared.ports?.length, 'cloudflared must not publish host ports');
+requireBoundary(!tunnelServices.cloudflared.volumes?.length, 'cloudflared must not receive host mounts');
+requireBoundary(JSON.stringify(networkNames(tunnelServices.cloudflared)) === JSON.stringify(['ingress']), 'cloudflared must attach only to the ingress network');
+requireBoundary(tunnelConfig.networks.ingress.internal !== true, 'ingress network must remain routable for tunnel');
+
 const nginx = readFileSync('deploy/nginx/cloud-harness-mcp.conf', 'utf8');
 const locationBlock = (pattern) => nginx.match(pattern)?.[0] ?? '';
 const dashboardEntry = locationBlock(/location = \/dashboard \{[^}]+\}/s);
