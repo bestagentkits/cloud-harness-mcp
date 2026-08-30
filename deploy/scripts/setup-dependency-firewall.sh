@@ -6,6 +6,10 @@ BRIDGE_IF="${DEPENDENCY_BRIDGE_INTERFACE:-chm-egress0}"
 SUBNET="${DEPENDENCY_BRIDGE_SUBNET:-172.30.240.0/24}"
 DNS_RESOLVERS="${DEPENDENCY_DNS_RESOLVERS:-8.8.8.8 1.1.1.1}"
 
+SUDO=""
+if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+  SUDO="sudo"
+fi
 # 1. Ensure dedicated Docker bridge network exists
 if ! docker network inspect "$BRIDGE_NAME" >/dev/null 2>&1; then
   docker network create \
@@ -72,13 +76,13 @@ trap 'rm -f "$TMP_RESTORE"' EXIT
 } > "$TMP_RESTORE"
 
 # 3. Test syntax before applying
-if ! iptables-restore --test < "$TMP_RESTORE"; then
+if ! $SUDO iptables-restore --test < "$TMP_RESTORE"; then
   echo "ERROR: iptables-restore syntax validation failed" >&2
   exit 1
 fi
 
 # 4. Commit atomic transaction under xtables lock
-iptables-restore -w 10 --noflush < "$TMP_RESTORE"
+$SUDO iptables-restore -w 10 --noflush < "$TMP_RESTORE"
 
 # 5. Deduplicate jump rules created by earlier runs. The restore inserted the
 # authoritative jump at position 1, so remove any *later* duplicate (highest
@@ -87,16 +91,15 @@ dedup_jump() {
   local chain="$1"
   while :; do
     local nums
-    nums=$(iptables -w 10 -L "$chain" --line-numbers -n | awk -v ifc="$BRIDGE_IF" -v tgt="$2" '$2==tgt && $0 ~ ("in "ifc) {print $1}')
+    nums=$($SUDO iptables -w 10 -L "$chain" --line-numbers -n | awk -v ifc="$BRIDGE_IF" -v tgt="$2" '$2==tgt && $0 ~ ("in "ifc) {print $1}')
     local count
     count=$(printf '%s\n' "$nums" | grep -c .)
     [ "$count" -le 1 ] && break
     local last
     last=$(printf '%s\n' "$nums" | tail -n1)
-    iptables -w 10 -D "$chain" "$last" || break
+    $SUDO iptables -w 10 -D "$chain" "$last" || break
   done
 }
 dedup_jump INPUT "$INPUT_CHAIN"
 dedup_jump DOCKER-USER "$EGRESS_CHAIN"
-
 echo "cloud-harness-dependency-firewall: committed transactional policy successfully"

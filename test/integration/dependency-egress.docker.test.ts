@@ -71,14 +71,16 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
     await runDocker(['network', 'rm', METADATA_NET], { timeoutMs: 30_000 }).catch(() => undefined);
     // Restore host firewall rules
     execFileSync('bash', ['-c',
-      `iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true; ` +
-      `iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true; ` +
-      `iptables -w 10 -F CHM-INPUT-v1 2>/dev/null || true; iptables -w 10 -X CHM-INPUT-v1 2>/dev/null || true; ` +
-      `iptables -w 10 -F CHM-EGRESS-v1 2>/dev/null || true; iptables -w 10 -X CHM-EGRESS-v1 2>/dev/null || true; ` +
+      `sudo=""\n` +
+      `if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then sudo="sudo"; fi\n` +
+      `$sudo iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -F CHM-INPUT-v1 2>/dev/null || true; $sudo iptables -w 10 -X CHM-INPUT-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -F CHM-EGRESS-v1 2>/dev/null || true; $sudo iptables -w 10 -X CHM-EGRESS-v1 2>/dev/null || true\n` +
       `docker network rm ${NETWORK} 2>/dev/null || true`
     ], { stdio: 'ignore' });
-    await service.stop().catch(() => undefined);
-    store.close();
+    if (service) await service.stop().catch(() => undefined);
+    if (store) store.close();
     try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
@@ -135,10 +137,11 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
     expect(depWorkspaceId).toBeDefined();
     // Simulate drift: remove the managed jump rules.
     execFileSync('bash', ['-c',
-      `iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true; ` +
-      `iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true`
+      `sudo=""\n` +
+      `if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then sudo="sudo"; fi\n` +
+      `$sudo iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true\n` +
+      `$sudo iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true`
     ], { stdio: 'inherit' });
-
     // Next command execution detects drift and fails closed
     await expect(service.execute('owner', 'exec_run', {
       workspaceId: depWorkspaceId!, command: 'echo should-fail-closed', cwd: '.', timeoutMs: 20_000
