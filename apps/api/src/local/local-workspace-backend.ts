@@ -233,6 +233,69 @@ export class LocalWorkspaceBackend implements OperationBackend {
         };
       }
       const caps = this.getCapabilities();
+      let manifest: unknown = undefined;
+      try {
+        const scanRes = await this.workerClient.call('workspace_context', input, signal);
+        if (scanRes.ok && scanRes.data && typeof scanRes.data === 'object' && 'manifest' in scanRes.data) {
+          const rawManifest = scanRes.data.manifest as Record<string, unknown>;
+          const rawItems = Array.isArray(rawManifest.items) ? rawManifest.items : [];
+          const maxBytes = Math.min(Math.max(Number((input as { maxBytes?: number }).maxBytes || 32768), 4096), 131072);
+          const sanitizedItems = [];
+          let accumulatedBytes = 0;
+          let truncated = Boolean(rawManifest.truncated);
+          const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
+
+          for (const rawItem of rawItems as Record<string, unknown>[]) {
+            const pathStr = typeof rawItem.path === 'string' ? rawItem.path : undefined;
+            const hashStr = typeof rawItem.contentSha256 === 'string' && rawItem.contentSha256.length === 64
+              ? rawItem.contentSha256
+              : '0'.repeat(64);
+            const item = {
+              id: typeof rawItem.id === 'string' ? rawItem.id : `ctx_${hashStr.slice(0, 12)}`,
+              kind: typeof rawItem.kind === 'string' ? rawItem.kind : 'instruction',
+              format: typeof rawItem.format === 'string' ? rawItem.format : 'plain',
+              clients: Array.isArray(rawItem.clients) ? rawItem.clients : ['all'],
+              path: pathStr,
+              appliesTo: typeof rawItem.appliesTo === 'string' ? rawItem.appliesTo : undefined,
+              activeForClient: Boolean(rawItem.activeForClient ?? true),
+              contentSha256: hashStr,
+              byteCount: typeof rawItem.byteCount === 'number' ? rawItem.byteCount : 0,
+              excerpt: typeof rawItem.excerpt === 'string' ? rawItem.excerpt.slice(0, 8192) : undefined,
+              references: Array.isArray(rawItem.references) ? rawItem.references : undefined,
+              provenance: {
+                source: 'repository',
+                trust: 'untrusted-executor',
+                mutableBy: 'repository-commit',
+                path: pathStr,
+                contentSha256: hashStr,
+                discoveredAt: new Date().toISOString()
+              }
+            };
+            const itemBytes = Buffer.byteLength(JSON.stringify(item));
+            if (accumulatedBytes + itemBytes > maxBytes) {
+              truncated = true;
+              if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
+              break;
+            }
+            sanitizedItems.push(item);
+            accumulatedBytes += itemBytes;
+          }
+
+          manifest = {
+            contractVersion: 1,
+            returnedBytes: accumulatedBytes,
+            scannedFiles: typeof rawManifest.scannedFiles === 'number' ? rawManifest.scannedFiles : sanitizedItems.length,
+            scannedSourceBytes: typeof rawManifest.scannedSourceBytes === 'number' ? rawManifest.scannedSourceBytes : accumulatedBytes,
+            truncated,
+            truncationReasons,
+            cursor: typeof rawManifest.cursor === 'string' ? rawManifest.cursor : undefined,
+            items: sanitizedItems,
+            warnings: Array.isArray(rawManifest.warnings) ? rawManifest.warnings : []
+          };
+        }
+      } catch {
+        // local scan is non-blocking
+      }
       return {
         ok: true,
         message: 'Workspace context',
@@ -251,7 +314,8 @@ export class LocalWorkspaceBackend implements OperationBackend {
           },
           capabilities: caps.capabilities,
           permissions: caps.permissions,
-          operations: caps.operations
+          operations: caps.operations,
+          ...(manifest ? { manifest } : {})
         },
         truncated: false
       };

@@ -280,4 +280,48 @@ describe('formatToolResultText', () => {
       expect(text).toContain(`Message for ${spec.name}`);
     }
   });
+
+  it('formats workspace_context manifest with trusted boundaries, provenance badges, and JSON-escaped excerpts', () => {
+    const result: ToolResult = {
+      ok: true,
+      message: 'Workspace context',
+      data: {
+        branch: 'main',
+        manifest: {
+          contractVersion: 1,
+          returnedBytes: 500,
+          scannedFiles: 2,
+          scannedSourceBytes: 1000,
+          truncated: true,
+          truncationReasons: ['byte-budget'],
+          items: [
+            {
+              id: 'ctx_inst_1',
+              kind: 'instruction',
+              format: 'claude',
+              clients: ['claude'],
+              path: 'CLAUDE.md',
+              byteCount: 250,
+              excerpt: '# Instructions\nDo something: "quoted"',
+              provenance: {
+                source: 'repository',
+                trust: 'untrusted-executor',
+                mutableBy: 'repository-commit',
+                contentSha256: 'a'.repeat(64),
+                discoveredAt: new Date().toISOString()
+              }
+            }
+          ]
+        }
+      },
+      truncated: false
+    };
+
+    const text = formatToolResultText(result);
+    expect(text).toContain('--- Workspace Context Manifest (contractVersion: 1) ---');
+    expect(text).toContain('[status: truncated — reasons: byte-budget]');
+    expect(text).toContain('- CLAUDE.md (instruction) [250 bytes] [repository | untrusted-executor]');
+    // excerpt is JSON escaped
+    expect(text).toContain('excerpt: "# Instructions\\nDo something: \\"quoted\\""');
+  });
 });

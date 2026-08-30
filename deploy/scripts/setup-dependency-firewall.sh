@@ -4,7 +4,7 @@ set -euo pipefail
 BRIDGE_NAME="${DEPENDENCY_NETWORK_NAME:-cloud-harness-dependency-access}"
 BRIDGE_IF="${DEPENDENCY_BRIDGE_INTERFACE:-chm-egress0}"
 SUBNET="${DEPENDENCY_BRIDGE_SUBNET:-172.30.240.0/24}"
-DNS_RESOLVERS="${DEPENDENCY_DNS_RESOLVERS:-8.8.8.8 1.1.1.1}"
+DNS_RESOLVERS=$(echo "${DEPENDENCY_DNS_RESOLVERS:-8.8.8.8,1.1.1.1}" | tr ',' ' ')
 
 SUDO=""
 if [[ $(id -u) -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
@@ -28,16 +28,12 @@ fi
 VERSION="v1"
 INPUT_CHAIN="CHM-INPUT-$VERSION"
 EGRESS_CHAIN="CHM-EGRESS-$VERSION"
-
+NAT_CHAIN="CHM-NAT-$VERSION"
 TMP_RESTORE=$(mktemp /tmp/chm-firewall-restore.XXXXXX)
 chmod 0644 "$TMP_RESTORE"
 trap 'rm -f "$TMP_RESTORE"' EXIT
 {
   echo "*filter"
-  echo ":INPUT ACCEPT [0:0]"
-  echo ":FORWARD ACCEPT [0:0]"
-  echo ":OUTPUT ACCEPT [0:0]"
-  echo ":DOCKER-USER - [0:0]"
   echo ":$INPUT_CHAIN - [0:0]"
   echo ":$EGRESS_CHAIN - [0:0]"
   echo "-F $INPUT_CHAIN"
@@ -66,14 +62,12 @@ trap 'rm -f "$TMP_RESTORE"' EXIT
   echo "COMMIT"
   
   echo "*nat"
-  echo ":PREROUTING ACCEPT [0:0]"
-  echo ":INPUT ACCEPT [0:0]"
-  echo ":OUTPUT ACCEPT [0:0]"
-  echo ":POSTROUTING ACCEPT [0:0]"
-  echo "-A POSTROUTING -s $SUBNET -p tcp -m multiport --dports 80,443 -j MASQUERADE"
+  echo ":$NAT_CHAIN - [0:0]"
+  echo "-F $NAT_CHAIN"
+  echo "-A $NAT_CHAIN -p tcp -m multiport --dports 80,443 -j MASQUERADE"
   for resolver in $DNS_RESOLVERS; do
-    echo "-A POSTROUTING -s $SUBNET -p udp -d $resolver --dport 53 -j MASQUERADE"
-    echo "-A POSTROUTING -s $SUBNET -p tcp -d $resolver --dport 53 -j MASQUERADE"
+    echo "-A $NAT_CHAIN -p udp -d $resolver --dport 53 -j MASQUERADE"
+    echo "-A $NAT_CHAIN -p tcp -d $resolver --dport 53 -j MASQUERADE"
   done
   echo "COMMIT"
 } > "$TMP_RESTORE"
@@ -85,10 +79,10 @@ if ! $SUDO iptables-restore -w 10 -n --test < "$TMP_RESTORE"; then
 fi
 
 $SUDO iptables-restore -w 10 --noflush < "$TMP_RESTORE"
-
-# 5. Head-insert jump rules at Rule 1 in INPUT and DOCKER-USER
+# 5. Head-insert jump rules at Rule 1 in INPUT, DOCKER-USER, and POSTROUTING
 $SUDO iptables -w 10 -I INPUT 1 -i "$BRIDGE_IF" -j "$INPUT_CHAIN"
 $SUDO iptables -w 10 -I DOCKER-USER 1 -i "$BRIDGE_IF" -j "$EGRESS_CHAIN"
+$SUDO iptables -w 10 -t nat -I POSTROUTING 1 -s "$SUBNET" -j "$NAT_CHAIN"
 
 dedup_jump() {
   local chain="$1"
@@ -112,4 +106,27 @@ dedup_jump() {
 }
 dedup_jump INPUT "$INPUT_CHAIN"
 dedup_jump DOCKER-USER "$EGRESS_CHAIN"
+
+dedup_jump_nat() {
+  local chain="$1"
+  local target="$2"
+  while true; do
+    local nums
+    nums=$($SUDO iptables -w 10 -t nat -L "$chain" --line-numbers -n | awk -v sn="$SUBNET" -v tgt="$target" '$2==tgt && $0 ~ sn {print $1}')
+    local count
+    count=$(echo "$nums" | wc -w)
+    if [ "$count" -le 1 ]; then
+      break
+    fi
+    local last
+    last=$(echo "$nums" | awk '{print $NF}')
+    if [ -n "$last" ]; then
+      $SUDO iptables -w 10 -t nat -D "$chain" "$last" || break
+    else
+      break
+    fi
+  done
+}
+dedup_jump_nat POSTROUTING "$NAT_CHAIN"
+
 echo "cloud-harness-dependency-firewall: committed transactional policy successfully"

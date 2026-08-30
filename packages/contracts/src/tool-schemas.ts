@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
-import type { RunnerOperation } from './runner-api.js';
+import { HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 
 const relativePath = z.string().min(1).max(1_024).refine((value) => {
   const normalized = value.replaceAll('\\', '/');
@@ -228,7 +228,15 @@ const schemas = {
   workspace_close: z.object(workspace),
   workspace_lease_renew: z.object({ ...workspace, extensionSeconds: z.number().int().min(60).max(86_400).optional() }),
   workspace_recover: z.object({ ...workspace, mode: z.enum(['resume', 'status', 'patch', 'export']).default('resume'), targetBranch: gitArgument.optional() }),
-  workspace_context: z.object(workspace),
+  workspace_context: z.object({
+    ...workspace,
+    clientProfile: z.enum(['all', 'claude', 'codex', 'cursor', 'aider']).default('all'),
+    include: z.array(z.enum(['instructions', 'languages', 'test_commands', 'skills'])).max(4).default(['instructions', 'languages', 'test_commands', 'skills']),
+    contentMode: z.enum(['none', 'excerpt']).default('none'),
+    cursor: z.string().max(256).optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+    maxBytes: z.number().int().min(4_096).max(131_072).default(32_768)
+  }),
   workspace_set_active: z.object({ workspaceId: WorkspaceIdSchema }),
   workspace_finalize: z.object({
     ...workspace,
@@ -331,14 +339,74 @@ const schemas = {
   worktrees_list: z.object(workspace),
   worktrees_create: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), ref: gitArgument, createBranch: z.boolean().default(false) }),
   worktrees_remove: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), force: z.boolean().default(false) }),
-  skills_list: z.object(workspace),
-  skills_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/) }),
-  skills_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/), script: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), args: z.array(z.string().max(2_048)).max(50).default([]), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
-  hooks_list: z.object(workspace),
-  hooks_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
-  memories_list: z.object(workspace),
-  memories_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/) }),
-  memories_write: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), content: z.string().max(262_144) }),
+  skills_list: z.object({ ...workspace, limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional(), includeShadowed: z.boolean().default(true) }),
+  skills_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/), source: ProvenanceSourceSchema.optional(), expectedSha256: z.string().length(64).optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(262_144).default(65_536) }),
+  skills_run: z.object({
+    ...workspace,
+    name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/),
+    source: ProvenanceSourceSchema.optional(),
+    script: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    args: z.array(z.string().max(2_048)).max(50).default([]),
+    timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
+    expectedSha256: z.string().length(64).optional(),
+    expectedContentSha256: z.string().length(64).optional()
+  }).superRefine((input, context) => {
+    if (!input.expectedSha256 && !input.expectedContentSha256) {
+      context.addIssue({ code: 'custom', path: ['expectedSha256'], message: 'expectedSha256 or expectedContentSha256 is required to prevent TOCTOU execution of modified scripts' });
+    }
+  }),
+  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  hooks_run: z.object({
+    ...workspace,
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    event: HookEventSchema.optional(),
+    expectedSha256: z.string().length(64).optional(),
+    expectedManifestSha256: z.string().length(64).optional(),
+    timeoutMs: z.number().int().min(100).max(300_000).default(60_000)
+  }).superRefine((input, context) => {
+    if (!input.expectedSha256 && !input.expectedManifestSha256) {
+      context.addIssue({ code: 'custom', path: ['expectedManifestSha256'], message: 'expectedManifestSha256 or expectedSha256 is required to prevent TOCTOU execution of modified hooks' });
+    }
+  }),
+  hooks_activate: z.object({ ...workspace, manifestSha256: z.string().length(64), events: z.array(HookEventSchema).min(1).max(10), retentionSeconds: z.number().int().min(60).max(2_592_000).optional() }),
+  hooks_deactivate: z.object({ ...workspace, events: z.array(HookEventSchema).max(10).optional() }),
+  memories_list: z.object({ ...workspace, scope: MemoryScopeSchema.optional(), tags: z.array(z.string().min(1).max(50)).max(16).optional(), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  memories_read: z.object({
+    ...workspace,
+    scope: MemoryScopeSchema.optional(),
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional(),
+    memoryId: z.string().regex(/^mem_[A-Za-z0-9_-]{10,80}$/).optional()
+  }).superRefine((input, context) => {
+    if (!input.name && !input.memoryId) context.addIssue({ code: 'custom', message: 'name or memoryId is required' });
+  }),
+  memories_write: z.object({
+    ...workspace,
+    scope: MemoryScopeSchema.default('workspace'),
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    content: z.string().max(262_144),
+    tags: z.array(z.string().min(1).max(50)).max(16).default([]),
+    retentionSeconds: z.number().int().min(60).max(31_536_000).optional(),
+    expectedGeneration: z.number().int().min(0).default(0),
+    idempotencyKey: z.string().min(1).max(256).optional()
+  }),
+  memories_search: z.object({
+    ...workspace,
+    query: z.string().min(1).max(512),
+    scope: MemoryScopeSchema.optional(),
+    tags: z.array(z.string().min(1).max(50)).max(16).optional(),
+    tagMatch: z.enum(['all', 'any']).default('all'),
+    limit: z.number().int().min(1).max(50).default(20),
+    cursor: z.string().max(256).optional()
+  }),
+  memories_delete: z.object({
+    ...workspace,
+    memoryId: z.string().regex(/^mem_[A-Za-z0-9_-]{10,80}$/).optional(),
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional(),
+    scope: MemoryScopeSchema.optional(),
+    expectedGeneration: z.number().int().positive().default(1)
+  }).superRefine((input, context) => {
+    if (!input.memoryId && !input.name) context.addIssue({ code: 'custom', message: 'memoryId or name is required' });
+  }),
   deployments_list: z.object(workspace),
   deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
   artifacts_snapshot: z.object({
@@ -400,7 +468,9 @@ const titles: Record<RunnerOperation, string> = {
   git_status: 'Git status', git_diff: 'Git diff', git_log: 'Git log', git_branch: 'Manage Git branches', git_checkout: 'Checkout Git ref', git_add: 'Stage Git changes', git_commit: 'Create Git commit', git_fetch: 'Fetch Git refs', git_pull: 'Pull Git changes', git_push: 'Push Git changes', git_merge: 'Merge Git ref', git_rebase: 'Manage Git rebase',
   git_identity_status: 'Read Git author identity', git_identity_set: 'Set Git author identity',
   worktrees_list: 'List worktrees', worktrees_create: 'Create worktree', worktrees_remove: 'Remove worktree',
-  skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory',
+  skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script',
+  hooks_list: 'List hooks', hooks_run: 'Run hook', hooks_activate: 'Activate lifecycle hooks', hooks_deactivate: 'Deactivate lifecycle hooks',
+  memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory', memories_search: 'Search memories', memories_delete: 'Delete memory note',
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
   github_action: 'Perform brokered GitHub operations',
@@ -467,9 +537,13 @@ const descriptions: Record<RunnerOperation, string> = {
   skills_run: 'Execute one reviewed script packaged by a repository-provided skill.',
   hooks_list: 'List repository-defined Cloud Harness automation hooks without running them.',
   hooks_run: 'Execute one named repository-defined hook as a bounded shell command.',
-  memories_list: 'List repository-local Cloud Harness memory note names.',
-  memories_read: 'Read one bounded repository-local Cloud Harness memory note.',
-  memories_write: 'Create or replace one repository-local Cloud Harness memory note.',
+  hooks_activate: 'Explicitly activate reviewed lifecycle hooks for a workspace by exact manifest digest.',
+  hooks_deactivate: 'Deactivate enrolled lifecycle hooks for a workspace.',
+  memories_list: 'List Cloud Harness memory note names across owner, repository, and workspace scopes.',
+  memories_read: 'Read one bounded Cloud Harness memory note by name or ID.',
+  memories_write: 'Create or replace one scoped Cloud Harness memory note with optimistic concurrency.',
+  memories_search: 'Search scoped memory notes by literal text query and tag filters with bounded pagination.',
+  memories_delete: 'Delete one scoped memory note with generation guard.',
   deployments_list: 'List repository-defined deployment targets without running them.',
   deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.',
   artifacts_snapshot: 'Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot.',
@@ -487,7 +561,7 @@ const readOnly = new Set<RunnerOperation>([
   'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph',
   'operation_status', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_identity_status',
-  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list',
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'deployments_list',
   'artifacts_list', 'artifacts_read', 'secrets_list'
 ]);
 const destructive = new Set<RunnerOperation>([
@@ -496,7 +570,7 @@ const destructive = new Set<RunnerOperation>([
   'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
   'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
-  'worktrees_remove', 'skills_run', 'hooks_run', 'memories_write', 'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action'
+  'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete', 'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action'
 ]);
 const idempotent = new Set<RunnerOperation>([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
@@ -505,7 +579,7 @@ const idempotent = new Set<RunnerOperation>([
   'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
   'operation_status', 'operation_cancel', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_add', 'git_identity_status', 'git_identity_set',
-  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list',
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'memories_write', 'deployments_list',
   'artifacts_list', 'artifacts_read', 'secrets_list'
 ]);
 const openWorld = new Set<RunnerOperation>([

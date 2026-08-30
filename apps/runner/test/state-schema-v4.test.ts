@@ -2,18 +2,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { StateStore, downgradeStateSchemaToV3 } from '../src/state-store.js';
+import { StateStore, downgradeStateSchemaToV3, downgradeStateSchemaToV4 } from '../src/state-store.js';
 import { migratePrincipalSchema, applyLegacyPrincipalMapping } from '../src/principal-store.js';
 
 const tempDbPath = () => join(tmpdir(), `test-state-v4-${randomBytes(8).toString('hex')}.sqlite`);
-
 describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
-  it('migrates fresh database to schema version 5', () => {
+  it('migrates fresh database to schema version 6', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
       const version = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(version).toBe(5);
+      expect(version).toBe(6);
     } finally {
       store.close();
     }
@@ -258,11 +257,13 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     }
   });
 
-  it('downgrades a v5 store to v3 for legacy simulation', () => {
+  it('downgrades a v6 store to v3 for legacy simulation', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
+      downgradeStateSchemaToV4(store.database);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(4);
       downgradeStateSchemaToV3(store.database);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(3);
     } finally {
@@ -275,6 +276,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     const store = new StateStore(dbPath);
     try {
       // Downgrade to v3 to simulate a legacy database
+      downgradeStateSchemaToV4(store.database);
       downgradeStateSchemaToV3(store.database);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(3);
 
@@ -307,7 +309,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       // Upgrade to v4
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
 
       // Verify row was migrated into git_operation_idempotency
       const migratedRow = store.getGitOperation(p, wsId, 'ik_legacy_fin_1');
@@ -407,6 +409,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     const store = new StateStore(dbPath);
     try {
       // Downgrade to v3 to simulate a legacy database
+      downgradeStateSchemaToV4(store.database);
       downgradeStateSchemaToV3(store.database);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(3);
 
@@ -431,7 +434,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       // Upgrade to schema version 4: MUST NOT throw foreign key constraint error!
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(6);
 
       // Prior to principal mapping, git_operation_idempotency should NOT have the row (since FK to principals is enforced)
       const unmappedGitOp = store.database.prepare(

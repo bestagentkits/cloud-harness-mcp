@@ -201,14 +201,69 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
     version = 4;
   }
   if (version === 4) {
+    transaction(database, () => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS memories (
+          id TEXT PRIMARY KEY,
+          principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          scope TEXT NOT NULL CHECK (scope IN ('owner','repository','workspace')),
+          repository_key TEXT,
+          workspace_id TEXT,
+          name TEXT NOT NULL,
+          content TEXT NOT NULL,
+          content_sha256 TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK (generation > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          deleted_at INTEGER,
+          provenance_json TEXT NOT NULL,
+          CHECK (
+            (scope='owner' AND repository_key IS NULL AND workspace_id IS NULL) OR
+            (scope='repository' AND repository_key IS NOT NULL AND workspace_id IS NULL) OR
+            (scope='workspace' AND workspace_id IS NOT NULL)
+          ),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS memories_owner_active ON memories(principal_id, name) WHERE deleted_at IS NULL AND scope='owner';
+        CREATE UNIQUE INDEX IF NOT EXISTS memories_repo_active ON memories(principal_id, repository_key, name) WHERE deleted_at IS NULL AND scope='repository';
+        CREATE UNIQUE INDEX IF NOT EXISTS memories_ws_active ON memories(principal_id, workspace_id, name) WHERE deleted_at IS NULL AND scope='workspace';
+        CREATE INDEX IF NOT EXISTS memories_expiry ON memories(expires_at, deleted_at);
+        CREATE INDEX IF NOT EXISTS memories_principal_lookup ON memories(principal_id, scope, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS memory_tags (
+          principal_id TEXT NOT NULL,
+          memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+          tag TEXT NOT NULL,
+          PRIMARY KEY(principal_id, memory_id, tag)
+        );
+        CREATE INDEX IF NOT EXISTS memory_tags_lookup ON memory_tags(principal_id, tag, memory_id);
+
+        CREATE TABLE IF NOT EXISTS hook_activations (
+          principal_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          event TEXT NOT NULL,
+          manifest_sha256 TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          PRIMARY KEY(principal_id, workspace_id, event),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        UPDATE schema_meta SET version = 5;
+      `);
+    });
+    version = 5;
+  }
+  if (version === 5) {
     const cols = (database.prepare('PRAGMA table_info(workspaces)').all() as { name: string }[]).map((c) => c.name);
     if (cols.includes('network_profile') && !cols.includes('network_mode')) {
-      // Table already carries the v5 shape (e.g. downgraded-then-remigrated); just advance the version.
-      transaction(database, () => { database.exec('UPDATE schema_meta SET version = 5;'); });
-      version = 5;
+      transaction(database, () => { database.exec('UPDATE schema_meta SET version = 6;'); });
+      version = 6;
     }
   }
-  if (version === 4) {
+  if (version === 5) {
     database.exec('PRAGMA foreign_keys = OFF;');
     try {
       transaction(database, () => {
@@ -217,7 +272,7 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
           throw new Error('invalid legacy network_mode in migration');
         }
         database.exec(`
-          CREATE TABLE workspaces_v5 (
+          CREATE TABLE workspaces_v6 (
             id TEXT PRIMARY KEY,
             owner_id TEXT NOT NULL,
             idempotency_key TEXT NOT NULL,
@@ -242,7 +297,7 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
             UNIQUE(owner_id, id)
           );
 
-          INSERT INTO workspaces_v5
+          INSERT INTO workspaces_v6
             (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status, network_profile, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, mutation_lock_count, generation, error)
           SELECT
             id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status,
@@ -256,7 +311,7 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
           FROM workspaces;
 
           DROP TABLE workspaces;
-          ALTER TABLE workspaces_v5 RENAME TO workspaces;
+          ALTER TABLE workspaces_v6 RENAME TO workspaces;
 
           CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner
             ON workspaces(owner_id)
@@ -264,19 +319,44 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
           CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id
             ON workspaces(owner_id, id);
 
-          UPDATE schema_meta SET version = 5;
+          UPDATE schema_meta SET version = 6;
         `);
         const fkViolations = database.prepare('PRAGMA foreign_key_check').all();
         if (fkViolations.length > 0) {
-          throw new Error(`foreign key integrity check failed after schema v5 migration: ${JSON.stringify(fkViolations)}`);
+          throw new Error(`foreign key integrity check failed after schema v6 migration: ${JSON.stringify(fkViolations)}`);
         }
       });
-      version = 5;
+      version = 6;
     } finally {
       database.exec('PRAGMA foreign_keys = ON;');
     }
   }
-  if (version !== 5) throw new Error(`unsupported state schema version ${version}`);
+  if (version !== 6) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 5 && version !== 6) throw new Error(`state schema must be version 5 or 6 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const memCount = (database.prepare('SELECT count(*) as count FROM memories').get() as { count: number }).count;
+    const hookCount = (database.prepare('SELECT count(*) as count FROM hook_activations').get() as { count: number }).count;
+    if (memCount > 0 || hookCount > 0) {
+      throw new Error('cannot downgrade state schema to v4: feature tables contain active records (export or discard required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      DROP TABLE IF EXISTS hook_activations;
+      DROP TABLE IF EXISTS memory_tags;
+      DROP TABLE IF EXISTS memories;
+      DROP INDEX IF EXISTS memories_owner_active;
+      DROP INDEX IF EXISTS memories_repo_active;
+      DROP INDEX IF EXISTS memories_ws_active;
+      DROP INDEX IF EXISTS memories_expiry;
+      DROP INDEX IF EXISTS memories_principal_lookup;
+      UPDATE schema_meta SET version = 4;
+    `);
+  });
 }
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {

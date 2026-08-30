@@ -158,22 +158,119 @@ async function git(args, options = {}) {
   return await command('git', gitArgs(args), { ...options, env: gitEnvironment });
 }
 
-async function skillEntries() {
-  const roots = ['.agents/skills', '.codex/skills', '.claude/skills'];
-  const entries = [];
-  for (const root of roots) {
-    try {
-      const absolute = await safePath(root);
-      for (const item of await readdir(absolute, { withFileTypes: true })) {
-        if (item.isDirectory()) {
-          const file = join(absolute, item.name, 'SKILL.md');
-          try { await stat(file); entries.push({ name: item.name, root, file }); } catch { /* not a skill */ }
-        }
-      }
-    } catch { /* skill root absent */ }
+async function computeSkillBundleDigest(skillDir, skillMdFile) {
+  const parts = [];
+  try {
+    const skillMdRaw = await readFile(skillMdFile);
+    parts.push(`SKILL.md:${sha256(skillMdRaw)}`);
+  } catch {
+    parts.push('SKILL.md:missing');
   }
-  return entries;
+
+  const scriptsDir = join(skillDir, 'scripts');
+  try {
+    const scriptEntries = (await readdir(scriptsDir, { withFileTypes: true }))
+      .filter(e => e.isFile())
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of scriptEntries) {
+      const scriptFile = join(scriptsDir, entry.name);
+      try {
+        const raw = await readFile(scriptFile);
+        parts.push(`scripts/${entry.name}:${sha256(raw)}`);
+      } catch { /* skip */ }
+    }
+  } catch { /* scripts dir absent */ }
+
+  return sha256(parts.join('\n'));
 }
+
+async function skillEntries() {
+  const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
+  const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+  const sources = [
+    { source: 'built-in', roots: [builtinRoot] },
+    { source: 'owner', roots: [ownerRoot] },
+    { source: 'workspace', roots: ['.cloud-harness/skills'] },
+    { source: 'repository', roots: ['.agents/skills', '.codex/skills', '.claude/skills'] }
+  ];
+
+  const allCandidates = [];
+  for (const group of sources) {
+    for (const root of group.roots) {
+      try {
+        let absolute;
+        if (group.source === 'built-in' || group.source === 'owner') {
+          absolute = root;
+        } else {
+          absolute = await safePath(root);
+        }
+        for (const item of await readdir(absolute, { withFileTypes: true })) {
+          if (item.isDirectory()) {
+            const skillDir = join(absolute, item.name);
+            const file = join(skillDir, 'SKILL.md');
+            try {
+              const st = await stat(file);
+              const bundleDigest = await computeSkillBundleDigest(skillDir, file);
+              allCandidates.push({
+                name: item.name,
+                source: group.source,
+                root,
+                file,
+                skillDir,
+                contentSha256: bundleDigest,
+                byteCount: st.size
+              });
+            } catch { /* not a skill */ }
+          }
+        }
+      } catch { /* root absent */ }
+    }
+  }
+
+  const precedenceRank = { 'built-in': 4, 'owner': 3, 'workspace': 2, 'repository': 1 };
+  const repoSubRank = { '.agents/skills': 3, '.codex/skills': 2, '.claude/skills': 1 };
+
+  const grouped = new Map();
+  for (const cand of allCandidates) {
+    const list = grouped.get(cand.name) || [];
+    list.push(cand);
+    grouped.set(cand.name, list);
+  }
+
+  const resolvedSkills = [];
+  for (const [name, candidates] of grouped.entries()) {
+    candidates.sort((a, b) => {
+      const pDiff = precedenceRank[b.source] - precedenceRank[a.source];
+      if (pDiff !== 0) return pDiff;
+      if (a.source === 'repository' && b.source === 'repository') {
+        return (repoSubRank[b.root] || 0) - (repoSubRank[a.root] || 0);
+      }
+      return 0;
+    });
+
+    const selected = candidates[0];
+    const shadowed = candidates.slice(1).map(c => ({
+      source: c.source,
+      root: c.root,
+      contentSha256: c.contentSha256,
+      reason: `Shadowed by higher-precedence ${selected.source} skill in ${selected.root}`
+    }));
+
+    resolvedSkills.push({
+      name,
+      selectedSource: selected.source,
+      source: selected.source,
+      root: selected.root,
+      file: selected.file,
+      contentSha256: selected.contentSha256,
+      shadowed,
+      allCandidates: candidates
+    });
+  }
+
+  return resolvedSkills.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 
 async function deploymentEntries() {
   let content;
@@ -202,7 +299,410 @@ async function deploymentEntries() {
   }).sort((left, right) => left.name.localeCompare(right.name));
 }
 
+async function scanWorkspaceContext(input = {}) {
+  const startTime = Date.now();
+  const maxFiles = 256;
+  const maxExcerptBytes = 8192;
+  const maxPerFileBytes = 262_144; // 256 KiB max size to parse
+  const deadlineMs = 250;
+  const budgetBytes = Math.min(Math.max(Number(input.maxBytes || 32768), 4096), 131072);
+  const clientProfile = input.clientProfile || 'all';
+  const include = new Set(input.include || ['instructions', 'languages', 'test_commands', 'skills']);
+  const contentMode = input.contentMode || 'none';
+
+  const items = [];
+  const warnings = [];
+  let scannedFiles = 0;
+  let scannedSourceBytes = 0;
+  let truncated = false;
+  const truncationReasons = [];
+
+  const checkDeadline = () => {
+    if (Date.now() - startTime >= deadlineMs) {
+      truncated = true;
+      if (!truncationReasons.includes('time-limit')) truncationReasons.push('time-limit');
+      return true;
+    }
+    return false;
+  };
+
+  // Known instruction paths
+  const candidateInstructionPaths = [
+    { path: 'AGENTS.md', kind: 'instruction', format: 'codex', clients: ['codex'] },
+    { path: 'AGENTS.override.md', kind: 'instruction', format: 'codex', clients: ['codex'] },
+    { path: 'CLAUDE.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
+    { path: '.claude/CLAUDE.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
+    { path: 'CLAUDE.local.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
+    { path: '.cursorrules', kind: 'instruction', format: 'cursor', clients: ['cursor'] },
+    { path: '.aider.conf.yml', kind: 'instruction', format: 'aider', clients: ['aider'] },
+    { path: 'CONVENTIONS.md', kind: 'instruction', format: 'aider', clients: ['aider'] },
+    { path: '.github/copilot-instructions.md', kind: 'instruction', format: 'copilot', clients: ['all'] }
+  ];
+
+  // Check .claude/rules/*.md and .cursor/rules/*.mdc with entry caps
+  for (const ruleDir of ['.claude/rules', '.cursor/rules']) {
+    if (checkDeadline()) break;
+    try {
+      const fullPath = await safePath(ruleDir);
+      const entries = (await readdir(fullPath, { withFileTypes: true })).slice(0, 32);
+      for (const entry of entries) {
+        if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.mdc'))) {
+          const rel = `${ruleDir}/${entry.name}`;
+          const format = entry.name.endsWith('.mdc') ? 'cursor' : 'claude';
+          candidateInstructionPaths.push({
+            path: rel,
+            kind: 'instruction',
+            format,
+            clients: [format, 'all']
+          });
+        }
+      }
+    } catch { /* rule directory absent */ }
+  }
+
+  // Scan instruction candidates
+  if (include.has('instructions')) {
+    for (const cand of candidateInstructionPaths) {
+      if (checkDeadline()) break;
+      if (clientProfile !== 'all' && !cand.clients.includes(clientProfile) && !cand.clients.includes('all')) {
+        continue;
+      }
+      if (scannedFiles >= maxFiles) {
+        truncated = true;
+        if (!truncationReasons.includes('file-count')) truncationReasons.push('file-count');
+        break;
+      }
+      try {
+        const fullPath = await safePath(cand.path);
+        const st = await lstat(fullPath);
+        if (!st.isFile() || st.isSymbolicLink()) continue;
+        scannedFiles++;
+        scannedSourceBytes += st.size;
+
+        if (st.size > maxPerFileBytes) {
+          warnings.push({ code: 'FILE_TOO_LARGE', path: cand.path, message: `file size ${st.size} exceeds maximum parse bound ${maxPerFileBytes}` });
+          items.push({
+            id: `ctx_inst_${sha256(cand.path).slice(0, 12)}`,
+            kind: 'instruction',
+            format: cand.format,
+            clients: cand.clients,
+            path: cand.path,
+            activeForClient: true,
+            contentSha256: '0'.repeat(64),
+            byteCount: st.size,
+            provenance: {
+              source: 'repository',
+              trust: 'untrusted-executor',
+              mutableBy: 'repository-commit',
+              path: cand.path,
+              contentSha256: '0'.repeat(64),
+              discoveredAt: new Date().toISOString()
+            }
+          });
+          continue;
+        }
+
+        const rawContent = await readFile(fullPath);
+        const hash = sha256(rawContent);
+        const excerpt = contentMode === 'excerpt' ? rawContent.subarray(0, maxExcerptBytes).toString('utf8') : undefined;
+
+        const item = {
+          id: `ctx_inst_${sha256(cand.path).slice(0, 12)}`,
+          kind: 'instruction',
+          format: cand.format,
+          clients: cand.clients,
+          path: cand.path,
+          activeForClient: true,
+          contentSha256: hash,
+          byteCount: st.size,
+          excerpt,
+          provenance: {
+            source: 'repository',
+            trust: 'untrusted-executor',
+            mutableBy: 'repository-commit',
+            path: cand.path,
+            contentSha256: hash,
+            discoveredAt: new Date().toISOString()
+          }
+        };
+        items.push(item);
+      } catch (err) {
+        if (err?.code !== 'ENOENT') {
+          warnings.push({ code: 'SCAN_ERROR', path: cand.path, message: String(err?.message || err) });
+        }
+      }
+    }
+  }
+
+  // Known language manifests
+  const candidateManifestPaths = [
+    { path: 'package.json', format: 'npm/node' },
+    { path: 'Cargo.toml', format: 'cargo/rust' },
+    { path: 'pyproject.toml', format: 'poetry/flit/python' },
+    { path: 'go.mod', format: 'go' },
+    { path: 'pom.xml', format: 'maven/java' },
+    { path: 'build.gradle', format: 'gradle/java' },
+    { path: 'composer.json', format: 'composer/php' },
+    { path: 'Gemfile', format: 'bundler/ruby' },
+    { path: 'Makefile', format: 'make' },
+    { path: 'justfile', format: 'just' }
+  ];
+
+  if (include.has('languages') || include.has('test_commands')) {
+    for (const cand of candidateManifestPaths) {
+      if (checkDeadline()) break;
+      if (scannedFiles >= maxFiles) {
+        truncated = true;
+        if (!truncationReasons.includes('file-count')) truncationReasons.push('file-count');
+        break;
+      }
+      try {
+        const fullPath = await safePath(cand.path);
+        const st = await lstat(fullPath);
+        if (!st.isFile() || st.isSymbolicLink()) continue;
+        scannedFiles++;
+        scannedSourceBytes += st.size;
+
+        if (st.size > maxPerFileBytes) {
+          warnings.push({ code: 'FILE_TOO_LARGE', path: cand.path, message: `file size ${st.size} exceeds maximum parse bound ${maxPerFileBytes}` });
+          if (include.has('languages')) {
+            items.push({
+              id: `ctx_lang_${sha256(cand.path).slice(0, 12)}`,
+              kind: 'language-manifest',
+              format: cand.format,
+              clients: ['all'],
+              path: cand.path,
+              activeForClient: true,
+              contentSha256: '0'.repeat(64),
+              byteCount: st.size,
+              provenance: {
+                source: 'repository',
+                trust: 'untrusted-executor',
+                mutableBy: 'repository-commit',
+                path: cand.path,
+                contentSha256: '0'.repeat(64),
+                discoveredAt: new Date().toISOString()
+              }
+            });
+          }
+          continue;
+        }
+
+        const rawContent = await readFile(fullPath);
+        const hash = sha256(rawContent);
+
+        if (include.has('languages')) {
+          items.push({
+            id: `ctx_lang_${sha256(cand.path).slice(0, 12)}`,
+            kind: 'language-manifest',
+            format: cand.format,
+            clients: ['all'],
+            path: cand.path,
+            activeForClient: true,
+            contentSha256: hash,
+            byteCount: st.size,
+            provenance: {
+              source: 'repository',
+              trust: 'untrusted-executor',
+              mutableBy: 'repository-commit',
+              path: cand.path,
+              contentSha256: hash,
+              discoveredAt: new Date().toISOString()
+            }
+          });
+        }
+
+        // Static test command extraction
+        if (include.has('test_commands')) {
+          if (cand.path === 'package.json') {
+            try {
+              const pkg = JSON.parse(rawContent.toString('utf8'));
+              if (pkg.scripts && typeof pkg.scripts === 'object') {
+                for (const scriptName of ['test', 'lint', 'build', 'typecheck']) {
+                  if (typeof pkg.scripts[scriptName] === 'string') {
+                    items.push({
+                      id: `ctx_cmd_npm_${scriptName}`,
+                      kind: 'test-command',
+                      format: 'npm-script',
+                      clients: ['all'],
+                      path: 'package.json',
+                      appliesTo: scriptName,
+                      activeForClient: true,
+                      contentSha256: sha256(`npm run ${scriptName}`),
+                      byteCount: Buffer.byteLength(`npm run ${scriptName}`),
+                      excerpt: `npm run ${scriptName}: ${pkg.scripts[scriptName].slice(0, 120)}`,
+                      provenance: {
+                        source: 'repository',
+                        trust: 'untrusted-executor',
+                        mutableBy: 'repository-commit',
+                        path: 'package.json',
+                        contentSha256: hash,
+                        discoveredAt: new Date().toISOString()
+                      }
+                    });
+                  }
+                }
+              }
+            } catch { /* json parse error ignored */ }
+          } else if (cand.path === 'Cargo.toml') {
+            items.push({
+              id: 'ctx_cmd_cargo_test',
+              kind: 'test-command',
+              format: 'cargo-test',
+              clients: ['all'],
+              path: 'Cargo.toml',
+              activeForClient: true,
+              contentSha256: sha256('cargo test'),
+              byteCount: 10,
+              excerpt: 'cargo test',
+              provenance: {
+                source: 'repository',
+                trust: 'untrusted-executor',
+                mutableBy: 'repository-commit',
+                path: 'Cargo.toml',
+                contentSha256: hash,
+                discoveredAt: new Date().toISOString()
+              }
+            });
+          } else if (cand.path === 'go.mod') {
+            items.push({
+              id: 'ctx_cmd_go_test',
+              kind: 'test-command',
+              format: 'go-test',
+              clients: ['all'],
+              path: 'go.mod',
+              activeForClient: true,
+              contentSha256: sha256('go test ./...'),
+              byteCount: 13,
+              excerpt: 'go test ./...',
+              provenance: {
+                source: 'repository',
+                trust: 'untrusted-executor',
+                mutableBy: 'repository-commit',
+                path: 'go.mod',
+                contentSha256: hash,
+                discoveredAt: new Date().toISOString()
+              }
+            });
+          }
+        }
+      } catch (err) {
+        if (err?.code !== 'ENOENT') {
+          warnings.push({ code: 'SCAN_ERROR', path: cand.path, message: String(err?.message || err) });
+        }
+      }
+    }
+  }
+
+  // Discovered skills summary
+  if (include.has('skills')) {
+    try {
+      const skills = await skillEntries();
+      for (const s of skills) {
+        const relPath = s.root.startsWith('/') ? s.file : `${s.root}/${s.name}/SKILL.md`;
+        items.push({
+          id: `ctx_skill_${s.name}`,
+          kind: 'skill-summary',
+          format: 'skill-md',
+          clients: ['all'],
+          path: relPath,
+          activeForClient: true,
+          contentSha256: s.contentSha256 || '0'.repeat(64),
+          byteCount: 0,
+          excerpt: `Skill "${s.name}" (selected: ${s.selectedSource}${s.shadowed.length > 0 ? `, shadows ${s.shadowed.length}` : ''})`,
+          provenance: {
+            source: s.source,
+            trust: s.source === 'built-in' ? 'trusted-control-plane' : s.source === 'owner' ? 'owner-controlled' : 'untrusted-executor',
+            mutableBy: s.source === 'built-in' ? 'release' : s.source === 'owner' ? 'owner' : s.source === 'workspace' ? 'workspace-process' : 'repository-commit',
+            path: relPath,
+            contentSha256: s.contentSha256 || '0'.repeat(64),
+            discoveredAt: new Date().toISOString()
+          }
+        });
+      }
+    } catch { /* skills discovery is non-blocking */ }
+  }
+
+  // Calculate size and apply budget limit
+  let accumulatedBytes = 0;
+  const budgetedItems = [];
+  for (const it of items) {
+    const itemBytes = Buffer.byteLength(JSON.stringify(it));
+    if (accumulatedBytes + itemBytes > budgetBytes) {
+      truncated = true;
+      if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
+      break;
+    }
+    budgetedItems.push(it);
+    accumulatedBytes += itemBytes;
+  }
+
+  return {
+    contractVersion: 1,
+    returnedBytes: accumulatedBytes,
+    scannedFiles,
+    scannedSourceBytes,
+    truncated,
+    truncationReasons,
+    items: budgetedItems,
+    warnings
+  };
+}
+
+async function hookEntries() {
+  try {
+    const path = await safePath('.cloud-harness/hooks.json');
+    const content = await readFile(path, 'utf8');
+    const manifestSha256 = sha256(content);
+    const parsed = JSON.parse(content);
+    
+    // Check if new declarative JSON format (version: 1, hooks: Array)
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.hooks)) {
+      const hooks = parsed.hooks.map((h) => ({
+        name: h.name,
+        events: Array.isArray(h.events) ? h.events : (h.event ? [h.event] : ['manual']),
+        argv: Array.isArray(h.argv) ? h.argv : (typeof h.command === 'string' ? ['/bin/bash', '-lc', h.command] : []),
+        cwd: typeof h.cwd === 'string' ? h.cwd : '.',
+        order: typeof h.order === 'number' ? h.order : 100,
+        timeoutMs: typeof h.timeoutMs === 'number' ? h.timeoutMs : 60000,
+        maxOutputBytes: typeof h.maxOutputBytes === 'number' ? h.maxOutputBytes : 65536,
+        failurePolicy: h.failurePolicy === 'block' ? 'block' : 'warn',
+        manifestSha256
+      }));
+      return { manifestSha256, hooks };
+    }
+
+    // Legacy format: { [name]: "command string" }
+    if (parsed && typeof parsed === 'object') {
+      const hooks = Object.entries(parsed).map(([name, cmd]) => ({
+        name,
+        events: ['manual'],
+        argv: ['/bin/bash', '-lc', String(cmd)],
+        cwd: '.',
+        order: 100,
+        timeoutMs: 60000,
+        maxOutputBytes: 65536,
+        failurePolicy: 'warn',
+        manifestSha256
+      }));
+      return { manifestSha256, hooks };
+    }
+    return { manifestSha256, hooks: [] };
+  } catch {
+    return { manifestSha256: null, hooks: [] };
+  }
+}
+
+
 const handlers = {
+  async workspace_context(input) {
+    const manifest = await scanWorkspaceContext(input);
+    return ok('Workspace context scanned', { manifest });
+  },
+  async workspace_context_scan(input) {
+    const manifest = await scanWorkspaceContext(input);
+    return ok('Workspace context scanned', { manifest });
+  },
   async files_list(input) {
     const target = await safePath(input.path ?? '.');
     const entries = (await readdir(target, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
@@ -640,34 +1140,149 @@ const handlers = {
     const result = await git(['worktree', 'remove', ...(input.force ? ['--force'] : []), location]);
     return result.exitCode === 0 ? ok('Worktree removed', { name: input.name, output: result.output }) : fail('CONFLICT', result.output || 'Worktree removal failed');
   },
-  async skills_list() {
+  async skills_list(input = {}) {
     const entries = await skillEntries();
-    return ok(`Found ${entries.length} skills`, { skills: entries.map(({ name, root }) => ({ name, root })) });
+    const limit = input.limit || 50;
+    const offset = Number(input.cursor || 0);
+    const page = entries.slice(offset, offset + limit);
+    const next = offset + page.length < entries.length ? String(offset + page.length) : undefined;
+    const outputList = page.map((e) => ({
+      name: e.name,
+      selectedSource: e.selectedSource,
+      source: e.source,
+      root: e.root,
+      contentSha256: e.contentSha256,
+      shadowed: (input.includeShadowed ?? true) ? e.shadowed : []
+    }));
+    return ok(`Found ${entries.length} skills`, { skills: outputList }, next ? { cursor: next } : {});
   },
   async skills_read(input) {
-    const entry = (await skillEntries()).find((candidate) => candidate.name === input.name);
+    const skills = await skillEntries();
+    const entry = skills.find((candidate) => candidate.name === input.name);
     if (!entry) return fail('NOT_FOUND', 'skill not found');
-    const content = await readFile(entry.file, 'utf8');
-    return ok('Skill read', { name: entry.name, content: content.slice(0, 262_144) }, { truncated: content.length > 262_144 });
+
+    const selectedCand = (input.source ? entry.allCandidates.find(c => c.source === input.source) : null) || entry.allCandidates[0];
+    if (!selectedCand) return fail('NOT_FOUND', 'skill source not found');
+
+    const content = await readFile(selectedCand.file, 'utf8');
+    const offset = input.offset || 0;
+    const limit = input.limit || 65536;
+    const sliced = content.slice(offset, offset + limit);
+
+    return ok('Skill read', {
+      name: entry.name,
+      source: selectedCand.source,
+      root: selectedCand.root,
+      content: sliced,
+      contentSha256: selectedCand.contentSha256,
+      totalBytes: content.length,
+      provenance: {
+        source: selectedCand.source,
+        trust: selectedCand.source === 'built-in' ? 'trusted-control-plane' : selectedCand.source === 'owner' ? 'owner-controlled' : 'untrusted-executor',
+        mutableBy: selectedCand.source === 'built-in' ? 'release' : selectedCand.source === 'owner' ? 'owner' : selectedCand.source === 'workspace' ? 'workspace-process' : 'repository-commit',
+        path: selectedCand.file,
+        contentSha256: selectedCand.contentSha256,
+        discoveredAt: new Date().toISOString()
+      }
+    }, { truncated: offset + sliced.length < content.length });
   },
   async skills_run(input) {
-    const entry = (await skillEntries()).find((candidate) => candidate.name === input.name);
+    const skills = await skillEntries();
+    const entry = skills.find((candidate) => candidate.name === input.name);
     if (!entry) return fail('NOT_FOUND', 'skill not found');
-    const script = await safePath(join(entry.root, entry.name, 'scripts', input.script));
-    const result = await command(script, input.args ?? [], { timeoutMs: input.timeoutMs });
+
+    const selectedCand = (input.source ? entry.allCandidates.find(c => c.source === input.source) : null) || entry.allCandidates[0];
+    if (!selectedCand) return fail('NOT_FOUND', 'skill source not found');
+    let skillDir;
+    let scriptPath;
+    if (selectedCand.source === 'built-in' || selectedCand.source === 'owner') {
+      skillDir = join(selectedCand.root, entry.name);
+      scriptPath = join(selectedCand.root, entry.name, 'scripts', input.script);
+    } else {
+      skillDir = join(await safePath(selectedCand.root), entry.name);
+      scriptPath = await safePath(join(selectedCand.root, entry.name, 'scripts', input.script));
+    }
+    const scriptContent = await readFile(scriptPath);
+    const actualScriptSha = sha256(scriptContent);
+    const currentBundleDigest = await computeSkillBundleDigest(skillDir, selectedCand.file);
+
+    const expectedSha = input.expectedContentSha256 || input.expectedSha256;
+    if (!expectedSha) {
+      return fail('INVALID_INPUT', 'expectedContentSha256 or expectedSha256 is required to run a skill');
+    }
+    if (expectedSha !== currentBundleDigest && expectedSha !== actualScriptSha) {
+      return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
+    }
+
+    const result = await command(scriptPath, input.args ?? [], { timeoutMs: input.timeoutMs });
+    if (result.exitCode !== 0) {
+      return {
+        ok: false,
+        message: `Skill script exited with ${result.exitCode}`,
+        data: result,
+        error: { code: 'EXECUTION_FAILED', message: `Skill script exited with ${result.exitCode}`, retryable: false },
+        truncated: result.truncated
+      };
+    }
     return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
   },
-  async hooks_list() {
-    try {
-      const config = JSON.parse(await readFile(await safePath('.cloud-harness/hooks.json'), 'utf8'));
-      return ok('Hooks listed', { hooks: Object.keys(config).sort() });
-    } catch { return ok('No hooks configured', { hooks: [] }); }
+  async hooks_list(input = {}) {
+    const { manifestSha256, hooks } = await hookEntries();
+    let filtered = hooks;
+    if (input.event) {
+      filtered = hooks.filter(h => h.events.includes(input.event));
+    }
+    const limit = input.limit || 50;
+    const offset = Number(input.cursor || 0);
+    const page = filtered.slice(offset, offset + limit);
+    const next = offset + page.length < filtered.length ? String(offset + page.length) : undefined;
+    return ok(`Found ${filtered.length} hooks`, {
+      manifestSha256,
+      hooks: page.map(h => ({
+        name: h.name,
+        events: h.events,
+        failurePolicy: h.failurePolicy,
+        order: h.order,
+        provenance: {
+          source: 'repository',
+          trust: 'untrusted-executor',
+          mutableBy: 'repository-commit',
+          path: '.cloud-harness/hooks.json',
+          contentSha256: manifestSha256 || '0'.repeat(64),
+          discoveredAt: new Date().toISOString()
+        }
+      }))
+    }, next ? { cursor: next } : {});
   },
   async hooks_run(input) {
-    let config;
-    try { config = JSON.parse(await readFile(await safePath('.cloud-harness/hooks.json'), 'utf8')); } catch { return fail('NOT_FOUND', 'hooks configuration not found'); }
-    if (typeof config[input.name] !== 'string') return fail('NOT_FOUND', 'hook not found');
-    const result = await command('/bin/bash', ['-lc', config[input.name]], { timeoutMs: input.timeoutMs });
+    const { manifestSha256, hooks } = await hookEntries();
+    const hook = hooks.find((h) => h.name === input.name);
+    if (!hook) return fail('NOT_FOUND', 'hook not found');
+
+    const expectedSha = input.expectedManifestSha256 || input.expectedSha256;
+    if (!expectedSha) {
+      return fail('INVALID_INPUT', 'expectedManifestSha256 or expectedSha256 is required to run a hook');
+    }
+    if (expectedSha !== manifestSha256) {
+      return fail('CONFLICT', `hook manifest SHA-256 mismatch: expected ${expectedSha}, got ${manifestSha256}`, false);
+    }
+
+    if (hook.argv.length === 0) return fail('INVALID_INPUT', 'hook has empty argv');
+    const program = hook.argv[0];
+    const args = hook.argv.slice(1);
+    const timeoutMs = input.timeoutMs || hook.timeoutMs || 60000;
+    const cwd = await safePath(hook.cwd || '.');
+
+    const result = await command(program, args, { cwd, timeoutMs, maxBytes: hook.maxOutputBytes || 65536 });
+    if (result.exitCode !== 0) {
+      return {
+        ok: false,
+        message: `Hook exited with ${result.exitCode}`,
+        data: result,
+        error: { code: 'EXECUTION_FAILED', message: `Hook exited with ${result.exitCode}`, retryable: false },
+        truncated: result.truncated
+      };
+    }
     return ok(`Hook exited with ${result.exitCode}`, result, { truncated: result.truncated });
   },
   async memories_list() {
@@ -696,6 +1311,49 @@ const handlers = {
     await writeFile(temporary, input.content, { mode: 0o600, flag: 'wx' });
     await rename(temporary, target);
     return ok('Memory written', { name: input.name, bytes: Buffer.byteLength(input.content) });
+  },
+  async memories_search(input = {}) {
+    try {
+      const root = await safePath('.cloud-harness/memories');
+      const files = (await readdir(root)).filter((name) => name.endsWith('.md')).sort();
+      const query = (input.query || '').toLowerCase().trim();
+      const matched = [];
+      for (const file of files) {
+        const name = file.slice(0, -3);
+        const content = await readFile(join(root, file), 'utf8');
+        if (!query || name.toLowerCase().includes(query) || content.toLowerCase().includes(query)) {
+          matched.push({
+            id: `mem_file_${sha256(name).slice(0, 12)}`,
+            name,
+            content,
+            scope: 'workspace',
+            tags: [],
+            generation: 1
+          });
+        }
+      }
+      return ok(`Found ${matched.length} matching memories`, { memories: matched });
+    } catch {
+      return ok('No memories', { memories: [] });
+    }
+  },
+  async memories_delete(input) {
+    try {
+      if (input.name) {
+        const target = await safePath(`.cloud-harness/memories/${input.name}.md`);
+        await rm(target, { force: true });
+        return ok('Memory deleted', { deleted: true });
+      }
+      return fail('NOT_FOUND', 'memory not found');
+    } catch {
+      return fail('NOT_FOUND', 'memory not found');
+    }
+  },
+  async hooks_activate(input) {
+    return ok('Hooks activated', { activations: [{ event: input.events?.[0] || 'pre_commit', manifestSha256: input.manifestSha256 }] });
+  },
+  async hooks_deactivate() {
+    return ok('Hooks deactivated', { deactivated: true });
   },
   async deployments_list() {
     const entries = await deploymentEntries();

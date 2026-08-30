@@ -66,7 +66,7 @@ fi
 
 git checkout --detach --force "$release_sha"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
-compose --profile images build executor-image api runner
+compose --profile images build executor-image network-guard-image api runner
 systemctl enable --now cloud-harness-mcp.service
 wait_ready
 verify_running_images

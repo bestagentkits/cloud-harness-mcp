@@ -13,6 +13,7 @@ record_images() {
   docker image inspect cloud-harness-api:local --format '{{.Id}}' > "$state/${prefix}-api-image"
   docker image inspect cloud-harness-runner:local --format '{{.Id}}' > "$state/${prefix}-runner-image"
   docker image inspect cloud-harness-executor:local --format '{{.Id}}' > "$state/${prefix}-executor-image"
+  docker image inspect cloud-harness-network-guard:local --format '{{.Id}}' > "$state/${prefix}-network-guard-image"
 }
 
 compose() {
@@ -124,7 +125,7 @@ rollback() {
   if [[ $rollback_failed -eq 0 && -n $previous_sha && $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
     if ! git checkout --detach --force "$previous_sha"; then rollback_failed=1
     elif [[ -n $backup_dir ]] && ! restore_snapshot "$backup_dir"; then rollback_failed=1
-    elif ! compose --profile images build executor-image api runner; then rollback_failed=1
+    elif ! compose --profile images build executor-image network-guard-image api runner; then rollback_failed=1
     elif ! systemctl enable --now cloud-harness-mcp.service; then rollback_failed=1
     elif ! wait_ready; then rollback_failed=1
     elif ! verify_running_images; then rollback_failed=1
