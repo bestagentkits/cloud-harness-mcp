@@ -296,7 +296,8 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
   }, 180_000);
 
   it('rejects agent spawn for a bridge-backed workspace before creating agent resources', async () => {
-    const workspaceId = await openWorkspace('pi-agent-bridge-rejection', 'dependency-access');
+    const workspaceId = await openWorkspace('pi-agent-bridge-rejection', 'network-none');
+    store.database.prepare("UPDATE workspaces SET network_profile='dependency-access' WHERE id=?").run(workspaceId);
     const before = await agentResourceInventory();
     const result = await client.callTool({
       name: 'agent_spawn',
@@ -347,7 +348,7 @@ async function closeActiveWorkspaces(): Promise<void> {
   }
 }
 
-async function openWorkspace(idempotencyKey: string, networkProfile: 'network-none' | 'dependency-access'): Promise<string> {
+async function openWorkspace(idempotencyKey: string, networkProfile: 'network-none' = 'network-none'): Promise<string> {
   const opened = await call('workspace_open', {
     repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
     ref: 'test-fixture-v1',
