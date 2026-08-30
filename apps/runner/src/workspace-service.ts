@@ -2019,33 +2019,35 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         : undefined;
 
       if (idempotencyKey && requestFingerprint) {
-        const existingOp = this.store.getGitOperation(ownerId, record.id, idempotencyKey);
-        if (existingOp) {
-          if (existingOp.requestFingerprint !== requestFingerprint) {
-            throw new HarnessError('CONFLICT', 'Idempotency key reused with different finalize parameters', 409, false);
-          }
-          if (existingOp.status === 'SUCCEEDED' && existingOp.resultJson) {
-            const parsed = JSON.parse(existingOp.resultJson) as RunnerResponse;
-            return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
-          }
-          if (existingOp.status === 'PENDING') {
-            throw new HarnessError('CONFLICT', 'Finalize operation with this idempotency key is already in progress', 409, true);
-          }
-        } else {
-          this.store.recordGitOperationPending({
-            ownerId,
-            workspaceId: record.id,
-            idempotencyKey,
-            operation: 'finalize',
-            requestFingerprint,
-            targetRef: null,
-            expectedRemoteOid: null,
-            localCommitSha: null,
-            createdAt: Date.now()
-          });
+        const claim = this.store.acquireGitOperation({
+          ownerId,
+          workspaceId: record.id,
+          idempotencyKey,
+          operation: 'finalize',
+          requestFingerprint,
+          targetRef: null,
+          expectedRemoteOid: null,
+          localCommitSha: null,
+          createdAt: Date.now()
+        });
+
+        if (claim.action === 'FINGERPRINT_CONFLICT') {
+          throw new HarnessError('CONFLICT', 'Idempotency key reused with different finalize parameters', 409, false);
+        }
+        if (claim.action === 'IN_FLIGHT') {
+          throw new HarnessError('CONFLICT', 'Finalize operation with this idempotency key is already in progress', 409, true);
+        }
+        if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
+          const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+          return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
+        }
+        if (claim.action === 'RECONCILE_REQUIRED') {
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'PENDING');
         }
       }
-      // Step 1: Preflight checks
+
+      const runFinalize = async (): Promise<RunnerResponse> => {
+        // Step 1: Preflight checks
         const preflight = validated.preflight as { checkDiff?: boolean; forbiddenPatterns?: string[] } | undefined;
         if (preflight?.checkDiff !== false) {
           const diffResult = await this.runWorker(record, 'git_diff', { readAll: true }, signal);
@@ -2122,16 +2124,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               };
             }
           }
-          const response: RunnerResponse = {
+          return {
             ok: true,
             message: `Workspace already clean and finalized at ${commitSha.slice(0, 7)}`,
             data: { commitSha, branch, pushed, alreadyFinalized: true, finalStatus: currentStatus.data },
             truncated: false
           };
-          if (idempotencyKey) {
-            this.store.setFinalizeIdempotency(ownerId, record.id, idempotencyKey, JSON.stringify(response));
-          }
-          return response;
         }
 
         // Step 3: Stage changes
@@ -2215,7 +2213,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         const finalStatus = await this.runWorker(record, 'git_status', {}, signal);
         await this.enforceActiveLimits(record);
 
-        const response: RunnerResponse = {
+        return {
           ok: true,
           message: pushed ? `Workspace finalized and pushed to ${branch}` : `Workspace finalized (commit ${commitSha.slice(0, 7)})`,
           data: {
@@ -2227,9 +2225,26 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           },
           truncated: false
         };
-        if (idempotencyKey) {
-          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(response), null, commitSha);
+      };
+
+      let response: RunnerResponse;
+      try {
+        response = await runFinalize();
+      } catch (err: unknown) {
+        if (idempotencyKey && err instanceof HarnessError) {
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }));
         }
+        throw err;
+      }
+
+      if (idempotencyKey) {
+        if (response.ok) {
+          const commitSha = (response.data && typeof response.data === 'object' && 'commitSha' in response.data && typeof response.data.commitSha === 'string') ? response.data.commitSha : undefined;
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(response), null, commitSha);
+        } else {
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify(response.error ?? { message: response.message }));
+        }
+      }
       return response;
     }
     if (operation === 'exec_run') {
