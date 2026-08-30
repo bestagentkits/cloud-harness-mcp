@@ -518,8 +518,8 @@ describe('Workspace Recovery and Lease Renewal (Issue #103)', () => {
 
     const project = metadata.createProject(ownerId, 'Project', 0)!;
     const environment = metadata.createEnvironment(ownerId, project.id, 'Env', 0)!;
+    metadata.createGlobalSecret(ownerId, 'GLOBAL_SHARED', 'global_value_shared_1', 0, 'Shared global secret');
     metadata.secrets.create(ownerId, environment.id, 'DATABASE_URL', 'postgres://v1', 0, 'DB url');
-
     const service = new WorkspaceService(config, store, metadata);
 
     const principal = { kind: 'owner', ownerId: 'test-owner' } as const;
@@ -537,11 +537,12 @@ describe('Workspace Recovery and Lease Renewal (Issue #103)', () => {
     expect(initialCreateCall).toBeDefined();
     expect(initialCreateCall![0].join(' ')).not.toContain('postgres://v1');
     expect(docker.createdEnvFiles[0]).toContain('DATABASE_URL=postgres://v1');
+    expect(docker.createdEnvFiles[0]).toContain('GLOBAL_SHARED=global_value_shared_1');
     expect(docker.createdEnvFiles[0]).not.toContain('postgres://v2');
 
-    // Rotate secret to v2 in metadata store
+    // Rotate secrets to v2 in metadata store
     metadata.secrets.rotate(ownerId, environment.id, 'DATABASE_URL', 'postgres://v2', 1, 'Rotated DB url');
-
+    metadata.rotateGlobalSecret(ownerId, 'GLOBAL_SHARED', 'global_value_shared_2', 1, 'Rotated global secret');
     // Simulate container removal / crash
     docker.inspectContainer.mockResolvedValueOnce(null);
     docker.runDocker.mockClear();
@@ -554,15 +555,16 @@ describe('Workspace Recovery and Lease Renewal (Issue #103)', () => {
     expect(recreatedCall).toBeDefined();
     expect(recreatedCall![0].join(' ')).not.toContain('postgres://v2');
     expect(docker.createdEnvFiles[1]).toContain('DATABASE_URL=postgres://v1');
+    expect(docker.createdEnvFiles[1]).toContain('GLOBAL_SHARED=global_value_shared_1');
     expect(docker.createdEnvFiles[1]).not.toContain('postgres://v2');
-
+    expect(docker.createdEnvFiles[1]).not.toContain('global_value_shared_2');
     // Test key rotation and snapshot re-encryption
     const key2 = Buffer.alloc(32, 2);
     const keyringV2 = new SecretKeyring(2, [{ version: 1, key: Buffer.alloc(32, 1) }, { version: 2, key: key2 }]);
     const metadataV2 = new MetadataStore(config.stateDb, keyringV2);
     await metadataV2.secrets.reencrypt();
     const snapshotsReencrypted = store.reencryptSnapshots((item) => metadataV2.secrets.reencryptSnapshotItem(item));
-    expect(snapshotsReencrypted).toBe(1);
+    expect(snapshotsReencrypted).toBe(2);
 
     // Verify that after removing old key version 1, recovery still succeeds with key version 2 only
     const keyringOnlyV2 = new SecretKeyring(2, [{ version: 2, key: key2 }]);
@@ -574,12 +576,65 @@ describe('Workspace Recovery and Lease Renewal (Issue #103)', () => {
     const rekeyRecoverRes = await serviceOnlyV2.execute(principal, 'workspace_recover', { workspaceId: wsId, mode: 'resume' });
     expect(rekeyRecoverRes.ok).toBe(true);
     expect(docker.createdEnvFiles[2]).toContain('DATABASE_URL=postgres://v1');
-
+    expect(docker.createdEnvFiles[2]).toContain('GLOBAL_SHARED=global_value_shared_1');
     metadataV2.close();
     keyringV2.close();
     metadataOnlyV2.close();
     keyringOnlyV2.close();
     metadata.close();
     keyring.close();
+  });
+
+  it('succeeds workspace_open without keyring when no secrets exist, but fails closed when secrets exist and keyring is unready', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-no-keyring-'));
+    temporaryDirectories.push(directory);
+    const jobsRoot = join(directory, 'jobs');
+    mkdirSync(jobsRoot, { recursive: true });
+    const config = {
+      jobsRoot,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      workspaceIdleTimeoutSeconds: 3600,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576,
+      networkMode: 'none',
+      allowedGitHosts: ['github.com'],
+      executorImage: 'cloud-harness-executor:test'
+    } as RunnerConfig;
+
+    const store = new StateStore(config.stateDb);
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'test-owner' });
+    const unreadyMetadata = new MetadataStore(config.stateDb, undefined, 'Keyring is not configured');
+    const service = new WorkspaceService(config, store, unreadyMetadata);
+    const principal = { kind: 'owner', ownerId: 'test-owner' } as const;
+
+    // 1. Open without environment and without global secrets -> succeeds even without keyring
+    const openNoSecrets = await service.execute(principal, 'workspace_open', {
+      repositoryUrl: 'https://github.com/example/repo.git',
+      idempotencyKey: 'idemp-no-secrets-ok'
+    });
+    expect(openNoSecrets.ok).toBe(true);
+    const wsId = (openNoSecrets.data as { workspaceId: string }).workspaceId;
+    await service.execute(principal, 'workspace_close', { workspaceId: wsId });
+
+    // 2. Add a global secret using a temporary ready metadata instance
+    const readyKeyring = new SecretKeyring(1, [{ version: 1, key: Buffer.alloc(32, 1) }]);
+    const readyMetadata = new MetadataStore(config.stateDb, readyKeyring);
+    readyMetadata.createGlobalSecret(ownerId, 'GLOBAL_REQUIRED', 'global_value_123', 0, 'Global secret');
+    readyMetadata.close();
+    readyKeyring.close();
+
+    // 3. Open now that a global secret exists -> must fail closed with UNAVAILABLE 503
+    await expect(service.execute(principal, 'workspace_open', {
+      repositoryUrl: 'https://github.com/example/repo.git',
+      idempotencyKey: 'idemp-has-secrets-fail'
+    })).rejects.toMatchObject({
+      code: 'UNAVAILABLE'
+    });
+
+    unreadyMetadata.close();
   });
 });

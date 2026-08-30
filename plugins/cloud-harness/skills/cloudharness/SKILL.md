@@ -32,9 +32,11 @@ not require a source checkout.
 
 1. **Preflight and authorization.** Confirm the target repository. Use a
    credential-free HTTPS repository URL. Keep `networkMode` at `none` unless
-   the owner explicitly authorizes broad executor egress via `bridge`. When
-   environment credentials are required for dev or tests, provide
-   `environmentId` with `confirmEnvironmentInjection: true`.
+   the owner explicitly authorizes broad executor egress via `bridge`. Workspaces
+   automatically inherit active **Global Secrets** for your signed-in identity.
+   When project-specific environment credentials are also required, provide
+   `environmentId` with `confirmEnvironmentInjection: true` (environment secrets
+   override global secrets on key name collision).
 2. **Open and set active context.** Call `workspace_open` with a fresh
    idempotency key. Preserve the returned opaque `workspaceId` exactly. Call
    `workspace_set_active` to establish default workspace context.

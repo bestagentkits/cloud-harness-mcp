@@ -1,6 +1,6 @@
 import { api } from './dashboard-api.js';
 import {
-  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderOverview, renderOverviewSkeleton,
+  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName
 } from './dashboard-render.js';
 
@@ -318,15 +318,21 @@ export function initializeDashboard() {
     const form = event.currentTarget;
     const envId = currentBulkEnvironment.id;
     const projId = currentBulkProject?.id;
+    const isGlobal = envId === 'global';
+    const endpoint = isGlobal ? '/secrets/bulk' : `/environments/${encodeURIComponent(envId)}/secrets/bulk`;
     void submitForm(form, 'Applying…', async () => {
-      await api(`/environments/${encodeURIComponent(envId)}/secrets/bulk`, {
+      await api(endpoint, {
         method: 'POST',
         body: requestBody({ items: validItems })
       });
     }, async () => {
       closeBulkImport();
       announce('Bulk secrets applied successfully.');
-      if (projId) await loadProject(projId);
+      if (isGlobal) {
+        await loadGlobalSecrets();
+      } else if (projId) {
+        await loadProject(projId);
+      }
     });
   });
   const setBusy = (busy) => content.setAttribute('aria-busy', String(busy));
@@ -365,6 +371,7 @@ export function initializeDashboard() {
       if (location.pathname === '/dashboard' || location.pathname === '/dashboard/') await loadIndex();
       else if (location.pathname === '/dashboard/overview') await loadOverview();
       else if (location.pathname === '/dashboard/projects') await loadProjects();
+      else if (location.pathname === '/dashboard/secrets') await loadGlobalSecrets();
       else if (projectMatch) await loadProject(projectMatch[1]);
       else if (location.pathname === '/dashboard/artifacts') await loadArtifacts();
       else if (location.pathname === '/dashboard/audit') await loadAudit();
@@ -506,6 +513,92 @@ export function initializeDashboard() {
     for (const button of document.querySelectorAll('.delete-secret')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete secret reference?', description: 'Delete this write-only reference and its encrypted value?', target: button.dataset.secretName, label: 'Delete secret', pendingLabel: 'Deleting…', action: async () => { await api(`/environments/${encodeURIComponent(button.dataset.environmentId)}/secrets/${encodeURIComponent(button.dataset.secretName)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); announce('Secret reference deleted.'); await loadProject(project.id); } }, event.currentTarget));
     for (const button of document.querySelectorAll('.delete-environment')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete environment?', description: 'Delete this environment and its retained metadata?', target: button.dataset.environmentId, label: 'Delete environment', pendingLabel: 'Deleting…', action: async () => { await api(`/environments/${encodeURIComponent(button.dataset.environmentId)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); announce('Environment deleted.'); await loadProject(project.id); } }, event.currentTarget));
     document.querySelector('#delete-project').addEventListener('click', (event) => confirmAction({ title: 'Delete project?', description: 'Delete this project and its retained environment metadata?', target: project.name, label: 'Delete project', pendingLabel: 'Deleting…', action: async () => { await api(`/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: project.generation }) }); location.href = '/dashboard/projects'; } }, event.currentTarget));
+  }
+  async function loadGlobalSecrets() {
+    selectNavigation('secrets');
+    setTitle('Secrets', 'Retained global secrets available across all projects and workspaces.');
+    document.querySelector('#command-surface').hidden = true;
+    const result = await api('/secrets');
+    const secrets = result.data?.secrets ?? [];
+    const readiness = result.data?.readiness;
+    content.innerHTML = renderGlobalSecrets(secrets, readiness);
+    bindGlobalSecretControls(secrets);
+  }
+  function bindGlobalSecretControls(secrets = []) {
+    const createForm = document.querySelector('#create-global-secret-form');
+    createForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const values = new FormData(form);
+      const name = values.get('name');
+      const value = values.get('value');
+      const description = String(values.get('description') ?? '').trim() || null;
+      resetWriteOnlyFields(form);
+      void submitForm(form, 'Creating…', async () => api('/secrets', { method: 'POST', body: requestBody({ name, value, description, expectedGeneration: 0 }) }), async () => {
+        announce('Global secret created. Value was not retained in the page.');
+        await loadGlobalSecrets();
+      });
+    });
+    for (const form of document.querySelectorAll('.rotate-global-secret-form')) form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const current = event.currentTarget;
+      const values = new FormData(current);
+      const value = values.get('value');
+      const description = String(values.get('description') ?? '').trim() || undefined;
+      resetWriteOnlyFields(current);
+      void submitForm(current, 'Rotating…', async () => api(`/secrets/${encodeURIComponent(current.dataset.secretName)}`, { method: 'PUT', body: requestBody({ value, ...(description !== undefined ? { description } : {}), expectedGeneration: Number(current.dataset.generation) }) }), async () => {
+        announce('Global secret rotated. Value was not retained in the page.');
+        await loadGlobalSecrets();
+      });
+    });
+    for (const form of document.querySelectorAll('.update-global-secret-desc-form')) form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const current = event.currentTarget;
+      const values = new FormData(current);
+      const description = String(values.get('description') ?? '').trim() || null;
+      void submitForm(current, 'Saving…', async () => api(`/secrets/${encodeURIComponent(current.dataset.secretName)}`, { method: 'PATCH', body: requestBody({ description, expectedGeneration: Number(current.dataset.generation) }) }), async () => {
+        announce('Global secret description updated.');
+        await loadGlobalSecrets();
+      });
+    });
+    document.querySelector('#open-global-bulk-import')?.addEventListener('click', () => {
+      openBulkImport({ id: 'global', secrets }, null);
+    });
+    document.querySelector('#export-global-env-example')?.addEventListener('click', async () => {
+      const result = await api('/secrets');
+      const currentSecrets = result.data?.secrets ?? [];
+      const lines = [];
+      for (const secret of currentSecrets) {
+        if (secret.description) {
+          for (const line of secret.description.split('\n')) {
+            lines.push(`# ${line.trim()}`);
+          }
+        }
+        lines.push(`${secret.name}=`);
+      }
+      const blob = new globalThis.Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+      const url = globalThis.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'global.env.example';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      globalThis.URL.revokeObjectURL(url);
+      announce('global.env.example exported.');
+    });
+    for (const button of document.querySelectorAll('.delete-global-secret')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Delete global secret?',
+      description: 'Delete this global write-only reference and its encrypted value?',
+      target: button.dataset.secretName,
+      label: 'Delete secret',
+      pendingLabel: 'Deleting…',
+      action: async () => {
+        await api(`/secrets/${encodeURIComponent(button.dataset.secretName)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) });
+        announce('Global secret deleted.');
+        await loadGlobalSecrets();
+      }
+    }, event.currentTarget));
   }
   async function loadArtifacts() {
     selectNavigation('artifacts'); setTitle('Artifacts', 'Bounded retained snapshots created from workspace files.'); document.querySelector('#command-surface').hidden = true;

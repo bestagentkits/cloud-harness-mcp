@@ -46,7 +46,9 @@ export type DashboardResponseOperation =
   | 'sessions_list'
   | 'project_list' | 'project_create' | 'project_update' | 'project_delete'
   | 'environment_list' | 'environment_create' | 'environment_update' | 'environment_delete'
-  | 'secret_list' | 'secret_create' | 'secret_rotate' | 'secret_update' | 'secret_delete' | 'secret_bulk_apply' | 'audit_list'
+  | 'secret_list' | 'secret_create' | 'secret_rotate' | 'secret_update' | 'secret_delete' | 'secret_bulk_apply'
+  | 'global_secret_list' | 'global_secret_create' | 'global_secret_rotate' | 'global_secret_update' | 'global_secret_delete' | 'global_secret_bulk_apply'
+  | 'audit_list'
   | 'artifact_list' | 'artifact_snapshot' | 'artifact_read' | 'artifact_restore' | 'artifact_delete'
   | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect'
   | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject';
@@ -111,9 +113,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (['project_create', 'project_update', 'project_delete'].includes(operation)) return pick(data, metadataKeys);
   if (operation === 'environment_list') return list(data, 'environments', environmentKeys);
   if (['environment_create', 'environment_update', 'environment_delete'].includes(operation)) return pick(data, environmentKeys);
-  if (operation === 'secret_list') return { ...list(data, 'secrets', secretKeys), readiness: pick(data.readiness, ['ready', 'error']) };
-  if (operation === 'secret_bulk_apply') return { secrets: Array.isArray(data.secrets) ? data.secrets.map((record) => pick(record, secretKeys)) : [] };
-  if (['secret_create', 'secret_rotate', 'secret_update', 'secret_delete'].includes(operation)) return pick(data, secretKeys);
+  if (operation === 'secret_list' || operation === 'global_secret_list') return { ...list(data, 'secrets', secretKeys), readiness: pick(data.readiness, ['ready', 'error']) };
+  if (operation === 'secret_bulk_apply' || operation === 'global_secret_bulk_apply') return { secrets: Array.isArray(data.secrets) ? data.secrets.map((record) => pick(record, secretKeys)) : [] };
+  if (['secret_create', 'secret_rotate', 'secret_update', 'secret_delete', 'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete'].includes(operation)) return pick(data, secretKeys);
   if (operation === 'audit_list') return list(data, 'events', ['id', 'action', 'subjectType', 'subjectId', 'subjectGeneration', 'details', 'createdAt']);
   if (operation === 'artifact_list') return list(data, 'artifacts', artifactKeys);
   if (operation === 'artifact_snapshot' || operation === 'artifact_delete') return pick(data, artifactKeys);
@@ -127,8 +129,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
 }
 
 const descriptiveOperations = new Set<string>([
-  'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'secret_create', 'secret_rotate', 'secret_update', 'secret_delete', 'secret_bulk_apply',
+  'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'project_create', 'project_update', 'project_delete',
   'environment_create', 'environment_update', 'environment_delete',
   'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete'

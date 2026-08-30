@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,7 @@ import { StateStore } from '../src/state-store.js';
 
 const docker = vi.hoisted(() => ({
   workerResult: { ok: true, message: 'worker complete', data: {}, truncated: false },
+  createdEnvFiles: [] as string[],
   runDocker: vi.fn(async (args: string[]) => {
     if (args.includes('/usr/bin/du')) {
       return { stdout: '0\t/workspace\n', stderr: '', exitCode: 0, truncated: false };
@@ -22,6 +23,15 @@ const docker = vi.hoisted(() => ({
       };
     }
     if (args[0] === 'create') {
+      const envFileIdx = args.indexOf('--env-file');
+      if (envFileIdx !== -1 && args[envFileIdx + 1]) {
+        try {
+          const content = readFileSync(args[envFileIdx + 1]!, 'utf8');
+          docker.createdEnvFiles.push(content);
+        } catch {
+          // ignore
+        }
+      }
       return { stdout: 'container-created\n', stderr: '', exitCode: 0, truncated: false };
     }
     if (args[0] === 'start') {
@@ -51,6 +61,7 @@ const openStores: StateStore[] = [];
 
 afterEach(() => {
   docker.workerResult = { ok: true, message: 'worker complete', data: {}, truncated: false };
+  docker.createdEnvFiles = [];
   vi.clearAllMocks();
   for (const store of openStores.splice(0)) {
     try { store.close(); } catch { /* store closed */ }
@@ -87,6 +98,7 @@ function fixture() {
 
   const project = metadata.createProject(ownerId, 'MyProject', 0)!;
   const environment = metadata.createEnvironment(ownerId, project.id, 'Production', 0)!;
+  metadata.createGlobalSecret(ownerId, 'GLOBAL_CONFIG', 'global_secret_abc123', 0, 'Global app config');
   metadata.secrets.create(ownerId, environment.id, 'STRIPE_KEY', 'sk_live_verysecret12345', 0, 'Stripe production secret');
   metadata.secrets.create(ownerId, environment.id, 'DB_PASS', 'db_pass_secret999', 0, 'Database master password');
 
@@ -103,21 +115,30 @@ describe('Workspace Secrets List and Output Redaction', () => {
       environmentId: environment.id
     });
     expect(listRes.ok).toBe(true);
-    const data = listRes.data as { secrets: Array<{ name: string; description: string | null; version: number }> };
-    expect(data.secrets).toHaveLength(2);
-    expect(data.secrets[0]).toMatchObject({
-      name: 'DB_PASS',
-      description: 'Database master password',
+    const data = listRes.data as { secrets: Array<{ name: string; description: string | null; scope: string; version: number }> };
+    expect(data.secrets).toHaveLength(3);
+    expect(data.secrets.find((s) => s.name === 'GLOBAL_CONFIG')).toMatchObject({
+      name: 'GLOBAL_CONFIG',
+      description: 'Global app config',
+      scope: 'global',
       version: 1
     });
-    expect(data.secrets[1]).toMatchObject({
+    expect(data.secrets.find((s) => s.name === 'DB_PASS')).toMatchObject({
+      name: 'DB_PASS',
+      description: 'Database master password',
+      scope: 'environment',
+      version: 1
+    });
+    expect(data.secrets.find((s) => s.name === 'STRIPE_KEY')).toMatchObject({
       name: 'STRIPE_KEY',
       description: 'Stripe production secret',
+      scope: 'environment',
       version: 1
     });
     // Ensure no secret value property exists
-    expect(data.secrets[0]).not.toHaveProperty('value');
-    expect(data.secrets[1]).not.toHaveProperty('value');
+    for (const item of data.secrets) {
+      expect(item).not.toHaveProperty('value');
+    }
 
     // Test query filter on name and description
     const queryRes = await service.execute(principal, 'secrets_list', {
@@ -153,25 +174,23 @@ describe('Workspace Secrets List and Output Redaction', () => {
     expect(createCall![0].join(' ')).not.toContain('db_pass_secret999');
 
 
-    // Mock worker returning output that accidentally contains the injected secret value
     docker.workerResult = {
       ok: true,
-      message: 'Command executed with sk_live_verysecret12345',
+      message: 'Command executed with sk_live_verysecret12345 and global_secret_abc123',
       data: {
-        output: 'Connecting using db_pass_secret999 and sk_live_verysecret12345'
+        output: 'Connecting using db_pass_secret999, sk_live_verysecret12345, and global_secret_abc123'
       },
       truncated: false
     };
 
     const execRes = await service.execute(principal, 'exec_run', {
       workspaceId: wsId,
-      command: 'echo $STRIPE_KEY'
+      command: 'echo $STRIPE_KEY $GLOBAL_CONFIG'
     });
     expect(execRes.ok).toBe(true);
-    expect(execRes.message).toBe('Command executed with [REDACTED_SECRET: STRIPE_KEY]');
+    expect(execRes.message).toBe('Command executed with [REDACTED_SECRET: STRIPE_KEY] and [REDACTED_SECRET: GLOBAL_CONFIG]');
     const data = execRes.data as { output: string };
-    expect(data.output).toBe('Connecting using [REDACTED_SECRET: DB_PASS] and [REDACTED_SECRET: STRIPE_KEY]');
-
+    expect(data.output).toBe('Connecting using [REDACTED_SECRET: DB_PASS], [REDACTED_SECRET: STRIPE_KEY], and [REDACTED_SECRET: GLOBAL_CONFIG]');
     metadata.close();
     keyring.close();
   });
@@ -207,6 +226,56 @@ describe('Workspace Secrets List and Output Redaction', () => {
     expect(execRes.message).toBe('Command executed with [REDACTED_SECRET: STRIPE_KEY]');
     const data = execRes.data as { output: string };
     expect(data.output).toBe('Output: [REDACTED_SECRET: STRIPE_KEY]');
+
+    metadata.close();
+    keyring.close();
+  });
+
+  it('overrides global secret with environment secret of the same name in injection, recovery, and secrets_list', async () => {
+    const { service, environment, jobsRoot, metadata, keyring, store } = fixture();
+    const principal = { kind: 'owner', ownerId: 'test-owner' } as const;
+    const ownerId = store.resolvePrincipal(principal);
+
+    // Create a global secret named DATABASE_URL with a global default value
+    metadata.createGlobalSecret(ownerId, 'DATABASE_URL', 'postgres://global-default-url', 0, 'Global DB URL');
+    // Create an environment secret with the same name DATABASE_URL
+    metadata.secrets.create(ownerId, environment.id, 'DATABASE_URL', 'postgres://env-override-url', 0, 'Env DB URL');
+
+    // Verify secrets_list returns the environment override
+    const listRes = await service.execute(principal, 'secrets_list', { environmentId: environment.id });
+    expect(listRes.ok).toBe(true);
+    const listData = listRes.data as { secrets: Array<{ name: string; description: string | null; scope: string }> };
+    const dbSecret = listData.secrets.find((s) => s.name === 'DATABASE_URL');
+    expect(dbSecret).toMatchObject({
+      name: 'DATABASE_URL',
+      description: 'Env DB URL',
+      scope: 'environment'
+    });
+
+    // Open workspace with environment
+    const openResult = await service.execute(principal, 'workspace_open', {
+      repositoryUrl: 'https://github.com/example/repo.git',
+      idempotencyKey: 'idemp-collision-test-1',
+      environmentId: environment.id,
+      confirmEnvironmentInjection: true
+    });
+    expect(openResult.ok).toBe(true);
+    const wsId = (openResult.data as { workspaceId: string }).workspaceId;
+    mkdirSync(join(jobsRoot, wsId, 'repo'), { recursive: true });
+
+    // Verify injected env file contains the env-override value, NOT the global default
+    const lastEnvFile = docker.createdEnvFiles.at(-1);
+    expect(lastEnvFile).toContain('DATABASE_URL=postgres://env-override-url');
+    expect(lastEnvFile).not.toContain('postgres://global-default-url');
+
+    // Simulate container removal / crash and recover
+    docker.inspectContainer.mockResolvedValueOnce(null);
+    docker.runDocker.mockClear();
+    const recoverRes = await service.execute(principal, 'workspace_recover', { workspaceId: wsId, mode: 'resume' });
+    expect(recoverRes.ok).toBe(true);
+    const recoveredEnvFile = docker.createdEnvFiles.at(-1);
+    expect(recoveredEnvFile).toContain('DATABASE_URL=postgres://env-override-url');
+    expect(recoveredEnvFile).not.toContain('postgres://global-default-url');
 
     metadata.close();
     keyring.close();

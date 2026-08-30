@@ -45,6 +45,8 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `MAX_ARTIFACT_BYTES` | `16777216` | **Required** | Required configuration. |
 | `MAX_PRINCIPAL_ARTIFACT_BYTES` | `134217728` | **Required** | Required configuration. |
 | `ARTIFACT_RETENTION_SECONDS` | `86400` | **Required** | Required configuration. |
+| `REPO_CACHE_ROOT` | `/var/lib/cloud-harness/cache/repos` | **Required** | Required configuration. |
+| `ENABLE_REPO_CACHE` | `false` | Optional | Optional configuration. |
 | `EXECUTOR_IMAGE` | `cloud-harness-executor:local` | **Required** | Required configuration. |
 | `ALLOWED_GIT_HOSTS` | `github.com` | **Required** | Required configuration. |
 | `WORKSPACE_NETWORK_MODE` | `none` | **Required** | Required configuration. |

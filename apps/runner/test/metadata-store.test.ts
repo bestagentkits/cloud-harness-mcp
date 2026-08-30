@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-import { downgradeMetadataSchemaToV1, downgradeMetadataSchemaToV2, migrateMetadataSchema } from '../src/metadata-schema.js';
+import { downgradeMetadataSchemaToV1, downgradeMetadataSchemaToV2, downgradeMetadataSchemaToV3, migrateMetadataSchema } from '../src/metadata-schema.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
@@ -35,7 +35,7 @@ describe('MetadataStore', () => {
   it('migrates once, survives restart, and enforces owner-qualified foreign keys', () => {
     const { path, owner, foreign, store, keyring } = fixture();
     const { project, environment } = projectEnvironment(store, owner);
-    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(3);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(4);
     expect(() => store.database.prepare(`INSERT INTO environments
       (id, principal_id, project_id, name, state, generation, created_at, updated_at)
       VALUES (?, ?, ?, 'Foreign', 'ACTIVE', 1, 1, 1)`).run(`env_${'x'.repeat(24)}`, foreign, project.id)).toThrow();
@@ -307,14 +307,67 @@ describe('MetadataStore', () => {
     keyring.close();
   });
 
-  it('supports schema migration and downgrade ladders v3 -> v2 -> v1', () => {
+  it('supports global secrets CRUD, descriptions, metadata updates, and bulk apply', () => {
+    const { owner, store, keyring } = fixture();
+
+    const created = store.createGlobalSecret(owner, 'GLOBAL_KEY', 'global_val_123', 0, 'Global auth key')!;
+    expect(created.name).toBe('GLOBAL_KEY');
+    expect(created.description).toBe('Global auth key');
+    expect(created.environmentId).toBe('global');
+    expect(store.listGlobalSecrets(owner)).toHaveLength(1);
+    expect(store.listGlobalSecrets(owner)[0]?.description).toBe('Global auth key');
+
+    const updatedDesc = store.updateGlobalSecretMetadata(owner, 'GLOBAL_KEY', 'Updated global description', created.generation)!;
+    expect(updatedDesc.description).toBe('Updated global description');
+    expect(updatedDesc.generation).toBe(created.generation + 1);
+
+    const rotated = store.rotateGlobalSecret(owner, 'GLOBAL_KEY', 'global_val_rotated', updatedDesc.generation, 'Rotated global key')!;
+    expect(rotated.version).toBe(2);
+    expect(rotated.description).toBe('Rotated global key');
+
+    const bulkResults = store.bulkApplyGlobalSecrets(owner, [
+      { name: 'ANOTHER_GLOBAL', value: 'another_val_999', description: 'Another global', action: 'create', expectedGeneration: 0 }
+    ]);
+    expect(bulkResults).toHaveLength(1);
+    expect(store.listGlobalSecrets(owner)).toHaveLength(2);
+
+    const deleted = store.deleteGlobalSecret(owner, 'GLOBAL_KEY', rotated.generation)!;
+    expect(deleted.state).toBe('DELETED');
+    expect(store.listGlobalSecrets(owner)).toHaveLength(1);
+
+    store.close();
+    keyring.close();
+  });
+
+  it('enforces principal isolation for global secrets', () => {
+    const { owner, foreign, store, keyring } = fixture();
+
+    store.createGlobalSecret(owner, 'OWNER_SECRET', 'owner_val_123', 0, 'Owner only');
+    store.createGlobalSecret(foreign, 'FOREIGN_SECRET', 'foreign_val_456', 0, 'Foreign only');
+
+    expect(store.listGlobalSecrets(owner).map((s) => s.name)).toEqual(['OWNER_SECRET']);
+    expect(store.listGlobalSecrets(foreign).map((s) => s.name)).toEqual(['FOREIGN_SECRET']);
+
+    expect(store.rotateGlobalSecret(foreign, 'OWNER_SECRET', 'attempt_rotate', 1)).toBeUndefined();
+    expect(store.deleteGlobalSecret(foreign, 'OWNER_SECRET', 1)).toBeUndefined();
+    expect(store.updateGlobalSecretMetadata(foreign, 'OWNER_SECRET', 'Hacked', 1)).toBeUndefined();
+
+    store.close();
+    keyring.close();
+  });
+
+  it('supports schema migration and downgrade ladders v4 -> v3 -> v2 -> v1', () => {
     const { path, store, keyring } = fixture();
     store.close();
     keyring.close();
 
     const db = new DatabaseSync(path);
     const initialRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
-    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(3);
+    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(4);
+
+    downgradeMetadataSchemaToV3(db);
+    const v3Row = db.prepare('SELECT version FROM metadata_schema_meta').get();
+    expect(v3Row && typeof v3Row === 'object' && 'version' in v3Row ? v3Row.version : undefined).toBe(3);
 
     downgradeMetadataSchemaToV2(db);
     const v2Row = db.prepare('SELECT version FROM metadata_schema_meta').get();
@@ -326,7 +379,7 @@ describe('MetadataStore', () => {
 
     migrateMetadataSchema(db);
     const migratedRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
-    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(3);
+    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(4);
     db.close();
   });
 });

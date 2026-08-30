@@ -27,6 +27,7 @@ import type { GitOperationStatus, PrincipalSelector, StateStore, WorkspaceRecord
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
+import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING']);
@@ -143,7 +144,7 @@ export class WorkspaceService {
     const cached = this.redactorCache.get(workspaceId);
     if (cached) return cached;
     const record = this.store.byId(workspaceId);
-    if (!record || !record.environmentId) {
+    if (!record) {
       const empty = new SecretSnapshotRedactor({});
       this.redactorCache.set(workspaceId, empty);
       return empty;
@@ -152,9 +153,9 @@ export class WorkspaceService {
     const values: Record<string, string> = {};
     if (snapshotResult.initialized) {
       for (const item of snapshotResult.secrets) {
-        values[item.name] = this.metadata?.decryptEnvelope(record.ownerId, record.environmentId, item.name, item.version, item.envelope) ?? '';
+        values[item.name] = this.metadata?.decryptEnvelope(record.ownerId, item.environmentId, item.name, item.version, item.envelope) ?? '';
       }
-    } else {
+    } else if (record.environmentId) {
       Object.assign(values, this.metadata?.environmentValues(record.ownerId, record.environmentId) ?? {});
     }
     const redactor = new SecretSnapshotRedactor(values);
@@ -525,22 +526,20 @@ export class WorkspaceService {
       throw new HarnessError('EXPIRED', 'workspace repository data is no longer retained on disk and cannot be recovered', 410);
     }
     let environment: Record<string, string> = {};
-    if (record.environmentId) {
-      try {
-        const snapshotResult = this.store.getSecretSnapshot(record.id);
-        if (snapshotResult.initialized) {
-          const decrypted: Record<string, string> = {};
-          for (const item of snapshotResult.secrets) {
-            decrypted[item.name] = this.metadata?.decryptEnvelope(record.ownerId, record.environmentId, item.name, item.version, item.envelope) ?? '';
-          }
-          environment = decrypted;
-        } else {
-          environment = this.metadata?.environmentValues(record.ownerId, record.environmentId) ?? {};
+    try {
+      const snapshotResult = this.store.getSecretSnapshot(record.id);
+      if (snapshotResult.initialized) {
+        const decrypted: Record<string, string> = {};
+        for (const item of snapshotResult.secrets) {
+          decrypted[item.name] = this.metadata?.decryptEnvelope(record.ownerId, item.environmentId, item.name, item.version, item.envelope) ?? '';
         }
-      } catch (error) {
-        if (error instanceof HarnessError) throw error;
-        throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
+        environment = decrypted;
+      } else if (record.environmentId) {
+        environment = this.metadata?.environmentValues(record.ownerId, record.environmentId) ?? {};
       }
+    } catch (error) {
+      if (error instanceof HarnessError) throw error;
+      throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
     }
     const containerName = await this.createExecutor(record, repositoryPath, validatedWorkspaceEnvironment(environment));
     const updated = this.store.updateFenced(record.id, record.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
@@ -583,16 +582,32 @@ export class WorkspaceService {
     }
     try {
       let environment: Record<string, string> = {};
-      if (parsed.environmentId) {
+      const hasGlobals = Boolean(this.metadata?.hasActiveGlobalSecrets(ownerId));
+      if (parsed.environmentId || hasGlobals) {
         try {
-          const envelopes = this.metadata?.environmentSecretEnvelopes(ownerId, parsed.environmentId);
-          if (!envelopes) {
-            throw new HarnessError('NOT_FOUND', 'environment not found', 404, false);
+          const globalEnvelopes = this.metadata?.globalSecretEnvelopes(ownerId) ?? [];
+          let envEnvelopes: Array<{ name: string; version: number; envelope: EncryptedSecret }> = [];
+          if (parsed.environmentId) {
+            const envFound = this.metadata?.environmentSecretEnvelopes(ownerId, parsed.environmentId);
+            if (!envFound) {
+              throw new HarnessError('NOT_FOUND', 'environment not found', 404, false);
+            }
+            envEnvelopes = envFound;
           }
-          this.store.saveSecretSnapshot(workspaceId, parsed.environmentId, envelopes);
+          const mergedMap = new Map<string, { name: string; version: number; environmentId: string; envelope: EncryptedSecret }>();
+          for (const g of globalEnvelopes) {
+            mergedMap.set(g.name, { name: g.name, version: g.version, environmentId: 'global', envelope: g.envelope });
+          }
+          for (const e of envEnvelopes) {
+            mergedMap.set(e.name, { name: e.name, version: e.version, environmentId: parsed.environmentId!, envelope: e.envelope });
+          }
+          const combined = Array.from(mergedMap.values());
+          if (combined.length > 0 || parsed.environmentId) {
+            this.store.saveSecretSnapshot(workspaceId, combined);
+          }
           const decrypted: Record<string, string> = {};
-          for (const item of envelopes) {
-            decrypted[item.name] = this.metadata?.decryptEnvelope(ownerId, parsed.environmentId, item.name, item.version, item.envelope) ?? '';
+          for (const item of combined) {
+            decrypted[item.name] = this.metadata?.decryptEnvelope(ownerId, item.environmentId, item.name, item.version, item.envelope) ?? '';
           }
           environment = decrypted;
           this.redactorCache.set(workspaceId, new SecretSnapshotRedactor(environment));
@@ -2967,16 +2982,23 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         throw new HarnessError('CONFLICT', 'multiple active workspaces exist with different environments; specify an explicit environmentId or workspaceId', 409, false);
       }
     }
-    if (!environmentId) {
-      return {
-        ok: true,
-        message: 'No environment bound to workspace or specified',
-        data: { secrets: [] },
-        truncated: false
-      };
-    }
-    const references = this.metadata?.listSecretReferences(ownerId, environmentId) ?? [];
-    let filtered = references;
+
+    const globalSecrets = (this.metadata?.listGlobalSecrets(ownerId) ?? []).map((s) => ({
+      ...s,
+      scope: 'global' as const
+    }));
+    const envSecrets = environmentId
+      ? (this.metadata?.listSecretReferences(ownerId, environmentId) ?? []).map((s) => ({
+          ...s,
+          scope: 'environment' as const
+        }))
+      : [];
+
+    const merged = new Map<string, (typeof globalSecrets)[0] | (typeof envSecrets)[0]>();
+    for (const g of globalSecrets) merged.set(g.name, g);
+    for (const e of envSecrets) merged.set(e.name, e);
+    let filtered = Array.from(merged.values());
+
     if (parsed.query) {
       const q = parsed.query.toLowerCase();
       filtered = filtered.filter((s) => s.name.toLowerCase().includes(q) || (s.description && s.description.toLowerCase().includes(q)));
@@ -2992,6 +3014,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const secrets = page.map((s) => ({
       name: s.name,
       description: s.description ?? null,
+      scope: s.scope,
       environmentId: s.environmentId,
       version: s.version,
       updatedAt: s.updatedAt

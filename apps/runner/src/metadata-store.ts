@@ -179,6 +179,71 @@ export class MetadataStore {
     return this.secrets.updateMetadata(principalId, environmentId, name, description, expectedGeneration);
   }
 
+  hasActiveGlobalSecrets(principalId: string): boolean {
+    return Boolean(this.database.prepare("SELECT 1 FROM global_secret_references WHERE principal_id = ? AND state = 'ACTIVE' LIMIT 1").get(principalId));
+  }
+
+  listGlobalSecrets(principalId: string): SecretView[] {
+    const rows = this.database.prepare(`SELECT refs.*, 'global' as environment_id FROM global_secret_references refs
+      WHERE refs.principal_id = ? AND refs.state = 'ACTIVE'
+      ORDER BY refs.updated_at DESC, refs.id`).all(principalId);
+    return (rows as Parameters<typeof secretView>[0][]).map(secretView);
+  }
+
+  createGlobalSecret(
+    principalId: string,
+    name: string,
+    value: string,
+    expectedGeneration: 0 = 0,
+    description: string | null = null
+  ): SecretView | undefined {
+    return this.secrets.globalCreate(principalId, name, value, expectedGeneration, description);
+  }
+
+  rotateGlobalSecret(
+    principalId: string,
+    name: string,
+    value: string,
+    expectedGeneration: number,
+    description?: string | null
+  ): SecretView | undefined {
+    return this.secrets.globalRotate(principalId, name, value, expectedGeneration, description);
+  }
+
+  updateGlobalSecretMetadata(
+    principalId: string,
+    name: string,
+    description: string | null,
+    expectedGeneration: number
+  ): SecretView | undefined {
+    return this.secrets.globalUpdateMetadata(principalId, name, description, expectedGeneration);
+  }
+
+  deleteGlobalSecret(
+    principalId: string,
+    name: string,
+    expectedGeneration: number
+  ): SecretView | undefined {
+    return this.secrets.globalDelete(principalId, name, expectedGeneration);
+  }
+
+  bulkApplyGlobalSecrets(
+    principalId: string,
+    items: Array<{
+      name: string;
+      value: string;
+      description?: string | null | undefined;
+      action: 'create' | 'rotate';
+      expectedGeneration: number;
+    }>
+  ): SecretView[] {
+    return this.secrets.globalBulkApply(principalId, items);
+  }
+
+  globalSecretEnvelopes(principalId: string): Array<{ name: string; version: number; envelope: EncryptedSecret }> {
+    return this.secrets.globalSecretEnvelopes(principalId);
+  }
+
   createEnvironment(principalId: string, projectId: string, name: string, expectedGeneration: 0): EnvironmentView | undefined {
     if (expectedGeneration !== 0) return undefined;
     return transaction(this.database, () => {
