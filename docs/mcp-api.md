@@ -158,11 +158,15 @@ workspace. This makes a lost response recoverable without duplicating work.
   maintains isolated bare mirror caches (`chmod 0700`) per principal and clones using
   `git clone --reference-if-able <cache_path> --dissociate`, ensuring workspace object databases become
   completely independent after clone with automatic fallback to blobless clone.
-- **MCP Tasks Specification Evaluation:** The official Model Context Protocol specification
-  (2026-07-28 revision) transitioned Tasks into an optional extension (`io.modelcontextprotocol/tasks`)
-  negotiated via per-request server capabilities and dynamic discovery. Cloud Harness MCP maintains
-  its stable, verified public task tool contracts (`tasks_run`, `tasks_status`, `tasks_list`, `tasks_cancel`,
-  `tasks_graph`) as canonical. Standard MCP Tasks facade integration remains evaluated and default-off
+- **MCP Tasks Specification Evaluation (2026-07-28 Revision):** The official Model Context Protocol specification
+  ([Overview](https://modelcontextprotocol.io/extensions/tasks/overview), 2026-07-28 revision) transitioned Tasks from
+  basic utilities into an optional extension (`io.modelcontextprotocol/tasks`) negotiated via per-request server capabilities
+  and `server/discover`. The specification defines methods (`tasks/get`, `tasks/update`, `tasks/cancel`), polymorphic
+  tool results (`resultType: "task"`), and progress notifications (`notifications/tasks/progress`).
+  According to the official [Extension Client Matrix](https://modelcontextprotocol.io/extensions/client-matrix), major host
+  clients (Claude Desktop, Cursor, Codex, ChatGPT Web) do not yet advertise or verify Tasks extension capability handshake.
+  Cloud Harness MCP maintains its stable, verified public task tool contracts (`tasks_run`, `tasks_status`, `tasks_list`,
+  `tasks_cancel`, `tasks_graph`) as canonical. Standard MCP Tasks facade integration remains evaluated and **default-off**
   until official client host runtime support is verified across the ecosystem matrix.
 - Retained artifact snapshots (`artifacts_snapshot`, `artifacts_list`, `artifacts_read`,
   `artifacts_restore`, `artifacts_delete`) allow agents to explicitly retain selected
