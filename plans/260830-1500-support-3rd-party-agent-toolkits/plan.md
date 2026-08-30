@@ -35,18 +35,18 @@ MCP Client / Dashboard -> workspace_open { toolkits: [presets, git] }
 ```
 
 ## Acceptance Criteria
-- [x] Phase 0 feasibility gates formally resolved: secret purpose classification data model prevents `AGENTKIT_API_KEY` leakage into runtime containers; AgentKit offline relocatability validated.
+- [x] Phase 0 feasibility gates formally resolved: secret purpose classification data model prevents `AGENTKIT_API_KEY` leakage into runtime containers; proprietary AgentKit preset deferred pending vendor entitlement proof.
 - [x] `workspace_open` accepts zero, one, or multiple toolkit selections via a strict discriminated union (`preset` | `git`), with omitted/empty preserving pristine default behavior.
 - [x] Executor runs with `networkMode: "none"` by default; warm opens operate with zero network and add $\le 1.0\text{s}$ P95 latency.
-- [x] `AGENTKIT_API_KEY` is classified as `purpose: "provisioning"`, delivered via stdin pipe to the ephemeral helper, and strictly excluded from runtime container environment (`docker inspect`).
-- [x] ALL helper containers (Git clone and AgentKit export) run attached strictly to an `internal: true` provisioning network; direct raw socket connections fail with `ENETUNREACH`; all egress traverses dual-homed `provisioning-proxy`.
+- [x] `AGENTKIT_API_KEY` is classified as `purpose: "provisioning"` and strictly excluded from runtime container environment (`docker inspect`).
+- [x] ALL helper containers run attached strictly to an `internal: true` provisioning network; direct raw socket connections fail with `ENETUNREACH`; all egress traverses dual-homed `provisioning-proxy`.
 - [x] Remote executor mounts composed owner skills read-only at `/opt/cloud-harness/owner-skills:ro`; `owner` scope leaves `git status --porcelain` 100% clean.
 - [x] Workspace-scope writes require explicit confirmation (`allowToolkitWorkspaceChanges: true`), enforce canonical root containment without following ancestor symlinks, and fail on existing non-identical files without overwrite.
 - [x] Same-tier duplicate skill names between owner toolkits fail deterministically (`CONFLICT`); 4-tier precedence (`built-in > owner > workspace > repository`) remains strictly enforced with shadowed candidate reporting.
-- [x] Superpowers and AgentKit report truthful capability metadata (`provisioned`, `discoverable`, `context-ready`, `auto-activated`).
+- [x] Superpowers and open-source presets report truthful capability metadata (`provisioned`, `discoverable`, `context-ready`, `auto-activated`).
 - [x] Replaying an idempotencyKey compares canonical request fingerprints; mismatched request returns `CONFLICT`; recovery restores exact pinned digests.
-- [x] Full-tree bundle SHA-256 digest covers all paths, content, and executable modes; verified snapshots prevent TOCTOU execution tampering.
-- [x] StateStore migrations (v5 $\rightarrow$ v6) and rollbacks (v6 $\rightarrow$ v5) in `principal-store.ts` are 100% transactional.
+- [x] Full-tree bundle SHA-256 digest covers all paths, content, and executable modes; kernel-enforced `:ro` mounts protect owner/built-in tiers, while snapshot-first validation mitigates in-container filesystem races for mutable tiers.
+- [x] StateStore migrations and rollbacks in `principal-store.ts` are 100% transactional.
 - [x] All unit, integration, Docker sandbox, compose boundary, and contract tests pass.
 
 ## Phases
