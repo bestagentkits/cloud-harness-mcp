@@ -33,7 +33,7 @@ describe('truthful workspace cleanup', () => {
     const record: WorkspaceRecord = {
       id: `ws_${'a'.repeat(24)}`, ownerId: 'owner', idempotencyKey: 'cleanup-failure',
       repositoryUrl: 'https://github.com/example/repo.git', repositoryRef: null,
-      containerName: 'cloud-harness-unremovable', workspacePath, status: 'ACTIVE', networkMode: 'none',
+      containerName: 'cloud-harness-unremovable', workspacePath, status: 'ACTIVE', networkProfile: 'network-none',
       createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, generation: 1, error: null
     };
     store.create(record);

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import type { RunnerOperation } from './runner-api.js';
 
 const relativePath = z.string().min(1).max(1_024).refine((value) => {
@@ -26,9 +26,18 @@ const EnvironmentIdSchema = z.string().regex(/^env_[A-Za-z0-9_-]{20,80}$/);
 const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
-    networkMode: z.enum(['none', 'bridge']).optional(), environmentId: EnvironmentIdSchema.optional(),
+    networkProfile: ExecutorNetworkProfileSchema.optional(),
+    networkMode: z.unknown().optional(),
+    environmentId: EnvironmentIdSchema.optional(),
     confirmEnvironmentInjection: z.literal(true).optional()
   }).superRefine((input, context) => {
+    if (input.networkMode !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['networkMode'],
+        message: "networkMode was replaced by networkProfile; choose 'network-none' or 'dependency-access'"
+      });
+    }
     if (Boolean(input.environmentId) !== Boolean(input.confirmEnvironmentInjection)) {
       context.addIssue({ code: 'custom', path: ['confirmEnvironmentInjection'], message: 'environment injection requires an explicit environment selection and confirmation' });
     }

@@ -102,11 +102,20 @@ must still be large enough for the intended operation.
 ## Workspace and repository policy
 
 `ALLOWED_GIT_HOSTS` is a host allowlist, not permission to use arbitrary URL
-schemes or private addresses. `WORKSPACE_NETWORK_MODE=none` is the safe
-baseline. `bridge` enables ordinary container egress and should be an explicit
-owner choice for a workspace that needs dependency downloads, arbitrary
-networked commands, or networked repository-defined deployments. Runner-owned
-remote Git helpers do not depend on executor network mode.
+schemes or private addresses. `WORKSPACE_NETWORK_PROFILE=network-none` is the
+safe baseline and blocks all executor egress. `dependency-access` is an explicit
+owner choice for a workspace that needs public dependency downloads: it permits
+public DNS and public TCP 80/443 only, while a Linux host firewall (attested by
+the runner before each dependency executor starts) blocks loopback-to-host,
+Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges. It is not
+an allowlist or DLP boundary and still permits exfiltration to public endpoints.
+If host firewall attestation fails, `dependency-access` fails closed
+(`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge egress.
+`DEPENDENCY_DNS_RESOLVERS`, `DEPENDENCY_BRIDGE_SUBNET`,
+`DEPENDENCY_BRIDGE_INTERFACE`, and `DEPENDENCY_NETWORK_NAME` configure the
+managed bridge and firewall. The legacy `WORKSPACE_NETWORK_MODE` variable is
+rejected at startup. Runner-owned remote Git helpers do not depend on the
+executor network profile.
 
 `WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`, and
 `REAPER_INTERVAL_SECONDS` define lifecycle timing. `MAX_OUTPUT_BYTES` bounds

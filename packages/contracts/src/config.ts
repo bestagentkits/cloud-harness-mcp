@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ExecutorNetworkProfileSchema } from './identifiers.js';
 
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
 
@@ -81,8 +82,13 @@ export const RunnerConfigSchema = z.object({
   jobsRoot: z.string().min(1),
   stateDb: z.string().min(1),
   executorImage: z.string().min(1),
+  networkGuardImage: z.string().min(1).default('cloud-harness-network-guard:local'),
   allowedGitHosts: z.array(z.string().min(1)).min(1),
-  networkMode: z.enum(['none', 'bridge']).default('none'),
+  networkProfile: ExecutorNetworkProfileSchema.default('network-none'),
+  dependencyDnsResolvers: z.array(z.string().regex(/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/)).min(1).default(['8.8.8.8', '1.1.1.1']),
+  dependencyBridgeSubnet: z.string().default('172.30.240.0/24'),
+  dependencyBridgeInterface: z.string().default('chm-egress0'),
+  dependencyNetworkName: z.string().default('cloud-harness-dependency-access'),
   wallTtlSeconds: z.coerce.number().int().min(60).max(86_400).default(900),
   idleTtlSeconds: z.coerce.number().int().min(30).max(43_200).default(300),
   maxOutputBytes: z.coerce.number().int().min(1_024).max(10_485_760).default(262_144),

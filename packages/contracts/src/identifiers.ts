@@ -15,3 +15,9 @@ export type OperationId = z.infer<typeof OperationIdSchema>;
 export type ShellId = z.infer<typeof ShellIdSchema>;
 export type SessionId = z.infer<typeof SessionIdSchema>;
 export type TaskId = z.infer<typeof TaskIdSchema>;
+
+export const ExecutorNetworkProfileSchema = z.enum(['network-none', 'dependency-access']);
+export type ExecutorNetworkProfile = z.infer<typeof ExecutorNetworkProfileSchema>;
+
+export const WorkspaceNetworkExposureSchema = z.enum(['network-none', 'dependency-access', 'local-host']);
+export type WorkspaceNetworkExposure = z.infer<typeof WorkspaceNetworkExposureSchema>;

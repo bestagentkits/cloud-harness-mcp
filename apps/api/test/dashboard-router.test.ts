@@ -32,7 +32,7 @@ beforeEach(async () => {
     call: vi.fn(async (operation, input, selected): Promise<RunnerResponse> => {
       calls.push({ operation, input, principal: selected });
       if (operation === 'workspace_list') return { ok: true, message: 'listed', truncated: false, data: { workspaces: [{
-        workspaceId, repositoryUrl: 'https://github.com/example/project.git', ref: null, status: 'ACTIVE', networkMode: 'none',
+        workspaceId, repositoryUrl: 'https://github.com/example/project.git', ref: null, status: 'ACTIVE', networkProfile: 'network-none',
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z',
         generation: 7, ownerId: 'internal-owner', workspacePath: '/host/jobs/private', containerName: 'executor-secret'
       }] } };
@@ -42,7 +42,7 @@ beforeEach(async () => {
     callInternal: vi.fn(async (operation, input, selected): Promise<RunnerResponse> => {
       calls.push({ operation, input, principal: selected });
       return { ok: true, message: 'detail', truncated: false, data: {
-        workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkMode: 'none', generation: 7,
+        workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkProfile: 'network-none', generation: 7,
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z'
       } };
     }),

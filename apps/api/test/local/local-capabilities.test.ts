@@ -78,7 +78,7 @@ describe('Local Workspace Capabilities', () => {
     };
 
     expect(data.capabilities.repository.push).toBe(true);
-    expect(data.capabilities.workspace.networkMode).toBe('host');
+    expect(data.capabilities.workspace.networkProfile).toBe('local-host');
     expect(data.operations.gitFetch).toBe(true);
     expect(data.operations.gitPull).toBe(true);
     expect(data.operations.gitPush).toBe(true);

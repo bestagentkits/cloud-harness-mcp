@@ -165,7 +165,7 @@ describe('formatToolResultText', () => {
         repositoryUrl: 'https://github.com/example/repo',
         ref: 'main',
         status: 'ACTIVE',
-        networkMode: 'none',
+        networkProfile: 'network-none',
         createdAt: '2026-08-27T00:00:00.000Z',
         lastActivityAt: '2026-08-27T00:00:00.000Z',
         expiresAt: '2026-08-27T01:00:00.000Z'

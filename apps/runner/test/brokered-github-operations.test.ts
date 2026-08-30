@@ -63,7 +63,7 @@ function fixture() {
     authMode: 'cloudflare-access',
     host: '127.0.0.1', port: 3001, serviceToken: 'runner-token-that-is-longer-than-32-characters',
     jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state.db'), executorImage: 'executor',
-    allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300, idleTtlSeconds: 180,
+    allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 300, idleTtlSeconds: 180,
     maxOutputBytes: 262_144, minFreeBytes: 0, maxWorkspaceBytes: 1_048_576, reaperIntervalSeconds: 30,
     githubApp: {
       appId: 123,
@@ -97,7 +97,7 @@ function fixture() {
     containerName: 'executor-container',
     workspacePath,
     status: 'ACTIVE',
-    networkMode: 'none',
+    networkProfile: 'network-none',
     createdAt: now,
     lastActivityAt: now,
     expiresAt: now + 60_000,

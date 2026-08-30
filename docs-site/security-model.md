@@ -25,7 +25,7 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 - **Hardened Standard Mode:** Standard executors strictly maintain `--read-only`, `--cap-drop ALL`, and `--security-opt no-new-privileges`.
 - **3-Zone Storage Partitioning:** Ephemeral secrets/config in RAM tmpfs (`/tmp/cloud-harness-home`), persistent user-space toolchains in `/opt/user-tools` & `/var/cache/harness`, and clean Git checkout in `/workspace`.
 - **No Docker Authority:** No socket mount or host filesystem access.
-- **Default Network `none`:** Outbound network is disabled unless explicitly requested as `bridge`.
+- **Default Network `network-none`:** Outbound network is disabled unless explicitly requested as `dependency-access`, which permits only public DNS and TCP 80/443 while an attested Linux host firewall blocks loopback-to-host, Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges. It fails closed if attestation is unavailable and still permits public exfiltration.
 
 ### 3. Privileged Execution & Operator Grants
 - Privileged (`sudo`/root) commands are treated as an explicit threat model weakening and are supported in **Cloudflare Access** mode only.

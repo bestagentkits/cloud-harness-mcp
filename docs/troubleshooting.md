@@ -80,9 +80,12 @@ a lost response; do not create a second key until the first result is resolved.
   are in memory and cannot be reconnected. Background task metadata and output
   logs persist across restarts and can be inspected via `tasks_status` or `tasks_list`.
 - A dependency download, arbitrary network command, or networked deployment
-  fails in a `none` workspace: open a new owner-approved `bridge` workspace if
-  egress is necessary and accept the weaker boundary. Remote Git fetch/pull/push
-  use runner-owned helpers and do not require executor bridge networking.
+  fails in a `network-none` workspace: open a new owner-approved
+  `dependency-access` workspace if public egress is necessary and accept the
+  weaker boundary (public DNS and TCP 80/443 only). If it fails with
+  `DEPENDENCY_EGRESS_UNAVAILABLE`, the Linux host firewall is missing or drifted;
+  reprovision it with `deploy/scripts/setup-dependency-firewall.sh`. Remote Git
+  fetch/pull/push use runner-owned helpers and do not require executor egress.
 - Private fetch/pull failure: verify GitHub App installation access and Contents
   read permission. Push additionally requires Contents read and write
   permission; only `origin`, branch refspecs, and optional force-with-lease are
@@ -91,7 +94,7 @@ a lost response; do not create a second key until the first result is resolved.
   becomes `blocked` if one fails or is cancelled. Inspect the task graph rather
   than rerunning it with a new idempotency key.
 - A repository-defined deployment is missing or cannot authenticate: inspect
-  `.cloud-harness/deployments.json`, executor network mode, and the repository's
+  `.cloud-harness/deployments.json`, executor network profile, and the repository's
   own setup. The harness does not inject deployment secrets.
 - A command times out earlier than Codex's tool timeout: compare
   `REQUEST_TIMEOUT_MS`, the tool's `timeoutMs`, and Codex

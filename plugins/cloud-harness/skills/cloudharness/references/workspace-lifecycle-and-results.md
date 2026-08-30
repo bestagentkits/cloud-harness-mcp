@@ -56,17 +56,18 @@ it does not create a replacement.
 Clone an approved repository and start its bounded executor.
 
 - Required: `repositoryUrl` (credential-free HTTPS URL), `idempotencyKey`.
-- Optional: `ref` (1–255 characters, cannot start with `-`), `networkMode`
-  (`none` or `bridge`; service default when omitted).
+- Optional: `ref` (1–255 characters, cannot start with `-`), `networkProfile`
+  (`network-none` or `dependency-access`; service default when omitted). The
+  legacy `networkMode` field is rejected.
 - Returns workspace metadata including opaque `workspaceId`, status, network
-  mode, timestamps, and expiry.
+  profile, timestamps, and expiry.
 - Side effects: clone, state record, workspace directory, executor creation;
   may contact the approved repository host through the trusted clone broker.
 - Recovery: after a lost response, retry with the same key. A different key is
   a new open request and may hit the one-active-workspace limit.
 
 <!-- cloudharness-example:workspace_open
-{"repositoryUrl":"https://github.com/example/project.git","ref":"main","idempotencyKey":"open-project-20260817","networkMode":"none"}
+{"repositoryUrl":"https://github.com/example/project.git","ref":"main","idempotencyKey":"open-project-20260817","networkProfile":"network-none"}
 -->
 
 <!-- cloudharness-tool:workspace_list -->

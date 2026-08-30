@@ -125,7 +125,7 @@ function createTestContext(): {
     containerName: 'cloud-harness-ws-artifacttest12',
     workspacePath: wsPath,
     status: 'ACTIVE',
-    networkMode: 'none',
+    networkProfile: 'network-none',
     createdAt: now,
     lastActivityAt: now,
     expiresAt: now + 1800 * 1000,
@@ -133,11 +133,11 @@ function createTestContext(): {
     generation: 1
   };
   store.database.prepare(`
-    INSERT INTO workspaces (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, generation)
+    INSERT INTO workspaces (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_profile, created_at, last_activity_at, expires_at, hard_expires_at, generation)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.id, record.ownerId, record.idempotencyKey, record.repositoryUrl, record.repositoryRef,
-    record.containerName, record.workspacePath, record.status, record.networkMode,
+    record.containerName, record.workspacePath, record.status, record.networkProfile,
     record.createdAt, record.lastActivityAt, record.expiresAt, record.hardExpiresAt, record.generation
   );
 

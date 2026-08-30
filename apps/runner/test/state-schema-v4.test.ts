@@ -7,12 +7,12 @@ import { StateStore, downgradeStateSchemaToV3 } from '../src/state-store.js';
 const tempDbPath = () => join(tmpdir(), `test-state-v4-${randomBytes(8).toString('hex')}.sqlite`);
 
 describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
-  it('migrates fresh database to schema version 4', () => {
+  it('migrates fresh database to schema version 5', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
       const version = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(version).toBe(4);
+      expect(version).toBe(5);
     } finally {
       store.close();
     }
@@ -72,7 +72,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
         containerName: null,
         workspacePath: '/job/ws_1',
         status: 'ACTIVE',
-        networkMode: 'none',
+        networkProfile: 'network-none',
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
         expiresAt: Date.now() + 3600_000,
@@ -217,7 +217,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
         containerName: null,
         workspacePath: '/job/ws_test',
         status: 'ACTIVE',
-        networkMode: 'none',
+        networkProfile: 'network-none',
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
         expiresAt: Date.now() + 3600_000,
@@ -257,13 +257,12 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     }
   });
 
-  it('supports downgradeStateSchemaToV3', () => {
+  it('rejects downgradeStateSchemaToV3 once the store is at schema v5', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(4);
-      downgradeStateSchemaToV3(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(3);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
+      expect(() => downgradeStateSchemaToV3(store.database)).toThrow(/state schema must be version 4 before downgrade/);
     } finally {
       store.close();
     }

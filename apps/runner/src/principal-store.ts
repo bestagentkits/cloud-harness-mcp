@@ -189,9 +189,77 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         UPDATE schema_meta SET version = 4;
       `);
     });
-    return;
+    version = 4;
   }
-  if (version !== 4) throw new Error(`unsupported state schema version ${version}`);
+  if (version === 4) {
+    database.exec('PRAGMA foreign_keys = OFF;');
+    try {
+      transaction(database, () => {
+        const invalidRows = database.prepare("SELECT COUNT(*) as c FROM workspaces WHERE network_mode NOT IN ('none', 'bridge', 'network-none', 'dependency-access')").get() as { c: number } | undefined;
+        if (invalidRows && invalidRows.c > 0) {
+          throw new Error('invalid legacy network_mode in migration');
+        }
+        database.exec(`
+          CREATE TABLE workspaces_v5 (
+            id TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            repository_url TEXT NOT NULL,
+            repository_ref TEXT,
+            container_name TEXT,
+            workspace_path TEXT NOT NULL,
+            environment_id TEXT,
+            status TEXT NOT NULL CHECK(status IN ('CREATING', 'ACTIVE', 'REAPING', 'CLOSED', 'FAILED', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED')),
+            network_profile TEXT NOT NULL CHECK(network_profile IN ('network-none', 'dependency-access')),
+            created_at INTEGER NOT NULL,
+            last_activity_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            hard_expires_at INTEGER,
+            git_author_name TEXT,
+            git_author_email TEXT,
+            mutation_locked_until INTEGER,
+            mutation_lock_count INTEGER NOT NULL DEFAULT 0,
+            generation INTEGER NOT NULL DEFAULT 1,
+            error TEXT,
+            UNIQUE(owner_id, idempotency_key),
+            UNIQUE(owner_id, id)
+          );
+
+          INSERT INTO workspaces_v5
+            (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status, network_profile, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, mutation_lock_count, generation, error)
+          SELECT
+            id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status,
+            CASE
+              WHEN network_mode = 'bridge' THEN 'dependency-access'
+              WHEN network_mode = 'none' THEN 'network-none'
+              WHEN network_mode = 'dependency-access' THEN 'dependency-access'
+              WHEN network_mode = 'network-none' THEN 'network-none'
+            END,
+            created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, COALESCE(mutation_lock_count, 0), generation, error
+          FROM workspaces;
+
+          DROP TABLE workspaces;
+          ALTER TABLE workspaces_v5 RENAME TO workspaces;
+
+          CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner
+            ON workspaces(owner_id)
+            WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED');
+          CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id
+            ON workspaces(owner_id, id);
+
+          UPDATE schema_meta SET version = 5;
+        `);
+        const fkViolations = database.prepare('PRAGMA foreign_key_check').all();
+        if (fkViolations.length > 0) {
+          throw new Error(`foreign key integrity check failed after schema v5 migration: ${JSON.stringify(fkViolations)}`);
+        }
+      });
+      version = 5;
+    } finally {
+      database.exec('PRAGMA foreign_keys = ON;');
+    }
+  }
+  if (version !== 5) throw new Error(`unsupported state schema version ${version}`);
 }
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {
