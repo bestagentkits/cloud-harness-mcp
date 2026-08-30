@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readdirSync } from 'node:fs';
 import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { StateStore, ToolkitCacheEntryRecord } from './state-store.js';
@@ -29,8 +29,6 @@ export class ToolkitCacheManager {
     if (!root) throw new Error('toolkit cache root is required');
     this.root = root;
     this.store = store;
-    mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    mkdirSync(join(this.root, 'staging'), { recursive: true, mode: 0o700 });
   }
 
   computeCacheKey(ownerId: string, spec: ToolkitAcquisitionSpec): string {
