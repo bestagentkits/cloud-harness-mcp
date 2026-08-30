@@ -1,3 +1,10 @@
+# [0.28.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.27.0...v0.28.0) (2026-08-30)
+
+
+### Features
+
+* **secrets:** add secret descriptions, mcp secrets_list discovery, and safe output redaction ([#117](https://github.com/bestagentkits/cloud-harness-mcp/issues/117)) ([366f929](https://github.com/bestagentkits/cloud-harness-mcp/commit/366f9293b88fbf5e16a304815c4cd8bdaf6b2e27))
+
 # [0.27.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.26.0...v0.27.0) (2026-08-30)
 
 
