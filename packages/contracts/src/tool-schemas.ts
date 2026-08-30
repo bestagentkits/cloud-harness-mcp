@@ -31,16 +31,6 @@ const SkillFilterSchema = z.object({
   }
 });
 
-const ToolkitSecretRefSchema = z.object({
-  scope: z.enum(['global', 'environment']),
-  environmentId: EnvironmentIdSchema.optional(),
-  name: z.literal('AGENTKIT_API_KEY')
-}).strict().superRefine((val, ctx) => {
-  if (val.scope === 'environment' && !val.environmentId) {
-    ctx.addIssue({ code: 'custom', path: ['environmentId'], message: 'environmentId is required when secret scope is environment' });
-  }
-});
-
 export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('preset'),

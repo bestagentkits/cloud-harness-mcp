@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, writeFileSync } from 'node:fs';
-import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, relative } from 'node:path';
+import { lstatSync, readFileSync, readlinkSync, readdirSync } from 'node:fs';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 import type { RepositoryCacheManager } from '../repository-cache-manager.js';
 import { runDocker } from '../docker-engine.js';
 

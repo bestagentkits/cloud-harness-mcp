@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, statSync } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync } from 'node:fs';
+import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { StateStore, ToolkitCacheEntryRecord } from './state-store.js';
 

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
-import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { chmod, chown, cp, mkdir, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,

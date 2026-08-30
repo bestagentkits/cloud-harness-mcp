@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { realpathSync, writeFileSync } from 'node:fs';
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -158,7 +158,7 @@ async function git(args, options = {}) {
   return await command('git', gitArgs(args), { ...options, env: gitEnvironment });
 }
 
-async function computeSkillBundleDigest(skillDir, skillMdFile) {
+async function computeSkillBundleDigest(skillDir) {
   const parts = [];
   try {
     async function walk(dir, rel) {
@@ -1206,7 +1206,7 @@ const handlers = {
     }
     const scriptContent = await readFile(scriptPath);
     const actualScriptSha = sha256(scriptContent);
-    const currentBundleDigest = await computeSkillBundleDigest(skillDir, selectedCand.file);
+    const currentBundleDigest = await computeSkillBundleDigest(skillDir);
 
     const expectedSha = input.expectedContentSha256 || input.expectedSha256;
     if (!expectedSha) {
