@@ -675,6 +675,8 @@ Create an unsigned local Git commit with default or explicit author and message.
 | `authorName` | `string` | No | length: 1–200 |
 | `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
 | `all` | `boolean` | **Yes** | default: `false` |
+| `expectedHeadOid` | `string` | No | pattern: `^(?:[0-9a-f]{40}|[0-9a-f]{64})$` |
+| `idempotencyKey` | `string` | No | length: 1–256 |
 
 ### `git_identity_status`
 
@@ -767,6 +769,7 @@ Push a constrained branch refspec to origin, with optional explicit force-with-l
 | `refspec` | `string` | No | length: 1–512 |
 | `forceWithLease` | `boolean` | **Yes** | default: `false` |
 | `expectedRemoteOid` | `string` | No | pattern: `^(?:[0-9a-f]{40}|[0-9a-f]{64})$` |
+| `idempotencyKey` | `string` | No | length: 1–256 |
 
 ### `git_merge`
 

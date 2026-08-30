@@ -624,30 +624,39 @@ export class OperationManager {
     for (const record of activeRecords) {
       record.status = 'cancelled';
       record.finishedAt = now;
-      if (record.child && !record.child.killed) {
+      if (record.child && (record.child.exitCode === null && record.child.signalCode === null)) {
         const child = record.child;
         const exitPromise = new Promise<void>((resolve) => {
           let resolved = false;
+          let killTimer: NodeJS.Timeout | undefined;
+          let deadlineTimer: NodeJS.Timeout | undefined;
           const done = () => {
             if (!resolved) {
               resolved = true;
+              if (killTimer) clearTimeout(killTimer);
+              if (deadlineTimer) clearTimeout(deadlineTimer);
               resolve();
             }
           };
           child.once('close', done);
           child.once('exit', done);
-          setTimeout(() => {
-            if (!resolved) {
+
+          killTimer = setTimeout(() => {
+            killTimer = undefined;
+            if (!resolved && (child.exitCode === null && child.signalCode === null)) {
               try { child.kill('SIGKILL'); } catch { /* ignore */ }
-              done();
             }
-          }, 1_000).unref();
+          }, 1_500);
+
+          deadlineTimer = setTimeout(() => {
+            deadlineTimer = undefined;
+            done();
+          }, 3_500);
         });
         exitPromises.push(exitPromise);
         try { child.kill('SIGTERM'); } catch { /* ignore */ }
       }
     }
-
     if (exitPromises.length > 0) {
       await Promise.all(exitPromises);
     }
