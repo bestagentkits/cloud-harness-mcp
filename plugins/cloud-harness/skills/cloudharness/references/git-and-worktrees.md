@@ -200,18 +200,18 @@ List managed worktrees and their branch/HEAD state for `workspaceId`.
   - `pr_view`: required `prNumber`.
   - `issue_view`: required `issueNumber`.
 - PR mutations:
-  - `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`).
-  - `pr_update`: required `prNumber`; optional `title`, `body`, `state` (`open` | `closed`).
+  - `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`), `draft` (default false), `labels` array (max 50).
+  - `pr_update`: required `prNumber`; optional `title`, `body`, `base`, `state` (`open` | `closed`).
   - `pr_comment`: required `prNumber`, `body`; optional `idempotencyKey`.
 - Issue and label mutations:
-  - `issue_create`: required `title`; optional `body`, `labels` array (max 50).
+  - `issue_create`: required `title`; optional `body`, `labels` array (max 50), `assignees` array (max 10).
   - `issue_update`: required `issueNumber`; optional `title`, `body`, `state` (`open` | `closed`), `stateReason` (`completed` | `not_planned` | `reopened`).
   - `issue_comment`: required `issueNumber`, `body`; optional `idempotencyKey`.
   - `issue_comment_update`: required `commentId`, `body`.
   - `issue_labels_add`: required `issueNumber`, `labels` array (1–50); optional `createMissing` (default true), `idempotencyKey`.
   - `issue_labels_remove`: required `issueNumber`, `label`.
   - `label_create`: required `name`; optional `color` (6-hex), `description`.
-  - `issue_publish`: required `issueNumber`; optional `comment`, `addLabels`, `removeLabels`, `state`, `stateReason`, `idempotencyKey`.
+  - `issue_publish`: required `issueNumber`; optional `comment`, `addLabels` array (max 50), `removeLabels` array (max 50), `createMissingLabels` (default true), `idempotencyKey`.
 - Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, and `issue_publish` cache their successful result and replay it on a same-key retry with identical payload; reusing the key with a different request payload is rejected with `CONFLICT`.
 <!-- cloudharness-example:github_action
 {
