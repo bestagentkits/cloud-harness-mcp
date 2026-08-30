@@ -24,8 +24,8 @@ import { OperationManager } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
 import type { PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
-
-const opaqueId = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
+import { opaqueId } from './metadata-records.js';
+import { classifyGitHubFailure } from './github-error-classifier.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING']);
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
@@ -1184,6 +1184,14 @@ export class WorkspaceService {
       });
     } catch (err: unknown) {
       if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
+        if (isWrite) {
+          this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
+            repository: record.repositoryUrl,
+            action,
+            success: false,
+            errorCode: 'REPOSITORY_OPERATION_NOT_AUTHORIZED'
+          });
+        }
         throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
           operation: `github_action.${action}`,
           repository: repoStr ?? undefined,
@@ -1193,6 +1201,14 @@ export class WorkspaceService {
       throw err;
     }
     if (!token) {
+      if (isWrite) {
+        this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
+          repository: record.repositoryUrl,
+          action,
+          success: false,
+          errorCode: 'REPOSITORY_OPERATION_NOT_AUTHORIZED'
+        });
+      }
       throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', `No GitHub App installation available for ${record.repositoryUrl}`, 403, false, {
         operation: `github_action.${action}`,
         repository: repoStr ?? undefined,
@@ -1233,10 +1249,26 @@ export class WorkspaceService {
         ...(signal ? { signal } : {})
       });
 
+      if (result.exitCode === 0) {
+        return {
+          ok: true,
+          message: `GitHub ${action} successful`,
+          data: { output: result.stdout || result.stderr },
+          truncated: result.truncated
+        };
+      }
+
+      const classified = classifyGitHubFailure(result.stderr, result.stdout, action);
       return {
-        ok: result.exitCode === 0,
-        message: (result.exitCode === 0 ? `GitHub ${action} successful` : `GitHub ${action} failed: ${result.stderr}`).slice(0, 2_000),
+        ok: false,
+        message: classified.message,
         data: { output: result.stdout || result.stderr },
+        error: {
+          code: classified.code,
+          message: classified.message,
+          retryable: classified.retryable,
+          ...(classified.retryAfterMs ? { retryAfterMs: classified.retryAfterMs } : {})
+        },
         truncated: result.truncated
       };
     } finally {
@@ -1954,6 +1986,32 @@ export class WorkspaceService {
         ]; break;
       }
       const result = await this.runBrokeredGitHubAction(record, action, args, signal);
+      const isWrite = ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
+      if (isWrite) {
+        const details: Record<string, string | number | boolean> = {
+          repository: record.repositoryUrl,
+          action,
+          success: result.ok
+        };
+        if (typeof validated.prNumber === 'number') details.prNumber = validated.prNumber;
+        if (typeof validated.issueNumber === 'number') details.issueNumber = validated.issueNumber;
+        if (typeof validated.commentId === 'number') details.commentId = validated.commentId;
+        if (typeof validated.draft === 'boolean') details.draft = validated.draft;
+        if (typeof validated.state === 'string') details.state = validated.state;
+        if (typeof validated.idempotencyKey === 'string') details.idempotencyKey = validated.idempotencyKey;
+        if (typeof validated.name === 'string' && action === 'label_create') details.labelName = validated.name;
+        if (result.ok && (action === 'pr_create' || action === 'issue_create')) {
+          const match = String((result.data as Record<string, unknown>)?.output ?? '').match(/\/(?:pull|issues)\/(\d+)/);
+          if (match && match[1]) {
+            if (action === 'pr_create') details.createdPrNumber = Number(match[1]);
+            if (action === 'issue_create') details.createdIssueNumber = Number(match[1]);
+          }
+        }
+        if (!result.ok && result.error?.code) {
+          details.errorCode = result.error.code;
+        }
+        this.auditWorkspaceOutcome(ownerId, `github_action.${action}`, record, details);
+      }
       if ((action === 'pr_comment' || action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey && result.ok) {
         this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result), fingerprint);
       }

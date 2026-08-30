@@ -13,7 +13,11 @@ export const ErrorCodeSchema = z.enum([
   'UNAVAILABLE',
   'INTERNAL_ERROR',
   'PRIVILEGE_APPROVAL_REQUIRED',
-  'REPOSITORY_OPERATION_NOT_AUTHORIZED'
+  'REPOSITORY_OPERATION_NOT_AUTHORIZED',
+  'GITHUB_PERMISSION_MISSING',
+  'GITHUB_RATE_LIMITED',
+  'INVALID_PULL_REQUEST_BASE',
+  'GITHUB_ACTION_FAILED'
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const ToolResultSchema = z.object({
