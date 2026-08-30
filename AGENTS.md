@@ -65,7 +65,11 @@ instead of copying behavior, defaults, command inventories, or configuration.
    Keep changes narrow and preserve public contracts unless the accepted scope
    intentionally changes them.
 3. Run the narrowest relevant test first, then the applicable repository gate:
-   - Normal code changes: `npm run verify`.
+   - Normal code changes: `npm run verify`. On Windows or non-POSIX hosts, use
+     targeted suites (`npm run test:unit`, `npm run test:integration`, `npm run lint`,
+     `npm run typecheck`) as your baseline; shell fixture tests in
+     `test/deploy-release-runtime.test.ts` and `test/upgrade-nginx-routes.test.ts`
+     require a POSIX host and are verified in Linux CI.
    - Compose or network-boundary changes: `npm run verify:compose` and
      `npm run verify`.
    - Shell changes: run the syntax check owned by `.github/workflows/ci.yml`.
