@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { computeFullTreeDigest, validateStagingDir, MattPocockAdapter } from '../src/adapters/mattpocock-adapter.js';
@@ -121,7 +121,35 @@ describe('validateStagingDir & Failure Boundary Protections', () => {
     writeFileSync(join(tmpDir, 'large.txt'), 'x'.repeat(1024));
     expect(() => validateStagingDir(tmpDir, 100, 500)).toThrow('Staging directory exceeds maximum byte size of 500');
   });
+  it('rejects escaping symlinks that point outside staging directory', () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'ch-outside-'));
+    try {
+      const secretFile = join(outsideDir, 'secret.txt');
+      writeFileSync(secretFile, 'sensitive-data');
+      try {
+        symlinkSync(secretFile, join(tmpDir, 'evil_link'));
+        expect(() => validateStagingDir(tmpDir)).toThrow('escapes staging directory root');
+      } catch (e: any) {
+        // If symlink creation requires elevated privileges on Windows, verify error or skip
+        if (e?.code !== 'EPERM') throw e;
+      }
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
 
+  it('counts symlinks toward maxFiles ceiling and rejects symlink floods', () => {
+    const targetFile = join(tmpDir, 'target.txt');
+    writeFileSync(targetFile, 'content');
+    try {
+      for (let i = 0; i < 4; i++) {
+        symlinkSync(targetFile, join(tmpDir, `link_${i}`));
+      }
+      expect(() => validateStagingDir(tmpDir, 3)).toThrow('Staging directory exceeds maximum file count of 3');
+    } catch (e: any) {
+      if (e?.code !== 'EPERM') throw e;
+    }
+  });
   it('rejects unready cache mirror across all adapters', async () => {
     const unreadyCacheManager: any = {
       acquireCacheMirror: async () => ({ cachePath: '/cache/dummy.git', isReady: false })
