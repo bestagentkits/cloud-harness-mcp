@@ -4,6 +4,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { validateStagingDir } from '../src/adapters/mattpocock-adapter.js';
 
 describe('TOCTOU Script Tamper & Execution Snapshot Defense', () => {
   let tmpDir: string;
@@ -71,9 +72,10 @@ describe('TOCTOU Script Tamper & Execution Snapshot Defense', () => {
         const snapEvilDir = join(tmpDir, 'snap-evil');
         await cp(skillDir, snapEvilDir, { recursive: true, verbatimSymlinks: true });
 
-        // Verify the external symlink is detected as escaping root
+        // Verify the external symlink is detected as escaping root and rejected
         const linkTarget = lstatSync(join(snapEvilDir, 'scripts', 'evil.sh'));
         expect(linkTarget.isSymbolicLink()).toBe(true);
+        expect(() => validateStagingDir(snapEvilDir)).toThrow('escapes staging directory root');
       } catch (e: any) {
         if (e?.code !== 'EPERM') throw e;
       }
