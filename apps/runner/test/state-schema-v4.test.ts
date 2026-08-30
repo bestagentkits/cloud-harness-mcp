@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { StateStore, downgradeStateSchemaToV3 } from '../src/state-store.js';
-import { migratePrincipalSchema } from '../src/principal-store.js';
+import { migratePrincipalSchema, applyLegacyPrincipalMapping } from '../src/principal-store.js';
 
 const tempDbPath = () => join(tmpdir(), `test-state-v4-${randomBytes(8).toString('hex')}.sqlite`);
 
@@ -397,6 +397,107 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
         createdAt: Date.now()
       });
       expect(lazyPushClaim.action).toBe('ACQUIRED');
+    } finally {
+      store.close();
+    }
+  });
+
+  it('successfully upgrades unmapped legacy owner databases to v4 and migrates finalize idempotency on principal relink', () => {
+    const dbPath = tempDbPath();
+    const store = new StateStore(dbPath);
+    try {
+      // Downgrade to v3 to simulate a legacy database
+      downgradeStateSchemaToV3(store.database);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(3);
+
+      // Seed an unmapped legacy workspace with NO principal record
+      const legacyOwnerId = 'owner-raw-legacy-123';
+      const wsId = 'ws_unmapped_legacy';
+      store.database.prepare(`
+        INSERT INTO workspaces (
+          id, owner_id, idempotency_key, repository_url, workspace_path,
+          status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, generation
+        ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', 'none', ?, ?, ?, ?, 1)
+      `).run(
+        wsId, legacyOwnerId, 'ik_ws_unmapped', 'https://github.com/org/repo', '/tmp/ws_unmapped',
+        Date.now() - 100_000, Date.now() - 100_000, Date.now() + 3600_000, Date.now() + 7200_000
+      );
+
+      // Seed legacy finalize_idempotency row for the unmapped legacy owner
+      const legacyResult = JSON.stringify({ ok: true, message: 'Unmapped finalize', commitSha: 'abcdef1234567890abcdef1234567890abcdef12' });
+      store.database.prepare(
+        'INSERT INTO finalize_idempotency(owner_id, workspace_id, idempotency_key, result_json, created_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(legacyOwnerId, wsId, 'ik_unmapped_fin', legacyResult, Date.now() - 50_000);
+
+      // Upgrade to schema version 4: MUST NOT throw foreign key constraint error!
+      migratePrincipalSchema(store.database);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(4);
+
+      // Prior to principal mapping, git_operation_idempotency should NOT have the row (since FK to principals is enforced)
+      const unmappedGitOp = store.database.prepare(
+        'SELECT * FROM git_operation_idempotency WHERE workspace_id = ? AND idempotency_key = ?'
+      ).get(wsId, 'ik_unmapped_fin');
+      expect(unmappedGitOp).toBeUndefined();
+
+      // Unmapped finalize row remains preserved in finalize_idempotency
+      const preservedRow = store.database.prepare(
+        'SELECT * FROM finalize_idempotency WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?'
+      ).get(legacyOwnerId, wsId, 'ik_unmapped_fin') as { result_json: string } | undefined;
+      expect(preservedRow?.result_json).toBe(legacyResult);
+
+      // Apply legacy principal mapping for this owner
+      const mappedPrincipalId = applyLegacyPrincipalMapping(store.database, {
+        legacyOwnerId,
+        issuer: 'https://access.example.com',
+        subject: 'user-legacy-mapped'
+      });
+      expect(mappedPrincipalId).toMatch(/^prn_/);
+
+      // Workspace and finalize row must now be updated to the mapped principal ID
+      const mappedWs = store.byId(wsId);
+      expect(mappedWs?.ownerId).toBe(mappedPrincipalId);
+
+      // git_operation_idempotency must now have the materialized row under mappedPrincipalId
+      const mappedGitOp = store.getGitOperation(mappedPrincipalId, wsId, 'ik_unmapped_fin');
+      expect(mappedGitOp).toBeDefined();
+      expect(mappedGitOp?.status).toBe('SUCCEEDED');
+      expect(mappedGitOp?.operation).toBe('finalize');
+      expect(mappedGitOp?.resultJson).toBe(legacyResult);
+      expect(mappedGitOp?.requestFingerprint).toBe('');
+
+      // Permanent wildcard replay: acquireGitOperation returns REPLAY_SUCCEEDED regardless of fingerprint
+      const replay1 = store.acquireGitOperation({
+        ownerId: mappedPrincipalId,
+        workspaceId: wsId,
+        idempotencyKey: 'ik_unmapped_fin',
+        operation: 'finalize',
+        requestFingerprint: 'sha256_attempt_1',
+        createdAt: Date.now()
+      });
+      expect(replay1.action).toBe('REPLAY_SUCCEEDED');
+      expect(replay1.existing?.resultJson).toBe(legacyResult);
+
+      const replay2 = store.acquireGitOperation({
+        ownerId: mappedPrincipalId,
+        workspaceId: wsId,
+        idempotencyKey: 'ik_unmapped_fin',
+        operation: 'finalize',
+        requestFingerprint: 'sha256_attempt_2_different',
+        createdAt: Date.now()
+      });
+      expect(replay2.action).toBe('REPLAY_SUCCEEDED');
+      expect(replay2.existing?.resultJson).toBe(legacyResult);
+
+      // Cross-operation conflict: push or commit with the same key is rejected
+      const pushConflict = store.acquireGitOperation({
+        ownerId: mappedPrincipalId,
+        workspaceId: wsId,
+        idempotencyKey: 'ik_unmapped_fin',
+        operation: 'push',
+        requestFingerprint: 'sha256_attempt_1',
+        createdAt: Date.now()
+      });
+      expect(pushConflict.action).toBe('FINGERPRINT_CONFLICT');
     } finally {
       store.close();
     }
