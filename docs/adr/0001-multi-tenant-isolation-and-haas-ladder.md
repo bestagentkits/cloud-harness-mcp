@@ -148,7 +148,7 @@ To balance security, operational complexity, and commercial readiness, CloudHarn
 
 ### 6.5 Incident Containment and Forensic Runbook
 1. **Automated Quarantine:** Upon detection of anomalous kernel syscall patterns, unhandled jailer seccomp violations, or watchdog fence trip, the control plane immediately executes `node cordon` and freezes the affected microVM.
-2. **Forensic Preservation:** The node agent captures an unencrypted memory core dump to an isolated forensic volume before terminating the guest process.
+2. **Forensic Capture & Destruction (When Authorized):** Under explicit security authorization, memory state is captured directly into an access-controlled, asymmetric encrypted container (AES-256-GCM + ephemeral key pair) on an isolated forensic enclave with mandatory 30-day retention and automated destruction. By default, unmanaged rogue microVMs are terminated immediately with complete cryptographic key erasure and zero plaintext memory preservation.
 3. **Certificate Revocation & CRL Update:** The control plane revokes the worker node's client mTLS certificate and issues an immediate CRL push to all endpoints.
 4. **Customer Disclosure & Audit:** Emit structured tamper-evident audit logs documenting affected workspace IDs and time boundaries without disclosing neighboring tenant metadata.
 ---
