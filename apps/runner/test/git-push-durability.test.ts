@@ -68,6 +68,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
         generation: 1,
         error: null
       });
+      vi.spyOn(service as unknown as { workspaceBytes: () => Promise<number> }, 'workspaceBytes').mockResolvedValue(1024);
 
       let mockHead = '1111111111111111111111111111111111111111';
       vi.spyOn(service as unknown as { currentHead: () => Promise<string> }, 'currentHead').mockImplementation(async () => mockHead);
@@ -177,6 +178,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
         error: null
       });
 
+      vi.spyOn(service as unknown as { workspaceBytes: () => Promise<number> }, 'workspaceBytes').mockResolvedValue(1024);
       vi.spyOn(service as unknown as { repositoryToken: () => Promise<string> }, 'repositoryToken').mockResolvedValue('token123');
       vi.spyOn(service as unknown as { currentBranch: () => Promise<string> }, 'currentBranch').mockResolvedValue('main');
       vi.spyOn(service as unknown as { currentHead: () => Promise<string> }, 'currentHead').mockResolvedValue('aaaabbbbccccddddeeeeffff1111222233334444');
@@ -271,6 +273,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
         error: null
       });
 
+      vi.spyOn(service as unknown as { workspaceBytes: () => Promise<number> }, 'workspaceBytes').mockResolvedValue(1024);
       vi.spyOn(service as unknown as { repositoryToken: () => Promise<string> }, 'repositoryToken').mockResolvedValue('token123');
       vi.spyOn(service as unknown as { currentBranch: () => Promise<string> }, 'currentBranch').mockResolvedValue('main');
       vi.spyOn(service as unknown as { currentHead: () => Promise<string> }, 'currentHead').mockResolvedValue('aaaabbbbccccddddeeeeffff1111222233334444');
