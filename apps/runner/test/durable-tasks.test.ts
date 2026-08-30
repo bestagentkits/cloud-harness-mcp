@@ -550,11 +550,15 @@ describe('Durable Task Engine & Restart Reconciliation', () => {
       unkillableChild.stdout = new EventEmitter();
       unkillableChild.stderr = new EventEmitter();
       unkillableChild.kill = () => { /* ignores signals */ };
-
+      if (task.child) {
+        task.child.removeAllListeners();
+        try { task.child.kill(); } catch { /* ignore */ }
+      }
       (ops as unknown as { track: (t: unknown, c: unknown, b: number) => void }).track(task, unkillableChild, 65536);
       task.child = unkillableChild as unknown as ChildProcessWithoutNullStreams;
-
-      // Attempt workspace_close -> stopWorkspace hits deadline and throws 503 UNAVAILABLE
+      task.status = 'running';
+      task.exitCode = undefined;
+      // Attempt 1: workspace_close -> stopWorkspace hits deadline and throws 503 UNAVAILABLE
       await expect(
         service.execute(ownerId, 'workspace_close', { workspaceId: wsId })
       ).rejects.toThrow(/failed to terminate within teardown deadline/);
@@ -564,11 +568,32 @@ describe('Durable Task Engine & Restart Reconciliation', () => {
       expect(existsSync(logFile)).toBe(true);
 
       // Workspace status must be rolled back to EXPIRED_RECOVERABLE
-      const wsRecord = store.byId(wsId);
-      expect(wsRecord?.status).toBe('EXPIRED_RECOVERABLE');
-      expect(wsRecord?.error).toContain('Workspace stop failed');
+      const wsRecord1 = store.byId(wsId);
+      expect(wsRecord1?.status).toBe('EXPIRED_RECOVERABLE');
+      expect(wsRecord1?.error).toContain('Workspace stop failed');
+
+      // Attempt 2: retry while child is STILL unkillable -> must reject AGAIN without bypassing live child!
+      await expect(
+        service.execute(ownerId, 'workspace_close', { workspaceId: wsId })
+      ).rejects.toThrow(/failed to terminate within teardown deadline/);
+      expect(existsSync(wsPath)).toBe(true);
+
+      // Attempt 3: child is allowed to exit on signal
+      unkillableChild.kill = () => {
+        unkillableChild.exitCode = 0;
+        unkillableChild.emit('close', 0);
+        unkillableChild.emit('exit', 0);
+      };
+
+      const closeSuccess = await service.execute(ownerId, 'workspace_close', { workspaceId: wsId });
+      expect(closeSuccess.ok).toBe(true);
+
+      // Now workspace path is cleaned up and status is CLOSED
+      expect(existsSync(wsPath)).toBe(false);
+      const wsRecordFinal = store.byId(wsId);
+      expect(wsRecordFinal?.status).toBe('CLOSED');
     } finally {
       store.close();
     }
-  }, 10_000);
+  }, 20_000);
 });

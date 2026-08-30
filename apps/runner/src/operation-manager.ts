@@ -615,15 +615,12 @@ export class OperationManager {
     return record;
   }
   async stopWorkspace(workspaceId: string, ownerId?: string): Promise<void> {
-    const now = Date.now();
     const activeRecords = this.records(workspaceId).filter(
       (record) => record.status === 'running' || record.status === 'queued'
     );
     const exitPromises: Promise<void>[] = [];
 
     for (const record of activeRecords) {
-      record.status = 'cancelled';
-      record.finishedAt = now;
       if (record.child && (record.child.exitCode === null && record.child.signalCode === null)) {
         const child = record.child;
         const exitPromise = new Promise<void>((resolve, reject) => {
@@ -663,11 +660,14 @@ export class OperationManager {
         try { child.kill('SIGTERM'); } catch { /* ignore */ }
       }
     }
+
     if (exitPromises.length > 0) {
       await Promise.all(exitPromises);
     }
-
+    const now = Date.now();
     for (const record of activeRecords) {
+      record.status = 'cancelled';
+      record.finishedAt = now;
       if (this.store && this.tasks.has(record.id)) {
         try {
           const current = this.store.getDurableTask(ownerId ?? record.ownerId ?? '', record.workspaceId, record.id);

@@ -45,7 +45,9 @@ beforeAll(async () => {
   const runnerConfig: RunnerConfig = {
     host: '127.0.0.1', port: 0, serviceToken, jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state', 'state.db'),
     executorImage: 'cloud-harness-executor:local', allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300,
-    idleTtlSeconds: 180, maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 536_870_912, reaperIntervalSeconds: 0.05
+    idleTtlSeconds: 180, maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 536_870_912, reaperIntervalSeconds: 0.05,
+    artifactRoot: join(directory, 'artifacts'), maxArtifactBytes: 16_777_216, maxPrincipalArtifactBytes: 134_217_728,
+    artifactRetentionSeconds: 86_400, enableRepoCache: false, repoCacheRoot: join(directory, 'cache')
   };
   store = new StateStore(runnerConfig.stateDb);
   service = new WorkspaceService(runnerConfig, store);
