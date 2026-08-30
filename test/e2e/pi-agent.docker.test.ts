@@ -68,7 +68,7 @@ beforeAll(async () => {
     stateDb: join(directory, 'state', 'state.db'),
     executorImage: 'cloud-harness-executor:local',
     allowedGitHosts: ['github.com'],
-    networkMode: 'none',
+    networkProfile: 'network-none',
     wallTtlSeconds: 300,
     idleTtlSeconds: 180,
     maxOutputBytes: 262_144,
@@ -157,7 +157,7 @@ afterAll(async () => {
 
 describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the private runner', () => {
   it('edits only through allowed proxy tools and covers all six public operations with terminal cleanup', async () => {
-    const workspaceId = await openWorkspace('pi-agent-network-none', 'none');
+    const workspaceId = await openWorkspace('pi-agent-network-none', 'network-none');
     const spawnInput = {
       workspaceId,
       prompt: 'Write then edit pi-agent-proof.txt exactly as requested using only the granted tools.',
@@ -296,7 +296,7 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
   }, 180_000);
 
   it('rejects agent spawn for a bridge-backed workspace before creating agent resources', async () => {
-    const workspaceId = await openWorkspace('pi-agent-bridge-rejection', 'bridge');
+    const workspaceId = await openWorkspace('pi-agent-bridge-rejection', 'dependency-access');
     const before = await agentResourceInventory();
     const result = await client.callTool({
       name: 'agent_spawn',
@@ -347,12 +347,12 @@ async function closeActiveWorkspaces(): Promise<void> {
   }
 }
 
-async function openWorkspace(idempotencyKey: string, networkMode: 'none' | 'bridge'): Promise<string> {
+async function openWorkspace(idempotencyKey: string, networkProfile: 'network-none' | 'dependency-access'): Promise<string> {
   const opened = await call('workspace_open', {
     repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
     ref: 'test-fixture-v1',
     idempotencyKey,
-    networkMode
+    networkProfile
   });
   const workspaceId = opened.data.workspaceId as string;
   activeWorkspaceIds.add(workspaceId);
