@@ -112,11 +112,13 @@ not require a source checkout.
 - `bridge` enables broad egress; it is not an allowlist or strong isolation.
 - Arbitrary commands, interactive I/O, tasks, skill scripts, hooks, and
   deployments execute repository-controlled code. Review intent and scope.
-- Do not retry an unknown mutation blindly. Reuse the same idempotency key only
-  for the identical operation and parameters — to recover a lost creation
-  response, or to reconcile a `git_commit`, `git_push`, or `workspace_finalize`
-  whose outcome is unverified (e.g. `UNKNOWN_REMOTE_STATE`). A changed request
-  needs a new key.
+- Do not retry an unknown mutation blindly. Only operations documented as
+  idempotent — creation ops (`workspace_open`, `shell_open`, `sessions_open`,
+  `tasks_run`) and the Git mutations `git_commit`, `git_push`,
+  `workspace_finalize` — may reuse the original key, and only with identical
+  parameters. An unverified push outcome (e.g. `UNKNOWN_REMOTE_STATE`) must be
+  resolved by same-key reconciliation, never a blind re-push. A changed request
+  or any non-idempotent operation needs a new key.
 - Do not claim a push, private clone, deployment, or production outcome without
   current owner-authorized evidence from the corresponding operation.
 
