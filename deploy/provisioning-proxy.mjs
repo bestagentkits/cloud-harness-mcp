@@ -25,7 +25,7 @@ export function isForbiddenIp(ip) {
   if (ip.includes('.')) {
     const parts = ip.split('.').map(Number);
     if (parts.length !== 4 || parts.some((p) => isNaN(p) || p < 0 || p > 255)) return true;
-    const [b0, b1, b2, b3] = parts;
+    const [b0, b1, b2] = parts;
 
     // 0.0.0.0/8 (Current network)
     if (b0 === 0) return true;

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HarnessError } from '@cloud-harness/contracts';
-import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
+import { StateStore } from '../src/state-store.js';
 import { resolveOwnerPrincipal } from '../src/principal-store.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import { ToolkitService } from '../src/toolkit-service.js';

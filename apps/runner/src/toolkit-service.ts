@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { HarnessError, type ToolkitLockItem, type ToolkitSelection, type WorkspaceToolkitsLock } from '@cloud-harness/contracts';
+import { HarnessError, type ToolkitLockItem, type ToolkitSelection } from '@cloud-harness/contracts';
 import { MattPocockAdapter } from './adapters/mattpocock-adapter.js';
 import { SuperpowersAdapter } from './adapters/superpowers-adapter.js';
 import { DeclarativeGitAdapter } from './adapters/git-adapter.js';
@@ -9,7 +9,7 @@ import type { StateStore } from './state-store.js';
 import type { ToolkitCacheManager } from './toolkit-cache-manager.js';
 
 export type ToolkitCatalogPreset = {
-  id: 'mattpocock/skills' | 'obra/superpowers' | 'bestagentkits/agentkit';
+  id: 'mattpocock/skills' | 'obra/superpowers';
   name: string;
   description: string;
   defaultRevision: string;
