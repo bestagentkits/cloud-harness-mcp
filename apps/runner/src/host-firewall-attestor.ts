@@ -72,36 +72,29 @@ export class HostFirewallAttestor {
 
     const lines = iptablesText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0 && !l.startsWith('#'));
 
-    // 1. FORWARD must jump to DOCKER-USER, and no prior FORWARD rule may accept
-    // traffic from the managed bridge before that jump.
+    // 1. FORWARD must have an exact, unconditional jump to DOCKER-USER as its first rule
     const forwardRules = lines.filter((l) => l.startsWith('-A FORWARD'));
-    const dockerUserJumpIdx = forwardRules.findIndex((l) => l.includes('-j DOCKER-USER'));
-    if (forwardRules.length > 0 && dockerUserJumpIdx === -1) {
-      return { ok: false, reason: 'FORWARD chain does not jump to DOCKER-USER' };
+    if (forwardRules.length === 0) {
+      return { ok: false, reason: 'missing FORWARD jump rule to DOCKER-USER' };
     }
-    if (dockerUserJumpIdx > 0) {
-      const priorForwardAccept = forwardRules.slice(0, dockerUserJumpIdx).some((l) => l.includes('-j ACCEPT') && (!l.includes('-i ') || l.includes(`-i ${this.bridgeInterface}`)));
-      if (priorForwardAccept) {
-        return { ok: false, reason: `broad ACCEPT rule precedes FORWARD jump to DOCKER-USER for '${this.bridgeInterface}'` };
-      }
+    const firstForward = forwardRules[0]!.replace(/\s+/g, ' ').trim();
+    if (firstForward !== '-A FORWARD -j DOCKER-USER') {
+      return { ok: false, reason: `first FORWARD rule must be exactly '-A FORWARD -j DOCKER-USER', found '${firstForward}'` };
     }
     // 2. Check INPUT jump
     const inputRules = lines.filter((l) => l.startsWith('-A INPUT'));
-    const inputInterfaceRules = inputRules.filter((l) => l.includes(`-i ${this.bridgeInterface}`));
-    if (inputInterfaceRules.length === 0) {
+    if (inputRules.length === 0) {
       return { ok: false, reason: `missing INPUT jump rule for interface '${this.bridgeInterface}'` };
     }
-    // Managed jump must be the literal first rule in the INPUT chain so no prior
-    // rule (ACCEPT, RETURN, or a jump to an accepting chain) can bypass it.
-    const firstInput = inputRules[0];
-    if (!firstInput || !firstInput.includes(`-i ${this.bridgeInterface}`)) {
-      return { ok: false, reason: `managed INPUT jump for '${this.bridgeInterface}' must be the first INPUT rule` };
+    const firstInput = inputRules[0]!.replace(/\s+/g, ' ').trim();
+    const inputPrefix = `-A INPUT -i ${this.bridgeInterface} -j `;
+    if (!firstInput.startsWith(inputPrefix)) {
+      return { ok: false, reason: `managed INPUT jump for '${this.bridgeInterface}' must be the first INPUT rule, found '${firstInput}'` };
     }
-    const inputTarget = firstInput.match(/-j\s+([A-Za-z0-9_-]+)/)?.[1];
-    if (!inputTarget || inputTarget === 'ACCEPT' || inputTarget === 'RETURN') {
-      return { ok: false, reason: `invalid or broad ACCEPT/RETURN target jump for '${this.bridgeInterface}' in INPUT` };
+    const inputTarget = firstInput.slice(inputPrefix.length).trim();
+    if (inputTarget === 'ACCEPT' || inputTarget === 'RETURN' || !/^[A-Za-z0-9_-]+$/.test(inputTarget)) {
+      return { ok: false, reason: `invalid or broad target jump for '${this.bridgeInterface}' in INPUT: ${inputTarget}` };
     }
-
     // The owned INPUT target chain must strictly deny all host-destined traffic
     // and must not contain any RETURN, ACCEPT, or indirect jump rules.
     if (inputTarget !== 'REJECT' && inputTarget !== 'DROP') {
@@ -126,20 +119,17 @@ export class HostFirewallAttestor {
 
     // 3. Check DOCKER-USER jump
     const dockerUserRules = lines.filter((l) => l.startsWith('-A DOCKER-USER'));
-    const dockerUserInterfaceRules = dockerUserRules.filter((l) => l.includes(`-i ${this.bridgeInterface}`));
-    if (dockerUserInterfaceRules.length === 0) {
+    if (dockerUserRules.length === 0) {
       return { ok: false, reason: `missing DOCKER-USER jump rule for interface '${this.bridgeInterface}'` };
     }
-
-    // Managed jump must be the literal first rule in DOCKER-USER so no prior
-    // rule (ACCEPT, RETURN, or a jump to an accepting chain) can bypass it.
-    const firstEgress = dockerUserRules[0];
-    if (!firstEgress || !firstEgress.includes(`-i ${this.bridgeInterface}`)) {
-      return { ok: false, reason: `managed DOCKER-USER jump for '${this.bridgeInterface}' must be the first DOCKER-USER rule` };
+    const firstEgress = dockerUserRules[0]!.replace(/\s+/g, ' ').trim();
+    const egressPrefix = `-A DOCKER-USER -i ${this.bridgeInterface} -j `;
+    if (!firstEgress.startsWith(egressPrefix)) {
+      return { ok: false, reason: `managed DOCKER-USER jump for '${this.bridgeInterface}' must be the first DOCKER-USER rule, found '${firstEgress}'` };
     }
-    const egressTarget = firstEgress.match(/-j\s+([A-Za-z0-9_-]+)/)?.[1];
-    if (!egressTarget || egressTarget === 'ACCEPT' || egressTarget === 'RETURN') {
-      return { ok: false, reason: `invalid or broad ACCEPT/RETURN target jump for '${this.bridgeInterface}' in DOCKER-USER` };
+    const egressTarget = firstEgress.slice(egressPrefix.length).trim();
+    if (egressTarget === 'ACCEPT' || egressTarget === 'RETURN' || !/^[A-Za-z0-9_-]+$/.test(egressTarget)) {
+      return { ok: false, reason: `invalid or broad target jump for '${this.bridgeInterface}' in DOCKER-USER: ${egressTarget}` };
     }
 
     // 4. Check EGRESS chain rules in strict order
@@ -166,9 +156,9 @@ export class HostFirewallAttestor {
     }
     const maxDenyIdx = Math.max(...denyIndices);
 
-    // Allowed ports 80 and 443
-    const port80Idx = egressRules.findIndex((l) => l.includes('--dport 80') && l.includes('-j ACCEPT'));
-    const port443Idx = egressRules.findIndex((l) => l.includes('--dport 443') && l.includes('-j ACCEPT'));
+    // Allowed ports 80 and 443 with exact word boundaries
+    const port80Idx = egressRules.findIndex((l) => /--dport\s+80\b/.test(l) && /-p\s+tcp\b/.test(l) && /-j\s+ACCEPT\b/.test(l) && !/-d\s+/.test(l));
+    const port443Idx = egressRules.findIndex((l) => /--dport\s+443\b/.test(l) && /-p\s+tcp\b/.test(l) && /-j\s+ACCEPT\b/.test(l) && !/-d\s+/.test(l));
     if (port80Idx === -1 || port443Idx === -1) {
       return { ok: false, reason: 'egress chain missing HTTP/HTTPS (ports 80, 443) accept rules' };
     }
@@ -180,8 +170,8 @@ export class HostFirewallAttestor {
 
     // Must have DNS resolvers on port 53 for both UDP and TCP
     for (const resolver of this.dnsResolvers) {
-      const hasDnsUdp = egressRules.some((l) => l.includes(`-d ${resolver}`) && l.includes('--dport 53') && l.includes('-p udp') && l.includes('-j ACCEPT'));
-      const hasDnsTcp = egressRules.some((l) => l.includes(`-d ${resolver}`) && l.includes('--dport 53') && l.includes('-p tcp') && l.includes('-j ACCEPT'));
+      const hasDnsUdp = egressRules.some((l) => l.includes(`-d ${resolver}`) && /--dport\s+53\b/.test(l) && /-p\s+udp\b/.test(l) && /-j\s+ACCEPT\b/.test(l));
+      const hasDnsTcp = egressRules.some((l) => l.includes(`-d ${resolver}`) && /--dport\s+53\b/.test(l) && /-p\s+tcp\b/.test(l) && /-j\s+ACCEPT\b/.test(l));
       if (!hasDnsUdp) {
         return { ok: false, reason: `egress chain missing DNS UDP accept rule for '${resolver}'` };
       }
@@ -190,26 +180,24 @@ export class HostFirewallAttestor {
       }
     }
 
-    // Every rule in the egress chain must have an authorized target (ACCEPT, REJECT, DROP)
-    // and match the exact canonical shape. Reject any early RETURN or indirect jump.
+    // Every rule in the egress chain must match an exact authorized canonical shape.
+    // Reject any early RETURN, indirect jump, or widened port (e.g. 8000, 4430, 22).
     for (const rule of egressRules) {
-      const target = rule.match(/-j\s+([A-Za-z0-9_-]+)/)?.[1];
-      if (target === 'RETURN') {
-        return { ok: false, reason: `egress chain must not contain RETURN rules: ${rule}` };
-      }
-      if (target !== 'ACCEPT' && target !== 'REJECT' && target !== 'DROP') {
-        return { ok: false, reason: `egress chain contains unauthorized jump target '${target}': ${rule}` };
-      }
-      if (target === 'ACCEPT') {
-        const isEstablished = rule.includes('conntrack') && rule.includes('ESTABLISHED');
-        const isDns = this.dnsResolvers.some((r) => rule.includes(`-d ${r}`)) && rule.includes('--dport 53');
-        const isWeb = !rule.includes('-d ') && (rule.includes('--dport 80') || rule.includes('--dport 443'));
-        if (!isEstablished && !isDns && !isWeb) {
-          return { ok: false, reason: `egress chain contains unauthorized ACCEPT rule: ${rule}` };
-        }
+      const isConntrack = /^-A\s+\S+\s+-m\s+conntrack\s+--ctstate\s+ESTABLISHED(?:,RELATED)?\s+-j\s+ACCEPT$/.test(rule);
+      const isDeny = /^-A\s+\S+\s+-d\s+\S+\s+-j\s+(?:REJECT|DROP)(?:\s+--reject-with\s+\S+)?$/.test(rule);
+      const isDns = this.dnsResolvers.some((r) =>
+        new RegExp(`^-A\\s+\\S+\\s+-d\\s+${r}(?:/32)?\\s+-p\\s+(?:udp|tcp)(?:\\s+-m\\s+(?:udp|tcp))?\\s+--dport\\s+53\\s+-j\\s+ACCEPT$`).test(rule) ||
+        new RegExp(`^-A\\s+\\S+\\s+-p\\s+(?:udp|tcp)(?:\\s+-m\\s+(?:udp|tcp))?\\s+-d\\s+${r}(?:/32)?\\s+--dport\\s+53\\s+-j\\s+ACCEPT$`).test(rule)
+      );
+      const isWeb = /^-A\s+\S+\s+-p\s+tcp(?:\s+-m\s+tcp)?\s+--dport\s+80\s+-j\s+ACCEPT$/.test(rule) ||
+                    /^-A\s+\S+\s+-p\s+tcp(?:\s+-m\s+tcp)?\s+--dport\s+443\s+-j\s+ACCEPT$/.test(rule) ||
+                    /^-A\s+\S+\s+-p\s+tcp\s+-m\s+multiport\s+--dports\s+80,443\s+-j\s+ACCEPT$/.test(rule);
+      const isTerminal = /^-A\s+\S+\s+-j\s+(?:REJECT|DROP)(?:\s+--reject-with\s+\S+)?$/.test(rule);
+
+      if (!isConntrack && !isDeny && !isDns && !isWeb && !isTerminal) {
+        return { ok: false, reason: `egress chain contains unauthorized or widened rule: ${rule}` };
       }
     }
-    // Must terminate with REJECT or DROP
     const lastRule = egressRules[egressRules.length - 1];
     if (!lastRule || (!lastRule.includes('-j REJECT') && !lastRule.includes('-j DROP'))) {
       return { ok: false, reason: 'egress chain must end with terminal REJECT or DROP' };

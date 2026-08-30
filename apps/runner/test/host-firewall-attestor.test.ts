@@ -207,6 +207,7 @@ COMMIT
     it('rejects adversarial reordering: port 80/443 allow placed before deny rules', () => {
       const reordered = `
 *filter
+-A FORWARD -j DOCKER-USER
 -A INPUT -i chm-egress0 -j CHM-INPUT-v1
 -A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
 -A CHM-INPUT-v1 -j REJECT
@@ -234,6 +235,7 @@ COMMIT
     it('rejects adversarial broad ACCEPT target or preceding rule on DOCKER-USER jump', () => {
       const directAccept = `
 *filter
+-A FORWARD -j DOCKER-USER
 -A DOCKER-USER -i chm-egress0 -j ACCEPT
 -A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
 -A INPUT -i chm-egress0 -j CHM-INPUT-v1
@@ -256,10 +258,11 @@ COMMIT
       `;
       const res1 = attestor.parseFirewallRules(directAccept);
       expect(res1.ok).toBe(false);
-      expect(res1.reason).toContain('invalid or broad ACCEPT/RETURN target jump');
+      expect(res1.reason).toContain("invalid or broad target jump for 'chm-egress0' in DOCKER-USER");
 
       const precedingAccept = `
 *filter
+-A FORWARD -j DOCKER-USER
 -A DOCKER-USER -j ACCEPT
 -A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
 -A INPUT -i chm-egress0 -j CHM-INPUT-v1
@@ -288,6 +291,7 @@ COMMIT
     it('rejects broad unconstrained NAT masquerade', () => {
       const broadNat = `
 *filter
+-A FORWARD -j DOCKER-USER
 -A INPUT -i chm-egress0 -j CHM-INPUT-v1
 -A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
 -A CHM-INPUT-v1 -j REJECT
@@ -318,6 +322,7 @@ COMMIT
     it('rejects a broad ACCEPT rule inside the egress chain', () => {
       const broadEgressAccept = `
 *filter
+-A FORWARD -j DOCKER-USER
 -A INPUT -i chm-egress0 -j CHM-INPUT-v1
 -A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
 -A CHM-INPUT-v1 -j REJECT
@@ -347,10 +352,57 @@ COMMIT
       `;
       const result = attestor.parseFirewallRules(broadEgressAccept);
       expect(result.ok).toBe(false);
-      expect(result.reason).toContain('unauthorized ACCEPT rule');
+      expect(result.reason).toContain('unauthorized or widened rule');
     });
 
-    it('rejects a FORWARD accept that precedes the DOCKER-USER jump', () => {
+    it('rejects widened port 8000 or 4430 inside egress chain', () => {
+      const widened8000 = `
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:DOCKER-USER - [0:0]
+:CHM-INPUT-v1 - [0:0]
+:CHM-EGRESS-v1 - [0:0]
+-A FORWARD -j DOCKER-USER
+-A INPUT -i chm-egress0 -j CHM-INPUT-v1
+-A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
+-A CHM-INPUT-v1 -j REJECT --reject-with icmp-port-unreachable
+-A CHM-EGRESS-v1 -m conntrack --ctstate ESTABLISHED -j ACCEPT
+-A CHM-EGRESS-v1 -d 169.254.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 10.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 172.16.0.0/12 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited
+-A CHM-EGRESS-v1 -d 8.8.8.8/32 -p udp -m udp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 8.8.8.8/32 -p tcp -m tcp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 1.1.1.1/32 -p tcp -m tcp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -p tcp --dport 8000 -j ACCEPT
+-A CHM-EGRESS-v1 -p tcp --dport 443 -j ACCEPT
+-A CHM-EGRESS-v1 -j REJECT --reject-with icmp-port-unreachable
+COMMIT
+*nat
+:POSTROUTING ACCEPT [0:0]
+:CHM-NAT-v1 - [0:0]
+-A POSTROUTING -s 172.30.240.0/24 -j CHM-NAT-v1
+-A CHM-NAT-v1 -p tcp -m multiport --dports 80,443 -j MASQUERADE
+-A CHM-NAT-v1 -p udp -d 8.8.8.8/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p tcp -d 8.8.8.8/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p udp -d 1.1.1.1/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p tcp -d 1.1.1.1/32 --dport 53 -j MASQUERADE
+COMMIT
+      `;
+      const res1 = attestor.parseFirewallRules(widened8000);
+      expect(res1.ok).toBe(false);
+
+      const widened4430 = widened8000.replace('--dport 8000', '--dport 80').replace('--dport 443', '--dport 4430');
+      const res2 = attestor.parseFirewallRules(widened4430);
+      expect(res2.ok).toBe(false);
+    });
+
+    it('rejects a FORWARD rule that precedes the DOCKER-USER jump', () => {
       const forwardBypass = `
 *filter
 -A FORWARD -i chm-egress0 -j ACCEPT
@@ -376,7 +428,72 @@ COMMIT
       `;
       const result = attestor.parseFirewallRules(forwardBypass);
       expect(result.ok).toBe(false);
-      expect(result.reason).toContain('broad ACCEPT rule precedes FORWARD jump');
+      expect(result.reason).toContain("first FORWARD rule must be exactly '-A FORWARD -j DOCKER-USER'");
+    });
+
+    it('rejects conditional or unauthorized FORWARD jump', () => {
+      const conditionalForward = `
+*filter
+-A FORWARD -p tcp -j DOCKER-USER
+-A INPUT -i chm-egress0 -j CHM-INPUT-v1
+-A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
+-A CHM-INPUT-v1 -j REJECT
+-A CHM-EGRESS-v1 -m conntrack --ctstate ESTABLISHED -j ACCEPT
+-A CHM-EGRESS-v1 -d 169.254.0.0/16 -j REJECT
+-A CHM-EGRESS-v1 -d 10.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 172.16.0.0/12 -j REJECT
+-A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
+-A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 1.1.1.1 -p tcp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -p tcp --dport 80 -j ACCEPT
+-A CHM-EGRESS-v1 -p tcp --dport 443 -j ACCEPT
+-A CHM-EGRESS-v1 -j REJECT
+COMMIT
+*nat
+:POSTROUTING ACCEPT [0:0]
+:CHM-NAT-v1 - [0:0]
+-A POSTROUTING -s 172.30.240.0/24 -j CHM-NAT-v1
+-A CHM-NAT-v1 -p tcp -m multiport --dports 80,443 -j MASQUERADE
+-A CHM-NAT-v1 -p udp -d 8.8.8.8/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p tcp -d 8.8.8.8/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p udp -d 1.1.1.1/32 --dport 53 -j MASQUERADE
+-A CHM-NAT-v1 -p tcp -d 1.1.1.1/32 --dport 53 -j MASQUERADE
+COMMIT
+      `;
+      const result = attestor.parseFirewallRules(conditionalForward);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toContain("first FORWARD rule must be exactly '-A FORWARD -j DOCKER-USER'");
+    });
+
+    it('rejects ruleset with missing FORWARD jump to DOCKER-USER', () => {
+      const noForward = `
+*filter
+-A INPUT -i chm-egress0 -j CHM-INPUT-v1
+-A DOCKER-USER -i chm-egress0 -j CHM-EGRESS-v1
+-A CHM-INPUT-v1 -j REJECT
+-A CHM-EGRESS-v1 -m conntrack --ctstate ESTABLISHED -j ACCEPT
+-A CHM-EGRESS-v1 -d 169.254.0.0/16 -j REJECT
+-A CHM-EGRESS-v1 -d 10.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 172.16.0.0/12 -j REJECT
+-A CHM-EGRESS-v1 -d 192.168.0.0/16 -j REJECT
+-A CHM-EGRESS-v1 -d 127.0.0.0/8 -j REJECT
+-A CHM-EGRESS-v1 -d 100.64.0.0/10 -j REJECT
+-A CHM-EGRESS-v1 -d 8.8.8.8 -p udp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 8.8.8.8 -p tcp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 1.1.1.1 -p udp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -d 1.1.1.1 -p tcp --dport 53 -j ACCEPT
+-A CHM-EGRESS-v1 -p tcp --dport 80 -j ACCEPT
+-A CHM-EGRESS-v1 -p tcp --dport 443 -j ACCEPT
+-A CHM-EGRESS-v1 -j REJECT
+COMMIT
+      `;
+      const result = attestor.parseFirewallRules(noForward);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toContain('missing FORWARD jump rule to DOCKER-USER');
     });
 
     it('rejects widened MASQUERADE on unauthorized port in nat table', () => {
@@ -510,7 +627,7 @@ COMMIT
       `;
       const result = attestor.parseFirewallRules(returnRules);
       expect(result.ok).toBe(false);
-      expect(result.reason).toContain('must not contain RETURN rules');
+      expect(result.reason).toContain('unauthorized or widened rule');
     });
 
     it('rejects unauthorized indirect jump inside egress chain', () => {
@@ -556,7 +673,7 @@ COMMIT
       `;
       const result = attestor.parseFirewallRules(indirectRules);
       expect(result.ok).toBe(false);
-      expect(result.reason).toContain('unauthorized jump target');
+      expect(result.reason).toContain('unauthorized or widened rule');
     });
 
     it('rejects early RETURN inside INPUT target chain', () => {
