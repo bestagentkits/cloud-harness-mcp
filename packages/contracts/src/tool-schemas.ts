@@ -23,6 +23,186 @@ const gitRefspec = z.string().min(1).max(512).refine((value) => {
 const sessionName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
 const EnvironmentIdSchema = z.string().regex(/^env_[A-Za-z0-9_-]{20,80}$/);
 
+const githubActionUnion = z.discriminatedUnion('action', [
+  z.object({
+    ...workspace,
+    action: z.literal('pr_list'),
+    limit: z.number().int().min(1).max(100).default(20),
+    state: z.enum(['open', 'closed', 'all']).default('open')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_view'),
+    prNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_create'),
+    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
+    head: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'head cannot contain null bytes'),
+    base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').default('main'),
+    draft: z.boolean().default(false),
+    labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_update'),
+    prNumber: z.number().int().positive(),
+    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+    base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').optional(),
+    state: z.enum(['open', 'closed']).optional()
+  }).superRefine((input, context) => {
+    if (!input.title && !input.body && !input.base && !input.state) {
+      context.addIssue({ code: 'custom', path: ['title'], message: 'at least one of title, body, base, or state is required' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_comment'),
+    prNumber: z.number().int().positive(),
+    body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_list'),
+    limit: z.number().int().min(1).max(100).default(20),
+    state: z.enum(['open', 'closed', 'all']).default('open')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_view'),
+    issueNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_create'),
+    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
+    labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+    assignees: z.array(z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username')).max(10).optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_comment'),
+    issueNumber: z.number().int().positive(),
+    body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_comment_update'),
+    commentId: z.number().int().positive(),
+    body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('label_create'),
+    name: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label name cannot contain null bytes'),
+    color: z.string().regex(/^[0-9A-Fa-f]{6}$/).optional(),
+    description: z.string().max(200).optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_labels_add'),
+    issueNumber: z.number().int().positive(),
+    labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).min(1).max(50),
+    createMissing: z.boolean().default(true),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_labels_remove'),
+    issueNumber: z.number().int().positive(),
+    label: z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_update'),
+    issueNumber: z.number().int().positive(),
+    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+    state: z.enum(['open', 'closed']).optional(),
+    stateReason: z.enum(['completed', 'not_planned', 'reopened']).optional()
+  }).superRefine((input, context) => {
+    if (!input.title && !input.body && !input.state) {
+      context.addIssue({ code: 'custom', path: ['title'], message: 'at least one of title, body, or state is required' });
+    }
+    if (input.stateReason && input.state !== 'closed' && input.stateReason !== 'reopened') {
+      context.addIssue({ code: 'custom', path: ['stateReason'], message: 'stateReason is valid only when closing or reopening an issue' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_publish'),
+    issueNumber: z.number().int().positive(),
+    comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
+    addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+    removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+    createMissingLabels: z.boolean().default(true),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    const hasComment = Boolean(input.comment?.trim());
+    const hasAdd = Boolean(input.addLabels && input.addLabels.length > 0);
+    const hasRemove = Boolean(input.removeLabels && input.removeLabels.length > 0);
+    if (!hasComment && !hasAdd && !hasRemove) {
+      context.addIssue({
+        code: 'custom',
+        path: ['comment'],
+        message: 'at least one of comment, addLabels, or removeLabels is required'
+      });
+    }
+    if (input.addLabels && input.removeLabels) {
+      const addMap: Record<string, true> = {};
+      for (const label of input.addLabels) addMap[label] = true;
+      for (const label of input.removeLabels) {
+        if (addMap[label]) {
+          context.addIssue({
+            code: 'custom',
+            path: ['removeLabels'],
+            message: `label "${label}" cannot appear in both addLabels and removeLabels`
+          });
+        }
+      }
+    }
+  })
+]);
+
+const githubActionInput = z.object({
+  ...workspace,
+  action: z.enum([
+    'pr_list', 'pr_view', 'pr_create', 'pr_update', 'pr_comment',
+    'issue_list', 'issue_view', 'issue_create', 'issue_comment',
+    'issue_comment_update', 'label_create', 'issue_labels_add',
+    'issue_labels_remove', 'issue_update', 'issue_publish'
+  ]),
+  limit: z.number().int().min(1).max(100).optional(),
+  state: z.enum(['open', 'closed', 'all']).optional(),
+  prNumber: z.number().int().positive().optional(),
+  issueNumber: z.number().int().positive().optional(),
+  commentId: z.number().int().positive().optional(),
+  title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
+  body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+  head: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'head cannot contain null bytes').optional(),
+  base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').optional(),
+  draft: z.boolean().optional(),
+  labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+  assignees: z.array(z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username')).max(10).optional(),
+  name: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label name cannot contain null bytes').optional(),
+  color: z.string().regex(/^[0-9A-Fa-f]{6}$/).optional(),
+  description: z.string().max(200).optional(),
+  label: z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas').optional(),
+  createMissing: z.boolean().optional(),
+  createMissingLabels: z.boolean().optional(),
+  stateReason: z.enum(['completed', 'not_planned', 'reopened']).optional(),
+  comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
+  addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+  removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+  idempotencyKey: IdempotencyKeySchema.optional()
+});
+
 const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
@@ -187,151 +367,7 @@ const schemas = {
     artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
     expectedGeneration: z.number().int().positive().default(1)
   }),
-  github_action: z.discriminatedUnion('action', [
-    z.object({
-      ...workspace,
-      action: z.literal('pr_list'),
-      limit: z.number().int().min(1).max(100).default(20),
-      state: z.enum(['open', 'closed', 'all']).default('open')
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('pr_view'),
-      prNumber: z.number().int().positive()
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('pr_create'),
-      title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
-      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
-      head: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'head cannot contain null bytes'),
-      base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').default('main'),
-      draft: z.boolean().default(false),
-      labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional()
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('pr_update'),
-      prNumber: z.number().int().positive(),
-      title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
-      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
-      base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').optional(),
-      state: z.enum(['open', 'closed']).optional()
-    }).superRefine((input, context) => {
-      if (!input.title && !input.body && !input.base && !input.state) {
-        context.addIssue({ code: 'custom', path: ['title'], message: 'at least one of title, body, base, or state is required' });
-      }
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('pr_comment'),
-      prNumber: z.number().int().positive(),
-      body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
-      idempotencyKey: IdempotencyKeySchema.optional()
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_list'),
-      limit: z.number().int().min(1).max(100).default(20),
-      state: z.enum(['open', 'closed', 'all']).default('open')
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_view'),
-      issueNumber: z.number().int().positive()
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_create'),
-      title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
-      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
-      labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
-      assignees: z.array(z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username')).max(10).optional()
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_comment'),
-      issueNumber: z.number().int().positive(),
-      body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
-      idempotencyKey: IdempotencyKeySchema.optional()
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_comment_update'),
-      commentId: z.number().int().positive(),
-      body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes')
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('label_create'),
-      name: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label name cannot contain null bytes'),
-      color: z.string().regex(/^[0-9A-Fa-f]{6}$/).optional(),
-      description: z.string().max(200).optional()
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_labels_add'),
-      issueNumber: z.number().int().positive(),
-      labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).min(1).max(50),
-      createMissing: z.boolean().default(true),
-      idempotencyKey: IdempotencyKeySchema.optional()
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_labels_remove'),
-      issueNumber: z.number().int().positive(),
-      label: z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_update'),
-      issueNumber: z.number().int().positive(),
-      title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
-      body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
-      state: z.enum(['open', 'closed']).optional(),
-      stateReason: z.enum(['completed', 'not_planned', 'reopened']).optional()
-    }).superRefine((input, context) => {
-      if (!input.title && !input.body && !input.state) {
-        context.addIssue({ code: 'custom', path: ['title'], message: 'at least one of title, body, or state is required' });
-      }
-      if (input.stateReason && input.state !== 'closed' && input.stateReason !== 'reopened') {
-        context.addIssue({ code: 'custom', path: ['stateReason'], message: 'stateReason is valid only when closing or reopening an issue' });
-      }
-    }),
-    z.object({
-      ...workspace,
-      action: z.literal('issue_publish'),
-      issueNumber: z.number().int().positive(),
-      comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
-      addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
-      removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
-      createMissingLabels: z.boolean().default(true),
-      idempotencyKey: IdempotencyKeySchema.optional()
-    }).superRefine((input, context) => {
-      const hasComment = Boolean(input.comment?.trim());
-      const hasAdd = Boolean(input.addLabels && input.addLabels.length > 0);
-      const hasRemove = Boolean(input.removeLabels && input.removeLabels.length > 0);
-      if (!hasComment && !hasAdd && !hasRemove) {
-        context.addIssue({
-          code: 'custom',
-          path: ['comment'],
-          message: 'at least one of comment, addLabels, or removeLabels is required'
-        });
-      }
-      if (input.addLabels && input.removeLabels) {
-        const addSet = new Set(input.addLabels);
-        for (const label of input.removeLabels) {
-          if (addSet.has(label)) {
-            context.addIssue({
-              code: 'custom',
-              path: ['removeLabels'],
-              message: `label "${label}" cannot appear in both addLabels and removeLabels`
-            });
-          }
-        }
-      }
-    })
-  ]),
+  github_action: githubActionInput.pipe(githubActionUnion as unknown as z.ZodType<unknown, z.output<typeof githubActionInput>>),
   secrets_list: z.object({
     ...workspace,
     environmentId: EnvironmentIdSchema.optional(),

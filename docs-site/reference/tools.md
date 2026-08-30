@@ -55,7 +55,7 @@ List owner-visible workspace records with bounded cursor pagination.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `cursor` | `string` | No | max length: 256 |
-| `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
+| `limit` | `integer` | No | range: 1–500, default: `100` |
 
 ### `workspace_status`
 
@@ -129,7 +129,7 @@ Recover a recoverable expired workspace to active state, or inspect, patch, or e
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `mode` | `"resume"` \| `"status"` \| `"patch"` \| `"export"` | **Yes** | default: `"resume"` |
+| `mode` | `"resume"` \| `"status"` \| `"patch"` \| `"export"` | No | default: `"resume"` |
 | `targetBranch` | `string` | No | length: 1–255 |
 
 ### `workspace_close`
@@ -158,7 +158,7 @@ List available environment secret names and descriptions without revealing secre
 | `environmentId` | `string` | No | pattern: `^env_[A-Za-z0-9_-]{20,80}$` |
 | `query` | `string` | No | max length: 200 |
 | `cursor` | `string` | No | max length: 256 |
-| `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
+| `limit` | `integer` | No | range: 1–500, default: `100` |
 
 ## Files and Code Intelligence
 
@@ -175,9 +175,9 @@ List one workspace directory with bounded cursor pagination.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `path` | `string` | **Yes** | length: 1–1024, default: `"."` |
+| `path` | `string` | No | length: 1–1024, default: `"."` |
 | `cursor` | `string` | No | max length: 256 |
-| `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
+| `limit` | `integer` | No | range: 1–500, default: `100` |
 
 ### `files_read`
 
@@ -191,8 +191,8 @@ Read a bounded byte range from a workspace file with its size, SHA-256, and cont
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
-| `offset` | `integer` | **Yes** | range: 0–9007199254740991, default: `0` |
-| `limit` | `integer` | **Yes** | range: 1–1048576, default: `65536` |
+| `offset` | `integer` | No | range: 0–9007199254740991, default: `0` |
+| `limit` | `integer` | No | range: 1–1048576, default: `65536` |
 | `cursor` | `string` | No | max length: 256 |
 | `readAll` | `boolean` | No | — |
 
@@ -223,8 +223,8 @@ Atomically write multiple workspace files in one call, automatically creating mi
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `files` | object[] | **Yes** | — |
-| `createParents` | `boolean` | **Yes** | default: `true` |
-| `atomic` | `boolean` | **Yes** | default: `true` |
+| `createParents` | `boolean` | No | default: `true` |
+| `atomic` | `boolean` | No | default: `true` |
 | `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
 ### `files_apply_patch`
@@ -255,7 +255,7 @@ Delete one workspace file or directory, with explicit recursion and optional fil
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
-| `recursive` | `boolean` | **Yes** | default: `false` |
+| `recursive` | `boolean` | No | default: `false` |
 | `expectedSha256` | `string` | No | length: 64–64 |
 
 ### `files_move`
@@ -271,7 +271,7 @@ Move or rename one workspace entry, optionally overwriting an existing file.
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `source` | `string` | **Yes** | length: 1–1024 |
 | `destination` | `string` | **Yes** | length: 1–1024 |
-| `overwrite` | `boolean` | **Yes** | default: `false` |
+| `overwrite` | `boolean` | No | default: `false` |
 
 ### `files_mkdir`
 
@@ -285,7 +285,7 @@ Create one workspace directory, including missing parents by default.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
-| `recursive` | `boolean` | **Yes** | default: `true` |
+| `recursive` | `boolean` | No | default: `true` |
 
 ### `grep_search`
 
@@ -299,9 +299,9 @@ Search workspace text with a bounded regular expression and optional path, glob 
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `pattern` | `string` | **Yes** | length: 1–4096 |
-| `path` | `string` | **Yes** | length: 1–1024, default: `"."` |
+| `path` | `string` | No | length: 1–1024, default: `"."` |
 | `glob` | `string` | No | max length: 512 |
-| `maxResults` | `integer` | **Yes** | range: 1–500, default: `100` |
+| `maxResults` | `integer` | No | range: 1–500, default: `100` |
 
 ### `symbols_search`
 
@@ -315,9 +315,9 @@ Find bounded indexed symbol definitions by case-insensitive substring.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `query` | `string` | **Yes** | length: 1–256 |
-| `path` | `string` | **Yes** | length: 1–1024, default: `"."` |
+| `path` | `string` | No | length: 1–1024, default: `"."` |
 | `language` | `string` | No | pattern: `^[A-Za-z0-9_+#.-]{1,40}$` |
-| `maxResults` | `integer` | **Yes** | range: 1–500, default: `100` |
+| `maxResults` | `integer` | No | range: 1–500, default: `100` |
 
 ### `symbols_references`
 
@@ -331,9 +331,9 @@ Find bounded lexical whole-word occurrences of a symbol in workspace text.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `symbol` | `string` | **Yes** | length: 1–256 |
-| `path` | `string` | **Yes** | length: 1–1024, default: `"."` |
+| `path` | `string` | No | length: 1–1024, default: `"."` |
 | `glob` | `string` | No | max length: 512 |
-| `maxResults` | `integer` | **Yes** | range: 1–500, default: `100` |
+| `maxResults` | `integer` | No | range: 1–500, default: `100` |
 
 ## Commands and Shells
 
@@ -351,12 +351,12 @@ Run one bounded shell command in the workspace and return captured output.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `command` | `string` | **Yes** | length: 1–32768 |
-| `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
-| `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
-| `maxOutputBytes` | `integer` | **Yes** | range: 1024–1048576, default: `262144` |
-| `privileged` | `boolean` | **Yes** | default: `false` |
+| `cwd` | `string` | No | length: 1–1024, default: `"."` |
+| `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
+| `maxOutputBytes` | `integer` | No | range: 1024–1048576, default: `262144` |
+| `privileged` | `boolean` | No | default: `false` |
 | `approvalGrantToken` | `string` | No | length: 1–128 |
-| `async` | `boolean` | **Yes** | default: `false` |
+| `async` | `boolean` | No | default: `false` |
 
 ### `shell_open`
 
@@ -369,7 +369,7 @@ Open an idempotent ephemeral interactive shell in the workspace.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
+| `cwd` | `string` | No | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
 ### `shell_io`
@@ -386,7 +386,7 @@ Send input to or poll bounded output from an open interactive shell.
 | `shellId` | `string` | **Yes** | pattern: `^sh_[A-Za-z0-9_-]{20,80}$` |
 | `input` | `string` | No | max length: 65536 |
 | `cursor` | `string` | No | max length: 256 |
-| `waitMs` | `integer` | **Yes** | range: 0–5000, default: `100` |
+| `waitMs` | `integer` | No | range: 0–5000, default: `100` |
 
 ### `shell_close`
 
@@ -437,7 +437,7 @@ Wait for a long-running operation to reach a terminal state with a timeout.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
-| `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
+| `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
 
 ## Sessions and Tasks
 
@@ -455,7 +455,7 @@ List named coding sessions in a workspace with bounded cursor pagination.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `cursor` | `string` | No | max length: 256 |
-| `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
+| `limit` | `integer` | No | range: 1–500, default: `100` |
 
 ### `sessions_open`
 
@@ -469,7 +469,7 @@ Open an idempotent named coding session in the workspace.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
-| `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
+| `cwd` | `string` | No | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
 ### `sessions_io`
@@ -486,7 +486,7 @@ Send input to or poll bounded output from a named coding session.
 | `sessionId` | `string` | **Yes** | pattern: `^sess_[A-Za-z0-9_-]{20,80}$` |
 | `input` | `string` | No | max length: 65536 |
 | `cursor` | `string` | No | max length: 256 |
-| `waitMs` | `integer` | **Yes** | range: 0–5000, default: `100` |
+| `waitMs` | `integer` | No | range: 0–5000, default: `100` |
 
 ### `sessions_close`
 
@@ -513,7 +513,7 @@ List managed background task records with bounded cursor pagination.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `cursor` | `string` | No | max length: 256 |
-| `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
+| `limit` | `integer` | No | range: 1–500, default: `100` |
 
 ### `tasks_run`
 
@@ -527,10 +527,10 @@ Start an idempotent managed command task with optional task dependencies.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `command` | `string` | **Yes** | length: 1–32768 |
-| `cwd` | `string` | **Yes** | length: 1–1024, default: `"."` |
+| `cwd` | `string` | No | length: 1–1024, default: `"."` |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
-| `timeoutMs` | `integer` | **Yes** | range: 100–86400000, default: `900000` |
-| `dependsOn` | string[] | **Yes** | default: `[]` |
+| `timeoutMs` | `integer` | No | range: 100–86400000, default: `900000` |
+| `dependsOn` | string[] | No | default: `[]` |
 
 ### `tasks_status`
 
@@ -598,10 +598,10 @@ Read a bounded staged or unstaged Git diff with cursor pagination and readAll co
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `staged` | `boolean` | **Yes** | default: `false` |
+| `staged` | `boolean` | No | default: `false` |
 | `path` | `string` | No | length: 1–1024 |
 | `cursor` | `string` | No | max length: 256 |
-| `limit` | `integer` | **Yes** | range: 1–500000, default: `65536` |
+| `limit` | `integer` | No | range: 1–500000, default: `65536` |
 | `readAll` | `boolean` | No | — |
 
 ### `git_log`
@@ -615,7 +615,7 @@ Read bounded recent commit metadata from the workspace repository with cursor pa
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `limit` | `integer` | **Yes** | range: 1–500, default: `20` |
+| `limit` | `integer` | No | range: 1–500, default: `20` |
 | `cursor` | `string` | No | max length: 256 |
 | `readAll` | `boolean` | No | — |
 
@@ -633,7 +633,7 @@ List, create, or delete a local Git branch with constrained ref arguments.
 | `action` | `"list"` \| `"create"` \| `"delete"` | **Yes** | — |
 | `name` | `string` | No | length: 1–255 |
 | `startPoint` | `string` | No | length: 1–255 |
-| `force` | `boolean` | **Yes** | default: `false` |
+| `force` | `boolean` | No | default: `false` |
 
 ### `git_checkout`
 
@@ -647,7 +647,7 @@ Check out an existing Git ref or create and check out a local branch.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `ref` | `string` | **Yes** | length: 1–255 |
-| `create` | `boolean` | **Yes** | default: `false` |
+| `create` | `boolean` | No | default: `false` |
 
 ### `git_add`
 
@@ -660,8 +660,8 @@ Stage either explicit workspace paths or all tracked and untracked changes.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `all` | `boolean` | **Yes** | default: `false` |
-| `paths` | string[] | **Yes** | default: `[]` |
+| `all` | `boolean` | No | default: `false` |
+| `paths` | string[] | No | default: `[]` |
 
 ### `git_commit`
 
@@ -675,7 +675,7 @@ Create an unsigned local Git commit with default or explicit author and message.
 | `message` | `string` | **Yes** | length: 1–10000 |
 | `authorName` | `string` | No | length: 1–200 |
 | `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
-| `all` | `boolean` | **Yes** | default: `false` |
+| `all` | `boolean` | No | default: `false` |
 | `expectedHeadOid` | `string` | No | pattern: `^(?:[0-9a-f]{40}|[0-9a-f]{64})$` |
 | `idempotencyKey` | `string` | No | length: 1–256 |
 
@@ -717,10 +717,10 @@ Transactionally stage changes, run preflights, commit with default or explicit i
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `paths` | string[] | No | — |
-| `all` | `boolean` | **Yes** | default: `true` |
+| `all` | `boolean` | No | default: `true` |
 | `commitMessage` | `string` | **Yes** | length: 1–10000 |
 | `branch` | `string` | No | length: 1–255 |
-| `push` | `boolean` | **Yes** | default: `true` |
+| `push` | `boolean` | No | default: `true` |
 | `authorName` | `string` | No | length: 1–200 |
 | `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
 | `preflight` | `object` | No | — |
@@ -737,7 +737,7 @@ Fetch a constrained source ref from origin through the trusted repository broker
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `remote` | `"origin"` | **Yes** | default: `"origin"` |
+| `remote` | `"origin"` | No | default: `"origin"` |
 | `refspec` | `string` | No | length: 1–255 |
 
 ### `git_pull`
@@ -751,9 +751,9 @@ Integrate an origin branch using ff-only, merge, or rebase strategy.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `remote` | `"origin"` | **Yes** | default: `"origin"` |
+| `remote` | `"origin"` | No | default: `"origin"` |
 | `branch` | `string` | No | length: 1–255 |
-| `strategy` | `"ff-only"` \| `"merge"` \| `"rebase"` | **Yes** | default: `"ff-only"` |
+| `strategy` | `"ff-only"` \| `"merge"` \| `"rebase"` | No | default: `"ff-only"` |
 
 ### `git_push`
 
@@ -766,9 +766,9 @@ Push a constrained branch refspec to origin, with optional explicit force-with-l
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `remote` | `"origin"` | **Yes** | default: `"origin"` |
+| `remote` | `"origin"` | No | default: `"origin"` |
 | `refspec` | `string` | No | length: 1–512 |
-| `forceWithLease` | `boolean` | **Yes** | default: `false` |
+| `forceWithLease` | `boolean` | No | default: `false` |
 | `expectedRemoteOid` | `string` | No | pattern: `^(?:[0-9a-f]{40}|[0-9a-f]{64})$` |
 | `idempotencyKey` | `string` | No | length: 1–256 |
 
@@ -784,7 +784,7 @@ Merge a Git ref with an explicit fast-forward policy and optional message.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `ref` | `string` | **Yes** | length: 1–255 |
-| `fastForward` | `"allow"` \| `"only"` \| `"never"` | **Yes** | default: `"allow"` |
+| `fastForward` | `"allow"` \| `"only"` \| `"never"` | No | default: `"allow"` |
 | `message` | `string` | No | length: 1–10000 |
 
 ### `git_rebase`
@@ -824,7 +824,7 @@ Create a named managed worktree, optionally with a new local branch.
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
 | `ref` | `string` | **Yes** | length: 1–255 |
-| `createBranch` | `boolean` | **Yes** | default: `false` |
+| `createBranch` | `boolean` | No | default: `false` |
 
 ### `worktrees_remove`
 
@@ -838,7 +838,7 @@ Remove one named managed worktree, optionally discarding dirty state.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,80}$` |
-| `force` | `boolean` | **Yes** | default: `false` |
+| `force` | `boolean` | No | default: `false` |
 
 ### `github_action`
 
@@ -850,31 +850,31 @@ Perform brokered GitHub operations via brokered helper without exposing tokens t
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `action` | `"pr_list"` \| `"pr_view"` \| `"pr_create"` \| `"pr_update"` \| `"pr_comment"` \| `"issue_list"` \| `"issue_view"` \| `"issue_create"` \| `"issue_comment"` \| `"issue_comment_update"` \| `"label_create"` \| `"issue_labels_add"` \| `"issue_labels_remove"` \| `"issue_update"` \| `"issue_publish"` | **Yes** | — |
-| `limit` | `integer` | No | range: 1–100, default: `20` |
+| `limit` | `integer` | No | range: 1–100 |
 | `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |
-| `title` | `string` | No | length: 1–256 |
-| `body` | `string` | No | max length: 65536, default: `""` |
-| `head` | `string` | No | length: 1–256 |
-| `base` | `string` | No | length: 1–256, default: `"main"` |
-| `draft` | `boolean` | No | default: `false` |
-| `labels` | string[] | No | — |
-| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 | `issueNumber` | `integer` | No | range: 0–9007199254740991 |
-| `assignees` | string[] | No | — |
 | `commentId` | `integer` | No | range: 0–9007199254740991 |
+| `title` | `string` | No | length: 1–256 |
+| `body` | `string` | No | max length: 65536 |
+| `head` | `string` | No | length: 1–256 |
+| `base` | `string` | No | length: 1–256 |
+| `draft` | `boolean` | No | — |
+| `labels` | string[] | No | — |
+| `assignees` | string[] | No | — |
 | `name` | `string` | No | length: 1–100 |
 | `color` | `string` | No | pattern: `^[0-9A-Fa-f]{6}$` |
 | `description` | `string` | No | max length: 200 |
-| `createMissing` | `boolean` | No | default: `true` |
 | `label` | `string` | No | length: 1–100 |
+| `createMissing` | `boolean` | No | — |
+| `createMissingLabels` | `boolean` | No | — |
 | `stateReason` | `"completed"` \| `"not_planned"` \| `"reopened"` | No | — |
 | `comment` | `string` | No | max length: 65536 |
 | `addLabels` | string[] | No | — |
 | `removeLabels` | string[] | No | — |
-| `createMissingLabels` | `boolean` | No | default: `true` |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
 ## Repository Extensions
 
@@ -918,8 +918,8 @@ Execute one reviewed script packaged by a repository-provided skill.
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]{1,120}$` |
 | `script` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
-| `args` | string[] | **Yes** | default: `[]` |
-| `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
+| `args` | string[] | No | default: `[]` |
+| `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
 
 ### `hooks_list`
 
@@ -945,7 +945,7 @@ Execute one named repository-defined hook as a bounded shell command.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
-| `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
+| `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
 
 ### `memories_list`
 
@@ -1010,7 +1010,7 @@ Execute one named repository-defined deployment target with external-effect risk
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `name` | `string` | **Yes** | pattern: `^[A-Za-z0-9._-]{1,120}$` |
-| `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
+| `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
 
 ## Retained Artifacts
 
@@ -1040,7 +1040,7 @@ List principal-owned retained artifact snapshots with bounded pagination.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `cursor` | `string` | No | max length: 256 |
-| `limit` | `integer` | **Yes** | range: 1–100, default: `50` |
+| `limit` | `integer` | No | range: 1–100, default: `50` |
 
 ### `artifacts_read`
 
@@ -1053,8 +1053,8 @@ Read a bounded base64 byte chunk from a principal-owned retained artifact with h
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
-| `offset` | `integer` | **Yes** | range: 0–9007199254740991, default: `0` |
-| `limit` | `integer` | **Yes** | range: 1–1048576, default: `65536` |
+| `offset` | `integer` | No | range: 0–9007199254740991, default: `0` |
+| `limit` | `integer` | No | range: 1–1048576, default: `65536` |
 
 ### `artifacts_restore`
 
@@ -1069,7 +1069,7 @@ Restore an unexpired principal-owned artifact into an active workspace file with
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
 | `path` | `string` | **Yes** | length: 1–1024 |
-| `overwrite` | `boolean` | **Yes** | default: `false` |
+| `overwrite` | `boolean` | No | default: `false` |
 | `expectedSha256` | `string` | No | length: 64–64 |
 
 ### `artifacts_delete`
@@ -1083,5 +1083,5 @@ Delete a principal-owned retained artifact snapshot before its retention expiry.
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
-| `expectedGeneration` | `integer` | **Yes** | range: 0–9007199254740991, default: `1` |
+| `expectedGeneration` | `integer` | No | range: 0–9007199254740991, default: `1` |
 

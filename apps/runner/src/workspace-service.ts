@@ -2088,6 +2088,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return result;
     }
     if (operation === 'workspace_finalize') {
+      const branch = (validated.branch as string | undefined) ?? await this.currentBranch(record, signal);
+      const targetRef = `refs/heads/${branch}`;
       const idempotencyKey = validated.idempotencyKey as string | undefined;
       const requestFingerprint = idempotencyKey
         ? createHash('sha256').update(JSON.stringify(validated)).digest('hex')
@@ -2100,7 +2102,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           idempotencyKey,
           operation: 'finalize',
           requestFingerprint,
-          targetRef: null,
+          targetRef,
           expectedRemoteOid: null,
           localCommitSha: null,
           createdAt: Date.now()
@@ -2116,7 +2118,31 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
           return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
         }
-        if (claim.action === 'RECONCILE_REQUIRED') {
+        if (claim.action === 'RECONCILE_REQUIRED' && claim.existing) {
+          const existingOp = claim.existing;
+          if (existingOp.status === 'UNKNOWN_REMOTE_STATE' && existingOp.localCommitSha) {
+            const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
+            let token: string | undefined;
+            try {
+              token = await this.repositoryToken(record.ownerId, repositoryUrl, 'write');
+            } catch { /* ignore if token cannot be minted */ }
+            const remoteOid = await this.probeRemoteRefOid(record, branch, token, signal);
+            if (remoteOid && remoteOid === existingOp.localCommitSha) {
+              const successResponse: RunnerResponse = {
+                ok: true,
+                message: `Workspace finalized and pushed to ${branch} (reconciled from remote state)`,
+                data: {
+                  commitSha: existingOp.localCommitSha,
+                  branch,
+                  pushed: true,
+                  alreadyFinalized: true
+                },
+                truncated: false
+              };
+              this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(successResponse), null, existingOp.localCommitSha);
+              return successResponse;
+            }
+          }
           this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'PENDING');
         }
       }
@@ -2174,7 +2200,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           let pushResult: RunnerResponse | undefined;
           if (validated.push !== false) {
             try {
-              pushResult = await this.remotePush(record, { refspec: `HEAD:refs/heads/${branch}` }, signal);
+              pushResult = await this.remotePush(record, {
+                refspec: `HEAD:refs/heads/${branch}`,
+                idempotencyKey: idempotencyKey ? `${idempotencyKey}:push` : undefined
+              }, signal);
               pushed = Boolean(pushResult.ok);
             } catch (err: unknown) {
               const pushErrMsg = err instanceof Error ? err.message : 'push failed';
@@ -2183,6 +2212,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               const operationDetail = err instanceof HarnessError ? err.operation : undefined;
               const repositoryDetail = err instanceof HarnessError ? err.repository : undefined;
               const requiredCapDetail = err instanceof HarnessError ? err.requiredCapability : undefined;
+              if (idempotencyKey) {
+                const isUnknown = errorCode === 'UNKNOWN_REMOTE_STATE';
+                this.store.updateGitOperationStatus(
+                  ownerId, record.id, idempotencyKey,
+                  isUnknown ? 'UNKNOWN_REMOTE_STATE' : 'FAILED',
+                  null,
+                  JSON.stringify({ message: pushErrMsg, code: errorCode }),
+                  commitSha
+                );
+              }
               return {
                 ok: false,
                 message: `Working tree clean but push failed: ${pushErrMsg}`,
@@ -2246,13 +2285,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
         const logResult = await this.runWorker(record, 'git_log', { limit: 1 }, signal);
         const commitSha = (logResult.data && typeof logResult.data === 'object' && 'output' in logResult.data && typeof logResult.data.output === 'string') ? logResult.data.output.split('\t')?.[0] || '' : '';
+        if (idempotencyKey && commitSha) {
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'PENDING', null, null, commitSha);
+        }
 
         // Step 5: Push if requested
         let pushResult: RunnerResponse | undefined;
         let pushed = false;
         if (validated.push !== false) {
           try {
-            pushResult = await this.remotePush(record, { refspec: `HEAD:refs/heads/${branch}` }, signal);
+            pushResult = await this.remotePush(record, {
+              refspec: `HEAD:refs/heads/${branch}`,
+              idempotencyKey: idempotencyKey ? `${idempotencyKey}:push` : undefined
+            }, signal);
             pushed = Boolean(pushResult.ok);
           } catch (pushErr: unknown) {
             const pushErrMsg = pushErr instanceof Error ? pushErr.message : 'push failed';
@@ -2261,6 +2306,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             const operationDetail = pushErr instanceof HarnessError ? pushErr.operation : undefined;
             const repositoryDetail = pushErr instanceof HarnessError ? pushErr.repository : undefined;
             const requiredCapDetail = pushErr instanceof HarnessError ? pushErr.requiredCapability : undefined;
+            if (idempotencyKey) {
+              const isUnknown = errorCode === 'UNKNOWN_REMOTE_STATE';
+              this.store.updateGitOperationStatus(
+                ownerId, record.id, idempotencyKey,
+                isUnknown ? 'UNKNOWN_REMOTE_STATE' : 'FAILED',
+                null,
+                JSON.stringify({ message: pushErrMsg, code: errorCode }),
+                commitSha
+              );
+            }
             return {
               ok: false,
               message: `Commit created (${commitSha.slice(0, 7)}) but push failed: ${pushErrMsg}`,
@@ -2313,11 +2368,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
 
       if (idempotencyKey) {
+        const commitSha = (response.data && typeof response.data === 'object' && 'commitSha' in response.data && typeof response.data.commitSha === 'string') ? response.data.commitSha : undefined;
         if (response.ok) {
-          const commitSha = (response.data && typeof response.data === 'object' && 'commitSha' in response.data && typeof response.data.commitSha === 'string') ? response.data.commitSha : undefined;
           this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(response), null, commitSha);
         } else {
-          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify(response.error ?? { message: response.message }));
+          const isUnknown = response.error?.code === 'UNKNOWN_REMOTE_STATE';
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, isUnknown ? 'UNKNOWN_REMOTE_STATE' : 'FAILED', null, JSON.stringify(response.error ?? { message: response.message }), commitSha);
         }
       }
       return response;

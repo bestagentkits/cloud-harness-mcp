@@ -56,6 +56,11 @@ Atomically create or update multiple workspace files in one operation with paren
 - Required: `files` array of 1–100 path/content objects.
 - Optional: `workspaceId`, `createParents` (default true), `atomic` (default true), `idempotencyKey`.
 - Returns created/updated counts, hashes, and per-file write details.
+- With `idempotencyKey`, a successful batch is cached and a same-key retry
+  replays that stored result instead of writing again — use it only to recover a
+  lost response. This replay is not fingerprint-checked: reusing the key with
+  different `files` returns the original result rather than a `CONFLICT`, so
+  always use a fresh key for a changed batch.
 
 <!-- cloudharness-example:files_write_batch
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","files":[{"path":"plans/plan.md","content":"# Plan"}],"createParents":true}

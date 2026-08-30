@@ -186,10 +186,27 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         );
         CREATE INDEX IF NOT EXISTS git_op_idempotency_lookup ON git_operation_idempotency(owner_id, workspace_id, operation, created_at DESC);
 
+        INSERT OR IGNORE INTO git_operation_idempotency (
+          owner_id, workspace_id, idempotency_key, operation, request_fingerprint,
+          status, result_json, created_at, finished_at
+        )
+        SELECT f.owner_id, f.workspace_id, f.idempotency_key, 'finalize', '',
+          'SUCCEEDED', f.result_json, f.created_at, f.created_at
+        FROM finalize_idempotency f
+        WHERE EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_id = f.owner_id AND w.id = f.workspace_id)
+          AND EXISTS (SELECT 1 FROM principals p WHERE p.id = f.owner_id);
         UPDATE schema_meta SET version = 4;
       `);
     });
     version = 4;
+  }
+  if (version === 4) {
+    const cols = (database.prepare('PRAGMA table_info(workspaces)').all() as { name: string }[]).map((c) => c.name);
+    if (cols.includes('network_profile') && !cols.includes('network_mode')) {
+      // Table already carries the v5 shape (e.g. downgraded-then-remigrated); just advance the version.
+      transaction(database, () => { database.exec('UPDATE schema_meta SET version = 5;'); });
+      version = 5;
+    }
   }
   if (version === 4) {
     database.exec('PRAGMA foreign_keys = OFF;');
@@ -264,7 +281,7 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {
   const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version !== 4) throw new Error(`state schema must be version 4 before downgrade, got ${version}`);
+  if (version !== 4 && version !== 5) throw new Error(`state schema must be version 4 or 5 before downgrade, got ${version}`);
   transaction(database, () => {
     database.exec(`
       DROP TABLE IF EXISTS git_operation_idempotency;
@@ -411,7 +428,24 @@ function resolveExternalPrincipalInTransaction(
     principalId, selector.issuer, selector.subject, selector.email ?? null, selector.name ?? null,
     legacyOwnerId ?? null, now, now
   );
-  if (legacyOwnerId) database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
+  if (legacyOwnerId) {
+    database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
+    try {
+      database.prepare('UPDATE finalize_idempotency SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
+      database.prepare(`
+        INSERT OR IGNORE INTO git_operation_idempotency (
+          owner_id, workspace_id, idempotency_key, operation, request_fingerprint,
+          status, result_json, created_at, finished_at
+        )
+        SELECT f.owner_id, f.workspace_id, f.idempotency_key, 'finalize', '',
+          'SUCCEEDED', f.result_json, f.created_at, f.created_at
+        FROM finalize_idempotency f
+        WHERE f.owner_id = ?
+          AND EXISTS (SELECT 1 FROM workspaces w WHERE w.owner_id = f.owner_id AND w.id = f.workspace_id)
+          AND EXISTS (SELECT 1 FROM principals p WHERE p.id = f.owner_id);
+      `).run(principalId);
+    } catch { /* ignore if tables do not exist yet */ }
+  }
   return principalId;
 }
 

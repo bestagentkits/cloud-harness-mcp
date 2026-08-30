@@ -47,10 +47,26 @@ describe('official SDK interoperability', () => {
     expect(listed.tools.find((tool) => tool.name === 'workspace_close')?.annotations?.destructiveHint).toBe(true);
     expect(listed.tools.find((tool) => tool.name === 'shell_close')?.annotations?.destructiveHint).toBe(true);
     expect(listed.tools.find((tool) => tool.name === 'sessions_close')?.annotations?.destructiveHint).toBe(true);
+    const ghAction = listed.tools.find((tool) => tool.name === 'github_action');
+    expect(ghAction).toBeDefined();
+    expect(ghAction?.annotations?.destructiveHint).toBe(true);
+    expect(ghAction?.annotations?.openWorldHint).toBe(true);
     const result = await client.callTool({ name: 'workspace_list', arguments: {} });
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toMatchObject({ ok: true });
     expect(result.content).toEqual([{ type: 'text', text: 'Stub runner result\n\noperation: workspace_list' }]);
+
+    const ghResult = await client.callTool({
+      name: 'github_action',
+      arguments: {
+        workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaa',
+        action: 'issue_create',
+        title: 'Test issue from MCP client'
+      }
+    });
+    expect(ghResult.isError).toBe(false);
+    expect(ghResult.structuredContent).toMatchObject({ ok: true });
+    expect(ghResult.content).toEqual([{ type: 'text', text: 'Stub runner result\n\noperation: github_action' }]);
     await client.close();
   });
 
