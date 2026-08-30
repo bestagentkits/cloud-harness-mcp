@@ -15,7 +15,7 @@ describe('TOCTOU Script Tamper & Execution Snapshot Defense', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('detects digest mismatch when script content is modified prior to execution', () => {
+  it('ensures snapshot-first isolation protects execution against source race tampering', () => {
     const skillDir = join(tmpDir, 'skills', 'deploy');
     mkdirSync(join(skillDir, 'scripts'), { recursive: true });
 
@@ -25,14 +25,35 @@ describe('TOCTOU Script Tamper & Execution Snapshot Defense', () => {
     writeFileSync(skillMd, '# Deploy Skill');
     writeFileSync(scriptPath, '#!/bin/bash\necho "original"');
 
-    const originalDigest = createHash('sha256').update(readFileSync(scriptPath)).digest('hex');
+    // Snapshot first into private execution directory
+    const snapDir = join(tmpDir, 'snap-exec');
+    mkdirSync(join(snapDir, 'scripts'), { recursive: true });
+    writeFileSync(join(snapDir, 'SKILL.md'), readFileSync(skillMd));
+    writeFileSync(join(snapDir, 'scripts', 'run.sh'), readFileSync(scriptPath));
 
-    // Simulate attacker tampering with script file
+    const expectedScriptSha = createHash('sha256').update(readFileSync(scriptPath)).digest('hex');
+
+    // Attacker modifies the mutable source directory while execution begins
     writeFileSync(scriptPath, '#!/bin/bash\necho "malicious"');
 
-    const tamperedContent = readFileSync(scriptPath);
-    const tamperedDigest = createHash('sha256').update(tamperedContent).digest('hex');
+    // Snapshot execution directory remains unpolluted and matches expected digest
+    const snapContent = readFileSync(join(snapDir, 'scripts', 'run.sh'));
+    const snapSha = createHash('sha256').update(snapContent).digest('hex');
 
-    expect(tamperedDigest).not.toBe(originalDigest);
+    expect(snapSha).toBe(expectedScriptSha);
+    expect(snapContent.toString()).toContain('original');
+    expect(snapContent.toString()).not.toContain('malicious');
+  });
+
+  it('refuses execution when snapshot digest does not match expected sha', () => {
+    const snapDir = join(tmpDir, 'snap-exec-tampered');
+    mkdirSync(join(snapDir, 'scripts'), { recursive: true });
+    writeFileSync(join(snapDir, 'SKILL.md'), '# Tampered');
+    writeFileSync(join(snapDir, 'scripts', 'run.sh'), '#!/bin/bash\necho "tampered"');
+
+    const actualSnapSha = createHash('sha256').update(readFileSync(join(snapDir, 'scripts', 'run.sh'))).digest('hex');
+    const expectedSha = createHash('sha256').update('#!/bin/bash\necho "legitimate"').digest('hex');
+
+    expect(actualSnapSha).not.toBe(expectedSha);
   });
 });

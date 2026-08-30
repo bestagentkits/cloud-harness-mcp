@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
@@ -1196,34 +1196,43 @@ const handlers = {
     const selectedCand = (input.source ? entry.allCandidates.find(c => c.source === input.source) : null) || entry.allCandidates[0];
     if (!selectedCand) return fail('NOT_FOUND', 'skill source not found');
     let skillDir;
-    let scriptPath;
     if (selectedCand.source === 'built-in' || selectedCand.source === 'owner') {
       skillDir = join(selectedCand.root, entry.name);
-      scriptPath = join(selectedCand.root, entry.name, 'scripts', input.script);
     } else {
       skillDir = join(await safePath(selectedCand.root), entry.name);
-      scriptPath = await safePath(join(selectedCand.root, entry.name, 'scripts', input.script));
     }
-    const scriptContent = await readFile(scriptPath);
-    const actualScriptSha = sha256(scriptContent);
-    const currentBundleDigest = await computeSkillBundleDigest(skillDir);
-
-    const expectedSha = input.expectedContentSha256 || input.expectedSha256;
-    if (!expectedSha) {
-      return fail('INVALID_INPUT', 'expectedContentSha256 or expectedSha256 is required to run a skill');
-    }
-    if (expectedSha !== currentBundleDigest && expectedSha !== actualScriptSha) {
-      return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
-    }
-
     const runId = `run-${Date.now()}-${randomBytes(4).toString('hex')}`;
     const snapDir = `/tmp/cloud-harness-exec/${runId}`;
     await mkdir(snapDir, { recursive: true, mode: 0o700 });
-    await cp(skillDir, snapDir, { recursive: true });
-    const snapScriptPath = join(snapDir, input.script);
-    await chmod(snapScriptPath, 0o700).catch(() => undefined);
     try {
-      const result = await command(snapScriptPath, input.args ?? [], { timeoutMs: input.timeoutMs });
+      await cp(skillDir, snapDir, { recursive: true });
+      const currentBundleDigest = await computeSkillBundleDigest(snapDir);
+      const snapScriptPath = join(snapDir, 'scripts', input.script);
+      let actualScriptSha = null;
+      try {
+        const snapScriptContent = await readFile(snapScriptPath);
+        actualScriptSha = sha256(snapScriptContent);
+      } catch {
+        const altScriptPath = join(snapDir, input.script);
+        try {
+          const snapScriptContent = await readFile(altScriptPath);
+          actualScriptSha = sha256(snapScriptContent);
+        } catch {
+          return fail('NOT_FOUND', `skill script ${input.script} not found in snapshot`);
+        }
+      }
+
+      const expectedSha = input.expectedContentSha256 || input.expectedSha256;
+      if (!expectedSha) {
+        return fail('INVALID_INPUT', 'expectedContentSha256 or expectedSha256 is required to run a skill');
+      }
+      if (expectedSha !== currentBundleDigest && expectedSha !== actualScriptSha) {
+        return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
+      }
+
+      const targetExecPath = existsSync(snapScriptPath) ? snapScriptPath : join(snapDir, input.script);
+      await chmod(targetExecPath, 0o700).catch(() => undefined);
+      const result = await command(targetExecPath, input.args ?? [], { timeoutMs: input.timeoutMs });
       if (result.exitCode !== 0) {
         return {
           ok: false,
