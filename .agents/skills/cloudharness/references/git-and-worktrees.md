@@ -193,14 +193,26 @@ List managed worktrees and their branch/HEAD state for `workspaceId`.
 <!-- cloudharness-tool:github_action -->
 ### `github_action`
 
-- Required: `workspaceId`, `action` (`pr_list`, `pr_view`, `pr_create`, `issue_list`, `issue_view`, or `issue_create`).
+- Required: `workspaceId`, `action`.
 - Uses trusted GitHub App broker tokens passed via stdin to an ephemeral helper container. Tokens are never exposed to workspace files.
-- `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state` (`open`, `closed`, or `all`).
-- `pr_view`: required `prNumber`.
-- `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`).
-- `issue_view`: required `issueNumber`.
-- `issue_create`: required `title`; optional `body`.
-
+- Read actions:
+  - `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state` (`open`, `closed`, or `all`).
+  - `pr_view`: required `prNumber`.
+  - `issue_view`: required `issueNumber`.
+- PR mutations:
+  - `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`).
+  - `pr_update`: required `prNumber`; optional `title`, `body`, `state` (`open` | `closed`).
+  - `pr_comment`: required `prNumber`, `body`; optional `idempotencyKey`.
+- Issue and label mutations:
+  - `issue_create`: required `title`; optional `body`, `labels` array (max 50).
+  - `issue_update`: required `issueNumber`; optional `title`, `body`, `state` (`open` | `closed`), `stateReason` (`completed` | `not_planned` | `reopened`).
+  - `issue_comment`: required `issueNumber`, `body`; optional `idempotencyKey`.
+  - `issue_comment_update`: required `commentId`, `body`.
+  - `issue_labels_add`: required `issueNumber`, `labels` array (1–50); optional `createMissing` (default true), `idempotencyKey`.
+  - `issue_labels_remove`: required `issueNumber`, `label`.
+  - `label_create`: required `name`; optional `color` (6-hex), `description`.
+  - `issue_publish`: required `issueNumber`; optional `comment`, `addLabels`, `removeLabels`, `state`, `stateReason`, `idempotencyKey`.
+- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, and `issue_publish` cache their successful result and replay it on a same-key retry with identical payload; reusing the key with a different request payload is rejected with `CONFLICT`.
 <!-- cloudharness-example:github_action
 {
   "workspaceId": "ws_abcdefghijklmnopqrstuvwxyz012345",
