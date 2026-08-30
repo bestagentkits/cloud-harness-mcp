@@ -1,3 +1,10 @@
+# [0.33.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.32.0...v0.33.0) (2026-08-30)
+
+
+### Features
+
+* **runner:** enforce controlled executor egress profiles ([#128](https://github.com/bestagentkits/cloud-harness-mcp/issues/128)) ([27ac3a7](https://github.com/bestagentkits/cloud-harness-mcp/commit/27ac3a7342e992af229206075908c60e2a0b840e)), closes [#12](https://github.com/bestagentkits/cloud-harness-mcp/issues/12)
+
 # [0.32.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.31.1...v0.32.0) (2026-08-30)
 
 
