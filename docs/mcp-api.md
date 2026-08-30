@@ -128,21 +128,29 @@ workspace. This makes a lost response recoverable without duplicating work.
   [`worker/harness-worker.mjs`](../worker/harness-worker.mjs), and the executor
   image owns the available indexer in
   [`docker/executor.Dockerfile`](../docker/executor.Dockerfile).
-- Shells, named coding sessions, and detached tasks are workspace-owned during
-  a runner process lifetime, but their handles and buffered output are in
-  memory. They are not recoverable after a runner restart. Startup restarts
-  each surviving executor so processes whose handles were lost cannot continue
-  invisibly.
-- In-memory operation retention is bounded per workspace: completed records
-  are evicted as handle limits are reached, retained output shares a fixed
-  budget, and closing the workspace evicts all shell/session/task state.
-- A task with dependencies remains queued until every named prerequisite has
-  succeeded. Failure or cancellation blocks its dependents; the dependency
-  graph exposes that scheduling state. Dependency validation and scheduling
-  are owned by
-  [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
-- Workspace metadata is durable in SQLite; executor files persist only until
-  workspace close or TTL cleanup.
+- Shells and named interactive coding sessions are workspace-owned during a runner
+  process lifetime and remain in-memory ephemeral streams. Background tasks (`tasks_run`,
+  `tasks_status`, `tasks_list`, `tasks_cancel`, `tasks_graph`) are durable across process
+  restarts: task metadata is persisted in SQLite (`durable_tasks`, `task_dependencies`) with
+  composite tenant foreign keys, while task log output is spooled to disk (`/job/.chm/tasks/<id>.log`)
+  with 0600 permissions and capped at `maxOutputBytes`.
+- Process-scoped `runner_boot_id` ensures safe restart reconciliation: upon runner restart, any
+  in-flight tasks from previous boot IDs are cleanly marked `FAILED` (`error_code: "RUNNER_RESTARTED"`),
+  while completed task outputs remain readable via cursor-based offset pagination. When a workspace is
+  closed or reaped, completed task logs are automatically archived into `ArtifactStore` (`task-output-<id>.log`)
+  before the workspace directory is deleted.
+- Retrying `tasks_run`, `git_commit`, or `git_push` with an existing `idempotencyKey` returns the
+  recorded result with `alreadyFinalized: true` without duplicate execution. Reusing an idempotency key with
+  mismatched request parameters is rejected with `CONFLICT`.
+- Remote Git push operations enforce Compare-And-Swap via `--force-with-lease=<ref>:<expectedRemoteOid>`
+  and classify errors into deterministic `CONFLICT` (409) or network interruptions `UNKNOWN_REMOTE_STATE` (504)
+  with structured `resumeAction: "reconcile_push"`. When retrying after an unknown outcome, the runner probes
+  the remote reference OID via `git ls-remote` before re-pushing. `git_commit` accepts an optional `expectedHeadOid`
+  to reject commits on stale HEADs with `STALE_HEAD` (409).
+- Owner-scoped repository caching (`REPO_CACHE_ROOT`, default disabled via `ENABLE_REPO_CACHE=false`)
+  maintains isolated bare mirror caches (`chmod 0700`) per principal and clones using
+  `git clone --reference-if-able <cache_path> --dissociate`, ensuring workspace object databases become
+  completely independent after clone with automatic fallback to blobless clone.
 - Retained artifact snapshots (`artifacts_snapshot`, `artifacts_list`, `artifacts_read`,
   `artifacts_restore`, `artifacts_delete`) allow agents to explicitly retain selected
   workspace files beyond ephemeral workspace TTLs, list and read bounded base64 chunks,

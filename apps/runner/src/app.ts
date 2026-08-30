@@ -69,7 +69,12 @@ function sendRunnerError(response: Response, error: unknown): void {
         retryable: error.retryable,
         ...(error.operation ? { operation: error.operation } : {}),
         ...(error.repository ? { repository: error.repository } : {}),
-        ...(error.requiredCapability ? { requiredCapability: error.requiredCapability } : {})
+        ...(error.requiredCapability ? { requiredCapability: error.requiredCapability } : {}),
+        ...(error.currentRemoteOid ? { currentRemoteOid: error.currentRemoteOid } : {}),
+        ...(error.expectedRemoteOid ? { expectedRemoteOid: error.expectedRemoteOid } : {}),
+        ...(error.currentHeadOid ? { currentHeadOid: error.currentHeadOid } : {}),
+        ...(error.expectedHeadOid ? { expectedHeadOid: error.expectedHeadOid } : {}),
+        ...(error.resumeAction ? { resumeAction: error.resumeAction } : {})
       },
       truncated: false
     });

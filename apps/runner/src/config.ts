@@ -56,6 +56,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     maxArtifactBytes: process.env.MAX_ARTIFACT_BYTES,
     maxPrincipalArtifactBytes: process.env.MAX_PRINCIPAL_ARTIFACT_BYTES,
     artifactRetentionSeconds: process.env.ARTIFACT_RETENTION_SECONDS,
+    enableRepoCache: process.env.ENABLE_REPO_CACHE,
+    repoCacheRoot: process.env.REPO_CACHE_ROOT,
     secretKeyring,
     legacyPrincipalMapping: legacyOwnerId || legacyIssuer || legacySubject ? {
       legacyOwnerId,

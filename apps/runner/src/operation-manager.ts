@@ -1,27 +1,40 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { type ErrorCode, HarnessError } from '@cloud-harness/contracts';
 import { spawnDocker, terminateContainerProcessGroup } from './docker-engine.js';
+import type { DurableTaskStatus, StateStore } from './state-store.js';
 
 type ManagedStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'blocked';
 type Managed = {
   id: string;
   workspaceId: string;
+  ownerId?: string | undefined;
   output: Buffer;
   offset: number;
   status: ManagedStatus;
   createdAt: number;
   idempotencyKey: string;
-  child?: ChildProcessWithoutNullStreams;
-  container?: string;
-  exitCode?: number;
-  name?: string;
-  dependsOn?: string[];
-  command?: string;
-  cwd?: string;
-  timeoutMs?: number;
-  maxBytes?: number;
-  settled?: boolean;
+  child?: ChildProcessWithoutNullStreams | undefined;
+  container?: string | undefined;
+  exitCode?: number | undefined;
+  errorCode?: string | undefined;
+  errorMessage?: string | undefined;
+  name?: string | undefined;
+  dependsOn?: string[] | undefined;
+  command?: string | undefined;
+  cwd?: string | undefined;
+  timeoutMs?: number | undefined;
+  maxBytes?: number | undefined;
+  logPath?: string | undefined;
+  outputBytes?: number | undefined;
+  outputArtifactId?: string | undefined;
+  settled?: boolean | undefined;
+  generation?: number | undefined;
+  startedAt?: number | undefined;
+  finishedAt?: number | undefined;
 };
 export type TrackedOperation = {
   id: string;
@@ -41,6 +54,27 @@ export type TrackedOperation = {
   abortController?: AbortController | undefined;
 };
 const id = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
+function utf8SafeLength(buf: Buffer, maxLen: number): number {
+  if (maxLen <= 0) return 0;
+  if (maxLen >= buf.length) maxLen = buf.length;
+  let len = maxLen;
+  while (len > 0 && len > maxLen - 4) {
+    const byte = buf[len - 1]!;
+    if ((byte & 0x80) === 0) return len;
+    if ((byte & 0xc0) === 0xc0) {
+      let expected = 2;
+      if ((byte & 0xe0) === 0xc0) expected = 2;
+      else if ((byte & 0xf0) === 0xe0) expected = 3;
+      else if ((byte & 0xf8) === 0xf0) expected = 4;
+      const actual = maxLen - (len - 1);
+      if (actual >= expected) return maxLen;
+      return len - 1;
+    }
+    len--;
+  }
+  return maxLen;
+}
+
 
 export class OperationManager {
   private readonly tasks = new Map<string, Managed>();
@@ -52,8 +86,18 @@ export class OperationManager {
   onTaskStart?: (workspaceId: string, timeoutMs: number) => void;
   onTaskSettle?: (workspaceId: string, taskId: string) => void;
 
-  hasTaskKey(key: string): boolean {
-    return this.idempotency.has(key);
+  constructor(
+    private readonly store?: StateStore,
+    private readonly bootId: string = randomBytes(16).toString('hex')
+  ) {}
+
+  hasTaskKey(key: string, ownerId?: string, workspaceId?: string): boolean {
+    if (this.idempotency.has(key)) return true;
+    if (this.store && ownerId && workspaceId) {
+      const rawKey = key.startsWith(`task:${workspaceId}:`) ? key.slice(`task:${workspaceId}:`.length) : key;
+      return this.store.getDurableTaskByIdempotencyKey(ownerId, workspaceId, rawKey) !== undefined;
+    }
+    return false;
   }
 
   private records(workspaceId: string): Managed[] {
@@ -98,6 +142,37 @@ export class OperationManager {
   private track(record: Managed, child: ChildProcessWithoutNullStreams, maxBytes: number): void {
     record.child = child;
     const append = (chunk: Buffer) => {
+      const currentBytes = record.outputBytes ?? 0;
+      const allowedBytes = Math.max(0, maxBytes - currentBytes);
+      if (allowedBytes > 0 && record.logPath) {
+        const sliceToWrite = chunk.length <= allowedBytes ? chunk : chunk.subarray(0, allowedBytes);
+        try {
+          appendFileSync(record.logPath, sliceToWrite);
+        } catch (err) {
+          record.status = 'failed';
+          record.errorCode = 'INTERNAL_ERROR';
+          record.errorMessage = `Failed to write task output log: ${err instanceof Error ? err.message : String(err)}`;
+          try { child.kill('SIGTERM'); } catch { /* ignore */ }
+          if (this.store && this.tasks.has(record.id)) {
+            try {
+              const current = this.store.getDurableTask(record.ownerId ?? '', record.workspaceId, record.id);
+              const gen = current?.generation ?? record.generation ?? 1;
+              this.store.updateDurableTaskStatus(record.id, gen, {
+                status: 'FAILED',
+                errorCode: record.errorCode,
+                errorMessage: record.errorMessage,
+                finishedAt: Date.now(),
+                outputBytes: record.outputBytes ?? 0
+              });
+              record.generation = gen + 1;
+            } catch { /* ignore */ }
+          }
+          this.reconcileQueued(record.workspaceId);
+          this.settleTask(record);
+          return;
+        }
+      }
+      record.outputBytes = currentBytes + chunk.length;
       const next = Buffer.concat([record.output, chunk]);
       const removed = Math.max(0, next.length - maxBytes);
       record.offset += removed;
@@ -109,6 +184,21 @@ export class OperationManager {
     child.on('close', (code) => {
       record.exitCode = code ?? 1;
       if (record.status === 'running') record.status = code === 0 ? 'succeeded' : 'failed';
+      record.finishedAt = Date.now();
+      if (this.store && this.tasks.has(record.id)) {
+        try {
+          const statusUpper = (record.status === 'succeeded' ? 'SUCCEEDED' : 'FAILED') as DurableTaskStatus;
+          const current = this.store.getDurableTask(record.ownerId ?? '', record.workspaceId, record.id);
+          const gen = current?.generation ?? record.generation ?? 1;
+          this.store.updateDurableTaskStatus(record.id, gen, {
+            status: statusUpper,
+            exitCode: record.exitCode,
+            finishedAt: record.finishedAt,
+            outputBytes: record.outputBytes ?? record.output.length
+          });
+          record.generation = gen + 1;
+        } catch { /* ignore if store is closed */ }
+      }
       this.reconcileQueued(record.workspaceId);
       if (this.tasks.has(record.id)) {
         this.settleTask(record);
@@ -208,23 +298,92 @@ export class OperationManager {
     key: string,
     timeoutMs: number,
     maxBytes: number,
-    dependsOn: string[] = []
+    dependsOn: string[] = [],
+    ownerId?: string,
+    workspacePath?: string,
+    name?: string
   ): Managed & { created?: boolean } {
     const mapKey = `task:${workspaceId}:${key}`;
-    const prior = this.idempotency.get(mapKey);
-    if (prior) {
-      const existing = this.tasks.get(prior)!;
-      return Object.assign(existing, { created: false });
+    const requestFingerprint = createHash('sha256')
+      .update(JSON.stringify({ command, cwd: cwd || '.', timeoutMs, maxBytes, dependsOn: [...dependsOn].sort(), name: name ?? null }))
+      .digest('hex');
+
+    if (this.store && ownerId) {
+      const persisted = this.store.getDurableTaskByIdempotencyKey(ownerId, workspaceId, key);
+      if (persisted) {
+        if (persisted.requestFingerprint && persisted.requestFingerprint !== requestFingerprint) {
+          throw new HarnessError('CONFLICT', 'Idempotency key reused with different task parameters', 409, false);
+        }
+        const memoryRecord = this.tasks.get(persisted.id);
+        if (memoryRecord) return Object.assign(memoryRecord, { created: false });
+        return {
+          id: persisted.id,
+          workspaceId: persisted.workspaceId,
+          ownerId: persisted.ownerId,
+          output: Buffer.alloc(0),
+          offset: 0,
+          status: persisted.status.toLowerCase() as ManagedStatus,
+          createdAt: persisted.createdAt,
+          idempotencyKey: mapKey,
+          name: persisted.name ?? undefined,
+          command: persisted.command,
+          cwd: persisted.cwd,
+          timeoutMs: persisted.timeoutMs,
+          maxBytes: persisted.maxBytes,
+          logPath: persisted.logPath,
+          outputBytes: persisted.outputBytes,
+          outputArtifactId: persisted.outputArtifactId ?? undefined,
+          exitCode: persisted.exitCode ?? undefined,
+          errorCode: persisted.errorCode ?? undefined,
+          errorMessage: persisted.errorMessage ?? undefined,
+          dependsOn: persisted.dependsOn,
+          generation: persisted.generation,
+          startedAt: persisted.startedAt ?? undefined,
+          finishedAt: persisted.finishedAt ?? undefined,
+          created: false
+        };
+      }
+    } else {
+      const prior = this.idempotency.get(mapKey);
+      if (prior) {
+        const existing = this.tasks.get(prior)!;
+        return Object.assign(existing, { created: false });
+      }
     }
+
     this.reserve(this.tasks, workspaceId, 128);
     if (new Set(dependsOn).size !== dependsOn.length) throw new HarnessError('INVALID_INPUT', 'task dependencies must be unique', 400, false);
     for (const dependencyId of dependsOn) {
-      const dependency = this.tasks.get(dependencyId);
+      const dependency = this.tasks.get(dependencyId) ?? (this.store && ownerId ? this.store.getDurableTask(ownerId, workspaceId, dependencyId) : undefined);
       if (!dependency || dependency.workspaceId !== workspaceId) throw new HarnessError('NOT_FOUND', `task dependency ${dependencyId} not found`, 404, false);
     }
+
+    const taskId = id('task');
+    const logPath = workspacePath
+      ? join(workspacePath, '.chm', 'tasks', `${taskId}.log`)
+      : join(tmpdir(), `chm-task-${taskId}.log`);
+
+    if (workspacePath) {
+      try {
+        mkdirSync(join(workspacePath, '.chm', 'tasks'), { recursive: true, mode: 0o700 });
+      } catch { /* ignore */ }
+    } else {
+      try {
+        mkdirSync(join(tmpdir(), 'cloud-harness-tasks'), { recursive: true, mode: 0o700 });
+      } catch { /* ignore */ }
+    }
+
+    try {
+      const fd = openSync(logPath, 'w', 0o600);
+      closeSync(fd);
+    } catch (err) {
+      throw new HarnessError('INTERNAL_ERROR', `Failed to initialize task log file at ${logPath}: ${err instanceof Error ? err.message : String(err)}`, 500, true);
+    }
+
     const record: Managed & { created?: boolean } = {
-      id: id('task'),
+      id: taskId,
       workspaceId,
+      ownerId,
       output: Buffer.alloc(0),
       offset: 0,
       status: 'queued',
@@ -235,9 +394,40 @@ export class OperationManager {
       cwd,
       timeoutMs,
       maxBytes,
+      logPath,
+      outputBytes: 0,
       dependsOn: [...dependsOn],
+      generation: 1,
+      ...(name ? { name } : {}),
       created: true
     };
+
+    if (this.store && ownerId) {
+      this.store.createDurableTask({
+        id: taskId,
+        workspaceId,
+        ownerId,
+        name: name ?? null,
+        command,
+        cwd: cwd || '.',
+        status: 'QUEUED',
+        idempotencyKey: key,
+        requestFingerprint,
+        bootId: this.bootId,
+        exitCode: null,
+        errorCode: null,
+        errorMessage: null,
+        timeoutMs,
+        maxBytes,
+        logPath,
+        outputBytes: 0,
+        outputArtifactId: null,
+        createdAt: record.createdAt,
+        startedAt: null,
+        finishedAt: null
+      }, dependsOn);
+    }
+
     this.tasks.set(record.id, record);
     this.idempotency.set(mapKey, record.id);
     this.reconcileQueued(workspaceId);
@@ -252,6 +442,14 @@ export class OperationManager {
     ]);
     child.stdin.end();
     record.status = 'running';
+    record.startedAt = Date.now();
+    if (this.store && this.tasks.has(record.id)) {
+      this.store.updateDurableTaskStatus(record.id, record.generation ?? 1, {
+        status: 'RUNNING',
+        startedAt: record.startedAt
+      });
+      record.generation = (record.generation ?? 1) + 1;
+    }
     this.onTaskStart?.(record.workspaceId, record.timeoutMs ?? 60_000);
     this.track(record, child, record.maxBytes!);
   }
@@ -262,11 +460,19 @@ export class OperationManager {
       const dependencies = (record.dependsOn ?? []).map((dependencyId) => this.tasks.get(dependencyId));
       if (dependencies.some((dependency) => !dependency || dependency.workspaceId !== workspaceId)) {
         record.status = 'blocked';
+        if (this.store && this.tasks.has(record.id)) {
+          this.store.updateDurableTaskStatus(record.id, record.generation ?? 1, { status: 'BLOCKED' });
+          record.generation = (record.generation ?? 1) + 1;
+        }
         this.settleTask(record);
         continue;
       }
       if (dependencies.some((dependency) => ['failed', 'cancelled', 'blocked'].includes(dependency!.status))) {
         record.status = 'blocked';
+        if (this.store && this.tasks.has(record.id)) {
+          this.store.updateDurableTaskStatus(record.id, record.generation ?? 1, { status: 'BLOCKED' });
+          record.generation = (record.generation ?? 1) + 1;
+        }
         this.settleTask(record);
         continue;
       }
@@ -274,45 +480,143 @@ export class OperationManager {
     }
   }
 
-  task(workspaceId: string, taskId: string): Managed {
+  task(workspaceId: string, taskId: string, ownerId?: string): Managed {
     const record = this.tasks.get(taskId);
-    if (!record || record.workspaceId !== workspaceId) throw new HarnessError('NOT_FOUND', 'task not found', 404, false);
-    return record;
+    if (record && record.workspaceId === workspaceId) return record;
+    if (this.store && ownerId) {
+      const persisted = this.store.getDurableTask(ownerId, workspaceId, taskId);
+      if (persisted) {
+        return {
+          id: persisted.id,
+          workspaceId: persisted.workspaceId,
+          ownerId: persisted.ownerId,
+          output: Buffer.alloc(0),
+          offset: 0,
+          status: persisted.status.toLowerCase() as ManagedStatus,
+          createdAt: persisted.createdAt,
+          idempotencyKey: persisted.idempotencyKey ?? '',
+          name: persisted.name ?? undefined,
+          command: persisted.command,
+          cwd: persisted.cwd,
+          timeoutMs: persisted.timeoutMs,
+          maxBytes: persisted.maxBytes,
+          logPath: persisted.logPath,
+          outputBytes: persisted.outputBytes,
+          outputArtifactId: persisted.outputArtifactId ?? undefined,
+          exitCode: persisted.exitCode ?? undefined,
+          errorCode: persisted.errorCode ?? undefined,
+          errorMessage: persisted.errorMessage ?? undefined,
+          dependsOn: persisted.dependsOn,
+          generation: persisted.generation,
+          startedAt: persisted.startedAt ?? undefined,
+          finishedAt: persisted.finishedAt ?? undefined
+        };
+      }
+    }
+    throw new HarnessError('NOT_FOUND', 'task not found', 404, false);
   }
 
-  listTasks(workspaceId: string): Managed[] {
+  listTasks(workspaceId: string, ownerId?: string): Managed[] {
+    if (this.store && ownerId) {
+      const persisted = this.store.listDurableTasks(ownerId, workspaceId);
+      const memoryMap = new Map([...this.tasks.values()].filter((r) => r.workspaceId === workspaceId).map((r) => [r.id, r]));
+      return persisted.map((p) => {
+        const mem = memoryMap.get(p.id);
+        if (mem) return mem;
+        return {
+          id: p.id,
+          workspaceId: p.workspaceId,
+          ownerId: p.ownerId,
+          output: Buffer.alloc(0),
+          offset: 0,
+          status: p.status.toLowerCase() as ManagedStatus,
+          createdAt: p.createdAt,
+          idempotencyKey: p.idempotencyKey ?? '',
+          name: p.name ?? undefined,
+          command: p.command,
+          cwd: p.cwd,
+          timeoutMs: p.timeoutMs,
+          maxBytes: p.maxBytes,
+          logPath: p.logPath,
+          outputBytes: p.outputBytes,
+          outputArtifactId: p.outputArtifactId ?? undefined,
+          exitCode: p.exitCode ?? undefined,
+          errorCode: p.errorCode ?? undefined,
+          errorMessage: p.errorMessage ?? undefined,
+          dependsOn: p.dependsOn,
+          generation: p.generation,
+          startedAt: p.startedAt ?? undefined,
+          finishedAt: p.finishedAt ?? undefined
+        };
+      });
+    }
     return [...this.tasks.values()].filter((record) => record.workspaceId === workspaceId).sort((left, right) => left.createdAt - right.createdAt);
   }
-
-  taskGraph(workspaceId: string) {
-    const tasks = this.listTasks(workspaceId);
+  taskGraph(workspaceId: string, ownerId?: string) {
+    const tasks = this.listTasks(workspaceId, ownerId);
     return {
       nodes: tasks.map((record) => this.summary(record)),
       edges: tasks.flatMap((record) => (record.dependsOn ?? []).map((dependencyId) => ({ from: dependencyId, to: record.id })))
     };
   }
 
-  async cancelTask(workspaceId: string, taskId: string): Promise<Managed> {
-    const record = this.task(workspaceId, taskId);
+  async cancelTask(workspaceId: string, taskId: string, ownerId?: string): Promise<Managed> {
+    const record = this.task(workspaceId, taskId, ownerId);
     if (record.status === 'queued') {
       record.status = 'cancelled';
+      record.finishedAt = Date.now();
+      if (this.store && this.tasks.has(record.id)) {
+        this.store.updateDurableTaskStatus(record.id, record.generation ?? 1, {
+          status: 'CANCELLED',
+          finishedAt: record.finishedAt
+        });
+        record.generation = (record.generation ?? 1) + 1;
+      }
       this.reconcileQueued(workspaceId);
       this.settleTask(record);
       return record;
     }
     if (record.status !== 'running') return record;
-    await terminateContainerProcessGroup(record.container!, `/tmp/cloud-harness-tasks/${record.id}.pid`);
+    if (record.container) {
+      await terminateContainerProcessGroup(record.container, `/tmp/cloud-harness-tasks/${record.id}.pid`);
+    }
     record.status = 'cancelled';
+    record.finishedAt = Date.now();
     record.child?.kill();
+    if (this.store && this.tasks.has(record.id)) {
+      this.store.updateDurableTaskStatus(record.id, record.generation ?? 1, {
+        status: 'CANCELLED',
+        finishedAt: record.finishedAt
+      });
+      record.generation = (record.generation ?? 1) + 1;
+    }
     this.reconcileQueued(workspaceId);
     this.settleTask(record);
     return record;
   }
-  stopWorkspace(workspaceId: string): void {
+  stopWorkspace(workspaceId: string, ownerId?: string): void {
+    const now = Date.now();
     for (const record of this.records(workspaceId)) {
       if (record.status === 'running' || record.status === 'queued') {
         record.status = 'cancelled';
+        record.finishedAt = now;
         record.child?.kill();
+        if (this.store && this.tasks.has(record.id)) {
+          try {
+            const current = this.store.getDurableTask(ownerId ?? record.ownerId ?? '', record.workspaceId, record.id);
+            const gen = current?.generation ?? record.generation ?? 1;
+            let outputBytes = record.outputBytes ?? record.output.length;
+            if (record.logPath && existsSync(record.logPath)) {
+              try { outputBytes = statSync(record.logPath).size; } catch { /* ignore */ }
+            }
+            this.store.updateDurableTaskStatus(record.id, gen, {
+              status: 'CANCELLED',
+              finishedAt: now,
+              outputBytes
+            });
+            record.generation = gen + 1;
+          } catch { /* ignore */ }
+        }
       }
     }
     for (const op of this.genericOperations.values()) {
@@ -341,6 +645,8 @@ export class OperationManager {
       id: record.id,
       status: record.status,
       exitCode: record.exitCode,
+      ...(record.errorCode ? { errorCode: record.errorCode } : {}),
+      ...(record.errorMessage ? { errorMessage: record.errorMessage } : {}),
       output: record.output.toString('utf8'),
       ...(record.name ? { name: record.name } : {}),
       ...(record.dependsOn ? { dependsOn: record.dependsOn } : {})
@@ -352,6 +658,8 @@ export class OperationManager {
       id: record.id,
       status: record.status,
       exitCode: record.exitCode,
+      ...(record.errorCode ? { errorCode: record.errorCode } : {}),
+      ...(record.errorMessage ? { errorMessage: record.errorMessage } : {}),
       ...(record.name ? { name: record.name } : {}),
       ...(record.dependsOn ? { dependsOn: record.dependsOn } : {})
     };
@@ -359,19 +667,53 @@ export class OperationManager {
 
   viewSince(record: Managed, cursor?: string) {
     const requested = cursor === undefined ? 0 : Number(cursor);
+    if (!Number.isSafeInteger(requested) || requested < 0) throw new HarnessError('INVALID_INPUT', 'invalid output cursor');
+
+    if (record.logPath && existsSync(record.logPath)) {
+      const stats = statSync(record.logPath);
+      const totalBytes = stats.size;
+      if (requested > totalBytes) throw new HarnessError('INVALID_INPUT', 'invalid output cursor');
+      const pageSize = 65_536;
+      const readLength = Math.min(pageSize, totalBytes - requested);
+      let pageText = '';
+      let consumedBytes = 0;
+      if (readLength > 0) {
+        const fd = openSync(record.logPath, 'r');
+        const buf = Buffer.alloc(readLength);
+        try {
+          readSync(fd, buf, 0, readLength, requested);
+          const safeLen = utf8SafeLength(buf, readLength);
+          consumedBytes = safeLen > 0 ? safeLen : readLength;
+          pageText = buf.subarray(0, consumedBytes).toString('utf8');
+        } finally {
+          closeSync(fd);
+        }
+      }
+      const nextOffset = requested + consumedBytes;
+      const truncated = nextOffset < totalBytes;
+      return {
+        data: { ...this.view(record), output: pageText },
+        cursor: String(nextOffset),
+        truncated
+      };
+    }
+
     const end = record.offset + record.output.length;
-    if (!Number.isSafeInteger(requested) || requested < 0 || requested > end) throw new HarnessError('INVALID_INPUT', 'invalid output cursor');
+    if (requested > end) throw new HarnessError('INVALID_INPUT', 'invalid output cursor');
     const missedOutput = requested < record.offset;
     const start = Math.max(0, requested - record.offset);
-    const page = record.output.subarray(start, Math.min(record.output.length, start + 65_536));
-    const nextCursor = record.offset + start + page.length;
+    const maxSliceLen = Math.min(record.output.length - start, 65_536);
+    const rawSlice = record.output.subarray(start, start + maxSliceLen);
+    const safeLen = utf8SafeLength(rawSlice, rawSlice.length);
+    const consumedLen = safeLen > 0 ? safeLen : rawSlice.length;
+    const slice = rawSlice.subarray(0, consumedLen);
+    const nextOffset = record.offset + start + consumedLen;
     return {
-      data: { ...this.view(record), output: page.toString('utf8') },
-      cursor: String(nextCursor),
-      truncated: missedOutput || nextCursor < end
+      data: { ...this.view(record), output: slice.toString('utf8') },
+      cursor: String(nextOffset),
+      truncated: missedOutput || nextOffset < end
     };
   }
-
   registerGenericOperation(op: {
     id: string;
     workspaceId?: string | undefined;

@@ -91,7 +91,7 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
       `);
     });
   }
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
   if (version === 2) {
     transaction(database, () => {
       database.exec(`
@@ -108,11 +108,105 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         UPDATE schema_meta SET version = 3;
       `);
     });
+    version = 3;
+  }
+  if (version === 3) {
+    transaction(database, () => {
+      database.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id ON workspaces(owner_id, id);
+
+        CREATE TABLE IF NOT EXISTS repo_caches (
+          id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          repository_url TEXT NOT NULL,
+          repository_url_hash TEXT NOT NULL,
+          cache_path TEXT NOT NULL,
+          default_branch TEXT,
+          last_fetched_at INTEGER NOT NULL,
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL CHECK(status IN ('INITIALIZING', 'READY', 'UPDATING', 'FAILED', 'DISABLED')),
+          generation INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(owner_id, repository_url_hash)
+        );
+        CREATE INDEX IF NOT EXISTS repo_caches_owner_lookup ON repo_caches(owner_id, repository_url_hash);
+
+        CREATE TABLE IF NOT EXISTS durable_tasks (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          name TEXT,
+          command TEXT NOT NULL,
+          cwd TEXT NOT NULL DEFAULT '.',
+          status TEXT NOT NULL CHECK(status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'BLOCKED')),
+          idempotency_key TEXT,
+          request_fingerprint TEXT,
+          boot_id TEXT NOT NULL,
+          exit_code INTEGER,
+          error_code TEXT,
+          error_message TEXT,
+          timeout_ms INTEGER NOT NULL DEFAULT 300000,
+          max_bytes INTEGER NOT NULL DEFAULT 67108864,
+          log_path TEXT NOT NULL,
+          output_bytes INTEGER NOT NULL DEFAULT 0,
+          output_artifact_id TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          finished_at INTEGER,
+          generation INTEGER NOT NULL DEFAULT 1,
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          UNIQUE(owner_id, workspace_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS durable_tasks_workspace_created ON durable_tasks(owner_id, workspace_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS durable_tasks_boot_status ON durable_tasks(boot_id, status);
+
+        CREATE TABLE IF NOT EXISTS task_dependencies (
+          task_id TEXT NOT NULL REFERENCES durable_tasks(id) ON DELETE CASCADE,
+          depends_on_task_id TEXT NOT NULL REFERENCES durable_tasks(id) ON DELETE CASCADE,
+          PRIMARY KEY(task_id, depends_on_task_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS git_operation_idempotency (
+          owner_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          workspace_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          operation TEXT NOT NULL CHECK(operation IN ('push', 'commit', 'finalize')),
+          request_fingerprint TEXT NOT NULL,
+          target_ref TEXT,
+          expected_remote_oid TEXT,
+          local_commit_sha TEXT,
+          status TEXT NOT NULL CHECK(status IN ('PENDING', 'SUCCEEDED', 'UNKNOWN_REMOTE_STATE', 'CONFLICT', 'FAILED')),
+          result_json TEXT,
+          error_json TEXT,
+          created_at INTEGER NOT NULL,
+          finished_at INTEGER,
+          PRIMARY KEY(owner_id, workspace_id, idempotency_key),
+          FOREIGN KEY(owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS git_op_idempotency_lookup ON git_operation_idempotency(owner_id, workspace_id, operation, created_at DESC);
+
+        UPDATE schema_meta SET version = 4;
+      `);
+    });
     return;
   }
-  if (version !== 3) throw new Error(`unsupported state schema version ${version}`);
+  if (version !== 4) throw new Error(`unsupported state schema version ${version}`);
 }
 
+export function downgradeStateSchemaToV3(database: DatabaseSync): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 4) throw new Error(`state schema must be version 4 before downgrade, got ${version}`);
+  transaction(database, () => {
+    database.exec(`
+      DROP TABLE IF EXISTS git_operation_idempotency;
+      DROP TABLE IF EXISTS task_dependencies;
+      DROP TABLE IF EXISTS durable_tasks;
+      DROP TABLE IF EXISTS repo_caches;
+      UPDATE schema_meta SET version = 3;
+    `);
+  });
+}
 export function applyPrincipalRelinks(
   database: DatabaseSync,
   mappings: PrincipalRelinkMapping[],

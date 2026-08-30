@@ -92,11 +92,13 @@ Executable owners:
 - Versioned dashboard-only runner contracts:
   [`packages/contracts/src/internal-runner-api.ts`](../packages/contracts/src/internal-runner-api.ts)
   and [`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts)
-- Workspace lifecycle and Docker policy:
-  [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
-- In-memory shells, named sessions, and dependency-task scheduling:
-  [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts)
-- Credential-isolated remote Git staging:
+- Workspace lifecycle, Docker policy, unified reaper, and repository caching:
+  [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts) and
+  [`apps/runner/src/repository-cache-manager.ts`](../apps/runner/src/repository-cache-manager.ts)
+- Durable tasks, in-memory shells, named sessions, and restart reconciliation:
+  [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts) and
+  [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts)
+- Credential-isolated remote Git staging and CAS push:
   [`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh) and
   [`test/integration/git-transfer-helper.docker.test.ts`](../test/integration/git-transfer-helper.docker.test.ts)
 - Executor-side file, code-intelligence, command, repository-local Git, and

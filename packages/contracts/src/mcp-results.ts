@@ -13,7 +13,10 @@ export const ErrorCodeSchema = z.enum([
   'UNAVAILABLE',
   'INTERNAL_ERROR',
   'PRIVILEGE_APPROVAL_REQUIRED',
-  'REPOSITORY_OPERATION_NOT_AUTHORIZED'
+  'REPOSITORY_OPERATION_NOT_AUTHORIZED',
+  'UNKNOWN_REMOTE_STATE',
+  'STALE_HEAD',
+  'RUNNER_RESTARTED'
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const ToolResultSchema = z.object({
@@ -38,7 +41,12 @@ export const ToolResultSchema = z.object({
         .optional(),
       operation: z.string().optional(),
       repository: z.string().optional(),
-      requiredCapability: z.string().optional()
+      requiredCapability: z.string().optional(),
+      currentRemoteOid: z.string().optional(),
+      expectedRemoteOid: z.string().optional(),
+      currentHeadOid: z.string().optional(),
+      expectedHeadOid: z.string().optional(),
+      resumeAction: z.string().optional()
     })
     .optional(),
   truncated: z.boolean().default(false),
@@ -51,7 +59,11 @@ export class HarnessError extends Error {
   public readonly operation?: string | undefined;
   public readonly repository?: string | undefined;
   public readonly requiredCapability?: string | undefined;
-
+  public readonly currentRemoteOid?: string | undefined;
+  public readonly expectedRemoteOid?: string | undefined;
+  public readonly currentHeadOid?: string | undefined;
+  public readonly expectedHeadOid?: string | undefined;
+  public readonly resumeAction?: string | undefined;
   constructor(
     public readonly code: z.infer<typeof ErrorCodeSchema>,
     message: string,
@@ -61,6 +73,11 @@ export class HarnessError extends Error {
       operation?: string | undefined;
       repository?: string | undefined;
       requiredCapability?: string | undefined;
+      currentRemoteOid?: string | undefined;
+      expectedRemoteOid?: string | undefined;
+      currentHeadOid?: string | undefined;
+      expectedHeadOid?: string | undefined;
+      resumeAction?: string | undefined;
     }
   ) {
     super(message);
@@ -72,6 +89,21 @@ export class HarnessError extends Error {
     }
     if (details?.requiredCapability !== undefined) {
       this.requiredCapability = details.requiredCapability;
+    }
+    if (details?.currentRemoteOid !== undefined) {
+      this.currentRemoteOid = details.currentRemoteOid;
+    }
+    if (details?.expectedRemoteOid !== undefined) {
+      this.expectedRemoteOid = details.expectedRemoteOid;
+    }
+    if (details?.currentHeadOid !== undefined) {
+      this.currentHeadOid = details.currentHeadOid;
+    }
+    if (details?.expectedHeadOid !== undefined) {
+      this.expectedHeadOid = details.expectedHeadOid;
+    }
+    if (details?.resumeAction !== undefined) {
+      this.resumeAction = details.resumeAction;
     }
   }
 }
