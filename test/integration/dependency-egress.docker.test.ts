@@ -143,12 +143,12 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       `$sudo iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true\n` +
       `$sudo iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true`
     ], { stdio: 'inherit' });
-    // Integration test with real Docker daemon: poll periodic reaper interval for drift detection
+    // Integration test with real Docker daemon: poll periodic reaper interval for drift detection and container teardown
     let quarantined = false;
     for (let i = 0; i < 30; i++) {
       await sleep(500);
       const record = store.byId(depWorkspaceId!);
-      if (record?.status === 'NETWORK_QUARANTINED') {
+      if (record?.status === 'NETWORK_QUARANTINED' && record.containerName === null) {
         quarantined = true;
         break;
       }
@@ -161,9 +161,17 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
     })).rejects.toMatchObject({ code: 'DEPENDENCY_EGRESS_UNAVAILABLE' });
 
     // Verify all workspace-labeled containers are stopped and removed
-    const containers = await runDocker([
-      'ps', '-a', '--filter', `label=cloud-harness.workspace=${depWorkspaceId}`, '--format', '{{.Names}}'
-    ], { timeoutMs: 30_000 });
-    expect(containers.stdout.trim()).toBe('');
+    let containersCleaned = false;
+    for (let i = 0; i < 30; i++) {
+      const containers = await runDocker([
+        'ps', '-a', '--filter', `label=cloud-harness.workspace=${depWorkspaceId}`, '--format', '{{.Names}}'
+      ], { timeoutMs: 30_000 });
+      if (containers.stdout.trim() === '') {
+        containersCleaned = true;
+        break;
+      }
+      await sleep(500);
+    }
+    expect(containersCleaned).toBe(true);
   }, 120_000);
 });
