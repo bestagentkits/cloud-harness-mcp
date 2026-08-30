@@ -105,6 +105,7 @@ record_images release-new
 mv "$state/release-new-api-image" "$state/release-api-image"
 mv "$state/release-new-runner-image" "$state/release-runner-image"
 mv "$state/release-new-executor-image" "$state/release-executor-image"
+mv "$state/release-new-network-guard-image" "$state/release-network-guard-image"
 record_release_config
 if [[ $previous_sha =~ ^[0-9a-f]{40}$ && $previous_sha != "$release_sha" ]]; then
   printf '%s\n' "$previous_sha" > "$state/release-previous"

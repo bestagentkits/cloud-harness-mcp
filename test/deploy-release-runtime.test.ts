@@ -87,6 +87,13 @@ describe.skipIf(process.platform === 'win32')('release rollback orchestration', 
     expect(lock).toBeLessThan(source.indexOf('git fetch --force --prune origin main'));
   });
 
+  it('moves all promoted image records including network-guard', () => {
+    const deploySource = readFileSync(deployScript, 'utf8');
+    expect(deploySource).toContain('mv "$state/release-new-network-guard-image" "$state/release-network-guard-image"');
+    const runtimeSource = readFileSync(runtime, 'utf8');
+    expect(runtimeSource).toContain('docker image inspect cloud-harness-network-guard:local');
+  });
+
   it('restores and records the coherent runtime configuration snapshot', () => {
     const result = runConfigRestore();
     expect(result.status).toBe(0);
