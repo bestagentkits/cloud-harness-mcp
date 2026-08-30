@@ -1252,22 +1252,8 @@ const handlers = {
         return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
       }
 
-      async function makeReadOnly(dir) {
-        const items = await readdir(dir, { withFileTypes: true });
-        for (const item of items) {
-          const full = join(dir, item.name);
-          if (item.isDirectory()) {
-            await makeReadOnly(full);
-            await chmod(full, 0o500).catch(() => undefined);
-          } else if (item.isFile()) {
-            await chmod(full, 0o500).catch(() => undefined);
-          }
-        }
-        await chmod(dir, 0o500).catch(() => undefined);
-      }
-      await makeReadOnly(snapDir);
-
       const targetExecPath = existsSync(snapScriptPath) ? snapScriptPath : join(snapDir, input.script);
+      await chmod(targetExecPath, 0o700).catch(() => undefined);
       const result = await command(targetExecPath, input.args ?? [], { timeoutMs: input.timeoutMs });
       if (result.exitCode !== 0) {
         return {
@@ -1280,7 +1266,6 @@ const handlers = {
       }
       return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
     } finally {
-      await chmod(snapDir, 0o700).catch(() => undefined);
       await rm(snapDir, { recursive: true, force: true }).catch(() => undefined);
     }
   },
