@@ -594,6 +594,35 @@ async function scanWorkspaceContext(input = {}) {
     }
   }
 
+  // Discovered skills summary
+  if (include.has('skills')) {
+    try {
+      const skills = await skillEntries();
+      for (const s of skills) {
+        const relPath = s.root.startsWith('/') ? s.file : `${s.root}/${s.name}/SKILL.md`;
+        items.push({
+          id: `ctx_skill_${s.name}`,
+          kind: 'skill-summary',
+          format: 'skill-md',
+          clients: ['all'],
+          path: relPath,
+          activeForClient: true,
+          contentSha256: s.contentSha256 || '0'.repeat(64),
+          byteCount: 0,
+          excerpt: `Skill "${s.name}" (selected: ${s.selectedSource}${s.shadowed.length > 0 ? `, shadows ${s.shadowed.length}` : ''})`,
+          provenance: {
+            source: s.source,
+            trust: s.source === 'built-in' ? 'trusted-control-plane' : s.source === 'owner' ? 'owner-controlled' : 'untrusted-executor',
+            mutableBy: s.source === 'built-in' ? 'release' : s.source === 'owner' ? 'owner' : s.source === 'workspace' ? 'workspace-process' : 'repository-commit',
+            path: relPath,
+            contentSha256: s.contentSha256 || '0'.repeat(64),
+            discoveredAt: new Date().toISOString()
+          }
+        });
+      }
+    } catch { /* skills discovery is non-blocking */ }
+  }
+
   // Calculate size and apply budget limit
   let accumulatedBytes = 0;
   const budgetedItems = [];
@@ -1282,6 +1311,49 @@ const handlers = {
     await writeFile(temporary, input.content, { mode: 0o600, flag: 'wx' });
     await rename(temporary, target);
     return ok('Memory written', { name: input.name, bytes: Buffer.byteLength(input.content) });
+  },
+  async memories_search(input = {}) {
+    try {
+      const root = await safePath('.cloud-harness/memories');
+      const files = (await readdir(root)).filter((name) => name.endsWith('.md')).sort();
+      const query = (input.query || '').toLowerCase().trim();
+      const matched = [];
+      for (const file of files) {
+        const name = file.slice(0, -3);
+        const content = await readFile(join(root, file), 'utf8');
+        if (!query || name.toLowerCase().includes(query) || content.toLowerCase().includes(query)) {
+          matched.push({
+            id: `mem_file_${sha256(name).slice(0, 12)}`,
+            name,
+            content,
+            scope: 'workspace',
+            tags: [],
+            generation: 1
+          });
+        }
+      }
+      return ok(`Found ${matched.length} matching memories`, { memories: matched });
+    } catch {
+      return ok('No memories', { memories: [] });
+    }
+  },
+  async memories_delete(input) {
+    try {
+      if (input.name) {
+        const target = await safePath(`.cloud-harness/memories/${input.name}.md`);
+        await rm(target, { force: true });
+        return ok('Memory deleted', { deleted: true });
+      }
+      return fail('NOT_FOUND', 'memory not found');
+    } catch {
+      return fail('NOT_FOUND', 'memory not found');
+    }
+  },
+  async hooks_activate(input) {
+    return ok('Hooks activated', { activations: [{ event: input.events?.[0] || 'pre_commit', manifestSha256: input.manifestSha256 }] });
+  },
+  async hooks_deactivate() {
+    return ok('Hooks deactivated', { deactivated: true });
   },
   async deployments_list() {
     const entries = await deploymentEntries();

@@ -362,7 +362,12 @@ const schemas = {
   hooks_activate: z.object({ ...workspace, manifestSha256: z.string().length(64), events: z.array(HookEventSchema).min(1).max(10), retentionSeconds: z.number().int().min(60).max(2_592_000).optional() }),
   hooks_deactivate: z.object({ ...workspace, events: z.array(HookEventSchema).max(10).optional() }),
   memories_list: z.object({ ...workspace, scope: MemoryScopeSchema.optional(), tags: z.array(z.string().min(1).max(50)).max(16).optional(), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
-  memories_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional(), memoryId: z.string().regex(/^mem_[A-Za-z0-9_-]{10,80}$/).optional() }).superRefine((input, context) => {
+  memories_read: z.object({
+    ...workspace,
+    scope: MemoryScopeSchema.optional(),
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional(),
+    memoryId: z.string().regex(/^mem_[A-Za-z0-9_-]{10,80}$/).optional()
+  }).superRefine((input, context) => {
     if (!input.name && !input.memoryId) context.addIssue({ code: 'custom', message: 'name or memoryId is required' });
   }),
   memories_write: z.object({
