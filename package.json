@@ -15,12 +15,12 @@
     "docs-site"
   ],
   "scripts": {
-    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway",
+    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/agent-runtime && npm run build -w @cloud-harness/model-gateway && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway",
     "clean": "npm run clean --workspaces --if-present",
     "dev:api": "npm run dev -w @cloud-harness/api",
     "dev:runner": "npm run dev -w @cloud-harness/runner",
     "lint": "eslint .",
-    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway",
+    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/agent-runtime && npm run typecheck -w @cloud-harness/model-gateway && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway",
     "pretest": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
     "test": "vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism",
     "pretest:unit": "npm run build -w @cloud-harness/contracts",
@@ -28,7 +28,7 @@
     "pretest:integration": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
     "test:integration": "vitest run test/integration --exclude '**/*.docker.test.ts'",
     "pretest:docker": "npm run build -w @cloud-harness/contracts",
-    "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/dependency-egress.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts --testTimeout=180000",
+    "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/dependency-egress.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts test/integration/agent-isolation.docker.test.ts --testTimeout=180000",
     "pretest:e2e": "npm run build -w @cloud-harness/contracts",
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
     "pages:check": "node scripts/verify-pages-artifact.mjs",

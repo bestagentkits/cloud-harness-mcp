@@ -58,6 +58,14 @@ temporary network access and an optional token. This split exists so remote
 repository synchronization does not put long-lived credentials in the
 repository executor.
 
+Coding-agent subagents run in dedicated ephemeral containers separate from the
+workspace executor. Each agent container has a read-only root filesystem,
+bounded tmpfs, no host/repository mounts, no Docker socket, and no secrets.
+Agent tools communicate with the runner via a bounded stdio JSONL protocol for
+10 safe file and search operations. Model API requests route exclusively through
+the trusted Model Gateway service via per-agent internal Docker networks using
+opaque, short-lived capability leases with pre-reserved token and cost budgets.
+
 ## Composition roots and transports
 
 Cloud Harness MCP supports two distinct composition roots sharing the same public `TOOL_SPECS` and result envelopes:

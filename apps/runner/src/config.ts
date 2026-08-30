@@ -11,6 +11,19 @@ const csv = (value: string | undefined, fallback: string) => (value ?? fallback)
 
 const json = (value: string | undefined): unknown => value === undefined ? undefined : JSON.parse(value) as unknown;
 
+function agentProfiles(value: string | undefined, file: string | undefined): unknown {
+  if (value !== undefined && file !== undefined) {
+    throw new Error('configure only one of AGENT_PROFILES_JSON or AGENT_PROFILES_FILE');
+  }
+  const serialized = value ?? (file === undefined ? undefined : readFileSync(file, 'utf8'));
+  if (serialized === undefined) return undefined;
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    throw new Error('agent profiles must contain valid JSON');
+  }
+}
+
 export type RunnerConfigLoadResult = {
   config: RunnerConfig;
   secretReadinessError?: string;
@@ -39,6 +52,38 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
   if (process.env.WORKSPACE_NETWORK_MODE !== undefined) {
     throw new Error("WORKSPACE_NETWORK_MODE was replaced by WORKSPACE_NETWORK_PROFILE; set WORKSPACE_NETWORK_PROFILE to 'network-none' or 'dependency-access'");
   }
+
+  const agentConfigurationPresent = [
+    'AGENT_IMAGE',
+    'AGENT_NETWORK_MODE',
+    'AGENT_GATEWAY_URL',
+    'AGENT_PROFILES_JSON',
+    'AGENT_PROFILES_FILE',
+    'AGENT_GLOBAL_ACTIVE',
+    'AGENT_PRINCIPAL_ACTIVE',
+    'AGENT_WORKSPACE_ACTIVE',
+    'AGENT_PARENT_ACTIVE',
+    'AGENT_WORKSPACE_LIFETIME_RECORDS',
+    'AGENT_MIN_TTL_SECONDS',
+    'AGENT_MAX_TTL_SECONDS',
+    'AGENT_MAX_PROMPT_BYTES',
+    'AGENT_MAX_MESSAGE_BYTES',
+    'AGENT_MAX_LOG_BYTES',
+    'AGENT_MAX_LOG_EVENTS',
+    'AGENT_MAX_OUTPUT_BYTES',
+    'AGENT_MAX_LOG_EVENT_BYTES',
+    'AGENT_GLOBAL_RETAINED_ROWS',
+    'AGENT_PRINCIPAL_RETAINED_ROWS',
+    'AGENT_WORKSPACE_RETAINED_ROWS',
+    'AGENT_GLOBAL_RETAINED_BYTES',
+    'AGENT_PRINCIPAL_RETAINED_BYTES',
+    'AGENT_WORKSPACE_RETAINED_BYTES',
+    'AGENT_CANCELLATION_GRACE_MS',
+    'AGENT_CLEANUP_RETRY_LIMIT',
+    'AGENT_CLEANUP_RETRY_MAX_DELAY_MS',
+    'AGENT_RETENTION_SECONDS',
+    'AGENT_LOOKUP_HORIZON_SECONDS'
+  ].some((name) => process.env[name] !== undefined);
   const config = RunnerConfigSchema.parse({
     authMode: process.env.AUTH_MODE,
     host: process.env.RUNNER_HOST,
@@ -78,6 +123,38 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       installationId: githubInstallationId,
       privateKey: githubPrivateKey,
       appSlug: process.env.GITHUB_APP_SLUG
+    } : undefined,
+    agents: agentConfigurationPresent ? {
+      image: process.env.AGENT_IMAGE,
+      networkMode: process.env.AGENT_NETWORK_MODE,
+      gatewayUrl: process.env.AGENT_GATEWAY_URL,
+      profiles: agentProfiles(process.env.AGENT_PROFILES_JSON, process.env.AGENT_PROFILES_FILE),
+      limits: {
+        globalActive: process.env.AGENT_GLOBAL_ACTIVE,
+        principalActive: process.env.AGENT_PRINCIPAL_ACTIVE,
+        workspaceActive: process.env.AGENT_WORKSPACE_ACTIVE,
+        maxOutputBytesPerAgent: process.env.AGENT_MAX_OUTPUT_BYTES,
+        parentActive: process.env.AGENT_PARENT_ACTIVE,
+        workspaceLifetimeRecords: process.env.AGENT_WORKSPACE_LIFETIME_RECORDS,
+        minTtlSeconds: process.env.AGENT_MIN_TTL_SECONDS,
+        maxTtlSeconds: process.env.AGENT_MAX_TTL_SECONDS,
+        maxPromptBytes: process.env.AGENT_MAX_PROMPT_BYTES,
+        maxMessageBytes: process.env.AGENT_MAX_MESSAGE_BYTES,
+        maxLogBytesPerAgent: process.env.AGENT_MAX_LOG_BYTES,
+        maxLogEventsPerAgent: process.env.AGENT_MAX_LOG_EVENTS,
+        maxLogEventBytes: process.env.AGENT_MAX_LOG_EVENT_BYTES,
+        globalRetainedRows: process.env.AGENT_GLOBAL_RETAINED_ROWS,
+        principalRetainedRows: process.env.AGENT_PRINCIPAL_RETAINED_ROWS,
+        workspaceRetainedRows: process.env.AGENT_WORKSPACE_RETAINED_ROWS,
+        globalRetainedBytes: process.env.AGENT_GLOBAL_RETAINED_BYTES,
+        principalRetainedBytes: process.env.AGENT_PRINCIPAL_RETAINED_BYTES,
+        workspaceRetainedBytes: process.env.AGENT_WORKSPACE_RETAINED_BYTES,
+        cancellationGraceMs: process.env.AGENT_CANCELLATION_GRACE_MS,
+        cleanupRetryLimit: process.env.AGENT_CLEANUP_RETRY_LIMIT,
+        cleanupRetryMaxDelayMs: process.env.AGENT_CLEANUP_RETRY_MAX_DELAY_MS,
+        retentionSeconds: process.env.AGENT_RETENTION_SECONDS,
+        lookupHorizonSeconds: process.env.AGENT_LOOKUP_HORIZON_SECONDS
+      }
     } : undefined
   });
   return { config, ...(secretReadinessError ? { secretReadinessError } : {}) };

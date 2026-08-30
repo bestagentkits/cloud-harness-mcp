@@ -180,3 +180,27 @@ state, API-key gateway disablement when applicable, and managed-container
 cleanup after a rollback. Retain at least one
 known-good coherent recovery set; backup retention is an operator policy, not
 an automated service feature.
+
+## Owner-Authorized Real-Provider Canary Runbook (Subagents)
+
+To verify live provider connectivity and obtain the operational receipts required for closing Issue #19, execute a bounded canary on isolated staging before general use.
+
+### 1. Preflight and authorization
+
+- Verify exact release SHA, image digests, and staging deployment status.
+- Prepare a disposable test repository (no private secrets, PII, or customer data).
+- Ensure workspace uses `networkMode: "none"`.
+- Configure an operator profile in `/etc/cloud-harness-model-gateway/profiles.json` with low hard caps (`maxCostMicros: 500000`, approximately $0.50 maximum spending ceiling).
+- Mount the provider API key exclusively into Model Gateway (`/etc/cloud-harness-model-gateway/provider-api-key`).
+
+### 2. Execution protocol
+
+1. **Spawn & Idempotency:** Call `agent_spawn` with the disposable workspace and curated test prompt. Replay the same idempotency key 3 times; verify identical `agentId` returned, `replayed: true` on subsequent calls, and exactly 1 container/lease created.
+2. **Live Execution & Paging:** Call `agent_status` by `agentId` and `idempotencyKey`. Stream and page `agent_logs` via byte cursors. Verify all sensitive tokens/canaries are redacted.
+3. **Steering & Cancellation:** Send an `agent_message` (`steer` or `followUp`). Test `agent_cancel`; verify post-order cascading cancellation of any child subagents and exact `Revoke -> Drain -> TERM/KILL -> Remove` order.
+4. **Failure & Restart Resilience:** Exercise a controlled runner restart with an active agent; confirm status reconciles to `INTERRUPTED` with `outcomeUnknown: true` without auto-replaying unverified side effects.
+5. **Closure & Zero Residual:** Call `workspace_close`. Confirm `docker ps -a` and `docker network ls` show 0 residual agent containers and networks, Model Gateway shows 0 active leases, and workspace directories are deleted only after barrier completion.
+
+### 3. Sign-off and receipts
+
+Record the test evidence (image digests, execution trace, token/cost reconciliation, and zero-residual confirmation) in the tracking issue before signing off on full operational readiness.

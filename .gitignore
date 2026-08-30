@@ -10,3 +10,4 @@ coverage/
 *.db-wal
 .cloud-harness-state/
 deploy/.generated/
+.cloud-harness-test-fixtures/

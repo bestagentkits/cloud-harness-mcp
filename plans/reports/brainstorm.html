@@ -1,304 +1,281 @@
-<!doctype html>
-<html lang="en" data-theme="dark">
+<!DOCTYPE html>
+<html lang="vi">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Brainstorm Brief | Issue #15: Provenance-Aware Workspace Context, Skills, Memories & Hooks — Cloud Harness MCP</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Brainstorm Contract — Issue #19: agent_* MCP tools backed by Pi coding-agent subagents</title>
   <style>
     :root {
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
-      --canvas: #0f1117;
-      --surface: #161922;
-      --surface-raised: #1e2230;
-      --surface-overlay: #262c3e;
-      --line: #2e354a;
-      --line-strong: #3f4966;
-      --ink: #e6edf3;
-      --ink-muted: #8b949e;
-      --accent: #38bdf8;
-      --accent-strong: #0ea5e9;
-      --accent-soft: rgba(56, 189, 248, 0.15);
-      --on-accent: #0f172a;
-      --success: #34d399;
-      --success-soft: rgba(52, 211, 153, 0.15);
-      --warning: #fbbf24;
-      --warning-soft: rgba(251, 191, 36, 0.15);
-      --danger: #f87171;
-      --danger-soft: rgba(248, 113, 113, 0.15);
-      --purple: #c084fc;
-      --purple-soft: rgba(192, 132, 252, 0.15);
-      --radius-sm: 4px;
-      --radius-md: 8px;
-      --radius-lg: 12px;
-      --radius-xl: 16px;
-      --shadow: 0 4px 20px rgba(0,0,0,0.35);
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-border: #1f293d;
+      --accent: #3b82f6;
+      --accent-hover: #60a5fa;
+      --accent-glow: rgba(59, 130, 246, 0.2);
+      --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.15);
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --danger-glow: rgba(239, 68, 68, 0.15);
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --text-dim: #6b7280;
+      --code-bg: #0d1321;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
     }
-    [data-theme="light"] {
-      --canvas: #f8fafc;
-      --surface: #ffffff;
-      --surface-raised: #f1f5f9;
-      --surface-overlay: #e2e8f0;
-      --line: #cbd5e1;
-      --line-strong: #94a3b8;
-      --ink: #0f172a;
-      --ink-muted: #64748b;
-      --accent: #0284c7;
-      --accent-strong: #0369a1;
-      --accent-soft: rgba(2, 132, 199, 0.12);
-      --on-accent: #ffffff;
-      --success: #059669;
-      --success-soft: rgba(5, 150, 105, 0.12);
-      --warning: #d97706;
-      --warning-soft: rgba(217, 119, 6, 0.12);
-      --danger: #dc2626;
-      --danger-soft: rgba(220, 38, 38, 0.12);
-      --purple: #9333ea;
-      --purple-soft: rgba(147, 51, 234, 0.12);
-      --shadow: 0 4px 20px rgba(0,0,0,0.08);
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
-      font-family: var(--font-sans);
-      background-color: var(--canvas);
-      color: var(--ink);
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
       line-height: 1.6;
-      font-size: 14px;
-      padding-bottom: 5rem;
+      padding: 2rem 1rem;
     }
-    header {
-      background: linear-gradient(180deg, var(--surface-raised) 0%, var(--surface) 100%);
-      border-bottom: 1px solid var(--line);
-      padding: 2.5rem 2rem 2rem;
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      backdrop-filter: blur(12px);
-    }
-    .header-inner {
+
+    .container {
       max-width: 1200px;
       margin: 0 auto;
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 1.5rem;
     }
+
+    header {
+      background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.9));
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 2.5rem 2rem;
+      margin-bottom: 2rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      position: relative;
+      overflow: hidden;
+    }
+
+    header::before {
+      content: "";
+      position: absolute;
+      top: -50px;
+      right: -50px;
+      width: 200px;
+      height: 200px;
+      background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
     .badge-bar {
       display: flex;
       flex-wrap: wrap;
       gap: 0.5rem;
-      margin-bottom: 0.75rem;
+      margin-bottom: 1rem;
     }
+
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 0.35rem;
-      padding: 0.2rem 0.6rem;
-      border-radius: var(--radius-sm);
-      font-size: 0.75rem;
+      padding: 0.3rem 0.8rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
       font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.02em;
     }
-    .badge-accent { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
-    .badge-success { background: var(--success-soft); color: var(--success); border: 1px solid var(--success); }
-    .badge-warning { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
-    .badge-purple { background: var(--purple-soft); color: var(--purple); border: 1px solid var(--purple); }
-    .badge-danger { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
+
+    .badge-primary { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-success { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-warning { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-purple { background: rgba(139, 92, 246, 0.15); color: #a78bfa; border: 1px solid rgba(139, 92, 246, 0.3); }
+
     h1 {
-      font-size: 1.85rem;
-      font-weight: 700;
-      color: var(--ink);
-      letter-spacing: -0.02em;
-      margin-bottom: 0.4rem;
+      font-size: 2.2rem;
+      font-weight: 800;
+      line-height: 1.25;
+      margin-bottom: 0.75rem;
+      background: linear-gradient(to right, #ffffff, #93c5fd);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
-    .subtitle {
-      color: var(--ink-muted);
-      font-size: 0.95rem;
+
+    .lead {
+      color: var(--text-muted);
+      font-size: 1.1rem;
+      max-width: 900px;
     }
-    .theme-toggle {
-      background: var(--surface-raised);
-      border: 1px solid var(--line);
-      color: var(--ink);
-      padding: 0.5rem 0.9rem;
-      border-radius: var(--radius-md);
-      cursor: pointer;
-      font-size: 0.85rem;
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      transition: all 0.2s;
-    }
-    .theme-toggle:hover {
-      background: var(--surface-overlay);
-      border-color: var(--line-strong);
-    }
-    main {
-      max-width: 1200px;
-      margin: 2rem auto 0;
-      padding: 0 1.5rem;
-      display: flex;
-      flex-direction: column;
-      gap: 2.5rem;
-    }
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-lg);
-      padding: 1.75rem;
-      box-shadow: var(--shadow);
-    }
-    .card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1.25rem;
-      padding-bottom: 0.75rem;
-      border-bottom: 1px solid var(--line);
-    }
-    .card-title {
-      font-size: 1.25rem;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-    }
-    .grid-2 {
+
+    .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 1.25rem;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
     }
-    .grid-3 {
+
+    .grid-2 {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1.25rem;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
     }
-    .grid-4 {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1rem;
+
+    @media (max-width: 868px) {
+      .grid-2 { grid-template-columns: 1fr; }
     }
-    .contract-box {
-      background: var(--surface-raised);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: 1.25rem;
+
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 1.75rem;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
     }
-    .contract-box h3 {
-      font-size: 0.95rem;
-      font-weight: 600;
-      color: var(--accent);
-      margin-bottom: 0.75rem;
+
+    .card-title {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: #fff;
       display: flex;
       align-items: center;
       gap: 0.5rem;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--card-border);
     }
-    .contract-box ul {
-      list-style-position: inside;
-      color: var(--ink);
+
+    .card-title .icon {
+      font-size: 1.4rem;
+    }
+
+    h3 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #93c5fd;
+      margin: 1.25rem 0 0.5rem 0;
+    }
+
+    p {
+      margin-bottom: 1rem;
+      color: var(--text);
+    }
+
+    ul, ol {
+      padding-left: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    li {
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+
+    code {
+      font-family: var(--mono);
+      background-color: var(--code-bg);
+      color: #93c5fd;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.88em;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    pre {
+      background-color: var(--code-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 1rem;
+      overflow-x: auto;
+      margin-bottom: 1rem;
+      font-family: var(--mono);
       font-size: 0.88rem;
+      color: #e2e8f0;
+      line-height: 1.5;
     }
-    .contract-box li {
-      margin-bottom: 0.4rem;
+
+    /* Diagram & Visual container */
+    .diagram-container {
+      background: #0a0f1d;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+      overflow-x: auto;
     }
+
+    .diagram-title {
+      font-size: 0.95rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--accent);
+      font-weight: 700;
+      margin-bottom: 1rem;
+      text-align: center;
+    }
+
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    /* Comparison Quadrant / Table */
     .table-container {
       overflow-x: auto;
-      border-radius: var(--radius-md);
-      border: 1px solid var(--line);
+      margin: 1rem 0;
     }
+
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.85rem;
       text-align: left;
+      font-size: 0.92rem;
     }
-    th {
-      background: var(--surface-raised);
-      color: var(--ink-muted);
-      font-weight: 600;
-      padding: 0.75rem 1rem;
-      border-bottom: 1px solid var(--line);
-      text-transform: uppercase;
-      font-size: 0.75rem;
-      letter-spacing: 0.05em;
-    }
-    td {
+
+    th, td {
       padding: 0.85rem 1rem;
-      border-bottom: 1px solid var(--line);
-      vertical-align: top;
+      border-bottom: 1px solid var(--card-border);
     }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: var(--surface-raised); }
-    .winner-row td {
-      background: var(--accent-soft);
+
+    th {
+      background-color: rgba(30, 41, 59, 0.5);
+      color: #93c5fd;
       font-weight: 600;
     }
-    .svg-container {
-      background: var(--surface-raised);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: 1.5rem;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      overflow-x: auto;
+
+    tr:hover {
+      background-color: rgba(255, 255, 255, 0.02);
     }
-    .mockup-window {
-      background: #090d16;
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      font-family: var(--font-mono);
-      font-size: 0.82rem;
-      box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+
+    .winner-row {
+      background-color: rgba(16, 185, 129, 0.08) !important;
+      border-left: 3px solid var(--success);
     }
-    .mockup-titlebar {
-      background: #151a28;
-      border-bottom: 1px solid var(--line);
-      padding: 0.6rem 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
+
+    .tag-pass {
+      color: #34d399;
+      font-weight: bold;
     }
-    .mockup-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
+
+    .tag-fail {
+      color: #f87171;
+      font-weight: bold;
     }
-    .dot-red { background: #ef4444; }
-    .dot-yellow { background: #f59e0b; }
-    .dot-green { background: #10b981; }
-    .mockup-body {
-      padding: 1.25rem;
-      color: #e2e8f0;
-      overflow-x: auto;
-    }
-    .token-key { color: #38bdf8; }
-    .token-str { color: #34d399; }
-    .token-num { color: #f59e0b; }
-    .token-bool { color: #c084fc; }
-    .token-tag {
-      display: inline-block;
-      padding: 0.1rem 0.4rem;
-      border-radius: 3px;
-      font-size: 0.7rem;
-      font-weight: 600;
-      margin-left: 0.4rem;
-    }
-    .tag-untrusted { background: rgba(239, 68, 68, 0.25); color: #fca5a5; border: 1px solid #ef4444; }
-    .tag-owner { background: rgba(56, 189, 248, 0.25); color: #7dd3fc; border: 1px solid #0284c7; }
-    .tag-builtin { background: rgba(192, 132, 252, 0.25); color: #e9d5ff; border: 1px solid #9333ea; }
+
+    /* Callouts */
     .callout {
       border-left: 4px solid var(--accent);
-      background: var(--accent-soft);
+      background: rgba(59, 130, 246, 0.08);
       padding: 1rem 1.25rem;
-      border-radius: 0 var(--radius-md) var(--radius-md) 0;
-      margin: 1rem 0;
+      border-radius: 0 8px 8px 0;
+      margin: 1.25rem 0;
     }
+
+    .callout-success {
+      border-left-color: var(--success);
+      background: rgba(16, 185, 129, 0.08);
+    }
+
     .callout-warning {
       border-left-color: var(--warning);
-      background: var(--warning-soft);
+      background: rgba(245, 158, 11, 0.08);
     }
     .callout-title {
       font-weight: 700;
@@ -307,490 +284,474 @@
       align-items: center;
       gap: 0.4rem;
     }
+
+    /* UI Mockup Card */
+    .mockup-window {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 1.5rem 0;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+    }
+
+    .mockup-header {
+      background: #1e293b;
+      padding: 0.6rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      border-bottom: 1px solid #334155;
+    }
+
+    .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+    .dot-red { background: #ef4444; }
+    .dot-yellow { background: #f59e0b; }
+    .dot-green { background: #10b981; }
+    .mockup-title { font-size: 0.85rem; color: #94a3b8; font-family: var(--mono); margin-left: 0.5rem; }
+
+    .mockup-body {
+      padding: 1.25rem;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+
+    .token-kw { color: #f472b6; }
+    .token-str { color: #34d399; }
+    .token-fn { color: #60a5fa; }
+    .token-num { color: #fbbf24; }
+    .token-comment { color: #64748b; }
+
+    .footer-bar {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--card-border);
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 0.9rem;
+    }
   </style>
 </head>
 <body>
 
-<header>
-  <div class="header-inner">
-    <div>
-      <div class="badge-bar">
-        <span class="badge badge-accent">Issue #15</span>
-        <span class="badge badge-success">Ultra Verifier: 5/5 Passed</span>
-        <span class="badge badge-purple">Supervisor: Kongming</span>
-        <span class="badge badge-warning">Priority: P2</span>
-        <span class="badge badge-accent">Phase: Brainstorm Contract</span>
-      </div>
-      <h1>Provenance-Aware Workspace Context, Skills, Memories & Hooks</h1>
-      <p class="subtitle">Cloud Harness MCP — Vendor-Neutral Portable AI Coding Context with Immutable Provenance & Sandboxed Execution</p>
-    </div>
-    <button class="theme-toggle" onclick="toggleTheme()">
-      <span id="theme-icon">🌙</span> <span id="theme-text">Toggle Theme</span>
-    </button>
-  </div>
-</header>
+<div class="container">
 
-<main>
-
-  <!-- SUMMARY & DECISION BANNER -->
-  <section class="card">
-    <div class="card-header">
-      <div class="card-title">
-        <span>🏆</span> Executive Decision: Winning Candidate Selected
-      </div>
-      <span class="badge badge-success">Selected: Candidate B (77/80)</span>
+  <!-- HEADER -->
+  <header>
+    <div class="badge-bar">
+      <span class="badge badge-primary">Cloud Harness MCP</span>
+      <span class="badge badge-purple">Issue #19</span>
+      <span class="badge badge-success">Ultra Verifier: 79/80 (Winner)</span>
+      <span class="badge badge-warning">Advisory Supervised: Kongming</span>
+      <span class="badge badge-primary">Baseline: v0.30.0 (HEAD) vs Prior Beta (7bcdd9e)</span>
     </div>
-    <div class="callout">
-      <div class="callout-title">
-        <span>🎯</span> Core Architectural Direction: Bounded Passive Scanner + Lightweight Hybrid State Store
-      </div>
-      <p>
-        Cloud Harness MCP adopts a <strong>split-plane provenance architecture</strong>:
-        <strong>(1) Worker Passive Scanner</strong> discovers instruction files (<code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>.cursorrules</code>, <code>.aider.conf.yml</code>), language manifests, and test declarations with strict zero-execution, bounded byte budgets;
-        <strong>(2) Runner Provenance Resolver</strong> assigns non-forgeable trust layers (<code>built-in &gt; owner &gt; workspace &gt; repository</code>);
-        <strong>(3) Principal-Qualified SQLite</strong> manages durable scoped memories (owner, repository, workspace) with optimistic concurrency (CAS), tags, TTL, and atomic audit logging;
-        <strong>(4) Declarative Hooks Registry</strong> requires exact SHA-256 digest activation before running in a short-lived, no-network, no-secret executor container.
-      </p>
-    </div>
-    <div class="grid-4" style="margin-top: 1.25rem;">
-      <div class="contract-box">
-        <h3><span>🛡️</span> Zero Execution on Scan</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Passive discovery performs NO shell invocations, package scripts, or dynamic code evaluation.</p>
-      </div>
-      <div class="contract-box">
-        <h3><span>🏷️</span> Immutable Provenance</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Runner assigns trust labels from isolation boundaries. Repository files cannot forge owner authority.</p>
-      </div>
-      <div class="contract-box">
-        <h3><span>🧠</span> Scoped SQLite Memory</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Principal, repository, and workspace scopes with generation guards, TTL expiry, and tag search.</p>
-      </div>
-      <div class="contract-box">
-        <h3><span>🔒</span> Digest-Pinned Hooks</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Named lifecycle events (<code>pre_commit</code>, <code>post_checkout</code>) execute only in ephemeral sandboxes with exact digest matching.</p>
-      </div>
-    </div>
-  </section>
+    <h1>Brainstorm Contract: Pi Coding-Agent Subagents (P2 — Issue #19)</h1>
+    <p class="lead">Hợp đồng định vị kiến trúc 5 Hard Gates, <strong>so sánh đối chiếu nhánh (Branch Comparison: 7bcdd9e vs HEAD v0.30.0)</strong> và lộ trình tích hợp / nghiệm thu Canary để đóng hoàn tất Issue #19.</p>
 
-  <!-- 4 CONTRACT FIELDS -->
-  <section class="card">
-    <div class="card-header">
-      <div class="card-title">
-        <span>📋</span> Bounded Delivery Contract (4 Inviolable Fields)
-      </div>
-      <span class="badge badge-accent">Authoritative Spec</span>
-    </div>
-    <div class="grid-2">
-      <!-- 1. OUTCOME -->
-      <div class="contract-box">
-        <h3><span>🎯</span> 1. Outcome (End State)</h3>
-        <ul>
-          <li><strong>Universal Context Manifest:</strong> <code>workspace_context</code> returns a bounded, vendor-neutral manifest of known allowlisted instruction files discovered within declared scan bounds (such as <code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>.cursor/rules/*.mdc</code>, <code>.aider.conf.yml</code>), language manifests (<code>package.json</code>, <code>Cargo.toml</code>, etc.), declared test commands, and skill summaries across Claude, Codex, Cursor, and Aider.</li>
-          <li><strong>Explicit Provenance Attribution:</strong> Every returned item clearly identifies its source (<code>built-in</code>, <code>owner</code>, <code>workspace</code>, <code>repository</code>), trust level, content SHA-256, and mutation authority.</li>
-          <li><strong>Deterministic Skill Precedence:</strong> Same-name skills resolve in exact order <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidates fully visible.</li>
-          <li><strong>Durable Scoped Memories:</strong> Principal, repository, and workspace memories with CAS generation concurrency, TTL cleanup, tag filtering, and deletion.</li>
-          <li><strong>Safe Lifecycle Hooks:</strong> Declarative event registry with exact digest-pinned activation, sandboxed executor isolation, and strict pre-commit veto semantics.</li>
-        </ul>
-      </div>
-
-      <!-- 2. CONSTRAINTS -->
-      <div class="contract-box">
-        <h3><span>⛓️</span> 2. Constraints & Boundaries</h3>
-        <ul>
-          <li><strong>Untrusted Repository Data:</strong> All checkout text, instructions, and scripts are treated as untrusted data. No repository text can elevate itself to system policy or forge owner provenance.</li>
-          <li><strong>Byte-Budget Hard Caps:</strong> 32 KiB default (128 KiB max) for context manifests; 64 KiB max per memory note; max 256 scanned candidate files with 250ms deadline.</li>
-          <li><strong>Principal Isolation (#13):</strong> Every SQLite query and memory record is strictly scoped by server-derived <code>principal_id</code>. Zero cross-principal leakage.</li>
-          <li><strong>Executor Confinement:</strong> All skill/hook execution runs as unprivileged UID in isolated container with <code>networkMode: none</code> by default, zero access to broker tokens or Docker socket.</li>
-          <li><strong>Schema Migration:</strong> Metadata SQLite schema upgrades cleanly v4 &rarr; v5 with atomic transactions and downgrade refusal safety.</li>
-        </ul>
-      </div>
-
-      <!-- 3. NON-GOALS -->
-      <div class="contract-box">
-        <h3><span>🚫</span> 3. Non-Goals (Strictly Out of Scope)</h3>
-        <ul>
-          <li><strong>No Agent Reasoning Stream:</strong> Context manifest is strictly passive, bounded static file discovery; reasoning traces or active execution logs are not context primitives.</li>
-          <li><strong>No LLM Semantic Vector Embeddings:</strong> No runner-hosted vector databases, semantic RAG, or embeddings calculation.</li>
-          <li><strong>No Automatic Prompt Merging:</strong> Does NOT concatenate conflicting instruction files (e.g. <code>CLAUDE.md</code> + <code>AGENTS.md</code>) into one synthetic document.</li>
-          <li><strong>No Host-Level Hook Execution:</strong> Hooks never execute on the host OS and never receive control-plane broker credentials.</li>
-          <li><strong>No Cross-Principal Sharing:</strong> No collaborative multi-tenant memory sharing or public memory publishing.</li>
-          <li><strong>No Skill Marketplace:</strong> No dynamic remote package resolution, npm installation, or remote downloading of unreviewed skills.</li>
-        </ul>
-      </div>
-
-      <!-- 4. ACCEPTANCE CRITERIA -->
-      <div class="contract-box">
-        <h3><span>✅</span> 4. Observable Acceptance Criteria</h3>
-        <ul>
-          <li><strong>Passive Discovery Proof:</strong> Sentinel executable referenced in manifests remains completely untouched during all context, skill, memory, and hook scan operations.</li>
-          <li><strong>Adversarial Output-Boundary & Prompt-Injection Containment:</strong> An adversarial repository containing fake <code>SYSTEM</code> headers, forged provenance fields (<code>source: built-in</code>, <code>source: owner</code>), fake delimiters/NUL bytes, and prompt-injection instructions MUST:
-            <br>&bull; In <code>structuredContent</code>: remain strictly nested within <code>result.data</code> under <code>trust: "untrusted-executor"</code>;
-            <br>&bull; In text projection: be rendered by a dedicated provenance-aware formatter using trusted boundary labels/delimiters and JSON-escaped strings (or serialized JSON blocks) rather than raw string flattening;
-            <br>&bull; Never escape into top-level message, header, tool description, or audit fields, and create zero persistent/privileged SQLite memory records.
-          </li>
-          <li><strong>Precedence Verification:</strong> 4 same-name skill fixtures resolve strictly to <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidate visibility.</li>
-          <li><strong>Concurrency Guard:</strong> <code>memories_write</code> and <code>memories_delete</code> with mismatched <code>expectedGeneration</code> fail immediately with <code>CONFLICT</code>.</li>
-          <li><strong>TTL & Expiry Reaping:</strong> Expired memories are invisible immediately and reaped; workspace memories vanish on workspace closure; owner memories persist across restarts.</li>
-          <li><strong>Digest Pin Invalidation:</strong> Modifying a hook script file immediately invalidates its activation digest and blocks execution before process spawn.</li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
-  <!-- ARCHITECTURE & WORKFLOW DIAGRAMS -->
-  <section class="card">
-    <div class="card-header">
-      <div class="card-title">
-        <span>🏗️</span> System Architecture & Provenance Resolution Flow
-      </div>
-      <span class="badge badge-purple">Interactive Vector Flow</span>
-    </div>
+  <!-- 4 CONTRACT FIELDS OVERVIEW -->
+  <div class="grid grid-2">
     
-    <div class="svg-container">
-      <svg width="960" height="420" viewBox="0 0 960 420" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <!-- Background grid styling -->
-        <defs>
-          <linearGradient id="grad-client" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#0284c7" stop-opacity="0.3"/>
-            <stop offset="100%" stop-color="#0369a1" stop-opacity="0.1"/>
-          </linearGradient>
-          <linearGradient id="grad-runner" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.25"/>
-            <stop offset="100%" stop-color="#0284c7" stop-opacity="0.08"/>
-          </linearGradient>
-          <linearGradient id="grad-worker" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#34d399" stop-opacity="0.2"/>
-            <stop offset="100%" stop-color="#059669" stop-opacity="0.05"/>
-          </linearGradient>
-          <linearGradient id="grad-sqlite" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#c084fc" stop-opacity="0.25"/>
-            <stop offset="100%" stop-color="#7e22ce" stop-opacity="0.08"/>
-          </linearGradient>
-          <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
-            <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.4"/>
-          </filter>
-        </defs>
+    <!-- Outcome -->
+    <div class="card">
+      <div class="card-title"><span class="icon">🎯</span> 1. Outcome (Trạng thái đích)</div>
+      <p>Cung cấp bộ <strong>6 MCP tools</strong> cho phép caller điều khiển subagent Pi chạy trong workspace:</p>
+      <ul>
+        <li><code>agent_spawn</code>: Khởi tạo subagent có budget, TTL, model profile, gắn chặt với workspace/principal.</li>
+        <li><code>agent_status</code>: Tra cứu trạng thái, metrics sử dụng, terminal reason & <code>outcomeUnknown</code>.</li>
+        <li><code>agent_logs</code>: Đọc log streaming/phân trang bằng cursor có redaction trước lưu.</li>
+        <li><code>agent_message</code>: Gửi chỉ dẫn <code>steer</code> hoặc <code>followUp</code> vào session đang chạy.</li>
+        <li><code>agent_cancel</code>: Hủy theo cây (post-order cascade) có hàng rào thu hồi tài nguyên sạch.</li>
+        <li><code>agent_list</code>: Liệt kê các agent thuộc quyền sở hữu, hỗ trợ phân trang & bộ lọc.</li>
+      </ul>
+      <div class="callout callout-success">
+        <div class="callout-title">✓ Invariant cốt lõi</div>
+        Subagent là untrusted workload; chạy trong container riêng, không có Docker socket, không repository mount, không credential control-plane và không Internet egress tổng quát.
+      </div>
+    </div>
 
-        <!-- BOUNDARY ZONES -->
-        <!-- MCP Client Zone -->
-        <rect x="20" y="30" width="180" height="360" rx="10" fill="url(#grad-client)" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="4 4"/>
-        <text x="35" y="60" fill="#38bdf8" font-family="system-ui" font-size="13" font-weight="700">MCP CLIENTS</text>
-        <rect x="35" y="85" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
-        <text x="50" y="115" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Claude / Codex</text>
-        <rect x="35" y="150" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
-        <text x="50" y="180" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Cursor / Aider</text>
-        <rect x="35" y="215" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
-        <text x="50" y="245" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Generic MCP Tools</text>
+    <!-- Constraints -->
+    <div class="card">
+      <div class="card-title"><span class="icon">🛡️</span> 2. Constraints (5 Hard Gates Bắt buộc)</div>
+      <ul>
+        <li><strong>HG1 (No Host/Control Access):</strong> Dedicated container non-root, read-only rootfs, tmpfs quota, zero host/repo mounts, zero secrets.</li>
+        <li><strong>HG2 (Strict Network & Admission):</strong> Workspace giữ nguyên <code>networkMode: none</code> (từ chối spawn nếu workspace là <code>bridge</code>). Agent chỉ nối Model Gateway qua mạng nội bộ riêng.</li>
+        <li><strong>HG3 (Exact 10 Tools & Pi Lockdown):</strong> Đúng 10 safe operations được liệt kê tường minh: <code>files_list</code>, <code>files_read</code>, <code>files_write</code>, <code>files_apply_patch</code>, <code>files_delete</code>, <code>files_move</code>, <code>files_mkdir</code>, <code>grep_search</code>, <code>symbols_search</code>, <code>symbols_references</code>. <em>(Lưu ý: <code>files_write_batch</code> được chủ ý loại trừ nhằm giảm thiểu bán kính đột biến mã nguồn trên từng lượt gọi — mutation blast radius — và giữ chính sách công cụ của agent đơn giản, tập trung vào chu trình chỉnh sửa từng file có hash guard qua <code>files_write</code> / <code>files_apply_patch</code>).</em> Khóa hoàn toàn Pi built-ins, extensions, prompts, context discovery và nested spawn.</li>
+        <li><strong>HG4 (Cascading Cleanup Barrier):</strong> <em>Revoke lease &rarr; Drain requests &rarr; TERM/KILL &rarr; Remove container/network &rarr; Verify 0 residual</em> trước khi xóa thư mục workspace.</li>
+        <li><strong>HG5 (SQLite Durability & Fencing):</strong> Intent ghi trước side effect, epoch fencing chống stale write, không auto-replay khi crash, báo <code>outcomeUnknown: true</code> trung thực.</li>
+      </ul>
+    </div>
 
-        <!-- RUNNER CONTROL PLANE ZONE -->
-        <rect x="240" y="30" width="440" height="360" rx="10" fill="url(#grad-runner)" stroke="#38bdf8" stroke-width="2"/>
-        <text x="260" y="60" fill="#38bdf8" font-family="system-ui" font-size="14" font-weight="700">TRUSTED RUNNER CONTROL PLANE (apps/runner)</text>
+    <!-- Non-goals -->
+    <div class="card">
+      <div class="card-title"><span class="icon">🚫</span> 3. Non-goals (Ngoài phạm vi)</div>
+      <ul>
+        <li>Không cấp raw shell, <code>exec_run</code>, Git remote push, deployment hay browser cho Pi.</li>
+        <li>Không cho agent tự spawn agent con (recursive autonomous spawn). Lineage chỉ do trusted caller tạo.</li>
+        <li>Không cho caller truyền provider URL/API key tùy ý; chỉ dùng Model Profiles cố định của operator.</li>
+        <li>Không tự resume/replay hội thoại Pi sau Runner crash; ưu tiên tính trung thực <code>outcomeUnknown</code>.</li>
+        <li>Không tuyên bố Model Gateway hay Docker shared-kernel là hostile multi-tenant sandbox; bảo vệ threat model private/single-owner.</li>
+      </ul>
+    </div>
 
-        <!-- Runner Components -->
-        <rect x="260" y="85" width="200" height="75" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
-        <text x="275" y="110" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Provenance & Precedence</text>
-        <text x="275" y="130" fill="#94a3b8" font-family="system-ui" font-size="10">Resolver: built-in &gt; owner</text>
-        <text x="275" y="145" fill="#94a3b8" font-family="system-ui" font-size="10">&gt; workspace &gt; repository</text>
+    <!-- Acceptance Criteria Highlights -->
+    <div class="card">
+      <div class="card-title"><span class="icon">✅</span> 4. Acceptance Criteria (Điểm nhấn nghiệm thu)</div>
+      <ul>
+        <li><strong>32-way Idempotency:</strong> 32 requests concurrent cùng key tạo đúng 1 agent row, 1 lease, 1 container và 1 prompt.</li>
+        <li><strong>Zero Residual Resources:</strong> Sau cancel/TTL/close/crash, kiểm tra Docker & Gateway chứng minh 0 container, 0 network, 0 active lease.</li>
+        <li><strong>Secret Redaction:</strong> Injected secrets không bao giờ lọt vào DB, WAL, logs, MCP responses hay stdout/stderr.</li>
+        <li><strong>Crash Consistency:</strong> Crash tại bất kỳ điểm nào trong crash matrix đều kết thúc an toàn, không duplicate write.</li>
+        <li><strong>Parity:</strong> Schema, annotations, dispatch và E2E giữ đồng bộ tuyệt đối 6 tools & 10 proxy operations.</li>
+      </ul>
+    </div>
 
-        <rect x="260" y="175" width="200" height="85" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
-        <text x="275" y="200" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Context Budget Manager</text>
-        <text x="275" y="220" fill="#94a3b8" font-family="system-ui" font-size="10">Hard Cap: 32 KiB / 128 KiB</text>
-        <text x="275" y="235" fill="#94a3b8" font-family="system-ui" font-size="10">Deterministic Truncation & Cursors</text>
-        <text x="275" y="250" fill="#94a3b8" font-family="system-ui" font-size="10">No Prompt Merging</text>
+  </div>
 
-        <rect x="260" y="275" width="200" height="95" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
-        <text x="275" y="300" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Hook Lifecycle Controller</text>
-        <text x="275" y="320" fill="#94a3b8" font-family="system-ui" font-size="10">Exact Digest Verification</text>
-        <text x="275" y="335" fill="#94a3b8" font-family="system-ui" font-size="10">Pre-commit Veto Enforcer</text>
-        <text x="275" y="350" fill="#94a3b8" font-family="system-ui" font-size="10">Audit Event Publisher (#10)</text>
+  <!-- ARCHITECTURE TOPOLOGY DIAGRAM -->
+  <div class="card" style="margin-bottom: 2rem;">
+    <div class="card-title"><span class="icon">🏛️</span> Kiến trúc Topology & Luồng Dữ liệu Cách ly (Trust Boundary)</div>
+    
+    <div class="diagram-container">
+      <div class="diagram-title">Sơ đồ Topology Hệ thống & Kênh Cách ly Kép</div>
+      <svg viewBox="0 0 950 480" xmlns="http://www.w3.org/2000/svg">
+        <!-- Background Grids & Groups -->
+        <rect x="10" y="10" width="930" height="460" rx="10" fill="#0b1120" stroke="#1e293b" stroke-width="1.5"/>
 
-        <!-- SQLite Box inside Runner -->
-        <rect x="480" y="85" width="180" height="285" rx="8" fill="url(#grad-sqlite)" stroke="#c084fc" stroke-width="1.5" filter="url(#shadow)"/>
-        <text x="500" y="115" fill="#c084fc" font-family="system-ui" font-size="13" font-weight="700">SQLite StateStore v5</text>
-        <rect x="495" y="135" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
-        <text x="505" y="158" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">memories (Scoped)</text>
-        <rect x="495" y="185" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
-        <text x="505" y="208" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">memory_tags</text>
-        <rect x="495" y="235" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
-        <text x="505" y="258" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">hook_activations</text>
-        <rect x="495" y="285" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
-        <text x="505" y="308" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">audit_events (#10)</text>
+        <!-- Ingress / API Layer -->
+        <rect x="30" y="40" width="200" height="120" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="130" y="65" fill="#60a5fa" font-size="13" font-weight="bold" text-anchor="middle">API Layer (HTTP/MCP)</text>
+        <text x="130" y="85" fill="#94a3b8" font-size="11" text-anchor="middle">• loopback ingress</text>
+        <text x="130" y="105" fill="#94a3b8" font-size="11" text-anchor="middle">• Principal Authentication</text>
+        <text x="130" y="125" fill="#94a3b8" font-size="11" text-anchor="middle">• 6 public agent_* tools</text>
+        <text x="130" y="145" fill="#ef4444" font-size="10" font-weight="bold" text-anchor="middle">NO Docker socket / NO mounts</text>
 
-        <!-- WORKER EXECUTOR ZONE -->
-        <rect x="710" y="30" width="230" height="360" rx="10" fill="url(#grad-worker)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4 4"/>
-        <text x="730" y="60" fill="#34d399" font-family="system-ui" font-size="13" font-weight="700">EXECUTOR (worker)</text>
+        <!-- Runner Control Plane -->
+        <rect x="270" y="40" width="310" height="190" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+        <text x="425" y="65" fill="#34d399" font-size="13" font-weight="bold" text-anchor="middle">Runner / AgentManager (Trust Root)</text>
+        <text x="425" y="85" fill="#94a3b8" font-size="11" text-anchor="middle">• SQLite: State, Lineage, Leases, Budgets</text>
+        <text x="425" y="105" fill="#94a3b8" font-size="11" text-anchor="middle">• Epoch Fencing & Admission Control</text>
+        <text x="425" y="125" fill="#94a3b8" font-size="11" text-anchor="middle">• Secret Keyring & Redactor Engine</text>
+        <text x="425" y="145" fill="#94a3b8" font-size="11" text-anchor="middle">• Cascading Cleanup Barrier Manager</text>
+        <text x="425" y="165" fill="#94a3b8" font-size="11" text-anchor="middle">• Safe 10-Tool Proxy Dispatcher</text>
+        <text x="425" y="210" fill="#10b981" font-size="10" font-weight="bold" text-anchor="middle">Sole Owner: Docker Socket & SQLite</text>
+
+        <!-- SQLite DB Box -->
+        <rect x="40" y="190" width="180" height="100" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+        <text x="130" y="215" fill="#e2e8f0" font-size="12" font-weight="bold" text-anchor="middle">SQLite state_store</text>
+        <text x="130" y="235" fill="#94a3b8" font-size="10" text-anchor="middle">• agents, agent_lineage</text>
+        <text x="130" y="250" fill="#94a3b8" font-size="10" text-anchor="middle">• agent_leases, agent_effects</text>
+        <text x="130" y="265" fill="#94a3b8" font-size="10" text-anchor="middle">• agent_messages, agent_logs</text>
+
+        <!-- Existing Workspace Executor -->
+        <rect x="30" y="320" width="220" height="130" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="140" y="345" fill="#fbbf24" font-size="12" font-weight="bold" text-anchor="middle">Workspace Executor Container</text>
+        <text x="140" y="365" fill="#94a3b8" font-size="10" text-anchor="middle">• networkMode: none (STRICT)</text>
+        <text x="140" y="385" fill="#94a3b8" font-size="10" text-anchor="middle">• Writable Repository Mount</text>
+        <text x="140" y="405" fill="#94a3b8" font-size="10" text-anchor="middle">• Sole Repository Writer</text>
+        <text x="140" y="425" fill="#ef4444" font-size="10" font-weight="bold" text-anchor="middle">Pi is NOT running here</text>
+
+        <!-- Dedicated Agent Container -->
+        <rect x="340" y="280" width="250" height="170" rx="8" fill="#1e293b" stroke="#8b5cf6" stroke-width="1.5"/>
+        <text x="465" y="305" fill="#a78bfa" font-size="13" font-weight="bold" text-anchor="middle">Dedicated Pi Agent Worker</text>
+        <text x="465" y="325" fill="#94a3b8" font-size="10" text-anchor="middle">• Pi SDK (AgentSession in-memory)</text>
+        <text x="465" y="345" fill="#94a3b8" font-size="10" text-anchor="middle">• non-root, Read-only rootfs, tmpfs</text>
+        <text x="465" y="365" fill="#94a3b8" font-size="10" text-anchor="middle">• ZERO mounts (no repo/host/socket)</text>
+        <text x="465" y="385" fill="#94a3b8" font-size="10" text-anchor="middle">• ZERO secrets / ZERO direct internet</text>
+        <text x="465" y="405" fill="#94a3b8" font-size="10" text-anchor="middle">• in-memory Empty ResourceLoader</text>
+        <text x="465" y="425" fill="#34d399" font-size="10" font-weight="bold" text-anchor="middle">10 Custom Tools via Stdio JSONL</text>
+
+        <!-- Model Gateway -->
+        <rect x="670" y="160" width="240" height="150" rx="8" fill="#1e293b" stroke="#ec4899" stroke-width="1.5"/>
+        <text x="790" y="185" fill="#f472b6" font-size="13" font-weight="bold" text-anchor="middle">Trusted Model Gateway</text>
+        <text x="790" y="205" fill="#94a3b8" font-size="10" text-anchor="middle">• Dual-homed (per-agent net &lt;-&gt; egress)</text>
+        <text x="790" y="225" fill="#94a3b8" font-size="10" text-anchor="middle">• Scoped Opaque Lease Authentication</text>
+        <text x="790" y="245" fill="#94a3b8" font-size="10" text-anchor="middle">• Atomic Budget Pre-Reservation & Settle</text>
+        <text x="790" y="265" fill="#94a3b8" font-size="10" text-anchor="middle">• Provider Credentials Stored ONLY here</text>
+        <text x="790" y="285" fill="#94a3b8" font-size="10" text-anchor="middle">• Zero Raw Prompt/Body Logging</text>
+
+        <!-- Pinned LLM Provider -->
+        <rect x="690" y="370" width="200" height="70" rx="8" fill="#0f172a" stroke="#64748b" stroke-width="1"/>
+        <text x="790" y="400" fill="#e2e8f0" font-size="12" font-weight="bold" text-anchor="middle">Pinned LLM Provider</text>
+        <text x="790" y="420" fill="#94a3b8" font-size="10" text-anchor="middle">OpenAI / Anthropic / Gemini / Fake</text>
+
+        <!-- Connection Lines -->
+        <!-- API to Runner -->
+        <line x1="230" y1="100" x2="270" y2="100" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrow)"/>
         
-        <rect x="725" y="85" width="200" height="95" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
-        <text x="740" y="110" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Passive File Scanner</text>
-        <text x="740" y="130" fill="#d1fae5" font-family="system-ui" font-size="9.5">• AGENTS.md, CLAUDE.md</text>
-        <text x="740" y="145" fill="#d1fae5" font-family="system-ui" font-size="9.5">• .cursor/rules, package.json</text>
-        <text x="740" y="160" fill="#fca5a5" font-family="system-ui" font-size="9.5">ZERO EXECUTION ON SCAN</text>
+        <!-- Runner to SQLite -->
+        <line x1="270" y1="150" x2="220" y2="210" stroke="#10b981" stroke-width="2"/>
 
-        <rect x="725" y="195" width="200" height="75" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
-        <text x="740" y="220" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Sandboxed Hook Runner</text>
-        <text x="740" y="240" fill="#d1fae5" font-family="system-ui" font-size="9.5">• networkMode: none</text>
-        <text x="740" y="255" fill="#d1fae5" font-family="system-ui" font-size="9.5">• Read-only mounts & caps</text>
+        <!-- Runner to Stdio JSONL (Agent) -->
+        <line x1="425" y1="230" x2="425" y2="280" stroke="#8b5cf6" stroke-width="2.5" stroke-dasharray="4"/>
+        <text x="435" y="255" fill="#a78bfa" font-size="10" font-weight="bold">stdio JSONL Tool Proxy</text>
 
-        <rect x="725" y="285" width="200" height="85" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
-        <text x="740" y="310" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Legacy File Projection</text>
-        <text x="740" y="330" fill="#d1fae5" font-family="system-ui" font-size="9.5">• .cloud-harness/memories/</text>
-        <text x="740" y="345" fill="#fca5a5" font-family="system-ui" font-size="9.5">Read-Only Untrusted Projection</text>
+        <!-- Runner to Executor Dispatch -->
+        <path d="M 310 230 L 310 370 L 250 370" fill="none" stroke="#f59e0b" stroke-width="2"/>
+        <text x="270" y="360" fill="#fbbf24" font-size="9" text-anchor="middle">safe dispatch</text>
 
-        <!-- CONNECTORS / ARROWS -->
-        <!-- Client to Runner -->
-        <path d="M 200 120 L 260 120" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
-        <path d="M 260 210 L 200 210" stroke="#34d399" stroke-width="2" stroke-dasharray="3 3"/>
-        
-        <!-- Runner to Worker Scan -->
-        <path d="M 460 130 L 725 130" stroke="#34d399" stroke-width="2"/>
-        <text x="530" y="125" fill="#a7f3d0" font-family="system-ui" font-size="9" font-weight="600">Passive Scan (Zero Exec)</text>
+        <!-- Agent to Gateway -->
+        <line x1="590" y1="310" x2="670" y2="250" stroke="#ec4899" stroke-width="2"/>
+        <text x="635" y="275" fill="#f472b6" font-size="9" text-anchor="middle">unique net</text>
 
-        <!-- Runner to Worker Hook Exec -->
-        <path d="M 460 320 L 725 230" stroke="#f59e0b" stroke-width="2"/>
-        <text x="520" y="270" fill="#fde68a" font-family="system-ui" font-size="9" font-weight="600">Digest-Pinned Exec (No-Net)</text>
+        <!-- Gateway to Provider -->
+        <line x1="790" y1="310" x2="790" y2="370" stroke="#38bdf8" stroke-width="2"/>
+        <text x="800" y="345" fill="#38bdf8" font-size="9">HTTPS</text>
       </svg>
     </div>
-  </section>
+  </div>
 
-  <!-- ULTRA VERIFIER BENCHMARK & COMPARISON -->
-  <section class="card">
-    <div class="card-header">
-      <div class="card-title">
-        <span>🔬</span> Ultra Verifier Mode: Best-of-5 Evaluation & Rubric Scoring
-      </div>
-      <span class="badge badge-purple">Scored by Kongming</span>
-    </div>
-
+  <!-- COMPARISON & ULTRA VERIFIER RANKING -->
+  <div class="card" style="margin-bottom: 2rem;">
+    <div class="card-title"><span class="icon">⚖️</span> Đánh giá & Xếp hạng 5 Ứng viên (Ultra Verifier Scoreboard)</div>
+    
     <div class="table-container">
       <table>
         <thead>
           <tr>
-            <th>Rank</th>
-            <th>Candidate Architecture Focus</th>
+            <th>Hạng</th>
+            <th>Ứng viên</th>
             <th>Faithfulness (/20)</th>
             <th>Evidence (/20)</th>
-            <th>Acceptance (/20)</th>
-            <th>Trade-offs (/20)</th>
-            <th>Total (/80)</th>
-            <th>Status</th>
+            <th>AC & Failure (/20)</th>
+            <th>Honesty (/20)</th>
+            <th>Tổng (/80)</th>
+            <th>5 Hard Gates</th>
+            <th>Kết luận</th>
           </tr>
         </thead>
         <tbody>
           <tr class="winner-row">
             <td><strong>#1</strong></td>
-            <td><strong>Candidate B: Client-Portability & Minimalist Engine</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Bounded passive scanner, multi-client adapters (Claude/Codex/Cursor/Aider), lightweight hybrid SQLite store, UTF-8 byte budgets.</span></td>
-            <td><strong>20</strong></td>
-            <td><strong>18</strong></td>
-            <td><strong>19</strong></td>
-            <td><strong>20</strong></td>
-            <td><strong>77</strong></td>
+            <td><strong>Candidate A (CandidateR3)</strong></td>
+            <td>20</td>
+            <td>19</td>
+            <td>20</td>
+            <td>20</td>
+            <td><strong>79</strong></td>
+            <td><span class="tag-pass">PASS ALL (5/5)</span></td>
             <td><span class="badge badge-success">WINNER</span></td>
           </tr>
           <tr>
             <td>#2</td>
-            <td><strong>Candidate C: Developer-Experience & Scalable Context</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">In-memory layered manifest cache, adaptive token budgeting, rich FTS5 tag/scope memory queries, sandboxed hooks.</span></td>
+            <td>Candidate D (CandidateR2)</td>
+            <td>20</td>
             <td>19</td>
+            <td>20</td>
             <td>19</td>
-            <td>19</td>
-            <td>19</td>
-            <td>76</td>
-            <td><span class="badge badge-accent">Runner-Up</span></td>
+            <td>78</td>
+            <td><span class="tag-pass">PASS ALL (5/5)</span></td>
+            <td>Á quân (Sát điểm)</td>
           </tr>
           <tr>
             <td>#3</td>
-            <td><strong>Candidate E: Threat-Model Containment & Production Governance</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">STRIDE threat modeling, approval grant tokens for persistent writes, durable pre-execution run state with INTERRUPTED recovery.</span></td>
-            <td>17</td>
-            <td>19</td>
-            <td>19</td>
+            <td>Candidate B (CandidateR1)</td>
             <td>20</td>
-            <td>75</td>
-            <td><span class="badge badge-warning">Strong Threat Model</span></td>
+            <td>20</td>
+            <td>19</td>
+            <td>18</td>
+            <td>77</td>
+            <td><span class="tag-pass">PASS ALL (5/5)</span></td>
+            <td>Grounding tốt</td>
           </tr>
           <tr>
             <td>#4</td>
-            <td><strong>Candidate A: Security-First & HMAC Cryptographic Provenance</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Split-plane runner authority, HMAC-SHA-256 provenance integrity tags, provenance keyring, out-of-checkout workspace storage.</span></td>
-            <td>17</td>
-            <td>17</td>
-            <td>20</td>
+            <td>Candidate C (CandidateR5)</td>
             <td>19</td>
-            <td>73</td>
-            <td><span class="badge badge-warning">Over-Engineered Crypto</span></td>
+            <td>19</td>
+            <td>18</td>
+            <td>19</td>
+            <td>75</td>
+            <td><span class="tag-pass">PASS ALL (5/5)</span></td>
+            <td>Đạt chuẩn</td>
           </tr>
           <tr>
             <td>#5</td>
-            <td><strong>Candidate D: Zero-Friction Backward Compatibility & Schema Evolution</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Expand-migrate-contract overlay, separate new mutation tools (memories_put/query) to avoid rolling deploy field stripping, v5-to-v4 downgrade guards.</span></td>
-            <td>15</td>
+            <td>Candidate E (CandidateR4)</td>
             <td>18</td>
             <td>18</td>
-            <td>20</td>
-            <td>71</td>
-            <td><span class="badge badge-danger">Excessive Operations</span></td>
+            <td>18</td>
+            <td>18</td>
+            <td>72</td>
+            <td><span class="tag-pass">PASS ALL (5/5)</span></td>
+            <td>Đạt chuẩn</td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <div class="callout callout-warning" style="margin-top: 1.5rem;">
-      <div class="callout-title">
-        <span>💡</span> Kongming Verifier Synthesis: Key Lessons to Adopt from Other Candidates
-      </div>
-      <p style="font-size: 0.85rem;">
-        While Candidate B is the single winner, the final implementation plan must incorporate key hardening elements:
-        <strong>(1) From Candidate D:</strong> Safe rolling upgrades with feature negotiation so old runners don't strip new mutation parameters;
-        <strong>(2) From Candidate 3:</strong> Snapshot-bound cursors for deterministic pagination;
-        <strong>(3) From Candidate 5:</strong> Durable pre-execution <code>REQUESTED</code> status for long lifecycle hooks to handle runner restarts without silent state corruption.
-      </p>
+    <div class="callout callout-success">
+      <div class="callout-title">🏆 Quyết định của Verifier (Kongming)</div>
+      <strong>Candidate A (CandidateR3)</strong> được chọn làm Winner duy nhất nguyên vẹn. Bản hợp đồng này có failure semantics và acceptance criteria sâu nhất (32-way idempotency, crash recovery matrix, exact zero-residual proofs), đồng thời trung thực nhất về giới hạn container shared-kernel, Model Gateway blast radius và hiệu năng cần đo ở Phase 0.
     </div>
-  </section>
+  </div>
 
-  <!-- UI / UX MOCKUPS & TOOL OUTPUT CONTRACT -->
-  <section class="card">
-    <div class="card-header">
-      <div class="card-title">
-        <span>💻</span> UI/UX Mockups: Enriched MCP Tool Responses with Provenance Badges
-      </div>
-      <span class="badge badge-accent">MCP JSON Envelopes</span>
+  <!-- IMPLEMENTATION WORKFLOW & PHASES -->
+  <div class="card" style="margin-bottom: 2rem;">
+    <div class="card-title"><span class="icon">🚀</span> Kế hoạch Triển khai 8 Pha (Phases 0–7)</div>
+    
+    <div class="diagram-container">
+      <div class="diagram-title">Lộ trình Thực thi & Điểm Kiểm soát (Exit Gates)</div>
+      <svg viewBox="0 0 950 180" xmlns="http://www.w3.org/2000/svg">
+        <!-- Phase 0 -->
+        <rect x="10" y="20" width="105" height="130" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="62" y="45" fill="#60a5fa" font-size="11" font-weight="bold" text-anchor="middle">Phase 0</text>
+        <text x="62" y="65" fill="#e2e8f0" font-size="10" text-anchor="middle">Spike & Pin</text>
+        <text x="62" y="85" fill="#94a3b8" font-size="9" text-anchor="middle">• Pin Pi SDK</text>
+        <text x="62" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">• In-memory load</text>
+        <text x="62" y="115" fill="#94a3b8" font-size="9" text-anchor="middle">• Measure cold</text>
+        <text x="62" y="135" fill="#10b981" font-size="8" font-weight="bold" text-anchor="middle">Gate: Pi lockdown</text>
+
+        <!-- Phase 1 -->
+        <rect x="125" y="20" width="105" height="130" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="177" y="45" fill="#60a5fa" font-size="11" font-weight="bold" text-anchor="middle">Phase 1</text>
+        <text x="177" y="65" fill="#e2e8f0" font-size="10" text-anchor="middle">Contracts</text>
+        <text x="177" y="85" fill="#94a3b8" font-size="9" text-anchor="middle">• 6 MCP schemas</text>
+        <text x="177" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">• 10 proxy ops</text>
+        <text x="177" y="115" fill="#94a3b8" font-size="9" text-anchor="middle">• Annotations</text>
+        <text x="177" y="135" fill="#10b981" font-size="8" font-weight="bold" text-anchor="middle">Gate: Parity test</text>
+
+        <!-- Phase 2 -->
+        <rect x="240" y="20" width="105" height="130" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="292" y="45" fill="#60a5fa" font-size="11" font-weight="bold" text-anchor="middle">Phase 2</text>
+        <text x="292" y="65" fill="#e2e8f0" font-size="10" text-anchor="middle">SQLite State</text>
+        <text x="292" y="85" fill="#94a3b8" font-size="9" text-anchor="middle">• Migrations</text>
+        <text x="292" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">• BEGIN IMMED</text>
+        <text x="292" y="115" fill="#94a3b8" font-size="9" text-anchor="middle">• Epoch fence</text>
+        <text x="292" y="135" fill="#10b981" font-size="8" font-weight="bold" text-anchor="middle">Gate: Idempotency</text>
+
+        <!-- Phase 3 -->
+        <rect x="355" y="20" width="105" height="130" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="407" y="45" fill="#60a5fa" font-size="11" font-weight="bold" text-anchor="middle">Phase 3</text>
+        <text x="407" y="65" fill="#e2e8f0" font-size="10" text-anchor="middle">Agent Runtime</text>
+        <text x="407" y="85" fill="#94a3b8" font-size="9" text-anchor="middle">• Worker image</text>
+        <text x="407" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">• JSONL framing</text>
+        <text x="407" y="115" fill="#94a3b8" font-size="9" text-anchor="middle">• Redaction</text>
+        <text x="407" y="135" fill="#10b981" font-size="8" font-weight="bold" text-anchor="middle">Gate: Frame tests</text>
+
+        <!-- Phase 4 -->
+        <rect x="470" y="20" width="105" height="130" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="522" y="45" fill="#60a5fa" font-size="11" font-weight="bold" text-anchor="middle">Phase 4</text>
+        <text x="522" y="65" fill="#e2e8f0" font-size="10" text-anchor="middle">Model Gateway</text>
+        <text x="522" y="85" fill="#94a3b8" font-size="9" text-anchor="middle">• Fixed profile</text>
+        <text x="522" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">• Scoped lease</text>
+        <text x="522" y="115" fill="#94a3b8" font-size="9" text-anchor="middle">• Budget ledger</text>
+        <text x="522" y="135" fill="#10b981" font-size="8" font-weight="bold" text-anchor="middle">Gate: Lease isol.</text>
+
+        <!-- Phase 5 -->
+        <rect x="585" y="20" width="105" height="130" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="637" y="45" fill="#60a5fa" font-size="11" font-weight="bold" text-anchor="middle">Phase 5</text>
+        <text x="637" y="65" fill="#e2e8f0" font-size="10" text-anchor="middle">AgentManager</text>
+        <text x="637" y="85" fill="#94a3b8" font-size="9" text-anchor="middle">• Dispatching</text>
+        <text x="637" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">• Cascade cancel</text>
+        <text x="637" y="115" fill="#94a3b8" font-size="9" text-anchor="middle">• Reaping barrier</text>
+        <text x="637" y="135" fill="#10b981" font-size="8" font-weight="bold" text-anchor="middle">Gate: Zero resid.</text>
+
+        <!-- Phase 6 -->
+        <rect x="700" y="20" width="115" height="130" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="757" y="45" fill="#60a5fa" font-size="11" font-weight="bold" text-anchor="middle">Phase 6</text>
+        <text x="757" y="65" fill="#e2e8f0" font-size="10" text-anchor="middle">Docker E2E & Crash</text>
+        <text x="757" y="85" fill="#94a3b8" font-size="9" text-anchor="middle">• Fake TLS provider</text>
+        <text x="757" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">• Crash matrix</text>
+        <text x="757" y="115" fill="#94a3b8" font-size="9" text-anchor="middle">• Adversarial suite</text>
+        <text x="757" y="135" fill="#10b981" font-size="8" font-weight="bold" text-anchor="middle">Gate: 0 failures</text>
+
+        <!-- Phase 7 -->
+        <rect x="825" y="20" width="115" height="130" rx="6" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+        <text x="882" y="45" fill="#34d399" font-size="11" font-weight="bold" text-anchor="middle">Phase 7</text>
+        <text x="882" y="65" fill="#e2e8f0" font-size="10" text-anchor="middle">Docs & Beta Canary</text>
+        <text x="882" y="85" fill="#94a3b8" font-size="9" text-anchor="middle">• Docs site sync</text>
+        <text x="882" y="100" fill="#94a3b8" font-size="9" text-anchor="middle">• Beta release</text>
+        <text x="882" y="115" fill="#94a3b8" font-size="9" text-anchor="middle">• Real canary test</text>
+        <text x="882" y="135" fill="#34d399" font-size="8" font-weight="bold" text-anchor="middle">Gate: Live receipt</text>
+      </svg>
     </div>
+  </div>
 
-    <div class="grid-2">
-      <!-- Mockup 1: workspace_context -->
-      <div class="mockup-window">
-        <div class="mockup-titlebar">
-          <span class="mockup-dot dot-red"></span>
-          <span class="mockup-dot dot-yellow"></span>
-          <span class="mockup-dot dot-green"></span>
-          <span style="color: #94a3b8; margin-left: 0.5rem;">MCP Tool: workspace_context</span>
-        </div>
-        <div class="mockup-body">
-<pre>{
-  <span class="token-key">"ok"</span>: <span class="token-bool">true</span>,
-  <span class="token-key">"data"</span>: {
-    <span class="token-key">"workspace"</span>: { <span class="token-key">"workspaceId"</span>: <span class="token-str">"ws_9f8e7d6c5b"</span>, <span class="token-key">"status"</span>: <span class="token-str">"ACTIVE"</span> },
-    <span class="token-key">"branch"</span>: <span class="token-str">"feat/issue-15"</span>,
-    <span class="token-key">"manifest"</span>: {
-      <span class="token-key">"contractVersion"</span>: <span class="token-num">1</span>,
-      <span class="token-key">"returnedBytes"</span>: <span class="token-num">12450</span>,
-      <span class="token-key">"truncated"</span>: <span class="token-bool">false</span>,
-      <span class="token-key">"items"</span>: [
-        {
-          <span class="token-key">"id"</span>: <span class="token-str">"ctx_claude_root"</span>,
-          <span class="token-key">"kind"</span>: <span class="token-str">"instruction"</span>,
-          <span class="token-key">"format"</span>: <span class="token-str">"claude"</span>,
-          <span class="token-key">"path"</span>: <span class="token-str">"CLAUDE.md"</span>,
-          <span class="token-key">"provenance"</span>: {
-            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">UNTRUSTED</span>,
-            <span class="token-key">"trust"</span>: <span class="token-str">"untrusted-executor"</span>,
-            <span class="token-key">"mutableBy"</span>: <span class="token-str">"repository-commit"</span>,
-            <span class="token-key">"contentSha256"</span>: <span class="token-str">"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"</span>
-          }
-        },
-        {
-          <span class="token-key">"id"</span>: <span class="token-str">"ctx_agents_portable"</span>,
-          <span class="token-key">"kind"</span>: <span class="token-str">"instruction"</span>,
-          <span class="token-key">"format"</span>: <span class="token-str">"codex"</span>,
-          <span class="token-key">"path"</span>: <span class="token-str">"AGENTS.md"</span>,
-          <span class="token-key">"provenance"</span>: {
-            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">UNTRUSTED</span>
-          }
-        }
-      ]
-    }
-  }
-}</pre>
-        </div>
+  <!-- UI/UX & MCP TOOL CALL MOCKUP -->
+  <div class="card" style="margin-bottom: 2rem;">
+    <div class="card-title"><span class="icon">💻</span> Trực quan hóa Giao diện & Tương tác Công cụ MCP</div>
+    
+    <p>Ví dụ luồng gọi công cụ thực tế từ MCP Client (Claude Desktop / Cursor / Terminal):</p>
+
+    <div class="mockup-window">
+      <div class="mockup-header">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+        <span class="mockup-title">MCP Client &rarr; Cloud Harness MCP Tool Interaction Stream</span>
       </div>
+      <div class="mockup-body">
+<span class="token-comment">// 1. Khởi tạo Subagent với Profile & Budget có kiểm soát</span>
+<span class="token-kw">await</span> client.<span class="token-fn">callTool</span>(<span class="token-str">"agent_spawn"</span>, {
+  <span class="token-str">"workspaceId"</span>: <span class="token-str">"ws_9f83a0bc81de42a"</span>,
+  <span class="token-str">"prompt"</span>: <span class="token-str">"Refactor auth logic to use JWT tokens and update unit tests."</span>,
+  <span class="token-str">"idempotencyKey"</span>: <span class="token-str">"spawn_task_4812_refactor"</span>,
+  <span class="token-str">"profileId"</span>: <span class="token-str">"openai-gpt4o-mini"</span>,
+  <span class="token-str">"ttlSeconds"</span>: <span class="token-num">600</span>,
+  <span class="token-str">"maxOutputTokens"</span>: <span class="token-num">8192</span>
+});
+<span class="token-comment">// &rarr; Response (Immediate ACK): { agentId: "ag_7a18b9c", state: "SPAWNING", replayed: false }</span>
 
-      <!-- Mockup 2: skills_list & memories_search -->
-      <div class="mockup-window">
-        <div class="mockup-titlebar">
-          <span class="mockup-dot dot-red"></span>
-          <span class="mockup-dot dot-yellow"></span>
-          <span class="mockup-dot dot-green"></span>
-          <span style="color: #94a3b8; margin-left: 0.5rem;">MCP Tool: skills_list (Precedence Resolution)</span>
-        </div>
-        <div class="mockup-body">
-<pre>{
-  <span class="token-key">"ok"</span>: <span class="token-bool">true</span>,
-  <span class="token-key">"data"</span>: {
-    <span class="token-key">"skills"</span>: [
-      {
-        <span class="token-key">"name"</span>: <span class="token-str">"cloudharness"</span>,
-        <span class="token-key">"selectedSource"</span>: <span class="token-str">"built-in"</span> <span class="token-tag tag-builtin">BUILT-IN</span>,
-        <span class="token-key">"contentSha256"</span>: <span class="token-str">"9a8b7c6d5e4f3a2b..."</span>,
-        <span class="token-key">"shadowed"</span>: [
-          {
-            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">SHADOWED</span>,
-            <span class="token-key">"root"</span>: <span class="token-str">".agents/skills"</span>,
-            <span class="token-key">"reason"</span>: <span class="token-str">"Overridden by higher-precedence built-in skill"</span>
-          }
-        ]
-      },
-      {
-        <span class="token-key">"name"</span>: <span class="token-str">"project-deploy"</span>,
-        <span class="token-key">"selectedSource"</span>: <span class="token-str">"owner"</span> <span class="token-tag tag-owner">OWNER-ASSERTED</span>,
-        <span class="token-key">"mutableBy"</span>: <span class="token-str">"owner"</span>
-      }
-    ]
-  }
-}</pre>
-        </div>
-      </div>
-    </div>
-  </section>
+<span class="token-comment">// 2. Tra cứu Trạng thái & Đo lường Chi phí</span>
+<span class="token-kw">await</span> client.<span class="token-fn">callTool</span>(<span class="token-str">"agent_status"</span>, {
+  <span class="token-str">"workspaceId"</span>: <span class="token-str">"ws_9f83a0bc81de42a"</span>,
+  <span class="token-str">"agentId"</span>: <span class="token-str">"ag_7a18b9c"</span>
+});
+<span class="token-comment">/* &rarr; Response:
+{
+  "agentId": "ag_7a18b9c",
+  "state": "RUNNING",
+  "activity": "TOOL_CALL",
+  "currentTool": "files_apply_patch",
+  "budget": { "tokensUsed": 1420, "costMicros": 2840, "remainingTokens": 6772 },
+  "outcomeUnknown": false
+} */</span>
 
-  <!-- PHASED IMPLEMENTATION ROADMAP -->
-  <section class="card">
-    <div class="card-header">
-      <div class="card-title">
-        <span>🗺️</span> Phased Implementation & Delivery Roadmap
-      </div>
-      <span class="badge badge-accent">6 Implementation Phases</span>
-    </div>
+<span class="token-comment">// 3. Đọc Logs phân trang bằng Cursor (Đã Redact Secret)</span>
+<span class="token-kw">await</span> client.<span class="token-fn">callTool</span>(<span class="token-str">"agent_logs"</span>, {
+  <span class="token-str">"workspaceId"</span>: <span class="token-str">"ws_9f83a0bc81de42a"</span>,
+  <span class="token-str">"agentId"</span>: <span class="token-str">"ag_7a18b9c"</span>,
+  <span class="token-str">"cursor"</span>: <span class="token-str">"1024"</span>,
+  <span class="token-str">"limitBytes"</span>: <span class="token-num">32768</span>
+});
 
-    <div class="grid-3">
-      <div class="contract-box">
-        <h3><span>1️⃣</span> Phase 1: Contracts & Threat Model</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Define Zod schemas in <code>runner-api.ts</code> and <code>tool-schemas.ts</code>: <code>ProvenanceSchema</code>, <code>ContextManifestItem</code>, <code>MemoryDescriptor</code>, <code>HookEvent</code>, and budget bounds.</p>
-      </div>
-
-      <div class="contract-box">
-        <h3><span>2️⃣</span> Phase 2: Passive Worker Scanner</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Implement zero-execution file discovery in <code>worker/harness-worker.mjs</code> for Claude, Codex, Cursor, Aider instruction files, and language manifests.</p>
-      </div>
-
-      <div class="contract-box">
-        <h3><span>3️⃣</span> Phase 3: Precedence & Skill Resolver</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Build runner resolver for <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidate visibility and SHA-256 digest execution checks.</p>
-      </div>
-
-      <div class="contract-box">
-        <h3><span>4️⃣</span> Phase 4: Scoped SQLite Memory</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Migrate <code>StateStore</code> schema v5: <code>memories</code>, <code>memory_tags</code> with principal/repo/workspace scoping, CAS generation, TTL, search, and delete.</p>
-      </div>
-
-      <div class="contract-box">
-        <h3><span>5️⃣</span> Phase 5: Declarative Hooks & Sandbox</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Implement JSON manifest parser, digest-pinned activation, and short-lived no-network executor container runs for <code>pre_commit</code> and <code>post_checkout</code>.</p>
-      </div>
-
-      <div class="contract-box">
-        <h3><span>6️⃣</span> Phase 6: Hardening & Verification</h3>
-        <p style="font-size: 0.82rem; color: var(--ink-muted);">Run prompt-injection fixtures, restart/crash tests, output boundary assertions, sync docs/skills, and execute full Docker/CI gates.</p>
+<span class="token-comment">// 4. Gửi Điều hướng (Steering)</span>
+<span class="token-kw">await</span> client.<span class="token-fn">callTool</span>(<span class="token-str">"agent_message"</span>, {
+  <span class="token-str">"workspaceId"</span>: <span class="token-str">"ws_9f83a0bc81de42a"</span>,
+  <span class="token-str">"agentId"</span>: <span class="token-str">"ag_7a18b9c"</span>,
+  <span class="token-str">"idempotencyKey"</span>: <span class="token-str">"msg_steer_jwt_expiry"</span>,
+  <span class="token-str">"mode"</span>: <span class="token-str">"steer"</span>,
+  <span class="token-str">"message"</span>: <span class="token-str">"Ensure token expiry is set to exactly 15 minutes."</span>
+});
       </div>
     </div>
-  </section>
+  </div>
 
-</main>
+  <!-- SUMMARY & NEXT STEPS -->
+  <div class="card">
+    <div class="card-title"><span class="icon">📋</span> Bối cảnh Thực tế & Đối chiếu Nhánh (Branch Comparison: 7bcdd9e vs HEAD)</div>
+    <div class="callout callout-warning">
+      <div class="callout-title">⚠️ Kết quả Đối chiếu Git: 7bcdd9e KHÔNG phải là ancestor của HEAD (v0.30.0)</div>
+      Lệnh kiểm tra <code>git merge-base --is-ancestor 7bcdd9e HEAD</code> xác nhận commit <code>7bcdd9e</code> (PR #36 trên nhánh <code>dev</code> thời điểm <code>v0.4.0-beta.1</code>) <strong>chưa từng được sáp nhập vào nhánh chính hiện tại</strong> (HEAD đang ở <code>v0.30.0</code> — commit <code>f70223d</code>). Cây làm việc hiện tại chưa có <code>apps/agent-runtime</code>, chưa có dependency Pi hay tool schemas <code>agent_*</code>.
+    </div>
+    <p><strong>Phạm vi thực thi thực tế khi chuyển sang Planning & Cooking:</strong></p>
+    <ol>
+      <li><strong>Tích hợp & Reconcile vào v0.30.0:</strong> Mang kiến trúc <code>agent_*</code> từ prior art (PR #36) vào nền tảng <code>v0.30.0</code>, đồng bộ với các hệ thống mới: Global Secrets (#121), Durable Tasks & Artifacts Lifecycle (#14), State Schema v4.</li>
+      <li><strong>Kiểm thử & Khóa 5 Hard Gates:</strong> Chạy Fake TLS Provider Docker E2E, 32-way idempotency và ma trận crash failpoints.</li>
+      <li><strong>Giao thức Nghiệm thu Canary Vận hành:</strong> Chạy canary do owner cấp quyền với tài khoản provider thực, thu thập bằng chứng zero-residual và đóng chính thức Issue #19.</li>
+    </ol>
+    <div class="badge-bar" style="margin-top: 1rem;">
+      <span class="badge badge-primary">Next Workflow: ak:plan --html --wiki</span>
+      <span class="badge badge-warning">Advisory Forward-Carry: --advice</span>
+    </div>
+  </div>
 
-<script>
-  function toggleTheme() {
-    const html = document.documentElement;
-    const current = html.getAttribute('data-theme');
-    const next = current === 'dark' ? 'light' : 'dark';
-    html.setAttribute('data-theme', next);
-    document.getElementById('theme-icon').textContent = next === 'dark' ? '🌙' : '☀️';
-  }
-</script>
+  <div class="footer-bar">
+    Cloud Harness MCP • Artifact: <code>plans/reports/brainstorm.html</code> • Date: 2026-08-30
+  </div>
+
+</div>
 
 </body>
 </html>

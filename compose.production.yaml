@@ -35,8 +35,36 @@ services:
   # deploy. This idle holder is strictly less privileged than a real executor:
   # no network, no mounts, no secrets, all capabilities dropped, read-only,
   # non-root.
+
+  model-gateway:
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    deploy:
+      resources:
+        limits: { cpus: "0.50", memory: 512M, pids: 128 }
+    volumes:
+      - /etc/cloud-harness-model-gateway/profiles.json:/run/model-gateway-config/profiles.json:ro
+      - /etc/cloud-harness-model-gateway/provider-api-key:/run/model-gateway-secrets/provider-api-key:ro
   executor-image-keepalive:
     image: cloud-harness-executor:local
+    command: ["sleep", "infinity"]
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    user: "10001:10001"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: 1m, max-file: "1" }
+    deploy:
+      resources:
+        limits: { cpus: "0.01", memory: 32M, pids: 8 }
+
+  agent-image-keepalive:
+    image: cloud-harness-agent:local
     command: ["sleep", "infinity"]
     read_only: true
     network_mode: none
