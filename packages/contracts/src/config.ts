@@ -93,6 +93,8 @@ export const RunnerConfigSchema = z.object({
   maxArtifactBytes: z.coerce.number().int().min(1_024).max(268_435_456).default(16_777_216),
   maxPrincipalArtifactBytes: z.coerce.number().int().min(1_024).max(2_147_483_648).default(134_217_728),
   artifactRetentionSeconds: z.coerce.number().int().min(60).max(2_592_000).default(86_400),
+  enableRepoCache: enabled.default(false),
+  repoCacheRoot: z.string().min(1).default('/var/lib/cloud-harness/cache/repos'),
   secretKeyring: SecretKeyringConfigSchema.optional(),
   legacyPrincipalMapping: z.object({
     legacyOwnerId: z.string().min(1).max(100),

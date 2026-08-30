@@ -25,6 +25,68 @@ export type {
   PrincipalRelinkResult,
   PrincipalSelector
 } from './principal-store.js';
+export { downgradeStateSchemaToV3 } from './principal-store.js';
+
+export type RepoCacheStatus = 'INITIALIZING' | 'READY' | 'UPDATING' | 'FAILED' | 'DISABLED';
+export type RepoCacheRecord = {
+  id: string;
+  ownerId: string;
+  repositoryUrl: string;
+  repositoryUrlHash: string;
+  cachePath: string;
+  defaultBranch: string | null;
+  lastFetchedAt: number;
+  sizeBytes: number;
+  status: RepoCacheStatus;
+  generation: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type DurableTaskStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'BLOCKED';
+export type DurableTaskRecord = {
+  id: string;
+  workspaceId: string;
+  ownerId: string;
+  name: string | null;
+  command: string;
+  cwd: string;
+  status: DurableTaskStatus;
+  idempotencyKey: string | null;
+  requestFingerprint: string | null;
+  bootId: string;
+  exitCode: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  timeoutMs: number;
+  maxBytes: number;
+  logPath: string;
+  outputBytes: number;
+  outputArtifactId: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  generation: number;
+  dependsOn?: string[];
+};
+
+export type GitOperationStatus = 'PENDING' | 'SUCCEEDED' | 'UNKNOWN_REMOTE_STATE' | 'CONFLICT' | 'FAILED';
+export type GitOperationKind = 'push' | 'commit' | 'finalize';
+export type GitOperationRecord = {
+  ownerId: string;
+  workspaceId: string;
+  idempotencyKey: string;
+  operation: GitOperationKind;
+  requestFingerprint: string;
+  targetRef: string | null;
+  expectedRemoteOid: string | null;
+  localCommitSha: string | null;
+  status: GitOperationStatus;
+  resultJson: string | null;
+  errorJson: string | null;
+  createdAt: number;
+  finishedAt: number | null;
+};
 
 export type WorkspaceRecord = {
   id: string;
@@ -129,6 +191,8 @@ export class StateStore {
       CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner
         ON workspaces(owner_id)
         WHERE status IN ('CREATING','ACTIVE','REAPING');
+      CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id
+        ON workspaces(owner_id, id);
       CREATE TABLE IF NOT EXISTS privilege_grants (
         id TEXT PRIMARY KEY,
         owner_id TEXT NOT NULL,
@@ -809,6 +873,431 @@ export class StateStore {
       "UPDATE privilege_grants SET status = 'CONSUMED', consumed_at = ? WHERE id = ? AND owner_id = ? AND workspace_id = ? AND command_sha256 = ? AND cwd = ? AND status = 'APPROVED' AND expires_at > ?"
     ).run(now, input.grantId, input.ownerId, input.workspaceId, input.commandSha256, cwd, now);
     return result.changes === 1;
+  }
+
+  getRepoCache(ownerId: string, urlHash: string): RepoCacheRecord | undefined {
+    const row = this.database.prepare(
+      'SELECT * FROM repo_caches WHERE owner_id = ? AND repository_url_hash = ?'
+    ).get(ownerId, urlHash) as {
+      id: string; owner_id: string; repository_url: string; repository_url_hash: string;
+      cache_path: string; default_branch: string | null; last_fetched_at: number;
+      size_bytes: number; status: RepoCacheStatus; generation: number;
+      created_at: number; updated_at: number;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      ownerId: row.owner_id,
+      repositoryUrl: row.repository_url,
+      repositoryUrlHash: row.repository_url_hash,
+      cachePath: row.cache_path,
+      defaultBranch: row.default_branch,
+      lastFetchedAt: row.last_fetched_at,
+      sizeBytes: row.size_bytes,
+      status: row.status,
+      generation: row.generation,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  upsertRepoCache(record: Omit<RepoCacheRecord, 'generation'>): RepoCacheRecord {
+    const existing = this.getRepoCache(record.ownerId, record.repositoryUrlHash);
+    if (existing) {
+      this.database.prepare(`
+        UPDATE repo_caches
+        SET cache_path = ?, default_branch = ?, last_fetched_at = ?, size_bytes = ?,
+            status = ?, generation = generation + 1, updated_at = ?
+        WHERE id = ? AND owner_id = ?
+      `).run(
+        record.cachePath, record.defaultBranch, record.lastFetchedAt, record.sizeBytes,
+        record.status, record.updatedAt, existing.id, record.ownerId
+      );
+      return { ...record, id: existing.id, generation: existing.generation + 1 };
+    }
+    this.database.prepare(`
+      INSERT INTO repo_caches
+      (id, owner_id, repository_url, repository_url_hash, cache_path, default_branch,
+       last_fetched_at, size_bytes, status, generation, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `).run(
+      record.id, record.ownerId, record.repositoryUrl, record.repositoryUrlHash,
+      record.cachePath, record.defaultBranch, record.lastFetchedAt, record.sizeBytes,
+      record.status, record.createdAt, record.updatedAt
+    );
+    return { ...record, generation: 1 };
+  }
+  touchRepoCache(ownerId: string, urlHash: string, now: number = Date.now()): boolean {
+    const result = this.database.prepare(`
+      UPDATE repo_caches
+      SET last_fetched_at = ?, updated_at = ?, generation = generation + 1
+      WHERE owner_id = ? AND repository_url_hash = ?
+    `).run(now, now, ownerId, urlHash);
+    return Number(result.changes) === 1;
+  }
+
+  listStaleRepoCaches(unusedBefore: number): RepoCacheRecord[] {
+    const rows = this.database.prepare(
+      'SELECT * FROM repo_caches WHERE last_fetched_at < ?'
+    ).all(unusedBefore) as {
+      id: string; owner_id: string; repository_url: string; repository_url_hash: string;
+      cache_path: string; default_branch: string | null; last_fetched_at: number;
+      size_bytes: number; status: RepoCacheStatus; generation: number;
+      created_at: number; updated_at: number;
+    }[];
+    return rows.map((row) => ({
+      id: row.id,
+      ownerId: row.owner_id,
+      repositoryUrl: row.repository_url,
+      repositoryUrlHash: row.repository_url_hash,
+      cachePath: row.cache_path,
+      defaultBranch: row.default_branch,
+      lastFetchedAt: row.last_fetched_at,
+      sizeBytes: row.size_bytes,
+      status: row.status,
+      generation: row.generation,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }));
+  }
+
+  deleteRepoCache(id: string): boolean {
+    const result = this.database.prepare('DELETE FROM repo_caches WHERE id = ?').run(id);
+    return result.changes === 1;
+  }
+
+  createDurableTask(task: Omit<DurableTaskRecord, 'generation'>, dependsOn: string[] = []): DurableTaskRecord {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      this.database.prepare(`
+        INSERT INTO durable_tasks
+        (id, workspace_id, owner_id, name, command, cwd, status, idempotency_key,
+         request_fingerprint, boot_id, exit_code, error_code, error_message, timeout_ms,
+         max_bytes, log_path, output_bytes, output_artifact_id, created_at, started_at,
+         finished_at, generation)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `).run(
+        task.id, task.workspaceId, task.ownerId, task.name, task.command, task.cwd,
+        task.status, task.idempotencyKey, task.requestFingerprint, task.bootId,
+        task.exitCode, task.errorCode, task.errorMessage, task.timeoutMs, task.maxBytes,
+        task.logPath, task.outputBytes, task.outputArtifactId, task.createdAt,
+        task.startedAt, task.finishedAt
+      );
+      for (const depId of dependsOn) {
+        this.database.prepare(
+          'INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)'
+        ).run(task.id, depId);
+      }
+      this.database.exec('COMMIT;');
+      return { ...task, generation: 1, dependsOn };
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
+      throw error;
+    }
+  }
+
+  getDurableTask(ownerId: string, workspaceId: string, taskId: string): DurableTaskRecord | undefined {
+    const row = this.database.prepare(
+      'SELECT * FROM durable_tasks WHERE owner_id = ? AND workspace_id = ? AND id = ?'
+    ).get(ownerId, workspaceId, taskId) as {
+      id: string; workspace_id: string; owner_id: string; name: string | null;
+      command: string; cwd: string; status: DurableTaskStatus; idempotency_key: string | null;
+      request_fingerprint: string | null; boot_id: string; exit_code: number | null;
+      error_code: string | null; error_message: string | null; timeout_ms: number;
+      max_bytes: number; log_path: string; output_bytes: number; output_artifact_id: string | null;
+      created_at: number; started_at: number | null; finished_at: number | null; generation: number;
+    } | undefined;
+    if (!row) return undefined;
+    const deps = (this.database.prepare(
+      'SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?'
+    ).all(row.id) as { depends_on_task_id: string }[]).map((d) => d.depends_on_task_id);
+    return {
+      id: row.id,
+      workspaceId: row.workspace_id,
+      ownerId: row.owner_id,
+      name: row.name,
+      command: row.command,
+      cwd: row.cwd,
+      status: row.status,
+      idempotencyKey: row.idempotency_key,
+      requestFingerprint: row.request_fingerprint,
+      bootId: row.boot_id,
+      exitCode: row.exit_code,
+      errorCode: row.error_code,
+      errorMessage: row.error_message,
+      timeoutMs: row.timeout_ms,
+      maxBytes: row.max_bytes,
+      logPath: row.log_path,
+      outputBytes: row.output_bytes,
+      outputArtifactId: row.output_artifact_id,
+      createdAt: row.created_at,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+      generation: row.generation,
+      dependsOn: deps
+    };
+  }
+
+  getDurableTaskByIdempotencyKey(ownerId: string, workspaceId: string, key: string): DurableTaskRecord | undefined {
+    const row = this.database.prepare(
+      'SELECT * FROM durable_tasks WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?'
+    ).get(ownerId, workspaceId, key) as {
+      id: string; workspace_id: string; owner_id: string; name: string | null;
+      command: string; cwd: string; status: DurableTaskStatus; idempotency_key: string | null;
+      request_fingerprint: string | null; boot_id: string; exit_code: number | null;
+      error_code: string | null; error_message: string | null; timeout_ms: number;
+      max_bytes: number; log_path: string; output_bytes: number; output_artifact_id: string | null;
+      created_at: number; started_at: number | null; finished_at: number | null; generation: number;
+    } | undefined;
+    if (!row) return undefined;
+    const deps = (this.database.prepare(
+      'SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?'
+    ).all(row.id) as { depends_on_task_id: string }[]).map((d) => d.depends_on_task_id);
+    return {
+      id: row.id,
+      workspaceId: row.workspace_id,
+      ownerId: row.owner_id,
+      name: row.name,
+      command: row.command,
+      cwd: row.cwd,
+      status: row.status,
+      idempotencyKey: row.idempotency_key,
+      requestFingerprint: row.request_fingerprint,
+      bootId: row.boot_id,
+      exitCode: row.exit_code,
+      errorCode: row.error_code,
+      errorMessage: row.error_message,
+      timeoutMs: row.timeout_ms,
+      maxBytes: row.max_bytes,
+      logPath: row.log_path,
+      outputBytes: row.output_bytes,
+      outputArtifactId: row.output_artifact_id,
+      createdAt: row.created_at,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+      generation: row.generation,
+      dependsOn: deps
+    };
+  }
+
+  listDurableTasks(ownerId: string, workspaceId: string): DurableTaskRecord[] {
+    const rows = this.database.prepare(
+      'SELECT * FROM durable_tasks WHERE owner_id = ? AND workspace_id = ? ORDER BY created_at ASC'
+    ).all(ownerId, workspaceId) as {
+      id: string; workspace_id: string; owner_id: string; name: string | null;
+      command: string; cwd: string; status: DurableTaskStatus; idempotency_key: string | null;
+      request_fingerprint: string | null; boot_id: string; exit_code: number | null;
+      error_code: string | null; error_message: string | null; timeout_ms: number;
+      max_bytes: number; log_path: string; output_bytes: number; output_artifact_id: string | null;
+      created_at: number; started_at: number | null; finished_at: number | null; generation: number;
+    }[];
+    return rows.map((row) => {
+      const deps = (this.database.prepare(
+        'SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?'
+      ).all(row.id) as { depends_on_task_id: string }[]).map((d) => d.depends_on_task_id);
+      return {
+        id: row.id,
+        workspaceId: row.workspace_id,
+        ownerId: row.owner_id,
+        name: row.name,
+        command: row.command,
+        cwd: row.cwd,
+        status: row.status,
+        idempotencyKey: row.idempotency_key,
+        requestFingerprint: row.request_fingerprint,
+        bootId: row.boot_id,
+        exitCode: row.exit_code,
+        errorCode: row.error_code,
+        errorMessage: row.error_message,
+        timeoutMs: row.timeout_ms,
+        maxBytes: row.max_bytes,
+        logPath: row.log_path,
+        outputBytes: row.output_bytes,
+        outputArtifactId: row.output_artifact_id,
+        createdAt: row.created_at,
+        startedAt: row.started_at,
+        finishedAt: row.finished_at,
+        generation: row.generation,
+        dependsOn: deps
+      };
+    });
+  }
+
+  updateDurableTaskStatus(
+    taskId: string,
+    expectedGeneration: number,
+    updates: Partial<Pick<DurableTaskRecord, 'status' | 'exitCode' | 'errorCode' | 'errorMessage' | 'startedAt' | 'finishedAt' | 'outputBytes' | 'outputArtifactId'>>
+  ): boolean {
+    const sets: string[] = ['generation = generation + 1'];
+    const values: (string | number | null)[] = [];
+    if (updates.status !== undefined) { sets.push('status = ?'); values.push(updates.status); }
+    if (updates.exitCode !== undefined) { sets.push('exit_code = ?'); values.push(updates.exitCode); }
+    if (updates.errorCode !== undefined) { sets.push('error_code = ?'); values.push(updates.errorCode); }
+    if (updates.errorMessage !== undefined) { sets.push('error_message = ?'); values.push(updates.errorMessage); }
+    if (updates.startedAt !== undefined) { sets.push('started_at = ?'); values.push(updates.startedAt); }
+    if (updates.finishedAt !== undefined) { sets.push('finished_at = ?'); values.push(updates.finishedAt); }
+    if (updates.outputBytes !== undefined) { sets.push('output_bytes = ?'); values.push(updates.outputBytes); }
+    if (updates.outputArtifactId !== undefined) { sets.push('output_artifact_id = ?'); values.push(updates.outputArtifactId); }
+    values.push(taskId, expectedGeneration);
+    const sql = `UPDATE durable_tasks SET ${sets.join(', ')} WHERE id = ? AND generation = ?`;
+    const result = this.database.prepare(sql).run(...values);
+    return Number(result.changes) === 1;
+  }
+
+  reconcileRunningTasks(currentBootId: string, now: number): number {
+    const result = this.database.prepare(`
+      UPDATE durable_tasks
+      SET status = 'FAILED', error_code = 'RUNNER_RESTARTED',
+          error_message = 'Task execution interrupted by runner restart',
+          finished_at = ?, generation = generation + 1
+      WHERE status IN ('QUEUED', 'RUNNING') AND boot_id != ?
+    `).run(now, currentBootId);
+    return Number(result.changes);
+  }
+
+  listStaleDurableTasks(olderThan: number): { id: string; logPath: string }[] {
+    const rows = this.database.prepare(
+      "SELECT id, log_path FROM durable_tasks WHERE status IN ('SUCCEEDED', 'FAILED', 'CANCELLED') AND finished_at IS NOT NULL AND finished_at < ?"
+    ).all(olderThan) as { id: string; log_path: string }[];
+    return rows.map((row) => ({ id: row.id, logPath: row.log_path }));
+  }
+
+  deleteDurableTask(taskId: string): boolean {
+    const result = this.database.prepare('DELETE FROM durable_tasks WHERE id = ?').run(taskId);
+    return result.changes === 1;
+  }
+
+  getGitOperation(ownerId: string, workspaceId: string, idempotencyKey: string): GitOperationRecord | undefined {
+    const row = this.database.prepare(
+      'SELECT * FROM git_operation_idempotency WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?'
+    ).get(ownerId, workspaceId, idempotencyKey) as {
+      owner_id: string; workspace_id: string; idempotency_key: string; operation: GitOperationKind;
+      request_fingerprint: string; target_ref: string | null; expected_remote_oid: string | null;
+      local_commit_sha: string | null; status: GitOperationStatus; result_json: string | null;
+      error_json: string | null; created_at: number; finished_at: number | null;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      ownerId: row.owner_id,
+      workspaceId: row.workspace_id,
+      idempotencyKey: row.idempotency_key,
+      operation: row.operation,
+      requestFingerprint: row.request_fingerprint,
+      targetRef: row.target_ref,
+      expectedRemoteOid: row.expected_remote_oid,
+      localCommitSha: row.local_commit_sha,
+      status: row.status,
+      resultJson: row.result_json,
+      errorJson: row.error_json,
+      createdAt: row.created_at,
+      finishedAt: row.finished_at
+    };
+  }
+
+  acquireGitOperation(record: {
+    ownerId: string;
+    workspaceId: string;
+    idempotencyKey: string;
+    operation: GitOperationKind;
+    requestFingerprint: string;
+    targetRef?: string | null;
+    expectedRemoteOid?: string | null;
+    localCommitSha?: string | null;
+    createdAt: number;
+  }): {
+    action: 'ACQUIRED' | 'REPLAY_SUCCEEDED' | 'FINGERPRINT_CONFLICT' | 'IN_FLIGHT' | 'RECONCILE_REQUIRED';
+    existing?: GitOperationRecord;
+  } {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const existing = this.getGitOperation(record.ownerId, record.workspaceId, record.idempotencyKey);
+      if (!existing) {
+        this.database.prepare(`
+          INSERT INTO git_operation_idempotency
+          (owner_id, workspace_id, idempotency_key, operation, request_fingerprint, target_ref,
+           expected_remote_oid, local_commit_sha, status, result_json, error_json, created_at, finished_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, NULL, ?, NULL)
+        `).run(
+          record.ownerId, record.workspaceId, record.idempotencyKey, record.operation,
+          record.requestFingerprint, record.targetRef ?? null, record.expectedRemoteOid ?? null,
+          record.localCommitSha ?? null, record.createdAt
+        );
+        this.database.exec('COMMIT;');
+        return { action: 'ACQUIRED' };
+      }
+
+      this.database.exec('COMMIT;');
+      if (existing.requestFingerprint !== record.requestFingerprint) {
+        return { action: 'FINGERPRINT_CONFLICT', existing };
+      }
+      if (existing.status === 'SUCCEEDED') {
+        return { action: 'REPLAY_SUCCEEDED', existing };
+      }
+      if (existing.status === 'PENDING') {
+        return { action: 'IN_FLIGHT', existing };
+      }
+      return { action: 'RECONCILE_REQUIRED', existing };
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore */ }
+      throw error;
+    }
+  }
+
+  recordGitOperationPending(record: Omit<GitOperationRecord, 'status' | 'resultJson' | 'errorJson' | 'finishedAt'>): GitOperationRecord {
+    this.database.prepare(`
+      INSERT INTO git_operation_idempotency
+      (owner_id, workspace_id, idempotency_key, operation, request_fingerprint, target_ref,
+       expected_remote_oid, local_commit_sha, status, result_json, error_json, created_at, finished_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, NULL, ?, NULL)
+    `).run(
+      record.ownerId, record.workspaceId, record.idempotencyKey, record.operation,
+      record.requestFingerprint, record.targetRef, record.expectedRemoteOid,
+      record.localCommitSha, record.createdAt
+    );
+    return {
+      ...record,
+      status: 'PENDING',
+      resultJson: null,
+      errorJson: null,
+      finishedAt: null
+    };
+  }
+
+  updateGitOperationStatus(
+    ownerId: string,
+    workspaceId: string,
+    idempotencyKey: string,
+    status: GitOperationStatus,
+    resultJson?: string | null,
+    errorJson?: string | null,
+    localCommitSha?: string | null
+  ): boolean {
+    const now = Date.now();
+    const result = this.database.prepare(`
+      UPDATE git_operation_idempotency
+      SET status = ?, result_json = COALESCE(?, result_json), error_json = COALESCE(?, error_json),
+          local_commit_sha = COALESCE(?, local_commit_sha), finished_at = ?
+      WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?
+    `).run(
+      status, resultJson ?? null, errorJson ?? null, localCommitSha ?? null,
+      now, ownerId, workspaceId, idempotencyKey
+    );
+    return result.changes === 1;
+  }
+  reconcilePendingGitOperations(now: number): number {
+    const pushResult = this.database.prepare(`
+      UPDATE git_operation_idempotency
+      SET status = 'UNKNOWN_REMOTE_STATE', error_json = '{"message":"Operation interrupted by runner restart"}', finished_at = ?
+      WHERE status = 'PENDING' AND operation IN ('push', 'finalize')
+    `).run(now);
+
+    const commitResult = this.database.prepare(`
+      UPDATE git_operation_idempotency
+      SET status = 'FAILED', error_json = '{"message":"Commit interrupted by runner restart"}', finished_at = ?
+      WHERE status = 'PENDING' AND operation = 'commit'
+    `).run(now);
+
+    return Number(pushResult.changes) + Number(commitResult.changes);
   }
 
   close(): void {

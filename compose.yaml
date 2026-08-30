@@ -79,6 +79,7 @@ services:
       - ${HOST_JOBS_ROOT:-/var/lib/cloud-harness/jobs}:${JOBS_ROOT:-/var/lib/cloud-harness/jobs}
       - ${HOST_STATE_ROOT:-/var/lib/cloud-harness/state}:/var/lib/cloud-harness/state
       - ${HOST_ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}:${ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}
+      - ${HOST_REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}:${REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}
     networks: [control, runner-egress]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/healthz').then(r=>{if(!r.ok)process.exit(1)})"]

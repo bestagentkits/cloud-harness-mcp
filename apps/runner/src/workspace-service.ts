@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { chmod, chown, mkdir, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
@@ -22,8 +23,9 @@ import type { GitHubInstallationRecord, GitHubInstallationStore } from './github
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
-import type { PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
+import type { GitOperationStatus, PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
+import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
@@ -105,8 +107,10 @@ function internalWorkspaceDetail(record: WorkspaceRecord) {
 }
 
 export class WorkspaceService {
-  private readonly operations = new OperationManager();
+  private readonly operations: OperationManager;
+  private readonly repoCacheManager: RepositoryCacheManager;
   private readonly instanceId: string;
+  private readonly bootId: string = randomBytes(16).toString('hex');
   private reaper?: NodeJS.Timeout;
   private reaperRunning = false;
   private readonly redactorCache = new Map<string, SecretSnapshotRedactor>();
@@ -120,7 +124,11 @@ export class WorkspaceService {
     private readonly artifacts?: ArtifactStore
   ) {
     this.instanceId = store.instanceId();
+    this.store.reconcileRunningTasks(this.bootId, Date.now());
+    this.store.reconcilePendingGitOperations(Date.now());
+    this.operations = new OperationManager(this.store, this.bootId);
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
+    this.repoCacheManager = new RepositoryCacheManager(this.config.repoCacheRoot, this.store, this.config.allowedGitHosts, this.config.executorImage, this.instanceId);
     this.operations.onTaskStart = (wsId, timeoutMs) => {
       const rec = this.store.byId(wsId);
       if (rec) this.store.refreshMutationLock(rec.id, Date.now() + timeoutMs + 10_000, rec.generation);
@@ -326,7 +334,19 @@ export class WorkspaceService {
     const helperName = `chm-clone-${record.id.slice(3, 15)}`;
     await mkdir(jobPath, { recursive: true, mode: 0o700 });
     await chmod(jobPath, 0o777);
-    const args = [
+
+    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
+    let cachePathForVolume: string | undefined;
+    if (this.config.enableRepoCache) {
+      try {
+        const cacheResult = await this.repoCacheManager.acquireCacheMirror(record.ownerId, record.repositoryUrl, repositoryToken);
+        if (cacheResult.isReady) {
+          cachePathForVolume = cacheResult.cachePath;
+        }
+      } catch { /* fallback to direct clone */ }
+    }
+
+    const buildArgs = (cachePath?: string) => [
       'run', '-i', '--rm', '--pull', 'never', '--name', helperName,
       '--label', 'cloud-harness.role=clone-helper', '--label', 'cloud-harness.ephemeral=true',
       '--label', `cloud-harness.instance=${this.instanceId}`,
@@ -334,31 +354,38 @@ export class WorkspaceService {
       '--read-only', '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL',
       '--security-opt', 'no-new-privileges', '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
       '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
-      '--volume', `${jobPath}:/job`, '--entrypoint', '/opt/harness/clone-helper.sh', this.config.executorImage,
-      record.repositoryUrl, '/job/repo', ref ?? ''
+      '--volume', `${jobPath}:/job`,
+      ...(cachePath ? ['--volume', `${cachePath}:/job/cache:ro`] : []),
+      '--entrypoint', '/opt/harness/clone-helper.sh', this.config.executorImage,
+      record.repositoryUrl, '/job/repo', ref ?? '',
+      ...(cachePath ? ['/job/cache'] : [])
     ];
-    const runClone = async (token: string | undefined) => {
+
+    const runClone = async (token: string | undefined, cachePath?: string) => {
       try {
-        return await runDocker(args, { stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
+        return await runDocker(buildArgs(cachePath), { stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes });
       } finally {
         await removeContainer(helperName);
       }
     };
 
-    let repositoryToken = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
-    let result = await runClone(repositoryToken);
+    let result = await runClone(repositoryToken, cachePathForVolume);
+    if (result.exitCode !== 0 && cachePathForVolume) {
+      // Fallback to independent clone without cache
+      await this.safeRemovePath(repositoryPath);
+      result = await runClone(repositoryToken, undefined);
+    }
     if (result.exitCode !== 0 && !repositoryToken) {
       const refreshedToken = await this.refreshRepositoryToken(record.ownerId, repositoryUrl);
       if (refreshedToken) {
         await this.safeRemovePath(repositoryPath);
         repositoryToken = refreshedToken;
-        result = await runClone(repositoryToken);
+        result = await runClone(repositoryToken, undefined);
       }
     }
     if (result.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `repository clone failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
     return repositoryPath;
   }
-
   private async refreshRepositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write' = 'read'): Promise<string | undefined> {
     if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') return undefined;
     if (!this.githubInstallations || !this.githubBinding || !this.config.githubApp) return undefined;
@@ -949,7 +976,22 @@ export class WorkspaceService {
       });
       if (result.exitCode !== 0) {
         const action = mode === 'push' ? 'push' : mode === 'fetch' ? 'fetch' : 'transfer';
-        throw new HarnessError('UNAVAILABLE', `Git ${action} failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
+        const errText = result.stderr || result.stdout;
+        if (mode === 'push') {
+          if (errText.includes('stale info') || errText.includes('[rejected]') || errText.includes('lease') || errText.includes('non-fast-forward') || errText.includes('fetch first')) {
+            throw new HarnessError('CONFLICT', `Git push rejected: remote ref has diverged or force-with-lease failed (${errText})`.slice(0, 2_000), 409, false, {
+              expectedRemoteOid,
+              resumeAction: 'reconcile_push'
+            });
+          }
+          if (errText.includes('Connection timed out') || errText.includes('Connection reset') || errText.includes('timed out') || errText.includes('Could not resolve host')) {
+            throw new HarnessError('UNKNOWN_REMOTE_STATE', `Git push was interrupted by network failure (${errText})`.slice(0, 2_000), 504, true, {
+              expectedRemoteOid,
+              resumeAction: 'reconcile_push'
+            });
+          }
+        }
+        throw new HarnessError('UNAVAILABLE', `Git ${action} failed: ${errText}`.slice(0, 2_000), 502, true);
       }
       return result;
     } finally {
@@ -998,6 +1040,79 @@ export class WorkspaceService {
       await removeContainer(helperName);
     }
   }
+  private async currentHead(record: WorkspaceRecord, signal?: AbortSignal): Promise<string> {
+    if (record.containerName) {
+      const result = await runDocker([
+        'exec', record.containerName, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', 'rev-parse', 'HEAD'
+      ], { timeoutMs: 30_000, maxBytes: 8_192, ...(signal ? { signal } : {}) });
+      if (result.exitCode !== 0) throw new HarnessError('CONFLICT', 'current Git HEAD could not be determined', 409, false);
+      return result.stdout.trim();
+    }
+    const helperName = `chm-hd-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
+    try {
+      const result = await runDocker([
+        'run', '--rm', '--name', helperName,
+        '--label', 'cloud-harness.ephemeral=true',
+        '--network', 'none', '--user', '10001:10001', '--read-only',
+        '--volume', `${record.workspacePath}/repo:/workspace:ro`,
+        '--workdir', '/workspace',
+        '--entrypoint', 'git',
+        this.config.executorImage,
+        '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', 'rev-parse', 'HEAD'
+      ], { timeoutMs: 30_000, maxBytes: 8_192, ...(signal ? { signal } : {}) });
+      if (result.exitCode !== 0) throw new HarnessError('CONFLICT', 'current Git HEAD could not be determined', 409, false);
+      return result.stdout.trim();
+    } finally {
+      await removeContainer(helperName);
+    }
+  }
+
+  private async probeRemoteRefOid(record: WorkspaceRecord, branch: string, token?: string, signal?: AbortSignal): Promise<string | undefined> {
+    const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
+    const helperName = `chm-probe-${randomBytes(6).toString('hex')}`;
+    try {
+      const askpassScript = `#!/usr/bin/env bash
+case \${1:-} in
+  *Username*) printf '%s\\n' x-access-token ;;
+  *) printf '%s\\n' "$CLOUD_HARNESS_GIT_TOKEN" ;;
+esac
+`;
+      const result = await runDocker([
+        'run', '-i', '--rm', '--name', helperName,
+        '--label', 'cloud-harness.role=probe-helper', '--label', 'cloud-harness.ephemeral=true',
+        '--network', 'bridge', '--user', '10001:10001', '--read-only',
+        '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=64m', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+        '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
+        '--entrypoint', '/bin/bash', this.config.executorImage,
+        '-c',
+        `token=; IFS= read -r token || true;
+if [[ -n $token ]]; then
+  printf '%s\\n' '${askpassScript}' > /tmp/askpass;
+  chmod 0700 /tmp/askpass;
+  export CLOUD_HARNESS_GIT_TOKEN=$token;
+  export GIT_ASKPASS=/tmp/askpass;
+fi;
+git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2"
+`,
+        'probe-helper', repositoryUrl.toString(), `refs/heads/${branch}`
+      ], {
+        stdin: `${token ?? ''}\n`,
+        timeoutMs: 30_000,
+        maxBytes: 65_536,
+        ...(signal ? { signal } : {})
+      });
+      if (result.exitCode === 0) {
+        const line = result.stdout.trim().split('\n')[0];
+        const oid = line?.split(/\s+/)[0];
+        return oid || undefined;
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    } finally {
+      await removeContainer(helperName);
+    }
+  }
 
   private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal) {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
@@ -1039,10 +1154,76 @@ export class WorkspaceService {
         requiredCapability: 'repository.push'
       });
     }
+    const idempotencyKey = input.idempotencyKey as string | undefined;
     const requestedRefspec = input.refspec as string | undefined;
     const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
     if (!requestedRefspec && !branch) throw new HarnessError('CONFLICT', 'git_push requires refspec when HEAD is detached', 409, false);
     const refspec = normalizePushRefspec(requestedRefspec, branch);
+    const expectedRemoteOid = input.expectedRemoteOid as string | undefined;
+    const forceWithLease = Boolean(input.forceWithLease);
+    const requestFingerprint = createHash('sha256')
+      .update(JSON.stringify({ refspec, expectedRemoteOid: expectedRemoteOid ?? null, forceWithLease }))
+      .digest('hex');
+    const currentLocalHead = await this.currentHead(record, signal);
+
+    if (idempotencyKey) {
+      const claim = this.store.acquireGitOperation({
+        ownerId: record.ownerId,
+        workspaceId: record.id,
+        idempotencyKey,
+        operation: 'push',
+        requestFingerprint,
+        targetRef: refspec,
+        expectedRemoteOid: expectedRemoteOid ?? null,
+        localCommitSha: currentLocalHead,
+        createdAt: Date.now()
+      });
+
+      if (claim.action === 'FINGERPRINT_CONFLICT') {
+        throw new HarnessError('CONFLICT', 'Idempotency key reused with different push parameters', 409, false);
+      }
+      if (claim.action === 'IN_FLIGHT') {
+        throw new HarnessError('CONFLICT', 'Git push operation with this idempotency key is already in progress', 409, true);
+      }
+      if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
+        const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+        return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
+      }
+      if (claim.action === 'RECONCILE_REQUIRED' && claim.existing) {
+        const existingOp = claim.existing;
+        if (existingOp.status === 'UNKNOWN_REMOTE_STATE') {
+          const targetBranchName = branch || (refspec.includes(':') ? refspec.split(':')[1]?.replace(/^refs\/heads\//, '') : refspec.replace(/^refs\/heads\//, '')) || 'main';
+          const remoteOid = await this.probeRemoteRefOid(record, targetBranchName, token, signal);
+          if (remoteOid && existingOp.localCommitSha && remoteOid === existingOp.localCommitSha) {
+            const successResponse: RunnerResponse = {
+              ok: true,
+              message: 'Git push complete (reconciled from remote state)',
+              data: { refspec, alreadyFinalized: true },
+              truncated: false
+            };
+            this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(successResponse), null, existingOp.localCommitSha);
+            return successResponse;
+          }
+          if (expectedRemoteOid && remoteOid && remoteOid !== expectedRemoteOid && remoteOid !== existingOp.localCommitSha) {
+            throw new HarnessError('CONFLICT', `Remote branch moved to ${remoteOid} during push retry (expected ${expectedRemoteOid})`, 409, false, {
+              currentRemoteOid: remoteOid,
+              expectedRemoteOid,
+              resumeAction: 'reconcile_push'
+            });
+          }
+          if (!remoteOid) {
+            throw new HarnessError('UNKNOWN_REMOTE_STATE', 'Remote state could not be determined during reconciliation probe; please retry after verifying connection', 504, true, {
+              expectedRemoteOid,
+              resumeAction: 'reconcile_push'
+            });
+          }
+          this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
+        } else {
+          this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
+        }
+      }
+    }
+
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
       if (record.containerName) {
@@ -1052,8 +1233,34 @@ export class WorkspaceService {
       } else {
         await this.runGitTransferHelper(record, 'stage-push', transferName, '', undefined, undefined, signal);
       }
-      const pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, input.expectedRemoteOid as string | undefined, signal);
-      return { ok: true, message: 'Git push complete', data: { output: pushed.stdout || pushed.stderr, refspec }, truncated: pushed.truncated };
+      let pushed: { exitCode: number; stdout: string; stderr: string; truncated: boolean };
+      try {
+        pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, expectedRemoteOid, signal);
+      } catch (err: unknown) {
+        if (err instanceof HarnessError && (err.code === 'TIMEOUT' || err.code === 'UNAVAILABLE')) {
+          throw new HarnessError('UNKNOWN_REMOTE_STATE', `Git push interrupted by timeout or transport failure (${err.message})`.slice(0, 2_000), 504, true, {
+            expectedRemoteOid,
+            resumeAction: 'reconcile_push'
+          });
+        }
+        throw err;
+      }
+      const response: RunnerResponse = {
+        ok: true,
+        message: 'Git push complete',
+        data: { output: pushed.stdout || pushed.stderr, refspec },
+        truncated: pushed.truncated
+      };
+      if (idempotencyKey) {
+        this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(response), null, currentLocalHead);
+      }
+      return response;
+    } catch (err: unknown) {
+      if (err instanceof HarnessError && idempotencyKey) {
+        const status: GitOperationStatus = err.code === 'UNKNOWN_REMOTE_STATE' ? 'UNKNOWN_REMOTE_STATE' : (err.code === 'CONFLICT' ? 'CONFLICT' : 'FAILED');
+        this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, status, null, JSON.stringify({ message: err.message, code: err.code }), currentLocalHead);
+      }
+      throw err;
     } finally {
       await this.safeRemovePath(join(record.workspacePath, transferName));
     }
@@ -1809,13 +2016,40 @@ export class WorkspaceService {
     }
     if (operation === 'workspace_finalize') {
       const idempotencyKey = validated.idempotencyKey as string | undefined;
-      if (idempotencyKey) {
-        const cached = this.store.getFinalizeIdempotency(ownerId, record.id, idempotencyKey);
-        if (cached) {
-          return JSON.parse(cached) as RunnerResponse;
+      const requestFingerprint = idempotencyKey
+        ? createHash('sha256').update(JSON.stringify(validated)).digest('hex')
+        : undefined;
+
+      if (idempotencyKey && requestFingerprint) {
+        const claim = this.store.acquireGitOperation({
+          ownerId,
+          workspaceId: record.id,
+          idempotencyKey,
+          operation: 'finalize',
+          requestFingerprint,
+          targetRef: null,
+          expectedRemoteOid: null,
+          localCommitSha: null,
+          createdAt: Date.now()
+        });
+
+        if (claim.action === 'FINGERPRINT_CONFLICT') {
+          throw new HarnessError('CONFLICT', 'Idempotency key reused with different finalize parameters', 409, false);
+        }
+        if (claim.action === 'IN_FLIGHT') {
+          throw new HarnessError('CONFLICT', 'Finalize operation with this idempotency key is already in progress', 409, true);
+        }
+        if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
+          const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+          return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
+        }
+        if (claim.action === 'RECONCILE_REQUIRED') {
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'PENDING');
         }
       }
-      // Step 1: Preflight checks
+
+      const runFinalize = async (): Promise<RunnerResponse> => {
+        // Step 1: Preflight checks
         const preflight = validated.preflight as { checkDiff?: boolean; forbiddenPatterns?: string[] } | undefined;
         if (preflight?.checkDiff !== false) {
           const diffResult = await this.runWorker(record, 'git_diff', { readAll: true }, signal);
@@ -1892,16 +2126,12 @@ export class WorkspaceService {
               };
             }
           }
-          const response: RunnerResponse = {
+          return {
             ok: true,
             message: `Workspace already clean and finalized at ${commitSha.slice(0, 7)}`,
             data: { commitSha, branch, pushed, alreadyFinalized: true, finalStatus: currentStatus.data },
             truncated: false
           };
-          if (idempotencyKey) {
-            this.store.setFinalizeIdempotency(ownerId, record.id, idempotencyKey, JSON.stringify(response));
-          }
-          return response;
         }
 
         // Step 3: Stage changes
@@ -1985,7 +2215,7 @@ export class WorkspaceService {
         const finalStatus = await this.runWorker(record, 'git_status', {}, signal);
         await this.enforceActiveLimits(record);
 
-        const response: RunnerResponse = {
+        return {
           ok: true,
           message: pushed ? `Workspace finalized and pushed to ${branch}` : `Workspace finalized (commit ${commitSha.slice(0, 7)})`,
           data: {
@@ -1997,9 +2227,26 @@ export class WorkspaceService {
           },
           truncated: false
         };
-        if (idempotencyKey) {
-          this.store.setFinalizeIdempotency(ownerId, record.id, idempotencyKey, JSON.stringify(response));
+      };
+
+      let response: RunnerResponse;
+      try {
+        response = await runFinalize();
+      } catch (err: unknown) {
+        if (idempotencyKey && err instanceof HarnessError) {
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }));
         }
+        throw err;
+      }
+
+      if (idempotencyKey) {
+        if (response.ok) {
+          const commitSha = (response.data && typeof response.data === 'object' && 'commitSha' in response.data && typeof response.data.commitSha === 'string') ? response.data.commitSha : undefined;
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(response), null, commitSha);
+        } else {
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify(response.error ?? { message: response.message }));
+        }
+      }
       return response;
     }
     if (operation === 'exec_run') {
@@ -2143,7 +2390,7 @@ export class WorkspaceService {
     if (operation === 'tasks_run') {
       const taskTimeout = (validated.timeoutMs as number) || 60_000;
       const mapKey = `task:${record.id}:${validated.idempotencyKey as string}`;
-      const isNew = !this.operations.hasTaskKey(mapKey);
+      const isNew = !this.operations.hasTaskKey(mapKey, ownerId, record.id);
       if (isNew) {
         this.store.setMutationLock(record.id, Date.now() + taskTimeout + 10_000, record.generation);
       }
@@ -2154,9 +2401,12 @@ export class WorkspaceService {
           validated.cwd as string,
           validated.command as string,
           validated.idempotencyKey as string,
-          validated.timeoutMs as number,
+          taskTimeout,
           this.config.maxOutputBytes,
-          validated.dependsOn as string[]
+          (validated.dependsOn as string[]) ?? [],
+          ownerId,
+          record.workspacePath,
+          validated.name as string | undefined
         );
         return { ok: true, message: task.created ? 'Task started' : 'Idempotent task result', data: this.operations.view(task), truncated: false };
       } catch (error) {
@@ -2167,7 +2417,7 @@ export class WorkspaceService {
       }
     }
     if (operation === 'tasks_list') {
-      const tasks = this.operations.listTasks(record.id);
+      const tasks = this.operations.listTasks(record.id, ownerId);
       const offset = Number(validated.cursor ?? 0);
       const limit = validated.limit as number;
       if (!Number.isSafeInteger(offset) || offset < 0) throw new HarnessError('INVALID_INPUT', 'invalid task cursor');
@@ -2176,11 +2426,11 @@ export class WorkspaceService {
       return { ok: true, message: 'Tasks listed', data: { tasks: page.map((task) => this.operations.summary(task)) }, truncated: false, ...(next ? { cursor: next } : {}) };
     }
     if (operation === 'tasks_status') {
-      const page = this.operations.viewSince(this.operations.task(record.id, validated.taskId as string), validated.cursor as string | undefined);
+      const page = this.operations.viewSince(this.operations.task(record.id, validated.taskId as string, ownerId), validated.cursor as string | undefined);
       return { ok: true, message: 'Task status', ...page };
     }
-    if (operation === 'tasks_cancel') return { ok: true, message: 'Task cancelled', data: this.operations.view(await this.operations.cancelTask(record.id, validated.taskId as string)), truncated: false };
-    if (operation === 'tasks_graph') return { ok: true, message: 'Task dependency graph', data: this.operations.taskGraph(record.id), truncated: false };
+    if (operation === 'tasks_cancel') return { ok: true, message: 'Task cancelled', data: this.operations.view(await this.operations.cancelTask(record.id, validated.taskId as string, ownerId)), truncated: false };
+    if (operation === 'tasks_graph') return { ok: true, message: 'Task dependency graph', data: this.operations.taskGraph(record.id, ownerId), truncated: false };
     if (operation === 'git_fetch') {
       const transfer = await this.remoteFetch(record, validated.refspec as string | undefined, signal);
       await this.enforceActiveLimits(record);
@@ -2203,6 +2453,87 @@ export class WorkspaceService {
     if (operation === 'git_push') {
       const result = await this.remotePush(record, validated, signal);
       await this.enforceActiveLimits(record);
+      return result;
+    }
+    if (operation === 'git_commit') {
+      const expectedHeadOid = validated.expectedHeadOid as string | undefined;
+      const idempotencyKey = validated.idempotencyKey as string | undefined;
+      let requestFingerprint: string | undefined;
+      if (idempotencyKey) {
+        requestFingerprint = createHash('sha256')
+          .update(JSON.stringify({
+            message: validated.message,
+            authorName: validated.authorName ?? null,
+            authorEmail: validated.authorEmail ?? null,
+            all: Boolean(validated.all),
+            expectedHeadOid: expectedHeadOid ?? null
+          }))
+          .digest('hex');
+
+        const existing = this.store.getGitOperation(ownerId, record.id, idempotencyKey);
+        if (existing) {
+          if (existing.requestFingerprint !== requestFingerprint) {
+            throw new HarnessError('CONFLICT', 'Idempotency key reused with different commit parameters', 409, false);
+          }
+          if (existing.status === 'SUCCEEDED' && existing.resultJson) {
+            const parsed = JSON.parse(existing.resultJson) as RunnerResponse;
+            return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
+          }
+          if (existing.status === 'PENDING') {
+            throw new HarnessError('CONFLICT', 'Git commit operation with this idempotency key is already in progress', 409, true);
+          }
+        }
+      }
+
+      const currentHeadOid = await this.currentHead(record, signal);
+      if (expectedHeadOid) {
+        if (currentHeadOid !== expectedHeadOid) {
+          throw new HarnessError('STALE_HEAD', `workspace HEAD is ${currentHeadOid}, expected ${expectedHeadOid}`, 409, false, {
+            currentHeadOid,
+            expectedHeadOid
+          });
+        }
+      }
+
+      if (idempotencyKey && requestFingerprint) {
+        const claim = this.store.acquireGitOperation({
+          ownerId,
+          workspaceId: record.id,
+          idempotencyKey,
+          operation: 'commit',
+          requestFingerprint,
+          targetRef: null,
+          expectedRemoteOid: null,
+          localCommitSha: currentHeadOid,
+          createdAt: Date.now()
+        });
+        if (claim.action === 'FINGERPRINT_CONFLICT') {
+          throw new HarnessError('CONFLICT', 'Idempotency key reused with different commit parameters', 409, false);
+        }
+        if (claim.action === 'IN_FLIGHT') {
+          throw new HarnessError('CONFLICT', 'Git commit operation with this idempotency key is already in progress', 409, true);
+        }
+        if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
+          const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+          return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
+        }
+      }
+      let result: RunnerResponse;
+      try {
+        result = await this.runWorker(record, 'git_commit', validated, signal);
+      } catch (err: unknown) {
+        if (idempotencyKey && err instanceof HarnessError) {
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify({ message: err.message, code: err.code }), currentHeadOid);
+        }
+        throw err;
+      }
+      await this.enforceActiveLimits(record);
+      if (idempotencyKey && result.ok) {
+        const commitSha = result.data && typeof result.data === 'object' && 'commitSha' in result.data && typeof result.data.commitSha === 'string' ? result.data.commitSha : undefined;
+        this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(result), null, commitSha);
+      } else if (idempotencyKey && !result.ok) {
+        this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'FAILED', null, JSON.stringify(result.error ?? { message: result.message }), currentHeadOid);
+      }
       return result;
     }
     if (!auditedFileMutations.has(operation)) {
@@ -2520,7 +2851,43 @@ export class WorkspaceService {
         claimed = this.store.byId(claimed.id)!;
       }
     }
-    this.operations.stopWorkspace(claimed.id);
+    await this.operations.stopWorkspace(claimed.id, claimed.ownerId);
+    if (this.artifacts) {
+      const tasks = this.store.listDurableTasks(claimed.ownerId, claimed.id);
+      for (const t of tasks) {
+        if (t.logPath && existsSync(t.logPath) && !t.outputArtifactId) {
+          const fileSize = statSync(t.logPath).size;
+          if (fileSize > 0) {
+            const rawContent = readFileSync(t.logPath);
+            const content = rawContent.length <= this.config.maxArtifactBytes
+              ? rawContent
+              : rawContent.subarray(0, this.config.maxArtifactBytes);
+            try {
+              this.artifacts.create(claimed.ownerId, {
+                logicalName: `task-output-${t.id}.log`,
+                content,
+                workspaceId: claimed.id
+              }, (database, _owner, art) => {
+                database.prepare(
+                  'UPDATE durable_tasks SET output_artifact_id = ?, output_bytes = ? WHERE id = ?'
+                ).run(art.artifactId, fileSize, t.id);
+                this.metadata?.recordAuditInTransaction(
+                  database, claimed.ownerId, 'artifact.created', 'artifact', art.artifactId,
+                  art.generation, { sizeBytes: art.sizeBytes, taskId: t.id }
+                );
+              });
+            } catch (spoolErr) {
+              this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
+                status: 'EXPIRED_RECOVERABLE',
+                lastActivityAt: Date.now(),
+                error: `Artifact spool failed: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`
+              });
+              throw new HarnessError('UNAVAILABLE', `Failed to archive task output for task ${t.id} during close: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`, 503, true);
+            }
+          }
+        }
+      }
+    }
     if (claimed.containerName) await removeContainer(claimed.containerName);
     await this.safeRemovePath(claimed.workspacePath);
     this.store.deleteSecretSnapshot(claimed.id);
@@ -2562,6 +2929,24 @@ export class WorkspaceService {
         if (fullRec) await this.closeRecord(fullRec, 'recoverable grace period expired').catch(() => undefined);
       }
     }
+    if (this.artifacts) {
+      try {
+        this.artifacts.reapExpired(now, 100, (database, principalId, artifact) => {
+          this.metadata?.recordAuditInTransaction(
+            database, principalId, 'artifact.expired', 'artifact', artifact.artifactId, artifact.generation
+          );
+        });
+      } catch { /* ignore sweep error */ }
+    }
+    try {
+      const staleTasks = this.store.listStaleDurableTasks(now - 7 * 86_400_000);
+      for (const t of staleTasks) {
+        if (t.logPath && existsSync(t.logPath)) {
+          try { rmSync(t.logPath, { force: true }); } catch { /* ignore */ }
+        }
+      }
+      await this.repoCacheManager.cleanupStaleCaches(now - 14 * 86_400_000);
+    } catch { /* ignore cleanup error */ }
   }
   private secretsList(ownerId: string, input: Record<string, unknown>): RunnerResponse {
     const parsed = TOOL_SCHEMA_BY_NAME.secrets_list.parse(input);

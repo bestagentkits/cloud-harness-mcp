@@ -5,6 +5,7 @@ umask 022
 repository_url=$1
 destination=$2
 repository_ref=${3:-}
+cache_path=${4:-}
 token=
 IFS= read -r token || true
 
@@ -31,8 +32,12 @@ arguments=(
   -c http.followRedirects=false
   -c core.hooksPath=/dev/null
   -c filter.lfs.smudge=
-  clone --depth 1 --no-tags --no-recurse-submodules --filter=blob:none
 )
+if [[ -n $cache_path && -d $cache_path ]]; then
+  arguments+=(clone --reference-if-able "$cache_path" --dissociate --depth 1 --no-tags --no-recurse-submodules --filter=blob:none)
+else
+  arguments+=(clone --depth 1 --no-tags --no-recurse-submodules --filter=blob:none)
+fi
 if [[ -n $repository_ref ]]; then arguments+=(--branch "$repository_ref"); fi
 arguments+=(-- "$repository_url" "$destination")
 git "${arguments[@]}"

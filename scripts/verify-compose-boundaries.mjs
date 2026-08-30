@@ -37,6 +37,7 @@ requireBoundary(!ingressEnvironment.some((name) => /TOKEN|SECRET|PASSWORD|GITHUB
 const runnerMounts = services.runner.volumes ?? [];
 requireBoundary(runnerMounts.some((mount) => mount.source === '/var/run/docker.sock' && mount.target === '/var/run/docker.sock'), 'runner Docker socket mount is missing');
 requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/artifacts'), 'runner artifact persistence mount is missing');
+requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/cache/repos'), 'runner repo cache persistence mount is missing');
 for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE']) {
   requireBoundary(!services.api.environment?.[name], `API must not receive ${name}`);
 }

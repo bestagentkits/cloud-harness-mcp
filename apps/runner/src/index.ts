@@ -43,18 +43,6 @@ const artifacts = new ArtifactStore(store.database, {
   defaultRetentionMs: config.artifactRetentionSeconds * 1_000,
   maxRetentionMs: 2_592_000_000
 });
-const artifactReaper = setInterval(() => {
-  try {
-    artifacts.reapExpired(Date.now(), 100, (database, principalId, artifact) => {
-      metadata.recordAuditInTransaction(
-        database, principalId, 'artifact.expired', 'artifact', artifact.artifactId, artifact.generation
-      );
-    });
-  } catch (error) {
-    logger.error({ error }, 'artifact retention sweep failed');
-  }
-}, config.reaperIntervalSeconds * 1_000);
-artifactReaper.unref();
 const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts);
 const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding);
 await service.start();
@@ -63,7 +51,6 @@ server.listen(config.port, config.host, () => logger.info({ host: config.host, p
 
 async function shutdown(signal: string) {
   logger.info({ signal }, 'runner shutting down');
-  clearInterval(artifactReaper);
   server.close();
   await service.stop();
   metadata.close();

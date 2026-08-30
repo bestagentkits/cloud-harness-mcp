@@ -35,10 +35,11 @@ The production defaults place:
 - runtime configuration, GitHub App key, and secret keyring below
   `/etc/cloud-harness-mcp`.
 
-The database persists workspace metadata across runner restarts.
-Shell/session/task handles, dependency graphs, and their output buffers do not.
-Startup restarts surviving executors, which preserves repository files but
-stops any process whose handle was lost.
+The database persists workspace and task metadata across runner restarts.
+Interactive shell and session streams remain in-memory, while background tasks
+and dependency graphs are durable in SQLite. Startup reconciles in-flight tasks
+from prior process boots to `FAILED` with `error_code: "RUNNER_RESTARTED"` while
+preserving completed task metadata and file logs.
 Workspace clones are operational, TTL-bound data and are deleted on
 close/expiry; they are not a durable source control remote or a backup.
 The same state database also owns the stable random runner-instance identity

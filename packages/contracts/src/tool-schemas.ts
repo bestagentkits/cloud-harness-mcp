@@ -117,7 +117,7 @@ const schemas = {
     if (!input.all && input.paths.length === 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths are required unless all is true' });
     if (input.all && input.paths.length > 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
   }),
-  git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200).optional(), authorEmail: z.email().optional(), all: z.boolean().default(false) }),
+  git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200).optional(), authorEmail: z.email().optional(), all: z.boolean().default(false), expectedHeadOid: gitObjectId.optional(), idempotencyKey: z.string().min(1).max(256).optional() }),
   git_identity_status: z.object(workspace),
   git_identity_set: z.object({ ...workspace, name: z.string().min(1).max(200), email: z.email() }),
   git_fetch: z.object({ ...workspace, remote: z.literal('origin').default('origin'), refspec: gitFetchRef.optional() }),
@@ -127,7 +127,8 @@ const schemas = {
     remote: z.literal('origin').default('origin'),
     refspec: gitRefspec.optional(),
     forceWithLease: z.boolean().default(false),
-    expectedRemoteOid: gitObjectId.optional()
+    expectedRemoteOid: gitObjectId.optional(),
+    idempotencyKey: z.string().min(1).max(256).optional()
   }).superRefine((input, context) => {
     if (input.forceWithLease && !input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid is required with forceWithLease' });
     if (!input.forceWithLease && input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid is only valid with forceWithLease' });
