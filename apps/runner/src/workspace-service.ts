@@ -1159,10 +1159,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const refspec = normalizePushRefspec(requestedRefspec, branch);
     const expectedRemoteOid = input.expectedRemoteOid as string | undefined;
     const forceWithLease = Boolean(input.forceWithLease);
-    const currentLocalHead = await this.currentHead(record, signal);
     const requestFingerprint = createHash('sha256')
-      .update(JSON.stringify({ refspec, expectedRemoteOid: expectedRemoteOid ?? null, forceWithLease, currentLocalHead }))
+      .update(JSON.stringify({ refspec, expectedRemoteOid: expectedRemoteOid ?? null, forceWithLease }))
       .digest('hex');
+    const currentLocalHead = await this.currentHead(record, signal);
 
     if (idempotencyKey) {
       const claim = this.store.acquireGitOperation({

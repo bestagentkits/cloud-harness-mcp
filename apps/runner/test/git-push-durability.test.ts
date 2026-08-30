@@ -181,8 +181,9 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
       vi.spyOn(service as unknown as { workspaceBytes: () => Promise<number> }, 'workspaceBytes').mockResolvedValue(1024);
       vi.spyOn(service as unknown as { repositoryToken: () => Promise<string> }, 'repositoryToken').mockResolvedValue('token123');
       vi.spyOn(service as unknown as { currentBranch: () => Promise<string> }, 'currentBranch').mockResolvedValue('main');
-      vi.spyOn(service as unknown as { currentHead: () => Promise<string> }, 'currentHead').mockResolvedValue('aaaabbbbccccddddeeeeffff1111222233334444');
-      vi.spyOn(service as unknown as { runGitTransferHelper: () => Promise<unknown> }, 'runGitTransferHelper').mockResolvedValue({
+      let pushHead = 'aaaabbbbccccddddeeeeffff1111222233334444';
+      vi.spyOn(service as unknown as { currentHead: () => Promise<string> }, 'currentHead').mockImplementation(async () => pushHead);
+      const pushTransferSpy = vi.spyOn(service as unknown as { runGitTransferHelper: () => Promise<unknown> }, 'runGitTransferHelper').mockResolvedValue({
         exitCode: 0,
         stdout: 'To https://github.com/org/repo\n   1111..aaaa  main -> main',
         stderr: '',
@@ -196,8 +197,12 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
         idempotencyKey: 'ik_push_success'
       });
       expect(res.ok).toBe(true);
+      expect(pushTransferSpy).toHaveBeenCalledTimes(2); // stage-push + push
 
-      // 2. Replay push -> returns cached result with alreadyFinalized
+      // Advance local HEAD commit (user committed again locally)
+      pushHead = 'bbbbccccddddeeeeffff11112222333344445555';
+
+      // 2. Replay push AFTER local HEAD moved -> returns cached result without running transfer again!
       const replay = await service.execute(ownerId, 'git_push', {
         workspaceId: 'ws_222222222222222222222222',
         refspec: 'refs/heads/main:refs/heads/main',
@@ -205,7 +210,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
       });
       expect(replay.ok).toBe(true);
       expect((replay.data as Record<string, unknown>).alreadyFinalized).toBe(true);
-
+      expect(pushTransferSpy).toHaveBeenCalledTimes(2); // No second transfer!
       // 3. Replay with different refspec -> throws CONFLICT
       await expect(
         service.execute(ownerId, 'git_push', {
