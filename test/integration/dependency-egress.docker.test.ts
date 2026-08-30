@@ -51,16 +51,10 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       dependencyBridgeInterface: BRIDGE_IF, dependencyNetworkName: NETWORK
     };
     // Provision the dedicated bridge and transactional host firewall.
-    try {
-      execFileSync('bash', ['deploy/scripts/setup-dependency-firewall.sh'], {
-        env: { ...process.env, DEPENDENCY_NETWORK_NAME: NETWORK, DEPENDENCY_BRIDGE_INTERFACE: BRIDGE_IF, DEPENDENCY_BRIDGE_SUBNET: SUBNET, DEPENDENCY_DNS_RESOLVERS: '8.8.8.8 1.1.1.1' },
-        stdio: 'pipe'
-      });
-    } catch (err: unknown) {
-      const e = err as { stdout?: Buffer; stderr?: Buffer; message?: string };
-      console.error('setup-dependency-firewall failed:\nSTDOUT:', e.stdout?.toString(), '\nSTDERR:', e.stderr?.toString());
-      throw err;
-    }
+    execFileSync('bash', ['deploy/scripts/setup-dependency-firewall.sh'], {
+      env: { ...process.env, DEPENDENCY_NETWORK_NAME: NETWORK, DEPENDENCY_BRIDGE_INTERFACE: BRIDGE_IF, DEPENDENCY_BRIDGE_SUBNET: SUBNET, DEPENDENCY_DNS_RESOLVERS: '8.8.8.8 1.1.1.1' },
+      stdio: 'inherit'
+    });
     // Simulated forbidden destination canaries on dedicated positive-control networks.
     await runDocker(['network', 'create', '--subnet', '10.88.0.0/24', CANARY_NET], { timeoutMs: 30_000 }).catch(() => undefined);
     await startCanary('chm-canary-private', CANARY_NET, '10.88.0.10');

@@ -30,6 +30,7 @@ INPUT_CHAIN="CHM-INPUT-$VERSION"
 EGRESS_CHAIN="CHM-EGRESS-$VERSION"
 
 TMP_RESTORE=$(mktemp /tmp/chm-firewall-restore.XXXXXX)
+chmod 0644 "$TMP_RESTORE"
 trap 'rm -f "$TMP_RESTORE"' EXIT
 {
   echo "*filter"
@@ -77,8 +78,8 @@ trap 'rm -f "$TMP_RESTORE"' EXIT
   echo "COMMIT"
 } > "$TMP_RESTORE"
 
-# 3. Test syntax before applying
-if ! $SUDO iptables-restore --test < "$TMP_RESTORE"; then
+# 3. Test syntax before applying under noflush mode
+if ! $SUDO iptables-restore -w 10 -n --test < "$TMP_RESTORE"; then
   echo "ERROR: iptables-restore syntax validation failed" >&2
   exit 1
 fi
