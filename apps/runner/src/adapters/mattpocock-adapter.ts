@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { HarnessError } from '@cloud-harness/contracts';
 import type { RepositoryCacheManager } from '../repository-cache-manager.js';
 import { runDocker } from '../docker-engine.js';
@@ -77,8 +77,18 @@ export function validateStagingDir(stagingDir: string, maxFiles = 1000, maxBytes
     for (const item of items) {
       const fullPath = join(currentDir, item.name);
       if (item.isSymbolicLink()) {
-        const linkTarget = realpathSync(fullPath);
-        if (!linkTarget.startsWith(canonicalRoot)) {
+        totalFiles++;
+        if (totalFiles > maxFiles) {
+          throw new HarnessError('LIMIT_EXCEEDED', `Staging directory exceeds maximum file count of ${maxFiles}`, 400, false);
+        }
+        let linkTarget: string;
+        try {
+          linkTarget = realpathSync(fullPath);
+        } catch {
+          throw new HarnessError('INVALID_INPUT', `Symbolic link ${item.name} target does not exist or is invalid`, 400, false);
+        }
+        const rel = relative(canonicalRoot, linkTarget);
+        if (rel.startsWith('..') || isAbsolute(rel)) {
           throw new HarnessError('INVALID_INPUT', `Symbolic link ${item.name} escapes staging directory root`, 400, false);
         }
       } else if (item.isDirectory()) {
