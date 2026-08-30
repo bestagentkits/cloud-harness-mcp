@@ -1,3 +1,10 @@
+# [0.27.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.26.0...v0.27.0) (2026-08-30)
+
+
+### Features
+
+* **runner:** add audit events and structured error taxonomy for brokered GitHub actions ([#115](https://github.com/bestagentkits/cloud-harness-mcp/issues/115)) ([eec0447](https://github.com/bestagentkits/cloud-harness-mcp/commit/eec044797938a59b1846430acbb9268ebfa761a7))
+
 # [0.26.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.25.0...v0.26.0) (2026-08-29)
 
 
