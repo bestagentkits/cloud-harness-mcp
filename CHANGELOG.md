@@ -1,3 +1,10 @@
+## [0.29.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.29.0...v0.29.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* **runner:** ensure awaitable process exit barrier and MCP Tasks compatibility matrix ([#14](https://github.com/bestagentkits/cloud-harness-mcp/issues/14)) ([160410a](https://github.com/bestagentkits/cloud-harness-mcp/commit/160410a96d82d15b065ddef6e27eea94c71e0e9c))
+
 # [0.29.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.28.1...v0.29.0) (2026-08-30)
 
 
