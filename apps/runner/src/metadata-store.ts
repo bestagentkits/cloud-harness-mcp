@@ -7,7 +7,7 @@ import {
   secretView, type AuditView, type EnvironmentView, type ProjectView, type SecretView
 } from './metadata-records.js';
 import { SecretMetadataStore } from './secret-metadata-store.js';
-import type { SecretKeyring } from './secret-keyring.js';
+import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
 const normalizedName = (name: string): string => {
   const value = name.trim();
@@ -140,6 +140,43 @@ export class MetadataStore {
       WHERE env.principal_id = ? AND env.id = ? AND env.state = 'ACTIVE' AND projects.state = 'ACTIVE'`)
       .get(principalId, environmentId);
     return environment ? this.secrets.environmentValues(principalId, environmentId) : undefined;
+  }
+
+  environmentSecretSnapshot(principalId: string, environmentId: string): Array<{ secretReferenceId: string; name: string; version: number }> | undefined {
+    const environment = this.database.prepare(`SELECT 1 FROM environments env
+      JOIN projects ON projects.principal_id = env.principal_id AND projects.id = env.project_id
+      WHERE env.principal_id = ? AND env.id = ? AND env.state = 'ACTIVE' AND projects.state = 'ACTIVE'`)
+      .get(principalId, environmentId);
+    return environment ? this.secrets.environmentSecretSnapshot(principalId, environmentId) : undefined;
+  }
+  environmentSecretEnvelopes(principalId: string, environmentId: string): Array<{ name: string; version: number; envelope: EncryptedSecret }> | undefined {
+    const environment = this.database.prepare(`SELECT 1 FROM environments env
+      JOIN projects ON projects.principal_id = env.principal_id AND projects.id = env.project_id
+      WHERE env.principal_id = ? AND env.id = ? AND env.state = 'ACTIVE' AND projects.state = 'ACTIVE'`)
+      .get(principalId, environmentId);
+    return environment ? this.secrets.environmentSecretEnvelopes(principalId, environmentId) : undefined;
+  }
+
+  decryptEnvelope(principalId: string, environmentId: string, name: string, version: number, encrypted: EncryptedSecret): string {
+    return this.secrets.decryptEnvelope(principalId, environmentId, name, version, encrypted);
+  }
+
+  snapshotValues(
+    principalId: string,
+    environmentId: string,
+    snapshot: Array<{ secretReferenceId: string; name: string; version: number }>
+  ): Record<string, string> | undefined {
+    return this.secrets.snapshotValues(principalId, environmentId, snapshot);
+  }
+
+  updateSecretMetadata(
+    principalId: string,
+    environmentId: string,
+    name: string,
+    description: string | null,
+    expectedGeneration: number
+  ): SecretView | undefined {
+    return this.secrets.updateMetadata(principalId, environmentId, name, description, expectedGeneration);
   }
 
   createEnvironment(principalId: string, projectId: string, name: string, expectedGeneration: 0): EnvironmentView | undefined {

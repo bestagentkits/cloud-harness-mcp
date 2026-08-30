@@ -168,7 +168,7 @@ describe('ApiKeyStore', () => {
     expect(value.metadata.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'api_keys'").get()).toBeUndefined();
     expect(value.metadata.listProjects(value.principalId)[0]?.id).toBe(project?.id);
     migrateMetadataSchema(value.metadata.database);
-    expect((value.metadata.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(2);
+    expect((value.metadata.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(3);
     expect(value.metadata.listProjects(value.principalId)[0]?.id).toBe(project?.id);
     value.metadata.close(); value.state.close();
   });
@@ -178,7 +178,7 @@ describe('ApiKeyStore', () => {
     future.metadata.database.prepare('UPDATE metadata_schema_meta SET version = 99 WHERE singleton = 1').run();
     expect(() => migrateMetadataSchema(future.metadata.database)).toThrow('unsupported metadata schema version 99');
     expect((future.metadata.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(99);
-    expect(() => downgradeMetadataSchemaToV1(future.metadata.database)).toThrow('metadata schema must be version 2 before downgrade');
+    expect(() => downgradeMetadataSchemaToV1(future.metadata.database)).toThrow('metadata schema must be version 2 or 3 before downgrade');
     future.metadata.close(); future.state.close();
 
     const conflicting = fixture();

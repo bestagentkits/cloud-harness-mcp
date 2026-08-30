@@ -25,7 +25,9 @@ export function registerDashboardControlRoutes(
   router.delete('/api/v1/environments/:environmentId', endpoint('environment_delete', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...generation.parse(request.body) })));
   router.get('/api/v1/environments/:environmentId/secrets', endpoint('secret_list', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId) })));
   router.post('/api/v1/environments/:environmentId/secrets', endpoint('secret_create', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...request.body as object })));
+  router.post('/api/v1/environments/:environmentId/secrets/bulk', endpoint('secret_bulk_apply', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), ...request.body as object })));
   router.put('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_rotate', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name, ...request.body as object })));
+  router.patch('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_update', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name, ...request.body as object })));
   router.delete('/api/v1/environments/:environmentId/secrets/:name', endpoint('secret_delete', (request) => ({ environmentId: internalId('env').parse(request.params.environmentId), name: request.params.name, ...request.body as object })));
   router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.get('/api/v1/artifacts', endpoint('artifact_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));

@@ -1,6 +1,6 @@
 ---
 title: Tools Reference
-description: Complete machine-generated reference of all 70 MCP tools provided by Cloud Harness MCP.
+description: Complete machine-generated reference of all 71 MCP tools provided by Cloud Harness MCP.
 ---
 
 # Tools Reference
@@ -11,7 +11,7 @@ description: Complete machine-generated reference of all 70 MCP tools provided b
   <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/tools.md</code>.
 </div>
 
-Cloud Harness MCP exposes **70 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
+Cloud Harness MCP exposes **71 tools** across six operational domains. Every tool executes strictly inside a sandboxed, TTL-limited Docker container with non-root privileges and default network isolation.
 
 ## Security & Capability Badges
 
@@ -24,7 +24,7 @@ Cloud Harness MCP exposes **70 tools** across six operational domains. Every too
 
 ## Workspace Lifecycle
 
-Tools for opening, inspecting, listing, and closing isolated TTL-bound workspaces.
+Tools for opening, inspecting, listing, secrets discovery, and closing isolated TTL-bound workspaces.
 
 ### `workspace_open`
 
@@ -92,6 +92,18 @@ Read the active workspace ID, branch, lease time, Git identity, and repository o
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 
+### `workspace_set_active`
+
+**Set active workspace**
+
+Set the caller preferred active workspace when multiple workspaces exist.
+
+**Attributes:** `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
 ### `workspace_lease_renew`
 
 **Renew workspace lease**
@@ -130,6 +142,22 @@ Stop a workspace executor and permanently remove all workspace files, including 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
+### `secrets_list`
+
+**List available secrets**
+
+List available environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `environmentId` | `string` | No | pattern: `^env_[A-Za-z0-9_-]{20,80}$` |
+| `query` | `string` | No | max length: 200 |
+| `cursor` | `string` | No | max length: 256 |
+| `limit` | `integer` | **Yes** | range: 1–500, default: `100` |
 
 ## Files and Code Intelligence
 
@@ -181,6 +209,22 @@ Atomically create or replace a workspace file, optionally guarded by its current
 | `path` | `string` | **Yes** | length: 1–1024 |
 | `content` | `string` | **Yes** | max length: 1048576 |
 | `expectedSha256` | `string` | No | length: 64–64 |
+
+### `files_write_batch`
+
+**Write batch files**
+
+Atomically write multiple workspace files in one call, automatically creating missing parent directories.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `files` | object[] | **Yes** | — |
+| `createParents` | `boolean` | **Yes** | default: `true` |
+| `atomic` | `boolean` | **Yes** | default: `true` |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
 ### `files_apply_patch`
 
@@ -292,7 +336,7 @@ Find bounded lexical whole-word occurrences of a symbol in workspace text.
 
 ## Commands and Shells
 
-Tools for running isolated non-root commands and persistent interactive PTY shell sessions.
+Tools for running isolated non-root commands, operations, and persistent interactive PTY shell sessions.
 
 ### `exec_run`
 
@@ -355,6 +399,44 @@ Terminate an interactive shell and release its in-memory state.
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
 | `shellId` | `string` | **Yes** | pattern: `^sh_[A-Za-z0-9_-]{20,80}$` |
+
+### `operation_status`
+
+**Read operation status**
+
+Query the execution state, progress, and terminal result of a long-running operation.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
+| `cursor` | `string` | No | max length: 256 |
+
+### `operation_cancel`
+
+**Cancel operation**
+
+Cancel an in-flight long-running operation.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
+
+### `operation_wait`
+
+**Wait for operation**
+
+Wait for a long-running operation to reach a terminal state with a timeout.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
+| `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
 
 ## Sessions and Tasks
 
@@ -490,7 +572,7 @@ Read the current managed-task dependency graph for a workspace.
 
 ## Git and Worktrees
 
-Local repository version control, branch management, worktree isolation, and credential-isolated origin transfer.
+Local repository version control, branch management, worktree isolation, Git identity, and credential-isolated origin transfer.
 
 ### `git_status`
 
@@ -593,6 +675,53 @@ Create an unsigned local Git commit with default or explicit author and message.
 | `authorName` | `string` | No | length: 1–200 |
 | `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
 | `all` | `boolean` | **Yes** | default: `false` |
+
+### `git_identity_status`
+
+**Read Git author identity**
+
+Read the default or configured Git author name and email for the workspace.
+
+**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+
+### `git_identity_set`
+
+**Set Git author identity**
+
+Configure default Git author name and email for workspace commits.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `name` | `string` | **Yes** | length: 1–200 |
+| `email` | `string` | **Yes** | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
+
+### `workspace_finalize`
+
+**Finalize workspace commit and push**
+
+Transactionally stage changes, run preflights, commit with default or explicit identity, and push to remote in one call.
+
+**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent` · <span class="badge-openworld">openWorld</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
+| `paths` | string[] | No | — |
+| `all` | `boolean` | **Yes** | default: `true` |
+| `commitMessage` | `string` | **Yes** | length: 1–10000 |
+| `branch` | `string` | No | length: 1–255 |
+| `push` | `boolean` | **Yes** | default: `true` |
+| `authorName` | `string` | No | length: 1–200 |
+| `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
+| `preflight` | `object` | No | — |
+| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
 ### `git_fetch`
 
@@ -951,119 +1080,4 @@ Delete a principal-owned retained artifact snapshot before its retention expiry.
 |---|---|---|---|
 | `artifactId` | `string` | **Yes** | pattern: `^art_[A-Za-z0-9_-]{20,80}$` |
 | `expectedGeneration` | `integer` | **Yes** | range: 0–9007199254740991, default: `1` |
-
-## Additional Tools
-
-### `workspace_set_active`
-
-**Set active workspace**
-
-Set the caller preferred active workspace when multiple workspaces exist.
-
-**Attributes:** `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `workspaceId` | `string` | **Yes** | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-
-### `workspace_finalize`
-
-**Finalize workspace commit and push**
-
-Transactionally stage changes, run preflights, commit with default or explicit identity, and push to remote in one call.
-
-**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent` · <span class="badge-openworld">openWorld</span>
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `paths` | string[] | No | — |
-| `all` | `boolean` | **Yes** | default: `true` |
-| `commitMessage` | `string` | **Yes** | length: 1–10000 |
-| `branch` | `string` | No | length: 1–255 |
-| `push` | `boolean` | **Yes** | default: `true` |
-| `authorName` | `string` | No | length: 1–200 |
-| `authorEmail` | `string` | No | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
-| `preflight` | `object` | No | — |
-| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
-
-### `files_write_batch`
-
-**Write batch files**
-
-Atomically write multiple workspace files in one call, automatically creating missing parent directories.
-
-**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `files` | object[] | **Yes** | — |
-| `createParents` | `boolean` | **Yes** | default: `true` |
-| `atomic` | `boolean` | **Yes** | default: `true` |
-| `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
-
-### `operation_status`
-
-**Read operation status**
-
-Query the execution state, progress, and terminal result of a long-running operation.
-
-**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
-| `cursor` | `string` | No | max length: 256 |
-
-### `operation_cancel`
-
-**Cancel operation**
-
-Cancel an in-flight long-running operation.
-
-**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
-
-### `operation_wait`
-
-**Wait for operation**
-
-Wait for a long-running operation to reach a terminal state with a timeout.
-
-**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `operationId` | `string` | **Yes** | pattern: `^op_[A-Za-z0-9_-]{20,80}$` |
-| `timeoutMs` | `integer` | **Yes** | range: 100–300000, default: `60000` |
-
-### `git_identity_status`
-
-**Read Git author identity**
-
-Read the default or configured Git author name and email for the workspace.
-
-**Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-
-### `git_identity_set`
-
-**Set Git author identity**
-
-Configure default Git author name and email for workspace commits.
-
-**Attributes:** <span class="badge-destructive">destructive</span> · `idempotent`
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `name` | `string` | **Yes** | length: 1–200 |
-| `email` | `string` | **Yes** | format: `email`, pattern: `^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$` |
 

@@ -148,4 +148,11 @@ describe('Local Workspace Capabilities', () => {
     expect(data.operations).toBeDefined();
     expect(data.branch).toBe('HEAD');
   });
+
+  it('reports secrets_list as unsupported in local stdio mode', async () => {
+    const res = await backend.call('secrets_list', {});
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe('INVALID_INPUT');
+    expect(res.message).toContain('secrets_list is unsupported in local stdio mode');
+  });
 });
