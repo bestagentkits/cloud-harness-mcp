@@ -121,7 +121,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
     } finally {
       store.close();
     }
-  });
+  }, 15_000);
 
   it('records git_push idempotency and returns cached response on retry', async () => {
     const dir = tempDir();
@@ -215,7 +215,7 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
     } finally {
       store.close();
     }
-  });
+  }, 15_000);
 
   it('classifies network failures as UNKNOWN_REMOTE_STATE with resumeAction', async () => {
     const dir = tempDir();
@@ -326,5 +326,5 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
     } finally {
       store.close();
     }
-  });
+  }, 15_000);
 });

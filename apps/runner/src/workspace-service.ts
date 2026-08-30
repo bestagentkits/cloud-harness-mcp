@@ -1121,6 +1121,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               resumeAction: 'reconcile_push'
             });
           }
+          if (!remoteOid) {
+            throw new HarnessError('UNKNOWN_REMOTE_STATE', 'Remote state could not be determined during reconciliation probe; please retry after verifying connection', 504, true, {
+              expectedRemoteOid,
+              resumeAction: 'reconcile_push'
+            });
+          }
           this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
         }
       } else {
@@ -1897,10 +1903,35 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'workspace_finalize') {
       const idempotencyKey = validated.idempotencyKey as string | undefined;
-      if (idempotencyKey) {
-        const cached = this.store.getFinalizeIdempotency(ownerId, record.id, idempotencyKey);
-        if (cached) {
-          return JSON.parse(cached) as RunnerResponse;
+      const requestFingerprint = idempotencyKey
+        ? createHash('sha256').update(JSON.stringify(validated)).digest('hex')
+        : undefined;
+
+      if (idempotencyKey && requestFingerprint) {
+        const existingOp = this.store.getGitOperation(ownerId, record.id, idempotencyKey);
+        if (existingOp) {
+          if (existingOp.requestFingerprint !== requestFingerprint) {
+            throw new HarnessError('CONFLICT', 'Idempotency key reused with different finalize parameters', 409, false);
+          }
+          if (existingOp.status === 'SUCCEEDED' && existingOp.resultJson) {
+            const parsed = JSON.parse(existingOp.resultJson) as RunnerResponse;
+            return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
+          }
+          if (existingOp.status === 'PENDING') {
+            throw new HarnessError('CONFLICT', 'Finalize operation with this idempotency key is already in progress', 409, true);
+          }
+        } else {
+          this.store.recordGitOperationPending({
+            ownerId,
+            workspaceId: record.id,
+            idempotencyKey,
+            operation: 'finalize',
+            requestFingerprint,
+            targetRef: null,
+            expectedRemoteOid: null,
+            localCommitSha: null,
+            createdAt: Date.now()
+          });
         }
       }
       // Step 1: Preflight checks
@@ -2086,7 +2117,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           truncated: false
         };
         if (idempotencyKey) {
-          this.store.setFinalizeIdempotency(ownerId, record.id, idempotencyKey, JSON.stringify(response));
+          this.store.updateGitOperationStatus(ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(response), null, commitSha);
         }
       return response;
     }

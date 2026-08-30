@@ -1,7 +1,7 @@
 # Implementation Plan: Durable Repository, Task, and Artifact State
 
 **Target:** [Issue #14: P2: Make repository, task, and artifact state durable](https://github.com/bestagentkits/cloud-harness-mcp/issues/14)  
-**Status:** In Progress (Advisory Incorporated)  
+**Status:** completed
 **Dependencies:** Issue #11 (Tool Contract), Issue #13 (Principal Ownership), Issue #109/#110/#111 (Artifact Store)
 
 ## Outcome
@@ -63,9 +63,9 @@ Add owner-scoped repository records, bounded artifact retention, and recoverable
    - Tests: `apps/runner/test/artifact-retention-integration.test.ts`
 
 ## Acceptance Criteria
-- [ ] Task metadata and completed outputs survive runner restart; in-flight tasks from prior boot IDs transition to `FAILED` with `error_code: "RUNNER_RESTARTED"`.
-- [ ] Retries with same idempotency key cannot silently duplicate a commit or push; mismatched fingerprints reject with `CONFLICT`.
-- [ ] Owner repository cache isolates principals (exact owner path `:ro` + `--dissociate`, zero cross-principal access) and falls back safely to independent clone.
-- [ ] Unknown-outcome push network errors return structured `UNKNOWN_REMOTE_STATE` with actionable `resumeAction: "reconcile_push"`.
-- [ ] State migration v3 -> v4 executes cleanly in atomic transactions with foreign keys enabled.
-- [ ] Private credentials never enter executor environment, checkout, artifact, result, or logs.
+- [x] Task metadata and completed outputs survive runner restart; in-flight tasks from prior boot IDs transition to `FAILED` with `error_code: "RUNNER_RESTARTED"`.
+- [x] Retries with same idempotency key cannot silently duplicate a commit or push; mismatched fingerprints reject with `CONFLICT`.
+- [x] Owner repository cache isolates principals (exact owner path `:ro` + `--dissociate`, zero cross-principal access) and falls back safely to independent clone.
+- [x] Unknown-outcome push network errors return structured `UNKNOWN_REMOTE_STATE` with actionable `resumeAction: "reconcile_push"`.
+- [x] State migration v3 -> v4 executes cleanly in atomic transactions with foreign keys enabled.
+- [x] Private credentials never enter executor environment, checkout, artifact, result, or logs.

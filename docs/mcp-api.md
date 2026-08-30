@@ -151,6 +151,12 @@ workspace. This makes a lost response recoverable without duplicating work.
   maintains isolated bare mirror caches (`chmod 0700`) per principal and clones using
   `git clone --reference-if-able <cache_path> --dissociate`, ensuring workspace object databases become
   completely independent after clone with automatic fallback to blobless clone.
+- **MCP Tasks Specification Evaluation:** The official Model Context Protocol specification
+  (2026-07-28 revision) transitioned Tasks into an optional extension (`io.modelcontextprotocol/tasks`)
+  negotiated via per-request server capabilities and dynamic discovery. Cloud Harness MCP maintains
+  its stable, verified public task tool contracts (`tasks_run`, `tasks_status`, `tasks_list`, `tasks_cancel`,
+  `tasks_graph`) as canonical. Standard MCP Tasks facade integration remains evaluated and default-off
+  until official client host runtime support is verified across the ecosystem matrix.
 - Retained artifact snapshots (`artifacts_snapshot`, `artifacts_list`, `artifacts_read`,
   `artifacts_restore`, `artifacts_delete`) allow agents to explicitly retain selected
   workspace files beyond ephemeral workspace TTLs, list and read bounded base64 chunks,

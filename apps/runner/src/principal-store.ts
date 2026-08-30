@@ -203,6 +203,7 @@ export function downgradeStateSchemaToV3(database: DatabaseSync): void {
       DROP TABLE IF EXISTS task_dependencies;
       DROP TABLE IF EXISTS durable_tasks;
       DROP TABLE IF EXISTS repo_caches;
+      DROP INDEX IF EXISTS workspaces_owner_id_id;
       UPDATE schema_meta SET version = 3;
     `);
   });
