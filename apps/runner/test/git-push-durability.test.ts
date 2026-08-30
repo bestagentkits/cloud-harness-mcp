@@ -366,6 +366,8 @@ describe('Remote-Git Idempotency & Error Taxonomy', () => {
     try {
       const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'test-owner-finalize' });
       const wsId = 'ws_finalize_interrupted_test';
+      const wsPath = join(dir, 'jobs', wsId);
+      mkdirSync(wsPath, { recursive: true });
 
       store.create({
         id: wsId,
