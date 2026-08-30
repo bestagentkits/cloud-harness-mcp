@@ -2,10 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeFullTreeDigest, MattPocockAdapter } from '../src/adapters/mattpocock-adapter.js';
+import { computeFullTreeDigest, validateStagingDir, MattPocockAdapter } from '../src/adapters/mattpocock-adapter.js';
 import { SuperpowersAdapter } from '../src/adapters/superpowers-adapter.js';
 import { DeclarativeGitAdapter } from '../src/adapters/git-adapter.js';
-
 describe('computeFullTreeDigest', () => {
   let tmpDir: string;
 
@@ -97,5 +96,58 @@ describe('Adapter Ref Validation & Shell Metacharacter Rejection', () => {
       await expect(sp.acquireAndNormalize('owner-1', '/tmp/dummy', { revision: badRef })).rejects.toThrow('invalid git revision reference');
       await expect(git.acquireAndNormalize('owner-1', '/tmp/dummy', { instanceId: 'inst', url: 'https://github.com/org/repo.git', ref: badRef })).rejects.toThrow('invalid git revision reference');
     }
+  });
+});
+
+describe('validateStagingDir & Failure Boundary Protections', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ch-val-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects directories exceeding maximum file limits', () => {
+    for (let i = 0; i < 5; i++) {
+      writeFileSync(join(tmpDir, `file_${i}.txt`), 'hello');
+    }
+    expect(() => validateStagingDir(tmpDir, 3)).toThrow('Staging directory exceeds maximum file count of 3');
+  });
+
+  it('rejects directories exceeding maximum byte limits', () => {
+    writeFileSync(join(tmpDir, 'large.txt'), 'x'.repeat(1024));
+    expect(() => validateStagingDir(tmpDir, 100, 500)).toThrow('Staging directory exceeds maximum byte size of 500');
+  });
+
+  it('rejects unready cache mirror across all adapters', async () => {
+    const unreadyCacheManager: any = {
+      acquireCacheMirror: async () => ({ cachePath: '/cache/dummy.git', isReady: false })
+    };
+
+    const mp = new MattPocockAdapter({
+      repoCacheManager: unreadyCacheManager,
+      executorImage: 'cloud-harness-executor:local',
+      provisioningNetwork: 'test-net'
+    });
+
+    const sp = new SuperpowersAdapter({
+      repoCacheManager: unreadyCacheManager,
+      executorImage: 'cloud-harness-executor:local',
+      provisioningNetwork: 'test-net'
+    });
+
+    const git = new DeclarativeGitAdapter({
+      repoCacheManager: unreadyCacheManager,
+      executorImage: 'cloud-harness-executor:local',
+      provisioningNetwork: 'test-net',
+      allowedGitHosts: ['github.com']
+    });
+
+    await expect(mp.acquireAndNormalize('owner-1', tmpDir)).rejects.toThrow('Repository mirror acquisition is not ready');
+    await expect(sp.acquireAndNormalize('owner-1', tmpDir)).rejects.toThrow('Repository mirror acquisition is not ready');
+    await expect(git.acquireAndNormalize('owner-1', tmpDir, { instanceId: 'inst', url: 'https://github.com/org/repo.git' })).rejects.toThrow('Repository mirror acquisition is not ready');
   });
 });
