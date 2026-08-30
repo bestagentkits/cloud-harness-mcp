@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RunnerConfig } from '@cloud-harness/contracts';
 import { removeContainer, runDocker } from '../../apps/runner/src/docker-engine.js';
@@ -45,7 +46,7 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state', 'state.db'),
       executorImage: 'cloud-harness-executor:local', networkGuardImage: 'cloud-harness-network-guard:local',
       allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 600, idleTtlSeconds: 300,
-      maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 256 * 1_024 * 1_024, reaperIntervalSeconds: 30,
+      maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 256 * 1_024 * 1_024, reaperIntervalSeconds: 1,
       dependencyDnsResolvers: ['8.8.8.8', '1.1.1.1'], dependencyBridgeSubnet: SUBNET,
       dependencyBridgeInterface: BRIDGE_IF, dependencyNetworkName: NETWORK
     };
@@ -148,14 +149,22 @@ describe.skipIf(!enabled)('dependency-access egress boundary', () => {
       `$sudo iptables -w 10 -D DOCKER-USER -i ${BRIDGE_IF} -j CHM-EGRESS-v1 2>/dev/null || true\n` +
       `$sudo iptables -w 10 -D INPUT -i ${BRIDGE_IF} -j CHM-INPUT-v1 2>/dev/null || true`
     ], { stdio: 'inherit' });
-    // Next command execution detects drift and fails closed
+    // Integration test with real Docker daemon: poll periodic reaper interval for drift detection
+    let quarantined = false;
+    for (let i = 0; i < 30; i++) {
+      await sleep(500);
+      const record = store.byId(depWorkspaceId!);
+      if (record?.status === 'NETWORK_QUARANTINED') {
+        quarantined = true;
+        break;
+      }
+    }
+    expect(quarantined).toBe(true);
+
+    // Any command execution on quarantined workspace fails closed
     await expect(service.execute('owner', 'exec_run', {
       workspaceId: depWorkspaceId!, command: 'echo should-fail-closed', cwd: '.', timeoutMs: 20_000
     })).rejects.toMatchObject({ code: 'DEPENDENCY_EGRESS_UNAVAILABLE' });
-
-    // Verify workspace status is transitioned to NETWORK_QUARANTINED
-    const record = store.byId(depWorkspaceId!);
-    expect(record?.status).toBe('NETWORK_QUARANTINED');
 
     // Verify all workspace-labeled containers are stopped and removed
     const containers = await runDocker([
