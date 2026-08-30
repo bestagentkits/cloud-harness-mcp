@@ -494,6 +494,20 @@ describe('contracts', () => {
     })).toMatchObject({
       events: ['pre_commit']
     });
+
+    // skills_run requires expectedSha256
+    expect(() => TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh' })).toThrow();
+    expect(TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh', expectedSha256: 'c'.repeat(64) })).toMatchObject({
+      name: 'demo',
+      expectedSha256: 'c'.repeat(64)
+    });
+
+    // hooks_run requires expectedManifestSha256 or expectedSha256
+    expect(() => TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify' })).toThrow();
+    expect(TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64) })).toMatchObject({
+      name: 'verify',
+      expectedManifestSha256: 'd'.repeat(64)
+    });
   });
   it('enforces capability consistency between advertised GitHub operations and exposed github_action tool', () => {
     const githubOps = [

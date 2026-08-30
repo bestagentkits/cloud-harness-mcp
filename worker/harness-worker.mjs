@@ -1178,13 +1178,23 @@ const handlers = {
     const currentBundleDigest = await computeSkillBundleDigest(skillDir, selectedCand.file);
 
     const expectedSha = input.expectedContentSha256 || input.expectedSha256;
-    if (expectedSha) {
-      if (expectedSha !== currentBundleDigest && expectedSha !== actualScriptSha) {
-        return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
-      }
+    if (!expectedSha) {
+      return fail('INVALID_INPUT', 'expectedContentSha256 or expectedSha256 is required to run a skill');
+    }
+    if (expectedSha !== currentBundleDigest && expectedSha !== actualScriptSha) {
+      return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
     }
 
     const result = await command(scriptPath, input.args ?? [], { timeoutMs: input.timeoutMs });
+    if (result.exitCode !== 0) {
+      return {
+        ok: false,
+        message: `Skill script exited with ${result.exitCode}`,
+        data: result,
+        error: { code: 'EXECUTION_FAILED', message: `Skill script exited with ${result.exitCode}`, retryable: false },
+        truncated: result.truncated
+      };
+    }
     return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
   },
   async hooks_list(input = {}) {
@@ -1221,7 +1231,10 @@ const handlers = {
     if (!hook) return fail('NOT_FOUND', 'hook not found');
 
     const expectedSha = input.expectedManifestSha256 || input.expectedSha256;
-    if (expectedSha && expectedSha !== manifestSha256) {
+    if (!expectedSha) {
+      return fail('INVALID_INPUT', 'expectedManifestSha256 or expectedSha256 is required to run a hook');
+    }
+    if (expectedSha !== manifestSha256) {
       return fail('CONFLICT', `hook manifest SHA-256 mismatch: expected ${expectedSha}, got ${manifestSha256}`, false);
     }
 
