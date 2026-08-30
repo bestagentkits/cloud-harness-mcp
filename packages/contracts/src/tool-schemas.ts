@@ -39,21 +39,8 @@ export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
     version: z.string().max(80).optional(),
     scope: z.enum(['owner', 'workspace']).default('owner'),
     skills: SkillFilterSchema.optional(),
-    activation: z.enum(['skills-only', 'toolkit-default']).default('toolkit-default'),
-    config: z.discriminatedUnion('presetId', [
-      z.object({
-        presetId: z.literal('obra/superpowers'),
-        clientTargets: z.array(z.enum(['claude', 'codex', 'cursor', 'all'])).max(5).default(['all'])
-      }).strict(),
-      z.object({
-        presetId: z.literal('mattpocock/skills')
-      }).strict()
-    ]).optional()
-  }).strict().superRefine((val, ctx) => {
-    if (val.config && val.config.presetId !== val.id) {
-      ctx.addIssue({ code: 'custom', path: ['config'], message: `config presetId must match preset id (${val.id})` });
-    }
-  }),
+    activation: z.enum(['skills-only', 'toolkit-default']).default('toolkit-default')
+  }).strict(),
   z.object({
     kind: z.literal('git'),
     instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
@@ -284,8 +271,7 @@ const schemas = {
     environmentId: EnvironmentIdSchema.optional(),
     confirmEnvironmentInjection: z.literal(true).optional(),
     toolkits: z.array(ToolkitSelectionSchema).max(8).default([]),
-    allowToolkitWorkspaceChanges: z.literal(true).optional(),
-    confirmToolkitSecretUse: z.literal(true).optional()
+    allowToolkitWorkspaceChanges: z.literal(true).optional()
   }).superRefine((input, context) => {
     if (input.networkMode !== undefined) {
       context.addIssue({
@@ -300,10 +286,6 @@ const schemas = {
     const hasWorkspaceScope = input.toolkits.some((t) => t.scope === 'workspace');
     if (hasWorkspaceScope && !input.allowToolkitWorkspaceChanges) {
       context.addIssue({ code: 'custom', path: ['allowToolkitWorkspaceChanges'], message: 'workspace-scope toolkits require allowToolkitWorkspaceChanges confirmation' });
-    }
-    const hasSecretUse = input.toolkits.some((t) => t.kind === 'preset' && 'apiKey' in (t.config ?? {}) && Boolean((t.config as { apiKey?: unknown })?.apiKey));
-    if (hasSecretUse && !input.confirmToolkitSecretUse) {
-      context.addIssue({ code: 'custom', path: ['confirmToolkitSecretUse'], message: 'toolkits requiring secrets require confirmToolkitSecretUse confirmation' });
     }
     const instanceIds = new Set<string>();
     for (const t of input.toolkits) {

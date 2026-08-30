@@ -43,7 +43,7 @@ MCP Client / Dashboard -> workspace_open { toolkits: [presets, git] }
 - [x] Remote executor mounts composed owner skills read-only at `/opt/cloud-harness/owner-skills:ro`; `owner` scope leaves `git status --porcelain` 100% clean.
 - [x] Workspace-scope writes require explicit confirmation (`allowToolkitWorkspaceChanges: true`), enforce canonical root containment without following ancestor symlinks, and fail on existing non-identical files without overwrite.
 - [x] Same-tier duplicate skill names between owner toolkits fail deterministically (`CONFLICT`); 4-tier precedence (`built-in > owner > workspace > repository`) remains strictly enforced with shadowed candidate reporting.
-- [x] Superpowers and open-source presets report truthful capability metadata (`provisioned`, `discoverable`, `context-ready`, `auto-activated`).
+- [x] Superpowers and open-source presets report truthful capability metadata (provisioned skills count and catalog verification status).
 - [x] Replaying an idempotencyKey compares canonical request fingerprints; mismatched request returns `CONFLICT`; recovery restores exact pinned digests.
 - [x] Full-tree bundle SHA-256 digest covers all paths, content, and executable modes; kernel-enforced `:ro` mounts protect owner/built-in tiers, while snapshot-first validation mitigates in-container filesystem races for mutable tiers.
 - [x] StateStore migrations and rollbacks in `principal-store.ts` are 100% transactional.

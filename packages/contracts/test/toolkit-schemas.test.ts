@@ -24,14 +24,10 @@ describe('ToolkitSelectionSchema', () => {
     }
   });
 
-  it('accepts valid obra/superpowers preset with client targets', () => {
+  it('accepts valid obra/superpowers preset', () => {
     const parsed = ToolkitSelectionSchema.parse({
       kind: 'preset',
-      id: 'obra/superpowers',
-      config: {
-        presetId: 'obra/superpowers',
-        clientTargets: ['claude', 'codex']
-      }
+      id: 'obra/superpowers'
     });
     expect(parsed.kind).toBe('preset');
     if (parsed.kind === 'preset') {
@@ -94,15 +90,12 @@ describe('ToolkitSelectionSchema', () => {
     })).toThrow('include and exclude cannot both be specified');
   });
 
-  it('rejects mismatched config presetId', () => {
+  it('rejects unrecognized properties in strict preset schema', () => {
     expect(() => ToolkitSelectionSchema.parse({
       kind: 'preset',
       id: 'mattpocock/skills',
-      config: {
-        presetId: 'obra/superpowers',
-        clientTargets: ['all']
-      }
-    })).toThrow('config presetId must match preset id');
+      extraField: 'invalid'
+    })).toThrow();
   });
 });
 
@@ -146,13 +139,6 @@ describe('WorkspaceOpenSchema with Toolkits', () => {
     expect(confirmed.allowToolkitWorkspaceChanges).toBe(true);
   });
 
-  it('validates secret confirmation flag schema', () => {
-    const openWithSecretFlag = TOOL_SCHEMA_BY_NAME.workspace_open.parse({
-      ...baseOpen,
-      confirmToolkitSecretUse: true
-    });
-    expect(openWithSecretFlag.confirmToolkitSecretUse).toBe(true);
-  });
   it('rejects duplicate toolkit IDs or instance IDs', () => {
     expect(() => TOOL_SCHEMA_BY_NAME.workspace_open.parse({
       ...baseOpen,

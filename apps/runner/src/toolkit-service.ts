@@ -218,8 +218,7 @@ export class ToolkitService {
             cache: 'hit',
             activation: item.activation,
             skillsCount: 14,
-            verification: 'catalog-pinned',
-            compatibility: 'context-ready'
+            verification: 'catalog-pinned'
           });
         }
       } else if (item.kind === 'git') {
