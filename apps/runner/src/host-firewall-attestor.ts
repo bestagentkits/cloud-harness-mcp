@@ -102,12 +102,21 @@ export class HostFirewallAttestor {
       return { ok: false, reason: `invalid or broad ACCEPT/RETURN target jump for '${this.bridgeInterface}' in INPUT` };
     }
 
-    // The owned INPUT target chain must deny with no ACCEPT rule that could
-    // let executor traffic reach the host.
+    // The owned INPUT target chain must strictly deny all host-destined traffic
+    // and must not contain any RETURN, ACCEPT, or indirect jump rules.
     if (inputTarget !== 'REJECT' && inputTarget !== 'DROP') {
       const inputChainRules = lines.filter((l) => l.startsWith(`-A ${inputTarget}`));
-      if (inputChainRules.some((l) => l.includes('-j ACCEPT'))) {
-        return { ok: false, reason: `INPUT target chain '${inputTarget}' must not contain ACCEPT rules` };
+      if (inputChainRules.length === 0) {
+        return { ok: false, reason: `INPUT target chain '${inputTarget}' has no rules` };
+      }
+      for (const rule of inputChainRules) {
+        const target = rule.match(/-j\s+([A-Za-z0-9_-]+)/)?.[1];
+        if (target === 'RETURN') {
+          return { ok: false, reason: `INPUT target chain '${inputTarget}' must not contain RETURN rules: ${rule}` };
+        }
+        if (target !== 'REJECT' && target !== 'DROP') {
+          return { ok: false, reason: `INPUT target chain '${inputTarget}' contains unauthorized target '${target}': ${rule}` };
+        }
       }
       const lastInput = inputChainRules[inputChainRules.length - 1];
       if (!lastInput || (!lastInput.includes('-j REJECT') && !lastInput.includes('-j DROP'))) {
