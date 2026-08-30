@@ -112,7 +112,9 @@ fi
 install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-deploy
 install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
 install -m 0755 deploy/scripts/upgrade-nginx-dashboard.sh /usr/local/sbin/cloud-harness-upgrade-nginx
-install -m 0755 deploy/scripts/service-compose.sh /usr/local/sbin/cloud-harness-service-compose
+if [[ -f deploy/scripts/service-compose.sh ]]; then
+  install -m 0755 deploy/scripts/service-compose.sh /usr/local/sbin/cloud-harness-service-compose
+fi
 printf '%s\n' "$release_sha" > "$state/release-current"
 trap - ERR
 echo "deployed $release_sha"
