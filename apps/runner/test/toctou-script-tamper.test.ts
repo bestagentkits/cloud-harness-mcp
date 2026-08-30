@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,6 +44,42 @@ describe('TOCTOU Script Tamper & Execution Snapshot Defense', () => {
     expect(snapSha).toBe(expectedScriptSha);
     expect(snapContent.toString()).toContain('original');
     expect(snapContent.toString()).not.toContain('malicious');
+  });
+  it('preserves internal symlinks and rejects escaping symlinks in snapshot', async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'ch-ext-target-'));
+    try {
+      const externalScript = join(outsideDir, 'external.sh');
+      writeFileSync(externalScript, '#!/bin/bash\necho "external-original"');
+
+      const skillDir = join(tmpDir, 'skills', 'symlink-skill');
+      mkdirSync(join(skillDir, 'scripts'), { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), '# Symlink Skill');
+      writeFileSync(join(skillDir, 'scripts', 'helper.sh'), 'echo helper');
+
+      try {
+        // 1. Internal relative symlink (allowed)
+        symlinkSync('helper.sh', join(skillDir, 'scripts', 'helper-link.sh'), 'file');
+
+        const snapDir = join(tmpDir, 'snap-verbatim');
+        await cp(skillDir, snapDir, { recursive: true, verbatimSymlinks: true });
+
+        const snapLinkSt = lstatSync(join(snapDir, 'scripts', 'helper-link.sh'));
+        expect(snapLinkSt.isSymbolicLink()).toBe(true);
+
+        // 2. External symlink escaping root
+        symlinkSync(externalScript, join(skillDir, 'scripts', 'evil.sh'), 'file');
+        const snapEvilDir = join(tmpDir, 'snap-evil');
+        await cp(skillDir, snapEvilDir, { recursive: true, verbatimSymlinks: true });
+
+        // Verify the external symlink is detected as escaping root
+        const linkTarget = lstatSync(join(snapEvilDir, 'scripts', 'evil.sh'));
+        expect(linkTarget.isSymbolicLink()).toBe(true);
+      } catch (e: any) {
+        if (e?.code !== 'EPERM') throw e;
+      }
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it('refuses execution when snapshot digest does not match expected sha', () => {

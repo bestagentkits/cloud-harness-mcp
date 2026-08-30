@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
 function getWorkspaceRoot() {
@@ -160,29 +160,46 @@ async function git(args, options = {}) {
 
 async function computeSkillBundleDigest(skillDir) {
   const parts = [];
+  let canonicalRoot;
   try {
-    async function walk(dir, rel) {
-      const entries = await readdir(dir, { withFileTypes: true });
-      entries.sort((a, b) => a.name.localeCompare(b.name));
-      for (const entry of entries) {
-        const full = join(dir, entry.name);
-        const nextRel = rel ? `${rel}/${entry.name}` : entry.name;
-        if (entry.isDirectory()) {
-          await walk(full, nextRel);
-        } else if (entry.isFile()) {
-          try {
-            const raw = await readFile(full);
-            const st = await stat(full);
-            const mode = (st.mode & 0o777).toString(8);
-            parts.push(`${nextRel}:${st.size}:${mode}:${sha256(raw)}`);
-          } catch { /* skip */ }
+    canonicalRoot = realpathSync(skillDir);
+  } catch {
+    canonicalRoot = skillDir;
+  }
+
+  async function walk(dir, rel) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      const nextRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink()) {
+        let linkTarget;
+        try {
+          linkTarget = realpathSync(full);
+        } catch {
+          throw new Error(`broken symlink ${nextRel}`);
         }
+        const relTarget = relative(canonicalRoot, linkTarget);
+        if (relTarget.startsWith('..') || isAbsolute(relTarget)) {
+          throw new Error(`symlink ${nextRel} escapes skill directory root`);
+        }
+        const st = await lstat(full);
+        const mode = (st.mode & 0o777).toString(8);
+        parts.push(`${nextRel}:${st.size}:${mode}:symlink->${relTarget}`);
+      } else if (entry.isDirectory()) {
+        await walk(full, nextRel);
+      } else if (entry.isFile()) {
+        const raw = await readFile(full);
+        const st = await stat(full);
+        const mode = (st.mode & 0o777).toString(8);
+        parts.push(`${nextRel}:${st.size}:${mode}:${sha256(raw)}`);
+      } else {
+        throw new Error(`unsupported special directory entry ${nextRel}`);
       }
     }
-    await walk(skillDir, '');
-  } catch {
-    parts.push('missing');
   }
+  await walk(skillDir, '');
   return sha256(parts.join('\n'));
 }
 
@@ -1205,8 +1222,13 @@ const handlers = {
     const snapDir = `/tmp/cloud-harness-exec/${runId}`;
     await mkdir(snapDir, { recursive: true, mode: 0o700 });
     try {
-      await cp(skillDir, snapDir, { recursive: true });
-      const currentBundleDigest = await computeSkillBundleDigest(snapDir);
+      await cp(skillDir, snapDir, { recursive: true, verbatimSymlinks: true });
+      let currentBundleDigest;
+      try {
+        currentBundleDigest = await computeSkillBundleDigest(snapDir);
+      } catch (err) {
+        return fail('CONFLICT', `skill integrity validation failed: ${err instanceof Error ? err.message : String(err)}`, false);
+      }
       const snapScriptPath = join(snapDir, 'scripts', input.script);
       let actualScriptSha = null;
       try {
