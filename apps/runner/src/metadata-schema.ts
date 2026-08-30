@@ -11,7 +11,7 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number };
-    if (row.version === 2) {
+    if (row.version === 3) {
       database.exec('COMMIT');
       return;
     }
@@ -111,8 +111,29 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
       CREATE INDEX api_keys_active_expiry ON api_keys(principal_id, state, expires_at);
       UPDATE metadata_schema_meta SET version = 2 WHERE singleton = 1;
     `);
+    const postV2 = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
+    if (postV2 === 2) database.exec(`
+      ALTER TABLE secret_references ADD COLUMN description TEXT;
+      UPDATE metadata_schema_meta SET version = 3 WHERE singleton = 1;
+    `);
     const migrated = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
-    if (migrated !== 2) throw new Error(`unsupported metadata schema version ${migrated}`);
+    if (migrated !== 3) throw new Error(`unsupported metadata schema version ${migrated}`);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function downgradeMetadataSchemaToV2(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+    if (!row || row.version !== 3) throw new Error('metadata schema must be version 3 before downgrade');
+    database.exec(`
+      ALTER TABLE secret_references DROP COLUMN description;
+      UPDATE metadata_schema_meta SET version = 2 WHERE singleton = 1;
+    `);
     database.exec('COMMIT');
   } catch (error) {
     database.exec('ROLLBACK');
@@ -124,7 +145,10 @@ export function downgradeMetadataSchemaToV1(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
-    if (!row || row.version !== 2) throw new Error('metadata schema must be version 2 before downgrade');
+    if (!row || (row.version !== 2 && row.version !== 3)) throw new Error('metadata schema must be version 2 or 3 before downgrade');
+    if (row.version === 3) {
+      database.exec('ALTER TABLE secret_references DROP COLUMN description;');
+    }
     database.exec(`
       DROP TABLE api_keys;
       UPDATE metadata_schema_meta SET version = 1 WHERE singleton = 1;

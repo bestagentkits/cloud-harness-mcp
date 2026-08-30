@@ -1,7 +1,9 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
+import { downgradeMetadataSchemaToV1, downgradeMetadataSchemaToV2, migrateMetadataSchema } from '../src/metadata-schema.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
@@ -33,7 +35,7 @@ describe('MetadataStore', () => {
   it('migrates once, survives restart, and enforces owner-qualified foreign keys', () => {
     const { path, owner, foreign, store, keyring } = fixture();
     const { project, environment } = projectEnvironment(store, owner);
-    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(2);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(3);
     expect(() => store.database.prepare(`INSERT INTO environments
       (id, principal_id, project_id, name, state, generation, created_at, updated_at)
       VALUES (?, ?, ?, 'Foreign', 'ACTIVE', 1, 1, 1)`).run(`env_${'x'.repeat(24)}`, foreign, project.id)).toThrow();
@@ -273,5 +275,58 @@ describe('MetadataStore', () => {
     expect(() => unavailable.secrets).toThrow('unknown secret key version 2');
     unavailable.close();
     missing.close();
+  });
+  it('supports secret descriptions, metadata updates, and transactional bulk apply', () => {
+    const { owner, store, keyring } = fixture();
+    const { environment } = projectEnvironment(store, owner);
+
+    const created = store.secrets.create(owner, environment.id, 'DB_PASS', 'secret123', 0, 'Database password')!;
+    expect(created.description).toBe('Database password');
+    expect(store.listSecretReferences(owner, environment.id)[0]?.description).toBe('Database password');
+
+    const updatedDesc = store.secrets.updateMetadata(owner, environment.id, 'DB_PASS', 'Updated database password', created.generation)!;
+    expect(updatedDesc.description).toBe('Updated database password');
+    expect(updatedDesc.generation).toBe(created.generation + 1);
+    expect(updatedDesc.version).toBe(created.version);
+
+    const rotated = store.secrets.rotate(owner, environment.id, 'DB_PASS', 'newsecret123', updatedDesc.generation, 'Rotated DB password')!;
+    expect(rotated.description).toBe('Rotated DB password');
+    expect(rotated.version).toBe(2);
+
+    const bulkResults = store.secrets.bulkApply(owner, environment.id, [
+      { name: 'STRIPE_KEY', value: 'sk_test_123', description: 'Stripe API key', action: 'create', expectedGeneration: 0 },
+      { name: 'DB_PASS', value: 'bulk_rotated_pass', description: 'Bulk rotated', action: 'rotate', expectedGeneration: rotated.generation }
+    ]);
+    expect(bulkResults).toHaveLength(2);
+    expect(bulkResults[0]?.name).toBe('STRIPE_KEY');
+    expect(bulkResults[0]?.description).toBe('Stripe API key');
+    expect(bulkResults[1]?.name).toBe('DB_PASS');
+    expect(bulkResults[1]?.description).toBe('Bulk rotated');
+
+    store.close();
+    keyring.close();
+  });
+
+  it('supports schema migration and downgrade ladders v3 -> v2 -> v1', () => {
+    const { path, store, keyring } = fixture();
+    store.close();
+    keyring.close();
+
+    const db = new DatabaseSync(path);
+    const initialRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
+    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(3);
+
+    downgradeMetadataSchemaToV2(db);
+    const v2Row = db.prepare('SELECT version FROM metadata_schema_meta').get();
+    expect(v2Row && typeof v2Row === 'object' && 'version' in v2Row ? v2Row.version : undefined).toBe(2);
+
+    downgradeMetadataSchemaToV1(db);
+    const v1Row = db.prepare('SELECT version FROM metadata_schema_meta').get();
+    expect(v1Row && typeof v1Row === 'object' && 'version' in v1Row ? v1Row.version : undefined).toBe(1);
+
+    migrateMetadataSchema(db);
+    const migratedRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
+    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(3);
+    db.close();
   });
 });

@@ -1,12 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type RunnerConfig } from '@cloud-harness/contracts';
+import { MetadataStore } from '../src/metadata-store.js';
+import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
-
 const docker = vi.hoisted(() => ({
   workerResult: { ok: true, message: 'worker complete', data: {}, truncated: false },
+  createdEnvFiles: [] as string[],
   runDocker: vi.fn(async (args: string[]) => {
     if (args.includes('/usr/bin/du')) {
       return { stdout: '0\t/workspace\n', stderr: '', exitCode: 0, truncated: false };
@@ -20,6 +22,15 @@ const docker = vi.hoisted(() => ({
       };
     }
     if (args[0] === 'create') {
+      const envFileIdx = args.indexOf('--env-file');
+      if (envFileIdx !== -1 && args[envFileIdx + 1]) {
+        try {
+          const content = readFileSync(args[envFileIdx + 1]!, 'utf8');
+          docker.createdEnvFiles.push(content);
+        } catch {
+          // ignore
+        }
+      }
       return { stdout: 'container-created\n', stderr: '', exitCode: 0, truncated: false };
     }
     if (args[0] === 'start') {
@@ -54,6 +65,8 @@ const openStores: StateStore[] = [];
 
 afterEach(() => {
   docker.workerResult = { ok: true, message: 'worker complete', data: {}, truncated: false };
+  docker.createdEnvFiles = [];
+  vi.clearAllMocks();
   vi.clearAllMocks();
   for (const store of openStores.splice(0)) {
     try { store.close(); } catch { /* store already closed */ }
@@ -476,5 +489,97 @@ describe('Workspace Recovery and Lease Renewal (Issue #103)', () => {
     // Verify start was called on the stopped container
     const startCalls = docker.runDocker.mock.calls.filter((c) => c[0][0] === 'start' && c[0][1] === 'chm-dead-container');
     expect(startCalls.length).toBeGreaterThan(0);
+  });
+
+  it('recovers workspace with exact pinned secret snapshot across container recreation', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-recovery-secrets-'));
+    temporaryDirectories.push(directory);
+    const jobsRoot = join(directory, 'jobs');
+    mkdirSync(jobsRoot, { recursive: true });
+    const config = {
+      jobsRoot,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 3600,
+      wallTtlSeconds: 14400,
+      workspaceIdleTimeoutSeconds: 3600,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576,
+      networkMode: 'none',
+      allowedGitHosts: ['github.com'],
+      executorImage: 'cloud-harness-executor:test'
+    } as RunnerConfig;
+
+    const store = new StateStore(config.stateDb);
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'test-owner' });
+    const keyring = new SecretKeyring(1, [{ version: 1, key: Buffer.alloc(32, 1) }]);
+    const metadata = new MetadataStore(config.stateDb, keyring);
+
+    const project = metadata.createProject(ownerId, 'Project', 0)!;
+    const environment = metadata.createEnvironment(ownerId, project.id, 'Env', 0)!;
+    metadata.secrets.create(ownerId, environment.id, 'DATABASE_URL', 'postgres://v1', 0, 'DB url');
+
+    const service = new WorkspaceService(config, store, metadata);
+
+    const principal = { kind: 'owner', ownerId: 'test-owner' } as const;
+    const openResult = await service.execute(principal, 'workspace_open', {
+      repositoryUrl: 'https://github.com/example/repo.git',
+      idempotencyKey: 'idemp-secret-rec-1',
+      environmentId: environment.id,
+      confirmEnvironmentInjection: true
+    });
+    const wsId = (openResult.data as { workspaceId: string }).workspaceId;
+    mkdirSync(join(jobsRoot, wsId, 'repo'), { recursive: true });
+
+    // Verify initial container create used --env-file containing v1 secret and kept values off argv
+    const initialCreateCall = docker.runDocker.mock.calls.find((c) => c[0][0] === 'create' && c[0].includes('--env-file'));
+    expect(initialCreateCall).toBeDefined();
+    expect(initialCreateCall![0].join(' ')).not.toContain('postgres://v1');
+    expect(docker.createdEnvFiles[0]).toContain('DATABASE_URL=postgres://v1');
+    expect(docker.createdEnvFiles[0]).not.toContain('postgres://v2');
+
+    // Rotate secret to v2 in metadata store
+    metadata.secrets.rotate(ownerId, environment.id, 'DATABASE_URL', 'postgres://v2', 1, 'Rotated DB url');
+
+    // Simulate container removal / crash
+    docker.inspectContainer.mockResolvedValueOnce(null);
+    docker.runDocker.mockClear();
+    // Recover workspace (recreates executor)
+    const recoverRes = await service.execute(principal, 'workspace_recover', { workspaceId: wsId, mode: 'resume' });
+    expect(recoverRes.ok).toBe(true);
+
+    // Verify recreated container received PINNED v1 secret via --env-file, not rotated v2
+    const recreatedCall = docker.runDocker.mock.calls.find((c) => c[0][0] === 'create' && c[0].includes('--env-file'));
+    expect(recreatedCall).toBeDefined();
+    expect(recreatedCall![0].join(' ')).not.toContain('postgres://v2');
+    expect(docker.createdEnvFiles[1]).toContain('DATABASE_URL=postgres://v1');
+    expect(docker.createdEnvFiles[1]).not.toContain('postgres://v2');
+
+    // Test key rotation and snapshot re-encryption
+    const key2 = Buffer.alloc(32, 2);
+    const keyringV2 = new SecretKeyring(2, [{ version: 1, key: Buffer.alloc(32, 1) }, { version: 2, key: key2 }]);
+    const metadataV2 = new MetadataStore(config.stateDb, keyringV2);
+    await metadataV2.secrets.reencrypt();
+    const snapshotsReencrypted = store.reencryptSnapshots((item) => metadataV2.secrets.reencryptSnapshotItem(item));
+    expect(snapshotsReencrypted).toBe(1);
+
+    // Verify that after removing old key version 1, recovery still succeeds with key version 2 only
+    const keyringOnlyV2 = new SecretKeyring(2, [{ version: 2, key: key2 }]);
+    const metadataOnlyV2 = new MetadataStore(config.stateDb, keyringOnlyV2);
+    const serviceOnlyV2 = new WorkspaceService(config, store, metadataOnlyV2);
+
+    docker.inspectContainer.mockResolvedValueOnce(null);
+    docker.runDocker.mockClear();
+    const rekeyRecoverRes = await serviceOnlyV2.execute(principal, 'workspace_recover', { workspaceId: wsId, mode: 'resume' });
+    expect(rekeyRecoverRes.ok).toBe(true);
+    expect(docker.createdEnvFiles[2]).toContain('DATABASE_URL=postgres://v1');
+
+    metadataV2.close();
+    keyringV2.close();
+    metadataOnlyV2.close();
+    keyringOnlyV2.close();
+    metadata.close();
+    keyring.close();
   });
 });

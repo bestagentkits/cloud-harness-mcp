@@ -156,6 +156,55 @@ export async function renderWorkspaceDrawer({ trigger, detail, content, fetchWor
   heading.setAttribute('tabindex', '-1');
   return { id, item, heading };
 }
+export function parseDotEnv(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const items = [];
+  let comments = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const trimmed = line.trim();
+    if (!trimmed) {
+      comments = [];
+      continue;
+    }
+    if (trimmed.startsWith('#')) {
+      comments.push(trimmed.replace(/^#+\s*/, ''));
+      continue;
+    }
+    let assignment = trimmed;
+    if (assignment.startsWith('export ')) {
+      assignment = assignment.slice(7).trim();
+    }
+    const idx = assignment.indexOf('=');
+    if (idx <= 0) continue;
+    const name = assignment.slice(0, idx).trim();
+    let value = assignment.slice(idx + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    const description = comments.length ? comments.join(' / ').slice(0, 500) : null;
+    comments = [];
+    items.push({ name, value, description });
+  }
+  return items;
+}
+const FORBIDDEN_CLIENT_NAMES = new Set([
+  'PATH', 'HOME', 'SHELL', 'USER', 'LOGNAME', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT',
+  'AUTHORIZATION', 'OWNER_ID', 'RUNNER_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'SECRET_KEYRING',
+  'LD_PRELOAD', 'LD_LIBRARY_PATH'
+]);
+const FORBIDDEN_CLIENT_PREFIXES = ['HARNESS_', 'CH_', 'CLOUDFLARE_', 'CF_', 'GITHUB_APP_', 'ACCESS_', 'RUNNER_', 'DOCKER_', 'XDG_', 'NPM_CONFIG_', 'UV_', 'BUN_', 'PNPM_'];
+
+export function validateSecretClient(name, value) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,99}$/.test(name)) return 'name must be an environment-style identifier';
+  const upper = name.toUpperCase();
+  if (FORBIDDEN_CLIENT_NAMES.has(upper)) return 'reserved control-plane or toolchain variable';
+  for (const prefix of FORBIDDEN_CLIENT_PREFIXES) {
+    if (upper.startsWith(prefix)) return `reserved prefix ${prefix}`;
+  }
+  if (!value || value.includes('\0')) return 'value cannot be empty or contain null bytes';
+  return null;
+}
 
 export function initializeDashboard() {
   const content = document.querySelector('#content'); const detail = document.querySelector('#detail'); const main = document.querySelector('#main');
@@ -170,6 +219,108 @@ export function initializeDashboard() {
     dialog: revealDialog, secretField: document.querySelector('#api-key-secret'), copyButton: document.querySelector('#copy-api-key'),
     acknowledgeButton: document.querySelector('#acknowledge-api-key'), status: document.querySelector('#api-key-copy-status'),
     clipboard: globalThis.navigator.clipboard, reportError: showError
+  });
+  const bulkDialog = document.querySelector('#bulk-import-dialog');
+  const bulkInput = document.querySelector('#bulk-import-input');
+  const bulkPreview = document.querySelector('#bulk-import-preview');
+  const bulkStatus = document.querySelector('#bulk-import-status');
+  const bulkEnvIdField = document.querySelector('#bulk-import-env-id');
+  let currentBulkEnvironment;
+  let currentBulkProject;
+  function openBulkImport(environment, project) {
+    currentBulkEnvironment = environment;
+    currentBulkProject = project;
+    if (bulkEnvIdField) bulkEnvIdField.value = environment.id;
+    if (bulkInput) bulkInput.value = '';
+    if (bulkPreview) bulkPreview.innerHTML = '';
+    if (bulkStatus) bulkStatus.textContent = '';
+    if (bulkDialog) bulkDialog.showModal();
+    if (bulkInput) bulkInput.focus();
+  }
+  function closeBulkImport() {
+    if (bulkInput) bulkInput.value = '';
+    if (bulkPreview) bulkPreview.innerHTML = '';
+    if (bulkStatus) bulkStatus.textContent = '';
+    if (bulkDialog && bulkDialog.open) bulkDialog.close();
+  }
+  document.querySelector('#cancel-bulk-import')?.addEventListener('click', () => closeBulkImport());
+  bulkInput?.addEventListener('input', () => {
+    if (!currentBulkEnvironment || !bulkPreview) return;
+    const parsed = parseDotEnv(bulkInput.value);
+    if (!parsed.length) {
+      bulkPreview.innerHTML = '<span class="diff-skip">No variable assignments found.</span>';
+      return;
+    }
+    const existing = new Map((currentBulkEnvironment.secrets ?? []).map((s) => [s.name, s]));
+    const seenInBatch = new Set();
+    const lines = [];
+    for (const item of parsed) {
+      const err = validateSecretClient(item.name, item.value);
+      const descHint = item.description ? ` (${escape(item.description)})` : '';
+      if (err) {
+        lines.push(`<span class="diff-err">&times; REJECTED: ${escape(item.name)} (${escape(err)})</span>`);
+      } else if (seenInBatch.has(item.name)) {
+        lines.push(`<span class="diff-err">&times; DUPLICATE: ${escape(item.name)} (duplicate in pasted batch)</span>`);
+      } else {
+        seenInBatch.add(item.name);
+        const isExisting = existing.has(item.name);
+        if (isExisting) {
+          const prev = existing.get(item.name);
+          lines.push(`<span class="diff-rot">&#8635; ROTATE: ${escape(item.name)}${descHint} (v${escape(prev.version ?? prev.generation)} &rarr; v${escape((prev.version ?? prev.generation) + 1)})</span>`);
+        } else {
+          lines.push(`<span class="diff-add">+ CREATE: ${escape(item.name)}${descHint}</span>`);
+        }
+      }
+    }
+    bulkPreview.innerHTML = lines.join('');
+  });
+  document.querySelector('#bulk-import-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!currentBulkEnvironment || !bulkInput || !bulkInput.value.trim()) return;
+    const parsed = parseDotEnv(bulkInput.value);
+    if (!parsed.length) return;
+    const existing = new Map((currentBulkEnvironment.secrets ?? []).map((s) => [s.name, s]));
+    const seen = new Set();
+    const validItems = [];
+    const errors = [];
+    for (const item of parsed) {
+      const err = validateSecretClient(item.name, item.value);
+      if (err) {
+        errors.push(`${item.name}: ${err}`);
+        continue;
+      }
+      if (seen.has(item.name)) {
+        errors.push(`${item.name}: duplicate key in batch`);
+        continue;
+      }
+      seen.add(item.name);
+      const prev = existing.get(item.name);
+      validItems.push({
+        name: item.name,
+        value: item.value,
+        description: item.description,
+        action: prev ? 'rotate' : 'create',
+        expectedGeneration: prev ? Number(prev.generation) : 0
+      });
+    }
+    if (errors.length > 0) {
+      if (bulkStatus) bulkStatus.textContent = `Fix ${errors.length} rejected item(s) before applying.`;
+      return;
+    }
+    if (!validItems.length) return;
+    const form = event.currentTarget;
+    const envId = currentBulkEnvironment.id;
+    const projId = currentBulkProject?.id;
+    void submitForm(form, 'Applying…', async () => {
+      await api(`/environments/${encodeURIComponent(envId)}/secrets/bulk`, {
+        method: 'POST',
+        body: requestBody({ items: validItems })
+      });
+    }, async () => {
+      closeBulkImport();
+      announce('Bulk secrets applied successfully.');
+      if (projId) await loadProject(projId);
+    });
   });
   const setBusy = (busy) => content.setAttribute('aria-busy', String(busy));
   const announce = (message) => { announcer.textContent = message; toast(message); };
@@ -297,20 +448,53 @@ export function initializeDashboard() {
       return { ...environment, secrets: result.data.secrets, readiness: result.data.readiness };
     }));
     setTitle(project.name, 'Retained environments and write-only secret references.'); content.innerHTML = renderProjectDetail(project, environments);
-    bindProjectControls(project);
+    bindProjectControls(project, environments);
   }
-  function bindProjectControls(project) {
+  function bindProjectControls(project, environments = []) {
     document.querySelector('#create-environment-form').addEventListener('submit', (event) => {
       event.preventDefault(); const form = event.currentTarget; const values = new FormData(form);
       void submitForm(form, 'Creating…', async () => api(`/projects/${encodeURIComponent(project.id)}/environments`, { method: 'POST', body: requestBody({ name: values.get('name'), expectedGeneration: 0 }) }), async () => { announce('Environment created.'); await loadProject(project.id); });
     });
     for (const form of document.querySelectorAll('.create-secret-form')) form.addEventListener('submit', (event) => {
-      event.preventDefault(); const current = event.currentTarget; const values = new FormData(current); const name = values.get('name'); const value = values.get('value'); resetWriteOnlyFields(current);
-      void submitForm(current, 'Creating…', async () => api(`/environments/${encodeURIComponent(current.dataset.environmentId)}/secrets`, { method: 'POST', body: requestBody({ name, value, expectedGeneration: 0 }) }), async () => { announce('Secret reference created. Value was not retained in the page.'); await loadProject(project.id); });
+      event.preventDefault(); const current = event.currentTarget; const values = new FormData(current); const name = values.get('name'); const value = values.get('value'); const description = String(values.get('description') ?? '').trim() || null; resetWriteOnlyFields(current);
+      void submitForm(current, 'Creating…', async () => api(`/environments/${encodeURIComponent(current.dataset.environmentId)}/secrets`, { method: 'POST', body: requestBody({ name, value, description, expectedGeneration: 0 }) }), async () => { announce('Secret reference created. Value was not retained in the page.'); await loadProject(project.id); });
     });
     for (const form of document.querySelectorAll('.rotate-secret-form')) form.addEventListener('submit', (event) => {
-      event.preventDefault(); const current = event.currentTarget; const values = new FormData(current); const value = values.get('value'); resetWriteOnlyFields(current);
-      void submitForm(current, 'Rotating…', async () => api(`/environments/${encodeURIComponent(current.dataset.environmentId)}/secrets/${encodeURIComponent(current.dataset.secretName)}`, { method: 'PUT', body: requestBody({ value, expectedGeneration: Number(current.dataset.generation) }) }), async () => { announce('Secret rotated. Value was not retained in the page.'); await loadProject(project.id); });
+      event.preventDefault(); const current = event.currentTarget; const values = new FormData(current); const value = values.get('value'); const description = String(values.get('description') ?? '').trim() || undefined; resetWriteOnlyFields(current);
+      void submitForm(current, 'Rotating…', async () => api(`/environments/${encodeURIComponent(current.dataset.environmentId)}/secrets/${encodeURIComponent(current.dataset.secretName)}`, { method: 'PUT', body: requestBody({ value, ...(description !== undefined ? { description } : {}), expectedGeneration: Number(current.dataset.generation) }) }), async () => { announce('Secret rotated. Value was not retained in the page.'); await loadProject(project.id); });
+    });
+    for (const form of document.querySelectorAll('.update-secret-desc-form')) form.addEventListener('submit', (event) => {
+      event.preventDefault(); const current = event.currentTarget; const values = new FormData(current); const description = String(values.get('description') ?? '').trim() || null;
+      void submitForm(current, 'Saving…', async () => api(`/environments/${encodeURIComponent(current.dataset.environmentId)}/secrets/${encodeURIComponent(current.dataset.secretName)}`, { method: 'PATCH', body: requestBody({ description, expectedGeneration: Number(current.dataset.generation) }) }), async () => { announce('Secret description updated.'); await loadProject(project.id); });
+    });
+    for (const button of document.querySelectorAll('.open-bulk-import')) button.addEventListener('click', () => {
+      const env = environments.find((e) => e.id === button.dataset.environmentId) ?? { id: button.dataset.environmentId, secrets: [] };
+      openBulkImport(env, project);
+    });
+    for (const button of document.querySelectorAll('.export-env-example')) button.addEventListener('click', async () => {
+      const envId = button.dataset.environmentId;
+      const envName = button.dataset.environmentName ?? 'environment';
+      const result = await api(`/environments/${encodeURIComponent(envId)}/secrets`);
+      const secrets = result.data?.secrets ?? [];
+      const lines = [];
+      for (const secret of secrets) {
+        if (secret.description) {
+          for (const line of secret.description.split('\n')) {
+            lines.push(`# ${line.trim()}`);
+          }
+        }
+        lines.push(`${secret.name}=`);
+      }
+      const blob = new globalThis.Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+      const url = globalThis.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${envName.toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}.env.example`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      globalThis.URL.revokeObjectURL(url);
+      announce('.env.example exported.');
     });
     for (const button of document.querySelectorAll('.delete-secret')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete secret reference?', description: 'Delete this write-only reference and its encrypted value?', target: button.dataset.secretName, label: 'Delete secret', pendingLabel: 'Deleting…', action: async () => { await api(`/environments/${encodeURIComponent(button.dataset.environmentId)}/secrets/${encodeURIComponent(button.dataset.secretName)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); announce('Secret reference deleted.'); await loadProject(project.id); } }, event.currentTarget));
     for (const button of document.querySelectorAll('.delete-environment')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete environment?', description: 'Delete this environment and its retained metadata?', target: button.dataset.environmentId, label: 'Delete environment', pendingLabel: 'Deleting…', action: async () => { await api(`/environments/${encodeURIComponent(button.dataset.environmentId)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); announce('Environment deleted.'); await loadProject(project.id); } }, event.currentTarget));

@@ -164,6 +164,20 @@ Set the preferred active workspace for subsequent calls that omit `workspaceId`.
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}
 -->
 
+<!-- cloudharness-tool:secrets_list -->
+### `secrets_list`
+
+List available environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.
+
+- Optional: `workspaceId`, `environmentId`, `query` (case-insensitive substring filter for names and descriptions), `cursor`, `limit` (default 100, max 500).
+- Returns value-free metadata records: `{ name, description, environmentId, version, updatedAt }[]`.
+- Secret values are strictly write-only and never exposed via MCP tools.
+- In local stdio mode, returns a structured error explaining that retained environment secrets require remote runner storage.
+
+<!-- cloudharness-example:secrets_list
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","query":"database"}
+-->
+
 ## Lifecycle details
 
 - Active workspace calls refresh idle expiry but cannot extend beyond the

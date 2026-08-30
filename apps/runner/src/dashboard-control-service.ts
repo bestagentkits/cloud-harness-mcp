@@ -37,9 +37,11 @@ export class DashboardControlService {
           secrets: this.metadata.listSecretReferences(principalId, parsed.input.environmentId),
           readiness: this.metadata.secretReadiness()
         });
-        case 'secret_create': return mutation('Secret reference created', this.secrets().create(principalId, parsed.input.environmentId, parsed.input.name, parsed.input.value, 0));
-        case 'secret_rotate': return mutation('Secret reference rotated', this.secrets().rotate(principalId, parsed.input.environmentId, parsed.input.name, parsed.input.value, parsed.input.expectedGeneration));
+        case 'secret_create': return mutation('Secret reference created', this.secrets().create(principalId, parsed.input.environmentId, parsed.input.name, parsed.input.value, 0, parsed.input.description ?? null));
+        case 'secret_rotate': return mutation('Secret reference rotated', this.secrets().rotate(principalId, parsed.input.environmentId, parsed.input.name, parsed.input.value, parsed.input.expectedGeneration, parsed.input.description));
+        case 'secret_update': return mutation('Secret reference updated', this.secrets().updateMetadata(principalId, parsed.input.environmentId, parsed.input.name, parsed.input.description ?? null, parsed.input.expectedGeneration));
         case 'secret_delete': return mutation('Secret reference deleted', this.secrets().delete(principalId, parsed.input.environmentId, parsed.input.name, parsed.input.expectedGeneration));
+        case 'secret_bulk_apply': return ok('Secrets bulk applied', { secrets: this.secrets().bulkApply(principalId, parsed.input.environmentId, parsed.input.items) });
         case 'audit_list': {
           const events = this.metadata.listAudit(principalId, parsed.input.limit, parsed.input.cursor);
           return ok('Audit events listed', { events }, events.length === parsed.input.limit ? events.at(-1)?.id : undefined);

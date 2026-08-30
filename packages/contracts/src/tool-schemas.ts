@@ -323,6 +323,12 @@ const schemas = {
       }
     })
   ]),
+  secrets_list: z.object({
+    ...workspace,
+    environmentId: EnvironmentIdSchema.optional(),
+    query: z.string().max(200).optional(),
+    ...pagination
+  })
 };
 
 export type ToolSpec = {
@@ -352,7 +358,8 @@ const titles: Record<RunnerOperation, string> = {
   skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory',
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
-  github_action: 'Perform brokered GitHub operations'
+  github_action: 'Perform brokered GitHub operations',
+  secrets_list: 'List available secrets'
 };
 
 const descriptions: Record<RunnerOperation, string> = {
@@ -425,7 +432,8 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
   artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
-  github_action: 'Perform brokered GitHub operations via brokered helper without exposing tokens to workspace.'
+  github_action: 'Perform brokered GitHub operations via brokered helper without exposing tokens to workspace.',
+  secrets_list: 'List available environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.'
 };
 
 const readOnly = new Set<RunnerOperation>([
@@ -435,7 +443,7 @@ const readOnly = new Set<RunnerOperation>([
   'operation_status', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_identity_status',
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'deployments_list',
-  'artifacts_list', 'artifacts_read'
+  'artifacts_list', 'artifacts_read', 'secrets_list'
 ]);
 const destructive = new Set<RunnerOperation>([
   'workspace_close', 'workspace_recover', 'workspace_finalize',
@@ -453,7 +461,7 @@ const idempotent = new Set<RunnerOperation>([
   'operation_status', 'operation_cancel', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_add', 'git_identity_status', 'git_identity_set',
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_write', 'deployments_list',
-  'artifacts_list', 'artifacts_read'
+  'artifacts_list', 'artifacts_read', 'secrets_list'
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',

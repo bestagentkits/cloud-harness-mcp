@@ -25,6 +25,7 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | Deployment and recovery | [`docs/deployment.md`](docs/deployment.md), [`docs/operations.md`](docs/operations.md), [`docs/troubleshooting.md`](docs/troubleshooting.md) | `deploy/`, `compose.production.yaml`, `scripts/verify-production.mjs`, `scripts/deploy-canary.mjs` |
 | Operator dashboard UI | [`docs/design-guidelines.md`](docs/design-guidelines.md) | `apps/api/dashboard/`, `apps/api/src/dashboard-router.ts`, `apps/api/src/dashboard-assets.ts`, `apps/api/test/dashboard-ui-contract.test.ts` |
 | Official user docs & guides | `docs-site/` | `docs-site/`, `scripts/build-docs-reference.mjs`, `npm run docs:build` |
+| Agent skill & MCP tool guidance | [`.agents/skills/cloudharness/SKILL.md`](.agents/skills/cloudharness/SKILL.md) | `.agents/skills/cloudharness/`, `plugins/cloud-harness/`, `packages/contracts/test/cloudharness-skill-contract.test.ts`, `npm run plugin:sync` |
 
 ## Safety-critical invariants
 
@@ -93,6 +94,18 @@ cases), evaluate and update both internal docs (`docs/`) and the official docs
 site (`docs-site/`). Keep user and operator guides in sync (such as
 `docs-site/ai-tools/`, `docs-site/dashboard/`, `docs-site/reference/`, and
 `docs-site/troubleshooting.md`), and run `npm run docs:reference` or
-`npm run plugin:sync` if tool or contract surfaces changed. Keep plans and
-reports out of evergreen guidance, and do not add release notes or governance
-files unless the repository contract requires them.
+`npm run plugin:sync` if tool or contract surfaces changed.
+
+Whenever MCP tool surfaces, schemas, capabilities, options, execution behaviors,
+or workspace lifecycle features change or are added:
+- Update `.agents/skills/cloudharness/SKILL.md` and the affected reference
+  documents under `.agents/skills/cloudharness/references/` to keep agent tool
+  usage guidance accurate and effective.
+- Run `npm run plugin:sync` to ensure `.agents/skills/cloudharness/` and
+  `plugins/cloud-harness/skills/cloudharness/` remain byte-identical.
+- Verify skill contract compliance by running
+  `npm test packages/contracts/test/cloudharness-skill-contract.test.ts` (or
+  `npm run verify`).
+
+Keep plans and reports out of evergreen guidance, and do not add release notes
+or governance files unless the repository contract requires them.

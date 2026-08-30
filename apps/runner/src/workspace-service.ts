@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { chmod, chown, mkdir, readdir, realpath, rm, stat, statfs } from 'node:fs/promises';
+import { chmod, chown, mkdir, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
@@ -26,6 +26,7 @@ import { validateRepositoryUrl } from './repository-policy.js';
 import type { GitOperationStatus, PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
+import { SecretSnapshotRedactor } from './output-redactor.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING']);
@@ -112,6 +113,7 @@ export class WorkspaceService {
   private readonly bootId: string = randomBytes(16).toString('hex');
   private reaper?: NodeJS.Timeout;
   private reaperRunning = false;
+  private readonly redactorCache = new Map<string, SecretSnapshotRedactor>();
 
   constructor(
     private readonly config: RunnerConfig,
@@ -125,6 +127,7 @@ export class WorkspaceService {
     this.store.reconcileRunningTasks(this.bootId, Date.now());
     this.store.reconcilePendingGitOperations(Date.now());
     this.operations = new OperationManager(this.store, this.bootId);
+    this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
     this.repoCacheManager = new RepositoryCacheManager(this.config.repoCacheRoot, this.store, this.config.allowedGitHosts, this.config.executorImage, this.instanceId);
     this.operations.onTaskStart = (wsId, timeoutMs) => {
       const rec = this.store.byId(wsId);
@@ -134,6 +137,29 @@ export class WorkspaceService {
       const rec = this.store.byId(wsId);
       if (rec) this.store.clearMutationLock(rec.id, rec.generation);
     };
+  }
+
+  private getRedactor(workspaceId: string): SecretSnapshotRedactor {
+    const cached = this.redactorCache.get(workspaceId);
+    if (cached) return cached;
+    const record = this.store.byId(workspaceId);
+    if (!record || !record.environmentId) {
+      const empty = new SecretSnapshotRedactor({});
+      this.redactorCache.set(workspaceId, empty);
+      return empty;
+    }
+    const snapshotResult = this.store.getSecretSnapshot(workspaceId);
+    const values: Record<string, string> = {};
+    if (snapshotResult.initialized) {
+      for (const item of snapshotResult.secrets) {
+        values[item.name] = this.metadata?.decryptEnvelope(record.ownerId, record.environmentId, item.name, item.version, item.envelope) ?? '';
+      }
+    } else {
+      Object.assign(values, this.metadata?.environmentValues(record.ownerId, record.environmentId) ?? {});
+    }
+    const redactor = new SecretSnapshotRedactor(values);
+    this.redactorCache.set(workspaceId, redactor);
+    return redactor;
   }
 
   private requireArtifacts(): ArtifactStore {
@@ -427,41 +453,55 @@ export class WorkspaceService {
     const name = `cloud-harness-ws-${record.id.slice(3, 19).toLowerCase()}`;
     await removeContainer(name).catch(() => undefined);
     const { toolsPath, cachePath } = await this.provisionMountDirectories(record);
-    const args = [
-      'create', '--name', name,
-      '--label', 'cloud-harness.managed=true', '--label', `cloud-harness.instance=${this.instanceId}`,
-      '--label', `cloud-harness.workspace=${record.id}`,
-      '--user', '10001:10001', '--workdir', '/workspace', '--read-only',
-      '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
-      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256',
-      '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024',
-      '--network', record.networkMode,
-      '--volume', `${repositoryPath}:/workspace:rw`,
-      '--volume', `${toolsPath}:/opt/user-tools:rw`,
-      '--volume', `${cachePath}:/var/cache/harness:rw`,
-      '--env', 'HOME=/tmp/cloud-harness-home',
-      '--env', 'GIT_CONFIG_NOSYSTEM=1',
-      '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
-      '--env', 'XDG_CACHE_HOME=/var/cache/harness',
-      '--env', 'XDG_DATA_HOME=/opt/user-tools/data',
-      '--env', 'NPM_CONFIG_PREFIX=/opt/user-tools',
-      '--env', 'NPM_CONFIG_CACHE=/var/cache/harness/npm',
-      '--env', 'UV_CACHE_DIR=/var/cache/harness/uv',
-      '--env', 'BUN_INSTALL=/opt/user-tools/bun',
-      '--env', 'PNPM_HOME=/opt/user-tools/pnpm',
-      '--env', 'UV_TOOL_BIN_DIR=/opt/user-tools/bin',
-      '--env', 'PATH=/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-      ...Object.entries(environment).flatMap(([name, value]) => ['--env', `${name}=${value}`]),
-      this.config.executorImage
-    ];
-    const created = await runDocker(args, { timeoutMs: 30_000 });
-    if (created.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `executor creation failed: ${created.stderr}`.slice(0, 2_000), 502, true);
-    const started = await runDocker(['start', name], { timeoutMs: 30_000 });
-    if (started.exitCode !== 0) {
-      await removeContainer(name);
-      throw new HarnessError('UNAVAILABLE', `executor start failed: ${started.stderr}`.slice(0, 2_000), 502, true);
+    const envEntries = Object.entries(environment);
+    const envFilePath = join(record.workspacePath, `.env.injected-${randomBytes(6).toString('hex')}`);
+    let useEnvFile = false;
+    if (envEntries.length > 0) {
+      const content = envEntries.map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
+      await writeFile(envFilePath, content, { mode: 0o600, encoding: 'utf8' });
+      useEnvFile = true;
     }
-    return name;
+    try {
+      const args = [
+        'create', '--name', name,
+        '--label', 'cloud-harness.managed=true', '--label', `cloud-harness.instance=${this.instanceId}`,
+        '--label', `cloud-harness.workspace=${record.id}`,
+        '--user', '10001:10001', '--workdir', '/workspace', '--read-only',
+        '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
+        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256',
+        '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024',
+        '--network', record.networkMode,
+        '--volume', `${repositoryPath}:/workspace:rw`,
+        '--volume', `${toolsPath}:/opt/user-tools:rw`,
+        '--volume', `${cachePath}:/var/cache/harness:rw`,
+        '--env', 'HOME=/tmp/cloud-harness-home',
+        '--env', 'GIT_CONFIG_NOSYSTEM=1',
+        '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
+        '--env', 'XDG_CACHE_HOME=/var/cache/harness',
+        '--env', 'XDG_DATA_HOME=/opt/user-tools/data',
+        '--env', 'NPM_CONFIG_PREFIX=/opt/user-tools',
+        '--env', 'NPM_CONFIG_CACHE=/var/cache/harness/npm',
+        '--env', 'UV_CACHE_DIR=/var/cache/harness/uv',
+        '--env', 'BUN_INSTALL=/opt/user-tools/bun',
+        '--env', 'PNPM_HOME=/opt/user-tools/pnpm',
+        '--env', 'UV_TOOL_BIN_DIR=/opt/user-tools/bin',
+        '--env', 'PATH=/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        ...(useEnvFile ? ['--env-file', envFilePath] : []),
+        this.config.executorImage
+      ];
+      const created = await runDocker(args, { timeoutMs: 30_000 });
+      if (created.exitCode !== 0) throw new HarnessError('UNAVAILABLE', `executor creation failed: ${created.stderr}`.slice(0, 2_000), 502, true);
+      const started = await runDocker(['start', name], { timeoutMs: 30_000 });
+      if (started.exitCode !== 0) {
+        await removeContainer(name);
+        throw new HarnessError('UNAVAILABLE', `executor start failed: ${started.stderr}`.slice(0, 2_000), 502, true);
+      }
+      return name;
+    } finally {
+      if (useEnvFile) {
+        await rm(envFilePath, { force: true }).catch(() => undefined);
+      }
+    }
   }
 
   private async ensureActiveExecutor(record: WorkspaceRecord): Promise<WorkspaceRecord> {
@@ -484,7 +524,25 @@ export class WorkspaceService {
     if (!repoExists) {
       throw new HarnessError('EXPIRED', 'workspace repository data is no longer retained on disk and cannot be recovered', 410);
     }
-    const containerName = await this.createExecutor(record, repositoryPath, {});
+    let environment: Record<string, string> = {};
+    if (record.environmentId) {
+      try {
+        const snapshotResult = this.store.getSecretSnapshot(record.id);
+        if (snapshotResult.initialized) {
+          const decrypted: Record<string, string> = {};
+          for (const item of snapshotResult.secrets) {
+            decrypted[item.name] = this.metadata?.decryptEnvelope(record.ownerId, record.environmentId, item.name, item.version, item.envelope) ?? '';
+          }
+          environment = decrypted;
+        } else {
+          environment = this.metadata?.environmentValues(record.ownerId, record.environmentId) ?? {};
+        }
+      } catch (error) {
+        if (error instanceof HarnessError) throw error;
+        throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
+      }
+    }
+    const containerName = await this.createExecutor(record, repositoryPath, validatedWorkspaceEnvironment(environment));
     const updated = this.store.updateFenced(record.id, record.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
       containerName
     });
@@ -508,6 +566,7 @@ export class WorkspaceService {
     const record: WorkspaceRecord = {
       id: workspaceId, ownerId, idempotencyKey: parsed.idempotencyKey, repositoryUrl: url.toString(),
       repositoryRef: parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
+      environmentId: parsed.environmentId ?? null,
       status: 'CREATING', networkMode: parsed.networkMode ?? this.config.networkMode, createdAt: now,
       lastActivityAt: now, expiresAt: this.expiry(now, now), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
       mutationLockedUntil: null, generation: 1, error: null
@@ -523,13 +582,25 @@ export class WorkspaceService {
       throw error;
     }
     try {
-      let environment: Record<string, string> | undefined = {};
-      try {
-        environment = parsed.environmentId ? this.metadata?.environmentValues(ownerId, parsed.environmentId) : {};
-      } catch {
-        throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
+      let environment: Record<string, string> = {};
+      if (parsed.environmentId) {
+        try {
+          const envelopes = this.metadata?.environmentSecretEnvelopes(ownerId, parsed.environmentId);
+          if (!envelopes) {
+            throw new HarnessError('NOT_FOUND', 'environment not found', 404, false);
+          }
+          this.store.saveSecretSnapshot(workspaceId, parsed.environmentId, envelopes);
+          const decrypted: Record<string, string> = {};
+          for (const item of envelopes) {
+            decrypted[item.name] = this.metadata?.decryptEnvelope(ownerId, parsed.environmentId, item.name, item.version, item.envelope) ?? '';
+          }
+          environment = decrypted;
+          this.redactorCache.set(workspaceId, new SecretSnapshotRedactor(environment));
+        } catch (error) {
+          if (error instanceof HarnessError) throw error;
+          throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
+        }
       }
-      if (parsed.environmentId && !environment) throw new HarnessError('NOT_FOUND', 'environment not found', 404, false);
       const repositoryPath = await this.clone(record, url, parsed.ref);
       const cloneViolation = await this.resourceViolation(record);
       if (cloneViolation) throw new HarnessError('LIMIT_EXCEEDED', cloneViolation, 507, false);
@@ -803,23 +874,27 @@ export class WorkspaceService {
       }
       throw error;
     }
+    const redactor = this.getRedactor(record.id);
     if (result.exitCode !== 0) {
+      const rawError = result.stderr || result.stdout || 'worker failed';
+      const sanitized = redactor.sanitizeString(rawError);
       this.operations.updateGenericOperation(operationId, {
         status: 'failed',
-        error: { code: 'INTERNAL_ERROR', message: result.stderr || result.stdout || 'worker failed', retryable: true }
+        error: { code: 'INTERNAL_ERROR', message: sanitized.slice(0, 2_000), retryable: true }
       });
-      throw new HarnessError('INTERNAL_ERROR', `worker failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 500, true);
+      throw new HarnessError('INTERNAL_ERROR', `worker failed: ${sanitized}`.slice(0, 2_000), 500, true);
     }
     try {
       const parsed = RunnerResponseSchema.parse(JSON.parse(result.stdout));
+      const sanitized = redactor.sanitizeObject(parsed);
       this.operations.updateGenericOperation(operationId, {
-        status: parsed.ok ? 'completed' : 'failed',
-        result: parsed.data,
-        error: parsed.error
+        status: sanitized.ok ? 'completed' : 'failed',
+        result: sanitized.data,
+        error: sanitized.error
       });
       return {
-        ...parsed,
-        data: parsed.data && typeof parsed.data === 'object' ? { ...parsed.data, operationId } : parsed.data
+        ...sanitized,
+        data: sanitized.data && typeof sanitized.data === 'object' ? { ...sanitized.data, operationId } : sanitized.data
       };
     } catch {
       this.operations.updateGenericOperation(operationId, {
@@ -1489,6 +1564,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const validated = TOOL_SCHEMA_BY_NAME[operation].parse(input) as Record<string, unknown>;
     if (operation === 'workspace_open') return await this.open(ownerId, validated);
     if (operation === 'workspace_list') return this.list(ownerId, validated);
+    if (operation === 'secrets_list') return this.secretsList(ownerId, validated);
     if (operation === 'operation_status') {
       const opId = validated.operationId as string;
       const op = this.operations.getGenericOperation(opId);
@@ -2770,18 +2846,25 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               ? rawContent
               : rawContent.subarray(0, this.config.maxArtifactBytes);
             try {
-              const artifact = this.artifacts.create(claimed.ownerId, {
+              this.artifacts.create(claimed.ownerId, {
                 logicalName: `task-output-${t.id}.log`,
                 content,
                 workspaceId: claimed.id
               }, (database, _owner, art) => {
+                database.prepare(
+                  'UPDATE durable_tasks SET output_artifact_id = ?, output_bytes = ? WHERE id = ?'
+                ).run(art.artifactId, fileSize, t.id);
                 this.metadata?.recordAuditInTransaction(
                   database, claimed.ownerId, 'artifact.created', 'artifact', art.artifactId,
                   art.generation, { sizeBytes: art.sizeBytes, taskId: t.id }
                 );
               });
-              this.store.updateDurableTaskStatus(t.id, t.generation, { outputArtifactId: artifact.artifactId, outputBytes: fileSize });
             } catch (spoolErr) {
+              this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
+                status: 'EXPIRED_RECOVERABLE',
+                lastActivityAt: Date.now(),
+                error: `Artifact spool failed: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`
+              });
               throw new HarnessError('UNAVAILABLE', `Failed to archive task output for task ${t.id} during close: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`, 503, true);
             }
           }
@@ -2790,6 +2873,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (claimed.containerName) await removeContainer(claimed.containerName);
     await this.safeRemovePath(claimed.workspacePath);
+    this.store.deleteSecretSnapshot(claimed.id);
+    this.redactorCache.delete(claimed.id);
     const closed = this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'CLOSED', containerName: null, error: reason, expiresAt: Date.now() });
     if (!closed) {
       const finalState = this.store.byId(claimed.id);
@@ -2845,6 +2930,62 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       await this.repoCacheManager.cleanupStaleCaches(now - 14 * 86_400_000);
     } catch { /* ignore cleanup error */ }
+  }
+  private secretsList(ownerId: string, input: Record<string, unknown>): RunnerResponse {
+    const parsed = TOOL_SCHEMA_BY_NAME.secrets_list.parse(input);
+    let environmentId = parsed.environmentId;
+    if (!environmentId && parsed.workspaceId) {
+      const ws = this.store.byOwnerAndId(ownerId, parsed.workspaceId);
+      if (ws?.environmentId) environmentId = ws.environmentId;
+    }
+    if (!environmentId) {
+      const activeWorkspaces = this.store.active().filter((w) => w.ownerId === ownerId && w.environmentId);
+      const uniqueEnvs = Array.from(new Set(activeWorkspaces.map((w) => w.environmentId)));
+      if (uniqueEnvs.length === 1) {
+        environmentId = uniqueEnvs[0]!;
+      } else if (uniqueEnvs.length > 1) {
+        throw new HarnessError('CONFLICT', 'multiple active workspaces exist with different environments; specify an explicit environmentId or workspaceId', 409, false);
+      }
+    }
+    if (!environmentId) {
+      return {
+        ok: true,
+        message: 'No environment bound to workspace or specified',
+        data: { secrets: [] },
+        truncated: false
+      };
+    }
+    const references = this.metadata?.listSecretReferences(ownerId, environmentId) ?? [];
+    let filtered = references;
+    if (parsed.query) {
+      const q = parsed.query.toLowerCase();
+      filtered = filtered.filter((s) => s.name.toLowerCase().includes(q) || (s.description && s.description.toLowerCase().includes(q)));
+    }
+    const offset = parsed.cursor ? Number(parsed.cursor) : 0;
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new HarnessError('INVALID_INPUT', 'invalid secrets_list cursor', 400, false);
+    }
+    const limit = parsed.limit ?? 100;
+    const page = filtered.slice(offset, offset + limit);
+    const hasMore = offset + limit < filtered.length;
+    const nextCursor = hasMore ? String(offset + limit) : undefined;
+    const secrets = page.map((s) => ({
+      name: s.name,
+      description: s.description ?? null,
+      environmentId: s.environmentId,
+      version: s.version,
+      updatedAt: s.updatedAt
+    }));
+    return {
+      ok: true,
+      message: `Listed ${secrets.length} secret reference(s)`,
+      data: {
+        secrets,
+        ...(nextCursor ? { cursor: nextCursor } : {})
+      },
+      truncated: hasMore,
+      cursor: nextCursor
+    };
   }
 }
 

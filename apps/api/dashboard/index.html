@@ -79,6 +79,18 @@
     <p id="api-key-copy-status" class="status-message" aria-live="polite"></p>
     <div class="dialog-actions"><button id="copy-api-key" type="button">Copy API key</button><button id="acknowledge-api-key" type="button">I have saved it</button></div>
   </dialog>
+  <dialog id="bulk-import-dialog" aria-labelledby="bulk-import-title" aria-describedby="bulk-import-description">
+    <h2 id="bulk-import-title">Bulk import .env</h2>
+    <p id="bulk-import-description">Paste .env content to create or rotate secrets. Contiguous comments directly above keys become descriptions. Values are write-only and not retained in the page.</p>
+    <form id="bulk-import-form" class="stack-form">
+      <input type="hidden" id="bulk-import-env-id" name="environmentId">
+      <label for="bulk-import-input">.env content</label>
+      <textarea id="bulk-import-input" class="mono" rows="8" spellcheck="false" autocomplete="off" placeholder="# Description&#10;KEY=value" required></textarea>
+      <div id="bulk-import-preview" class="bulk-diff-preview" aria-live="polite"></div>
+      <p id="bulk-import-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" id="cancel-bulk-import">Cancel</button><button type="submit" id="submit-bulk-import">Apply import</button></div>
+    </form>
+  </dialog>
   <script type="module" src="/dashboard/assets/dashboard.js"></script>
 </body>
 </html>

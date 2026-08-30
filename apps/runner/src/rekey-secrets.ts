@@ -16,11 +16,12 @@ process.once('SIGTERM', () => controller.abort());
 
 try {
   const changed = await metadata.secrets.reencrypt(controller.signal);
+  const snapshotsChanged = state.reencryptSnapshots((item) => metadata.secrets.reencryptSnapshotItem(item));
   if (controller.signal.aborted) {
-    process.stderr.write(`Secret re-encryption interrupted after ${changed} version(s). It is safe to resume.\n`);
+    process.stderr.write(`Secret re-encryption interrupted after ${changed} version(s) and ${snapshotsChanged} snapshot(s). It is safe to resume.\n`);
     process.exitCode = 130;
   } else {
-    process.stdout.write(`Re-encrypted ${changed} secret version(s).\n`);
+    process.stdout.write(`Re-encrypted ${changed} secret version(s) and ${snapshotsChanged} snapshot(s).\n`);
   }
 } finally {
   metadata.close();

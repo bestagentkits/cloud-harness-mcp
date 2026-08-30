@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brainstorm Brief | Secrets Management, Discovery & Zero-Leakage Injection — Cloud Harness MCP</title>
+  <style>
+    :root {
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+      --canvas: oklch(0.18 0.015 250);
+      --surface: oklch(0.22 0.02 250);
+      --surface-raised: oklch(0.26 0.025 250);
+      --surface-overlay: oklch(0.30 0.03 250);
+      --line: oklch(0.32 0.02 250);
+      --line-strong: oklch(0.42 0.03 250);
+      --ink: oklch(0.92 0.01 250);
+      --ink-muted: oklch(0.68 0.02 250);
+      --accent: oklch(0.78 0.16 62);
+      --accent-strong: oklch(0.85 0.18 62);
+      --accent-soft: oklch(0.32 0.08 62);
+      --on-accent: oklch(0.15 0.02 250);
+      --success: oklch(0.75 0.16 155);
+      --warning: oklch(0.82 0.15 100);
+      --danger: oklch(0.65 0.22 27);
+      --danger-soft: oklch(0.28 0.08 27);
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-lg: 10px;
+    }
+    [data-theme="light"] {
+      --canvas: oklch(0.96 0.005 250);
+      --surface: oklch(1.0 0 0);
+      --surface-raised: oklch(0.94 0.01 250);
+      --surface-overlay: oklch(0.90 0.015 250);
+      --line: oklch(0.86 0.01 250);
+      --line-strong: oklch(0.75 0.02 250);
+      --ink: oklch(0.18 0.02 250);
+      --ink-muted: oklch(0.46 0.02 250);
+      --accent: oklch(0.68 0.16 62);
+      --accent-strong: oklch(0.60 0.18 62);
+      --accent-soft: oklch(0.90 0.06 62);
+      --on-accent: oklch(0.98 0 0);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--canvas);
+      color: var(--ink);
+      line-height: 1.55;
+      font-size: 14px;
+      padding-bottom: 4rem;
+    }
+    .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.85rem 1.5rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .brand-wrap { display: flex; align-items: center; gap: 0.75rem; }
+    .brand { font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; font-size: 14px; }
+    .badge {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 0.15rem 0.5rem;
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .theme-toggle {
+      background: var(--surface-raised);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      padding: 0.35rem 0.75rem;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .container { max-width: 1160px; margin: 2rem auto; padding: 0 1.5rem; display: grid; gap: 2rem; }
+    .header-banner {
+      background: var(--surface);
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-md);
+      padding: 1.5rem;
+      position: relative;
+    }
+    .header-banner::before {
+      content: "";
+      position: absolute;
+      top: -1px; left: -1px; width: 14px; height: 14px;
+      border-top: 3px solid var(--accent);
+      border-left: 3px solid var(--accent);
+    }
+    .header-banner::after {
+      content: "";
+      position: absolute;
+      bottom: -1px; right: -1px; width: 14px; height: 14px;
+      border-bottom: 3px solid var(--accent);
+      border-right: 3px solid var(--accent);
+    }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 0.4rem;
+    }
+    h1 { font-size: 1.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.5rem; }
+    .lead { font-size: 1rem; color: var(--ink-muted); max-width: 860px; }
+    
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+      display: grid;
+      gap: 1rem;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 0.75rem;
+    }
+    .panel-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; }
+    .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+
+    .card {
+      background: var(--surface-raised);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 1rem;
+    }
+    .card h3 { font-size: 0.95rem; font-weight: 700; margin-bottom: 0.4rem; color: var(--accent); }
+    .card p, .card ul { font-size: 0.85rem; color: var(--ink-muted); }
+    .card ul { padding-left: 1.2rem; display: grid; gap: 0.25rem; }
+
+    .contract-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+    }
+    .contract-tile {
+      background: var(--surface-raised);
+      border-left: 3px solid var(--accent);
+      padding: 1rem;
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+    .contract-tile.danger { border-left-color: var(--danger); }
+    .contract-tile.success { border-left-color: var(--success); }
+    .contract-tile.warning { border-left-color: var(--warning); }
+    .contract-tile h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem; color: var(--ink); }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--surface-overlay);
+      border: 1px solid var(--line-strong);
+    }
+    .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+    .pill.success::before { background: var(--success); }
+    .pill.danger::before { background: var(--danger); }
+    .pill.warning::before { background: var(--warning); }
+
+    /* Architecture diagram */
+    .diagram-container {
+      background: var(--canvas);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 1rem;
+      overflow-x: auto;
+    }
+    svg text { font-family: var(--font-mono); }
+
+    /* Mockups */
+    .mockup-window {
+      background: var(--canvas);
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    }
+    .mockup-bar {
+      background: var(--surface-raised);
+      padding: 0.5rem 1rem;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 12px;
+    }
+    .mockup-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); }
+    .mockup-content { padding: 1.5rem; display: grid; gap: 1rem; }
+    
+    .table-container { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 0.65rem 0.75rem; text-align: left; border-bottom: 1px solid var(--line); }
+    th { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-muted); background: var(--surface-raised); }
+    tr:hover td { background: var(--surface-raised); }
+
+    .callout {
+      border: 1px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 1rem;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+    }
+    .callout.danger {
+      border-color: var(--danger);
+      background: var(--danger-soft);
+      color: var(--ink);
+    }
+    .callout-title { font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; margin-bottom: 0.25rem; }
+
+    .annotation-badge {
+      display: inline-block;
+      background: var(--accent);
+      color: var(--on-accent);
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 6px;
+      border-radius: 10px;
+      vertical-align: middle;
+      margin-left: 4px;
+    }
+
+    .diff-box {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .diff-line { padding: 2px 0; }
+    .diff-add { color: var(--success); }
+    .diff-del { color: var(--danger); }
+    .diff-rot { color: var(--warning); }
+    .diff-err { color: var(--danger); font-weight: 700; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-wrap">
+      <span class="brand">Cloud Harness</span>
+      <span class="badge">Brainstorm Brief · --ultra --advice (Augmented)</span>
+    </div>
+    <button id="theme-btn" class="theme-toggle" type="button">Toggle Theme</button>
+  </header>
+
+  <main class="container">
+    <section class="header-banner">
+      <p class="eyebrow">CloudHarness MCP · Architecture & Design Brief</p>
+      <h1>Secrets & Credentials Management: Description, MCP Discovery & Zero-Leakage Injection</h1>
+      <p class="lead">Đặc tả kiến trúc hoàn chỉnh cho tính năng quản lý Secret có Description, công cụ khám phá MCP <code>secrets_list</code> (hoàn toàn không lộ value), bộ lọc Aho-Corasick Ingest-time Redaction Engine tự động che dấu secret trong output command, và cơ chế khôi phục workspace an toàn.</p>
+    </section>
+
+    <!-- SECTION 1: CONTRACT -->
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">1. Bounded Delivery Contract (Khung Giao Ước)</h2>
+        <span class="pill success">Best-of-5 + Kongming Verified</span>
+      </div>
+      <div class="contract-grid">
+        <div class="contract-tile">
+          <h3>Outcome (Mục tiêu sau cùng)</h3>
+          <p>Operator quản lý Secrets theo Environment kèm trường <strong>Description</strong> (mô tả nền tảng, tài khoản); AI Agent qua MCP có công cụ <code>secrets_list</code> để khám phá danh sách biến môi trường sẵn có (tên + mô tả, không value); khi chạy lệnh (<code>exec_run</code>, <code>tasks_run</code>, <code>shell_io</code>), secret được inject an toàn vào container và tự động kiểm duyệt (redact) <code>[REDACTED_SECRET: NAME]</code> trên toàn bộ stdout/stderr để không bao giờ lộ vào transcript cuộc hội thoại.</p>
+        </div>
+        <div class="contract-tile danger">
+          <h3>Constraints (Ràng buộc an toàn)</h3>
+          <ul>
+            <li><strong>Physical No-Decrypt on Discovery:</strong> <code>secrets_list</code> chỉ truy vấn bảng <code>secret_references</code>, tuyệt đối không gọi <code>environmentValues()</code> hay Keyring.</li>
+            <li><strong>Ingest-Time Redaction:</strong> Khử secret tại thời điểm nhận byte stream trong Runner trước khi ghi vào buffer, đảm bảo toàn vẹn không gian cursor (byte-offset pagination).</li>
+            <li><strong>Strict Description Limit:</strong> <code>description</code> là plain text non-secret, tối đa 500 ký tự, không bao giờ được đưa vào container env.</li>
+            <li><strong>Metadata Migration v2 -> v3:</strong> Thêm cột <code>description TEXT</code> có kiểm soát downgrade/idempotency.</li>
+          </ul>
+        </div>
+        <div class="contract-tile warning">
+          <h3>Non-goals (Phạm vi từ chối)</h3>
+          <ul>
+            <li>Không hỗ trợ giải mã hay hiển thị giá trị secret trong bất kỳ công cụ MCP nào.</li>
+            <li>Không làm full-text search engine phức tạp (dùng case-insensitive substring search cho query).</li>
+            <li>Không redacting input do agent tự gõ (agent chịu trách nhiệm về câu lệnh nó viết).</li>
+          </ul>
+        </div>
+        <div class="contract-tile success">
+          <h3>Acceptance Criteria (Tiêu chí nghiệm thu)</h3>
+          <ul>
+            <li><strong>AC1:</strong> Database schema migration v2 -> v3 thêm cột <code>description</code> vào <code>secret_references</code>; <code>SecretView</code> và API CRUD cập nhật đầy đủ.</li>
+            <li><strong>AC2:</strong> Thêm tool MCP <code>secrets_list</code>: trả về danh sách <code>{name, description, environmentId, version, updatedAt}</code>, hỗ trợ filter <code>query</code>.</li>
+            <li><strong>AC3:</strong> Bulk .env Import tự động trích xuất các comment <code># ...</code> liền kề phía trên làm <code>description</code> của secret.</li>
+            <li><strong>AC4:</strong> Ingest-Time Output Redaction: Lệnh <code>echo $STRIPE_KEY</code> trả về <code>[REDACTED_SECRET: STRIPE_KEY]</code> trên cả text và structuredContent của tool response.</li>
+            <li><strong>AC5:</strong> Persist <code>environment_id</code> vào <code>WorkspaceRecord</code>, đảm bảo recovery khôi phục container đầy đủ secret.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 2: ARCHITECTURE & REDACTION FLOW -->
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">2. Sơ đồ Luồng MCP Discovery & Ingest-Time Output Redaction</h2>
+        <span class="pill">Zero-Leakage Streaming Architecture</span>
+      </div>
+      <div class="diagram-container">
+        <svg viewBox="0 0 980 400" width="100%" height="400" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 8 5 L 0 9 z" fill="var(--accent)" />
+            </marker>
+          </defs>
+
+          <!-- Actors -->
+          <rect x="20" y="20" width="150" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
+          <text x="95" y="42" fill="var(--ink)" font-size="11" font-weight="700" text-anchor="middle">LLM AGENT / CLIENT</text>
+          <line x1="95" y1="56" x2="95" y2="380" stroke="var(--line)" stroke-dasharray="4" />
+
+          <rect x="210" y="20" width="160" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
+          <text x="290" y="42" fill="var(--ink)" font-size="11" font-weight="700" text-anchor="middle">MCP SERVER (API)</text>
+          <line x1="290" y1="56" x2="290" y2="380" stroke="var(--line)" stroke-dasharray="4" />
+
+          <rect x="420" y="20" width="170" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
+          <text x="505" y="42" fill="var(--ink)" font-size="11" font-weight="700" text-anchor="middle">RUNNER (SERVICE)</text>
+          <line x1="505" y1="56" x2="505" y2="380" stroke="var(--line)" stroke-dasharray="4" />
+
+          <rect x="630" y="20" width="160" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
+          <text x="710" y="42" fill="var(--accent)" font-size="11" font-weight="700" text-anchor="middle">REDACTION ENGINE</text>
+          <line x1="710" y1="56" x2="710" y2="380" stroke="var(--line)" stroke-dasharray="4" />
+
+          <rect x="830" y="20" width="130" height="36" rx="4" fill="var(--surface-raised)" stroke="var(--line-strong)" />
+          <text x="895" y="42" fill="var(--success)" font-size="11" font-weight="700" text-anchor="middle">DOCKER WORKSPACE</text>
+          <line x1="895" y1="56" x2="895" y2="380" stroke="var(--line)" stroke-dasharray="4" />
+
+          <!-- Flow 1: secrets_list -->
+          <line x1="95" y1="80" x2="285" y2="80" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="190" y="72" fill="var(--ink)" font-size="10" text-anchor="middle">1. secrets_list(query="stripe")</text>
+
+          <line x1="290" y1="105" x2="500" y2="105" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="395" y="98" fill="var(--ink)" font-size="10" text-anchor="middle">2. Query secret_references (Metadata Only)</text>
+
+          <line x1="290" y1="130" x2="100" y2="130" stroke="var(--success)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="190" y="124" fill="var(--success)" font-size="10" text-anchor="middle">3. Return [{name:"STRIPE_KEY", desc:"Staging API Key"}]</text>
+
+          <!-- Flow 2: exec_run -->
+          <line x1="95" y1="175" x2="285" y2="175" stroke="var(--warning)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="190" y="167" fill="var(--warning)" font-size="10" text-anchor="middle">4. exec_run(command="echo $STRIPE_KEY; npm test")</text>
+
+          <line x1="290" y1="200" x2="500" y2="200" stroke="var(--warning)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="395" y="192" fill="var(--warning)" font-size="10" text-anchor="middle">5. Dispatch command to container</text>
+
+          <line x1="505" y1="225" x2="890" y2="225" stroke="var(--warning)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="700" y="217" fill="var(--ink-muted)" font-size="10" text-anchor="middle">6. Exec inside container with injected env</text>
+
+          <!-- Flow 3: stdout capture & redaction -->
+          <line x1="895" y1="260" x2="715" y2="260" stroke="var(--danger)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="805" y="252" fill="var(--danger)" font-size="10" text-anchor="middle">7. Raw stdout: "sk_test_123456789..."</text>
+
+          <rect x="635" y="280" width="150" height="30" rx="3" fill="var(--surface-overlay)" stroke="var(--accent)" />
+          <text x="710" y="299" fill="var(--accent)" font-size="10" text-anchor="middle">Aho-Corasick Match & Redact</text>
+
+          <line x1="710" y1="330" x2="295" y2="330" stroke="var(--success)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="500" y="322" fill="var(--success)" font-size="10" text-anchor="middle">8. Sanitized output: "[REDACTED_SECRET: STRIPE_KEY]"</text>
+
+          <line x1="290" y1="360" x2="100" y2="360" stroke="var(--success)" stroke-width="2" marker-end="url(#arrow)" />
+          <text x="190" y="352" fill="var(--success)" font-size="10" text-anchor="middle">9. Return safe ToolResult to Agent</text>
+        </svg>
+      </div>
+    </section>
+
+    <!-- SECTION 3: MOCKUPS WITH DESCRIPTION & BULK .ENV -->
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">3. Giao diện Dashboard Quản lý Description & Bulk .env</h2>
+        <span class="pill">Enhanced UI Spec</span>
+      </div>
+
+      <div class="mockup-window">
+        <div class="mockup-bar">
+          <span class="mockup-dot"></span>
+          <span class="mockup-dot"></span>
+          <span class="mockup-dot"></span>
+          <span class="mono">Dashboard: /projects/prj_ecommerce_core / env_production</span>
+        </div>
+        <div class="mockup-content">
+          <!-- Environment Secret Table with Description -->
+          <div class="card" style="border-left: 4px solid var(--accent); background: var(--surface);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+              <div>
+                <h3 style="font-size: 1.1rem; color: var(--ink);">Production Secrets</h3>
+                <p class="mono" style="font-size: 11px;">env_prod_8829f0a · 3 Secrets Configured · Write-Only</p>
+              </div>
+              <div style="display: flex; gap: 0.5rem;">
+                <button type="button" class="theme-toggle" style="border-color: var(--accent); color: var(--accent);">Bulk Import .env</button>
+                <button type="button" class="theme-toggle">Export .env.example</button>
+              </div>
+            </div>
+
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Variable Name</th>
+                    <th>Description (Platform / Purpose) <span class="annotation-badge">D1</span></th>
+                    <th>State</th>
+                    <th>Version</th>
+                    <th>Actions <span class="annotation-badge">D2</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong class="mono">DATABASE_URL</strong></td>
+                    <td><span style="color: var(--ink);">Supabase PostgreSQL Staging (Account: infra-team)</span></td>
+                    <td><span class="pill success">Active</span></td>
+                    <td class="mono">v3 (gen 4)</td>
+                    <td>
+                      <div style="display: flex; gap: 0.3rem;">
+                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Edit Desc</button>
+                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Rotate</button>
+                        <button type="button" class="theme-toggle" style="color: var(--danger); padding: 3px 6px;">Del</button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong class="mono">STRIPE_SECRET_KEY</strong></td>
+                    <td><span style="color: var(--ink);">Stripe Payments API (US Entity, Test Mode)</span></td>
+                    <td><span class="pill success">Active</span></td>
+                    <td class="mono">v1 (gen 1)</td>
+                    <td>
+                      <div style="display: flex; gap: 0.3rem;">
+                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Edit Desc</button>
+                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Rotate</button>
+                        <button type="button" class="theme-toggle" style="color: var(--danger); padding: 3px 6px;">Del</button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong class="mono">ALGOLIA_API_KEY</strong></td>
+                    <td><span style="color: var(--ink-muted); font-style: italic;">No description provided</span></td>
+                    <td><span class="pill success">Active</span></td>
+                    <td class="mono">v1 (gen 1)</td>
+                    <td>
+                      <div style="display: flex; gap: 0.3rem;">
+                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">+ Add Desc</button>
+                        <button type="button" class="theme-toggle" style="padding: 3px 6px;">Rotate</button>
+                        <button type="button" class="theme-toggle" style="color: var(--danger); padding: 3px 6px;">Del</button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Single Create Form with Description -->
+            <div style="margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.5rem;">
+              <span style="font-weight: 700; font-size: 11px; text-transform: uppercase; color: var(--ink-muted);">Add Single Secret:</span>
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <input type="text" placeholder="NAME (e.g. AWS_ACCESS_KEY)" class="mono" style="padding: 6px 8px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 12px; width: 180px;">
+                <input type="password" placeholder="Write-only value" class="mono" style="padding: 6px 8px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 12px; width: 200px;">
+                <input type="text" placeholder="Optional description (e.g. AWS S3 Media Bucket)" style="padding: 6px 8px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 4px; color: var(--ink); font-size: 12px; flex: 1; min-width: 220px;">
+                <button type="button" class="theme-toggle" style="background: var(--accent); color: var(--on-accent); font-weight: 600;">+ Create</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 4: DETAILED TECHNICAL BREAKDOWN -->
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">4. Chi Tiết Kỹ Thuật (Technical Specifications)</h2>
+        <span class="pill">Database, Tooling & Engine</span>
+      </div>
+
+      <div class="grid-3">
+        <div class="card">
+          <h3>1. SQLite Migration (v2 -> v3)</h3>
+          <ul>
+            <li>File: <code>apps/runner/src/metadata-schema.ts</code></li>
+            <li>Nâng version ladder lên <strong>3</strong>.</li>
+            <li>DDL: <code>ALTER TABLE secret_references ADD COLUMN description TEXT;</code></li>
+            <li>Cập nhật <code>metadata-records.ts</code>: <code>SecretRow.description</code>, <code>SecretView.description: string | null</code>.</li>
+            <li>Thêm endpoint <code>secret_update</code> cho phép sửa description mà không cần nhập lại secret value.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h3>2. MCP Tool: secrets_list</h3>
+          <ul>
+            <li>File: <code>packages/contracts/src/tool-schemas.ts</code></li>
+            <li>Schema: <code>{ ...workspace, environmentId?, query?, cursor?, limit? }</code>.</li>
+            <li>Annotations: <code>readOnlyHint: true</code>, <code>idempotentHint: true</code>.</li>
+            <li>Output Schema: <code>{ secrets: [{ name, description, environmentId, version, updatedAt }] }</code>.</li>
+            <li>Đảm bảo tuyệt đối không có trường value trong output contract.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h3>3. Ingest-Time Output Redaction</h3>
+          <ul>
+            <li>File: <code>apps/runner/src/operation-manager.ts</code> & <code>workspace-service.ts</code>.</li>
+            <li>Xây dựng Aho-Corasick automaton từ danh sách <code>(name, value)</code> snapshot lúc mở workspace.</li>
+            <li>Khử trực tiếp trên stream chunks của <code>stdout/stderr</code> trước khi tính toán byte offset của cursor.</li>
+            <li>Sanitize string trên <code>runWorker</code> result và các điểm dựng <code>HarnessError.message</code>.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 5: IMPLEMENTATION PHASES -->
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">5. Kế Hoạch Triển Khai Hoàn Chỉnh (3-Phase Plan)</h2>
+        <span class="pill success">Ready for ak:plan</span>
+      </div>
+      <div class="grid-3">
+        <div class="card">
+          <h3 style="color: var(--accent);">Phase 1: Persistence & Policy</h3>
+          <ul>
+            <li>Tạo <code>secret-policy.ts</code> (chặn biến cấm).</li>
+            <li>Migration SQLite v2 -> v3 (thêm <code>description</code>).</li>
+            <li>Thêm <code>environment_id</code> vào <code>WorkspaceRecord</code> (sửa lỗi recovery).</li>
+            <li>Thêm <code>secret_update</code> API & cập nhật CRUD.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3 style="color: var(--accent);">Phase 2: MCP Tool & Redaction</h3>
+          <ul>
+            <li>Đăng ký tool MCP <code>secrets_list</code> trong contracts.</li>
+            <li>Cài đặt Aho-Corasick Ingest-time Redaction Engine trong Runner.</li>
+            <li>Tích hợp redaction vào <code>exec_run</code>, <code>tasks_status</code>, <code>shell_io</code>, <code>sessions_io</code>, và error messages.</li>
+            <li>Viết test kiểm thử khử chuỗi và bảo toàn cursor.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3 style="color: var(--accent);">Phase 3: Dashboard UI & Bulk .env</h3>
+          <ul>
+            <li>Cập nhật Secret Table hiển thị Description và form Edit Description.</li>
+            <li>Cải tiến Bulk .env Parser tự động lấy comment làm Description.</li>
+            <li>Tạo Export <code>.env.example</code> manifest.</li>
+            <li>Chạy kiểm thử UI contract và visual test.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const themeBtn = document.getElementById('theme-btn');
+    themeBtn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+    });
+  </script>
+</body>
+</html>

@@ -85,6 +85,7 @@ export class OperationManager {
   private readonly retainedOutputBytes = 67_108_864;
   onTaskStart?: (workspaceId: string, timeoutMs: number) => void;
   onTaskSettle?: (workspaceId: string, taskId: string) => void;
+  redactorProvider?: (workspaceId: string) => { createStream(): { processChunk(chunk: Buffer): Buffer; flush(): Buffer } } | undefined;
 
   constructor(
     private readonly store?: StateStore,
@@ -141,7 +142,13 @@ export class OperationManager {
 
   private track(record: Managed, child: ChildProcessWithoutNullStreams, maxBytes: number): void {
     record.child = child;
-    const append = (chunk: Buffer) => {
+    const redactor = this.redactorProvider?.(record.workspaceId);
+    const stdoutStream = redactor?.createStream();
+    const stderrStream = redactor?.createStream();
+
+    const append = (rawChunk: Buffer, stream?: { processChunk(chunk: Buffer): Buffer; flush(): Buffer }) => {
+      const chunk = stream ? stream.processChunk(rawChunk) : rawChunk;
+      if (chunk.length === 0) return;
       const currentBytes = record.outputBytes ?? 0;
       const allowedBytes = Math.max(0, maxBytes - currentBytes);
       if (allowedBytes > 0 && record.logPath) {
@@ -179,9 +186,22 @@ export class OperationManager {
       record.output = next.subarray(removed);
       this.enforceOutputBudget(record.workspaceId);
     };
-    child.stdout.on('data', append);
-    child.stderr.on('data', append);
+
+    child.stdout.on('data', (chunk: Buffer) => append(chunk, stdoutStream));
+    child.stderr.on('data', (chunk: Buffer) => append(chunk, stderrStream));
     child.on('close', (code) => {
+      if (stdoutStream || stderrStream) {
+        const flushedOut = stdoutStream?.flush() ?? Buffer.alloc(0);
+        const flushedErr = stderrStream?.flush() ?? Buffer.alloc(0);
+        const flushed = Buffer.concat([flushedOut, flushedErr]);
+        if (flushed.length > 0) {
+          const next = Buffer.concat([record.output, flushed]);
+          const removed = Math.max(0, next.length - maxBytes);
+          record.offset += removed;
+          record.output = next.subarray(removed);
+          this.enforceOutputBudget(record.workspaceId);
+        }
+      }
       record.exitCode = code ?? 1;
       if (record.status === 'running') record.status = code === 0 ? 'succeeded' : 'failed';
       record.finishedAt = Date.now();
