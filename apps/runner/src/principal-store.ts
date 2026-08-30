@@ -198,9 +198,90 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         UPDATE schema_meta SET version = 4;
       `);
     });
+    version = 4;
+  }
+  if (version === 4) {
+    transaction(database, () => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS memories (
+          id TEXT PRIMARY KEY,
+          principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          scope TEXT NOT NULL CHECK (scope IN ('owner','repository','workspace')),
+          repository_key TEXT,
+          workspace_id TEXT,
+          name TEXT NOT NULL,
+          content TEXT NOT NULL,
+          content_sha256 TEXT NOT NULL,
+          generation INTEGER NOT NULL CHECK (generation > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          deleted_at INTEGER,
+          provenance_json TEXT NOT NULL,
+          CHECK (
+            (scope='owner' AND repository_key IS NULL AND workspace_id IS NULL) OR
+            (scope='repository' AND repository_key IS NOT NULL AND workspace_id IS NULL) OR
+            (scope='workspace' AND workspace_id IS NOT NULL)
+          ),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS memories_owner_active ON memories(principal_id, name) WHERE deleted_at IS NULL AND scope='owner';
+        CREATE UNIQUE INDEX IF NOT EXISTS memories_repo_active ON memories(principal_id, repository_key, name) WHERE deleted_at IS NULL AND scope='repository';
+        CREATE UNIQUE INDEX IF NOT EXISTS memories_ws_active ON memories(principal_id, workspace_id, name) WHERE deleted_at IS NULL AND scope='workspace';
+        CREATE INDEX IF NOT EXISTS memories_expiry ON memories(expires_at, deleted_at);
+        CREATE INDEX IF NOT EXISTS memories_principal_lookup ON memories(principal_id, scope, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS memory_tags (
+          principal_id TEXT NOT NULL,
+          memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+          tag TEXT NOT NULL,
+          PRIMARY KEY(principal_id, memory_id, tag)
+        );
+        CREATE INDEX IF NOT EXISTS memory_tags_lookup ON memory_tags(principal_id, tag, memory_id);
+
+        CREATE TABLE IF NOT EXISTS hook_activations (
+          principal_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          event TEXT NOT NULL,
+          manifest_sha256 TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          PRIMARY KEY(principal_id, workspace_id, event),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        UPDATE schema_meta SET version = 5;
+      `);
+    });
     return;
   }
-  if (version !== 4) throw new Error(`unsupported state schema version ${version}`);
+  if (version !== 5) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 5) throw new Error(`state schema must be version 5 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const memCount = (database.prepare('SELECT count(*) as count FROM memories').get() as { count: number }).count;
+    const hookCount = (database.prepare('SELECT count(*) as count FROM hook_activations').get() as { count: number }).count;
+    if (memCount > 0 || hookCount > 0) {
+      throw new Error('cannot downgrade state schema to v4: feature tables contain active records (export or discard required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      DROP TABLE IF EXISTS hook_activations;
+      DROP TABLE IF EXISTS memory_tags;
+      DROP TABLE IF EXISTS memories;
+      DROP INDEX IF EXISTS memories_owner_active;
+      DROP INDEX IF EXISTS memories_repo_active;
+      DROP INDEX IF EXISTS memories_ws_active;
+      DROP INDEX IF EXISTS memories_expiry;
+      DROP INDEX IF EXISTS memories_principal_lookup;
+      UPDATE schema_meta SET version = 4;
+    `);
+  });
 }
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {

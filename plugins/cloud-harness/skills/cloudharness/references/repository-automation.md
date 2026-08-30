@@ -54,10 +54,29 @@ may change with the checked-out ref.
 - `timeoutMs` defaults to 60,000 and permits 100–300,000.
 - Executes the hook's shell command. It can modify files, Git state, processes,
   or external systems when network access is available.
+<!-- cloudharness-tool:hooks_activate -->
+### `hooks_activate`
+
+- Required: `workspaceId`, `manifestSha256` matching 64 hex characters, `events` array of 1–10 lifecycle events.
+- Explicitly activates reviewed lifecycle hooks for the workspace by exact manifest digest.
+
+<!-- cloudharness-example:hooks_activate
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","manifestSha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","events":["pre_commit"]}
+-->
+
+<!-- cloudharness-tool:hooks_deactivate -->
+### `hooks_deactivate`
+
+- Required: `workspaceId`, optional `events` array.
+- Deactivates enrolled lifecycle hooks for the workspace.
+
+<!-- cloudharness-example:hooks_deactivate
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","events":["pre_commit"]}
+-->
 
 ## Memories
 
-Memories are repository-local Markdown notes for durable, non-secret context.
+Memories are scoped notes (owner, repository, workspace) for durable, non-secret context with optimistic concurrency (CAS) and TTL.
 Names permit 1–120 ASCII letters, digits, `.`, `_`, or `-`.
 
 <!-- cloudharness-tool:memories_list -->
@@ -79,7 +98,27 @@ Names permit 1–120 ASCII letters, digits, `.`, `_`, or `-`.
 - Required: `workspaceId`, `name`, `content` at most 262,144 characters.
 - Replaces the named memory. Never write bearer tokens, keys, credential URLs,
   personal data, private repository details, or unredacted command output.
-- A memory records context; it is not proof that code was shipped or deployed.
+<!-- cloudharness-tool:memories_search -->
+### `memories_search`
+
+- Required: `workspaceId`, `query` string up to 512 characters.
+- Optional: `scope` (`owner`, `repository`, `workspace`), `tags` array up to 16 tags, `tagMatch` (`all` or `any`), `limit` up to 50, `cursor`.
+- Searches scoped memories by literal token query and tag filters.
+
+<!-- cloudharness-example:memories_search
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","query":"architecture","scope":"owner"}
+-->
+
+<!-- cloudharness-tool:memories_delete -->
+### `memories_delete`
+
+- Required: `workspaceId`, `expectedGeneration` positive integer.
+- Required identifier: `memoryId` or `name`.
+- Deletes a scoped memory note with CAS generation guard.
+
+<!-- cloudharness-example:memories_delete
+{"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","memoryId":"mem_aaaaaaaaaaaaaaaaaaaa","expectedGeneration":1}
+-->
 
 ## Deployments
 

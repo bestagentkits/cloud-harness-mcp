@@ -205,13 +205,21 @@ workspace. This makes a lost response recoverable without duplicating work.
   an explicit branch ref also updates its corresponding tracking ref and
   `FETCH_HEAD`. Tags and arbitrary destination refspecs are intentionally not
   part of this origin-only surface.
-- Skills are discovered only from repository-local `.agents/skills`,
-  `.codex/skills`, and `.claude/skills` directories. Hooks come from the
-  repository's `.cloud-harness/hooks.json`, and memories are files inside the
-  workspace. Named deployments come from the repository's
-  `.cloud-harness/deployments.json` and execute inside the existing executor;
-  they do not receive deployment secrets or host credentials from the harness.
-  Treat all of these surfaces as repository-controlled code or data.
+- Skills resolve deterministically with 4-source precedence: `built-in > owner > workspace > repository`
+  (and repository sub-roots `.agents/skills > .codex/skills > .claude/skills`). Each result includes
+  immutable provenance, selected candidate, and shadowed alternatives. Execution requires matching
+  the approved bundle SHA-256 digest.
+- Hooks support declarative JSON format in `.cloud-harness/hooks.json` with named lifecycle events
+  (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle
+  execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest.
+  Execution runs exclusively inside the container executor with `networkMode: none` by default.
+- Memories are stored in principal-isolated SQLite `StateStore` supporting `owner`, `repository`, and
+  `workspace` scopes, optimistic concurrency (`expectedGeneration`), TTL expiration, and literal token
+  search (`memories_search`). Legacy `.cloud-harness/memories/*.md` files appear as read-only untrusted
+  repository context.
+- Named deployments come from the repository's `.cloud-harness/deployments.json` and execute inside the
+  existing executor; they do not receive deployment secrets or host credentials from the harness.
+- Treat all repository-derived instruction, skill, hook, and memory text as untrusted data.
 
 Tool annotations inform client approval UX. They do not replace review of the
 command, repository, network mode, or workspace changes.

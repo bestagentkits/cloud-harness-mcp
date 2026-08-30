@@ -17,6 +17,28 @@ function formatArrayItem(item: unknown): string {
     const repo = typeof record.repositoryUrl === 'string' ? ` ${record.repositoryUrl}` : '';
     return `- ${record.workspaceId} [${record.status}]${repo}`;
   }
+  if (typeof record.id === 'string' && typeof record.kind === 'string' && typeof record.provenance === 'object') {
+    const prov = record.provenance as Record<string, unknown>;
+    const provTag = `[${prov.source || 'repository'} | ${prov.trust || 'untrusted-executor'}]`;
+    const rawPath = typeof record.path === 'string' ? record.path : String(record.id);
+    const path = rawPath.replaceAll('\0', '\\u0000').replaceAll('\n', '\\n').replaceAll('\r', '\\r');
+    const bytes = typeof record.byteCount === 'number' ? ` [${record.byteCount} bytes]` : '';
+    const kind = typeof record.kind === 'string' ? ` (${record.kind})` : '';
+    let line = `- ${path}${kind}${bytes} ${provTag}`;
+    if (typeof record.excerpt === 'string' && record.excerpt.length > 0) {
+      line += `\n    excerpt: ${JSON.stringify(record.excerpt.replaceAll('\0', '\\u0000'))}`;
+    }
+    return line;
+  }
+  if (typeof record.name === 'string' && (typeof record.selectedSource === 'string' || typeof record.source === 'string')) {
+    const src = (record.selectedSource || record.source || 'repository') as string;
+    const shadowed = Array.isArray(record.shadowed) && record.shadowed.length > 0 ? ` (shadows ${record.shadowed.length} candidate(s))` : '';
+    return `- ${record.name} [${src}]${shadowed}`;
+  }
+  if (typeof record.name === 'string' && typeof record.scope === 'string') {
+    const gen = typeof record.generation === 'number' ? ` (v${record.generation})` : '';
+    return `- ${record.name} [scope: ${record.scope}]${gen}`;
+  }
   return `- ${JSON.stringify(record)}`;
 }
 
@@ -24,6 +46,24 @@ function formatObjectData(data: Record<string, unknown>): string[] {
   const lines: string[] = [];
   for (const [key, value] of Object.entries(data)) {
     if (value === null || value === undefined) continue;
+    if (key === 'manifest' && typeof value === 'object' && value !== null) {
+      const manifest = value as Record<string, unknown>;
+      lines.push('--- Workspace Context Manifest (contractVersion: 1) ---');
+      if (manifest.truncated) {
+        const reasons = Array.isArray(manifest.truncationReasons) ? manifest.truncationReasons.join(', ') : 'byte-budget';
+        lines.push(`[status: truncated — reasons: ${reasons}]`);
+      }
+      if (Array.isArray(manifest.items) && manifest.items.length > 0) {
+        lines.push('Context Items:');
+        for (const item of manifest.items) {
+          const formatted = formatArrayItem(item);
+          if (formatted) lines.push(`  ${formatted}`);
+        }
+      } else {
+        lines.push('Context Items: (none)');
+      }
+      continue;
+    }
     if (typeof value === 'string' && (BLOB_KEYS[key] || value.includes('\n'))) {
       const sanitized = value.replaceAll('\0', '\\u0000');
       if (sanitized.length === 0) {

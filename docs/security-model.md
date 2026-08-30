@@ -276,3 +276,43 @@ To prevent late-stage workflow failures where an agent completes extensive edits
   - In `cloudflare-access` mode, write capabilities are derived from verified GitHub App installation grants bound to the authenticated principal.
   - In local stdio mode, capabilities reflect explicit operator flags (`--git-push`, `--git-network`).
 - **Structured denial error:** Unauthorized operations reject immediately with `REPOSITORY_OPERATION_NOT_AUTHORIZED` (403, non-retryable) indicating the exact `operation`, `repository`, and `requiredCapability` (e.g. `repository.push`, `repository.issuesWrite`, `repository.pullRequestsWrite`).
+
+## Provenance and workspace context security model
+
+Cloud Harness MCP provides vendor-neutral coding context across AI agents (Claude, Codex, Cursor, Aider) while maintaining strict boundaries against prompt injection and privilege escalation:
+
+### Passive discovery and zero execution
+
+- `workspace_context` passively inspects known allowlisted instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and declared test commands.
+- Passive discovery performs **zero script executions**, invokes no package managers, and triggers no Git hooks.
+- Files are read under strict size and time bounds (max 256 candidate files, 250ms deadline, 32 KiB default response budget).
+
+### Immutable provenance attribution
+
+- Provenance (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) is assigned exclusively by the trusted Runner control plane based on physical boundary locations:
+  - `built-in` (`trust: trusted-control-plane`, `mutableBy: release`)
+  - `owner` (`trust: owner-controlled`, `mutableBy: owner`)
+  - `workspace` (`trust: untrusted-executor`, `mutableBy: workspace-process`)
+  - `repository` (`trust: untrusted-executor`, `mutableBy: repository-commit`)
+- Repository text claiming `source: built-in` or `source: owner` is ignored; the Runner stamps canonical repository provenance.
+
+### Adversarial output-boundary containment
+
+- In `structuredContent`, repository text is encapsulated inside `data.manifest.items` under `trust: untrusted-executor`.
+- In text projections (`content[0].text`), items are formatted with trusted boundary markers and JSON-escaped excerpts to prevent delimiter breakout or fake system header forgery.
+- Malicious instructions in repository files cannot create persistent SQLite memories without explicit authenticated tool mutation calls.
+
+### Scoped SQLite memories with optimistic concurrency
+
+- Memories are stored in SQLite `StateStore` (schema v5), isolated by `principal_id`:
+  - `owner`: Principal-wide, persistent across workspaces
+  - `repository`: Scoped to `(principal_id, repository_key)`, persistent across workspaces for that repository
+  - `workspace`: Scoped to `(principal_id, workspace_id)`, reaped when the workspace is closed
+- Mutations enforce Optimistic Concurrency Control via `expectedGeneration` (CAS) and automatic TTL expiration.
+
+### Declarative lifecycle hooks & sandboxed execution
+
+- Hooks are defined in `.cloud-harness/hooks.json` supporting declarative JSON format with named lifecycle events (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`).
+- Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the exact manifest SHA-256 digest.
+- Modifying the hook script or manifest invalidates activation and blocks execution before process spawn.
+- All hooks execute in unprivileged executor containers with `networkMode: none` by default, no broker credentials, and no Docker socket.

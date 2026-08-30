@@ -2,7 +2,10 @@ import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 import {
   ApiConfigSchema,
+  ContextManifestItemSchema,
+  ContextManifestSchema,
   HarnessError,
+  ProvenanceSchema,
   RunnerConfigSchema,
   RunnerRequestSchema,
   TOOL_SCHEMA_BY_NAME,
@@ -394,6 +397,118 @@ describe('contracts', () => {
     expect(parsed.operations.gitPush).toBe(true);
   });
 
+  it('validates provenance, context manifest, scoped memories, and hooks schemas', () => {
+    const sampleProvenance = {
+      source: 'repository',
+      trust: 'untrusted-executor',
+      mutableBy: 'repository-commit',
+      path: 'CLAUDE.md',
+      contentSha256: 'a'.repeat(64),
+      discoveredAt: new Date().toISOString()
+    };
+    expect(() => ProvenanceSchema.parse(sampleProvenance)).not.toThrow();
+
+    // Invalid source
+    expect(() => ProvenanceSchema.parse({ ...sampleProvenance, source: 'unknown' })).toThrow();
+
+    const sampleManifestItem = {
+      id: 'ctx_claude_root',
+      kind: 'instruction',
+      format: 'claude',
+      clients: ['claude', 'all'],
+      path: 'CLAUDE.md',
+      contentSha256: 'a'.repeat(64),
+      byteCount: 1024,
+      provenance: sampleProvenance
+    };
+    expect(() => ContextManifestItemSchema.parse(sampleManifestItem)).not.toThrow();
+
+    const sampleManifest = {
+      contractVersion: 1,
+      returnedBytes: 1024,
+      scannedFiles: 1,
+      scannedSourceBytes: 1024,
+      truncated: false,
+      truncationReasons: [],
+      items: [sampleManifestItem],
+      warnings: []
+    };
+    expect(() => ContextManifestSchema.parse(sampleManifest)).not.toThrow();
+
+    // workspace_context enriched input
+    expect(TOOL_SCHEMA_BY_NAME.workspace_context.parse({
+      clientProfile: 'claude',
+      include: ['instructions', 'skills'],
+      contentMode: 'excerpt',
+      maxBytes: 65536
+    })).toMatchObject({
+      clientProfile: 'claude',
+      contentMode: 'excerpt',
+      maxBytes: 65536
+    });
+
+    // memories_write with CAS generation
+    expect(TOOL_SCHEMA_BY_NAME.memories_write.parse({
+      scope: 'owner',
+      name: 'architecture-notes',
+      content: 'Important context',
+      tags: ['arch', 'design'],
+      expectedGeneration: 0
+    })).toMatchObject({
+      scope: 'owner',
+      name: 'architecture-notes',
+      expectedGeneration: 0
+    });
+
+    // memories_search
+    expect(TOOL_SCHEMA_BY_NAME.memories_search.parse({
+      query: 'architecture',
+      scope: 'owner',
+      tags: ['arch']
+    })).toMatchObject({
+      query: 'architecture',
+      scope: 'owner'
+    });
+
+    // memories_delete
+    expect(TOOL_SCHEMA_BY_NAME.memories_delete.parse({
+      memoryId: 'mem_123456789012',
+      expectedGeneration: 1
+    })).toMatchObject({
+      memoryId: 'mem_123456789012',
+      expectedGeneration: 1
+    });
+
+    // hooks_activate
+    expect(TOOL_SCHEMA_BY_NAME.hooks_activate.parse({
+      manifestSha256: 'b'.repeat(64),
+      events: ['pre_commit', 'post_checkout']
+    })).toMatchObject({
+      manifestSha256: 'b'.repeat(64),
+      events: ['pre_commit', 'post_checkout']
+    });
+
+    // hooks_deactivate
+    expect(TOOL_SCHEMA_BY_NAME.hooks_deactivate.parse({
+      events: ['pre_commit']
+    })).toMatchObject({
+      events: ['pre_commit']
+    });
+
+    // skills_run requires expectedSha256
+    expect(() => TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh' })).toThrow();
+    expect(TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh', expectedSha256: 'c'.repeat(64) })).toMatchObject({
+      name: 'demo',
+      expectedSha256: 'c'.repeat(64)
+    });
+
+    // hooks_run requires expectedManifestSha256 or expectedSha256
+    expect(() => TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify' })).toThrow();
+    expect(TOOL_SCHEMA_BY_NAME.hooks_run.parse({ name: 'verify', expectedManifestSha256: 'd'.repeat(64) })).toMatchObject({
+      name: 'verify',
+      expectedManifestSha256: 'd'.repeat(64)
+    });
+  });
   it('enforces capability consistency between advertised GitHub operations and exposed github_action tool', () => {
     const githubOps = [
       'issueList',

@@ -53,7 +53,9 @@ export class LocalWorkerClient {
     return await new Promise<RunnerResponse>((resolvePromise) => {
       const env = {
         ...buildLocalEnvironment(),
-        HARNESS_WORKSPACE_ROOT: this.canonicalRoot
+        HARNESS_WORKSPACE_ROOT: this.canonicalRoot,
+        ...(process.env.CH_OWNER_SKILLS_ROOT ? { CH_OWNER_SKILLS_ROOT: process.env.CH_OWNER_SKILLS_ROOT } : {}),
+        ...(process.env.CH_BUILTIN_SKILLS_ROOT ? { CH_BUILTIN_SKILLS_ROOT: process.env.CH_BUILTIN_SKILLS_ROOT } : {})
       };
 
       const child = spawn(process.execPath, [this.workerScript], {

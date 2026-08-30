@@ -74,7 +74,7 @@ describe('StateStore', () => {
     legacy.close();
 
     const store = new StateStore(path);
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(4);
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(5);
     expect(store.legacyWorkspaceOwnerIds()).toEqual(['owner']);
     expect(store.byOwnerAndId('owner', workspace.id)?.id).toBe(workspace.id);
     expect(store.byOwnerAndId('other-owner', workspace.id)).toBeUndefined();
