@@ -626,7 +626,7 @@ export class OperationManager {
       record.finishedAt = now;
       if (record.child && (record.child.exitCode === null && record.child.signalCode === null)) {
         const child = record.child;
-        const exitPromise = new Promise<void>((resolve) => {
+        const exitPromise = new Promise<void>((resolve, reject) => {
           let resolved = false;
           let killTimer: NodeJS.Timeout | undefined;
           let deadlineTimer: NodeJS.Timeout | undefined;
@@ -650,7 +650,13 @@ export class OperationManager {
 
           deadlineTimer = setTimeout(() => {
             deadlineTimer = undefined;
-            done();
+            if (!resolved && (child.exitCode === null && child.signalCode === null)) {
+              resolved = true;
+              if (killTimer) clearTimeout(killTimer);
+              reject(new HarnessError('UNAVAILABLE', `Process for task ${record.id} failed to terminate within teardown deadline`, 503, true));
+            } else {
+              done();
+            }
           }, 3_500);
         });
         exitPromises.push(exitPromise);
