@@ -181,19 +181,25 @@ export class HostFirewallAttestor {
       }
     }
 
-    // Every ACCEPT rule in the egress chain must be one of the four allowed
-    // shapes: established conntrack, DNS to a configured resolver, or public
-    // TCP 80/443. Any other ACCEPT is a broad bypass.
-    const acceptRules = egressRules.filter((l) => l.includes('-j ACCEPT'));
-    for (const rule of acceptRules) {
-      const isEstablished = rule.includes('conntrack') && rule.includes('ESTABLISHED');
-      const isDns = this.dnsResolvers.some((r) => rule.includes(`-d ${r}`)) && rule.includes('--dport 53');
-      const isWeb = !rule.includes('-d ') && (rule.includes('--dport 80') || rule.includes('--dport 443'));
-      if (!isEstablished && !isDns && !isWeb) {
-        return { ok: false, reason: `egress chain contains a broad ACCEPT rule: ${rule}` };
+    // Every rule in the egress chain must have an authorized target (ACCEPT, REJECT, DROP)
+    // and match the exact canonical shape. Reject any early RETURN or indirect jump.
+    for (const rule of egressRules) {
+      const target = rule.match(/-j\s+([A-Za-z0-9_-]+)/)?.[1];
+      if (target === 'RETURN') {
+        return { ok: false, reason: `egress chain must not contain RETURN rules: ${rule}` };
+      }
+      if (target !== 'ACCEPT' && target !== 'REJECT' && target !== 'DROP') {
+        return { ok: false, reason: `egress chain contains unauthorized jump target '${target}': ${rule}` };
+      }
+      if (target === 'ACCEPT') {
+        const isEstablished = rule.includes('conntrack') && rule.includes('ESTABLISHED');
+        const isDns = this.dnsResolvers.some((r) => rule.includes(`-d ${r}`)) && rule.includes('--dport 53');
+        const isWeb = !rule.includes('-d ') && (rule.includes('--dport 80') || rule.includes('--dport 443'));
+        if (!isEstablished && !isDns && !isWeb) {
+          return { ok: false, reason: `egress chain contains unauthorized ACCEPT rule: ${rule}` };
+        }
       }
     }
-
     // Must terminate with REJECT or DROP
     const lastRule = egressRules[egressRules.length - 1];
     if (!lastRule || (!lastRule.includes('-j REJECT') && !lastRule.includes('-j DROP'))) {
