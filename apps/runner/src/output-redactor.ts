@@ -46,13 +46,12 @@ export class StreamRedactor {
     const input = this.holdback.length > 0 ? Buffer.concat([this.holdback, chunk]) : chunk;
     const outputParts: Buffer[] = [];
     let safeOffset = 0;
-    let i = 0;
     let pendingMatch: { name: string; matchStart: number; matchEnd: number } | null = null;
 
+    let i = 0;
     while (i < input.length) {
       const byte = input[i]!;
 
-      // Check if current node can advance with byte
       if (this.currentNode.next.has(byte)) {
         this.currentNode = this.currentNode.next.get(byte)!;
         if (this.currentNode.output.length > 0) {
@@ -65,38 +64,33 @@ export class StreamRedactor {
         }
         i++;
       } else {
-        // Cannot advance directly with byte
         if (pendingMatch) {
-          // Commit the pending match
           if (pendingMatch.matchStart > safeOffset) {
             outputParts.push(input.subarray(safeOffset, pendingMatch.matchStart));
           }
           outputParts.push(Buffer.from(`[REDACTED_SECRET: ${pendingMatch.name}]`, 'utf8'));
           safeOffset = pendingMatch.matchEnd;
-          i = safeOffset;
           this.currentNode = this.root;
           pendingMatch = null;
+          if (i < safeOffset) {
+            i = safeOffset;
+          }
         } else if (this.currentNode !== this.root) {
-          // Fall back via failure link without advancing i
           this.currentNode = this.currentNode.fail ?? this.root;
         } else {
-          // At root and cannot match byte
           i++;
         }
       }
     }
 
-    if (pendingMatch) {
-      // If pending match is completely contained in input and no further extension is possible in trie
-      if (this.currentNode.next.size === 0) {
-        if (pendingMatch.matchStart > safeOffset) {
-          outputParts.push(input.subarray(safeOffset, pendingMatch.matchStart));
-        }
-        outputParts.push(Buffer.from(`[REDACTED_SECRET: ${pendingMatch.name}]`, 'utf8'));
-        safeOffset = pendingMatch.matchEnd;
-        this.currentNode = this.root;
-        pendingMatch = null;
+    if (pendingMatch && this.currentNode.next.size === 0) {
+      if (pendingMatch.matchStart > safeOffset) {
+        outputParts.push(input.subarray(safeOffset, pendingMatch.matchStart));
       }
+      outputParts.push(Buffer.from(`[REDACTED_SECRET: ${pendingMatch.name}]`, 'utf8'));
+      safeOffset = pendingMatch.matchEnd;
+      this.currentNode = this.root;
+      pendingMatch = null;
     }
 
     const holdStart = pendingMatch
@@ -118,11 +112,10 @@ export class StreamRedactor {
     this.holdback = Buffer.alloc(0);
     this.currentNode = this.root;
 
-    // Scan whatever is in holdback to commit any complete match
     const outputParts: Buffer[] = [];
     let safeOffset = 0;
-    let i = 0;
     let pendingMatch: { name: string; matchStart: number; matchEnd: number } | null = null;
+    let i = 0;
 
     while (i < input.length) {
       const byte = input[i]!;
@@ -144,9 +137,11 @@ export class StreamRedactor {
           }
           outputParts.push(Buffer.from(`[REDACTED_SECRET: ${pendingMatch.name}]`, 'utf8'));
           safeOffset = pendingMatch.matchEnd;
-          i = safeOffset;
           this.currentNode = this.root;
           pendingMatch = null;
+          if (i < safeOffset) {
+            i = safeOffset;
+          }
         } else if (this.currentNode !== this.root) {
           this.currentNode = this.currentNode.fail ?? this.root;
         } else {
@@ -182,9 +177,7 @@ export class SecretSnapshotRedactor {
         raw.push({ name, value });
       }
     }
-    // Sort by byte length descending
     this.patterns = raw.sort((a, b) => Buffer.byteLength(b.value, 'utf8') - Buffer.byteLength(a.value, 'utf8'));
-
     this.root = createNode(0);
     this.buildTrie();
   }

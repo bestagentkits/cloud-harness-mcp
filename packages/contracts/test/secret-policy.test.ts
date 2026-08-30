@@ -59,14 +59,16 @@ describe('secret-policy', () => {
   });
 
   describe('validateSecretValue', () => {
-    it('accepts values between 1 and 65,536 bytes', () => {
-      expect(validateSecretValue('a')).toEqual({ ok: true, value: 'a' });
+    it('accepts values between 4 and 65,536 bytes', () => {
       expect(validateSecretValue('abcd')).toEqual({ ok: true, value: 'abcd' });
       expect(validateSecretValue('super-secret-token-12345')).toEqual({ ok: true, value: 'super-secret-token-12345' });
     });
 
-    it('rejects empty values', () => {
+    it('rejects values shorter than 4 bytes', () => {
       expect(validateSecretValue('').ok).toBe(false);
+      expect(validateSecretValue('a').ok).toBe(false);
+      expect(validateSecretValue('ab').ok).toBe(false);
+      expect(validateSecretValue('abc').ok).toBe(false);
     });
 
     it('rejects values with null or newline bytes', () => {
@@ -106,9 +108,8 @@ describe('secret-policy', () => {
   describe('Zod schemas', () => {
     it('parses valid and throws on invalid', () => {
       expect(SecretNameSchema.parse('STRIPE_KEY')).toBe('STRIPE_KEY');
-      expect(() => SecretNameSchema.parse('PATH')).toThrow();
       expect(SecretValueSchema.parse('my-secret-value')).toBe('my-secret-value');
-      expect(SecretValueSchema.parse('a')).toBe('a');
+      expect(() => SecretValueSchema.parse('abc')).toThrow();
       expect(() => SecretValueSchema.parse('')).toThrow();
       expect(SecretDescriptionSchema.parse('My desc')).toBe('My desc');
       expect(SecretDescriptionSchema.parse(null)).toBe(null);

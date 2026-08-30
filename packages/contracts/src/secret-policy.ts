@@ -42,7 +42,7 @@ export const FORBIDDEN_SECRET_PREFIXES = [
 ] as const;
 
 export const SECRET_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
-export const MIN_SECRET_VALUE_BYTES = 1;
+export const MIN_SECRET_VALUE_BYTES = 4;
 export const MAX_SECRET_VALUE_BYTES = 65_536;
 export const MAX_SECRET_DESCRIPTION_CHARS = 500;
 
@@ -75,7 +75,7 @@ export function validateSecretValue(rawValue: unknown): { ok: true; value: strin
   }
   const byteLength = Buffer.byteLength(rawValue, 'utf8');
   if (byteLength < MIN_SECRET_VALUE_BYTES) {
-    return { ok: false, error: 'secret value must not be empty' };
+    return { ok: false, error: `secret value must be at least ${MIN_SECRET_VALUE_BYTES} bytes to ensure reliable output redaction` };
   }
   if (byteLength > MAX_SECRET_VALUE_BYTES) {
     return { ok: false, error: `secret value must not exceed ${MAX_SECRET_VALUE_BYTES} bytes` };
@@ -117,7 +117,13 @@ export const SecretValueSchema = z.string().superRefine((val, ctx) => {
   }
 });
 
-export const SecretDescriptionSchema = z.string().max(MAX_SECRET_DESCRIPTION_CHARS).nullable().optional().transform((val) => {
+export const SecretDescriptionSchema = z.string().nullable().optional().superRefine((val, ctx) => {
+  if (val === undefined || val === null) return;
+  const result = validateSecretDescription(val);
+  if (!result.ok) {
+    ctx.addIssue({ code: 'custom', message: result.error });
+  }
+}).transform((val) => {
   if (val === undefined || val === null) return null;
   const trimmed = val.trim();
   return trimmed.length > 0 ? trimmed : null;

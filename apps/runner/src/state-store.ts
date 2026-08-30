@@ -290,6 +290,9 @@ export class StateStore {
       auth_tag: Uint8Array;
       environment_id: string;
     }>;
+    if (rows.length !== header.item_count) {
+      throw new Error(`snapshot item count mismatch for workspace ${workspaceId}: expected ${header.item_count}, got ${rows.length}`);
+    }
     return {
       initialized: true,
       environmentId: header.environment_id,

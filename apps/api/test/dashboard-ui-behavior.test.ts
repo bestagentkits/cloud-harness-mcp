@@ -374,10 +374,11 @@ export STRIPE_SECRET=whsec_abc
 
   it('validates secret names and values client-side against reserved identifiers', () => {
     expect(validateSecretClient('VALID_KEY', 'valid_value')).toBeNull();
-    expect(validateSecretClient('PATH', 'val')).toContain('reserved');
-    expect(validateSecretClient('HARNESS_TOKEN', 'val')).toContain('reserved prefix');
-    expect(validateSecretClient('123_INVALID', 'val')).toContain('identifier');
-    expect(validateSecretClient('EMPTY_VAL', '')).toContain('empty');
+    expect(validateSecretClient('PATH', 'valid_val')).toContain('reserved');
+    expect(validateSecretClient('HARNESS_TOKEN', 'valid_val')).toContain('reserved prefix');
+    expect(validateSecretClient('123_INVALID', 'valid_val')).toContain('identifier');
+    expect(validateSecretClient('SHORT_VAL', 'abc')).toContain('at least 4');
+    expect(validateSecretClient('NEWLINE_VAL', 'val\n123')).toContain('null or newline');
   });
 
   it('renders secret descriptions, bulk import and export affordances in project detail', () => {
