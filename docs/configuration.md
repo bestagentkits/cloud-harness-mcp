@@ -140,7 +140,7 @@ by the configuration schema and enforced by
 `REPO_CACHE_ROOT` (mapped via `HOST_REPO_CACHE_ROOT` in Compose) configures the
 runner storage path for bare Git repository caches (`/var/lib/cloud-harness/cache/repos`).
 `ENABLE_REPO_CACHE` (default `false`) toggles owner-scoped bare cloning; when
-enabled, initial clones share local Git object storage via `git clone --shared --dissociate`
+enabled, initial clones reference local Git object storage via `git clone --reference-if-able <cache> --dissociate`
 while keeping writable checkouts strictly isolated.
 
 `EXECUTOR_IMAGE` is chosen by the trusted operator; callers cannot select an

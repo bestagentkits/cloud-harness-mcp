@@ -28,7 +28,7 @@ For detached builds, test suites, and multi-stage workflows:
 ### Durability & Restart Reconciliation
 
 - **Durable State:** Unlike interactive PTY sessions (which live in volatile memory only and are lost on runner restart), task records, dependency DAGs, and on-disk logs persist across runner restarts.
-- **Crash Reconciliation:** In-flight tasks from a prior runner epoch transition to `RUNNER_RESTARTED` upon restart and can be inspected via `tasks_status`/`tasks_list`.
+- **Crash Reconciliation:** In-flight tasks from a prior runner epoch transition to terminal failed status (`status: "failed"` with `errorCode: "RUNNER_RESTARTED"`) upon restart and can be inspected via `tasks_status`/`tasks_list`.
 - **Artifact Spooling:** When a workspace closes or expires, task log outputs are automatically spooled into retained artifact storage.
 
 The official Model Context Protocol specification ([Tasks Extension Overview](https://modelcontextprotocol.io/extensions/tasks/overview), 2026-07-28 revision) defines task management as an optional protocol extension (`io.modelcontextprotocol/tasks`) with `tasks/get`, `tasks/update`, `tasks/cancel`, and progress notifications.

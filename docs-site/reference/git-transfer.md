@@ -54,4 +54,4 @@ Network failures or runner restarts during a push can leave the client unsure wh
 
 ## Owner-Scoped Repository Cache
 
-When `enableRepoCache` is enabled, the runner maintains bare Git repository caches partitioned strictly by the authenticated principal ID. Initial clones use `git clone --shared --dissociate` to leverage shared local object storage while ensuring that each workspace has a fully detached, independent, and isolated working tree.
+When `enableRepoCache` is enabled, the runner maintains bare Git repository caches partitioned strictly by the authenticated principal ID. Initial clones use `git clone --reference-if-able <cache> --dissociate` to leverage shared local object storage while ensuring that each workspace has a fully detached, independent, and isolated working tree.

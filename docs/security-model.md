@@ -159,15 +159,16 @@ fetch, or push helpers; the stored remote stays credential-free and the
 executor never receives a token. Remote fetch/pull first stage outside the
 executor and import without network or credentials. Push first stages a bare
 snapshot without credentials, then uses a separate networked helper. Transfer
-Transfer directories and helper containers are removed after the operation.
+directories and helper containers are removed after the operation.
 
 ### Owner-scoped repository cache isolation
 
 When repository caching is enabled (`enableRepoCache: true`):
 1. Bare repository caches are stored under `repoCacheRoot` partitioned strictly by the authenticated principal's opaque ID (`<repoCacheRoot>/<principalId>/...`). Cross-principal cache access is structurally impossible.
-2. Cache synchronization uses ephemeral clone/fetch helpers that mount the cache directory read-only (`:ro`).
-3. Initial workspace checkouts use `git clone --shared --dissociate <cache> <workspace>`. The `--dissociate` flag copies referenced objects into the workspace repository during creation, severing any ongoing link to the shared object store before the executor starts.
+2. Cache initialization and synchronization use ephemeral helper containers that mount the owner's cache directory writable (`:rw`) to fetch or clone bare repository mirrors.
+3. Initial workspace checkouts mount the cache directory strictly read-only (`:ro`) in the clone helper and use `git clone --reference-if-able <cache> --dissociate <workspace>`. The `--dissociate` flag copies referenced objects into the workspace repository during creation, severing any ongoing link to the shared object store before the executor starts.
 4. Checkouts are fully independent and writable only to their own workspace; no writable Git state is ever shared across workspaces or principals.
+
 ### Brokered GitHub actions
 
 Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`) are minted by the runner from the trusted GitHub App installation and passed exclusively via `stdin`. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Tokens never enter the workspace filesystem or environment.

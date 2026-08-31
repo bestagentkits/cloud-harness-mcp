@@ -127,7 +127,8 @@ outside that contract.
 
 Workspace metadata, status, expiry, durable task graphs, Git operation idempotency,
 and principal ownership are persisted in SQLite by
-[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) (schema v4). The
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) with versioned
+schema migrations. The
 repository checkout lives under the configured jobs root and persists across
 MCP calls while the workspace is active. Close or TTL cleanup removes the
 executor and its workspace directory; SQLite retains the resulting metadata.
@@ -135,10 +136,11 @@ executor and its workspace directory; SQLite retains the resulting metadata.
 Dependency-task records, dependency DAGs, execution state, output byte counts,
 and 0600 log files on disk are durable SQLite state (`durable_tasks`, `task_dependencies`).
 They survive runner restarts and remain queryable via `tasks_list`/`tasks_status`.
-A restart reconciles prior-epoch in-flight tasks as `RUNNER_RESTARTED` and spools
-completed task logs into retained artifact storage upon workspace closure. In
-contrast, interactive shell and named-session process handles and in-memory
-output streams live in volatile runner memory and do not survive a runner restart.
+A restart reconciles prior-epoch in-flight tasks as terminal failed tasks
+(`status: 'failed'`, `errorCode: 'RUNNER_RESTARTED'`) and spools completed task logs
+into retained artifact storage upon workspace closure. In contrast, interactive
+shell and named-session process handles and in-memory output streams live in
+volatile runner memory and do not survive a runner restart.
 
 A restart reconciles persisted workspace records against Docker containers and
 restarts every surviving executor. This preserves repository files while
@@ -149,7 +151,7 @@ same daemon does not delete this instance's containers.
 
 Owner-scoped repository caching stores bare Git repositories under the configured
 `repoCacheRoot`, scoped strictly by opaque principal ID. Cloning from the cache
-uses `git clone --shared --dissociate` to create completely independent, writable
+uses `git clone --reference-if-able <cache> --dissociate` to create completely independent, writable
 worktree checkouts without cross-principal state sharing. Caching is opt-in
 (`enableRepoCache: false` by default).
 The MCP transport is stateless: the API creates a fresh server for request

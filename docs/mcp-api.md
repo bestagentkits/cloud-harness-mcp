@@ -225,29 +225,6 @@ lease is revoked, its container is removed, and its status transitions to
   [`worker/harness-worker.mjs`](../worker/harness-worker.mjs), and the executor
   image owns the available indexer in
   [`docker/executor.Dockerfile`](../docker/executor.Dockerfile).
-- Shells and named interactive coding sessions are workspace-owned during a runner
-  process lifetime and remain in-memory ephemeral streams. Background tasks (`tasks_run`,
-  `tasks_status`, `tasks_list`, `tasks_cancel`, `tasks_graph`) are durable across process
-  restarts: task metadata is persisted in SQLite (`durable_tasks`, `task_dependencies`) with
-  composite tenant foreign keys, while task log output is spooled to disk (`/job/.chm/tasks/<id>.log`)
-  with 0600 permissions and capped at `maxOutputBytes`.
-- Process-scoped `runner_boot_id` ensures safe restart reconciliation: upon runner restart, any
-  in-flight tasks from previous boot IDs are cleanly marked `FAILED` (`error_code: "RUNNER_RESTARTED"`),
-  while completed task outputs remain readable via cursor-based offset pagination. When a workspace is
-  closed or reaped, completed task logs are automatically archived into `ArtifactStore` (`task-output-<id>.log`)
-  before the workspace directory is deleted.
-- Retrying `tasks_run`, `git_commit`, or `git_push` with an existing `idempotencyKey` returns the
-  recorded result with `alreadyFinalized: true` without duplicate execution. Reusing an idempotency key with
-  mismatched request parameters is rejected with `CONFLICT`.
-- Remote Git push operations enforce Compare-And-Swap via `--force-with-lease=<ref>:<expectedRemoteOid>`
-  and classify errors into deterministic `CONFLICT` (409) or network interruptions `UNKNOWN_REMOTE_STATE` (504)
-  with structured `resumeAction: "reconcile_push"`. When retrying after an unknown outcome, the runner probes
-  the remote reference OID via `git ls-remote` before re-pushing. `git_commit` accepts an optional `expectedHeadOid`
-  to reject commits on stale HEADs with `STALE_HEAD` (409).
-- Owner-scoped repository caching (`REPO_CACHE_ROOT`, default disabled via `ENABLE_REPO_CACHE=false`)
-  maintains isolated bare mirror caches (`chmod 0700`) per principal and clones using
-  `git clone --reference-if-able <cache_path> --dissociate`, ensuring workspace object databases become
-  completely independent after clone with automatic fallback to blobless clone.
 - **MCP Tasks Specification Evaluation (2026-07-28 Revision):** The official Model Context Protocol specification
   ([Overview](https://modelcontextprotocol.io/extensions/tasks/overview), 2026-07-28 revision) transitioned Tasks from
   basic utilities into an optional extension (`io.modelcontextprotocol/tasks`) negotiated via per-request server capabilities
