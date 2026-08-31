@@ -35,6 +35,7 @@
         --text-dim: #64748b;
         --font-mono: "JetBrains Mono", monospace;
         --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        --header-offset: 7.25rem;
       }
 
       * {
@@ -45,6 +46,7 @@
 
       html {
         scroll-behavior: smooth;
+        scroll-padding-top: var(--header-offset);
         background-color: #000000;
       }
 
@@ -67,20 +69,27 @@
         text-decoration: none;
       }
 
-      /* HUD Top Telemetry Bar */
-      .telemetry-bar {
-        background: rgba(0, 0, 0, 0.9);
-        backdrop-filter: blur(16px);
-        border-bottom: 1px solid var(--border-soft);
-        font-family: var(--font-mono);
-        font-size: 0.75rem;
-        padding: 0.5rem 1.5rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
+      /* Sticky Unified HUD Header */
+      .site-header-hud {
         position: sticky;
         top: 0;
         z-index: 100;
+        background: rgba(0, 0, 0, 0.88);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      /* HUD Top Telemetry Bar */
+      .telemetry-bar {
+        background: transparent;
+        border-bottom: 1px solid var(--border-soft);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        padding: 0.45rem 1.5rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
         overflow-x: auto;
         white-space: nowrap;
         -webkit-overflow-scrolling: touch;
@@ -117,9 +126,10 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 1.25rem 2rem;
+        padding: 0.85rem 2rem;
         max-width: 1380px;
         margin: 0 auto;
+        gap: clamp(1rem, 1.5vw, 2rem);
         position: relative;
       }
 
@@ -131,6 +141,8 @@
         font-weight: 800;
         font-size: 1.15rem;
         letter-spacing: 0.05em;
+        flex: 0 0 auto;
+        white-space: nowrap;
       }
 
       .logo-icon {
@@ -156,14 +168,19 @@
 
       .nav-links {
         display: flex;
-        gap: 1.75rem;
-        font-size: 0.92rem;
+        align-items: center;
+        gap: clamp(0.75rem, 1.2vw, 1.5rem);
+        font-size: 0.85rem;
         font-weight: 500;
         color: var(--text-muted);
+        white-space: nowrap;
       }
 
       .nav-links a {
         transition: color 0.2s ease;
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
       }
 
       .nav-links a:hover {
@@ -174,6 +191,8 @@
         display: flex;
         align-items: center;
         gap: 1rem;
+        flex: 0 0 auto;
+        white-space: nowrap;
       }
 
       .hud-button {
@@ -187,6 +206,7 @@
         display: inline-flex;
         align-items: center;
         gap: 0.5rem;
+        white-space: nowrap;
       }
 
       .hud-button-primary {
@@ -411,7 +431,7 @@
       /* Architecture Highlights Grid */
       .arch-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
         gap: 2rem;
       }
 
@@ -478,8 +498,9 @@
       }
 
       @media (max-width: 860px) {
+        :root { --header-offset: 6.25rem; }
         .nav-actions .hud-button { display: none !important; }
-        .main-nav { padding: 0.85rem 1.15rem; }
+        .main-nav { padding: 0.75rem 1.15rem; }
         .ladder-grid { grid-template-columns: 1fr; }
         .arch-grid { grid-template-columns: 1fr; }
         .footer-top-row { flex-direction: column; text-align: center; }
@@ -491,86 +512,88 @@
     </style>
   </head>
   <body id="top">
-    <!-- Top Telemetry HUD -->
-    <aside class="telemetry-bar" aria-label="System telemetry">
-      <div class="telemetry-group">
-        <div class="telemetry-item">
-          <span class="pulse-dot"></span>
-          <span>HAAS CLUSTER:</span>
-          <span style="color: var(--purple-laser)">PREVIEW // ADR 0001 GATED</span>
-        </div>
-        <div class="telemetry-item">
-          <span>ISOLATION TARGET:</span>
-          <span style="color: var(--cyan-glow)">FIRECRACKER KVM &lt;150ms</span>
-        </div>
-        <div class="telemetry-item">
-          <span>STORAGE QUOTA:</span>
-          <span style="color: var(--green-neon)">DM-THIN 20GB HARD LIMIT</span>
-        </div>
-      </div>
-      <div class="telemetry-group">
-        <div class="telemetry-item">
-          <span>PROTOCOL:</span>
-          <span style="color: var(--text-bright)">gRPC / mTLS OUTBOUND</span>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Main Navigation Header -->
-    <header class="main-nav">
-      <div class="logo-hud">
-        <div class="logo-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--purple-laser)" stroke-width="2.2" aria-hidden="true">
-            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-          </svg>
-        </div>
-        <span>CLOUD HARNESS <span class="logo-tag">HaaS</span></span>
-      </div>
-
-      <nav class="nav-links" aria-label="Primary">
-        <a href="index.html">← Home</a>
-        <a href="#ladder">Isolation Ladder</a>
-        <a href="#node-agent">Node Agent</a>
-        <a href="#metering">Metering</a>
-        <a href="#residency">Residency</a>
-        <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Docs ↗</a>
-      </nav>
-
-      <div class="nav-actions">
-        <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" class="hud-button hud-button-outline">
-          GitHub Repo ★
-        </a>
-        <a href="#waitlist" class="hud-button hud-button-primary">Request Early Access →</a>
-        <button class="mobile-menu-btn" onclick="toggleMobileMenu()" aria-label="Toggle navigation menu">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <line x1="3" y1="12" x2="21" y2="12"></line>
-            <line x1="3" y1="6" x2="21" y2="6"></line>
-            <line x1="3" y1="18" x2="21" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-
-      <!-- Mobile Navigation Drawer -->
-      <nav class="mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
-        <div class="drawer-header">
-          <div class="logo-hud">
-            <span style="font-size: 1.05rem;">CLOUD HARNESS HaaS</span>
+    <header class="site-header-hud">
+      <!-- Top Telemetry HUD -->
+      <aside class="telemetry-bar" aria-label="System telemetry">
+        <div class="telemetry-group">
+          <div class="telemetry-item">
+            <span class="pulse-dot"></span>
+            <span>HAAS CLUSTER:</span>
+            <span style="color: var(--purple-laser)">PREVIEW // ADR 0001 GATED</span>
           </div>
-          <button class="drawer-close-btn" onclick="toggleMobileMenu()" aria-label="Close navigation menu">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
+          <div class="telemetry-item">
+            <span>ISOLATION TARGET:</span>
+            <span style="color: var(--cyan-glow)">FIRECRACKER KVM &lt;150ms</span>
+          </div>
+          <div class="telemetry-item">
+            <span>STORAGE QUOTA:</span>
+            <span style="color: var(--green-neon)">DM-THIN 20GB HARD LIMIT</span>
+          </div>
+        </div>
+        <div class="telemetry-group">
+          <div class="telemetry-item">
+            <span>PROTOCOL:</span>
+            <span style="color: var(--text-bright)">gRPC / mTLS OUTBOUND</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Navigation -->
+      <div class="main-nav">
+        <div class="logo-hud">
+          <div class="logo-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--purple-laser)" stroke-width="2.2" aria-hidden="true">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <span>CLOUD HARNESS <span class="logo-tag">HaaS</span></span>
+        </div>
+
+        <nav class="nav-links" aria-label="Primary">
+          <a href="index.html">← Home</a>
+          <a href="#ladder">Isolation Ladder</a>
+          <a href="#node-agent">Node Agent</a>
+          <a href="#metering">Metering</a>
+          <a href="#residency">Residency</a>
+          <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Docs ↗</a>
+        </nav>
+
+        <div class="nav-actions">
+          <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" class="hud-button hud-button-outline">
+            GitHub Repo ★
+          </a>
+          <a href="#waitlist" class="hud-button hud-button-primary">Request Early Access →</a>
+          <button class="mobile-menu-btn" onclick="toggleMobileMenu()" aria-label="Toggle navigation menu" aria-controls="mobileDrawer" aria-expanded="false">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
             </svg>
           </button>
         </div>
-        <a href="index.html">← Back to Open Source Home</a>
-        <a href="#ladder" onclick="toggleMobileMenu()">Isolation Ladder</a>
-        <a href="#node-agent" onclick="toggleMobileMenu()">Outbound Node Agent</a>
-        <a href="#metering" onclick="toggleMobileMenu()">Hybrid Metering</a>
-        <a href="#residency" onclick="toggleMobileMenu()">Data Residency</a>
-        <a href="#waitlist" class="hud-button hud-button-primary" style="justify-content: center;" onclick="toggleMobileMenu()">Request Early Access →</a>
-      </nav>
+      </div>
     </header>
+
+    <!-- Mobile Navigation Drawer -->
+    <nav class="mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
+      <div class="drawer-header">
+        <div class="logo-hud">
+          <span style="font-size: 1.05rem;">CLOUD HARNESS HaaS</span>
+        </div>
+        <button class="drawer-close-btn" onclick="toggleMobileMenu()" aria-label="Close navigation menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <a href="index.html">← Back to Open Source Home</a>
+      <a href="#ladder" onclick="toggleMobileMenu()">Isolation Ladder</a>
+      <a href="#node-agent" onclick="toggleMobileMenu()">Outbound Node Agent</a>
+      <a href="#metering" onclick="toggleMobileMenu()">Hybrid Metering</a>
+      <a href="#residency" onclick="toggleMobileMenu()">Data Residency</a>
+      <a href="#waitlist" class="hud-button hud-button-primary" style="justify-content: center;" onclick="toggleMobileMenu()">Request Early Access →</a>
+    </nav>
 
     <main>
       <!-- Hero Section -->
@@ -843,7 +866,14 @@
     <script>
       function toggleMobileMenu() {
         const drawer = document.getElementById('mobileDrawer');
-        if (drawer) drawer.classList.toggle('open');
+        const btn = document.querySelector('.mobile-menu-btn');
+        if (drawer) {
+          drawer.classList.toggle('open');
+          if (btn) {
+            const isOpen = drawer.classList.contains('open');
+            btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+          }
+        }
       }
 
       function copySnippet(id) {
