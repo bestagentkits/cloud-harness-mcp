@@ -66,6 +66,8 @@ Agent tools communicate with the runner via a bounded stdio JSONL protocol for
 the trusted Model Gateway service via per-agent internal Docker networks using
 opaque, short-lived capability leases with pre-reserved token and cost budgets.
 
+Third-party agent toolkits are acquired and normalized via disposable clone helpers running on a dedicated internal Docker network (`cloud-harness-provisioning`). All helper egress routes through the dual-homed `provisioning-proxy` (port 3128) with DNS destination allowlists. Normalized bundles are published to runner Content-Addressed Storage (`TOOLKIT_CACHE_ROOT`) and mounted into executors read-only at `/opt/cloud-harness/owner-skills:ro` or staged into `.cloud-harness/skills` under explicit confirmation.
+
 ## Composition roots and transports
 
 Cloud Harness MCP supports two distinct composition roots sharing the same public `TOOL_SPECS` and result envelopes:
@@ -103,6 +105,10 @@ Executable owners:
 - Workspace lifecycle, Docker policy, unified reaper, and repository caching:
   [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts) and
   [`apps/runner/src/repository-cache-manager.ts`](../apps/runner/src/repository-cache-manager.ts)
+- Toolkit acquisition, CAS cache manager, and provisioning proxy:
+  [`apps/runner/src/toolkit-service.ts`](../apps/runner/src/toolkit-service.ts),
+  [`apps/runner/src/toolkit-cache-manager.ts`](../apps/runner/src/toolkit-cache-manager.ts), and
+  [`deploy/provisioning-proxy.mjs`](../deploy/provisioning-proxy.mjs)
 - Durable tasks, in-memory shells, named sessions, and restart reconciliation:
   [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts) and
   [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts)
