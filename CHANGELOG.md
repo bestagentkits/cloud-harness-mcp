@@ -1,3 +1,10 @@
+# [0.37.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.36.0...v0.37.0) (2026-08-31)
+
+
+### Features
+
+* **docs-site:** replace static twin hints with interactive Copy as Markdown component and action dropdown ([#164](https://github.com/bestagentkits/cloud-harness-mcp/issues/164)) ([124e50f](https://github.com/bestagentkits/cloud-harness-mcp/commit/124e50f4d1e60c60b0c715cd7309d7339fc67031))
+
 # [0.36.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.35.3...v0.36.0) (2026-08-31)
 
 
