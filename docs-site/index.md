@@ -30,9 +30,6 @@ features:
     details: Embedded dark/light web console for managing active workspaces, repositories, API keys, artifacts, and security audits.
 ---
 
-<div class="md-twin-hint">
-  <strong>AI Crawlers:</strong> Browse clean Markdown for any page by appending <code>.md</code> to the URL (e.g. <code>/getting-started.md</code>), or read the complete index at <a href="/llms.txt">/llms.txt</a> and <a href="/llms-full.txt">/llms-full.txt</a>.
-</div>
 
 ## Architecture at a Glance
 
