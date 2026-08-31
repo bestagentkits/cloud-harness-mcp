@@ -591,6 +591,7 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
           id TEXT PRIMARY KEY,
           profile_id TEXT NOT NULL,
           principal_id TEXT NOT NULL,
+          credential_id TEXT NOT NULL REFERENCES model_provider_credentials(id) ON DELETE RESTRICT,
           model TEXT NOT NULL,
           api_mode TEXT NOT NULL,
           downstream_path TEXT NOT NULL,

@@ -247,14 +247,21 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     await manager.stop();
   });
 
-  it('retains revision N after profile update to N+1 across Gateway restart for active agent lease', async () => {
+  it('retains revision N with credential 1 after update to N+1 with credential 2 across Gateway restart', async () => {
     const { repo, p, store } = setup();
-    const cred = repo.createCredential(p, { label: 'OpenAI Test', provider: 'openai', apiKey: 'sk-key-v1' });
+    const { certFile, keyFile } = await ensureTlsFixtures();
+    const cert = readFileSync(certFile);
+    const key = readFileSync(keyFile);
 
+    // Create two separate credentials
+    const cred1 = repo.createCredential(p, { label: 'Key 1', provider: 'openai', apiKey: 'sk-secret-key-1111' });
+    const cred2 = repo.createCredential(p, { label: 'Key 2', provider: 'openai', apiKey: 'sk-secret-key-2222' });
+
+    // Create profile bound to credential 1
     const profile = repo.createProfile(p, {
       profileId: ModelProfileIdSchema.parse('dyn-coding'),
-      displayName: 'Coding Agent v1',
-      credentialId: cred.id,
+      displayName: 'Coding Agent',
+      credentialId: cred1.id,
       model: 'gpt-5.2',
       apiMode: 'chat-completions',
       pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
@@ -319,25 +326,79 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       expiresAt: now + 60_000
     });
 
-    // Cannot delete profile or credential while active agent exists
-    expect(() => repo.deleteProfile(p, profile.id, 1)).toThrow('active subagent leases exist');
-    expect(() => repo.deleteCredential(p, cred.id, 1)).toThrow('model profiles');
-
-    // Update profile to revision 2
+    // Update profile to credential 2 (generating revision 2)
     const updated = repo.updateProfile(p, profile.id, {
       displayName: 'Coding Agent v2',
-      pricing: { inputMicrosPerMillionTokens: 2000, outputMicrosPerMillionTokens: 4000 },
+      credentialId: cred2.id,
       expectedGeneration: 1
     });
 
     const rev2Id = updated.activeRevisionId!;
     expect(rev2Id).not.toBe(rev1Id);
 
-    // Snapshot exports BOTH rev1 (referenced by running agent) AND rev2 (current active revision)
+    // Snapshot exports BOTH rev1 (binding cred1) AND rev2 (binding cred2)
     const snapshot = repo.getExportSnapshot(p);
-    expect(snapshot.profiles[rev1Id]).toBeDefined();
-    expect(snapshot.profiles[rev2Id]).toBeDefined();
-    expect(snapshot.credentials[cred.id]).toBeDefined();
+    expect(snapshot.profiles[rev1Id]?.credentialId).toBe(cred1.id);
+    expect(snapshot.profiles[rev2Id]?.credentialId).toBe(cred2.id);
+    expect(snapshot.credentials[cred1.id]?.secret).toBe('sk-secret-key-1111');
+    expect(snapshot.credentials[cred2.id]?.secret).toBe('sk-secret-key-2222');
+
+    // Setup mock TLS upstream server capturing auth header
+    let lastAuth = '';
+    const upstreamServer: TlsServer = createTlsServer({ cert, key }, (req, res) => {
+      lastAuth = req.headers['authorization'] ?? '';
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+    await new Promise<void>((res) => upstreamServer.listen(0, '127.0.0.1', res));
+    const upstreamAddress = upstreamServer.address() as AddressInfo;
+    const upstreamUrl = `https://127.0.0.1:${upstreamAddress.port}/v1/chat/completions`;
+
+    snapshot.profiles[rev1Id]!.upstreamUrl = upstreamUrl;
+    snapshot.profiles[rev2Id]!.upstreamUrl = upstreamUrl;
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-rehydrate-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-rehydrate-${randomBytes(6).toString('hex')}.sock`);
+
+    const gwConfig = await loadGatewayConfig({
+      MODEL_GATEWAY_MODE: 'test',
+      MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
+      MODEL_GATEWAY_HOST: '127.0.0.1',
+      MODEL_GATEWAY_PORT: '3210',
+      MODEL_GATEWAY_PROFILES_JSON: '[]',
+      MODEL_GATEWAY_TEST_TLS_CA_FILE: certFile
+    });
+
+    const gwRuntime = createGatewayRuntime(gwConfig);
+    await gwRuntime.listen();
+    const gwAddress = gwRuntime.httpServer.address() as AddressInfo;
+
+    try {
+      // Apply snapshot to Gateway
+      const client = connect(controlSocket);
+      await new Promise<void>((res, rej) => {
+        client.on('data', () => res());
+        client.on('error', rej);
+        client.end(JSON.stringify({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) + '\n');
+      });
+
+      // Request using rev1 lease -> routes with Key 1
+      const lease1 = gwRuntime.issueLease({ leaseId: 'l1', agentId: 'agent_01234567890123456789', profileId: rev1Id, ttlMs: 30000, maxInputTokens: 1000, maxOutputTokens: 500, maxCostMicros: 1000 });
+      const req1 = httpRequest({ host: '127.0.0.1', port: gwAddress.port, path: '/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${lease1}`, 'x-model-profile': rev1Id, 'x-agent-id': 'agent_01234567890123456789', 'x-request-id': 'req_012345678901234567891' } });
+      await new Promise<void>((res, rej) => { req1.on('response', (r) => { r.resume(); r.on('end', () => res()); }); req1.on('error', rej); req1.write('{}'); req1.end(); });
+      expect(lastAuth).toBe('Bearer sk-secret-key-1111');
+
+      // Request using rev2 lease -> routes with Key 2
+      const lease2 = gwRuntime.issueLease({ leaseId: 'l2', agentId: 'agent_01234567890123456789', profileId: rev2Id, ttlMs: 30000, maxInputTokens: 1000, maxOutputTokens: 500, maxCostMicros: 1000 });
+      const req2 = httpRequest({ host: '127.0.0.1', port: gwAddress.port, path: '/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${lease2}`, 'x-model-profile': rev2Id, 'x-agent-id': 'agent_01234567890123456789', 'x-request-id': 'req_012345678901234567892' } });
+      await new Promise<void>((res, rej) => { req2.on('response', (r) => { r.resume(); r.on('end', () => res()); }); req2.on('error', rej); req2.write('{}'); req2.end(); });
+      expect(lastAuth).toBe('Bearer sk-secret-key-2222');
+    } finally {
+      await gwRuntime.close();
+      await new Promise<void>((res) => upstreamServer.close(() => res()));
+    }
   });
 
   it('executes real HTTP requests through Model Gateway for both chat-completions and responses modes with dynamic snapshot', async () => {

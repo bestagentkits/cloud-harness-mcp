@@ -98,7 +98,11 @@ export async function startControlServer(options: {
 
             // Update profiles
             for (const [revId, revData] of Object.entries(profiles)) {
-              const cred = registry.credentials.get(revData.credentialId) ?? Object.values(credentials)[0];
+              const credId = revData.credentialId;
+              const cred = typeof credId === 'string' ? registry.credentials.get(credId) : undefined;
+              if (!cred) {
+                throw new Error(`unresolved credential binding for profile revision ${revId}`);
+              }
               const limits: ProfileLimits = revData.limits ? {
                 ...defaultLimits(),
                 maxInputTokens: revData.limits.maxInputTokens ?? 400_000,
@@ -113,9 +117,9 @@ export async function startControlServer(options: {
                 downstreamPath: revData.downstreamPath ?? '/v1/chat/completions',
                 upstream: new URL(revData.upstreamUrl ?? 'https://api.openai.com/v1/chat/completions'),
                 credentialFile: '',
-                credentialSecret: cred?.secret,
-                credentialHeader: cred?.authMode === 'x-api-key' ? 'x-api-key' : 'authorization',
-                credentialScheme: cred?.authMode === 'x-api-key' ? '' : 'Bearer',
+                credentialSecret: cred.secret,
+                credentialHeader: cred.authMode === 'x-api-key' ? 'x-api-key' : 'authorization',
+                credentialScheme: cred.authMode === 'x-api-key' ? '' : 'Bearer',
                 inputMicrosPerMillionTokens: revData.pricing?.inputMicrosPerMillionTokens ?? 0,
                 outputMicrosPerMillionTokens: revData.pricing?.outputMicrosPerMillionTokens ?? 0,
                 limits,

@@ -96,6 +96,7 @@ export const AgentModelProfileRevisionSchema = z.object({
   id: ModelRevisionIdSchema,
   profileId: ModelProfileIdSchema,
   principalId: z.string(),
+  credentialId: ModelCredentialIdSchema,
   model: z.string(),
   apiMode: AgentModelApiModeSchema,
   downstreamPath: z.string(),

@@ -263,6 +263,7 @@ export class ModelProfileStateRepository {
 
     const digest = computeRevisionDigest({
       profileId: input.profileId,
+      credentialId: input.credentialId,
       model: input.model,
       apiMode: input.apiMode,
       downstreamPath,
@@ -276,6 +277,7 @@ export class ModelProfileStateRepository {
       id: revId,
       profileId: input.profileId,
       principalId,
+      credentialId: input.credentialId,
       model: input.model,
       apiMode: input.apiMode,
       downstreamPath,
@@ -297,14 +299,15 @@ export class ModelProfileStateRepository {
 
       this.database.prepare(`
         INSERT INTO agent_model_profile_revisions (
-          id, profile_id, principal_id, model, api_mode, downstream_path, upstream_url,
+          id, profile_id, principal_id, credential_id, model, api_mode, downstream_path, upstream_url,
           input_micros_per_million, output_micros_per_million, max_input_tokens, max_output_tokens, max_cost_micros,
           max_proxy_operations_json, digest, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         revId,
         input.profileId,
         principalId,
+        input.credentialId,
         input.model,
         input.apiMode,
         downstreamPath,
@@ -363,7 +366,7 @@ export class ModelProfileStateRepository {
       let activeRevision: AgentModelProfileRevision | null = null;
       if (p.active_revision_id) {
         const rev = this.database.prepare(`
-          SELECT id, profile_id, principal_id, model, api_mode, downstream_path, upstream_url,
+          SELECT id, profile_id, principal_id, credential_id, model, api_mode, downstream_path, upstream_url,
                  input_micros_per_million, output_micros_per_million, max_input_tokens, max_output_tokens, max_cost_micros,
                  max_proxy_operations_json, digest, created_at
           FROM agent_model_profile_revisions
@@ -372,6 +375,7 @@ export class ModelProfileStateRepository {
           id: string;
           profile_id: string;
           principal_id: string;
+          credential_id: string;
           model: string;
           api_mode: 'chat-completions' | 'responses';
           downstream_path: string;
@@ -391,6 +395,7 @@ export class ModelProfileStateRepository {
             id: ModelRevisionIdSchema.parse(rev.id),
             profileId: ModelProfileIdSchema.parse(rev.profile_id),
             principalId: rev.principal_id,
+            credentialId: ModelCredentialIdSchema.parse(rev.credential_id ?? p.credential_id),
             model: rev.model,
             apiMode: rev.api_mode,
             downstreamPath: rev.downstream_path,
@@ -478,6 +483,7 @@ export class ModelProfileStateRepository {
 
     const digest = computeRevisionDigest({
       profileId,
+      credentialId,
       model,
       apiMode,
       downstreamPath,
@@ -491,6 +497,7 @@ export class ModelProfileStateRepository {
       id: revId,
       profileId: ModelProfileIdSchema.parse(profileId),
       principalId,
+      credentialId: ModelCredentialIdSchema.parse(credentialId),
       model,
       apiMode,
       downstreamPath,
@@ -508,14 +515,15 @@ export class ModelProfileStateRepository {
     try {
       this.database.prepare(`
         INSERT INTO agent_model_profile_revisions (
-          id, profile_id, principal_id, model, api_mode, downstream_path, upstream_url,
+          id, profile_id, principal_id, credential_id, model, api_mode, downstream_path, upstream_url,
           input_micros_per_million, output_micros_per_million, max_input_tokens, max_output_tokens, max_cost_micros,
           max_proxy_operations_json, digest, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         revId,
         profileId,
         principalId,
+        credentialId,
         model,
         apiMode,
         downstreamPath,
@@ -529,7 +537,6 @@ export class ModelProfileStateRepository {
         digest,
         now
       );
-
       this.database.prepare(`
         UPDATE agent_model_profiles
         SET display_name = ?, credential_id = ?, desired_revision_id = ?, active_revision_id = ?, generation = generation + 1, updated_at = ?
@@ -667,10 +674,12 @@ export class ModelProfileStateRepository {
       `).get(revId) as Record<string, any> | undefined;
 
       if (rev) {
+        const credId = ModelCredentialIdSchema.parse(rev.credential_id);
         profiles[rev.id] = {
           id: ModelRevisionIdSchema.parse(rev.id),
           profileId: ModelProfileIdSchema.parse(rev.profile_id),
           principalId: rev.principal_id,
+          credentialId: credId,
           model: rev.model,
           apiMode: rev.api_mode,
           downstreamPath: rev.downstream_path,
@@ -689,8 +698,7 @@ export class ModelProfileStateRepository {
           createdAt: rev.created_at
         };
 
-        const prof = this.database.prepare('SELECT credential_id FROM agent_model_profiles WHERE id = ?').get(rev.profile_id) as { credential_id: string } | undefined;
-        if (prof) credentialIdsToExport.add(prof.credential_id);
+        credentialIdsToExport.add(credId);
       }
     }
 
