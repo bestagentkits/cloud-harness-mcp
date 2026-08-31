@@ -24,34 +24,43 @@ async function getRawMarkdown(): Promise<string> {
     if (res.ok) {
       return await res.text();
     }
-  } catch {
-    // Fallback if fetch fails
+  } catch (err) {
+    console.warn('Could not fetch markdown twin directly:', err);
   }
-  const contentEl = document.querySelector('.vp-doc');
-  return contentEl ? (contentEl as HTMLElement).innerText : '';
+  return '';
 }
 
 async function copyMarkdown() {
-  const text = await getRawMarkdown();
-  if (navigator.clipboard) {
-    await navigator.clipboard.writeText(text);
-    copiedState.value = 'markdown';
-    setTimeout(() => {
-      copiedState.value = 'idle';
-    }, 2000);
+  try {
+    const text = await getRawMarkdown();
+    if (text && navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      copiedState.value = 'markdown';
+      setTimeout(() => {
+        copiedState.value = 'idle';
+      }, 2000);
+    }
+  } catch (err) {
+    console.error('Failed to copy markdown to clipboard:', err);
+  } finally {
+    isOpen.value = false;
   }
-  isOpen.value = false;
 }
 
 async function copyMarkdownUrl() {
-  if (navigator.clipboard) {
-    await navigator.clipboard.writeText(fullMdUrl.value);
-    copiedState.value = 'url';
-    setTimeout(() => {
-      copiedState.value = 'idle';
-    }, 2000);
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(fullMdUrl.value);
+      copiedState.value = 'url';
+      setTimeout(() => {
+        copiedState.value = 'idle';
+      }, 2000);
+    }
+  } catch (err) {
+    console.error('Failed to copy URL to clipboard:', err);
+  } finally {
+    isOpen.value = false;
   }
-  isOpen.value = false;
 }
 
 function openMarkdown() {
