@@ -162,23 +162,36 @@ Cloud Harness MCP provides a portable coding context plane across agent clients 
 
 ## State and lifecycle
 
-Workspace metadata, idempotency, principal ownership, status, and expiry are persisted in
-SQLite by
-[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts). The
+Workspace metadata, status, expiry, durable task graphs, Git operation idempotency,
+and principal ownership are persisted in SQLite by
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) with versioned
+schema migrations. The
 repository checkout lives under the configured jobs root and persists across
 MCP calls while the workspace is active. Close or TTL cleanup removes the
 executor and its workspace directory; SQLite retains the resulting metadata.
 
-Shell, named-session, and dependency-task handles, output buffers, graphs, and
-idempotency mappings are runner memory, not SQLite state. They survive ordinary
-calls but not a runner restart. A restart reconciles persisted workspace
-records against Docker containers and restarts every surviving executor. This
-preserves repository files while terminating processes whose in-memory handles
-were lost; the handles themselves cannot be restored. Docker reconciliation is
-scoped by a random runner-instance identity persisted in SQLite, so another
-state store or Compose stack using the same daemon does not delete this
-instance's containers.
+Dependency-task records, dependency DAGs, execution state, and output byte counts
+are durable SQLite state (`durable_tasks`, `task_dependencies`), while task output
+logs are streamed to 0600 log files on disk. They survive runner restarts and
+remain queryable via `tasks_list`/`tasks_status`.
+A restart reconciles prior-epoch in-flight tasks as terminal failed tasks
+(`status: 'failed'`, `errorCode: 'RUNNER_RESTARTED'`) and spools completed task logs
+into retained artifact storage upon workspace closure. In contrast, interactive
+shell and named-session process handles and in-memory output streams live in
+volatile runner memory and do not survive a runner restart.
 
+A restart reconciles persisted workspace records against Docker containers and
+restarts every surviving executor. This preserves repository files while
+terminating processes whose in-memory handles were lost; the handles themselves
+cannot be restored. Docker reconciliation is scoped by a random runner-instance
+identity persisted in SQLite, so another state store or Compose stack using the
+same daemon does not delete this instance's containers.
+
+Owner-scoped repository caching stores bare Git repositories under the configured
+`repoCacheRoot`, scoped strictly by opaque principal ID. Cloning from the cache
+uses `git clone --reference-if-able <cache> --dissociate` to create completely independent, writable
+worktree checkouts without cross-principal state sharing. Caching is opt-in
+(`enableRepoCache: false` by default).
 The MCP transport is stateless: the API creates a fresh server for request
 handling while the durable workspace identity lives below the transport. A
 lost `workspace_open` response can therefore be recovered by replaying its

@@ -59,10 +59,20 @@ The lifecycle contract is owned by
 6. Close shells and sessions, cancel unwanted tasks, then call
    `workspace_close`.
 
-Reusing a `workspace_open`, `shell_open`, `sessions_open`, `tasks_run`,
-`workspace_finalize`, `agent_spawn`, or `agent_message` idempotency key returns the
-prior created resource or delivery state for that workspace. This makes a lost
-response recoverable without duplicating work.
+Reusing an idempotency key with identical parameters returns the prior created
+resource, delivery state, or confirmed mutation for that workspace without
+duplicating work:
+
+- Creation ops (`workspace_open`, `shell_open`, `sessions_open`, `tasks_run`,
+  `agent_spawn`, `agent_message`) return the existing handle or reservation.
+- Git mutations (`git_commit`, `git_push`, `workspace_finalize`) take the key
+  on the initial attempt and reuse it to reconcile an unverified outcome (e.g.
+  `UNKNOWN_REMOTE_STATE`). A same-key replay reporting `alreadyFinalized: true`
+  is confirmed success.
+- `files_write_batch` and idempotency-enabled `github_action` mutations
+  (`pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`) replay
+  their cached result within their configured retention window (GitHub action
+  idempotency records expire after 24 hours).
 
 ## Coding-agent operations
 
@@ -147,7 +157,10 @@ lease is revoked, its container is removed, and its status transitions to
   All write actions emit structured `github_action.<action>` events in `audit_events`.
   Failures return typed machine-actionable error codes (`GITHUB_RATE_LIMITED` with retryAfterMs,
   `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`).
-  Comment, label, and publish mutations support idempotency keys.
+  Comment, label, and publish mutations support idempotency keys with a 24-hour
+  retention window; retries within 24 hours replay the cached result or reject
+  payload mismatches with `CONFLICT`, after which the key expires and the request
+  executes anew.
 - Output pagination for tools such as `files_read`, `git_diff`, and `git_log` uses
   snapshot-bound continuation cursors. The cursor is bound to content hashes or commit
   signatures; if underlying files, index, or repository state change between calls,
@@ -158,8 +171,30 @@ lease is revoked, its container is removed, and its status transitions to
   are restored.
 - `workspace_finalize` provides a single transactional endpoint to stage changes,
   run diff preflight checks, commit with workspace/owner default Git identity, and
-  push to remote. If a push is rejected or network fails, actionable resumption hints
-  and the created commit SHA are returned.
+  push to remote. When supplied with an `idempotencyKey`, finalize is crash-durable:
+  the created commit SHA and target ref are persisted in the durable ledger. If the
+  remote push is interrupted, retrying the identical request with the same `idempotencyKey`
+  automatically reconciles against the remote ref and returns `alreadyFinalized: true`
+  instead of creating duplicate commits or pushing again.
+- `git_commit` creates an unsigned local commit. Supplying `expectedHeadOid` acts
+  as a compare-and-set guard: if workspace HEAD has diverged, the commit is
+  rejected with `STALE_HEAD` and returns `currentHeadOid`/`expectedHeadOid` detail.
+  Supplying `idempotencyKey` prevents duplicate commits on lost-response retries.
+- `git_push` pushes a branch refspec to origin. Supplying `idempotencyKey` on the
+  initial push enables safe unknown-outcome recovery: if a network drop or timeout
+  occurs, the runner returns `UNKNOWN_REMOTE_STATE` with `resumeAction: "reconcile_push"`.
+  Retrying the identical request with the same key probes the destination ref's
+  remote OID before pushing, returning `alreadyFinalized: true` if the earlier push
+  landed. Force-with-lease (`forceWithLease: true`) requires `expectedRemoteOid` and
+  an explicit destination branch, rejecting diverged remote state with `CONFLICT`.
+- `tasks_run`, `tasks_status`, and `tasks_list` manage detached dependency-aware tasks.
+  Task metadata, dependency DAGs, and status are durable in SQLite (`durable_tasks`),
+  while task output streams are written to 0600 log files on disk. Surviving task
+  records remain queryable across runner restarts; in-flight tasks interrupted by a
+  restart become terminal (`status: 'failed'`, `errorCode: 'RUNNER_RESTARTED'`) rather
+  than continuing invisibly. Task log output is automatically spooled into retained
+  artifact storage upon workspace closure. In contrast, interactive shells (`shell_*`)
+  and named sessions (`sessions_*`) live in volatile runner memory only and are lost on restart.
 - `workspace_lease_renew` and `workspace_recover` allow inspecting, extending,
   and restoring workspaces across their lifecycle states:
   - **`ACTIVE` → `EXPIRED_RECOVERABLE` → `CLOSED` Lifecycle:** When an active
@@ -195,29 +230,6 @@ lease is revoked, its container is removed, and its status transitions to
   [`worker/harness-worker.mjs`](../worker/harness-worker.mjs), and the executor
   image owns the available indexer in
   [`docker/executor.Dockerfile`](../docker/executor.Dockerfile).
-- Shells and named interactive coding sessions are workspace-owned during a runner
-  process lifetime and remain in-memory ephemeral streams. Background tasks (`tasks_run`,
-  `tasks_status`, `tasks_list`, `tasks_cancel`, `tasks_graph`) are durable across process
-  restarts: task metadata is persisted in SQLite (`durable_tasks`, `task_dependencies`) with
-  composite tenant foreign keys, while task log output is spooled to disk (`/job/.chm/tasks/<id>.log`)
-  with 0600 permissions and capped at `maxOutputBytes`.
-- Process-scoped `runner_boot_id` ensures safe restart reconciliation: upon runner restart, any
-  in-flight tasks from previous boot IDs are cleanly marked `FAILED` (`error_code: "RUNNER_RESTARTED"`),
-  while completed task outputs remain readable via cursor-based offset pagination. When a workspace is
-  closed or reaped, completed task logs are automatically archived into `ArtifactStore` (`task-output-<id>.log`)
-  before the workspace directory is deleted.
-- Retrying `tasks_run`, `git_commit`, or `git_push` with an existing `idempotencyKey` returns the
-  recorded result with `alreadyFinalized: true` without duplicate execution. Reusing an idempotency key with
-  mismatched request parameters is rejected with `CONFLICT`.
-- Remote Git push operations enforce Compare-And-Swap via `--force-with-lease=<ref>:<expectedRemoteOid>`
-  and classify errors into deterministic `CONFLICT` (409) or network interruptions `UNKNOWN_REMOTE_STATE` (504)
-  with structured `resumeAction: "reconcile_push"`. When retrying after an unknown outcome, the runner probes
-  the remote reference OID via `git ls-remote` before re-pushing. `git_commit` accepts an optional `expectedHeadOid`
-  to reject commits on stale HEADs with `STALE_HEAD` (409).
-- Owner-scoped repository caching (`REPO_CACHE_ROOT`, default disabled via `ENABLE_REPO_CACHE=false`)
-  maintains isolated bare mirror caches (`chmod 0700`) per principal and clones using
-  `git clone --reference-if-able <cache_path> --dissociate`, ensuring workspace object databases become
-  completely independent after clone with automatic fallback to blobless clone.
 - **MCP Tasks Specification Evaluation (2026-07-28 Revision):** The official Model Context Protocol specification
   ([Overview](https://modelcontextprotocol.io/extensions/tasks/overview), 2026-07-28 revision) transitioned Tasks from
   basic utilities into an optional extension (`io.modelcontextprotocol/tasks`) negotiated via per-request server capabilities
