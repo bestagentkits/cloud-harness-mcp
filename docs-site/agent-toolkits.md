@@ -49,7 +49,7 @@ Pass the preset inside the `toolkits` array during `workspace_open`:
 
 ## Custom Git Toolkits
 
-You can load skills from any public or authenticated HTTPS Git repository by specifying `kind: "git"`:
+You can load skills from any public HTTPS Git repository belonging to `ALLOWED_GIT_HOSTS` by specifying `kind: "git"`:
 
 ```json
 {
