@@ -136,6 +136,8 @@ schema and enforced by
 [`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts).
 `EXECUTOR_IMAGE` is chosen by the trusted operator; callers cannot select an
 image.
+`TOOLKIT_CACHE_ROOT` configures the runner's content-addressed storage volume for pre-cached agent toolkits (`/var/lib/cloud-harness/cache/toolkits`). `ENABLE_TOOLKIT_CACHE` toggles CAS persistence, and `TOOLKIT_NETWORK_POLICY` (`cache-only` vs `runner-fetch`) controls whether uncached toolkits can be fetched at workspace open.
+
 
 ## Dashboard secrets
 
@@ -154,6 +156,8 @@ keyring, quiescing writes, and using the runner-only re-encryption entry point d
 [operations guide](operations.md#secret-key-rotation). Missing or invalid key
 material disables secret-dependent operations without exposing key details;
 non-secret dashboard reads remain available.
+
+Secrets support purpose classification (`runtime` vs `provisioning`). Provisioning secrets are used exclusively during helper provisioning workflows and are strictly excluded from runtime executor containers.
 
 Dashboard-managed MCP API keys use a different write-only contract from
 encrypted environment secrets. The runner stores only a SHA-256 digest and
