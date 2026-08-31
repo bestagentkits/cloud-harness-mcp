@@ -130,15 +130,22 @@ untrusted service.
 
 `JOBS_ROOT` contains ephemeral workspace directories. `STATE_DB` points to
 SQLite control metadata. `ARTIFACT_ROOT` contains retained, bounded dashboard
-snapshots and must use runner-confined durable storage distinct from the
-TTL-bound jobs root. Quotas and retention are validated by the configuration
-schema and enforced by
+snapshots and spooled task outputs; it must use runner-confined durable storage
+distinct from the TTL-bound jobs root. Quotas and retention are defined by
+`MAX_ARTIFACT_BYTES` (default 16 MiB), `MAX_PRINCIPAL_ARTIFACT_BYTES` (default 128 MiB),
+and `ARTIFACT_RETENTION_SECONDS` (default 86,400 seconds / 24 hours), validated
+by the configuration schema and enforced by
 [`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts).
+
+`REPO_CACHE_ROOT` (mapped via `HOST_REPO_CACHE_ROOT` in Compose) configures the
+runner storage path for bare Git repository caches (`/var/lib/cloud-harness/cache/repos`).
+`ENABLE_REPO_CACHE` (default `false`) toggles owner-scoped bare cloning; when
+enabled, initial clones share local Git object storage via `git clone --shared --dissociate`
+while keeping writable checkouts strictly isolated.
+
 `EXECUTOR_IMAGE` is chosen by the trusted operator; callers cannot select an
 image.
 `TOOLKIT_CACHE_ROOT` configures the runner's content-addressed storage volume for pre-cached agent toolkits (`/var/lib/cloud-harness/cache/toolkits`). `ENABLE_TOOLKIT_CACHE` toggles CAS persistence, and `TOOLKIT_NETWORK_POLICY` (`cache-only` vs `runner-fetch`) controls whether uncached toolkits can be fetched at workspace open.
-
-
 ## Dashboard secrets
 
 Dashboard secret values are write-only. The browser receives reference

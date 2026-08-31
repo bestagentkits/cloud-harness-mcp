@@ -59,10 +59,19 @@ The lifecycle contract is owned by
 6. Close shells and sessions, cancel unwanted tasks, then call
    `workspace_close`.
 
-Reusing a `workspace_open`, `shell_open`, `sessions_open`, `tasks_run`,
-`workspace_finalize`, `agent_spawn`, or `agent_message` idempotency key returns the
-prior created resource or delivery state for that workspace. This makes a lost
-response recoverable without duplicating work.
+Reusing an idempotency key with identical parameters returns the prior created
+resource, delivery state, or confirmed mutation for that workspace without
+duplicating work:
+
+- Creation ops (`workspace_open`, `shell_open`, `sessions_open`, `tasks_run`,
+  `agent_spawn`, `agent_message`) return the existing handle or reservation.
+- Git mutations (`git_commit`, `git_push`, `workspace_finalize`) take the key
+  on the initial attempt and reuse it to reconcile an unverified outcome (e.g.
+  `UNKNOWN_REMOTE_STATE`). A same-key replay reporting `alreadyFinalized: true`
+  is confirmed success.
+- `files_write_batch` and idempotency-enabled `github_action` mutations
+  (`pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`) replay
+  their cached result.
 
 ## Coding-agent operations
 
@@ -158,8 +167,29 @@ lease is revoked, its container is removed, and its status transitions to
   are restored.
 - `workspace_finalize` provides a single transactional endpoint to stage changes,
   run diff preflight checks, commit with workspace/owner default Git identity, and
-  push to remote. If a push is rejected or network fails, actionable resumption hints
-  and the created commit SHA are returned.
+  push to remote. Finalize is crash-durable: the created commit SHA and target ref
+  are persisted in the durable ledger. If the remote push is interrupted, retrying
+  with the same `idempotencyKey` automatically reconciles against the remote ref
+  and returns `alreadyFinalized: true` instead of creating duplicate commits or pushing again.
+- `git_commit` creates an unsigned local commit. Supplying `expectedHeadOid` acts
+  as a compare-and-set guard: if workspace HEAD has diverged, the commit is
+  rejected with `STALE_HEAD` and returns `currentHeadOid`/`expectedHeadOid` detail.
+  Supplying `idempotencyKey` prevents duplicate commits on lost-response retries.
+- `git_push` pushes a branch refspec to origin. Supplying `idempotencyKey` on the
+  initial push enables safe unknown-outcome recovery: if a network drop or timeout
+  occurs, the runner returns `UNKNOWN_REMOTE_STATE` with `resumeAction: "reconcile_push"`.
+  Retrying the identical request with the same key probes the destination ref's
+  remote OID before pushing, returning `alreadyFinalized: true` if the earlier push
+  landed. Force-with-lease (`forceWithLease: true`) requires `expectedRemoteOid` and
+  an explicit destination branch, rejecting diverged remote state with `CONFLICT`.
+- `tasks_run`, `tasks_status`, and `tasks_list` manage detached dependency-aware tasks.
+  Task metadata, dependency DAGs, status, and bounded output are durable in SQLite
+  (`durable_tasks`) and 0600 log files on disk. Surviving task records remain queryable
+  across runner restarts; in-flight tasks interrupted by a restart become terminal
+  with `RUNNER_RESTARTED` rather than continuing invisibly. Task log output is
+  automatically spooled into retained artifact storage upon workspace closure. In
+  contrast, interactive shells (`shell_*`) and named sessions (`sessions_*`) live in
+  volatile runner memory only and are lost on restart.
 - `workspace_lease_renew` and `workspace_recover` allow inspecting, extending,
   and restoring workspaces across their lifecycle states:
   - **`ACTIVE` → `EXPIRED_RECOVERABLE` → `CLOSED` Lifecycle:** When an active

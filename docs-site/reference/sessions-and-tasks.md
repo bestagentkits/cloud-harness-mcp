@@ -16,14 +16,20 @@ For commands requiring user interaction, REPLs, or live monitoring:
 - `shell_io`: Sends input (keystrokes, text) and reads streaming output.
 - `shell_close`: Gracefully signals or terminates the process.
 
-## Task Graphs (DAGs)
+## Task Graphs (DAGs) & Durable Task Engine
 
-For complex multi-stage builds or benchmarks:
-- `tasks_run`: Submits a parallel dependency graph of tasks.
-- `tasks_status`: Polls execution status and outputs of tasks.
-- `tasks_cancel`: Cancels running or pending graph stages.
-- `tasks_graph`: Inspects dependency topology.
-## MCP Tasks Extension Compatibility Matrix (2026-07-28 Revision)
+For detached builds, test suites, and multi-stage workflows:
+- `tasks_run`: Submits a dependency-aware task graph (`dependsOn`). Task metadata, status, and bounded log outputs are persisted in SQLite.
+- `tasks_status`: Polls execution status, progress, and bounded log outputs.
+- `tasks_list`: Lists all tasks associated with the workspace.
+- `tasks_cancel`: Cancels running or pending task stages.
+- `tasks_graph`: Inspects dependency topology for diagnosing blocked tasks.
+
+### Durability & Restart Reconciliation
+
+- **Durable State:** Unlike interactive PTY sessions (which live in volatile memory only and are lost on runner restart), task records, dependency DAGs, and on-disk logs persist across runner restarts.
+- **Crash Reconciliation:** In-flight tasks from a prior runner epoch transition to `RUNNER_RESTARTED` upon restart and can be inspected via `tasks_status`/`tasks_list`.
+- **Artifact Spooling:** When a workspace closes or expires, task log outputs are automatically spooled into retained artifact storage.
 
 The official Model Context Protocol specification ([Tasks Extension Overview](https://modelcontextprotocol.io/extensions/tasks/overview), 2026-07-28 revision) defines task management as an optional protocol extension (`io.modelcontextprotocol/tasks`) with `tasks/get`, `tasks/update`, `tasks/cancel`, and progress notifications.
 
