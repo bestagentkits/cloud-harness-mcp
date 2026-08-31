@@ -4,7 +4,9 @@ import type { AddressInfo } from 'node:net';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
@@ -18,6 +20,26 @@ import { createGatewayRuntime } from '../../apps/model-gateway/src/gateway.js';
 import { loadGatewayConfig } from '../../apps/model-gateway/src/config.js';
 import { ModelProfileIdSchema, RunnerAgentsConfigSchema } from '@cloud-harness/contracts';
 const tempDbPath = () => join(tmpdir(), `test-dyn-models-${randomBytes(8).toString('hex')}.sqlite`);
+
+async function ensureTlsFixtures(): Promise<{ certFile: string; keyFile: string }> {
+  const defaultCert = resolve('.cloud-harness-test-fixtures/model-gateway/server-cert.pem');
+  const defaultKey = resolve('.cloud-harness-test-fixtures/model-gateway/server-key.pem');
+  if (existsSync(defaultCert) && existsSync(defaultKey)) {
+    return { certFile: defaultCert, keyFile: defaultKey };
+  }
+  const dir = await mkdtemp(join(tmpdir(), 'dyn-models-tls-'));
+  const certFile = join(dir, 'server-cert.pem');
+  const keyFile = join(dir, 'server-key.pem');
+  const res = spawnSync('openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '1',
+    '-subj', '/CN=fake-provider',
+    '-addext', 'subjectAltName=DNS:fake-provider,DNS:localhost,IP:127.0.0.1',
+    '-keyout', keyFile,
+    '-out', certFile
+  ], { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] });
+  if (res.status !== 0) throw new Error(`openssl failed: ${res.stderr}`);
+  return { certFile, keyFile };
+}
 
 describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
   const openStores: StateStore[] = [];
@@ -222,17 +244,107 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       maxOutputTokens: 10000,
       maxCostMicros: 1000000
     })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
-
     await manager.stop();
+  });
+
+  it('retains revision N after profile update to N+1 across Gateway restart for active agent lease', async () => {
+    const { repo, p, store } = setup();
+    const cred = repo.createCredential(p, { label: 'OpenAI Test', provider: 'openai', apiKey: 'sk-key-v1' });
+
+    const profile = repo.createProfile(p, {
+      profileId: ModelProfileIdSchema.parse('dyn-coding'),
+      displayName: 'Coding Agent v1',
+      credentialId: cred.id,
+      model: 'gpt-5.2',
+      apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      maxProxyOperations: ['files_read']
+    });
+
+    const rev1Id = profile.activeRevisionId!;
+
+    // Create active workspace and agent running on rev1
+    const wsId = `ws_${'r'.repeat(24)}`;
+    const now = Date.now();
+    store.create({
+      id: wsId,
+      ownerId: p,
+      idempotencyKey: 'workspace-key-r',
+      repositoryUrl: 'https://github.com/org/repo.git',
+      repositoryRef: null,
+      containerName: 'executor',
+      workspacePath: '/tmp/ws-r',
+      environmentId: null,
+      status: 'ACTIVE',
+      networkProfile: 'network-none',
+      createdAt: now,
+      lastActivityAt: now,
+      expiresAt: now + 3600_000,
+      hardExpiresAt: now + 7200_000,
+      gitAuthorName: null,
+      gitAuthorEmail: null,
+      mutationLockedUntil: null,
+      generation: 1,
+      error: null
+    });
+
+    const agentRepo = new AgentStateRepository(store.database, {
+      minTtlSeconds: 30, maxTtlSeconds: 3600, maxPromptBytes: 65536, maxMessageBytes: 65536,
+      maxLogBytes: 65536, maxLogEvents: 100, maxOutputBytes: 65536, maxLogEventBytes: 1024,
+      maxLogEventsPerAgent: 100, globalActive: 10, principalActive: 10, workspaceActive: 10,
+      parentActive: 5, workspaceLifetimeRecords: 100, cancellationGraceMs: 1000,
+      cleanupRetryLimit: 3, cleanupRetryMaxDelayMs: 1000, retentionSeconds: 3600,
+      lookupHorizonSeconds: 7200, globalRetainedRows: 100, principalRetainedRows: 100,
+      workspaceRetainedRows: 100, globalRetainedBytes: 1048576, principalRetainedBytes: 1048576,
+      workspaceRetainedBytes: 1048576
+    }, store.instanceId());
+
+    agentRepo.reserveSpawn({
+      id: 'agent_active_running_1234567890',
+      ownerId: p,
+      workspaceId: wsId,
+      workspaceGeneration: 1,
+      idempotencyKey: 'spawn-running-1',
+      payloadHash: 'hash1',
+      promptHash: 'hashp',
+      profileId: rev1Id,
+      proxyOperations: ['files_read'],
+      budget: { ttlSeconds: 60, maxOutputBytes: 65536, maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      containerName: 'ch-agent-1',
+      networkName: 'ch-net-1',
+      gatewayLeaseId: 'lease-running-1',
+      runtimeEpoch: 1,
+      now,
+      expiresAt: now + 60_000
+    });
+
+    // Cannot delete profile or credential while active agent exists
+    expect(() => repo.deleteProfile(p, profile.id, 1)).toThrow('active subagent leases exist');
+    expect(() => repo.deleteCredential(p, cred.id, 1)).toThrow('model profiles');
+
+    // Update profile to revision 2
+    const updated = repo.updateProfile(p, profile.id, {
+      displayName: 'Coding Agent v2',
+      pricing: { inputMicrosPerMillionTokens: 2000, outputMicrosPerMillionTokens: 4000 },
+      expectedGeneration: 1
+    });
+
+    const rev2Id = updated.activeRevisionId!;
+    expect(rev2Id).not.toBe(rev1Id);
+
+    // Snapshot exports BOTH rev1 (referenced by running agent) AND rev2 (current active revision)
+    const snapshot = repo.getExportSnapshot(p);
+    expect(snapshot.profiles[rev1Id]).toBeDefined();
+    expect(snapshot.profiles[rev2Id]).toBeDefined();
+    expect(snapshot.credentials[cred.id]).toBeDefined();
   });
 
   it('executes real HTTP requests through Model Gateway for both chat-completions and responses modes with dynamic snapshot', async () => {
     const { repo, p } = setup();
-    const certFile = resolve('.cloud-harness-test-fixtures/model-gateway/server-cert.pem');
-    const keyFile = resolve('.cloud-harness-test-fixtures/model-gateway/server-key.pem');
+    const { certFile, keyFile } = await ensureTlsFixtures();
     const cert = readFileSync(certFile);
     const key = readFileSync(keyFile);
-
     // 1. Setup local mock HTTPS upstream server handling both /v1/chat/completions and /v1/responses
     let lastReceivedAuth = '';
     let lastReceivedPath = '';

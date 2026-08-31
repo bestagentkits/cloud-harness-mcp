@@ -228,7 +228,22 @@ export class ModelProfileStateRepository {
     `).get(credentialId, principalId) as { count: number };
 
     if (dependentProfiles.count > 0) {
-      throw new HarnessError('CONFLICT', 'cannot delete credential referenced by active model profiles', 409, false);
+      throw new HarnessError('CONFLICT', 'cannot delete credential referenced by model profiles', 409, false);
+    }
+
+    try {
+      const activeAgents = this.database.prepare(`
+        SELECT count(*) as count FROM agents
+        WHERE profile_id IN (SELECT r.id FROM agent_model_profile_revisions r JOIN agent_model_profiles p ON p.id = r.profile_id WHERE p.credential_id = ?)
+          AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED')
+      `).get(credentialId) as { count: number };
+
+      if (activeAgents.count > 0) {
+        throw new HarnessError('CONFLICT', 'cannot delete credential while active subagent leases exist', 409, false);
+      }
+    } catch (err) {
+      if (err instanceof HarnessError) throw err;
+      // agents table may not exist in isolated repository tests
     }
 
     this.database.prepare('DELETE FROM model_provider_credentials WHERE id = ? AND principal_id = ?').run(credentialId, principalId);
@@ -588,6 +603,21 @@ export class ModelProfileStateRepository {
       throw new HarnessError('CONFLICT', 'profile generation conflict', 409, false);
     }
 
+    try {
+      const activeAgents = this.database.prepare(`
+        SELECT count(*) as count FROM agents
+        WHERE (profile_id = ? OR profile_id IN (SELECT id FROM agent_model_profile_revisions WHERE profile_id = ?))
+          AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED')
+      `).get(profileId, profileId) as { count: number };
+
+      if (activeAgents.count > 0) {
+        throw new HarnessError('CONFLICT', 'cannot delete model profile while active subagent leases exist', 409, false);
+      }
+    } catch (err) {
+      if (err instanceof HarnessError) throw err;
+      // agents table may not exist in isolated repository tests
+    }
+
     this.database.prepare('DELETE FROM agent_model_profiles WHERE id = ? AND principal_id = ?').run(profileId, principalId);
   }
 
@@ -595,18 +625,90 @@ export class ModelProfileStateRepository {
     credentials: Record<string, { provider: ModelProviderKind; authMode: ProviderAuthMode; secret: string }>;
     profiles: Record<string, AgentModelProfileRevision>;
   } {
+    const profileRows = (principalId
+      ? this.database.prepare("SELECT * FROM agent_model_profiles WHERE principal_id = ? AND status = 'ACTIVE'").all(principalId)
+      : this.database.prepare("SELECT * FROM agent_model_profiles WHERE status = 'ACTIVE'").all()) as Array<{
+        id: string;
+        principal_id: string;
+        active_revision_id: string | null;
+      }>;
+
+    const revisionIdsToExport = new Set<string>();
+    for (const p of profileRows) {
+      if (p.active_revision_id) revisionIdsToExport.add(p.active_revision_id);
+    }
+
+    try {
+      const activeAgentRows = (principalId
+        ? this.database.prepare(`
+            SELECT DISTINCT profile_id FROM agents
+            WHERE owner_id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED')
+          `).all(principalId)
+        : this.database.prepare(`
+            SELECT DISTINCT profile_id FROM agents
+            WHERE status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED')
+          `).all()) as Array<{ profile_id: string }>;
+
+      for (const row of activeAgentRows) {
+        if (row.profile_id.startsWith('rev_')) {
+          revisionIdsToExport.add(row.profile_id);
+        }
+      }
+    } catch {
+      // agents table may not exist in isolated repository tests
+    }
+
+    const profiles: Record<string, AgentModelProfileRevision> = {};
+    const credentialIdsToExport = new Set<string>();
+
+    for (const revId of revisionIdsToExport) {
+      const rev = this.database.prepare(`
+        SELECT * FROM agent_model_profile_revisions WHERE id = ?
+      `).get(revId) as Record<string, any> | undefined;
+
+      if (rev) {
+        profiles[rev.id] = {
+          id: ModelRevisionIdSchema.parse(rev.id),
+          profileId: ModelProfileIdSchema.parse(rev.profile_id),
+          principalId: rev.principal_id,
+          model: rev.model,
+          apiMode: rev.api_mode,
+          downstreamPath: rev.downstream_path,
+          upstreamUrl: rev.upstream_url,
+          pricing: {
+            inputMicrosPerMillionTokens: rev.input_micros_per_million,
+            outputMicrosPerMillionTokens: rev.output_micros_per_million
+          },
+          limits: {
+            maxInputTokens: rev.max_input_tokens,
+            maxOutputTokens: rev.max_output_tokens,
+            maxCostMicros: rev.max_cost_micros
+          },
+          maxProxyOperations: AgentProxyOperationSchema.array().parse(JSON.parse(rev.max_proxy_operations_json)),
+          digest: rev.digest,
+          createdAt: rev.created_at
+        };
+
+        const prof = this.database.prepare('SELECT credential_id FROM agent_model_profiles WHERE id = ?').get(rev.profile_id) as { credential_id: string } | undefined;
+        if (prof) credentialIdsToExport.add(prof.credential_id);
+      }
+    }
+
     const credRows = (principalId
-      ? this.database.prepare("SELECT * FROM model_provider_credentials WHERE principal_id = ? AND status = 'ACTIVE'").all(principalId)
-      : this.database.prepare("SELECT * FROM model_provider_credentials WHERE status = 'ACTIVE'").all()) as Array<{
+      ? this.database.prepare('SELECT * FROM model_provider_credentials WHERE principal_id = ?').all(principalId)
+      : this.database.prepare('SELECT * FROM model_provider_credentials').all()) as Array<{
         id: string;
         principal_id: string;
         provider: ModelProviderKind;
         auth_mode: ProviderAuthMode;
         active_version: number;
+        status: string;
       }>;
 
     const credentials: Record<string, { provider: ModelProviderKind; authMode: ProviderAuthMode; secret: string }> = {};
     for (const row of credRows) {
+      if (row.status !== 'ACTIVE' && !credentialIdsToExport.has(row.id)) continue;
+
       const ver = this.database.prepare(`
         SELECT key_version, nonce, ciphertext, auth_tag FROM model_provider_credential_versions
         WHERE credential_id = ? AND principal_id = ? AND version = ?
@@ -635,46 +737,6 @@ export class ModelProfileStateRepository {
           authMode: row.auth_mode,
           secret
         };
-      }
-    }
-
-    const profRows = (principalId
-      ? this.database.prepare("SELECT * FROM agent_model_profiles WHERE principal_id = ? AND status = 'ACTIVE'").all(principalId)
-      : this.database.prepare("SELECT * FROM agent_model_profiles WHERE status = 'ACTIVE'").all()) as Array<{
-        principal_id: string;
-        active_revision_id: string | null;
-      }>;
-
-    const profiles: Record<string, AgentModelProfileRevision> = {};
-    for (const p of profRows) {
-      if (p.active_revision_id) {
-        const rev = this.database.prepare(`
-          SELECT * FROM agent_model_profile_revisions WHERE id = ?
-        `).get(p.active_revision_id) as Record<string, any> | undefined;
-
-        if (rev) {
-          profiles[rev.id] = {
-            id: ModelRevisionIdSchema.parse(rev.id),
-            profileId: ModelProfileIdSchema.parse(rev.profile_id),
-            principalId: rev.principal_id,
-            model: rev.model,
-            apiMode: rev.api_mode,
-            downstreamPath: rev.downstream_path,
-            upstreamUrl: rev.upstream_url,
-            pricing: {
-              inputMicrosPerMillionTokens: rev.input_micros_per_million,
-              outputMicrosPerMillionTokens: rev.output_micros_per_million
-            },
-            limits: {
-              maxInputTokens: rev.max_input_tokens,
-              maxOutputTokens: rev.max_output_tokens,
-              maxCostMicros: rev.max_cost_micros
-            },
-            maxProxyOperations: AgentProxyOperationSchema.array().parse(JSON.parse(rev.max_proxy_operations_json)),
-            digest: rev.digest,
-            createdAt: rev.created_at
-          };
-        }
       }
     }
 
