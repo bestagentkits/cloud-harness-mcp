@@ -71,7 +71,8 @@ duplicating work:
   is confirmed success.
 - `files_write_batch` and idempotency-enabled `github_action` mutations
   (`pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`) replay
-  their cached result.
+  their cached result within their configured retention window (GitHub action
+  idempotency records expire after 24 hours).
 
 ## Coding-agent operations
 
@@ -156,7 +157,10 @@ lease is revoked, its container is removed, and its status transitions to
   All write actions emit structured `github_action.<action>` events in `audit_events`.
   Failures return typed machine-actionable error codes (`GITHUB_RATE_LIMITED` with retryAfterMs,
   `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`).
-  Comment, label, and publish mutations support idempotency keys.
+  Comment, label, and publish mutations support idempotency keys with a 24-hour
+  retention window; retries within 24 hours replay the cached result or reject
+  payload mismatches with `CONFLICT`, after which the key expires and the request
+  executes anew.
 - Output pagination for tools such as `files_read`, `git_diff`, and `git_log` uses
   snapshot-bound continuation cursors. The cursor is bound to content hashes or commit
   signatures; if underlying files, index, or repository state change between calls,
