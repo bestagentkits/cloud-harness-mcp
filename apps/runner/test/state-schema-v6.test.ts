@@ -26,7 +26,7 @@ describe('StateSchema v8 Migration and Downgrade', () => {
     const store = new StateStore(dbPath);
     try {
       const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(row.version).toBe(8);
+      expect(row.version).toBe(9);
 
     const tables = (store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(t => t.name);
     expect(tables).toContain('toolkit_cache_entries');
@@ -75,7 +75,7 @@ describe('StateSchema v8 Migration and Downgrade', () => {
     // Re-migrate to v6
     migratePrincipalSchema(store.database);
       const versionReMigrated = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(versionReMigrated).toBe(8);
+      expect(versionReMigrated).toBe(9);
     } finally {
       store.close();
     }

@@ -42,9 +42,10 @@ describe('dashboard static UI contract', () => {
 
   it('exposes accessible metadata navigation and only existing dashboard BFF controls', () => {
     for (const [path, label] of [
-      ['/dashboard/overview', 'Overview'], ['/dashboard/projects', 'Projects'], ['/dashboard/secrets', 'Secrets'],
-      ['/dashboard/artifacts', 'Artifacts'], ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'],
-      ['/dashboard/github', 'GitHub'], ['/dashboard/profile', 'Profile']
+      ['/dashboard/overview', 'Overview'], ['/dashboard', 'Workspaces'], ['/dashboard/projects', 'Projects'],
+      ['/dashboard/secrets', 'Secrets'], ['/dashboard/models', 'Models'], ['/dashboard/artifacts', 'Artifacts'],
+      ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub'],
+      ['/dashboard/profile', 'Profile']
     ]) {
       expect(html).toContain(`href="${path}"`);
       expect(html).toContain(`>${label}</a>`);

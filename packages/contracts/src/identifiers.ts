@@ -11,6 +11,9 @@ export const TaskIdSchema = opaqueId('task').brand<'TaskId'>();
 export const AgentIdSchema = opaqueId('agent').brand<'AgentId'>();
 export const AgentLeaseIdSchema = opaqueId('lease').brand<'AgentLeaseId'>();
 export const AgentMessageIdSchema = opaqueId('msg').brand<'AgentMessageId'>();
+export const ModelCredentialIdSchema = opaqueId('cred').brand<'ModelCredentialId'>();
+export const ModelProfileIdSchema = z.string().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/, 'invalid profile identifier').brand<'ModelProfileId'>();
+export const ModelRevisionIdSchema = opaqueId('rev').brand<'ModelRevisionId'>();
 export const IdempotencyKeySchema = z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
 export type WorkspaceId = z.infer<typeof WorkspaceIdSchema>;
@@ -21,6 +24,9 @@ export type TaskId = z.infer<typeof TaskIdSchema>;
 export type AgentId = z.infer<typeof AgentIdSchema>;
 export type AgentLeaseId = z.infer<typeof AgentLeaseIdSchema>;
 export type AgentMessageId = z.infer<typeof AgentMessageIdSchema>;
+export type ModelCredentialId = z.infer<typeof ModelCredentialIdSchema>;
+export type ModelProfileId = z.infer<typeof ModelProfileIdSchema>;
+export type ModelRevisionId = z.infer<typeof ModelRevisionIdSchema>;
 
 export const ExecutorNetworkProfileSchema = z.enum(['network-none', 'dependency-access']);
 export type ExecutorNetworkProfile = z.infer<typeof ExecutorNetworkProfileSchema>;

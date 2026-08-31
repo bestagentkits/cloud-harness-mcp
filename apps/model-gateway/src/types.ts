@@ -19,6 +19,7 @@ export interface GatewayProfile {
   downstreamPath: '/v1/chat/completions' | '/v1/responses';
   upstream: URL;
   credentialFile: string;
+  credentialSecret?: string | undefined;
   credentialHeader: 'authorization' | 'x-api-key';
   credentialScheme: '' | 'Bearer';
   inputMicrosPerMillionTokens: number;
@@ -26,7 +27,7 @@ export interface GatewayProfile {
   limits: ProfileLimits;
   testOnly: boolean;
   allowPrivateUpstream: boolean;
-  tlsCaFile?: string;
+  tlsCaFile?: string | undefined;
 }
 
 export interface GatewayConfig {
@@ -35,6 +36,7 @@ export interface GatewayConfig {
   port: number;
   controlSocket: string;
   profiles: ReadonlyMap<string, GatewayProfile>;
+  tlsCaFile?: string | undefined;
 }
 
 export interface LeaseGrant {

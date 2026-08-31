@@ -1,6 +1,11 @@
 import { z } from 'zod';
-import { WorkspaceIdSchema } from './identifiers.js';
+import { ModelCredentialIdSchema, ModelProfileIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { ToolResultSchema } from './mcp-results.js';
+import {
+  AgentModelProfileInputSchema,
+  AgentModelProfileUpdateInputSchema,
+  ProviderCredentialInputSchema
+} from './model-profile-schemas.js';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 import { SecretDescriptionSchema, SecretNameSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
 import { ToolkitSelectionSchema } from './tool-schemas.js';
@@ -66,7 +71,10 @@ export const MetadataRunnerOperationSchema = z.enum([
   'audit_list',
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
-  'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject'
+  'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
+  'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
+  'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
+  'model_config_status'
 ]);
 
 const metadataInputs = {
@@ -138,7 +146,23 @@ const metadataInputs = {
   github_disconnect: z.object({ installationId: z.string().min(1).max(100) }).strict(),
   privilege_grant_list: z.object({ workspaceId: WorkspaceIdSchema.optional() }).strict(),
   privilege_grant_approve: z.object({ grantId: z.string().min(1).max(128) }).strict(),
-  privilege_grant_reject: z.object({ grantId: z.string().min(1).max(128) }).strict()
+  privilege_grant_reject: z.object({ grantId: z.string().min(1).max(128) }).strict(),
+  model_credential_list: z.object({}).strict(),
+  model_credential_create: ProviderCredentialInputSchema,
+  model_credential_rotate: z.object({
+    credentialId: ModelCredentialIdSchema,
+    apiKey: z.string().min(1).max(4096),
+    secretReference: z.string().max(256).optional(),
+    expectedGeneration: generation
+  }).strict(),
+  model_credential_delete: z.object({ credentialId: ModelCredentialIdSchema, expectedGeneration: generation }).strict(),
+  model_profile_list: z.object({}).strict(),
+  model_profile_create: AgentModelProfileInputSchema,
+  model_profile_update: AgentModelProfileUpdateInputSchema.extend({ profileId: ModelProfileIdSchema }).strict(),
+  model_profile_activate: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
+  model_profile_disable: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
+  model_profile_delete: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
+  model_config_status: z.object({}).strict()
 } as const;
 
 const metadataRequest = <Operation extends keyof typeof metadataInputs>(operation: Operation) => z.object({
@@ -155,9 +179,11 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('global_secret_list'), metadataRequest('global_secret_create'), metadataRequest('global_secret_rotate'), metadataRequest('global_secret_update'), metadataRequest('global_secret_delete'), metadataRequest('global_secret_bulk_apply'),
   metadataRequest('audit_list'), metadataRequest('artifact_list'), metadataRequest('artifact_snapshot'),
   metadataRequest('artifact_read'), metadataRequest('artifact_restore'), metadataRequest('artifact_delete'),
-  metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'),
-  metadataRequest('github_reconcile'), metadataRequest('github_disconnect'),
-  metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject')
+  metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'), metadataRequest('github_reconcile'), metadataRequest('github_disconnect'),
+  metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject'),
+  metadataRequest('model_credential_list'), metadataRequest('model_credential_create'), metadataRequest('model_credential_rotate'), metadataRequest('model_credential_delete'),
+  metadataRequest('model_profile_list'), metadataRequest('model_profile_create'), metadataRequest('model_profile_update'), metadataRequest('model_profile_activate'), metadataRequest('model_profile_disable'), metadataRequest('model_profile_delete'),
+  metadataRequest('model_config_status')
 ]);
 
 export type InternalRunnerOperation = z.infer<typeof InternalRunnerOperationSchema>;

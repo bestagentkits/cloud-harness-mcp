@@ -34,6 +34,7 @@
         <p class="nav-group">Configuration</p>
         <a href="/dashboard/projects" data-section="projects"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Projects</a>
         <a href="/dashboard/secrets" data-section="secrets"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Secrets</a>
+        <a href="/dashboard/models" data-section="models"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L15 14h3a3 3 0 0 1 3 3v4H3v-4a3 3 0 0 1 3-3h3l2.25-4.07A4.002 4.002 0 0 1 12 2z"/></svg>Models</a>
         <a href="/dashboard/api-keys" data-section="api-keys"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 8-8"/><path d="m15.5 5.5 2 2"/><path d="m18.5 2.5 2.5 2.5"/></svg>API keys</a>
         <a href="/dashboard/github" data-section="github"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="17.5" cy="8" r="2.5"/><path d="M6 8.5v7"/><path d="M17.5 10.5a6 6 0 0 1-6 6H8.5"/></svg>GitHub</a>
         <p class="nav-group">Observability</p>
@@ -113,6 +114,102 @@
       <div class="dialog-actions">
         <button type="button" id="cancel-open-workspace">Cancel</button>
         <button type="submit" id="submit-open-workspace" class="accent-btn">Launch workspace</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="model-credential-dialog" aria-labelledby="model-credential-title" aria-describedby="model-credential-description">
+    <h2 id="model-credential-title">Add provider credential</h2>
+    <p id="model-credential-description">Configure an API key for subagent LLM providers. Values are write-only and encrypted.</p>
+    <form id="model-credential-form" class="stack-form">
+      <input type="hidden" id="model-credential-id" name="credentialId">
+      <input type="hidden" id="model-credential-generation" name="expectedGeneration" value="1">
+      <label for="model-credential-label">Label</label>
+      <input id="model-credential-label" name="label" placeholder="e.g. Production OpenAI Key" required>
+      <label for="model-credential-provider">Provider</label>
+      <select id="model-credential-provider" name="provider">
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic (OpenAI-compatible)</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="google">Google Gemini (OpenAI-compatible)</option>
+        <option value="custom">Custom (OpenAI-compatible)</option>
+      </select>
+      <label for="model-credential-auth-mode">Auth header mode</label>
+      <select id="model-credential-auth-mode" name="authMode">
+        <option value="bearer">Authorization: Bearer &lt;key&gt;</option>
+        <option value="x-api-key">X-API-Key: &lt;key&gt;</option>
+      </select>
+      <label for="model-credential-key">API Key (Write-only)</label>
+      <input id="model-credential-key" name="apiKey" type="password" autocomplete="new-password" placeholder="sk-..." required spellcheck="false">
+      <p id="model-credential-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-model-credential">Cancel</button>
+        <button type="submit" id="submit-model-credential" class="accent-btn">Save credential</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="model-profile-dialog" aria-labelledby="model-profile-title" aria-describedby="model-profile-description">
+    <h2 id="model-profile-title">Add model profile</h2>
+    <p id="model-profile-description">Configure model routing, token pricing, budget limits, and allowed proxy tools for Pi subagents.</p>
+    <form id="model-profile-form" class="stack-form">
+      <input type="hidden" id="model-profile-edit-mode" name="isEdit" value="false">
+      <input type="hidden" id="model-profile-generation" name="expectedGeneration" value="1">
+      <label for="model-profile-id">Profile ID</label>
+      <input id="model-profile-id" name="profileId" placeholder="e.g. coding-fast" required pattern="^[A-Za-z0-9._-]+$">
+      <label for="model-profile-display-name">Display name</label>
+      <input id="model-profile-display-name" name="displayName" placeholder="e.g. Fast Coding Agent" required>
+      <label for="model-profile-credential">Credential</label>
+      <select id="model-profile-credential" name="credentialId" required></select>
+      <label for="model-profile-model">Model name</label>
+      <input id="model-profile-model" name="model" placeholder="e.g. gpt-5.2-codex" required>
+      <label for="model-profile-api-mode">API Mode</label>
+      <select id="model-profile-api-mode" name="apiMode">
+        <option value="chat-completions" selected>Chat Completions (/v1/chat/completions)</option>
+      </select>
+      <div id="model-profile-custom-url-group" hidden>
+        <label for="model-profile-custom-url">Custom Upstream HTTPS URL</label>
+        <input id="model-profile-custom-url" name="customUpstreamUrl" type="url" placeholder="https://api.example.com/v1/chat/completions">
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="model-profile-pricing-input">Input $/1M Tokens</label>
+          <input id="model-profile-pricing-input" name="pricingInput" type="number" step="0.000001" min="0" value="1.75" required>
+        </div>
+        <div>
+          <label for="model-profile-pricing-output">Output $/1M Tokens</label>
+          <input id="model-profile-pricing-output" name="pricingOutput" type="number" step="0.000001" min="0" value="14.00" required>
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="model-profile-max-input">Max input tokens</label>
+          <input id="model-profile-max-input" name="maxInputTokens" type="number" min="1" value="200000" required>
+        </div>
+        <div>
+          <label for="model-profile-max-output">Max output tokens</label>
+          <input id="model-profile-max-output" name="maxOutputTokens" type="number" min="1" value="32000" required>
+        </div>
+        <div>
+          <label for="model-profile-max-cost">Max cost ($)</label>
+          <input id="model-profile-max-cost" name="maxCost" type="number" step="0.000001" min="0.01" value="5.00" required>
+        </div>
+      </div>
+      <div class="form-section-title">Allowed Proxy Operations</div>
+      <div class="tools-checkbox-grid">
+        <label><input type="checkbox" name="proxyOps" value="files_list" checked> files_list</label>
+        <label><input type="checkbox" name="proxyOps" value="files_read" checked> files_read</label>
+        <label><input type="checkbox" name="proxyOps" value="files_write"> files_write</label>
+        <label><input type="checkbox" name="proxyOps" value="files_apply_patch"> files_apply_patch</label>
+        <label><input type="checkbox" name="proxyOps" value="files_delete"> files_delete</label>
+        <label><input type="checkbox" name="proxyOps" value="files_move"> files_move</label>
+        <label><input type="checkbox" name="proxyOps" value="files_mkdir"> files_mkdir</label>
+        <label><input type="checkbox" name="proxyOps" value="grep_search" checked> grep_search</label>
+        <label><input type="checkbox" name="proxyOps" value="symbols_search" checked> symbols_search</label>
+        <label><input type="checkbox" name="proxyOps" value="symbols_references" checked> symbols_references</label>
+      </div>
+      <p id="model-profile-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-model-profile">Cancel</button>
+        <button type="submit" id="submit-model-profile" class="accent-btn">Save profile</button>
       </div>
     </form>
   </dialog>

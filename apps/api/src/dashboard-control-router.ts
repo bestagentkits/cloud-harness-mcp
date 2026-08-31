@@ -35,6 +35,17 @@ export function registerDashboardControlRoutes(
   router.put('/api/v1/secrets/:name', endpoint('global_secret_rotate', (request) => ({ name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.patch('/api/v1/secrets/:name', endpoint('global_secret_update', (request) => ({ name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.delete('/api/v1/secrets/:name', endpoint('global_secret_delete', (request) => ({ name: request.params.name, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.get('/api/v1/provider-credentials', endpoint('model_credential_list', () => ({})));
+  router.post('/api/v1/provider-credentials', endpoint('model_credential_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.put('/api/v1/provider-credentials/:id/rotate', endpoint('model_credential_rotate', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.delete('/api/v1/provider-credentials/:id', endpoint('model_credential_delete', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...generation.parse(request.body) })));
+  router.get('/api/v1/agent-model-profiles', endpoint('model_profile_list', () => ({})));
+  router.post('/api/v1/agent-model-profiles', endpoint('model_profile_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.patch('/api/v1/agent-model-profiles/:id', endpoint('model_profile_update', (request) => ({ profileId: request.params.id, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.post('/api/v1/agent-model-profiles/:id/activate', endpoint('model_profile_activate', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
+  router.post('/api/v1/agent-model-profiles/:id/disable', endpoint('model_profile_disable', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
+  router.delete('/api/v1/agent-model-profiles/:id', endpoint('model_profile_delete', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
+  router.get('/api/v1/agent-model-config-status', endpoint('model_config_status', () => ({})));
   router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.get('/api/v1/artifacts', endpoint('artifact_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.post('/api/v1/artifacts', endpoint('artifact_snapshot', (request) => request.body as Record<string, unknown>));

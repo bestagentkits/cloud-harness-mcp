@@ -13,6 +13,8 @@ import { MetadataStore } from './metadata-store.js';
 import { SecretKeyring } from './secret-keyring.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
+import { DockerAgentGatewayControl } from './agent-gateway-control.js';
+import { ModelProfileStateRepository } from './model-profile-state-repository.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const loaded = loadRunnerConfigWithReadiness();
@@ -43,8 +45,10 @@ const artifacts = new ArtifactStore(store.database, {
   defaultRetentionMs: config.artifactRetentionSeconds * 1_000,
   maxRetentionMs: 2_592_000_000
 });
-const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts);
-const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding);
+const gatewayControl = config.agents ? new DockerAgentGatewayControl() : undefined;
+const modelProfiles = keyring ? new ModelProfileStateRepository(store.database, keyring) : undefined;
+const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts, { modelProfiles, ...(gatewayControl !== undefined ? { gateway: gatewayControl } : {}) });
+const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding, modelProfiles, gatewayControl);
 await service.start();
 const server = createServer(createRunnerApp(config, service, controls, apiKeys));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));

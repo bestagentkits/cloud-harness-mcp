@@ -118,6 +118,13 @@ Executable owners:
 - Executor-side file, code-intelligence, command, repository-local Git, and
   manifest behavior:
   [`worker/harness-worker.mjs`](../worker/harness-worker.mjs)
+- Model Gateway dynamic control plane and framed stdin transport:
+  [`apps/model-gateway/src/control.ts`](../apps/model-gateway/src/control.ts),
+  [`apps/model-gateway/src/gateway.ts`](../apps/model-gateway/src/gateway.ts), and
+  [`apps/runner/src/agent-gateway-control.ts`](../apps/runner/src/agent-gateway-control.ts)
+- Subagent model profile and provider credential repository:
+  [`apps/runner/src/model-profile-state-repository.ts`](../apps/runner/src/model-profile-state-repository.ts) and
+  [`packages/contracts/src/model-profile-schemas.ts`](../packages/contracts/src/model-profile-schemas.ts)
 - Runtime topology:
   [`compose.yaml`](../compose.yaml) and
   [`compose.production.yaml`](../compose.production.yaml)

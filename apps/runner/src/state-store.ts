@@ -25,7 +25,14 @@ export type {
   PrincipalRelinkResult,
   PrincipalSelector
 } from './principal-store.js';
-export { downgradeStateSchemaToV3, downgradeStateSchemaToV4, downgradeStateSchemaToV5, downgradeStateSchemaToV6 } from './principal-store.js';
+export {
+  downgradeStateSchemaToV3,
+  downgradeStateSchemaToV4,
+  downgradeStateSchemaToV5,
+  downgradeStateSchemaToV6,
+  downgradeStateSchemaToV7,
+  downgradeStateSchemaToV8
+} from './principal-store.js';
 
 export type MemoryRecord = {
   id: string;
