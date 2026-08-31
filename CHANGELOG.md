@@ -1,3 +1,20 @@
+# [0.38.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.37.2...v0.38.0) (2026-08-31)
+
+
+### Bug Fixes
+
+* **runner:** export referenced revisions on gateway restart and block deletion while active leases exist ([1b80bbc](https://github.com/bestagentkits/cloud-harness-mcp/commit/1b80bbc19a6802f0823429fc71acf04bf07a2b12))
+* **runner:** implement automatic gateway rehydration and ensureGatewaySynced on spawn ([3f85c35](https://github.com/bestagentkits/cloud-harness-mcp/commit/3f85c3529f53b530ed836b626e632f9e0d0567a7))
+* **runner:** store credential_id in immutable revisions and strictly resolve in gateway ([9938e6b](https://github.com/bestagentkits/cloud-harness-mcp/commit/9938e6bcfe93034b3d28ce93e4a6a946518298be))
+* **security:** enforce strict rejectUnauthorized true and inject test CA via config dependency ([25740d7](https://github.com/bestagentkits/cloud-harness-mcp/commit/25740d7745a6b551dd91c65d04f68a274c379902))
+
+
+### Features
+
+* **dashboard:** add subagent model profiles, credentials, and dynamic gateway readiness ([9059ad5](https://github.com/bestagentkits/cloud-harness-mcp/commit/9059ad552114940e45a400b9e7b355f0a9b2ca61))
+* **gateway:** support responses mode and verify real TLS proxy routing ([d0a7271](https://github.com/bestagentkits/cloud-harness-mcp/commit/d0a72710bc3a8e723ad7acab3fbfe651ac4ee245))
+* **runner:** wire dynamic profile resolution, gateway sync, and end-to-end spawn ([24f9fb5](https://github.com/bestagentkits/cloud-harness-mcp/commit/24f9fb5b37f2bd820e708aff34f001363b4038c0))
+
 ## [0.37.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.37.1...v0.37.2) (2026-08-31)
 
 
