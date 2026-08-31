@@ -1,7 +1,12 @@
 import { readFile } from 'node:fs/promises';
 
-const page = await readFile(new URL('../site/index.html', import.meta.url), 'utf8');
-const urls = [...page.matchAll(/<a\b[^>]*\bhref="(https:\/\/[^"#]+)"/g)].map((match) => match[1]);
+const primaryPages = ['index.html', 'haas.html', 'terms.html', 'privacy.html', 'support.html'];
+const pagesContent = await Promise.all(
+  primaryPages.map((file) => readFile(new URL(`../site/${file}`, import.meta.url), 'utf8'))
+);
+const urls = pagesContent.flatMap((page) =>
+  [...page.matchAll(/<a\b[^>]*\bhref="(https:\/\/[^"#]+)"/g)].map((match) => match[1])
+);
 const failures = [];
 
 for (const url of [...new Set(urls)]) {
