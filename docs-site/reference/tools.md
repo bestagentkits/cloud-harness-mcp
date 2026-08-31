@@ -153,7 +153,7 @@ Stop a workspace executor and permanently remove all workspace files, including 
 
 **List available secrets**
 
-List available environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.
+List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent`
 

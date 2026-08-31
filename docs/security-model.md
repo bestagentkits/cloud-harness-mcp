@@ -212,6 +212,30 @@ and
 [`test/integration/git-transfer-helper.docker.test.ts`](../test/integration/git-transfer-helper.docker.test.ts).
 Live private-repository verification remains owner-supplied evidence.
 
+### Secrets management and ingest-time stream redaction
+
+Cloud Harness provides credential management partitioned by scope, lifecycle, and encryption boundaries:
+
+1. **Secret Scopes and Precedence:**
+   - **Global Secrets:** Active global runtime secrets are bound to the authenticated principal identity and automatically inherited by every remote Docker workspace created by that principal.
+   - **Environment Secrets:** Scoped to a specific project environment. Injected only when the client explicitly provides both `environmentId` and `confirmEnvironmentInjection: true` in `workspace_open`.
+   - **Precedence Rule:** When a key collision occurs, environment secrets override global secrets with the same name.
+   - **Local Stdio Limitation:** Retained secret discovery and injection are unsupported in local stdio workspaces.
+
+2. **Purpose Classification:**
+   - Secrets have a `purpose` attribute (`runtime` vs `provisioning`). Only `runtime` secrets are injected into executor container environments; `provisioning` secrets are excluded from runtime container injection.
+
+3. **Encryption at Rest & Write-Only Boundary:**
+   - Secret values are write-only through the authenticated, CSRF-protected Dashboard BFF API.
+   - Submitted values are encrypted at rest using AES-256-GCM via the versioned runner keyring (`SECRET_KEYRING_FILE`). Ciphertext is stored in SQLite (`secret_versions`, `global_secret_versions`, `workspace_secret_snapshots`, `workspace_secret_snapshot_headers`).
+   - Neither the browser dashboard nor MCP tools (`secrets_list`) ever return secret values or ciphertext.
+   - During executor creation, runtime secrets are briefly written to an ephemeral mode-0600 host environment file for Docker creation and immediately removed.
+
+4. **Ingest-Time Stream Redaction (Defense-in-Depth):**
+   - Secret values meeting the minimum length threshold (≥ 4 UTF-8 bytes) are compiled into the runner's streaming redactor.
+   - Streaming task, shell, and session stdout/stderr chunks are sanitized—including matches spanning stream chunk boundaries—before retained memory buffering, preserving monotonic byte cursor offsets. Synchronous `exec_run` command outputs and worker error messages are sanitized after capture before return.
+   - Redaction is defense-in-depth: it targets exact raw byte matches and does not match transformed, encoded (e.g., base64 or hex), hashed, or partial secret derivatives. Repository code and commands must not deliberately echo secret material.
+
 Repository-manifest deployments are named commands, not a secret broker. They
 execute with the same unprivileged executor environment and network mode as
 other repository commands; the harness does not inject host or deployment

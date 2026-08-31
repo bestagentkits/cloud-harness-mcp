@@ -160,12 +160,13 @@ and [`apps/runner/src/config.ts`](../apps/runner/src/config.ts).
 
 Keep old decrypt keys while their versions exist and through the rollback
 window. Rotate by adding a new active version, restarting with the complete
-keyring, quiescing writes, and using the runner-only re-encryption entry point documented in the
+keyring, quiescing writes, and invoking the runner re-encryption entry point
+via `npm run secrets:rekey -w @cloud-harness/runner` as documented in the
 [operations guide](operations.md#secret-key-rotation). Missing or invalid key
 material disables secret-dependent operations without exposing key details;
 non-secret dashboard reads remain available.
 
-Secrets support purpose classification (`runtime` vs `provisioning`). Provisioning secrets are used exclusively during helper provisioning workflows and are strictly excluded from runtime executor containers.
+Secrets support a `purpose` attribute (`runtime` vs `provisioning`). `runtime` secrets are injected into executor container environments; `provisioning` secrets are excluded from runtime container injection.
 
 Dashboard-managed MCP API keys use a different write-only contract from
 encrypted environment secrets. The runner stores only a SHA-256 digest and

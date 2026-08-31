@@ -10,7 +10,8 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 ## Key Sections
 
 - **[Workspaces](/dashboard/workspaces):** Inspect live Docker containers, open files, interactive shells, and close running workspaces.
-- **[Projects](/dashboard/projects):** Track repositories that have been cloned into workspaces.
+- **[Projects](/dashboard/projects):** Track repositories and manage project-scoped environment configurations.
+- **[Secrets & Credentials](/dashboard/secrets):** Manage global and project-scoped credentials encrypted at rest with AES-256-GCM and automatic ingest-time output stream redaction.
 - **[API Keys](/dashboard/api-keys):** Create and revoke static API keys for IDE and local CLI tools.
 - **[GitHub App](/dashboard/github):** Manage GitHub App installation bindings for private repository cloning and push access.
 - **[Artifacts](/dashboard/artifacts):** Download and inspect workspace output files, build logs, and test results.
