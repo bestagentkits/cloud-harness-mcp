@@ -123,11 +123,28 @@ capabilities, `no-new-privileges`, bounded CPU/memory/PIDs/file descriptors,
 bounded per-operation and aggregate retained output, bounded operation-handle
 counts, and TTL cleanup. Only the workspace repository mount is writable.
 
-Network mode is `none` by default. This blocks ordinary executor egress,
-including dependency installation and networked repository commands. Owner
-opt-in `bridge` networking enables broad container egress and weakens
-protection against exfiltration, SSRF, callbacks, dependency scripts, and
-repository-defined deployment commands. It is not an allowlisted proxy.
+The default executor network profile is `network-none`, which blocks all
+executor egress, including dependency installation and networked repository
+commands. The owner opt-in `dependency-access` profile is enforced below MCP
+tool policy: the executor attaches only to a dedicated managed Docker bridge
+(`chm-egress0`) with inter-container communication disabled and Docker's
+default masquerade off, and a transactional host firewall (installed via a
+single `iptables-restore` commit and verified through an ephemeral
+`NET_ADMIN`-only network-guard container) permits only public DNS and public
+TCP 80/443. The managed jump is the first rule of both `INPUT` and
+`DOCKER-USER`, and forbidden destination classes — loopback-to-host,
+Docker/control-plane, RFC 1918, carrier-grade NAT, link-local, and
+cloud-metadata (`169.254.169.254`) — are rejected before the allowed ports.
+IPv6 is disabled on the bridge. The runner attests the Docker network and the
+exact ordered host ruleset before every dependency executor start and during
+periodic reaper reconciliation; on drift it fences the workspace to
+`NETWORK_QUARANTINED`, stops the executor, and retains its data for recovery
+after policy reconciliation. If attestation is unavailable the profile fails
+closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge
+egress. `dependency-access` is not an allowlisted proxy or DLP boundary: it
+still permits exfiltration and callbacks to public endpoints. Production
+enforcement targets Linux with the Docker iptables backend; the host firewall
+is a trusted operator-owned control outside the executor's authority.
 
 Repository opening accepts only credential-free HTTPS URLs on configured
 hosts and rejects private/link-local resolutions. The clone helper disables
@@ -157,6 +174,12 @@ Executors operate across three partitioned storage zones:
 3. **Zone C (Git Repository)**: `/workspace` containing the clean repository working tree.
 
 Workspace disk usage metering calculates the combined footprint of all three persistent zones against `maxWorkspaceBytes`.
+
+### Skill tiers and execution isolation
+
+Skills are resolved across four deterministic precedence tiers (`built-in > owner > workspace > repository`):
+1. **Built-in & Owner Tiers (`/opt/cloud-harness/skills:ro`, `/opt/cloud-harness/owner-skills:ro`)**: Mounted read-only (`:ro`) at the container boundary. Because they reside on immutable host mounts, processes within the executor (including any process running as UID 10001) cannot modify these skill files.
+2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope.
 
 ### Privileged execution and operator approval grants
 
@@ -316,3 +339,10 @@ Cloud Harness MCP provides vendor-neutral coding context across AI agents (Claud
 - Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the exact manifest SHA-256 digest.
 - Modifying the hook script or manifest invalidates activation and blocks execution before process spawn.
 - All hooks execute in unprivileged executor containers with `networkMode: none` by default, no broker credentials, and no Docker socket.
+
+### Third-Party Agent Toolkits & Provisioning Network Firewall
+
+- **Network-isolated helpers:** Ephemeral helper containers run on a dedicated `cloud-harness-provisioning` network (`internal: true`) with no default gateway. Direct raw TCP sockets fail with `ENETUNREACH`.
+- **Dual-homed egress proxy:** All outbound provisioning traffic is forced through `provisioning-proxy:3128`. The proxy enforces destination allowlists (`allowedGitHosts` + catalog endpoints), blocks private IP ranges (RFC1918), loopback, and cloud metadata (`169.254.169.254`), and connects directly to validated numeric IPs to prevent DNS rebinding.
+- **Secret Purpose Classification:** Secrets are marked `purpose: "runtime" | "provisioning"`. Provisioning-only keys are delivered exclusively via stdin pipe to ephemeral helpers on tmpfs and are strictly excluded from runtime container environments (`docker inspect`).
+- **Read-only Owner Injection:** Toolkits selected under `owner` scope are projected to `/job/toolkit-projection/owner-skills/` and mounted read-only at `/opt/cloud-harness/owner-skills:ro`, keeping `git status --porcelain` 100% clean.
