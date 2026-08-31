@@ -212,7 +212,7 @@ List managed worktrees and their branch/HEAD state for `workspaceId`.
   - `issue_labels_remove`: required `issueNumber`, `label`.
   - `label_create`: required `name`; optional `color` (6-hex), `description`.
   - `issue_publish`: required `issueNumber`; optional `comment`, `addLabels` array (max 50), `removeLabels` array (max 50), `createMissingLabels` (default true), `idempotencyKey`.
-- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, and `issue_publish` cache their successful result and replay it on a same-key retry with identical payload; reusing the key with a different request payload is rejected with `CONFLICT`.
+- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, and `issue_publish` cache their successful result and replay it on a same-key retry with identical payload within a 24-hour retention window; reusing the key with a different request payload is rejected with `CONFLICT`. After 24 hours the record expires and the request executes anew.
 <!-- cloudharness-example:github_action
 {
   "workspaceId": "ws_abcdefghijklmnopqrstuvwxyz012345",
