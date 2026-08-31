@@ -1,10 +1,25 @@
 import { isAbsolute, relative, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
 import type { ContextManifestItem, Provenance } from './runner-api.js';
 
 export function isPathContained(parent: string, candidate: string): boolean {
   try {
     if (!parent || !candidate) return false;
-    const rel = relative(resolve(parent), resolve(candidate));
+    let canonicalParent: string;
+    try {
+      canonicalParent = realpathSync(parent);
+    } catch {
+      canonicalParent = resolve(parent);
+    }
+
+    let canonicalCandidate: string;
+    try {
+      canonicalCandidate = realpathSync(candidate);
+    } catch {
+      canonicalCandidate = resolve(candidate);
+    }
+
+    const rel = relative(canonicalParent, canonicalCandidate);
     return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
   } catch {
     return false;
