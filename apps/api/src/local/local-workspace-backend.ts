@@ -1,6 +1,7 @@
-import { isAbsolute, join, relative, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
-import type { RunnerOperation, RunnerResponse } from '@cloud-harness/contracts';
+import { join } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+import { sanitizeAndAttributeProvenance, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
 import type { CliOptions } from '../cli-options.js';
 import { LocalPathPolicy } from './local-path-policy.js';
@@ -9,15 +10,6 @@ import { LocalOperationManager } from './local-operation-manager.js';
 
 const opaqueId = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
 
-
-function isPathContained(parent: string, candidate: string): boolean {
-  try {
-    const rel = relative(resolve(parent), resolve(candidate));
-    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-  } catch {
-    return false;
-  }
-}
 
 export class LocalWorkspaceBackend implements OperationBackend {
   public readonly workspaceId: string;
@@ -257,55 +249,10 @@ export class LocalWorkspaceBackend implements OperationBackend {
           const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
 
           for (const rawItem of rawItems as Record<string, unknown>[]) {
-            const pathStr = typeof rawItem.path === 'string' ? rawItem.path : undefined;
-            const hashStr = typeof rawItem.contentSha256 === 'string' && rawItem.contentSha256.length === 64
-              ? rawItem.contentSha256
-              : '0'.repeat(64);
-            const kindStr = typeof rawItem.kind === 'string' ? rawItem.kind : 'instruction';
-            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
-            const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
-
-            let source: 'built-in' | 'owner' | 'workspace' | 'repository' = 'repository';
-            let trust: 'trusted-control-plane' | 'owner-controlled' | 'untrusted-executor' = 'untrusted-executor';
-            let mutableBy: 'release' | 'owner' | 'workspace-process' | 'repository-commit' = 'repository-commit';
-
-            if (kindStr === 'skill-summary' && pathStr) {
-              if (isPathContained(builtinRoot, pathStr) || isPathContained('/opt/cloud-harness/skills', pathStr)) {
-                source = 'built-in';
-                trust = 'trusted-control-plane';
-                mutableBy = 'release';
-              } else if (isPathContained(ownerRoot, pathStr) || isPathContained('/opt/cloud-harness/owner-skills', pathStr)) {
-                source = 'owner';
-                trust = 'owner-controlled';
-                mutableBy = 'owner';
-              } else if (isPathContained('.cloud-harness/skills', pathStr) || isPathContained(join(this.canonicalRoot, '.cloud-harness', 'skills'), pathStr)) {
-                source = 'workspace';
-                trust = 'untrusted-executor';
-                mutableBy = 'workspace-process';
-              }
-            }
-
-            const item = {
-              id: typeof rawItem.id === 'string' ? rawItem.id : `ctx_${hashStr.slice(0, 12)}`,
-              kind: kindStr,
-              format: typeof rawItem.format === 'string' ? rawItem.format : 'plain',
-              clients: Array.isArray(rawItem.clients) ? rawItem.clients : ['all'],
-              path: pathStr,
-              appliesTo: typeof rawItem.appliesTo === 'string' ? rawItem.appliesTo : undefined,
-              activeForClient: Boolean(rawItem.activeForClient ?? true),
-              contentSha256: hashStr,
-              byteCount: typeof rawItem.byteCount === 'number' ? rawItem.byteCount : 0,
-              excerpt: typeof rawItem.excerpt === 'string' ? rawItem.excerpt.slice(0, 8192) : undefined,
-              references: Array.isArray(rawItem.references) ? rawItem.references : undefined,
-              provenance: {
-                source,
-                trust,
-                mutableBy,
-                path: pathStr,
-                contentSha256: hashStr,
-                discoveredAt: new Date().toISOString()
-              }
-            };
+            const item = sanitizeAndAttributeProvenance(rawItem, {
+              partitionSource: 'repository',
+              repositoryRoot: this.canonicalRoot
+            });
             const itemBytes = Buffer.byteLength(JSON.stringify(item));
             if (accumulatedBytes + itemBytes > maxBytes) {
               truncated = true;
@@ -316,6 +263,43 @@ export class LocalWorkspaceBackend implements OperationBackend {
             accumulatedBytes += itemBytes;
           }
 
+          // Scan trusted external owner and built-in skill partitions
+          const include = Array.isArray((input as any).include) ? (input as any).include : ['instructions', 'languages', 'test_commands', 'skills'];
+          if (include.includes('skills')) {
+            const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+            try {
+              const ownerEntries = await readdir(ownerRoot, { withFileTypes: true });
+              for (const oe of ownerEntries) {
+                if (oe.isDirectory()) {
+                  const sFile = join(ownerRoot, oe.name, 'SKILL.md');
+                  try {
+                    const sRaw = await readFile(sFile);
+                    const sHash = createHash('sha256').update(sRaw).digest('hex');
+                    const sItem = sanitizeAndAttributeProvenance({
+                      id: `ctx_skill_${oe.name}`,
+                      kind: 'skill-summary',
+                      format: 'skill-md',
+                      path: sFile,
+                      clients: ['all'],
+                      contentSha256: sHash,
+                      excerpt: `Skill "${oe.name}" (owner)`
+                    }, {
+                      partitionSource: 'owner',
+                      trustedRoot: ownerRoot
+                    });
+                    const sBytes = Buffer.byteLength(JSON.stringify(sItem));
+                    if (accumulatedBytes + sBytes <= maxBytes) {
+                      // Replace or prepend owner skill
+                      const existingIdx = sanitizedItems.findIndex(it => it.id === sItem.id);
+                      if (existingIdx >= 0) sanitizedItems.splice(existingIdx, 1);
+                      sanitizedItems.unshift(sItem);
+                      accumulatedBytes += sBytes;
+                    }
+                  } catch { /* skip */ }
+                }
+              }
+            } catch { /* owner root absent */ }
+          }
           manifest = {
             contractVersion: 1,
             returnedBytes: accumulatedBytes,

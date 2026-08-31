@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { chmod, chown, mkdir, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { chmod, chown, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   HarnessError,
@@ -2058,6 +2058,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
           for (const rawItem of rawItems as Record<string, unknown>[]) {
             const item = sanitizeAndAttributeProvenance(rawItem, {
+              partitionSource: 'repository',
               repositoryRoot: record.workspacePath
             });
             const itemBytes = Buffer.byteLength(JSON.stringify(item));
@@ -2068,6 +2069,43 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             }
             sanitizedItems.push(item);
             accumulatedBytes += itemBytes;
+          }
+
+          // Scan trusted external owner and built-in skill partitions from Runner control plane
+          const include = Array.isArray((validated as any).include) ? (validated as any).include : ['instructions', 'languages', 'test_commands', 'skills'];
+          if (include.includes('skills')) {
+            const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+            try {
+              const ownerEntries = await readdir(ownerRoot, { withFileTypes: true });
+              for (const oe of ownerEntries) {
+                if (oe.isDirectory()) {
+                  const sFile = join(ownerRoot, oe.name, 'SKILL.md');
+                  try {
+                    const sRaw = await readFile(sFile);
+                    const sHash = createHash('sha256').update(sRaw).digest('hex');
+                    const sItem = sanitizeAndAttributeProvenance({
+                      id: `ctx_skill_${oe.name}`,
+                      kind: 'skill-summary',
+                      format: 'skill-md',
+                      path: sFile,
+                      clients: ['all'],
+                      contentSha256: sHash,
+                      excerpt: `Skill "${oe.name}" (owner)`
+                    }, {
+                      partitionSource: 'owner',
+                      trustedRoot: ownerRoot
+                    });
+                    const sBytes = Buffer.byteLength(JSON.stringify(sItem));
+                    if (accumulatedBytes + sBytes <= maxBytes) {
+                      const existingIdx = sanitizedItems.findIndex(it => it.id === sItem.id);
+                      if (existingIdx >= 0) sanitizedItems.splice(existingIdx, 1);
+                      sanitizedItems.unshift(sItem);
+                      accumulatedBytes += sBytes;
+                    }
+                  } catch { /* skip */ }
+                }
+              }
+            } catch { /* owner root absent */ }
           }
 
           manifest = {

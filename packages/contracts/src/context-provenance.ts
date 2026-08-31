@@ -14,12 +14,10 @@ export function isPathContained(parent: string, candidate: string): boolean {
 export type ScanPartitionSource = 'built-in' | 'owner' | 'workspace' | 'repository';
 
 export interface ScanPartitionContext {
-  /**
-   * Trusted partition source assigned by the Runner control plane.
-   * Items from repository scan partitions can NEVER be promoted to built-in or owner,
-   * regardless of the path strings or metadata they contain.
-   */
   partitionSource?: ScanPartitionSource;
+  builtinSkillsRoot?: string;
+  ownerSkillsRoot?: string;
+  workspaceSkillsRoot?: string;
   trustedRoot?: string;
   repositoryRoot?: string;
 }
@@ -28,7 +26,10 @@ export function sanitizeAndAttributeProvenance(
   rawItem: Record<string, unknown>,
   context: ScanPartitionContext = {}
 ): ContextManifestItem {
-  const partitionSource: ScanPartitionSource = context.partitionSource || 'repository';
+  const builtinRoot = context.builtinSkillsRoot || context.trustedRoot || process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
+  const ownerRoot = context.ownerSkillsRoot || context.trustedRoot || process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+  const workspaceSkillsRoot = context.workspaceSkillsRoot || process.env.CH_WORKSPACE_SKILLS_ROOT;
+
   const pathStr = typeof rawItem.path === 'string' ? rawItem.path : undefined;
   const kindStr = (typeof rawItem.kind === 'string' && ['instruction', 'language-manifest', 'test-command', 'skill-summary'].includes(rawItem.kind))
     ? (rawItem.kind as ContextManifestItem['kind'])
@@ -42,19 +43,23 @@ export function sanitizeAndAttributeProvenance(
   let trust: Provenance['trust'] = 'untrusted-executor';
   let mutableBy: Provenance['mutableBy'] = 'repository-commit';
 
-  // Only items originating from verified non-repository partitions can be promoted
-  if (partitionSource === 'built-in' && pathStr && context.trustedRoot && isPathContained(context.trustedRoot, pathStr)) {
-    source = 'built-in';
-    trust = 'trusted-control-plane';
-    mutableBy = 'release';
-  } else if (partitionSource === 'owner' && pathStr && context.trustedRoot && isPathContained(context.trustedRoot, pathStr)) {
-    source = 'owner';
-    trust = 'owner-controlled';
-    mutableBy = 'owner';
-  } else if (partitionSource === 'workspace' && pathStr && context.trustedRoot && isPathContained(context.trustedRoot, pathStr)) {
-    source = 'workspace';
-    trust = 'untrusted-executor';
-    mutableBy = 'workspace-process';
+  // Trust partition source ONLY from runner context, NEVER from untrusted rawItem
+  const partitionSource = context.partitionSource || 'repository';
+
+  if (kindStr === 'skill-summary' && pathStr) {
+    if (partitionSource === 'built-in' && isPathContained(builtinRoot, pathStr)) {
+      source = 'built-in';
+      trust = 'trusted-control-plane';
+      mutableBy = 'release';
+    } else if (partitionSource === 'owner' && isPathContained(ownerRoot, pathStr)) {
+      source = 'owner';
+      trust = 'owner-controlled';
+      mutableBy = 'owner';
+    } else if (partitionSource === 'workspace' && workspaceSkillsRoot && isPathContained(workspaceSkillsRoot, pathStr)) {
+      source = 'workspace';
+      trust = 'untrusted-executor';
+      mutableBy = 'workspace-process';
+    }
   }
 
   return {
