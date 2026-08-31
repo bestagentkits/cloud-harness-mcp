@@ -197,12 +197,18 @@ handling while the durable workspace identity lives below the transport. A
 lost `workspace_open` response can therefore be recovered by replaying its
 idempotency key or by listing workspaces.
 
-Principal, project/environment, encrypted secret-reference, API-key digest,
-GitHub binding,
-artifact metadata, and audit state share the runner-owned SQLite database.
-Artifact payloads persist under the artifact root until deletion or bounded
-retention reaping. Dashboard runtime summaries remain volatile. The exact
+Principal, project/environment, encrypted global and environment secret
+references/versions (`global_secret_references`, `global_secret_versions`,
+`secret_references`, `secret_versions`), workspace secret snapshots
+(`workspace_secret_snapshots`, `workspace_secret_snapshot_headers`), API-key digests,
+GitHub bindings, artifact metadata, and audit state share the runner-owned SQLite
+database. Ingest-time stream redactors in the runner sanitize exact secret matches
+(≥ 4 UTF-8 bytes) across streaming task, shell, and session stdout/stderr chunks before
+retained buffering, while synchronous `exec_run` command outputs are sanitized after
+capture before return. Artifact payloads persist under the artifact root until deletion
+or bounded retention reaping. Dashboard runtime summaries remain volatile. The exact
 schemas and lifecycle owners are under `apps/runner/src/metadata-*`,
+[`apps/runner/src/secret-metadata-store.ts`](../apps/runner/src/secret-metadata-store.ts),
 [`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts), and
 [`apps/runner/src/github-installation-sqlite-store.ts`](../apps/runner/src/github-installation-sqlite-store.ts).
 

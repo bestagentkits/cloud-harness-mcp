@@ -667,7 +667,7 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
   github_action: 'Perform brokered GitHub operations via brokered helper without exposing tokens to workspace.',
-  secrets_list: 'List available environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
+  secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
   agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
   agent_status: 'Read the execution state, budgets, and terminal summary of one coding agent.',
   agent_logs: 'Read bounded streaming diagnostic and tool events from one coding agent.',
