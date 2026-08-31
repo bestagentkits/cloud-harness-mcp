@@ -1,5 +1,10 @@
+import { createServer as createTlsServer, type Server as TlsServer } from 'node:https';
+import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
@@ -9,8 +14,9 @@ import { AgentStateRepository } from '../../apps/runner/src/agent-state-reposito
 import { ModelProfileStateRepository } from '../../apps/runner/src/model-profile-state-repository.js';
 import { SecretKeyring } from '../../apps/runner/src/secret-keyring.js';
 import { StateStore } from '../../apps/runner/src/state-store.js';
+import { createGatewayRuntime } from '../../apps/model-gateway/src/gateway.js';
+import { loadGatewayConfig } from '../../apps/model-gateway/src/config.js';
 import { ModelProfileIdSchema, RunnerAgentsConfigSchema } from '@cloud-harness/contracts';
-
 const tempDbPath = () => join(tmpdir(), `test-dyn-models-${randomBytes(8).toString('hex')}.sqlite`);
 
 describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
@@ -218,5 +224,182 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
 
     await manager.stop();
+  });
+
+  it('executes real HTTP requests through Model Gateway for both chat-completions and responses modes with dynamic snapshot', async () => {
+    const { repo, p } = setup();
+    const certFile = resolve('.cloud-harness-test-fixtures/model-gateway/server-cert.pem');
+    const keyFile = resolve('.cloud-harness-test-fixtures/model-gateway/server-key.pem');
+    const cert = readFileSync(certFile);
+    const key = readFileSync(keyFile);
+
+    // 1. Setup local mock HTTPS upstream server handling both /v1/chat/completions and /v1/responses
+    let lastReceivedAuth = '';
+    let lastReceivedPath = '';
+    const upstreamServer: TlsServer = createTlsServer({ cert, key }, (req, res) => {
+      lastReceivedAuth = req.headers['authorization'] ?? '';
+      lastReceivedPath = req.url ?? '';
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: {"choices":[{"delta":{"content":"dynamic reply for ${req.url}"}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}\n\n`);
+      res.end('data: [DONE]\n\n');
+    });
+    await new Promise<void>((res) => upstreamServer.listen(0, '127.0.0.1', res));
+    const upstreamAddress = upstreamServer.address() as AddressInfo;
+
+    // 2. Setup real Model Gateway in test mode
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-test-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-test-${randomBytes(6).toString('hex')}.sock`);
+
+    const gwConfig = await loadGatewayConfig({
+      MODEL_GATEWAY_MODE: 'test',
+      MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
+      MODEL_GATEWAY_HOST: '127.0.0.1',
+      MODEL_GATEWAY_PORT: '3210',
+      MODEL_GATEWAY_PROFILES_JSON: '[]'
+    });
+
+    const gwRuntime = createGatewayRuntime(gwConfig);
+    await gwRuntime.listen();
+    const gwAddress = gwRuntime.httpServer.address() as AddressInfo;
+
+     try {
+      // 3. Create dynamic credential and profiles for chat-completions and responses
+      const cred = repo.createCredential(p, {
+        label: 'Dynamic Key',
+        provider: 'openai',
+        apiKey: 'sk-dynamic-secret-key-445566'
+      });
+
+      const chatProfile = repo.createProfile(p, {
+        profileId: ModelProfileIdSchema.parse('dynamic-chat'),
+        displayName: 'Dynamic Chat Model',
+        credentialId: cred.id,
+        model: 'gpt-5.2',
+        apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+        limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+        maxProxyOperations: ['files_read']
+      });
+
+      const respProfile = repo.createProfile(p, {
+        profileId: ModelProfileIdSchema.parse('dynamic-responses'),
+        displayName: 'Dynamic Responses Model',
+        credentialId: cred.id,
+        model: 'gpt-5.2-responses',
+        apiMode: 'responses',
+        pricing: { inputMicrosPerMillionTokens: 1500, outputMicrosPerMillionTokens: 3000 },
+        limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+        maxProxyOperations: ['files_read']
+      });
+
+      // 4. Send snapshot over control socket with mock upstream URLs
+      const snapshot = repo.getExportSnapshot(p);
+      snapshot.profiles[chatProfile.activeRevisionId!]!.upstreamUrl = `https://127.0.0.1:${upstreamAddress.port}/v1/chat/completions`;
+      snapshot.profiles[respProfile.activeRevisionId!]!.upstreamUrl = `https://127.0.0.1:${upstreamAddress.port}/v1/responses`;
+
+      const controlSocketClient = connect(controlSocket);
+      const applyAck = await new Promise<{ ok: boolean }>((res, rej) => {
+        let buf = '';
+        controlSocketClient.on('data', (d) => { buf += d.toString(); });
+        controlSocketClient.on('end', () => res(JSON.parse(buf)));
+        controlSocketClient.on('error', rej);
+        controlSocketClient.end(JSON.stringify({
+          operation: 'apply_snapshot',
+          sequence: 1,
+          generation: 1,
+          credentials: snapshot.credentials,
+          profiles: snapshot.profiles
+        }) + '\n');
+      });
+      expect(applyAck.ok).toBe(true);
+
+      // 5. Test Mode 1: chat-completions (/v1/chat/completions)
+      const chatLease = gwRuntime.issueLease({
+        leaseId: 'lease_chat_1',
+        agentId: 'agent_012345678901234567890',
+        profileId: chatProfile.activeRevisionId!,
+        ttlMs: 60000,
+        maxInputTokens: 10000,
+        maxOutputTokens: 1000,
+        maxCostMicros: 50000
+      });
+
+      const chatReq = httpRequest({
+        host: '127.0.0.1',
+        port: gwAddress.port,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${chatLease}`,
+          'x-model-profile': chatProfile.activeRevisionId!,
+          'x-agent-id': 'agent_012345678901234567890',
+          'x-request-id': 'req_chat_1'
+        }
+      });
+
+      const chatPromise = new Promise<{ status: number; body: string }>((res, rej) => {
+        chatReq.on('response', (response) => {
+          let data = '';
+          response.on('data', (c) => { data += c; });
+          response.on('end', () => res({ status: response.statusCode ?? 500, body: data }));
+        });
+        chatReq.on('error', rej);
+      });
+      chatReq.write(JSON.stringify({ messages: [{ role: 'user', content: 'test chat' }] }));
+      chatReq.end();
+
+      const chatResponse = await chatPromise;
+      expect(chatResponse.status).toBe(200);
+      expect(chatResponse.body).toContain('dynamic reply for /v1/chat/completions');
+      expect(lastReceivedAuth).toBe('Bearer sk-dynamic-secret-key-445566');
+      expect(lastReceivedPath).toBe('/v1/chat/completions');
+
+      // 6. Test Mode 2: responses (/v1/responses)
+      const respLease = gwRuntime.issueLease({
+        leaseId: 'lease_resp_1',
+        agentId: 'agent_012345678901234567890',
+        profileId: respProfile.activeRevisionId!,
+        ttlMs: 60000,
+        maxInputTokens: 10000,
+        maxOutputTokens: 1000,
+        maxCostMicros: 50000
+      });
+
+      const respReq = httpRequest({
+        host: '127.0.0.1',
+        port: gwAddress.port,
+        path: '/v1/responses',
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${respLease}`,
+          'x-model-profile': respProfile.activeRevisionId!,
+          'x-agent-id': 'agent_012345678901234567890',
+          'x-request-id': 'req_resp_1'
+        }
+      });
+
+      const respPromise = new Promise<{ status: number; body: string }>((res, rej) => {
+        respReq.on('response', (response) => {
+          let data = '';
+          response.on('data', (c) => { data += c; });
+          response.on('end', () => res({ status: response.statusCode ?? 500, body: data }));
+        });
+        respReq.on('error', rej);
+      });
+      respReq.write(JSON.stringify({ model: 'gpt-5.2-responses', input: 'test responses' }));
+      respReq.end();
+
+      const respResponse = await respPromise;
+      expect(respResponse.status).toBe(200);
+      expect(respResponse.body).toContain('dynamic reply for /v1/responses');
+      expect(lastReceivedAuth).toBe('Bearer sk-dynamic-secret-key-445566');
+      expect(lastReceivedPath).toBe('/v1/responses');
+    } finally {
+      await gwRuntime.close();
+      await new Promise<void>((res) => upstreamServer.close(() => res()));
+    }
   });
 });

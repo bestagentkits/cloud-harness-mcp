@@ -71,7 +71,7 @@ export const StartRecordSchema = z.object({
   model: z.object({
     id: z.string().min(1).max(200),
     name: z.string().min(1).max(200),
-    api: z.literal('openai-completions'),
+    api: z.enum(['openai-completions', 'openai-responses']),
     reasoning: z.boolean(),
     contextWindow: z.number().int().min(1).max(2_000_000),
     maxTokens: z.number().int().min(1).max(1_000_000),

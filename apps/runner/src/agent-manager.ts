@@ -784,6 +784,7 @@ export class AgentManager {
           displayName: matched.displayName,
           provider: rev.model,
           model: rev.model,
+          apiMode: rev.apiMode,
           inputMicrosPerMillionTokens: rev.pricing.inputMicrosPerMillionTokens,
           outputMicrosPerMillionTokens: rev.pricing.outputMicrosPerMillionTokens,
           maxInputTokens: rev.limits.maxInputTokens,
@@ -844,7 +845,7 @@ export class AgentManager {
       type: 'start', requestId: randomUUID(), agentId: record.id, prompt, tools: record.proxyOperations,
       gateway: { profile: profile.id, lease },
       model: {
-        id: profile.model, name: profile.displayName, api: 'openai-completions', reasoning: false,
+        id: profile.model, name: profile.displayName, api: profile.apiMode === 'responses' ? 'openai-responses' : 'openai-completions', reasoning: false,
         contextWindow, maxTokens: Math.min(record.budget.maxOutputTokens, profile.maxOutputTokens, contextWindow),
         cost: {
           input: profile.inputMicrosPerMillionTokens / 1_000_000,

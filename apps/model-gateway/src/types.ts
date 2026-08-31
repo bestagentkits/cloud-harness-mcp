@@ -27,7 +27,7 @@ export interface GatewayProfile {
   limits: ProfileLimits;
   testOnly: boolean;
   allowPrivateUpstream: boolean;
-  tlsCaFile?: string;
+  tlsCaFile?: string | undefined;
 }
 
 export interface GatewayConfig {

@@ -53,7 +53,7 @@ export type AgentStartRecord = {
   model: {
     id: string;
     name: string;
-    api: 'openai-completions';
+    api: 'openai-completions' | 'openai-responses';
     reasoning: false;
     contextWindow: number;
     maxTokens: number;

@@ -35,6 +35,7 @@ export const AgentModelProfileSchema = z.object({
   displayName: z.string().min(1).max(120),
   provider: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
   model: z.string().regex(/^[A-Za-z0-9._:/-]{1,200}$/),
+  apiMode: z.enum(['chat-completions', 'responses']).default('chat-completions'),
   inputMicrosPerMillionTokens: z.coerce.number().int().min(0).max(1_000_000_000),
   outputMicrosPerMillionTokens: z.coerce.number().int().min(0).max(1_000_000_000),
   maxInputTokens: z.coerce.number().int().min(1).max(2_000_000),
