@@ -982,6 +982,8 @@
       </div>
 
       <nav class="nav-links" aria-label="Primary">
+        <a href="#install">Install</a>
+        <a href="haas.html" style="color: var(--cyan-glow); font-weight: 600;">HaaS Platform <span style="font-size: 0.65rem; padding: 2px 6px; background: var(--cyan-dim); border: 1px solid var(--border-hud); border-radius: 4px; margin-left: 2px;">Preview</span></a>
         <a href="#architecture">Architecture</a>
         <a href="#workflows">Workflows</a>
         <a href="#tools">Tools Surface</a>
@@ -1030,6 +1032,8 @@
           </button>
         </div>
         <a href="#connect" class="hud-button hud-button-primary drawer-connect-btn" style="justify-content: center; text-align: center; margin-bottom: 0.5rem;" onclick="toggleMobileMenu()">Connect Agent →</a>
+        <a href="#install" onclick="toggleMobileMenu()">1-Click Install</a>
+        <a href="haas.html" onclick="toggleMobileMenu()" style="color: var(--cyan-glow); font-weight: 700;">HaaS Cloud Platform (Preview) 🚀</a>
         <a href="#architecture" onclick="toggleMobileMenu()">Architecture</a>
         <a href="#workflows" onclick="toggleMobileMenu()">Workflows</a>
         <a href="#tools" onclick="toggleMobileMenu()">Tools Surface</a>
@@ -1056,11 +1060,14 @@
             Cloud Harness MCP gives Claude Code, Cursor, Codex, and ChatGPT full execution power over isolated repository clones inside bounded Docker executors — without ever exposing Docker host sockets or GitHub App secrets.
           </p>
           <div class="hero-actions">
-            <a href="#connect" class="hud-button hud-button-primary" style="font-size: 0.95rem; padding: 0.85rem 1.85rem;">
-              Initialize Harness ⚡
+            <a href="#install" class="hud-button hud-button-primary" style="font-size: 0.95rem; padding: 0.85rem 1.85rem;">
+              1-Click Install ⚡
+            </a>
+            <a href="haas.html" class="hud-button hud-button-outline" style="font-size: 0.95rem; padding: 0.85rem 1.85rem; border-color: var(--purple-laser); color: #d8b4fe;">
+              Explore HaaS Cloud →
             </a>
             <a href="#architecture" class="hud-button hud-button-outline" style="font-size: 0.95rem; padding: 0.85rem 1.85rem;">
-              View Architecture Diagram ↓
+              View Architecture ↓
             </a>
           </div>
           <div class="hero-stats">
@@ -1486,14 +1493,14 @@
         </div>
 
         <div class="client-matrix">
-          <div class="client-tabs">
-            <button class="client-tab-btn active" onclick="switchClientTab('claude', this)">Claude Code</button>
-            <button class="client-tab-btn" onclick="switchClientTab('cursor', this)">Cursor IDE</button>
-            <button class="client-tab-btn" onclick="switchClientTab('chatgpt', this)">ChatGPT</button>
-            <button class="client-tab-btn" onclick="switchClientTab('codex', this)">Codex CLI</button>
-            <button class="client-tab-btn" onclick="switchClientTab('antigravity', this)">Antigravity</button>
+          <div class="client-tabs" role="tablist" aria-label="AI Client selection">
+            <button class="client-tab-btn active" role="tab" aria-selected="true" tabindex="0" aria-controls="clientContent" onclick="switchClientTab('claude', this)">Claude Code</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="clientContent" onclick="switchClientTab('cursor', this)">Cursor IDE</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="clientContent" onclick="switchClientTab('chatgpt', this)">ChatGPT</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="clientContent" onclick="switchClientTab('codex', this)">Codex CLI</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="clientContent" onclick="switchClientTab('antigravity', this)">Antigravity</button>
           </div>
-          <div class="client-content-panel" id="clientContent">
+          <div class="client-content-panel" id="clientContent" role="tabpanel" tabindex="0">
             <div>
               <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">Claude Code Setup</h3>
               <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">
@@ -1511,6 +1518,77 @@
   --transport http \
   https://api.harness.zuey.me/mcp \
   --header "Authorization: Bearer YOUR_OPERATOR_KEY"</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- 1-Click Server & Companion Skill Installation Section -->
+      <section class="section-wrap" id="install">
+        <div class="section-header">
+          <div class="section-tag">// Quickstart Deployment</div>
+          <h2 class="section-title">Install CloudHarness in Seconds</h2>
+          <p style="color: var(--text-muted); max-width: 780px; margin: 0 auto 1.25rem;">
+            Deploy a private single-owner server on your own Linux VPS, install the portable companion skill, or integrate agent plugins.
+          </p>
+          <div style="display: inline-flex; align-items: center; gap: 0.5rem; background: rgba(0, 240, 255, 0.05); border: 1px solid var(--border-hud); padding: 0.4rem 1rem; border-radius: 9999px; font-size: 0.82rem; font-family: var(--font-mono); color: var(--cyan-glow);">
+            <span>ℹ️</span> The server, operating skill, and authenticated MCP connection are separate installation steps.
+          </div>
+        </div>
+
+        <div class="client-matrix" style="margin-top: 2rem;">
+          <div class="client-tabs" role="tablist" aria-label="Installation method selection">
+            <button class="client-tab-btn active" role="tab" aria-selected="true" tabindex="0" aria-controls="installContent" onclick="switchInstallTab('server-caddy', this)">1-Click Server (Caddy TLS)</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="installContent" onclick="switchInstallTab('server-tunnel', this)">1-Click Server (Cloudflare Tunnel)</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="installContent" onclick="switchInstallTab('agent-skill', this)">Companion Agent Skill</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="installContent" onclick="switchInstallTab('plugins', this)">AI Plugin Marketplace</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="installContent" onclick="switchInstallTab('docker-manual', this)">Manual Compose</button>
+          </div>
+          <div class="client-content-panel" id="installContent" role="tabpanel" tabindex="0">
+            <div>
+              <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">1-Click Linux VPS Server (Caddy TLS)</h3>
+              <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1rem;">
+                Single-command interactive installer for Ubuntu 24.04 / Debian 12 with automatic Let's Encrypt TLS reverse proxy to loopback <code>127.0.0.1:3100</code>.
+              </p>
+              <ul class="arch-specs" style="border: none; padding: 0; margin-bottom: 1rem;">
+                <li><span>→</span> Generates high-entropy cryptographic keys & secret keyring</li>
+                <li><span>→</span> Enables systemd auto-restart service</li>
+                <li><span>→</span> Includes <code>cloudharness</code> CLI (status, token view/rotate, upgrade)</li>
+              </ul>
+              <p style="font-size: 0.8rem; color: var(--text-dim);">Runs repository installer as root. Review source on <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" style="color: var(--cyan-glow); text-decoration: underline;">GitHub repository</a> first.</p>
+            </div>
+            <div class="code-box">
+              <button class="copy-btn" onclick="copySnippet('active-install-box')">Copy</button>
+              <pre id="active-install-box" style="overflow-x: auto; color: var(--text-bright);">curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- HaaS Platform Preview Banner -->
+      <section class="section-wrap" id="haas-preview" style="padding-top: 1rem;">
+        <div style="background: linear-gradient(135deg, rgba(9, 12, 18, 0.95), rgba(15, 20, 32, 0.95)); border: 1px solid var(--border-hud); border-radius: 16px; padding: 2.5rem; position: relative; overflow: hidden; box-shadow: 0 0 35px rgba(0, 240, 255, 0.08);">
+          <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 2rem;">
+            <div style="max-width: 740px;">
+              <div style="display: inline-flex; align-items: center; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.78rem; color: var(--purple-laser); margin-bottom: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">
+                <span class="pulse-dot" style="background: var(--purple-laser); box-shadow: 0 0 8px var(--purple-laser);"></span>
+                Architecture Preview // Multi-Tenant Cloud Platform
+              </div>
+              <h2 style="font-size: clamp(1.8rem, 3vw, 2.3rem); font-weight: 800; margin-bottom: 1rem; color: var(--text-bright);">
+                CloudHarness <span style="color: var(--cyan-glow);">HaaS</span> (Harness as a Service)
+              </h2>
+              <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; margin-bottom: 1.5rem;">
+                Scale beyond single-owner servers. Explore our 3-tier Tenant Isolation Ladder — from dedicated single-tenant provider VMs in Beta to hardware-isolated Firecracker KVM MicroVMs with fail-closed security and double-entry metering in GA.
+              </p>
+              <div style="display: flex; flex-wrap: wrap; gap: 1.25rem; font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted);">
+                <span style="display: inline-flex; align-items: center; gap: 0.35rem;">🛡️ ADR 0001 Isolation Ladder</span>
+                <span style="display: inline-flex; align-items: center; gap: 0.35rem;">⚡ Sub-150ms Cold Boot Target</span>
+                <span style="display: inline-flex; align-items: center; gap: 0.35rem;">💳 Double-Entry Ledger</span>
+              </div>
+            </div>
+            <div>
+              <a href="haas.html" class="hud-button hud-button-primary" style="font-size: 0.95rem; padding: 0.9rem 2rem; white-space: nowrap;">
+                Explore HaaS Architecture & Roadmap →
+              </a>
             </div>
           </div>
         </div>
@@ -1584,7 +1662,9 @@
         <div class="creator-attribution">
           From the creator of <a href="https://agentkit.best" target="_blank" rel="noreferrer" class="creator-link">AgentKit</a> & <a href="https://goclaw.sh" target="_blank" rel="noreferrer" class="creator-link">GoClaw</a>
         </div>
-        <div style="display: flex; gap: 2rem;">
+        <div style="display: flex; gap: 2rem; flex-wrap: wrap;">
+          <a href="#install">Installation</a>
+          <a href="haas.html">HaaS Platform</a>
           <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Documentation</a>
           <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">Repository</a>
           <a href="privacy.html">Privacy</a>
@@ -1672,8 +1752,14 @@
       }
 
       function switchClientTab(client, btn) {
-        document.querySelectorAll('.client-tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('#connect .client-tab-btn').forEach(b => {
+          b.classList.remove('active');
+          b.setAttribute('aria-selected', 'false');
+          b.setAttribute('tabindex', '-1');
+        });
         btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+        btn.setAttribute('tabindex', '0');
         const container = document.getElementById('clientContent');
         const configs = {
           claude: {
@@ -1721,11 +1807,121 @@
         `;
       }
 
+
+      function switchInstallTab(type, btn) {
+        document.querySelectorAll('#install .client-tab-btn').forEach(b => {
+          b.classList.remove('active');
+          b.setAttribute('aria-selected', 'false');
+          b.setAttribute('tabindex', '-1');
+        });
+        btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+        btn.setAttribute('tabindex', '0');
+        const container = document.getElementById('installContent');
+        const installConfigs = {
+          'server-caddy': {
+            title: "1-Click Linux VPS Server (Caddy TLS)",
+            desc: "Single-command interactive installer for Ubuntu 24.04 / Debian 12 with automatic Let's Encrypt TLS reverse proxy to loopback 127.0.0.1:3100.",
+            specs: [
+              "Generates high-entropy cryptographic keys & secret keyring",
+              "Enables systemd auto-restart service",
+              "Includes cloudharness CLI (status, token view/rotate, upgrade)"
+            ],
+            note: 'Runs repository installer as root. Review source on GitHub first.',
+            code: `curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash`
+          },
+          'server-tunnel': {
+            title: "1-Click Linux VPS Server (Cloudflare Tunnel)",
+            desc: "Zero-port installation attaching cloudflared directly to the loopback ingress network without opening inbound firewall ports.",
+            specs: [
+              "Zero public host listening ports",
+              "Direct internal routing to ingress proxy on 127.0.0.1:3100",
+              "Enforces tunnel token validation and public host security"
+            ],
+            note: 'The installer prompts for your Cloudflare Tunnel token via hidden input (zero history leak).',
+            code: `curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash -s -- \\\n  --ingress tunnel \\\n  --domain mcp.example.com`
+          },
+          'agent-skill': {
+            title: "Companion Agent Skill (Portable)",
+            desc: "Install the cloudharness agent skill into your local workspace or global user profile using the Skills CLI.",
+            specs: [
+              "Zero-config installation for AI coding agents",
+              "Provides tool guidance and auto-completion",
+              "Works across Claude Code, Codex, and OpenCode"
+            ],
+            note: 'Installed via npm / npx skills CLI.',
+            code: `# Project scope\nnpx skills add bestagentkits/cloud-harness-mcp --skill cloudharness\n\n# Or global user scope\nnpx skills add bestagentkits/cloud-harness-mcp --skill cloudharness --global`
+          },
+          'plugins': {
+            title: "AI Coding Agent Plugin Marketplace",
+            desc: "Direct plugin marketplace commands for Claude Code and OpenAI Codex CLI.",
+            specs: [
+              "Instant plugin discovery and capability registration",
+              "Automatic skill sync and update channels",
+              "Seamless integration with agent workflows"
+            ],
+            note: 'Requires Claude Code or Codex CLI installed.',
+            code: `# Claude Code Plugin\nclaude plugin marketplace add bestagentkits/cloud-harness-mcp\nclaude plugin install cloud-harness@bestagentkits\n\n# OpenAI Codex Plugin\ncodex plugin marketplace add bestagentkits/cloud-harness-mcp\ncodex plugin add cloud-harness@bestagentkits`
+          },
+          'docker-manual': {
+            title: "Manual Docker Compose Setup",
+            desc: "Clone the repository, configure runtime environment, and build the local container images manually.",
+            specs: [
+              "Full manual control over configuration files",
+              "Builds local executor, api, and runner images",
+              "Exposes loopback ingress on 127.0.0.1:3100"
+            ],
+            note: 'Requires Docker CE and Docker Compose plugin installed.',
+            code: `git clone https://github.com/bestagentkits/cloud-harness-mcp.git\ncd cloud-harness-mcp\ncp .env.example .env\ndocker compose --profile images build executor-image api runner\ndocker compose up -d`
+          }
+        };
+
+        const item = installConfigs[type];
+        const specsHtml = item.specs.map(s => `<li><span>→</span> ${s}</li>`).join('');
+        container.innerHTML = `
+          <div>
+            <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">${item.title}</h3>
+            <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1rem;">${item.desc}</p>
+            <ul class="arch-specs" style="border: none; padding: 0; margin-bottom: 1rem;">
+              ${specsHtml}
+            </ul>
+            <p style="font-size: 0.8rem; color: var(--text-dim);">${item.note}</p>
+          </div>
+          <div class="code-box">
+            <button class="copy-btn" onclick="copySnippet('active-install-box')">Copy</button>
+            <pre id="active-install-box" style="overflow-x: auto; color: var(--text-bright);">${item.code}</pre>
+          </div>
+        `;
+      }
       function copySnippet(id) {
         const text = document.getElementById(id).innerText;
         navigator.clipboard.writeText(text);
         alert('Copied configuration to clipboard!');
       }
+
+      // Keyboard arrow navigation for tablists
+      document.querySelectorAll('[role="tablist"]').forEach(tablist => {
+        tablist.addEventListener('keydown', (e) => {
+          const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+          const idx = tabs.indexOf(document.activeElement);
+          if (idx === -1) return;
+          let nextIdx = idx;
+          if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+            nextIdx = (idx + 1) % tabs.length;
+          } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+            nextIdx = (idx - 1 + tabs.length) % tabs.length;
+          } else if (e.key === 'Home') {
+            nextIdx = 0;
+          } else if (e.key === 'End') {
+            nextIdx = tabs.length - 1;
+          } else {
+            return;
+          }
+          e.preventDefault();
+          tabs[nextIdx].focus();
+          tabs[nextIdx].click();
+        });
+      });
     </script>
   </body>
 </html>

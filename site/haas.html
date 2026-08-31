@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="CloudHarness HaaS (Harness as a Service) — Cloud-native multi-tenant coding harness platform for AI agent fleets with hardware-isolated Firecracker MicroVMs."
+    />
+    <title>CloudHarness HaaS // Multi-Tenant Cloud Platform &amp; MicroVM Architecture</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;0,800;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg-void: #000000;
+        --bg-panel: #05070a;
+        --bg-card: #090c12;
+        --bg-card-hover: #0f1420;
+        --cyan-glow: #00f0ff;
+        --cyan-dim: rgba(0, 240, 255, 0.12);
+        --green-neon: #10b981;
+        --green-dim: rgba(16, 185, 129, 0.12);
+        --amber-warn: #f59e0b;
+        --purple-laser: #a855f7;
+        --purple-dim: rgba(168, 85, 247, 0.12);
+        --border-hud: rgba(0, 240, 255, 0.2);
+        --border-soft: rgba(255, 255, 255, 0.08);
+        --border-hover: rgba(255, 255, 255, 0.18);
+        --text-bright: #f8fafc;
+        --text-muted: #94a3b8;
+        --text-dim: #64748b;
+        --font-mono: "JetBrains Mono", monospace;
+        --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        background-color: #000000;
+      }
+
+      body {
+        background-color: var(--bg-void);
+        color: var(--text-bright);
+        font-family: var(--font-sans);
+        line-height: 1.7;
+        overflow-x: hidden;
+        -webkit-font-smoothing: antialiased;
+        background-image: 
+          radial-gradient(circle at 50% 0%, rgba(168, 85, 247, 0.08) 0%, transparent 55%),
+          linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+        background-size: 100% 100%, 48px 48px, 48px 48px;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      /* HUD Top Telemetry Bar */
+      .telemetry-bar {
+        background: rgba(0, 0, 0, 0.9);
+        backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--border-soft);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        padding: 0.5rem 1.5rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .telemetry-group {
+        display: flex;
+        gap: 1.75rem;
+        align-items: center;
+      }
+
+      .telemetry-item {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+      }
+
+      .pulse-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--purple-laser);
+        box-shadow: 0 0 8px var(--purple-laser);
+        animation: pulse 2.4s infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.35; transform: scale(0.85); }
+      }
+
+      /* Main Nav */
+      .main-nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1.25rem 2rem;
+        max-width: 1380px;
+        margin: 0 auto;
+        position: relative;
+      }
+
+      .logo-hud {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-family: var(--font-mono);
+        font-weight: 800;
+        font-size: 1.15rem;
+        letter-spacing: 0.05em;
+      }
+
+      .logo-icon {
+        width: 36px;
+        height: 36px;
+        background: rgba(168, 85, 247, 0.1);
+        border: 1px solid rgba(168, 85, 247, 0.3);
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .logo-tag {
+        font-size: 0.68rem;
+        background: var(--purple-dim);
+        border: 1px solid rgba(168, 85, 247, 0.3);
+        color: #d8b4fe;
+        padding: 0.15rem 0.45rem;
+        border-radius: 4px;
+        margin-left: 0.35rem;
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 1.75rem;
+        font-size: 0.92rem;
+        font-weight: 500;
+        color: var(--text-muted);
+      }
+
+      .nav-links a {
+        transition: color 0.2s ease;
+      }
+
+      .nav-links a:hover {
+        color: var(--text-bright);
+      }
+
+      .nav-actions {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+      }
+
+      .hud-button {
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        font-weight: 600;
+        padding: 0.6rem 1.25rem;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .hud-button-primary {
+        background: var(--purple-laser);
+        color: #ffffff;
+        border: 1px solid var(--purple-laser);
+        box-shadow: 0 0 16px rgba(168, 85, 247, 0.35);
+      }
+
+      .hud-button-primary:hover {
+        background: #9333ea;
+        box-shadow: 0 0 24px rgba(168, 85, 247, 0.55);
+        transform: translateY(-1px);
+      }
+
+      .hud-button-outline {
+        background: rgba(255, 255, 255, 0.02);
+        color: var(--text-bright);
+        border: 1px solid var(--border-soft);
+      }
+
+      .hud-button-outline:hover {
+        border-color: var(--border-hover);
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      /* Mobile Drawer */
+      .mobile-menu-btn {
+        display: none;
+        background: transparent;
+        border: 1px solid var(--border-soft);
+        color: var(--text-bright);
+        padding: 0.5rem;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .mobile-drawer {
+        display: none;
+        position: fixed;
+        top: 0;
+        right: -100%;
+        width: 280px;
+        height: 100vh;
+        background: rgba(5, 7, 10, 0.98);
+        backdrop-filter: blur(24px);
+        border-left: 1px solid var(--border-hud);
+        z-index: 200;
+        flex-direction: column;
+        padding: 2rem 1.5rem;
+        gap: 1.5rem;
+        transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .mobile-drawer.open {
+        display: flex;
+        right: 0;
+      }
+
+      .drawer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 1.25rem;
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      .drawer-close-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        cursor: pointer;
+      }
+
+      /* Section Wrappers */
+      .section-wrap {
+        max-width: 1380px;
+        margin: 0 auto;
+        padding: 5rem 2rem;
+      }
+
+      .section-header {
+        text-align: center;
+        margin-bottom: 3.5rem;
+      }
+
+      .section-tag {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        color: var(--purple-laser);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 0.75rem;
+      }
+
+      .section-title {
+        font-size: clamp(2rem, 3.5vw, 2.75rem);
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        margin-bottom: 1rem;
+      }
+
+      /* Hero Section */
+      .haas-hero {
+        text-align: center;
+        padding: 4rem 2rem 5rem;
+        max-width: 1100px;
+        margin: 0 auto;
+      }
+
+      .badge-cyber {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        padding: 0.4rem 1rem;
+        border-radius: 9999px;
+        background: rgba(168, 85, 247, 0.1);
+        border: 1px solid rgba(168, 85, 247, 0.3);
+        color: #d8b4fe;
+        margin-bottom: 2rem;
+      }
+
+      .haas-title {
+        font-size: clamp(2.5rem, 5.5vw, 4.2rem);
+        font-weight: 800;
+        line-height: 1.15;
+        letter-spacing: -0.03em;
+        margin-bottom: 1.75rem;
+      }
+
+      .haas-desc {
+        font-size: clamp(1.05rem, 2vw, 1.25rem);
+        color: var(--text-muted);
+        max-width: 820px;
+        margin: 0 auto 2.5rem;
+        line-height: 1.75;
+      }
+
+      /* Gating Notice Callout */
+      .gating-notice {
+        background: rgba(245, 158, 11, 0.05);
+        border: 1px solid rgba(245, 158, 11, 0.3);
+        border-radius: 8px;
+        padding: 1rem 1.5rem;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--amber-warn);
+        max-width: 820px;
+        margin: 0 auto 3rem;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        text-align: left;
+      }
+
+      /* Isolation Ladder Grid */
+      .ladder-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 2rem;
+      }
+
+      .ladder-card {
+        background: var(--bg-panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 12px;
+        padding: 2.25rem;
+        position: relative;
+        transition: all 0.25s ease;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .ladder-card:hover {
+        border-color: var(--border-hud);
+        transform: translateY(-3px);
+        box-shadow: 0 12px 36px rgba(0, 240, 255, 0.08);
+      }
+
+      .ladder-card.active-tier {
+        border-color: rgba(168, 85, 247, 0.5);
+        box-shadow: 0 0 30px rgba(168, 85, 247, 0.15);
+      }
+
+      .tier-badge {
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        padding: 0.3rem 0.7rem;
+        border-radius: 4px;
+        display: inline-block;
+        margin-bottom: 1.25rem;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .tier-oss { background: rgba(0, 240, 255, 0.12); color: var(--cyan-glow); border: 1px solid rgba(0, 240, 255, 0.3); }
+      .tier-beta { background: rgba(168, 85, 247, 0.15); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.3); }
+      .tier-ga { background: rgba(16, 185, 129, 0.15); color: var(--green-neon); border: 1px solid rgba(16, 185, 129, 0.3); }
+
+      .feature-list {
+        list-style: none;
+        margin: 1.5rem 0;
+      }
+
+      .feature-list li {
+        font-size: 0.9rem;
+        color: var(--text-muted);
+        margin-bottom: 0.65rem;
+        display: flex;
+        align-items: flex-start;
+        gap: 0.6rem;
+      }
+
+      .feature-list li span {
+        color: var(--purple-laser);
+        font-weight: 700;
+      }
+
+      /* Architecture Highlights Grid */
+      .arch-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 2rem;
+      }
+
+      .arch-card {
+        background: var(--bg-panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 12px;
+        padding: 2.25rem;
+        transition: all 0.2s ease;
+      }
+
+      .arch-card:hover {
+        border-color: var(--border-hover);
+        background: var(--bg-card);
+      }
+
+      .arch-card h3 {
+        font-size: 1.2rem;
+        margin-bottom: 0.75rem;
+        color: var(--text-bright);
+      }
+
+      .arch-card p {
+        color: var(--text-muted);
+        font-size: 0.92rem;
+        line-height: 1.65;
+      }
+
+      /* Footer */
+      .cyber-footer {
+        border-top: 1px solid var(--border-soft);
+        padding: 3.5rem 2rem 2rem;
+        max-width: 1380px;
+        margin: 0 auto;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--text-muted);
+      }
+
+      .footer-top-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+      }
+
+      .creator-attribution {
+        color: var(--text-dim);
+      }
+
+      .creator-link {
+        color: var(--text-muted);
+        transition: color 0.2s ease;
+      }
+
+      .creator-link:hover {
+        color: var(--cyan-glow);
+      }
+
+      @media (max-width: 1280px) {
+        .nav-links { display: none !important; }
+        .mobile-menu-btn { display: inline-flex !important; }
+      }
+
+      @media (max-width: 860px) {
+        .nav-actions .hud-button { display: none !important; }
+        .main-nav { padding: 0.85rem 1.15rem; }
+        .ladder-grid { grid-template-columns: 1fr; }
+        .arch-grid { grid-template-columns: 1fr; }
+        .footer-top-row { flex-direction: column; text-align: center; }
+      }
+
+      @media (max-width: 640px) {
+        .telemetry-bar { font-size: 0.7rem; padding: 0.4rem 1rem; }
+      }
+    </style>
+  </head>
+  <body id="top">
+    <!-- Top Telemetry HUD -->
+    <aside class="telemetry-bar" aria-label="System telemetry">
+      <div class="telemetry-group">
+        <div class="telemetry-item">
+          <span class="pulse-dot"></span>
+          <span>HAAS CLUSTER:</span>
+          <span style="color: var(--purple-laser)">PREVIEW // ADR 0001 GATED</span>
+        </div>
+        <div class="telemetry-item">
+          <span>ISOLATION TARGET:</span>
+          <span style="color: var(--cyan-glow)">FIRECRACKER KVM &lt;150ms</span>
+        </div>
+        <div class="telemetry-item">
+          <span>STORAGE QUOTA:</span>
+          <span style="color: var(--green-neon)">DM-THIN 20GB HARD LIMIT</span>
+        </div>
+      </div>
+      <div class="telemetry-group">
+        <div class="telemetry-item">
+          <span>PROTOCOL:</span>
+          <span style="color: var(--text-bright)">gRPC / mTLS OUTBOUND</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Navigation Header -->
+    <header class="main-nav">
+      <div class="logo-hud">
+        <div class="logo-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--purple-laser)" stroke-width="2.2" aria-hidden="true">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <span>CLOUD HARNESS <span class="logo-tag">HaaS</span></span>
+      </div>
+
+      <nav class="nav-links" aria-label="Primary">
+        <a href="index.html">← Home</a>
+        <a href="#ladder">Isolation Ladder</a>
+        <a href="#node-agent">Node Agent</a>
+        <a href="#metering">Metering</a>
+        <a href="#residency">Residency</a>
+        <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Docs ↗</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" class="hud-button hud-button-outline">
+          GitHub Repo ★
+        </a>
+        <a href="#waitlist" class="hud-button hud-button-primary">Request Early Access →</a>
+        <button class="mobile-menu-btn" onclick="toggleMobileMenu()" aria-label="Toggle navigation menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Mobile Navigation Drawer -->
+      <nav class="mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
+        <div class="drawer-header">
+          <div class="logo-hud">
+            <span style="font-size: 1.05rem;">CLOUD HARNESS HaaS</span>
+          </div>
+          <button class="drawer-close-btn" onclick="toggleMobileMenu()" aria-label="Close navigation menu">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <a href="index.html">← Back to Open Source Home</a>
+        <a href="#ladder" onclick="toggleMobileMenu()">Isolation Ladder</a>
+        <a href="#node-agent" onclick="toggleMobileMenu()">Outbound Node Agent</a>
+        <a href="#metering" onclick="toggleMobileMenu()">Hybrid Metering</a>
+        <a href="#residency" onclick="toggleMobileMenu()">Data Residency</a>
+        <a href="#waitlist" class="hud-button hud-button-primary" style="justify-content: center;" onclick="toggleMobileMenu()">Request Early Access →</a>
+      </nav>
+    </header>
+
+    <main>
+      <!-- Hero Section -->
+      <section class="haas-hero">
+        <div class="badge-cyber">
+          <span class="pulse-dot"></span>
+          HAAS // HARNESS AS A SERVICE &amp; MULTI-TENANT CLOUD ARCHITECTURE
+        </div>
+        <h1 class="haas-title">
+          Scale AI Agent Fleets with<br/>
+          <span style="color: var(--cyan-glow);">Hardware-Isolated MicroVMs.</span>
+        </h1>
+        <p class="haas-desc">
+          CloudHarness HaaS bridges self-hosted coding harnesses and elastic, multi-tenant cloud clusters. Architectural specification for executing untrusted coding agent workloads with sub-150ms cold boot target, hard block quotas, and double-entry metering.
+        </p>
+
+        <div class="gating-notice">
+          <span style="font-size: 1.2rem;">⚠️</span>
+          <div>
+            <strong>Architecture Preview &amp; Design Specification:</strong>
+            Commercial multi-tenant infrastructure is strictly gated behind <a href="https://docs.harness.agentkit.best/security-model" target="_blank" rel="noreferrer" style="color: var(--text-bright); text-decoration: underline;">ADR 0001</a> owner sign-off and empirical bare-metal KVM benchmarks. The private single-owner OSS installer remains the default production release.
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 1.25rem; justify-content: center; flex-wrap: wrap;">
+          <a href="#ladder" class="hud-button hud-button-primary" style="font-size: 0.95rem; padding: 0.85rem 1.85rem;">
+            Explore the Isolation Ladder ↓
+          </a>
+          <a href="https://docs.harness.agentkit.best/security-model" target="_blank" rel="noreferrer" class="hud-button hud-button-outline" style="font-size: 0.95rem; padding: 0.85rem 1.85rem;">
+            Read Security Architecture ↗
+          </a>
+        </div>
+      </section>
+
+      <!-- The 3-Tier Tenant Isolation Ladder Section -->
+      <section class="section-wrap" id="ladder">
+        <div class="section-header">
+          <div class="section-tag">// Security Architecture</div>
+          <h2 class="section-title">The 3-Tier Tenant Isolation Ladder</h2>
+          <p style="color: var(--text-muted); max-width: 760px; margin: 0 auto;">
+            Mutually distrustful tenants require hardware-level boundaries. CloudHarness specifies an explicit 3-tier isolation ladder to eliminate cross-tenant contamination.
+          </p>
+        </div>
+
+        <div class="ladder-grid">
+          <!-- Tier 1: Single-Owner OSS -->
+          <div class="ladder-card">
+            <div>
+              <div class="tier-badge tier-oss">Tier 1: OSS Community (Live)</div>
+              <h3 style="font-size: 1.35rem; margin-bottom: 0.75rem;">Single Trusted Owner</h3>
+              <p style="color: var(--text-muted); font-size: 0.92rem; line-height: 1.65;">
+                Self-hosted deployment on your own Linux VPS for individual engineers and tightly-knit teams with mutual trust.
+              </p>
+              <ul class="feature-list">
+                <li><span>✓</span> Rootful Docker Engine with seccomp and AppArmor</li>
+                <li><span>✓</span> Loopback Ingress (127.0.0.1:3100) + Caddy TLS / Cloudflare Tunnel</li>
+                <li><span>✓</span> Single-owner bearer token authentication</li>
+                <li><span>✓</span> 1-Click single-command installation pipeline</li>
+              </ul>
+            </div>
+            <div style="margin-top: 1.5rem;">
+              <a href="index.html#install" class="hud-button hud-button-outline" style="width: 100%; justify-content: center;">
+                Deploy OSS Server →
+              </a>
+            </div>
+          </div>
+
+          <!-- Tier 2: Dedicated Tenant Beta -->
+          <div class="ladder-card active-tier">
+            <div>
+              <div class="tier-badge tier-beta">Tier 2: Commercial Beta (Private)</div>
+              <h3 style="font-size: 1.35rem; margin-bottom: 0.75rem;">Dedicated Provider VM per Tenant</h3>
+              <p style="color: var(--text-muted); font-size: 0.92rem; line-height: 1.65;">
+                Hard hypervisor boundary provided by the cloud provider. Exactly one isolated cloud VPS provisioned per paying customer.
+              </p>
+              <ul class="feature-list">
+                <li><span>✓</span> 1 Customer = 1 Cloud VPS (Hetzner / AWS / OVH)</li>
+                <li><span>✓</span> Zero cross-customer container co-location</li>
+                <li><span>✓</span> Outbound gRPC over mTLS Node Agent</li>
+                <li><span>✓</span> Centralized control plane with capacity scheduling</li>
+              </ul>
+            </div>
+            <div style="margin-top: 1.5rem;">
+              <a href="#waitlist" class="hud-button hud-button-primary" style="width: 100%; justify-content: center;">
+                Apply for Beta Access →
+              </a>
+            </div>
+          </div>
+
+          <!-- Tier 3: Pooled GA MicroVMs -->
+          <div class="ladder-card">
+            <div>
+              <div class="tier-badge tier-ga">Tier 3: Commercial Pooled GA</div>
+              <h3 style="font-size: 1.35rem; margin-bottom: 0.75rem;">Firecracker KVM MicroVMs</h3>
+              <p style="color: var(--text-muted); font-size: 0.92rem; line-height: 1.65;">
+                High-density hardware virtualization for public multi-tenant pooled clusters on bare-metal servers.
+              </p>
+              <ul class="feature-list">
+                <li><span>✓</span> Dedicated Linux guest kernel booted in &lt; 150ms</li>
+                <li><span>✓</span> Jailer sandboxing with unique unprivileged UID/GID</li>
+                <li><span>✓</span> Device Mapper (dm-thin) 20GB hard block quotas</li>
+                <li><span>✓</span> <strong>FAIL-CLOSED Guarantee:</strong> Never falls back to Docker</li>
+              </ul>
+            </div>
+            <div style="margin-top: 1.5rem;">
+              <div style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-dim); text-align: center;">
+                Gated on Phase 04 KVM Verification
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Outbound Node Agent Architecture Section -->
+      <section class="section-wrap" id="node-agent" style="background: rgba(5, 7, 10, 0.6); border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);">
+        <div class="section-header">
+          <div class="section-tag">// Distributed Topology Roadmap</div>
+          <h2 class="section-title">Outbound gRPC Node Agent (Design)</h2>
+          <p style="color: var(--text-muted); max-width: 760px; margin: 0 auto;">
+            Proposed architecture: Worker nodes initiate outbound mTLS streams to the central control plane, eliminating all public inbound listening ports on execution nodes.
+          </p>
+        </div>
+
+        <div class="arch-grid">
+          <div class="arch-card">
+            <div style="font-family: var(--font-mono); font-size: 1.5rem; margin-bottom: 0.75rem;">🛡️</div>
+            <h3>Zero-Leak Node Enrollment</h3>
+            <p>
+              Tokens are structured as <code>&lt;id&gt;.&lt;secret&gt;</code> and verified via Argon2id with guarded database row consumption. Stdin ingestion (<code>--token-stdin</code>) or root-only <code>0600</code> file ingestion with descriptor-based <code>O_NOFOLLOW</code> checks prevents process table or bash history leaks.
+            </p>
+          </div>
+
+          <div class="arch-card">
+            <div style="font-family: var(--font-mono); font-size: 1.5rem; margin-bottom: 0.75rem;">⏱️</div>
+            <h3>Watchdog Fence &amp; Split-Brain Quarantine</h3>
+            <p>
+              If a worker node loses connection to the control plane for &gt; 30 seconds, a local watchdog timer self-fences the node and pauses active containers. Reconnection requires monotonic <code>lease_epoch</code> revalidation before execution can resume.
+            </p>
+          </div>
+
+          <div class="arch-card">
+            <div style="font-family: var(--font-mono); font-size: 1.5rem; margin-bottom: 0.75rem;">⚡</div>
+            <h3>Dedicated Tenant Scheduling</h3>
+            <p>
+              Database-enforced invariant: Dedicated tenant workspaces are routed strictly to nodes with matching <code>nodes.tenant_id</code> foreign keys. General tenant workloads are rejected from dedicated hardware enclaves.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Hybrid Metering & Billing Engine Section -->
+      <section class="section-wrap" id="metering">
+        <div class="section-header">
+          <div class="section-tag">// Unit Economics &amp; Billing Roadmap</div>
+          <h2 class="section-title">Hybrid Metering &amp; Double-Entry Ledger (Design)</h2>
+          <p style="color: var(--text-muted); max-width: 760px; margin: 0 auto;">
+            Target model: Fair, fraud-resistant pricing combining duration tracking with tool execution request volume.
+          </p>
+        </div>
+
+        <div class="arch-grid">
+          <div class="arch-card">
+            <h3>⏱️ 15-Minute Auto-Idle Sleep</h3>
+            <p>
+              Workspaces with no incoming tool calls for 15 minutes are automatically suspended. The duration meter stops immediately, and state resumes on the next request in under 2 seconds.
+            </p>
+          </div>
+
+          <div class="arch-card">
+            <h3>💳 Double-Entry Financial Ledger</h3>
+            <p>
+              Every billing event executes an atomic PostgreSQL transaction (<code>post_journal</code>) ensuring balanced debits and credits with sub-cent micro-USD integer scale.
+            </p>
+          </div>
+
+          <div class="arch-card">
+            <h3>🔐 Raw-Body Webhook Verification</h3>
+            <p>
+              Payment webhooks (Polar.sh and Stripe) are cryptographically validated against unmodified raw byte buffers with strict timestamp tolerances (&lt;300s) and composite key deduplication.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Data Residency & Sovereign Boundaries Section -->
+      <section class="section-wrap" id="residency" style="background: rgba(5, 7, 10, 0.6); border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);">
+        <div class="section-header">
+          <div class="section-tag">// Sovereignty &amp; Privacy</div>
+          <h2 class="section-title">Data Residency &amp; Incident Containment</h2>
+          <p style="color: var(--text-muted); max-width: 760px; margin: 0 auto;">
+            Strict regional isolation with cryptographic erasure upon workspace termination.
+          </p>
+        </div>
+
+        <div class="arch-grid">
+          <div class="arch-card">
+            <h3>🌍 Geographic Enclaves</h3>
+            <p>
+              Worker nodes are partitioned into regional silos (e.g. EU, US). Repository clones and ephemeral snapshots never cross geographical boundaries without explicit operator policy.
+            </p>
+          </div>
+
+          <div class="arch-card">
+            <h3>🔑 Ephemeral Key Destruction</h3>
+            <p>
+              Workspace termination wipes ephemeral AES-256 snapshot keys immediately. Unused storage blocks on thin-provisioned NVMe volumes are securely trimmed and recycled.
+            </p>
+          </div>
+
+          <div class="arch-card">
+            <h3>🚨 Automated Incident Quarantine</h3>
+            <p>
+              Syscall anomalies or jailer seccomp violations trigger instant node cordoning, certificate revocation via CRL, and tamper-evident audit logging.
+            </p>
+          </div>
+
+          <div class="arch-card">
+            <h3>🔐 Encrypted Forensic Capture &amp; Default Erasure</h3>
+            <p>
+              Under explicit security authorization, memory state is captured directly into an access-controlled, asymmetric encrypted container (AES-256-GCM + ephemeral key pair) with mandatory 30-day retention. By default, unmanaged rogue microVMs are terminated immediately with complete cryptographic key erasure and zero plaintext memory preservation (ADR 0001 Design).
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Waitlist & Early Access Section -->
+      <section class="section-wrap" id="waitlist">
+        <div style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(9, 12, 18, 0.95)); border: 1px solid rgba(168, 85, 247, 0.4); border-radius: 16px; padding: 3.5rem 2rem; text-align: center; max-width: 900px; margin: 0 auto; box-shadow: 0 0 40px rgba(168, 85, 247, 0.15);">
+          <div class="section-tag" style="color: #d8b4fe;">// Dedicated Beta Program</div>
+          <h2 style="font-size: clamp(2rem, 3.5vw, 2.5rem); font-weight: 800; margin-bottom: 1rem;">
+            Ready to Scale Dedicated AI Coding Infrastructure?
+          </h2>
+          <p style="color: var(--text-muted); max-width: 620px; margin: 0 auto 2rem; font-size: 1.05rem;">
+            Join our invite-only Dedicated Commercial Beta for engineering teams deploying high-concurrency coding agents.
+          </p>
+          <div style="display: flex; gap: 1.25rem; justify-content: center; flex-wrap: wrap;">
+            <a href="https://github.com/bestagentkits/cloud-harness-mcp/issues" target="_blank" rel="noreferrer" class="hud-button hud-button-primary" style="font-size: 1rem; padding: 0.85rem 2rem;">
+              GitHub Community Issues ↗
+            </a>
+            <a href="index.html#install" class="hud-button hud-button-outline" style="font-size: 1rem; padding: 0.85rem 2rem;">
+              Deploy Self-Hosted OSS →
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Cyber Footer -->
+    <footer class="cyber-footer">
+      <div class="footer-top-row">
+        <div>
+          <span>CLOUD HARNESS HaaS // ARCHITECTURE PREVIEW</span>
+        </div>
+        <div class="creator-attribution">
+          From the creator of <a href="https://agentkit.best" target="_blank" rel="noreferrer" class="creator-link">AgentKit</a> &amp; <a href="https://goclaw.sh" target="_blank" rel="noreferrer" class="creator-link">GoClaw</a>
+        </div>
+        <div style="display: flex; gap: 2rem; flex-wrap: wrap;">
+          <a href="index.html">Home</a>
+          <a href="index.html#install">Installation</a>
+          <a href="haas.html">HaaS Platform</a>
+          <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Documentation</a>
+          <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">Repository</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="terms.html">Terms</a>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Interactive Scripts -->
+    <script>
+      function toggleMobileMenu() {
+        const drawer = document.getElementById('mobileDrawer');
+        if (drawer) drawer.classList.toggle('open');
+      }
+
+      function copySnippet(id) {
+        const text = document.getElementById(id).innerText;
+        navigator.clipboard.writeText(text);
+        alert('Copied snippet to clipboard!');
+      }
+    </script>
+  </body>
+</html>
