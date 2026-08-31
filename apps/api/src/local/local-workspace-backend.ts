@@ -1,3 +1,4 @@
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { RunnerOperation, RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
@@ -7,6 +8,16 @@ import { LocalWorkerClient } from './local-worker-client.js';
 import { LocalOperationManager } from './local-operation-manager.js';
 
 const opaqueId = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
+
+
+function isPathContained(parent: string, candidate: string): boolean {
+  try {
+    const rel = relative(resolve(parent), resolve(candidate));
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  } catch {
+    return false;
+  }
+}
 
 export class LocalWorkspaceBackend implements OperationBackend {
   public readonly workspaceId: string;
@@ -250,9 +261,33 @@ export class LocalWorkspaceBackend implements OperationBackend {
             const hashStr = typeof rawItem.contentSha256 === 'string' && rawItem.contentSha256.length === 64
               ? rawItem.contentSha256
               : '0'.repeat(64);
+            const kindStr = typeof rawItem.kind === 'string' ? rawItem.kind : 'instruction';
+            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
+            const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+
+            let source: 'built-in' | 'owner' | 'workspace' | 'repository' = 'repository';
+            let trust: 'trusted-control-plane' | 'owner-controlled' | 'untrusted-executor' = 'untrusted-executor';
+            let mutableBy: 'release' | 'owner' | 'workspace-process' | 'repository-commit' = 'repository-commit';
+
+            if (kindStr === 'skill-summary' && pathStr) {
+              if (isPathContained(builtinRoot, pathStr) || isPathContained('/opt/cloud-harness/skills', pathStr)) {
+                source = 'built-in';
+                trust = 'trusted-control-plane';
+                mutableBy = 'release';
+              } else if (isPathContained(ownerRoot, pathStr) || isPathContained('/opt/cloud-harness/owner-skills', pathStr)) {
+                source = 'owner';
+                trust = 'owner-controlled';
+                mutableBy = 'owner';
+              } else if (isPathContained('.cloud-harness/skills', pathStr) || isPathContained(join(this.canonicalRoot, '.cloud-harness', 'skills'), pathStr)) {
+                source = 'workspace';
+                trust = 'untrusted-executor';
+                mutableBy = 'workspace-process';
+              }
+            }
+
             const item = {
               id: typeof rawItem.id === 'string' ? rawItem.id : `ctx_${hashStr.slice(0, 12)}`,
-              kind: typeof rawItem.kind === 'string' ? rawItem.kind : 'instruction',
+              kind: kindStr,
               format: typeof rawItem.format === 'string' ? rawItem.format : 'plain',
               clients: Array.isArray(rawItem.clients) ? rawItem.clients : ['all'],
               path: pathStr,
@@ -263,9 +298,9 @@ export class LocalWorkspaceBackend implements OperationBackend {
               excerpt: typeof rawItem.excerpt === 'string' ? rawItem.excerpt.slice(0, 8192) : undefined,
               references: Array.isArray(rawItem.references) ? rawItem.references : undefined,
               provenance: {
-                source: 'repository',
-                trust: 'untrusted-executor',
-                mutableBy: 'repository-commit',
+                source,
+                trust,
+                mutableBy,
                 path: pathStr,
                 contentSha256: hashStr,
                 discoveredAt: new Date().toISOString()

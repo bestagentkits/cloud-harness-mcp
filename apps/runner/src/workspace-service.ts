@@ -8,6 +8,7 @@ import {
   RunnerOperationSchema,
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
+  sanitizeAndAttributeProvenance,
   type RunnerConfig,
   type InternalRunnerOperation,
   type RunnerOperation,
@@ -2056,31 +2057,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
 
           for (const rawItem of rawItems as Record<string, unknown>[]) {
-            const pathStr = typeof rawItem.path === 'string' ? rawItem.path : undefined;
-            const hashStr = typeof rawItem.contentSha256 === 'string' && rawItem.contentSha256.length === 64
-              ? rawItem.contentSha256
-              : '0'.repeat(64);
-            const item = {
-              id: typeof rawItem.id === 'string' ? rawItem.id : `ctx_${hashStr.slice(0, 12)}`,
-              kind: typeof rawItem.kind === 'string' ? rawItem.kind : 'instruction',
-              format: typeof rawItem.format === 'string' ? rawItem.format : 'plain',
-              clients: Array.isArray(rawItem.clients) ? rawItem.clients : ['all'],
-              path: pathStr,
-              appliesTo: typeof rawItem.appliesTo === 'string' ? rawItem.appliesTo : undefined,
-              activeForClient: Boolean(rawItem.activeForClient ?? true),
-              contentSha256: hashStr,
-              byteCount: typeof rawItem.byteCount === 'number' ? rawItem.byteCount : 0,
-              excerpt: typeof rawItem.excerpt === 'string' ? rawItem.excerpt.slice(0, 8192) : undefined,
-              references: Array.isArray(rawItem.references) ? rawItem.references : undefined,
-              provenance: {
-                source: 'repository',
-                trust: 'untrusted-executor',
-                mutableBy: 'repository-commit',
-                path: pathStr,
-                contentSha256: hashStr,
-                discoveredAt: new Date().toISOString()
-              }
-            };
+            const item = sanitizeAndAttributeProvenance(rawItem, {
+              repositoryRoot: record.workspacePath
+            });
             const itemBytes = Buffer.byteLength(JSON.stringify(item));
             if (accumulatedBytes + itemBytes > maxBytes) {
               truncated = true;
