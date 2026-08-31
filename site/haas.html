@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="CloudHarness HaaS (Harness as a Service) — Cloud-native multi-tenant coding harness platform for AI agent fleets with hardware-isolated Firecracker MicroVMs."
+      content="CloudHarness HaaS (Harness as a Service) — Architectural roadmap and multi-tenant cloud specification for AI agent fleets with hardware-isolated Firecracker MicroVMs."
     />
     <title>CloudHarness HaaS // Multi-Tenant Cloud Platform &amp; MicroVM Architecture</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -756,23 +756,23 @@
 
         <div class="arch-grid">
           <div class="arch-card">
-            <h3>⏱️ 15-Minute Auto-Idle Sleep</h3>
+            <h3>⏱️ 15-Minute Auto-Idle Sleep (Design Target)</h3>
             <p>
-              Workspaces with no incoming tool calls for 15 minutes are automatically suspended. The duration meter stops immediately, and state resumes on the next request in under 2 seconds.
+              Target specification: Workspaces with no incoming tool calls for 15 minutes are planned to automatically suspend, halting duration metering immediately and resuming in under 2 seconds.
             </p>
           </div>
 
           <div class="arch-card">
-            <h3>💳 Double-Entry Financial Ledger</h3>
+            <h3>💳 Double-Entry Financial Ledger (Design Architecture)</h3>
             <p>
-              Every billing event executes an atomic PostgreSQL transaction (<code>post_journal</code>) ensuring balanced debits and credits with sub-cent micro-USD integer scale.
+              Planned design: Billing events execute an atomic PostgreSQL transaction (<code>post_journal</code>) ensuring balanced debits and credits with sub-cent micro-USD integer scale.
             </p>
           </div>
 
           <div class="arch-card">
-            <h3>🔐 Raw-Body Webhook Verification</h3>
+            <h3>🔐 Raw-Body Webhook Verification (Design Architecture)</h3>
             <p>
-              Payment webhooks (Polar.sh and Stripe) are cryptographically validated against unmodified raw byte buffers with strict timestamp tolerances (&lt;300s) and composite key deduplication.
+              Planned design: Payment webhooks (Polar.sh and Stripe) are designed to validate HMAC signatures against raw byte buffers with timestamp tolerances (&lt;300s) and composite key deduplication.
             </p>
           </div>
         </div>
@@ -781,32 +781,32 @@
       <!-- Data Residency & Sovereign Boundaries Section -->
       <section class="section-wrap" id="residency" style="background: rgba(5, 7, 10, 0.6); border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);">
         <div class="section-header">
-          <div class="section-tag">// Sovereignty &amp; Privacy</div>
-          <h2 class="section-title">Data Residency &amp; Incident Containment</h2>
+          <div class="section-tag">// Sovereignty &amp; Privacy Roadmap</div>
+          <h2 class="section-title">Data Residency &amp; Incident Containment (Design)</h2>
           <p style="color: var(--text-muted); max-width: 760px; margin: 0 auto;">
-            Strict regional isolation with cryptographic erasure upon workspace termination.
+            Proposed security policy: Strict regional isolation with cryptographic erasure upon workspace termination.
           </p>
         </div>
 
         <div class="arch-grid">
           <div class="arch-card">
-            <h3>🌍 Geographic Enclaves</h3>
+            <h3>🌍 Geographic Enclaves (Design Policy)</h3>
             <p>
-              Worker nodes are partitioned into regional silos (e.g. EU, US). Repository clones and ephemeral snapshots never cross geographical boundaries without explicit operator policy.
+              Proposed policy: Worker nodes are planned to be partitioned into regional silos (e.g. EU, US). Repository clones and ephemeral snapshots never cross geographical boundaries.
             </p>
           </div>
 
           <div class="arch-card">
-            <h3>🔑 Ephemeral Key Destruction</h3>
+            <h3>🔑 Ephemeral Key Destruction (Security Invariant)</h3>
             <p>
-              Workspace termination wipes ephemeral AES-256 snapshot keys immediately. Unused storage blocks on thin-provisioned NVMe volumes are securely trimmed and recycled.
+              Security invariant: Workspace termination wipes ephemeral AES-256 snapshot keys immediately. Unused storage blocks on thin-provisioned NVMe volumes are securely trimmed.
             </p>
           </div>
 
           <div class="arch-card">
-            <h3>🚨 Automated Incident Quarantine</h3>
+            <h3>🚨 Automated Incident Quarantine (Security Policy)</h3>
             <p>
-              Syscall anomalies or jailer seccomp violations trigger instant node cordoning, certificate revocation via CRL, and tamper-evident audit logging.
+              Incident runbook: Syscall anomalies or jailer seccomp violations trigger instant node cordoning, certificate revocation via CRL, and tamper-evident audit logging.
             </p>
           </div>
 
