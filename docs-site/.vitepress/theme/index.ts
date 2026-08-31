@@ -8,7 +8,7 @@ export default {
   extends: DefaultTheme,
   Layout() {
     return h(DefaultTheme.Layout, null, {
-      'doc-top': () => h(MarkdownActions)
+      'doc-before': () => h(MarkdownActions)
     });
   }
 } satisfies Theme;
