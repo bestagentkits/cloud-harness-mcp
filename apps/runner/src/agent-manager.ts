@@ -5,6 +5,7 @@ import {
   TOOL_SCHEMA_BY_NAME,
   type AgentBudget,
   type AgentModelProfile,
+  type AgentModelProfileMetadata,
   type AgentProxyOperation,
   type AgentStatus,
   type RunnerAgentsConfig,
@@ -17,6 +18,7 @@ import {
   type AgentRecord,
   type AgentTombstone
 } from './agent-state-repository.js';
+import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import { DockerAgentGatewayControl, type AgentGatewayControl } from './agent-gateway-control.js';
 import {
   AgentProtocolChannel,
@@ -66,17 +68,19 @@ type RuntimeContext = {
 };
 
 export type AgentManagerDependencies = {
-  repository?: AgentStateRepository;
-  gateway?: AgentGatewayControl;
-  launcher?: AgentLauncher;
+  repository?: AgentStateRepository | undefined;
+  gateway?: AgentGatewayControl | undefined;
+  launcher?: AgentLauncher | undefined;
   toolExecutor: AgentToolExecutor;
-  now?: () => number;
+  modelProfiles?: ModelProfileStateRepository | undefined;
+  now?: (() => number) | undefined;
 };
 
 export class AgentManager {
   private readonly repository: AgentStateRepository;
   private readonly gateway: AgentGatewayControl;
   private readonly launcher: AgentLauncher;
+  private readonly modelProfiles?: ModelProfileStateRepository | undefined;
   private readonly runtimes = new Map<string, RuntimeContext>();
   private readonly launches = new Map<string, Promise<void>>();
   private readonly cleanupTargets = new Map<string, TerminalAgentStatus>();
@@ -89,6 +93,7 @@ export class AgentManager {
     private readonly store: StateStore,
     private readonly dependencies: AgentManagerDependencies
   ) {
+    this.modelProfiles = dependencies.modelProfiles;
     this.repository = dependencies.repository ?? new AgentStateRepository(store.database, config.limits, store.instanceId());
     this.gateway = dependencies.gateway ?? new DockerAgentGatewayControl();
     this.launcher = dependencies.launcher ?? new DockerAgentLauncher(this.gateway, store.instanceId());
@@ -110,6 +115,14 @@ export class AgentManager {
     this.accepting = false;
     this.epoch = this.repository.bumpEpoch(this.store.instanceId(), this.now());
     await this.launcher.reconcile?.();
+    if (this.modelProfiles && this.gateway.applySnapshot) {
+      try {
+        const snapshot = this.modelProfiles.getExportSnapshot();
+        await this.gateway.applySnapshot(snapshot);
+      } catch {
+        // Gateway will be reconciled upon first lease or status check
+      }
+    }
     for (const workspace of this.store.active()) {
       if (workspace.status !== 'ACTIVE') continue;
       const records = this.repository.prepareWorkspaceStartupRepair(workspace.ownerId, workspace.id, workspace.generation, this.now());
@@ -189,7 +202,7 @@ export class AgentManager {
     if (workspace.networkProfile !== 'network-none') {
       throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace', 409, false);
     }
-    const profile = this.profile(input.profileId as string);
+    const profile = this.profile(input.profileId as string, ownerId);
     const tools = AgentProxyOperationSchema.array().parse(input.proxyOperations);
     if (tools.some((operation) => !profile.maxProxyOperations.includes(operation))) {
       throw new HarnessError('INVALID_INPUT', 'requested proxy operation exceeds the selected profile');
@@ -223,7 +236,7 @@ export class AgentManager {
       ...(input.parentAgentId ? { parentAgentId: input.parentAgentId as string } : {}),
       idempotencyKey: input.idempotencyKey as string,
       payloadHash,
-      promptHash: createHash('sha256').update(prompt).digest('hex'),
+      promptHash: digest(prompt),
       profileId: profile.id,
       proxyOperations: tools,
       budget,
@@ -760,10 +773,29 @@ export class AgentManager {
     return record;
   }
 
-  private profile(id: string): AgentModelProfile {
-    const profile = this.config.profiles.find((candidate) => candidate.id === id);
-    if (!profile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');
-    return profile;
+  private profile(id: string, ownerId?: string): AgentModelProfile {
+    if (ownerId && this.modelProfiles) {
+      const activeProfiles = this.modelProfiles.listProfiles(ownerId);
+      const matched = activeProfiles.find((p: AgentModelProfileMetadata) => (p.id === id || p.activeRevisionId === id) && p.status === 'ACTIVE');
+      if (matched && matched.activeRevision) {
+        const rev = matched.activeRevision;
+        return {
+          id: rev.id,
+          displayName: matched.displayName,
+          provider: rev.model,
+          model: rev.model,
+          inputMicrosPerMillionTokens: rev.pricing.inputMicrosPerMillionTokens,
+          outputMicrosPerMillionTokens: rev.pricing.outputMicrosPerMillionTokens,
+          maxInputTokens: rev.limits.maxInputTokens,
+          maxOutputTokens: rev.limits.maxOutputTokens,
+          maxCostMicros: rev.limits.maxCostMicros,
+          maxProxyOperations: rev.maxProxyOperations
+        };
+      }
+    }
+    const staticProfile = this.config.profiles.find((candidate) => candidate.id === id);
+    if (!staticProfile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');
+    return staticProfile;
   }
 
   private publicStatus(record: AgentRecord) {

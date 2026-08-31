@@ -9,8 +9,11 @@ import type { MetadataStore } from './metadata-store.js';
 import type { PrivilegeGrantRecord, StateStore } from './state-store.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
+import type { AgentGatewayControl } from './agent-gateway-control.js';
 
 export class DashboardControlService {
+  private lastGatewaySync?: { synced: boolean; bootId: string | null; time: number; error: string | null };
+
   constructor(
     private readonly config: RunnerConfig,
     private readonly principals: StateStore,
@@ -19,9 +22,9 @@ export class DashboardControlService {
     private readonly workspaces: WorkspaceService,
     private readonly githubInstallations?: GitHubInstallationStore,
     private readonly githubBinding?: GitHubBindingService,
-    private readonly modelProfiles?: ModelProfileStateRepository
+    private readonly modelProfiles?: ModelProfileStateRepository,
+    private readonly gatewayControl?: AgentGatewayControl
   ) {}
-
   async execute(request: MetadataRunnerRequest): Promise<RunnerResponse> {
     const parsed = MetadataRunnerRequestSchema.parse(request);
     const principalId = this.principals.resolvePrincipal(parsed.principal);
@@ -184,32 +187,72 @@ export class DashboardControlService {
           return ok('Privilege grant rejected', { grant: rejectedGrant });
         }
         case 'model_credential_list': return ok('Model provider credentials listed', { credentials: this.models().listCredentials(principalId) });
-        case 'model_credential_create': return mutation('Model provider credential created', this.models().createCredential(principalId, parsed.input));
-        case 'model_credential_rotate': return mutation('Model provider credential rotated', this.models().rotateCredential(principalId, parsed.input.credentialId, parsed.input));
+        case 'model_credential_create': {
+          const created = this.models().createCredential(principalId, parsed.input);
+          await this.syncGateway();
+          return mutation('Model provider credential created', created);
+        }
+        case 'model_credential_rotate': {
+          const rotated = this.models().rotateCredential(principalId, parsed.input.credentialId, parsed.input);
+          await this.syncGateway();
+          return mutation('Model provider credential rotated', rotated);
+        }
         case 'model_credential_delete': {
           this.models().deleteCredential(principalId, parsed.input.credentialId, parsed.input.expectedGeneration);
+          await this.syncGateway();
           return ok('Model provider credential deleted', { deleted: true });
         }
         case 'model_profile_list': return ok('Agent model profiles listed', { profiles: this.models().listProfiles(principalId) });
-        case 'model_profile_create': return mutation('Agent model profile created', this.models().createProfile(principalId, parsed.input));
-        case 'model_profile_update': return mutation('Agent model profile updated', this.models().updateProfile(principalId, parsed.input.profileId, parsed.input));
-        case 'model_profile_activate': return mutation('Agent model profile activated', this.models().activateProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration));
-        case 'model_profile_disable': return mutation('Agent model profile disabled', this.models().disableProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration));
+        case 'model_profile_create': {
+          const created = this.models().createProfile(principalId, parsed.input);
+          await this.syncGateway();
+          return mutation('Agent model profile created', created);
+        }
+        case 'model_profile_update': {
+          const updated = this.models().updateProfile(principalId, parsed.input.profileId, parsed.input);
+          await this.syncGateway();
+          return mutation('Agent model profile updated', updated);
+        }
+        case 'model_profile_activate': {
+          const activated = this.models().activateProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          await this.syncGateway();
+          return mutation('Agent model profile activated', activated);
+        }
+        case 'model_profile_disable': {
+          const disabled = this.models().disableProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          await this.syncGateway();
+          return mutation('Agent model profile disabled', disabled);
+        }
         case 'model_profile_delete': {
           this.models().deleteProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          await this.syncGateway();
           return ok('Agent model profile deleted', { deleted: true });
         }
         case 'model_config_status': {
           const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
           const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
+          let gatewaySynced = this.lastGatewaySync?.synced ?? false;
+          let gatewayBootId = this.lastGatewaySync?.bootId ?? null;
+          let syncError = this.lastGatewaySync?.error ?? null;
+          if (this.gatewayControl?.queryDigest) {
+            try {
+              const digest = await this.gatewayControl.queryDigest();
+              gatewaySynced = true;
+              gatewayBootId = digest.gatewayBootId;
+              syncError = null;
+            } catch (err) {
+              gatewaySynced = false;
+              syncError = err instanceof Error ? err.message : 'gateway unreachable';
+            }
+          }
           return ok('Model configuration status', {
             status: {
-              gatewaySynced: true,
-              gatewayBootId: null,
-              lastSyncTime: Date.now(),
+              gatewaySynced,
+              gatewayBootId,
+              lastSyncTime: this.lastGatewaySync?.time ?? Date.now(),
               activeProfileCount: activeProfiles,
               activeCredentialCount: activeCreds,
-              error: null
+              error: syncError
             }
           });
         }
@@ -252,6 +295,17 @@ export class DashboardControlService {
       throw new HarnessError('UNAVAILABLE', 'Model profile operations are temporarily unavailable', 503, false);
     }
     return this.modelProfiles;
+  }
+  private async syncGateway(): Promise<void> {
+    if (this.modelProfiles && this.gatewayControl?.applySnapshot) {
+      try {
+        const snapshot = this.modelProfiles.getExportSnapshot();
+        const ack = await this.gatewayControl.applySnapshot(snapshot);
+        this.lastGatewaySync = { synced: true, bootId: ack.gatewayBootId, time: Date.now(), error: null };
+      } catch (err) {
+        this.lastGatewaySync = { synced: false, bootId: null, time: Date.now(), error: err instanceof Error ? err.message : 'sync failed' };
+      }
+    }
   }
 }
 
