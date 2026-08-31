@@ -1,3 +1,10 @@
+## [0.37.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.37.0...v0.37.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **docs-site:** handle clipboard and markdown fetch failures gracefully in MarkdownActions ([#166](https://github.com/bestagentkits/cloud-harness-mcp/issues/166)) ([f865b73](https://github.com/bestagentkits/cloud-harness-mcp/commit/f865b7365cf3a2ff634e47600c683ed4434461c2))
+
 # [0.37.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.36.0...v0.37.0) (2026-08-31)
 
 
