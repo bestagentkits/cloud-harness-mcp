@@ -165,7 +165,7 @@ directories and helper containers are removed after the operation.
 
 When repository caching is enabled (`enableRepoCache: true`):
 1. Bare repository caches are stored under `repoCacheRoot` partitioned strictly by the authenticated principal's opaque ID (`<repoCacheRoot>/<principalId>/...`). Cross-principal cache access is structurally impossible.
-2. Cache initialization and synchronization use ephemeral helper containers that mount the owner's cache directory writable (`:rw`) to fetch or clone bare repository mirrors.
+2. Cache initialization uses ephemeral helper containers that mount the owner's cache directory writable (`:rw`) to clone the bare repository mirror. Once READY, existing mirrors are referenced without ongoing background synchronization.
 3. Initial workspace checkouts mount the cache directory strictly read-only (`:ro`) in the clone helper and use `git clone --reference-if-able <cache> --dissociate <workspace>`. The `--dissociate` flag copies referenced objects into the workspace repository during creation, severing any ongoing link to the shared object store before the executor starts.
 4. Checkouts are fully independent and writable only to their own workspace; no writable Git state is ever shared across workspaces or principals.
 

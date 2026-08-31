@@ -133,9 +133,10 @@ repository checkout lives under the configured jobs root and persists across
 MCP calls while the workspace is active. Close or TTL cleanup removes the
 executor and its workspace directory; SQLite retains the resulting metadata.
 
-Dependency-task records, dependency DAGs, execution state, output byte counts,
-and 0600 log files on disk are durable SQLite state (`durable_tasks`, `task_dependencies`).
-They survive runner restarts and remain queryable via `tasks_list`/`tasks_status`.
+Dependency-task records, dependency DAGs, execution state, and output byte counts
+are durable SQLite state (`durable_tasks`, `task_dependencies`), while task output
+logs are streamed to 0600 log files on disk. They survive runner restarts and
+remain queryable via `tasks_list`/`tasks_status`.
 A restart reconciles prior-epoch in-flight tasks as terminal failed tasks
 (`status: 'failed'`, `errorCode: 'RUNNER_RESTARTED'`) and spools completed task logs
 into retained artifact storage upon workspace closure. In contrast, interactive

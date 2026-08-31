@@ -19,7 +19,7 @@ For commands requiring user interaction, REPLs, or live monitoring:
 ## Task Graphs (DAGs) & Durable Task Engine
 
 For detached builds, test suites, and multi-stage workflows:
-- `tasks_run`: Submits a dependency-aware task graph (`dependsOn`). Task metadata, status, and bounded log outputs are persisted in SQLite.
+- `tasks_run`: Submits a dependency-aware task graph (`dependsOn`). Task metadata, dependency DAGs, and status are persisted in SQLite, while output streams are written to 0600 log files on disk.
 - `tasks_status`: Polls execution status, progress, and bounded log outputs.
 - `tasks_list`: Lists all tasks associated with the workspace.
 - `tasks_cancel`: Cancels running or pending task stages.
