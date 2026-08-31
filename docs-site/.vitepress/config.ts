@@ -27,6 +27,7 @@ export default defineConfig({
     },
     nav: [
       { text: 'Guide', link: '/getting-started' },
+      { text: 'Toolkits', link: '/agent-toolkits' },
       { text: 'AI Tools', link: '/ai-tools/overview' },
       { text: 'Dashboard', link: '/dashboard/' },
       { text: 'Tools Ref', link: '/reference/tools' },
@@ -56,7 +57,8 @@ export default defineConfig({
         items: [
           { text: 'Installation', link: '/installation' },
           { text: 'Getting Started', link: '/getting-started' },
-          { text: 'Connect MCP Client', link: '/connect' }
+          { text: 'Connect MCP Client', link: '/connect' },
+          { text: 'Agent Toolkits & Skills', link: '/agent-toolkits' }
         ]
       },
       {
@@ -105,6 +107,7 @@ export default defineConfig({
         items: [
           { text: 'Troubleshooting', link: '/troubleshooting' },
           { text: 'Agent Skill (cloudharness)', link: '/agent-skill' },
+          { text: 'Agent Toolkits & Skills', link: '/agent-toolkits' },
           { text: 'Self-Hosting & Deploy', link: '/self-host' },
           { text: 'Security & Threat Model', link: '/security-model' }
         ]
