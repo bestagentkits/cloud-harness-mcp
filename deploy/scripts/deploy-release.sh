@@ -66,6 +66,16 @@ fi
 
 git checkout --detach --force "$release_sha"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
+if [[ -f deploy/scripts/service-compose.sh ]]; then
+  install -m 0755 deploy/scripts/service-compose.sh /usr/local/sbin/cloud-harness-service-compose
+fi
+if [[ -f deploy/systemd/cloud-harness-mcp.service ]]; then
+  install -m 0644 deploy/systemd/cloud-harness-mcp.service /etc/systemd/system/cloud-harness-mcp.service
+  systemctl daemon-reload
+fi
+if [[ -f deploy/scripts/release-runtime.sh ]]; then
+  source deploy/scripts/release-runtime.sh
+fi
 compose --profile images build executor-image agent-image network-guard-image api runner model-gateway
 systemctl enable --now cloud-harness-mcp.service
 wait_ready
@@ -115,9 +125,6 @@ fi
 install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-deploy
 install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
 install -m 0755 deploy/scripts/upgrade-nginx-dashboard.sh /usr/local/sbin/cloud-harness-upgrade-nginx
-if [[ -f deploy/scripts/service-compose.sh ]]; then
-  install -m 0755 deploy/scripts/service-compose.sh /usr/local/sbin/cloud-harness-service-compose
-fi
 printf '%s\n' "$release_sha" > "$state/release-current"
 trap - ERR
 echo "deployed $release_sha"

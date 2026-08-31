@@ -54,6 +54,18 @@ stop_release() {
   return "$failed"
 }
 
+install_release_service_files() {
+  local failed=0
+  if [[ -f deploy/scripts/service-compose.sh ]]; then
+    install -m 0755 deploy/scripts/service-compose.sh /usr/local/sbin/cloud-harness-service-compose || failed=1
+  fi
+  if [[ -f deploy/systemd/cloud-harness-mcp.service ]]; then
+    install -m 0644 deploy/systemd/cloud-harness-mcp.service /etc/systemd/system/cloud-harness-mcp.service || failed=1
+    systemctl daemon-reload || failed=1
+  fi
+  return "$failed"
+}
+
 contain_failed_release() {
   local failed=0 status containers
   systemctl disable --now cloud-harness-mcp.service || failed=1
@@ -139,6 +151,7 @@ rollback() {
   stop_release || rollback_failed=1
   if [[ $rollback_failed -eq 0 && -n $previous_sha && $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
     if ! git checkout --detach --force "$previous_sha"; then rollback_failed=1
+    elif ! install_release_service_files; then rollback_failed=1
     elif [[ -n $backup_dir ]] && ! restore_snapshot "$backup_dir"; then rollback_failed=1
     elif ! compose --profile images build executor-image agent-image network-guard-image api runner model-gateway; then rollback_failed=1
     elif ! systemctl enable --now cloud-harness-mcp.service; then rollback_failed=1

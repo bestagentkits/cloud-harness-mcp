@@ -24,6 +24,7 @@ fails() { [[ $failure_step == "$1" ]]; }
 stop_release() { echo stop >> "$trace_path"; ! fails stop; }
 contain_failed_release() { echo contain >> "$trace_path"; }
 git() { echo "git:$*" >> "$trace_path"; ! fails checkout; }
+install_release_service_files() { echo service-files >> "$trace_path"; ! fails service-files; }
 restore_snapshot() { echo "restore:$1" >> "$trace_path"; ! fails restore; }
 compose() { echo "compose:$*" >> "$trace_path"; ! fails build; }
 systemctl() { echo "systemctl:$*" >> "$trace_path"; ! fails start; }
@@ -106,6 +107,7 @@ describe.skipIf(process.platform === 'win32')('release rollback orchestration', 
     expect(result.trace).toEqual([
       'stop',
       `git:checkout --detach --force ${previousSha}`,
+      'service-files',
       'restore:/snapshot',
       'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway',
       'systemctl:enable --now cloud-harness-mcp.service',
@@ -142,13 +144,14 @@ describe.skipIf(process.platform === 'win32')('release rollback orchestration', 
 
   it.each([
     ['checkout', ['stop', `git:checkout --detach --force ${previousSha}`, 'contain']],
-    ['restore', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'contain']],
-    ['build', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'contain']],
-    ['start', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'contain']],
-    ['ready', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'contain']],
-    ['verify', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'contain']],
-    ['config', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'config', 'contain']],
-    ['record', ['stop', `git:checkout --detach --force ${previousSha}`, 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'config', 'record:release', 'contain']]
+    ['service-files', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'contain']],
+    ['restore', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'contain']],
+    ['build', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'contain']],
+    ['start', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'contain']],
+    ['ready', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'contain']],
+    ['verify', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'contain']],
+    ['config', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'config', 'contain']],
+    ['record', ['stop', `git:checkout --detach --force ${previousSha}`, 'service-files', 'restore:/snapshot', 'compose:--profile images build executor-image agent-image network-guard-image api runner model-gateway', 'systemctl:enable --now cloud-harness-mcp.service', 'ready', 'verify', 'config', 'record:release', 'contain']]
   ])('does not advance after a failed %s transition', (step, expectedTrace) => {
     const result = runRollback(step);
     expect(result.status).toBe(70);
