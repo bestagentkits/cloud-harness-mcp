@@ -13,6 +13,7 @@ Cloud Harness MCP follows [Semantic Versioning](https://semver.org/) and automat
 
 ## Recent Release Highlights
 
+- **v0.13.0:** Third-party open-source agent toolkits support (`mattpocock/skills`, `obra/superpowers`, custom Git repositories) with Content-Addressed Storage, provisioning firewall, and secret purpose classification.
 - **v0.12.0:** Operator dashboard top header with theme toggle, nav collapse, and server status endpoint.
 - **v0.11.0:** Mission Control design system adoption with adaptive light/dark themes.
 - **v0.10.0:** Overview home dashboard, prune protection for local executor images.
