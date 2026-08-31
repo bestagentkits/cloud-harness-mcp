@@ -235,4 +235,45 @@ describe('workspace_context manifest and passive scanner', () => {
       delete process.env.CH_OWNER_SKILLS_ROOT;
     }
   });
+
+  it('strictly preserves built-in > owner > repository precedence when skills collide', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ch-ctx-collide-'));
+    const ownerDir = await mkdtemp(join(tmpdir(), 'ch-owner-collide-'));
+    const builtinDir = await mkdtemp(join(tmpdir(), 'ch-builtin-collide-'));
+    tempDirs.push(dir, ownerDir, builtinDir);
+    process.env.CH_OWNER_SKILLS_ROOT = ownerDir;
+    process.env.CH_BUILTIN_SKILLS_ROOT = builtinDir;
+
+    try {
+      // 1. Repo skill named 'deploy'
+      await mkdir(join(dir, '.agents', 'skills', 'deploy'), { recursive: true });
+      await writeFile(join(dir, '.agents', 'skills', 'deploy', 'SKILL.md'), '# Repo Deploy');
+
+      // 2. Owner skill named 'deploy'
+      await mkdir(join(ownerDir, 'deploy'), { recursive: true });
+      await writeFile(join(ownerDir, 'deploy', 'SKILL.md'), '# Owner Deploy');
+
+      // 3. Built-in skill named 'deploy'
+      await mkdir(join(builtinDir, 'deploy'), { recursive: true });
+      await writeFile(join(builtinDir, 'deploy', 'SKILL.md'), '# Built-in Deploy');
+
+      const backend = new LocalWorkspaceBackend(dir, { transport: 'stdio', workspace: dir });
+      const res = await backend.call('workspace_context', {
+        workspaceId: backend.workspaceId,
+        include: ['skills']
+      });
+
+      expect(res.ok).toBe(true);
+      const manifest = (res.data as any).manifest;
+      const deploySkill = manifest.items.find((it: any) => it.id === 'ctx_skill_deploy');
+      expect(deploySkill).toBeDefined();
+      // Built-in MUST outrank owner and repository!
+      expect(deploySkill.provenance.source).toBe('built-in');
+      expect(deploySkill.provenance.trust).toBe('trusted-control-plane');
+      expect(deploySkill.provenance.mutableBy).toBe('release');
+    } finally {
+      delete process.env.CH_OWNER_SKILLS_ROOT;
+      delete process.env.CH_BUILTIN_SKILLS_ROOT;
+    }
+  });
 });

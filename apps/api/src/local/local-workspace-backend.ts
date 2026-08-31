@@ -242,7 +242,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
           const rawManifest = scanRes.data.manifest as Record<string, unknown>;
           const rawItems = Array.isArray(rawManifest.items) ? rawManifest.items : [];
           const maxBytes = Math.min(Math.max(Number((input as { maxBytes?: number }).maxBytes || 32768), 4096), 131072);
-          const sanitizedItems = [];
+          const sanitizedItems: any[] = [];
           let accumulatedBytes = 0;
           let truncated = Boolean(rawManifest.truncated);
           const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
@@ -261,6 +261,31 @@ export class LocalWorkspaceBackend implements OperationBackend {
             sanitizedItems.push(item);
             accumulatedBytes += itemBytes;
           }
+
+          const precedenceRank: Record<string, number> = {
+            'built-in': 4,
+            'owner': 3,
+            'workspace': 2,
+            'repository': 1
+          };
+
+          const mergeSkillItem = (sItem: any) => {
+            const existingIdx = sanitizedItems.findIndex(it => it.id === sItem.id);
+            if (existingIdx === -1) {
+              const sBytes = Buffer.byteLength(JSON.stringify(sItem));
+              if (accumulatedBytes + sBytes <= maxBytes) {
+                sanitizedItems.push(sItem);
+                accumulatedBytes += sBytes;
+              }
+            } else {
+              const existing = sanitizedItems[existingIdx]!;
+              const newRank = precedenceRank[sItem.provenance.source] || 0;
+              const existingRank = precedenceRank[existing.provenance.source] || 0;
+              if (newRank > existingRank) {
+                sanitizedItems[existingIdx] = sItem;
+              }
+            }
+          };
 
           // Scan trusted external owner and built-in skill partitions from local host
           const include = Array.isArray((input as any).include) ? (input as any).include : ['instructions', 'languages', 'test_commands', 'skills'];
@@ -286,19 +311,39 @@ export class LocalWorkspaceBackend implements OperationBackend {
                       partitionSource: 'owner',
                       trustedRoot: ownerRoot
                     });
-                    const sBytes = Buffer.byteLength(JSON.stringify(sItem));
-                    if (accumulatedBytes + sBytes <= maxBytes) {
-                      const existingIdx = sanitizedItems.findIndex(it => it.id === sItem.id);
-                      if (existingIdx >= 0) sanitizedItems.splice(existingIdx, 1);
-                      sanitizedItems.unshift(sItem);
-                      accumulatedBytes += sBytes;
-                    }
+                    mergeSkillItem(sItem);
                   } catch { /* skip */ }
                 }
               }
             } catch { /* owner root absent */ }
-          }
 
+            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
+            try {
+              const builtinEntries = await readdir(builtinRoot, { withFileTypes: true });
+              for (const be of builtinEntries) {
+                if (be.isDirectory()) {
+                  const sFile = join(builtinRoot, be.name, 'SKILL.md');
+                  try {
+                    const sRaw = await readFile(sFile);
+                    const sHash = createHash('sha256').update(sRaw).digest('hex');
+                    const sItem = sanitizeAndAttributeProvenance({
+                      id: `ctx_skill_${be.name}`,
+                      kind: 'skill-summary',
+                      format: 'skill-md',
+                      path: sFile,
+                      clients: ['all'],
+                      contentSha256: sHash,
+                      excerpt: `Skill "${be.name}" (built-in)`
+                    }, {
+                      partitionSource: 'built-in',
+                      trustedRoot: builtinRoot
+                    });
+                    mergeSkillItem(sItem);
+                  } catch { /* skip */ }
+                }
+              }
+            } catch { /* builtin root absent */ }
+          }
           manifest = {
             contractVersion: 1,
             returnedBytes: accumulatedBytes,

@@ -123,6 +123,37 @@ responses are mapped at the API; runner tokens, Access assertions, raw secret
 values, provider credentials, ciphertext, and artifact filesystem paths are
 outside that contract.
 
+## Provenance, context plane, and automation architecture
+
+Cloud Harness MCP provides a portable coding context plane across agent clients without elevating repository text or scripts to trusted policy:
+
+1. **Passive Context Scanner:**
+   `worker/harness-worker.mjs` executes bounded passive discovery of allowlisted instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and test declarations. The scanner performs zero dynamic execution and enforces strict byte budgets (32 KiB default, 128 KiB max) and a 250ms deadline.
+
+2. **Runner Provenance Resolver:**
+   The trusted Runner control plane (`apps/runner/src/workspace-service.ts`) stamps canonical provenance metadata (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) based on physical isolation boundaries:
+   - `built-in` (`trust: trusted-control-plane`, `mutableBy: release`)
+   - `owner` (`trust: owner-controlled`, `mutableBy: owner`)
+   - `workspace` (`trust: untrusted-executor`, `mutableBy: workspace-process`)
+   - `repository` (`trust: untrusted-executor`, `mutableBy: repository-commit`)
+   Repository content claiming owner or built-in status is strictly ignored and attributed as untrusted repository data.
+
+3. **4-Tier Skill Precedence:**
+   Skills resolve deterministically in the fixed order `built-in > owner > workspace > repository` (with repository sub-priority `.agents/skills > .codex/skills > .claude/skills`). Shadowed candidates remain visible. `skills_run` requires matching the approved SHA-256 bundle digest before executing in an isolated container.
+
+4. **Scoped SQLite Memories (StateStore Schema v5):**
+   Memories are persisted in runner-owned SQLite isolated by `principal_id`:
+   - `owner`: Principal-wide, persistent across all workspaces
+   - `repository`: Scoped to `(principal_id, repository_key)`, persistent across workspaces for the same repository
+   - `workspace`: Scoped to `(principal_id, workspace_id)`, automatically reaped upon workspace termination
+   Enforces Optimistic Concurrency Control via `expectedGeneration` (CAS) and TTL expiration.
+
+5. **Declarative Lifecycle Hooks:**
+   Hooks defined in `.cloud-harness/hooks.json` support named lifecycle events (`pre_commit`, `post_checkout`, `on_workspace_open`, `post_commit`). Automatic execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest and executes in an unprivileged, no-network executor container.
+
+6. **Adversarial Output Boundary:**
+   Structured MCP results keep repository text nested in `data` under `trust: untrusted-executor`. Text projections (`mcp-response-text.ts`) format context items with trusted boundary markers and JSON-escaped excerpts to prevent delimiter breakouts or prompt injection.
+
 ## State and lifecycle
 
 Workspace metadata, idempotency, principal ownership, status, and expiry are persisted in

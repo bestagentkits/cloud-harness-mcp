@@ -38,3 +38,20 @@ Output files generated during workspace execution (logs, test reports, build out
 
 ### Sibling Git Transfer Helper
 An ephemeral container spawned by the Runner to handle `git_fetch`, `git_pull`, and `git_push`. It mounts the workspace repository as a sibling, receives a 10-minute GitHub App installation token via `stdin`, talks only to `github.com`, and is immediately destroyed.
+
+### Context Manifest & Provenance
+A bounded, vendor-neutral overview of allowlisted instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and test declarations produced by `workspace_context`. Every item carries immutable provenance (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) stamped by the trusted Runner:
+- `built-in`: release-packaged built-ins (`trust: trusted-control-plane`, `mutableBy: release`)
+- `owner`: runner-managed principal catalog (`trust: owner-controlled`, `mutableBy: owner`)
+- `workspace`: workspace-managed tools overlay (`trust: untrusted-executor`, `mutableBy: workspace-process`)
+- `repository`: checkout files (`trust: untrusted-executor`, `mutableBy: repository-commit`)
+
+### Scoped Memories
+Persistent notes stored in SQLite `StateStore` v5 isolated by `principal_id` across 3 scopes:
+- `owner`: Principal-wide notes persistent across all workspaces.
+- `repository`: Notes bound to `(principal_id, repository_key)`, persistent across workspaces for the same repository.
+- `workspace`: Notes bound to `(principal_id, workspace_id)`, reaped when the workspace terminates.
+Enforces Optimistic Concurrency Control via `expectedGeneration` (CAS: 0 for create, positive integer for update/delete) and automatic TTL cleanup.
+
+### Declarative Lifecycle Hooks
+Pre-configured automation commands declared in `.cloud-harness/hooks.json` for named lifecycle events (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest and runs exclusively inside an unprivileged executor container.
