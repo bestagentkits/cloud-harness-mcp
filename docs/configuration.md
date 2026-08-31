@@ -145,7 +145,8 @@ while keeping writable checkouts strictly isolated.
 
 `EXECUTOR_IMAGE` is chosen by the trusted operator; callers cannot select an
 image.
-`TOOLKIT_CACHE_ROOT` configures the runner's content-addressed storage volume for pre-cached agent toolkits (`/var/lib/cloud-harness/cache/toolkits`). `ENABLE_TOOLKIT_CACHE` toggles CAS persistence, and `TOOLKIT_NETWORK_POLICY` (`cache-only` vs `runner-fetch`) controls whether uncached toolkits can be fetched at workspace open.
+`TOOLKIT_CACHE_ROOT` configures the runner's content-addressed storage volume for pre-cached agent toolkits (`/var/lib/cloud-harness/cache/toolkits`), and `TOOLKIT_NETWORK_POLICY` (`cache-only` vs `runner-fetch`) controls whether uncached toolkits can be fetched dynamically at workspace open.
+
 ## Dashboard secrets
 
 Dashboard secret values are write-only. The browser receives reference
