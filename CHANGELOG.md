@@ -1,3 +1,22 @@
+## [0.35.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.35.2...v0.35.3) (2026-08-31)
+
+
+### Bug Fixes
+
+* **provenance:** enforce trusted scan partitions and eliminate worker-asserted source promotion ([#15](https://github.com/bestagentkits/cloud-harness-mcp/issues/15)) ([a9fd7c9](https://github.com/bestagentkits/cloud-harness-mcp/commit/a9fd7c94a6c1e2bd5c314b3dbd5ded257e2fd5d1))
+
+## [0.35.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.35.1...v0.35.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **provenance:** enforce trusted scan partitions and harden memory/hook isolation ([#15](https://github.com/bestagentkits/cloud-harness-mcp/issues/15)) ([bc0bc19](https://github.com/bestagentkits/cloud-harness-mcp/commit/bc0bc1906e7222c159f0f3700ce6aea16a8d5e99))
+
+
+### Reverts
+
+* emergency revert bc0bc19 to restore main schema and toolkit state ([a6af9cc](https://github.com/bestagentkits/cloud-harness-mcp/commit/a6af9cc1172c177e54b2caa8170f99172db436b0))
+
 ## [0.35.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.35.0...v0.35.1) (2026-08-30)
 
 

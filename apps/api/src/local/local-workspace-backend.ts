@@ -1,5 +1,7 @@
-import { randomBytes } from 'node:crypto';
-import type { RunnerOperation, RunnerResponse } from '@cloud-harness/contracts';
+import { createHash, randomBytes } from 'node:crypto';
+import { join } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
+import { sanitizeAndAttributeProvenance, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
 import type { CliOptions } from '../cli-options.js';
 import { LocalPathPolicy } from './local-path-policy.js';
@@ -240,37 +242,16 @@ export class LocalWorkspaceBackend implements OperationBackend {
           const rawManifest = scanRes.data.manifest as Record<string, unknown>;
           const rawItems = Array.isArray(rawManifest.items) ? rawManifest.items : [];
           const maxBytes = Math.min(Math.max(Number((input as { maxBytes?: number }).maxBytes || 32768), 4096), 131072);
-          const sanitizedItems = [];
+          const sanitizedItems: any[] = [];
           let accumulatedBytes = 0;
           let truncated = Boolean(rawManifest.truncated);
           const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
 
           for (const rawItem of rawItems as Record<string, unknown>[]) {
-            const pathStr = typeof rawItem.path === 'string' ? rawItem.path : undefined;
-            const hashStr = typeof rawItem.contentSha256 === 'string' && rawItem.contentSha256.length === 64
-              ? rawItem.contentSha256
-              : '0'.repeat(64);
-            const item = {
-              id: typeof rawItem.id === 'string' ? rawItem.id : `ctx_${hashStr.slice(0, 12)}`,
-              kind: typeof rawItem.kind === 'string' ? rawItem.kind : 'instruction',
-              format: typeof rawItem.format === 'string' ? rawItem.format : 'plain',
-              clients: Array.isArray(rawItem.clients) ? rawItem.clients : ['all'],
-              path: pathStr,
-              appliesTo: typeof rawItem.appliesTo === 'string' ? rawItem.appliesTo : undefined,
-              activeForClient: Boolean(rawItem.activeForClient ?? true),
-              contentSha256: hashStr,
-              byteCount: typeof rawItem.byteCount === 'number' ? rawItem.byteCount : 0,
-              excerpt: typeof rawItem.excerpt === 'string' ? rawItem.excerpt.slice(0, 8192) : undefined,
-              references: Array.isArray(rawItem.references) ? rawItem.references : undefined,
-              provenance: {
-                source: 'repository',
-                trust: 'untrusted-executor',
-                mutableBy: 'repository-commit',
-                path: pathStr,
-                contentSha256: hashStr,
-                discoveredAt: new Date().toISOString()
-              }
-            };
+            const item = sanitizeAndAttributeProvenance(rawItem, {
+              partitionSource: 'repository',
+              repositoryRoot: this.canonicalRoot
+            });
             const itemBytes = Buffer.byteLength(JSON.stringify(item));
             if (accumulatedBytes + itemBytes > maxBytes) {
               truncated = true;
@@ -281,6 +262,88 @@ export class LocalWorkspaceBackend implements OperationBackend {
             accumulatedBytes += itemBytes;
           }
 
+          const precedenceRank: Record<string, number> = {
+            'built-in': 4,
+            'owner': 3,
+            'workspace': 2,
+            'repository': 1
+          };
+
+          const mergeSkillItem = (sItem: any) => {
+            const existingIdx = sanitizedItems.findIndex(it => it.id === sItem.id);
+            if (existingIdx === -1) {
+              const sBytes = Buffer.byteLength(JSON.stringify(sItem));
+              if (accumulatedBytes + sBytes <= maxBytes) {
+                sanitizedItems.push(sItem);
+                accumulatedBytes += sBytes;
+              }
+            } else {
+              const existing = sanitizedItems[existingIdx]!;
+              const newRank = precedenceRank[sItem.provenance.source] || 0;
+              const existingRank = precedenceRank[existing.provenance.source] || 0;
+              if (newRank > existingRank) {
+                sanitizedItems[existingIdx] = sItem;
+              }
+            }
+          };
+
+          // Scan trusted external owner and built-in skill partitions from local host
+          const include = Array.isArray((input as any).include) ? (input as any).include : ['instructions', 'languages', 'test_commands', 'skills'];
+          if (include.includes('skills')) {
+            const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+            try {
+              const ownerEntries = await readdir(ownerRoot, { withFileTypes: true });
+              for (const oe of ownerEntries) {
+                if (oe.isDirectory()) {
+                  const sFile = join(ownerRoot, oe.name, 'SKILL.md');
+                  try {
+                    const sRaw = await readFile(sFile);
+                    const sHash = createHash('sha256').update(sRaw).digest('hex');
+                    const sItem = sanitizeAndAttributeProvenance({
+                      id: `ctx_skill_${oe.name}`,
+                      kind: 'skill-summary',
+                      format: 'skill-md',
+                      path: sFile,
+                      clients: ['all'],
+                      contentSha256: sHash,
+                      excerpt: `Skill "${oe.name}" (owner)`
+                    }, {
+                      partitionSource: 'owner',
+                      trustedRoot: ownerRoot
+                    });
+                    mergeSkillItem(sItem);
+                  } catch { /* skip */ }
+                }
+              }
+            } catch { /* owner root absent */ }
+
+            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
+            try {
+              const builtinEntries = await readdir(builtinRoot, { withFileTypes: true });
+              for (const be of builtinEntries) {
+                if (be.isDirectory()) {
+                  const sFile = join(builtinRoot, be.name, 'SKILL.md');
+                  try {
+                    const sRaw = await readFile(sFile);
+                    const sHash = createHash('sha256').update(sRaw).digest('hex');
+                    const sItem = sanitizeAndAttributeProvenance({
+                      id: `ctx_skill_${be.name}`,
+                      kind: 'skill-summary',
+                      format: 'skill-md',
+                      path: sFile,
+                      clients: ['all'],
+                      contentSha256: sHash,
+                      excerpt: `Skill "${be.name}" (built-in)`
+                    }, {
+                      partitionSource: 'built-in',
+                      trustedRoot: builtinRoot
+                    });
+                    mergeSkillItem(sItem);
+                  } catch { /* skip */ }
+                }
+              }
+            } catch { /* builtin root absent */ }
+          }
           manifest = {
             contractVersion: 1,
             returnedBytes: accumulatedBytes,
