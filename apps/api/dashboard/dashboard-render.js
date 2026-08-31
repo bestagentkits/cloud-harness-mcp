@@ -172,3 +172,108 @@ export function renderOverview(summary) {
     : '';
   return `<div class="overview"><ul class="metric-grid">${metrics}</ul><div class="overview-columns"><section class="panel" aria-labelledby="overview-activity-heading"><h2 id="overview-activity-heading">Recent activity</h2>${activity}</section><section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name)}</dd><dt>Email</dt><dd class="wrap">${escape(access.email)}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section></div>${renderServerPanel(summary.server)}</div>`;
 }
+
+export function renderModelsPage(profiles = [], credentials = [], status = null) {
+  const syncLabel = status?.gatewaySynced ? 'Gateway synchronized' : 'Gateway sync pending';
+  const syncClass = status?.gatewaySynced ? 'active' : 'reaping';
+
+  const profileRows = profiles.length ? profiles.map((p) => {
+    const rev = p.activeRevision;
+    const modelInfo = rev ? `${escape(rev.model)} · ${escape(rev.apiMode)}` : 'No active revision';
+    const pricing = rev ? `$${(rev.pricing.inputMicrosPerMillionTokens / 1_000_000).toFixed(4)} / $${(rev.pricing.outputMicrosPerMillionTokens / 1_000_000).toFixed(4)}` : '-';
+    const statusPill = `<span class="status ${escape(p.status.toLowerCase())}">${escape(p.status)}</span>`;
+    const actionBtn = p.status === 'ACTIVE'
+      ? `<button class="disable-model-profile" data-profile-id="${escape(p.id)}" data-generation="${escape(p.generation)}">Disable</button>`
+      : `<button class="activate-model-profile" data-profile-id="${escape(p.id)}" data-generation="${escape(p.generation)}">Activate</button>`;
+
+    return `<tr>
+      <th scope="row">
+        <strong>${escape(p.displayName)}</strong>
+        <small class="mono wrap">${escape(p.id)}</small>
+      </th>
+      <td>${statusPill}</td>
+      <td>${modelInfo}</td>
+      <td>${pricing}</td>
+      <td>
+        <div class="row-actions">
+          <button class="edit-model-profile" data-profile-json="${escape(JSON.stringify(p))}">Edit</button>
+          ${actionBtn}
+          <button class="danger delete-model-profile" data-profile-id="${escape(p.id)}" data-generation="${escape(p.generation)}">Delete</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="5" class="empty">No model profiles configured yet.</td></tr>';
+
+  const credentialRows = credentials.length ? credentials.map((c) => {
+    const statusPill = `<span class="status ${escape(c.status.toLowerCase())}">${escape(c.status)}</span>`;
+    return `<tr>
+      <th scope="row">
+        <strong>${escape(c.label)}</strong>
+        <small class="mono wrap">${escape(c.id)}</small>
+      </th>
+      <td>${escape(c.provider)}</td>
+      <td><span class="mono">Configured · v${escape(c.activeVersion)}</span></td>
+      <td>${statusPill}</td>
+      <td>
+        <div class="row-actions">
+          <button class="rotate-model-credential" data-credential-id="${escape(c.id)}" data-label="${escape(c.label)}" data-generation="${escape(c.generation ?? 1)}">Rotate</button>
+          <button class="danger delete-model-credential" data-credential-id="${escape(c.id)}" data-generation="${escape(c.generation ?? 1)}">Delete</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="5" class="empty">No provider credentials configured yet.</td></tr>';
+
+  return `
+    <div class="page-note">
+      <strong>Subagent Model Control Plane.</strong> Manage model profiles and write-only provider credentials for Pi subagents.
+      Credentials are encrypted in StateStore and projected dynamically to Model Gateway without container restart.
+    </div>
+    <div class="record-heading">
+      <div>
+        <h2>Model Profiles & Credentials</h2>
+        <p>Configured provider credentials and agent routing profiles.</p>
+      </div>
+      <div class="row-actions">
+        <span class="status ${syncClass}">${syncLabel}</span>
+        <button id="open-add-credential-btn" type="button">+ Add credential</button>
+        <button id="open-add-profile-btn" class="accent-btn" type="button">+ Add profile</button>
+      </div>
+    </div>
+    <section class="panel" aria-labelledby="model-profiles-heading">
+      <h3 id="model-profiles-heading">Model Profiles</h3>
+      <div class="desktop-table">
+        <table>
+          <caption>Active and configured model profiles for subagents</caption>
+          <thead>
+            <tr>
+              <th>Profile</th>
+              <th>Status</th>
+              <th>Model / API</th>
+              <th>Pricing ($/1M in/out)</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${profileRows}</tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel" aria-labelledby="model-credentials-heading">
+      <h3 id="model-credentials-heading">Provider Credentials</h3>
+      <div class="desktop-table">
+        <table>
+          <caption>Configured provider API keys and credentials</caption>
+          <thead>
+            <tr>
+              <th>Credential</th>
+              <th>Provider</th>
+              <th>Secret Key</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${credentialRows}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}

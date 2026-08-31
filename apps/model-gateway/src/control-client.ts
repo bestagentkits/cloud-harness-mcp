@@ -4,7 +4,7 @@ const socketPath = process.env.MODEL_GATEWAY_CONTROL_SOCKET ?? '/tmp/model-gatew
 let input = Buffer.alloc(0);
 for await (const chunk of process.stdin) {
   input = Buffer.concat([input, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)]);
-  if (input.byteLength > 16_384) throw new Error('control record too large');
+  if (input.byteLength > 1_048_576) throw new Error('control record too large');
 }
 if (input.byteLength === 0 || input[input.byteLength - 1] !== 0x0a || input.subarray(0, -1).includes(0x0a)) {
   throw new Error('control input must be exactly one LF-terminated JSON record');

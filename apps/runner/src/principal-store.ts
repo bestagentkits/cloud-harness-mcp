@@ -543,11 +543,108 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
     });
     version = 8;
   }
-  if (version !== 8) throw new Error(`unsupported state schema version ${version}`);
+  if (version === 8) {
+    transaction(database, () => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS model_provider_credentials (
+          id TEXT PRIMARY KEY,
+          principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          label TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          auth_mode TEXT NOT NULL,
+          active_version INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'DISABLED', 'REVOKED')),
+          generation INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS model_creds_principal_idx ON model_provider_credentials(principal_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS model_provider_credential_versions (
+          principal_id TEXT NOT NULL,
+          credential_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          key_version INTEGER NOT NULL,
+          nonce TEXT NOT NULL,
+          ciphertext TEXT NOT NULL,
+          auth_tag TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(principal_id, credential_id, version),
+          FOREIGN KEY(credential_id) REFERENCES model_provider_credentials(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_model_profiles (
+          id TEXT PRIMARY KEY,
+          principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          display_name TEXT NOT NULL,
+          credential_id TEXT NOT NULL REFERENCES model_provider_credentials(id) ON DELETE RESTRICT,
+          desired_revision_id TEXT,
+          active_revision_id TEXT,
+          generation INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'DISABLED', 'SYNC_PENDING', 'SYNC_FAILED')),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS agent_profiles_principal_idx ON agent_model_profiles(principal_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS agent_model_profile_revisions (
+          id TEXT PRIMARY KEY,
+          profile_id TEXT NOT NULL,
+          principal_id TEXT NOT NULL,
+          model TEXT NOT NULL,
+          api_mode TEXT NOT NULL,
+          downstream_path TEXT NOT NULL,
+          upstream_url TEXT NOT NULL,
+          input_micros_per_million INTEGER NOT NULL,
+          output_micros_per_million INTEGER NOT NULL,
+          max_input_tokens INTEGER NOT NULL,
+          max_output_tokens INTEGER NOT NULL,
+          max_cost_micros INTEGER NOT NULL,
+          max_proxy_operations_json TEXT NOT NULL,
+          digest TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(profile_id) REFERENCES agent_model_profiles(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS agent_revisions_profile_idx ON agent_model_profile_revisions(profile_id, created_at DESC);
+
+        UPDATE schema_meta SET version = 9;
+      `);
+    });
+    version = 9;
+  }
+  if (version !== 9) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 9) throw new Error(`state schema must be version 9 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const credCount = (database.prepare('SELECT count(*) as count FROM model_provider_credentials').get() as { count: number }).count;
+    const profCount = (database.prepare('SELECT count(*) as count FROM agent_model_profiles').get() as { count: number }).count;
+    if (credCount > 0 || profCount > 0) {
+      throw new Error('cannot downgrade state schema to v8: model tables contain active records (export or discard required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      DROP TABLE IF EXISTS agent_model_profile_revisions;
+      DROP TABLE IF EXISTS agent_model_profiles;
+      DROP TABLE IF EXISTS model_provider_credential_versions;
+      DROP TABLE IF EXISTS model_provider_credentials;
+      DROP INDEX IF EXISTS agent_revisions_profile_idx;
+      DROP INDEX IF EXISTS agent_profiles_principal_idx;
+      DROP INDEX IF EXISTS model_creds_principal_idx;
+      UPDATE schema_meta SET version = 8;
+    `);
+  });
 }
 
 export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss = false): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 9) {
+    downgradeStateSchemaToV8(database, allowDataLoss);
+    version = 8;
+  }
   if (version !== 8) throw new Error(`state schema must be version 8 before downgrade, got ${version}`);
   if (!allowDataLoss) {
     const cacheCount = (database.prepare('SELECT count(*) as count FROM toolkit_cache_entries').get() as { count: number }).count;
@@ -569,6 +666,10 @@ export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 9) {
+    downgradeStateSchemaToV8(database, allowDataLoss);
+    version = 8;
+  }
   if (version === 8) {
     downgradeStateSchemaToV7(database, allowDataLoss);
     version = 7;
@@ -593,6 +694,10 @@ export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 9) {
+    downgradeStateSchemaToV8(database, allowDataLoss);
+    version = 8;
+  }
   if (version === 8) {
     downgradeStateSchemaToV7(database, allowDataLoss);
     version = 7;
@@ -661,6 +766,10 @@ export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 9) {
+    downgradeStateSchemaToV8(database, allowDataLoss);
+    version = 8;
+  }
   if (version === 8) {
     downgradeStateSchemaToV7(database, allowDataLoss);
     version = 7;

@@ -367,6 +367,12 @@ dialog::backdrop { background: oklch(0.14 0.02 255 / .55); }
 .toolkit-card-select.selected .check-indicator { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .preflight-box { padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: var(--text-12); font-family: var(--font-mono); line-height: 1.5; margin-block: var(--space-2); }
 
+
+#model-credential-dialog { width: min(38rem, calc(100vw - 2 * var(--space-4))); }
+#model-profile-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: var(--space-3); }
+.tools-checkbox-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--space-2); padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: var(--text-12); margin-block: var(--space-2); }
+.tools-checkbox-grid label { display: flex; align-items: center; gap: var(--space-2); cursor: pointer; }
 .drawer-close { display: block; margin-inline-start: auto; margin-block-end: var(--space-4); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .topbar-menu { display: none; }

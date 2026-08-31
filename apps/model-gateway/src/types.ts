@@ -19,6 +19,7 @@ export interface GatewayProfile {
   downstreamPath: '/v1/chat/completions' | '/v1/responses';
   upstream: URL;
   credentialFile: string;
+  credentialSecret?: string | undefined;
   credentialHeader: 'authorization' | 'x-api-key';
   credentialScheme: '' | 'Bearer';
   inputMicrosPerMillionTokens: number;

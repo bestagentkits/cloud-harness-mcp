@@ -1,6 +1,19 @@
-import { api } from './dashboard-api.js';
 import {
-  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderOverview, renderOverviewSkeleton,
+  api,
+  listModelCredentials,
+  createModelCredential,
+  rotateModelCredential,
+  deleteModelCredential,
+  listModelProfiles,
+  createModelProfile,
+  updateModelProfile,
+  activateModelProfile,
+  disableModelProfile,
+  deleteModelProfile,
+  getModelConfigStatus
+} from './dashboard-api.js';
+import {
+  renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName
 } from './dashboard-render.js';
 
@@ -372,6 +385,7 @@ export function initializeDashboard() {
       else if (location.pathname === '/dashboard/overview') await loadOverview();
       else if (location.pathname === '/dashboard/projects') await loadProjects();
       else if (location.pathname === '/dashboard/secrets') await loadGlobalSecrets();
+      else if (location.pathname === '/dashboard/models') await loadModels();
       else if (projectMatch) await loadProject(projectMatch[1]);
       else if (location.pathname === '/dashboard/artifacts') await loadArtifacts();
       else if (location.pathname === '/dashboard/audit') await loadAudit();
@@ -599,6 +613,271 @@ export function initializeDashboard() {
         await loadGlobalSecrets();
       }
     }, event.currentTarget));
+  }
+  async function loadModels() {
+    selectNavigation('models');
+    setTitle('Subagent Models', 'Manage model profiles and write-only provider credentials for Pi subagents.');
+    document.querySelector('#command-surface').hidden = true;
+
+    const [profilesRes, credsRes, statusRes] = await Promise.all([
+      listModelProfiles().catch(() => ({ data: { profiles: [] } })),
+      listModelCredentials().catch(() => ({ data: { credentials: [] } })),
+      getModelConfigStatus().catch(() => ({ data: { status: null } }))
+    ]);
+
+    const profiles = profilesRes.data?.profiles ?? [];
+    const credentials = credsRes.data?.credentials ?? [];
+    const status = statusRes.data?.status ?? null;
+
+    content.innerHTML = renderModelsPage(profiles, credentials, status);
+    bindModelsControls(credentials);
+  }
+
+  function bindModelsControls(credentials = []) {
+    const credDialog = document.querySelector('#model-credential-dialog');
+    const credForm = document.querySelector('#model-credential-form');
+    const cancelCred = document.querySelector('#cancel-model-credential');
+    const profileDialog = document.querySelector('#model-profile-dialog');
+    const profileForm = document.querySelector('#model-profile-form');
+    const cancelProfile = document.querySelector('#cancel-model-profile');
+
+    const providerSelect = document.querySelector('#model-credential-provider');
+    const authModeGroup = document.querySelector('#model-credential-auth-mode');
+    providerSelect?.addEventListener('change', () => {
+      authModeGroup.value = providerSelect.value === 'custom' ? 'bearer' : 'bearer';
+    });
+
+    const customUrlGroup = document.querySelector('#model-profile-custom-url-group');
+    const credentialSelect = document.querySelector('#model-profile-credential');
+
+    function syncCustomUrlVisibility() {
+      const selectedCred = credentials.find((c) => c.id === credentialSelect.value);
+      if (customUrlGroup) {
+        customUrlGroup.hidden = selectedCred?.provider !== 'custom';
+      }
+    }
+    credentialSelect?.addEventListener('change', syncCustomUrlVisibility);
+
+    document.querySelector('#open-add-credential-btn')?.addEventListener('click', () => {
+      credForm.reset();
+      document.querySelector('#model-credential-id').value = '';
+      document.querySelector('#model-credential-title').textContent = 'Add provider credential';
+      document.querySelector('#model-credential-label').disabled = false;
+      document.querySelector('#model-credential-provider').disabled = false;
+      credDialog.showModal();
+      document.querySelector('#model-credential-label').focus();
+    });
+
+    cancelCred?.addEventListener('click', () => {
+      credForm.reset();
+      credDialog.close();
+    });
+
+    credForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const values = new FormData(form);
+      const credentialId = values.get('credentialId');
+      const apiKey = String(values.get('apiKey') ?? '').trim();
+      const label = String(values.get('label') ?? '').trim();
+      const provider = values.get('provider');
+      const authMode = values.get('authMode');
+      const expectedGeneration = Number(values.get('expectedGeneration') ?? 1);
+
+      form.querySelector('#model-credential-key').value = '';
+
+      if (credentialId) {
+        void submitForm(form, 'Rotating…', async () => rotateModelCredential(credentialId, { apiKey, expectedGeneration }), async () => {
+          credDialog.close();
+          announce('Provider credential rotated.');
+          await loadModels();
+        });
+      } else {
+        void submitForm(form, 'Saving…', async () => createModelCredential({ label, provider, authMode, apiKey }), async () => {
+          credDialog.close();
+          announce('Provider credential saved.');
+          await loadModels();
+        });
+      }
+    });
+
+    for (const btn of document.querySelectorAll('.rotate-model-credential')) {
+      btn.addEventListener('click', (event) => {
+        const id = event.currentTarget.dataset.credentialId;
+        const label = event.currentTarget.dataset.label;
+        const gen = event.currentTarget.dataset.generation;
+        credForm.reset();
+        document.querySelector('#model-credential-id').value = id;
+        document.querySelector('#model-credential-generation').value = gen;
+        document.querySelector('#model-credential-label').value = label;
+        document.querySelector('#model-credential-label').disabled = true;
+        document.querySelector('#model-credential-provider').disabled = true;
+        document.querySelector('#model-credential-title').textContent = `Rotate credential (${label})`;
+        credDialog.showModal();
+        document.querySelector('#model-credential-key').focus();
+      });
+    }
+
+    for (const btn of document.querySelectorAll('.delete-model-credential')) {
+      btn.addEventListener('click', (event) => {
+        const id = event.currentTarget.dataset.credentialId;
+        const gen = Number(event.currentTarget.dataset.generation ?? 1);
+        confirmAction.open({
+          label: 'Delete credential',
+          pendingLabel: 'Deleting…',
+          target: id,
+          description: 'Permanently delete this provider credential. Referenced profiles must be deleted first.',
+          action: async () => {
+            await deleteModelCredential(id, gen);
+            announce('Provider credential deleted.');
+            await loadModels();
+          }
+        }, event.currentTarget);
+      });
+    }
+
+    document.querySelector('#open-add-profile-btn')?.addEventListener('click', () => {
+      profileForm.reset();
+      document.querySelector('#model-profile-id').disabled = false;
+      document.querySelector('#model-profile-edit-mode').value = 'false';
+      document.querySelector('#model-profile-title').textContent = 'Add model profile';
+
+      credentialSelect.innerHTML = credentials.length
+        ? credentials.map((c) => `<option value="${escape(c.id)}">${escape(c.label)} (${escape(c.provider)})</option>`).join('')
+        : '<option value="">No credentials available (create one first)</option>';
+
+      syncCustomUrlVisibility();
+      profileDialog.showModal();
+      document.querySelector('#model-profile-id').focus();
+    });
+
+    cancelProfile?.addEventListener('click', () => {
+      profileForm.reset();
+      profileDialog.close();
+    });
+
+    for (const btn of document.querySelectorAll('.edit-model-profile')) {
+      btn.addEventListener('click', (event) => {
+        const profile = JSON.parse(event.currentTarget.dataset.profileJson);
+        profileForm.reset();
+        document.querySelector('#model-profile-edit-mode').value = 'true';
+        document.querySelector('#model-profile-generation').value = String(profile.generation);
+        document.querySelector('#model-profile-id').value = profile.id;
+        document.querySelector('#model-profile-id').disabled = true;
+        document.querySelector('#model-profile-display-name').value = profile.displayName;
+        document.querySelector('#model-profile-title').textContent = `Edit profile (${profile.displayName})`;
+
+        credentialSelect.innerHTML = credentials.map((c) => `<option value="${escape(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escape(c.label)} (${escape(c.provider)})</option>`).join('');
+
+        if (profile.activeRevision) {
+          document.querySelector('#model-profile-model').value = profile.activeRevision.model;
+          document.querySelector('#model-profile-api-mode').value = profile.activeRevision.apiMode;
+          document.querySelector('#model-profile-pricing-input').value = (profile.activeRevision.pricing.inputMicrosPerMillionTokens / 1_000_000).toFixed(6);
+          document.querySelector('#model-profile-pricing-output').value = (profile.activeRevision.pricing.outputMicrosPerMillionTokens / 1_000_000).toFixed(6);
+          document.querySelector('#model-profile-max-input').value = String(profile.activeRevision.limits.maxInputTokens);
+          document.querySelector('#model-profile-max-output').value = String(profile.activeRevision.limits.maxOutputTokens);
+          document.querySelector('#model-profile-max-cost').value = (profile.activeRevision.limits.maxCostMicros / 1_000_000).toFixed(6);
+
+          const ops = new Set(profile.activeRevision.maxProxyOperations);
+          for (const chk of profileForm.querySelectorAll('input[name="proxyOps"]')) {
+            chk.checked = ops.has(chk.value);
+          }
+        }
+
+        syncCustomUrlVisibility();
+        profileDialog.showModal();
+        document.querySelector('#model-profile-display-name').focus();
+      });
+    }
+
+    profileForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const values = new FormData(form);
+      const isEdit = values.get('isEdit') === 'true';
+      const profileId = String(values.get('profileId') ?? '').trim();
+      const displayName = String(values.get('displayName') ?? '').trim();
+      const credentialId = String(values.get('credentialId') ?? '').trim();
+      const model = String(values.get('model') ?? '').trim();
+      const apiMode = String(values.get('apiMode') ?? 'chat-completions');
+      const customUpstreamUrl = String(values.get('customUpstreamUrl') ?? '').trim() || undefined;
+      const expectedGeneration = Number(values.get('expectedGeneration') ?? 1);
+
+      const pricingInputMicros = Math.round(Number(values.get('pricingInput') ?? 0) * 1_000_000);
+      const pricingOutputMicros = Math.round(Number(values.get('pricingOutput') ?? 0) * 1_000_000);
+      const maxInputTokens = Number(values.get('maxInputTokens') ?? 200000);
+      const maxOutputTokens = Number(values.get('maxOutputTokens') ?? 32000);
+      const maxCostMicros = Math.round(Number(values.get('maxCost') ?? 5) * 1_000_000);
+
+      const maxProxyOperations = [...form.querySelectorAll('input[name="proxyOps"]:checked')].map((c) => c.value);
+
+      const payload = {
+        displayName,
+        credentialId,
+        model,
+        apiMode,
+        ...(customUpstreamUrl ? { customUpstreamUrl } : {}),
+        pricing: { inputMicrosPerMillionTokens: pricingInputMicros, outputMicrosPerMillionTokens: pricingOutputMicros },
+        limits: { maxInputTokens, maxOutputTokens, maxCostMicros },
+        maxProxyOperations
+      };
+
+      if (isEdit) {
+        void submitForm(form, 'Updating…', async () => updateModelProfile(profileId, { ...payload, expectedGeneration }), async () => {
+          profileDialog.close();
+          announce('Model profile updated.');
+          await loadModels();
+        });
+      } else {
+        void submitForm(form, 'Creating…', async () => createModelProfile({ profileId, ...payload }), async () => {
+          profileDialog.close();
+          announce('Model profile created.');
+          await loadModels();
+        });
+      }
+    });
+
+    for (const btn of document.querySelectorAll('.activate-model-profile')) {
+      btn.addEventListener('click', async (event) => {
+        const id = event.currentTarget.dataset.profileId;
+        const gen = Number(event.currentTarget.dataset.generation ?? 1);
+        try {
+          await activateModelProfile(id, gen);
+          announce('Model profile activated.');
+          await loadModels();
+        } catch (err) { showError(err); }
+      });
+    }
+
+    for (const btn of document.querySelectorAll('.disable-model-profile')) {
+      btn.addEventListener('click', async (event) => {
+        const id = event.currentTarget.dataset.profileId;
+        const gen = Number(event.currentTarget.dataset.generation ?? 1);
+        try {
+          await disableModelProfile(id, gen);
+          announce('Model profile disabled.');
+          await loadModels();
+        } catch (err) { showError(err); }
+      });
+    }
+
+    for (const btn of document.querySelectorAll('.delete-model-profile')) {
+      btn.addEventListener('click', (event) => {
+        const id = event.currentTarget.dataset.profileId;
+        const gen = Number(event.currentTarget.dataset.generation ?? 1);
+        confirmAction.open({
+          label: 'Delete profile',
+          pendingLabel: 'Deleting…',
+          target: id,
+          description: 'Permanently delete this subagent model profile.',
+          action: async () => {
+            await deleteModelProfile(id, gen);
+            announce('Model profile deleted.');
+            await loadModels();
+          }
+        }, event.currentTarget);
+      });
+    }
   }
   async function loadArtifacts() {
     selectNavigation('artifacts'); setTitle('Artifacts', 'Bounded retained snapshots created from workspace files.'); document.querySelector('#command-surface').hidden = true;

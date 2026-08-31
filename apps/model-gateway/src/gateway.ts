@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { randomBytes } from 'node:crypto';
+import type { DynamicGatewayRegistry } from './control.js';
 import type { Server as NetServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
@@ -124,6 +126,13 @@ export function createGatewayRuntime(
   const leases = new LeaseRegistry();
   const active = new Map<string, ActiveRequest>();
   let controlServer: NetServer | undefined;
+  const gatewayBootId = `boot_${randomBytes(12).toString('hex')}`;
+  const registry: DynamicGatewayRegistry = {
+    profiles: new Map(config.profiles),
+    credentials: new Map(),
+    snapshotDigest: '',
+    gatewayBootId
+  };
 
   const cancelAndDrain = async (requestId: string): Promise<boolean> => {
     const request = active.get(requestId);
@@ -155,7 +164,7 @@ export function createGatewayRuntime(
       }
       const profileId = headerValue(request, 'x-model-profile') ?? '';
       const agentId = headerValue(request, 'x-agent-id') ?? '';
-      const profile = config.profiles.get(profileId);
+      const profile = registry.profiles.get(profileId) ?? config.profiles.get(profileId);
       if (!profile || !PROFILE_ID_PATTERN.test(profileId) || !AGENT_ID_PATTERN.test(agentId)) {
         errorResponse(response, 401, 'invalid_gateway_lease');
         return;
@@ -251,14 +260,14 @@ export function createGatewayRuntime(
     httpServer,
     leases,
     issueLease(input) {
-      const profile = config.profiles.get(input.profileId);
+      const profile = registry.profiles.get(input.profileId) ?? config.profiles.get(input.profileId);
       if (!profile) throw new Error('unknown profile');
       return leases.issue(input, profile);
     },
     cancelAndDrain,
     revokeAndDrain,
     async listen() {
-      controlServer = await startControlServer({ config, leases, cancelRequest: cancelAndDrain, revokeLease: revokeAndDrain });
+      controlServer = await startControlServer({ config, leases, cancelRequest: cancelAndDrain, revokeLease: revokeAndDrain, registry });
       await new Promise<void>((resolve, reject) => {
         httpServer.once('error', reject);
         httpServer.listen(config.port, config.host, () => {

@@ -84,6 +84,7 @@ export default defineConfig({
           { text: 'Workspaces', link: '/dashboard/workspaces' },
           { text: 'Projects', link: '/dashboard/projects' },
           { text: 'Secrets & Credentials', link: '/dashboard/secrets' },
+          { text: 'Subagent Models', link: '/dashboard/models' },
           { text: 'API Keys', link: '/dashboard/api-keys' },
           { text: 'GitHub Bindings', link: '/dashboard/github' },
           { text: 'Artifacts', link: '/dashboard/artifacts' },

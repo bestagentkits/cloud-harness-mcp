@@ -55,7 +55,10 @@ export type DashboardResponseOperation =
   | 'audit_list'
   | 'artifact_list' | 'artifact_snapshot' | 'artifact_read' | 'artifact_restore' | 'artifact_delete'
   | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect'
-  | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject';
+  | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject'
+  | 'model_credential_list' | 'model_credential_create' | 'model_credential_rotate' | 'model_credential_delete'
+  | 'model_profile_list' | 'model_profile_create' | 'model_profile_update' | 'model_profile_activate' | 'model_profile_disable' | 'model_profile_delete'
+  | 'model_config_status';
 function pick(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return Object.fromEntries(keys.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));

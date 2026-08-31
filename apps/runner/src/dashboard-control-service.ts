@@ -8,6 +8,7 @@ import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import type { PrivilegeGrantRecord, StateStore } from './state-store.js';
 import type { WorkspaceService } from './workspace-service.js';
+import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 
 export class DashboardControlService {
   constructor(
@@ -17,7 +18,8 @@ export class DashboardControlService {
     private readonly artifacts: ArtifactStore,
     private readonly workspaces: WorkspaceService,
     private readonly githubInstallations?: GitHubInstallationStore,
-    private readonly githubBinding?: GitHubBindingService
+    private readonly githubBinding?: GitHubBindingService,
+    private readonly modelProfiles?: ModelProfileStateRepository
   ) {}
 
   async execute(request: MetadataRunnerRequest): Promise<RunnerResponse> {
@@ -181,6 +183,36 @@ export class DashboardControlService {
           }
           return ok('Privilege grant rejected', { grant: rejectedGrant });
         }
+        case 'model_credential_list': return ok('Model provider credentials listed', { credentials: this.models().listCredentials(principalId) });
+        case 'model_credential_create': return mutation('Model provider credential created', this.models().createCredential(principalId, parsed.input));
+        case 'model_credential_rotate': return mutation('Model provider credential rotated', this.models().rotateCredential(principalId, parsed.input.credentialId, parsed.input));
+        case 'model_credential_delete': {
+          this.models().deleteCredential(principalId, parsed.input.credentialId, parsed.input.expectedGeneration);
+          return ok('Model provider credential deleted', { deleted: true });
+        }
+        case 'model_profile_list': return ok('Agent model profiles listed', { profiles: this.models().listProfiles(principalId) });
+        case 'model_profile_create': return mutation('Agent model profile created', this.models().createProfile(principalId, parsed.input));
+        case 'model_profile_update': return mutation('Agent model profile updated', this.models().updateProfile(principalId, parsed.input.profileId, parsed.input));
+        case 'model_profile_activate': return mutation('Agent model profile activated', this.models().activateProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration));
+        case 'model_profile_disable': return mutation('Agent model profile disabled', this.models().disableProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration));
+        case 'model_profile_delete': {
+          this.models().deleteProfile(principalId, parsed.input.profileId, parsed.input.expectedGeneration);
+          return ok('Agent model profile deleted', { deleted: true });
+        }
+        case 'model_config_status': {
+          const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
+          const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
+          return ok('Model configuration status', {
+            status: {
+              gatewaySynced: true,
+              gatewayBootId: null,
+              lastSyncTime: Date.now(),
+              activeProfileCount: activeProfiles,
+              activeCredentialCount: activeCreds,
+              error: null
+            }
+          });
+        }
       }
     } catch (error) {
       if (error instanceof HarnessError) throw error;
@@ -214,6 +246,12 @@ export class DashboardControlService {
   private requireGitHubBinding(): GitHubBindingService {
     if (!this.githubBinding) throw new HarnessError('UNAVAILABLE', 'GitHub App setup is not configured', 503, false);
     return this.githubBinding;
+  }
+  private models(): ModelProfileStateRepository {
+    if (!this.modelProfiles) {
+      throw new HarnessError('UNAVAILABLE', 'Model profile operations are temporarily unavailable', 503, false);
+    }
+    return this.modelProfiles;
   }
 }
 

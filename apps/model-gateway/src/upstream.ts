@@ -50,7 +50,7 @@ export async function startUpstreamRequest(options: {
   maxOutputTokens: number;
 }): Promise<UpstreamHandle> {
   const { profile, body, downstream, requestId, maxOutputTokens } = options;
-  const credential = await readExactSecret(profile.credentialFile);
+  const credential = profile.credentialSecret !== undefined ? profile.credentialSecret : await readExactSecret(profile.credentialFile);
   const ca = profile.tlsCaFile === undefined ? undefined : await readFile(profile.tlsCaFile);
   const resolved = await resolveAddress(profile);
   if (downstream.destroyed) throw new Error('downstream closed before upstream request');
