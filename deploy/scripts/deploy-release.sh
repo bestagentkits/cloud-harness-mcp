@@ -66,6 +66,13 @@ fi
 
 git checkout --detach --force "$release_sha"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
+if [[ -f deploy/scripts/service-compose.sh ]]; then
+  install -m 0755 deploy/scripts/service-compose.sh /usr/local/sbin/cloud-harness-service-compose
+fi
+if [[ -f deploy/systemd/cloud-harness-mcp.service ]]; then
+  install -m 0644 deploy/systemd/cloud-harness-mcp.service /etc/systemd/system/cloud-harness-mcp.service
+  systemctl daemon-reload
+fi
 compose --profile images build executor-image api runner
 systemctl enable --now cloud-harness-mcp.service
 wait_ready
