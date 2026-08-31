@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
-import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
+import { IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 
 const relativePath = z.string().min(1).max(1_024).refine((value) => {
   const normalized = value.replaceAll('\\', '/');
@@ -22,42 +22,6 @@ const gitRefspec = z.string().min(1).max(512).refine((value) => {
 }, 'invalid Git branch push refspec');
 const sessionName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
 const EnvironmentIdSchema = z.string().regex(/^env_[A-Za-z0-9_-]{20,80}$/);
-const SkillFilterSchema = z.object({
-  include: z.array(z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/)).max(128).optional(),
-  exclude: z.array(z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/)).max(128).optional()
-}).strict().superRefine((val, ctx) => {
-  if (val.include && val.exclude) {
-    ctx.addIssue({ code: 'custom', message: 'include and exclude cannot both be specified' });
-  }
-});
-
-export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('preset'),
-    instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).optional(),
-    id: z.enum(['mattpocock/skills', 'obra/superpowers']),
-    version: z.string().max(80).optional(),
-    scope: z.enum(['owner', 'workspace']).default('owner'),
-    skills: SkillFilterSchema.optional(),
-    activation: z.enum(['skills-only', 'toolkit-default']).default('toolkit-default')
-  }).strict(),
-  z.object({
-    kind: z.literal('git'),
-    instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
-    url: z.string().url().refine((val) => val.startsWith('https://'), 'Git toolkit URL must use HTTPS'),
-    ref: gitObjectId.optional(),
-    subdirectory: relativePath.optional(),
-    scope: z.enum(['owner', 'workspace']).default('owner'),
-    skills: SkillFilterSchema.optional(),
-    layout: z.object({
-      skillRoots: z.array(relativePath).max(16).default(['skills']),
-      recursive: z.boolean().default(true)
-    }).strict().default({ skillRoots: ['skills'], recursive: true }),
-    activation: z.literal('skills-only').default('skills-only')
-  }).strict()
-]);
-
-export type ToolkitSelection = z.infer<typeof ToolkitSelectionSchema>;
 
 const githubActionUnion = z.discriminatedUnion('action', [
   z.object({
@@ -239,61 +203,14 @@ const githubActionInput = z.object({
   idempotencyKey: IdempotencyKeySchema.optional()
 });
 
-const profileId = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
-const uniqueProxyOperations = z.array(AgentProxyOperationSchema)
-  .min(1)
-  .max(AgentProxyOperationSchema.options.length)
-  .refine((operations) => new Set(operations).size === operations.length, 'proxy operations must be unique');
-const decimalCursor = z.string().regex(/^(?:0|[1-9]\d*)$/);
-const positiveDecimalCursor = z.string().regex(/^[1-9]\d*$/);
-const boundedUtf8Text = (maxBytes: number) =>
-  z.string().min(1).refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes, `text must be <= ${maxBytes} bytes`);
-
-const agentLookup = z.object({
-  ...workspace,
-  agentId: AgentIdSchema.optional(),
-  idempotencyKey: IdempotencyKeySchema.optional()
-}).strict().superRefine((input, context) => {
-  if ((input.agentId === undefined) === (input.idempotencyKey === undefined)) {
-    context.addIssue({
-      code: 'custom',
-      path: ['agentId'],
-      message: 'either agentId or idempotencyKey must be provided, but not both'
-    });
-  }
-});
-
 const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
-    networkProfile: ExecutorNetworkProfileSchema.optional(),
-    networkMode: z.unknown().optional(),
-    environmentId: EnvironmentIdSchema.optional(),
-    confirmEnvironmentInjection: z.literal(true).optional(),
-    toolkits: z.array(ToolkitSelectionSchema).max(8).default([]),
-    allowToolkitWorkspaceChanges: z.literal(true).optional()
+    networkMode: z.enum(['none', 'bridge']).optional(), environmentId: EnvironmentIdSchema.optional(),
+    confirmEnvironmentInjection: z.literal(true).optional()
   }).superRefine((input, context) => {
-    if (input.networkMode !== undefined) {
-      context.addIssue({
-        code: 'custom',
-        path: ['networkMode'],
-        message: "networkMode was replaced by networkProfile; choose 'network-none' or 'dependency-access'"
-      });
-    }
     if (Boolean(input.environmentId) !== Boolean(input.confirmEnvironmentInjection)) {
       context.addIssue({ code: 'custom', path: ['confirmEnvironmentInjection'], message: 'environment injection requires an explicit environment selection and confirmation' });
-    }
-    const hasWorkspaceScope = input.toolkits.some((t) => t.scope === 'workspace');
-    if (hasWorkspaceScope && !input.allowToolkitWorkspaceChanges) {
-      context.addIssue({ code: 'custom', path: ['allowToolkitWorkspaceChanges'], message: 'workspace-scope toolkits require allowToolkitWorkspaceChanges confirmation' });
-    }
-    const instanceIds = new Set<string>();
-    for (const t of input.toolkits) {
-      const key = t.kind === 'git' ? t.instanceId : (t.instanceId || t.id);
-      if (instanceIds.has(key)) {
-        context.addIssue({ code: 'custom', path: ['toolkits'], message: `duplicate toolkit instance or id: ${key}` });
-      }
-      instanceIds.add(key);
     }
   }),
   workspace_list: z.object(pagination),
@@ -515,42 +432,7 @@ const schemas = {
     environmentId: EnvironmentIdSchema.optional(),
     query: z.string().max(200).optional(),
     ...pagination
-  }),
-  agent_spawn: z.object({
-    ...workspace,
-    prompt: boundedUtf8Text(131_072),
-    idempotencyKey: IdempotencyKeySchema,
-    profileId,
-    parentAgentId: AgentIdSchema.optional(),
-    proxyOperations: uniqueProxyOperations,
-    ttlSeconds: z.number().int().min(30).max(86_400).default(900),
-    maxOutputBytes: z.number().int().min(1_024).max(10_485_760).default(262_144),
-    maxInputTokens: z.number().int().min(1).max(2_000_000).default(200_000),
-    maxOutputTokens: z.number().int().min(1).max(2_000_000).default(32_000),
-    maxCostMicros: z.number().int().min(0).max(1_000_000_000).default(10_000_000)
-  }).strict(),
-  agent_status: agentLookup,
-  agent_logs: z.object({
-    ...workspace,
-    agentId: AgentIdSchema,
-    cursor: decimalCursor.default('0'),
-    limitBytes: z.number().int().min(1_024).max(262_144).default(65_536)
-  }).strict(),
-  agent_message: z.object({
-    ...workspace,
-    agentId: AgentIdSchema,
-    idempotencyKey: IdempotencyKeySchema,
-    mode: z.enum(['steer', 'followUp']),
-    message: boundedUtf8Text(65_536)
-  }).strict(),
-  agent_cancel: z.object({ ...workspace, agentId: AgentIdSchema, reason: z.string().max(2_000).optional() }).strict(),
-  agent_list: z.object({
-    ...workspace,
-    parentAgentId: AgentIdSchema.optional(),
-    status: AgentStatusSchema.optional(),
-    cursor: positiveDecimalCursor.optional(),
-    limit: z.number().int().min(1).max(100).default(50)
-  }).strict()
+  })
 };
 
 export type ToolSpec = {
@@ -583,13 +465,7 @@ const titles: Record<RunnerOperation, string> = {
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
   github_action: 'Perform brokered GitHub operations',
-  secrets_list: 'List available secrets',
-  agent_spawn: 'Spawn coding agent',
-  agent_status: 'Read coding agent status',
-  agent_logs: 'Read coding agent logs',
-  agent_message: 'Message coding agent',
-  agent_cancel: 'Cancel coding agent',
-  agent_list: 'List coding agents'
+  secrets_list: 'List available secrets'
 };
 
 const descriptions: Record<RunnerOperation, string> = {
@@ -667,13 +543,7 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
   github_action: 'Perform brokered GitHub operations via brokered helper without exposing tokens to workspace.',
-  secrets_list: 'List available environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
-  agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
-  agent_status: 'Read the execution state, budgets, and terminal summary of one coding agent.',
-  agent_logs: 'Read bounded streaming diagnostic and tool events from one coding agent.',
-  agent_message: 'Send an idempotent steering or follow-up message to a running coding agent.',
-  agent_cancel: 'Cancel an in-flight coding agent and cascade cancellation to all its child agents.',
-  agent_list: 'List coding agents in a workspace with bounded pagination.'
+  secrets_list: 'List available environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.'
 };
 
 const readOnly = new Set<RunnerOperation>([
@@ -683,8 +553,7 @@ const readOnly = new Set<RunnerOperation>([
   'operation_status', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_identity_status',
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'deployments_list',
-  'artifacts_list', 'artifacts_read', 'secrets_list',
-  'agent_status', 'agent_logs', 'agent_list'
+  'artifacts_list', 'artifacts_read', 'secrets_list'
 ]);
 const destructive = new Set<RunnerOperation>([
   'workspace_close', 'workspace_recover', 'workspace_finalize',
@@ -692,8 +561,7 @@ const destructive = new Set<RunnerOperation>([
   'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
   'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
-  'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete', 'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action',
-  'agent_spawn', 'agent_message', 'agent_cancel'
+  'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete', 'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action'
 ]);
 const idempotent = new Set<RunnerOperation>([
   'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
@@ -703,13 +571,11 @@ const idempotent = new Set<RunnerOperation>([
   'operation_status', 'operation_cancel', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_add', 'git_identity_status', 'git_identity_set',
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'memories_write', 'deployments_list',
-  'artifacts_list', 'artifacts_read', 'secrets_list',
-  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
+  'artifacts_list', 'artifacts_read', 'secrets_list'
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',
-  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'hooks_run', 'deployments_run', 'github_action',
-  'agent_spawn', 'agent_message'
+  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'hooks_run', 'deployments_run', 'github_action'
 ]);
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({

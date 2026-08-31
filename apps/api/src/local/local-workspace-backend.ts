@@ -1,5 +1,7 @@
-import { randomBytes } from 'node:crypto';
-import type { RunnerOperation, RunnerResponse } from '@cloud-harness/contracts';
+import { join } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+import { sanitizeAndAttributeProvenance, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
 import type { CliOptions } from '../cli-options.js';
 import { LocalPathPolicy } from './local-path-policy.js';
@@ -7,6 +9,7 @@ import { LocalWorkerClient } from './local-worker-client.js';
 import { LocalOperationManager } from './local-operation-manager.js';
 
 const opaqueId = (prefix: string) => `${prefix}_${randomBytes(24).toString('base64url')}`;
+
 
 export class LocalWorkspaceBackend implements OperationBackend {
   public readonly workspaceId: string;
@@ -40,7 +43,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
       repositoryUrl: `local://${this.canonicalRoot}`,
       ref: 'HEAD',
       status: this.status,
-      networkProfile: 'local-host',
+      networkMode: this.options.gitNetwork ? 'host' : 'none',
       createdAt: new Date(this.createdAt).toISOString(),
       lastActivityAt: new Date(this.lastActivityAt).toISOString(),
       expiresAt: new Date(Date.now() + 86_400_000 * 365).toISOString(),
@@ -79,7 +82,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
           sessions: true,
           deployments: true,
           privileged: false,
-          networkProfile: 'local-host'
+          networkMode: gitNetwork ? 'host' : 'none'
         },
         mode: 'local',
         platform: process.platform,
@@ -246,31 +249,10 @@ export class LocalWorkspaceBackend implements OperationBackend {
           const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
 
           for (const rawItem of rawItems as Record<string, unknown>[]) {
-            const pathStr = typeof rawItem.path === 'string' ? rawItem.path : undefined;
-            const hashStr = typeof rawItem.contentSha256 === 'string' && rawItem.contentSha256.length === 64
-              ? rawItem.contentSha256
-              : '0'.repeat(64);
-            const item = {
-              id: typeof rawItem.id === 'string' ? rawItem.id : `ctx_${hashStr.slice(0, 12)}`,
-              kind: typeof rawItem.kind === 'string' ? rawItem.kind : 'instruction',
-              format: typeof rawItem.format === 'string' ? rawItem.format : 'plain',
-              clients: Array.isArray(rawItem.clients) ? rawItem.clients : ['all'],
-              path: pathStr,
-              appliesTo: typeof rawItem.appliesTo === 'string' ? rawItem.appliesTo : undefined,
-              activeForClient: Boolean(rawItem.activeForClient ?? true),
-              contentSha256: hashStr,
-              byteCount: typeof rawItem.byteCount === 'number' ? rawItem.byteCount : 0,
-              excerpt: typeof rawItem.excerpt === 'string' ? rawItem.excerpt.slice(0, 8192) : undefined,
-              references: Array.isArray(rawItem.references) ? rawItem.references : undefined,
-              provenance: {
-                source: 'repository',
-                trust: 'untrusted-executor',
-                mutableBy: 'repository-commit',
-                path: pathStr,
-                contentSha256: hashStr,
-                discoveredAt: new Date().toISOString()
-              }
-            };
+            const item = sanitizeAndAttributeProvenance(rawItem, {
+              partitionSource: 'repository',
+              repositoryRoot: this.canonicalRoot
+            });
             const itemBytes = Buffer.byteLength(JSON.stringify(item));
             if (accumulatedBytes + itemBytes > maxBytes) {
               truncated = true;
@@ -281,6 +263,43 @@ export class LocalWorkspaceBackend implements OperationBackend {
             accumulatedBytes += itemBytes;
           }
 
+          // Scan trusted external owner and built-in skill partitions
+          const include = Array.isArray((input as any).include) ? (input as any).include : ['instructions', 'languages', 'test_commands', 'skills'];
+          if (include.includes('skills')) {
+            const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+            try {
+              const ownerEntries = await readdir(ownerRoot, { withFileTypes: true });
+              for (const oe of ownerEntries) {
+                if (oe.isDirectory()) {
+                  const sFile = join(ownerRoot, oe.name, 'SKILL.md');
+                  try {
+                    const sRaw = await readFile(sFile);
+                    const sHash = createHash('sha256').update(sRaw).digest('hex');
+                    const sItem = sanitizeAndAttributeProvenance({
+                      id: `ctx_skill_${oe.name}`,
+                      kind: 'skill-summary',
+                      format: 'skill-md',
+                      path: sFile,
+                      clients: ['all'],
+                      contentSha256: sHash,
+                      excerpt: `Skill "${oe.name}" (owner)`
+                    }, {
+                      partitionSource: 'owner',
+                      trustedRoot: ownerRoot
+                    });
+                    const sBytes = Buffer.byteLength(JSON.stringify(sItem));
+                    if (accumulatedBytes + sBytes <= maxBytes) {
+                      // Replace or prepend owner skill
+                      const existingIdx = sanitizedItems.findIndex(it => it.id === sItem.id);
+                      if (existingIdx >= 0) sanitizedItems.splice(existingIdx, 1);
+                      sanitizedItems.unshift(sItem);
+                      accumulatedBytes += sBytes;
+                    }
+                  } catch { /* skip */ }
+                }
+              }
+            } catch { /* owner root absent */ }
+          }
           manifest = {
             contractVersion: 1,
             returnedBytes: accumulatedBytes,

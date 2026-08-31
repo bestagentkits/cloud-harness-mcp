@@ -122,17 +122,18 @@ describe('declarative hooks and sandbox execution', () => {
 
   it('manages hook activations in StateStore', async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'hooks-act-'));
-    const store = new StateStore(join(tmp, 'state.db'));
     try {
+      const store = new StateStore(join(tmp, 'state.db'));
       store.database.prepare(`
         INSERT OR IGNORE INTO principals (id, issuer, subject, email, name, created_at, updated_at)
         VALUES ('p_user1', 'https://auth.example.com', 'user1', 'u1@example.com', 'User 1', 1000, 1000)
       `).run();
       store.database.prepare(`
         INSERT OR IGNORE INTO workspaces
-        (id, owner_id, idempotency_key, repository_url, workspace_path, status, network_profile, created_at, last_activity_at, expires_at, generation)
-        VALUES ('ws_1', 'p_user1', 'idem_1', 'https://github.com/example/repo', '/tmp/ws1', 'ACTIVE', 'network-none', 1000, 1000, 9999999999, 1)
+        (id, owner_id, idempotency_key, repository_url, workspace_path, status, network_mode, created_at, last_activity_at, expires_at, generation)
+        VALUES ('ws_1', 'p_user1', 'idem_1', 'https://github.com/example/repo', '/tmp/ws1', 'ACTIVE', 'none', 1000, 1000, 9999999999, 1)
       `).run();
+
       const act = store.activateHook({
         principalId: 'p_user1',
         workspaceId: 'ws_1',
@@ -150,8 +151,8 @@ describe('declarative hooks and sandbox execution', () => {
       store.deactivateHook({ principalId: 'p_user1', workspaceId: 'ws_1', event: 'pre_commit' });
       expect(store.getActiveHookActivations('p_user1', 'ws_1').length).toBe(0);
 
+      store.close();
     } finally {
-      try { store.close(); } catch { /* ignore */ }
       await rm(tmp, { recursive: true, force: true });
     }
   });

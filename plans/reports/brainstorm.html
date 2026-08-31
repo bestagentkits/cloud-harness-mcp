@@ -3,87 +3,73 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Brainstorm Proposal: Third-Party Agent Toolkits in CloudHarness MCP — Verified Winner (Candidate E)</title>
+  <title>Brainstorm Brief | Issue #15: Provenance-Aware Workspace Context, Skills, Memories & Hooks — Cloud Harness MCP</title>
   <style>
     :root {
       --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
-      --canvas: #0d1117;
-      --surface: #161b22;
-      --surface-raised: #21262d;
-      --surface-overlay: #30363d;
-      --line: #30363d;
-      --line-strong: #484f58;
+      --canvas: #0f1117;
+      --surface: #161922;
+      --surface-raised: #1e2230;
+      --surface-overlay: #262c3e;
+      --line: #2e354a;
+      --line-strong: #3f4966;
       --ink: #e6edf3;
       --ink-muted: #8b949e;
-      --accent: #f59e0b; /* Safety Amber H62 */
-      --accent-strong: #d97706;
-      --accent-soft: rgba(245, 158, 11, 0.15);
+      --accent: #38bdf8;
+      --accent-strong: #0ea5e9;
+      --accent-soft: rgba(56, 189, 248, 0.15);
       --on-accent: #0f172a;
-      --cyan: #38bdf8;
-      --cyan-soft: rgba(56, 189, 248, 0.15);
-      --success: #10b981;
-      --success-soft: rgba(16, 185, 129, 0.15);
+      --success: #34d399;
+      --success-soft: rgba(52, 211, 153, 0.15);
       --warning: #fbbf24;
       --warning-soft: rgba(251, 191, 36, 0.15);
-      --danger: #ef4444;
-      --danger-soft: rgba(239, 68, 68, 0.15);
-      --purple: #a855f7;
-      --purple-soft: rgba(168, 85, 247, 0.15);
+      --danger: #f87171;
+      --danger-soft: rgba(248, 113, 113, 0.15);
+      --purple: #c084fc;
+      --purple-soft: rgba(192, 132, 252, 0.15);
       --radius-sm: 4px;
-      --radius-md: 6px;
-      --radius-lg: 10px;
-      --radius-xl: 14px;
-      --shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --shadow: 0 4px 20px rgba(0,0,0,0.35);
     }
     [data-theme="light"] {
-      --canvas: #f6f8fa;
+      --canvas: #f8fafc;
       --surface: #ffffff;
-      --surface-raised: #f3f4f6;
-      --surface-overlay: #e5e7eb;
-      --line: #d1d5db;
-      --line-strong: #9ca3af;
-      --ink: #111827;
-      --ink-muted: #4b5563;
-      --accent: #d97706;
-      --accent-strong: #b45309;
-      --accent-soft: rgba(217, 119, 6, 0.12);
+      --surface-raised: #f1f5f9;
+      --surface-overlay: #e2e8f0;
+      --line: #cbd5e1;
+      --line-strong: #94a3b8;
+      --ink: #0f172a;
+      --ink-muted: #64748b;
+      --accent: #0284c7;
+      --accent-strong: #0369a1;
+      --accent-soft: rgba(2, 132, 199, 0.12);
       --on-accent: #ffffff;
-      --cyan: #0284c7;
-      --cyan-soft: rgba(2, 132, 199, 0.12);
       --success: #059669;
       --success-soft: rgba(5, 150, 105, 0.12);
-      --warning: #b45309;
-      --warning-soft: rgba(180, 83, 9, 0.12);
+      --warning: #d97706;
+      --warning-soft: rgba(217, 119, 6, 0.12);
       --danger: #dc2626;
       --danger-soft: rgba(220, 38, 38, 0.12);
-      --purple: #7e22ce;
-      --purple-soft: rgba(126, 34, 206, 0.12);
-      --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      --purple: #9333ea;
+      --purple-soft: rgba(147, 51, 234, 0.12);
+      --shadow: 0 4px 20px rgba(0,0,0,0.08);
     }
-
-    @media (prefers-reduced-motion: reduce) {
-      *, ::before, ::after {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
-        scroll-behavior: auto !important;
-      }
-    }
-
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: var(--font-sans);
-      background: var(--canvas);
+      background-color: var(--canvas);
       color: var(--ink);
       line-height: 1.6;
-      padding: 0 0 80px 0;
-      -webkit-font-smoothing: antialiased;
+      font-size: 14px;
+      padding-bottom: 5rem;
     }
     header {
-      background: var(--surface);
+      background: linear-gradient(180deg, var(--surface-raised) 0%, var(--surface) 100%);
       border-bottom: 1px solid var(--line);
-      padding: 24px 32px;
+      padding: 2.5rem 2rem 2rem;
       position: sticky;
       top: 0;
       z-index: 100;
@@ -94,1180 +80,707 @@
       margin: 0 auto;
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 16px;
+      align-items: flex-start;
+      gap: 1.5rem;
     }
-    .brand-title {
+    .badge-bar {
       display: flex;
-      align-items: center;
-      gap: 12px;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
     }
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      font-family: var(--font-mono);
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      padding: 3px 8px;
+      gap: 0.35rem;
+      padding: 0.2rem 0.6rem;
       border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
-    .badge-amber { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
-    .badge-cyan { background: var(--cyan-soft); color: var(--cyan); border: 1px solid var(--cyan); }
-    .badge-green { background: var(--success-soft); color: var(--success); border: 1px solid var(--success); }
+    .badge-accent { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
+    .badge-success { background: var(--success-soft); color: var(--success); border: 1px solid var(--success); }
+    .badge-warning { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
     .badge-purple { background: var(--purple-soft); color: var(--purple); border: 1px solid var(--purple); }
-    .badge-red { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
-    
+    .badge-danger { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
+    h1 {
+      font-size: 1.85rem;
+      font-weight: 700;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+      margin-bottom: 0.4rem;
+    }
+    .subtitle {
+      color: var(--ink-muted);
+      font-size: 0.95rem;
+    }
     .theme-toggle {
       background: var(--surface-raised);
       border: 1px solid var(--line);
       color: var(--ink);
-      padding: 6px 12px;
+      padding: 0.5rem 0.9rem;
       border-radius: var(--radius-md);
-      font-family: var(--font-mono);
-      font-size: 12px;
       cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 500;
       display: flex;
       align-items: center;
-      gap: 8px;
-      transition: background 0.15s, border-color 0.15s;
+      gap: 0.5rem;
+      transition: all 0.2s;
     }
     .theme-toggle:hover {
       background: var(--surface-overlay);
       border-color: var(--line-strong);
     }
-
-    .container {
+    main {
       max-width: 1200px;
-      margin: 32px auto 0;
-      padding: 0 24px;
+      margin: 2rem auto 0;
+      padding: 0 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 2.5rem;
     }
-
     .card {
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: var(--radius-lg);
-      padding: 28px;
-      margin-bottom: 32px;
+      padding: 1.75rem;
       box-shadow: var(--shadow);
     }
-    .card-accent { border-top: 3px solid var(--accent); }
-    .card-cyan { border-top: 3px solid var(--cyan); }
-    .card-green { border-top: 3px solid var(--success); }
-    .card-danger { border-top: 3px solid var(--danger); }
-
-    h1, h2, h3, h4 { color: var(--ink); font-weight: 700; letter-spacing: -0.01em; }
-    h1 { font-size: 26px; line-height: 1.3; }
-    h2 { font-size: 20px; margin-bottom: 18px; display: flex; align-items: center; gap: 10px; }
-    h3 { font-size: 16px; margin: 20px 0 10px; color: var(--ink); }
-    h4 { font-size: 14px; margin: 14px 0 8px; color: var(--ink); }
-    p { margin-bottom: 14px; font-size: 14px; color: var(--ink); }
-    ul, ol { margin-left: 20px; margin-bottom: 16px; font-size: 14px; }
-    li { margin-bottom: 6px; }
-    code {
-      font-family: var(--font-mono);
-      background: var(--surface-raised);
-      padding: 2px 6px;
-      border-radius: var(--radius-sm);
-      font-size: 12px;
-      border: 1px solid var(--line);
-      color: var(--accent);
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--line);
     }
-    pre {
-      font-family: var(--font-mono);
-      background: var(--surface-raised);
-      border: 1px solid var(--line);
-      padding: 16px;
-      border-radius: var(--radius-md);
-      font-size: 12px;
-      overflow-x: auto;
-      margin: 14px 0;
-      line-height: 1.5;
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
     }
-
     .grid-2 {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 20px;
-      margin: 16px 0;
+      gap: 1.25rem;
     }
     .grid-3 {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 20px;
-      margin: 16px 0;
+      gap: 1.25rem;
     }
-
-    .info-box {
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+    }
+    .contract-box {
       background: var(--surface-raised);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: 16px;
-      margin-bottom: 14px;
+      padding: 1.25rem;
     }
-    .info-box-title {
-      font-size: 12px;
-      font-family: var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--ink-muted);
-      margin-bottom: 8px;
+    .contract-box h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
-
+    .contract-box ul {
+      list-style-position: inside;
+      color: var(--ink);
+      font-size: 0.88rem;
+    }
+    .contract-box li {
+      margin-bottom: 0.4rem;
+    }
+    .table-container {
+      overflow-x: auto;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--line);
+    }
     table {
       width: 100%;
       border-collapse: collapse;
-      margin: 16px 0;
-      font-size: 13px;
-    }
-    th, td {
-      border: 1px solid var(--line);
-      padding: 10px 14px;
+      font-size: 0.85rem;
       text-align: left;
     }
     th {
       background: var(--surface-raised);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
       color: var(--ink-muted);
+      font-weight: 600;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--line);
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
     }
-    tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
-
-    .diagram-container {
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface-raised); }
+    .winner-row td {
+      background: var(--accent-soft);
+      font-weight: 600;
+    }
+    .svg-container {
       background: var(--surface-raised);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: 24px;
-      margin: 20px 0;
+      padding: 1.5rem;
+      display: flex;
+      justify-content: center;
+      align-items: center;
       overflow-x: auto;
     }
-    .diagram-svg {
-      width: 100%;
-      min-width: 760px;
-      height: auto;
-    }
-
-    /* Mockup Elements */
     .mockup-window {
-      background: var(--surface);
-      border: 2px solid var(--line-strong);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      margin: 24px 0;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-    }
-    .mockup-header {
-      background: var(--surface-raised);
-      border-bottom: 1px solid var(--line);
-      padding: 12px 18px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .mockup-dots { display: flex; gap: 6px; }
-    .mockup-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); }
-    .mockup-dot.red { background: #ef4444; }
-    .mockup-dot.yellow { background: #f59e0b; }
-    .mockup-dot.green { background: #10b981; }
-    .mockup-body { padding: 24px; }
-    .form-group { margin-bottom: 20px; }
-    .form-label {
-      display: block;
-      font-size: 12px;
-      font-family: var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 6px;
-      color: var(--ink-muted);
-    }
-    .form-input {
-      width: 100%;
-      background: var(--surface-raised);
-      border: 1px solid var(--line);
-      color: var(--ink);
-      padding: 10px 14px;
-      border-radius: var(--radius-md);
-      font-family: var(--font-mono);
-      font-size: 13px;
-    }
-    .toolkit-card-select {
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: 16px;
-      background: var(--surface-raised);
-      cursor: pointer;
-      position: relative;
-    }
-    .toolkit-card-select.selected {
-      border-color: var(--accent);
-      background: var(--accent-soft);
-    }
-    .toolkit-card-select .check-indicator {
-      position: absolute;
-      top: 14px;
-      right: 14px;
-      width: 18px;
-      height: 18px;
-      border-radius: var(--radius-sm);
+      background: #090d16;
       border: 1px solid var(--line-strong);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    }
+    .mockup-titlebar {
+      background: #151a28;
+      border-bottom: 1px solid var(--line);
+      padding: 0.6rem 1rem;
       display: flex;
       align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: bold;
+      gap: 0.5rem;
     }
-    .toolkit-card-select.selected .check-indicator {
-      background: var(--accent);
-      color: var(--on-accent);
-      border-color: var(--accent);
+    .mockup-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
     }
-    .callout-box {
-      border: 1px dashed var(--accent);
-      background: var(--accent-soft);
-      padding: 12px 16px;
-      border-radius: var(--radius-md);
-      margin: 12px 0;
-      font-size: 12px;
+    .dot-red { background: #ef4444; }
+    .dot-yellow { background: #f59e0b; }
+    .dot-green { background: #10b981; }
+    .mockup-body {
+      padding: 1.25rem;
+      color: #e2e8f0;
+      overflow-x: auto;
     }
+    .token-key { color: #38bdf8; }
+    .token-str { color: #34d399; }
+    .token-num { color: #f59e0b; }
+    .token-bool { color: #c084fc; }
+    .token-tag {
+      display: inline-block;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      margin-left: 0.4rem;
+    }
+    .tag-untrusted { background: rgba(239, 68, 68, 0.25); color: #fca5a5; border: 1px solid #ef4444; }
+    .tag-owner { background: rgba(56, 189, 248, 0.25); color: #7dd3fc; border: 1px solid #0284c7; }
+    .tag-builtin { background: rgba(192, 132, 252, 0.25); color: #e9d5ff; border: 1px solid #9333ea; }
     .callout {
-      border-left: 3px solid var(--accent);
+      border-left: 4px solid var(--accent);
       background: var(--accent-soft);
-      padding: 14px 18px;
+      padding: 1rem 1.25rem;
       border-radius: 0 var(--radius-md) var(--radius-md) 0;
-      margin: 16px 0;
-      font-size: 13px;
+      margin: 1rem 0;
     }
-    .callout-cyan { border-color: var(--cyan); background: var(--cyan-soft); }
-    .callout-green { border-color: var(--success); background: var(--success-soft); }
-    .callout-red { border-color: var(--danger); background: var(--danger-soft); }
+    .callout-warning {
+      border-left-color: var(--warning);
+      background: var(--warning-soft);
+    }
+    .callout-title {
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
   </style>
 </head>
 <body>
 
 <header>
   <div class="header-inner">
-    <div class="brand-title">
-      <span class="badge badge-amber">CloudHarness MCP</span>
-      <h1>Brainstorm Proposal: Third-Party Agent Toolkits</h1>
+    <div>
+      <div class="badge-bar">
+        <span class="badge badge-accent">Issue #15</span>
+        <span class="badge badge-success">Ultra Verifier: 5/5 Passed</span>
+        <span class="badge badge-purple">Supervisor: Kongming</span>
+        <span class="badge badge-warning">Priority: P2</span>
+        <span class="badge badge-accent">Phase: Brainstorm Contract</span>
+      </div>
+      <h1>Provenance-Aware Workspace Context, Skills, Memories & Hooks</h1>
+      <p class="subtitle">Cloud Harness MCP — Vendor-Neutral Portable AI Coding Context with Immutable Provenance & Sandboxed Execution</p>
     </div>
-    <div style="display: flex; gap: 10px; align-items: center;">
-      <span class="badge badge-green">VERIFIED RECOMMENDATION (CANDIDATE E — 97/100)</span>
-      <span class="badge badge-purple">--ultra (best-of-5)</span>
-      <span class="badge badge-cyan">--advice (Kongming)</span>
-      <button class="theme-toggle" onclick="toggleTheme()">🌓 Theme</button>
-    </div>
+    <button class="theme-toggle" onclick="toggleTheme()">
+      <span id="theme-icon">🌙</span> <span id="theme-text">Toggle Theme</span>
+    </button>
   </div>
 </header>
 
-<div class="container">
+<main>
 
-  <!-- EXECUTIVE DECISION -->
-  <section class="card card-accent">
-    <h2>Executive decision</h2>
-    <p>
-      <strong>Recommend Option A: a runner-mediated, content-addressed toolkit bundle cache with isolated provider adapters and read-only mount injection.</strong> Seed the cache for the three supported presets and bake only the pinned provisioning executables—such as the compatible <code>ak</code> binary—into a provisioner/executor image. Do <strong>not</strong> create a general plugin marketplace yet, and do <strong>not</strong> run toolkit installers in the long-lived executor.
-    </p>
-    <p>
-      This is the simplest viable direction that meets offline executor operation, dynamic selection, proprietary credentials, reproducibility, and existing skill provenance. It reuses CloudHarness’s current strengths: runner-side network helpers, owner-partitioned repository caching, encrypted secret references, a read-only executor root, and the built-in &gt; owner &gt; workspace &gt; repository resolver.
-    </p>
-    <p>Two core assumptions must be challenged explicitly:</p>
-    <ol>
-      <li><strong><code>networkMode: "none"</code> does not mean the whole workspace-open operation has zero network.</strong> CloudHarness already clones the target repository through short-lived runner helpers on <code>bridge</code>, while the executor itself stays on <code>none</code>. Toolkit acquisition should use that same disclosed boundary rather than silently enabling executor networking.</li>
-      <li><strong>Putting skill files on disk does not by itself mean a toolkit works.</strong> <code>obra/superpowers</code> requires session-start bootstrap/context activation; AgentKit emits target-specific content and configuration. Provisioning, discovery, and activation are separate contracts. CloudHarness can guarantee provisioning and its own <code>skills_*</code>/<code>workspace_context</code> surfaces, but cannot guarantee automatic bootstrap injection inside every arbitrary MCP client without a client-side integration.</li>
-    </ol>
-  </section>
-
-  <!-- 1. BRAINSTORM CONTRACT -->
-  <section class="card card-cyan">
-    <h2>1. Brainstorm Contract</h2>
-    
-    <h3>Outcome</h3>
-    <p>
-      A caller can open a CloudHarness workspace with zero, one, or several approved or custom Git-based agent toolkits. The workspace reports the exact resolved toolkit versions/digests, exposes their normalized skills through <code>skills_list</code>, <code>skills_read</code>, <code>skills_run</code>, and <code>workspace_context</code>, and continues to run the executor with its requested network mode—normally <code>none</code>.
-    </p>
-    <p><strong>For the three presets:</strong></p>
-    <ul>
-      <li><code>mattpocock/skills</code>: recursively normalize its categorized <code>skills/&lt;category&gt;/&lt;skill&gt;/SKILL.md</code> layout into CloudHarness’s skill view without running its installer.</li>
-      <li><code>obra/superpowers</code>: mount its skills and expose its bootstrap/tool mapping through a CloudHarness context artifact. Full automatic activation is reported only for clients that implement the context-injection contract.</li>
-      <li><code>bestagentkits/agentkit</code>: run a pinned, compatible <code>ak</code> CLI in a disposable provisioning helper, produce a normalized offline bundle, and consume <code>AGENTKIT_API_KEY</code> only through an owner-bound secret reference.</li>
-    </ul>
-
-    <p><strong>Two installation scopes are supported:</strong></p>
-    <ul>
-      <li><strong><code>owner</code> scope, default:</strong> selected for this workspace but surfaced at the owner provenance tier through a read-only off-repository mount; <code>git status</code> remains unchanged.</li>
-      <li><strong><code>workspace</code> scope, explicit opt-in:</strong> materializes approved toolkit output such as <code>.cloud-harness/skills</code>, <code>.agentkit</code>, <code>CLAUDE.md</code>, or <code>AGENTS.md</code> changes in the checkout; changes are previewed/reported and may intentionally dirty the repository.</li>
-    </ul>
-
-    <p>Every active workspace is locked to immutable toolkit inputs. Recovery recreates the exact mount and configuration rather than resolving “latest” again.</p>
-
-    <h3>Constraints</h3>
-    
-    <div class="grid-2">
-      <div class="info-box">
-        <div class="info-box-title">Security</div>
-        <ul>
-          <li>Toolkit source URLs must reuse credential-free HTTPS, host allowlist, DNS/private-address rejection, and brokered-token model already used by repository cloning.</li>
-          <li>Custom toolkits are data/skill bundles, <strong>not arbitrary post-install command definitions</strong>. No upstream lifecycle hook, <code>npm install</code>, shell installer, Git hook, submodule, or LFS smudge process runs automatically during provisioning.</li>
-          <li>Toolkit scripts remain subject to explicit <code>skills_run</code>, exact bundle/script digest pinning, UID 10001 execution, dropped capabilities, read-only root, and workspace network policy.</li>
-          <li>Built-in skills remain highest precedence and cannot be overridden by owner-selected third-party content.</li>
-          <li>A selected upstream toolkit is not authored by CloudHarness. Preserve <code>source: "owner"</code> for precedence, but add origin metadata—toolkit ID, resolved commit/version, bundle digest, adapter version, and verification state—so <code>owner-controlled</code> is not mistaken for CloudHarness-reviewed code.</li>
-        </ul>
-      </div>
-
-      <div class="info-box">
-        <div class="info-box-title">Network model</div>
-        <ul>
-          <li><code>workspace_open.networkMode</code> controls the long-lived executor only.</li>
-          <li>A short-lived runner provisioning helper may use operator-authorized egress, analogous to the existing clone/cache helper. This must be visible in preview/status/audit.</li>
-          <li>In operator <code>cache-only</code> mode, a cache miss fails deterministically with <code>TOOLKIT_NOT_CACHED</code>; it never turns on executor networking.</li>
-          <li>Cache-hit provisioning must work with the executor on <code>none</code> and with no external fetch from inside the executor.</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="info-box">
-        <div class="info-box-title">Secret isolation</div>
-        <ul>
-          <li>MCP/dashboard requests contain secret <strong>references only</strong>, never values.</li>
-          <li><code>AGENTKIT_API_KEY</code> is decrypted by the runner immediately before provisioning, sent to the disposable helper through stdin into its process environment, redacted at the output boundary, and never placed in argv, Git, workspace files, Docker labels, cache keys, toolkit lock records, or audit details.</li>
-          <li>The helper uses tmpfs for <code>HOME</code>/XDG state and is removed on success or failure. Generated output is scanned for exact secret bytes before cache promotion.</li>
-          <li>Provisioning credentials are separate from runtime environment injection. Selecting AgentKit does not implicitly expose its API key to the long-lived executor.</li>
-          <li>Proprietary and private bundles are owner-partitioned and must not use cross-owner deduplication.</li>
-        </ul>
-      </div>
-
-      <div class="info-box">
-        <div class="info-box-title">Provenance and non-destructive mounting</div>
-        <ul>
-          <li>Preserve the current order: <code>/opt/cloud-harness/skills</code> built-in &gt; <code>/opt/cloud-harness/owner-skills</code> owner &gt; <code>.cloud-harness/skills</code> workspace &gt; <code>.agents/skills</code> &gt; <code>.codex/skills</code> &gt; <code>.claude/skills</code> repository.</li>
-          <li>Owner toolkit projection is mounted read-only at <code>/opt/cloud-harness/owner-skills</code> and does not live under <code>/workspace</code>.</li>
-          <li>Workspace-scope materialization requires an explicit confirmation literal, is conflict-safe, and reports every path changed.</li>
-          <li>Same-name skills from different selected owner toolkits are deduplicated only when bundle digests are identical. A non-identical same-tier collision fails before executor creation and asks the caller to use include/exclude filters; array order must not become an accidental security precedence rule.</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="info-box">
-        <div class="info-box-title">Compatibility</div>
-        <ul>
-          <li>Absence of <code>toolkits</code> is fully backward compatible and produces current behavior.</li>
-          <li>Toolkit adapters declare compatible CloudHarness bundle format, provisioner/CLI version, client targets, and runtime executable requirements. A missing requirement fails as <code>INCOMPATIBLE_TOOLKIT</code>, not as a late shell error.</li>
-          <li>Open-source prompt/skill content may be portable, but automatic activation differs by MCP host. Compatibility must distinguish <code>provisioned</code>, <code>discoverable</code>, and <code>auto-activated</code>.</li>
-          <li>Toolkit updates do not alter an active workspace. New catalog pins apply only to new opens or an explicit future reopen/update operation.</li>
-        </ul>
-      </div>
-
-      <div class="info-box">
-        <div class="info-box-title">Performance and idempotency</div>
-        <ul>
-          <li>Cache key includes immutable source revision/digest, toolkit configuration, selected skills, adapter version, target, and relevant provisioner/CLI version—never a secret value.</li>
-          <li>Cache creation is single-flight, staged, validated, and atomically renamed to <code>READY</code>.</li>
-          <li>Workspace state persists both the normalized request fingerprint and resolved toolkit lock. Same idempotency key + same fingerprint returns the original result without refetch/reprovision; same key + different fingerprint returns <code>CONFLICT</code>.</li>
-          <li>Active workspace cache entries are lease-pinned and cannot be evicted.</li>
-        </ul>
-      </div>
-    </div>
-
-    <h3>Non-goals</h3>
-    <ul>
-      <li>A universal package manager or arbitrary executable plugin marketplace.</li>
-      <li>Automatically running third-party install scripts, hooks, telemetry, daemons, or package-manager lifecycle scripts during <code>workspace_open</code>.</li>
-      <li>Granting toolkit scripts runtime internet merely because the toolkit was fetched over runner-mediated egress.</li>
-      <li>Editing the user’s host/global Claude, Codex, Cursor, or shell configuration.</li>
-      <li>Guaranteeing automatic Superpowers/AgentKit prompt injection in MCP clients that do not consume the CloudHarness context contract.</li>
-      <li>Sharing proprietary/private toolkit output across owners.</li>
-      <li>Managing AgentKit billing, licenses, account creation, or revealing API keys.</li>
-      <li>Interactive setup during <code>workspace_open</code>; every required choice must be supplied in typed configuration or left for later explicit skill invocation.</li>
-      <li>Mutating or refreshing an active workspace when an upstream branch/tag moves.</li>
-      <li>Supporting arbitrary repo layouts or dependencies without a declarative custom-Git layout and compatibility check.</li>
-    </ul>
-
-    <h3>Acceptance criteria</h3>
-    <ol>
-      <li><strong>Schema/backward compatibility:</strong> contract tests accept omitted <code>toolkits</code>, <code>[]</code>, one preset, multiple presets, and one custom Git source. They reject embedded Git credentials, non-HTTPS URLs, disallowed hosts, path traversal, duplicate instance IDs, unsupported per-preset config, and more than the configured selection cap.</li>
-      <li><strong>Offline executor:</strong> with all three preset bundles warm, <code>workspace_open({networkMode:"none", ...})</code> succeeds; Docker inspection shows the executor on <code>none</code>; no fetch occurs in the executor; all selected skills are listable/readable.</li>
-      <li><strong>Cold-cache semantics:</strong> in <code>cache-only</code> runner mode an uncached selection returns <code>TOOLKIT_NOT_CACHED</code> and leaves no active executor or partial projection. In runner-egress mode only the ephemeral helper uses network and it is removed afterward.</li>
-      <li><strong>Secret non-disclosure:</strong> an AgentKit open using a stored <code>AGENTKIT_API_KEY</code> leaves no exact secret match in runner responses, logs, audit rows, workspace files, Git diff, toolkit locks, cache metadata, Docker inspect output for the executor, or retained helper state. The executor environment does not contain the key unless the user separately requested runtime environment injection.</li>
-      <li><strong>AgentKit reproducibility:</strong> the preset runs a pinned compatible <code>ak</code> version in a disposable home, resolves an exact kit version, records its output digest, and can recreate the workspace from cache with no network and no secret read.</li>
-      <li><strong>Provenance/precedence:</strong> a same-name fixture at all four tiers resolves built-in &gt; owner &gt; workspace &gt; repository; <code>skills_list/read</code> reports toolkit origin and all shadowed candidates. Non-identical collisions between two owner toolkits fail rather than depending on request order.</li>
-      <li><strong>Non-destructive owner scope:</strong> baseline and post-open <code>git status --porcelain</code> are identical; owner toolkit mounts are read-only; attempts to modify them fail.</li>
-      <li><strong>Explicit workspace scope:</strong> no project file is written unless <code>allowToolkitWorkspaceChanges: true</code> is present. The result lists added/modified paths and digests. Reapplying an identical materialization is a no-op; an existing non-identical target fails without overwriting it.</li>
-      <li><strong>Toolkit-specific compatibility:</strong> Matt Pocock’s nested skills are normalized and discoverable; Superpowers’ <code>using-superpowers</code> bootstrap is returned by the context surface with client compatibility metadata; an AgentKit kit filtered with include/exclude selections exposes exactly the selected skills.</li>
-      <li><strong>Idempotency/recovery:</strong> repeated opens with the same key and fingerprint do not invoke a fetcher or CLI again. Recovery uses the stored immutable lock. Reusing the key with a different toolkit request returns <code>CONFLICT</code>.</li>
-      <li><strong>Atomic multi-toolkit behavior:</strong> if one of several requested toolkits fails resolution, validation, secret lookup, or compatibility, none is mounted and workspace creation fails cleanly.</li>
-      <li><strong>Dashboard/MCP UX:</strong> dashboard and MCP descriptions represent zero/one/many selections; show resolved source/version, cache state, activation level, repository changes, and provisioning-network disclosure; secret values never enter page state or request bodies.</li>
-      <li><strong>Performance SLOs [planning targets]:</strong> on the project benchmark host, a warm owner-scope bundle adds p95 ≤1 second for one toolkit and ≤2 seconds for three; no-toolkit opens regress by ≤250 ms or 5%, whichever is larger. Cold fetch time is bounded and reported but not assigned an upstream-dependent latency guarantee.</li>
-      <li><strong>Supply-chain bounds:</strong> archives/repos exceeding configured bytes, file count, depth, symlink policy, or extraction ratio fail before cache promotion. No <code>.git/hooks</code>, submodule, package lifecycle, or executable installer runs automatically.</li>
-    </ol>
-  </section>
-
-  <!-- 2. ARCHITECTURE AND DESIGN OPTIONS -->
+  <!-- SUMMARY & DECISION BANNER -->
   <section class="card">
-    <h2>2. Architecture and Design Options</h2>
-    <p>Planning estimates below are directional, not delivery commitments.</p>
-
-    <h3>Option A — Runner-side content-addressed cache and mount injection (recommended)</h3>
-    <p><strong>How it works:</strong></p>
-    <ol>
-      <li>API validates a typed toolkit selection.</li>
-      <li>Runner resolves catalog presets or approved Git refs to immutable revisions.</li>
-      <li>On a cache miss, a short-lived constrained helper fetches or runs an approved adapter. AgentKit receives its key only in this helper.</li>
-      <li>Adapter normalizes upstream assets into a CloudHarness bundle manifest: skills, references/scripts, bootstrap/context fragments, optional pinned CLI assets, dependencies, and provenance.</li>
-      <li>Runner validates and atomically promotes the bundle into a CAS. Public bundles may be deployment-shared; private/proprietary bundles remain owner-scoped.</li>
-      <li>Runner composes a workspace-specific read-only owner projection and optionally applies an explicitly approved project patch.</li>
-      <li>Executor mounts the owner projection read-only, remains on the requested network mode, and the existing worker resolves normal skill precedence.</li>
-    </ol>
-    <p><strong>Primary assumption:</strong> The three supported toolkits can be normalized through bounded provider-specific adapters without requiring arbitrary upstream installer execution in the long-lived workspace.</p>
-    <p><strong>First failure mode:</strong> An upstream toolkit changes layout/bootstrap/install semantics faster than its adapter/catalog pin is updated. The safe response is <code>INCOMPATIBLE_TOOLKIT</code>, not best-effort partial installation.</p>
-    <p><strong>Pros:</strong> Reuses existing runner clone/cache, secret, helper, state, mount, and skill-resolution patterns; supports default-offline executors and dynamic combinations; keeps proprietary credentials/content owner-isolated; no per-toolkit executor image matrix; immutable locks make recovery and audit straightforward.</p>
-    <p><strong>Cons:</strong> Requires three maintained adapters and a normalized bundle manifest; runner disk use grows with versions/config variants; Superpowers activation still needs a context/client contract beyond file mounting; cache GC, single-flight locking, and bundle validation are new operational concerns.</p>
-    <p><strong>Quantified trade-offs [estimate]:</strong></p>
-    <ul>
-      <li>Initial build: roughly 3–5 engineer-weeks for contracts, cache/provisioning, three adapters, status/UI, and security tests.</li>
-      <li>New long-lived services: 0.</li>
-      <li>Warm overhead: approximately 0.2–1 second/toolkit; cold open: upstream-dependent 2–60 seconds.</li>
-      <li>Storage: typically 10–200 MB per normalized version/config; proprietary copies per owner.</li>
-      <li>Maintenance: medium—adapter updates when upstream contracts change.</li>
-    </ul>
-    <p><strong>Second-order effects:</strong> Immutable locks delay upstream security fixes until a new workspace/catalog pin is chosen; the dashboard must surface outdated/revoked pins. Disk GC becomes an availability concern and must respect active leases. Runner egress and executor egress become visibly distinct policy concepts.</p>
-
-    <h3>Option B — Pre-baked image bundles with in-container CLI provisioning</h3>
-    <p><strong>How it works:</strong> Build executor variants containing open-source skill repos and the AgentKit CLI/content. <code>workspace_open</code> selects an image tag; startup copies or links requested assets into runtime roots. Missing AgentKit content is fetched by running <code>ak kit init</code> in the executor or must be baked during CI.</p>
-    <p><strong>Primary assumption:</strong> Toolkit versions change slowly enough, licensing permits broad image distribution, and image rebuild/pull cost is preferable to runtime bundle resolution.</p>
-    <p><strong>First failure mode:</strong> AgentKit content cannot legally or safely be baked into a generally available image, while fetching it in a <code>networkMode:none</code> executor is impossible. Enabling bridge for setup expands the executor’s secret/network blast radius.</p>
-    <p><strong>Pros:</strong> Fastest steady-state setup after the exact image is local; very little runtime normalization logic; strong byte-for-byte reproducibility per image digest.</p>
-    <p><strong>Cons:</strong> Image matrix grows combinatorially if combinations or versions get distinct tags; baking proprietary output risks cross-tenant disclosure and licensing violations; toolkit updates become image releases; image CVE patching and toolkit release cadence are coupled; a cache miss becomes an image pull, often slower than a small skill bundle; running <code>ak</code> in the long-lived executor risks secret/config leakage and violates the default network model.</p>
-    <p><strong>Quantified trade-offs [estimate]:</strong> Initial build: 1–2 engineer-weeks for fixed presets, but ongoing CI/release overhead dominates; images: +0.3–2 GB depending on runtimes/content; three versions across three presets can create 9+ maintained artifacts before combinations; local image hit overhead: &lt;0.5 seconds; cold registry pull: commonly 10–120 seconds; new long-lived services: 0, but more registry storage/build minutes; maintenance: high release coupling despite low runtime code.</p>
-    <p><strong>Second-order effects:</strong> Frequent toolkit updates cause image churn, degraded node-cache hit rates, and larger rollback matrices. CVE remediation may unexpectedly upgrade toolkit content—or toolkit release urgency may force executor base-image churn. Proprietary revocation is difficult once layers are distributed.</p>
-
-    <h3>Option C — Hybrid plugin/package-manager engine</h3>
-    <p><strong>How it works:</strong> Introduce a first-class toolkit registry and provider SDK. Providers resolve Git, OCI, npm, or proprietary registries; package manifests declare adapters, dependencies, hooks, bootstrap content, signatures, scopes, and secret slots. Runner installs signed packages into a shared CAS and invokes sandboxed provider plugins.</p>
-    <p><strong>Primary assumption:</strong> CloudHarness is becoming a general toolkit marketplace with enough future providers to justify a provider ABI, registry governance, signing, and lifecycle model now.</p>
-    <p><strong>First failure mode:</strong> The provider interface hardens before real upstream diversity is understood, creating an expensive abstraction that still needs special cases for AgentKit and Superpowers.</p>
-    <p><strong>Pros:</strong> Best extensibility for future registries and toolkit types; strong place for signatures, SBOMs, compatibility metadata, revocation, and policy; shared CAS can minimize duplication for public content; cleaner future operator APIs for prewarm, inventory, and upgrades.</p>
-    <p><strong>Cons:</strong> Largest security attack surface: executable provider code, manifest interpretation, registry trust, and migrations; considerably more public contracts and operational components than the three named toolkits require; harder to abandon once external providers depend on the ABI; delays delivering the requested presets.</p>
-    <p><strong>Quantified trade-offs [estimate]:</strong> Initial build: 6–10+ engineer-weeks, plus registry/signing operations; new durable concepts: registry, provider ABI, package schema, signature/revocation policy, compatibility resolver, cache lifecycle; warm overhead: 0.5–2 seconds; cold: 3–60 seconds plus registry calls; storage efficiency: best for public packages; still owner-scoped for private/proprietary content; maintenance: high platform governance, lower marginal cost only after several additional providers.</p>
-    <p><strong>Second-order effects:</strong> A “toolkit package” becomes an ecosystem compatibility promise. Revocation, malicious publisher response, semantic version resolution, provider sandboxing, and support policy become CloudHarness responsibilities. This shifts the product from workspace infrastructure toward marketplace governance.</p>
-
-    <h3>Option comparison</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Dimension</th>
-          <th>A. Runner bundles (Winner)</th>
-          <th>B. Image bundles</th>
-          <th>C. Plugin engine</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr style="background: var(--accent-soft);">
-          <td><strong>Meets executor none</strong></td>
-          <td>Yes</td>
-          <td>Only if all content baked</td>
-          <td>Yes</td>
-        </tr>
-        <tr>
-          <td><strong>Proprietary isolation</strong></td>
-          <td>Strong with owner CAS</td>
-          <td>Weak/risky if baked</td>
-          <td>Strong but complex</td>
-        </tr>
-        <tr>
-          <td><strong>Dynamic combinations</strong></td>
-          <td>Strong</td>
-          <td>Poor/image-matrix pressure</td>
-          <td>Strongest</td>
-        </tr>
-        <tr>
-          <td><strong>Warm startup</strong></td>
-          <td>Fast</td>
-          <td>Fastest if image local</td>
-          <td>Fast</td>
-        </tr>
-        <tr>
-          <td><strong>Cold startup</strong></td>
-          <td>Small bundle fetch</td>
-          <td>Potentially large image pull</td>
-          <td>Bundle + registry/provider</td>
-        </tr>
-        <tr>
-          <td><strong>Implementation complexity</strong></td>
-          <td>Medium</td>
-          <td>Low initial, high operations</td>
-          <td>High</td>
-        </tr>
-        <tr>
-          <td><strong>Upstream adaptability</strong></td>
-          <td>Adapter update</td>
-          <td>Image rebuild</td>
-          <td>Provider update</td>
-        </tr>
-        <tr>
-          <td><strong>Six-month maintainability</strong></td>
-          <td>Best for named scope</td>
-          <td>Release-coupled</td>
-          <td>Premature for named scope</td>
-        </tr>
-        <tr>
-          <td><strong>Cheapest to abandon</strong></td>
-          <td>Yes</td>
-          <td>Medium</td>
-          <td>No</td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="card-header">
+      <div class="card-title">
+        <span>🏆</span> Executive Decision: Winning Candidate Selected
+      </div>
+      <span class="badge badge-success">Selected: Candidate B (77/80)</span>
+    </div>
+    <div class="callout">
+      <div class="callout-title">
+        <span>🎯</span> Core Architectural Direction: Bounded Passive Scanner + Lightweight Hybrid State Store
+      </div>
+      <p>
+        Cloud Harness MCP adopts a <strong>split-plane provenance architecture</strong>:
+        <strong>(1) Worker Passive Scanner</strong> discovers instruction files (<code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>.cursorrules</code>, <code>.aider.conf.yml</code>), language manifests, and test declarations with strict zero-execution, bounded byte budgets;
+        <strong>(2) Runner Provenance Resolver</strong> assigns non-forgeable trust layers (<code>built-in &gt; owner &gt; workspace &gt; repository</code>);
+        <strong>(3) Principal-Qualified SQLite</strong> manages durable scoped memories (owner, repository, workspace) with optimistic concurrency (CAS), tags, TTL, and atomic audit logging;
+        <strong>(4) Declarative Hooks Registry</strong> requires exact SHA-256 digest activation before running in a short-lived, no-network, no-secret executor container.
+      </p>
+    </div>
+    <div class="grid-4" style="margin-top: 1.25rem;">
+      <div class="contract-box">
+        <h3><span>🛡️</span> Zero Execution on Scan</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Passive discovery performs NO shell invocations, package scripts, or dynamic code evaluation.</p>
+      </div>
+      <div class="contract-box">
+        <h3><span>🏷️</span> Immutable Provenance</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Runner assigns trust labels from isolation boundaries. Repository files cannot forge owner authority.</p>
+      </div>
+      <div class="contract-box">
+        <h3><span>🧠</span> Scoped SQLite Memory</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Principal, repository, and workspace scopes with generation guards, TTL expiry, and tag search.</p>
+      </div>
+      <div class="contract-box">
+        <h3><span>🔒</span> Digest-Pinned Hooks</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Named lifecycle events (<code>pre_commit</code>, <code>post_checkout</code>) execute only in ephemeral sandboxes with exact digest matching.</p>
+      </div>
+    </div>
   </section>
 
-  <!-- 3. SCHEMA AND API DESIGN -->
-  <section class="card card-accent">
-    <h2>3. Schema and API Design</h2>
-
-    <h3>Proposed <code>workspace_open</code> input</h3>
-    <p>Use a strict discriminated union. Do not accept arbitrary shell commands or raw secret values.</p>
-
-    <pre><code class="language-typescript">type ToolkitScope = "owner" | "workspace";
-
-type SkillFilter = {
-  include?: string[]; // mutually exclusive with exclude
-  exclude?: string[];
-};
-
-type SecretRef =
-  | { scope: "global"; name: "AGENTKIT_API_KEY" }
-  | { scope: "environment"; environmentId: `env_${string}`; name: "AGENTKIT_API_KEY" };
-
-type ToolkitSelection =
-  | {
-      kind: "preset";
-      instanceId?: string; // required only when selecting same preset with distinct configs
-      id:
-        | "mattpocock/skills"
-        | "obra/superpowers"
-        | "bestagentkits/agentkit";
-      version?: string; // catalog version; omitted means catalog's pinned default, not arbitrary HEAD
-      scope?: ToolkitScope; // default owner
-      skills?: SkillFilter;
-      activation?: "skills-only" | "toolkit-default";
-      config?:
-        | {
-            kit: string;
-            kitVersion?: string;
-            target?: "portable" | "claude-code" | "codex";
-            apiKey: SecretRef;
-          } // valid only for bestagentkits/agentkit
-        | {
-            clientTargets?: Array<"claude" | "codex" | "cursor" | "all">;
-          }; // only fields explicitly allowed by the chosen preset
-    }
-  | {
-      kind: "git";
-      instanceId: string;
-      url: string; // credential-free HTTPS, allowlisted host
-      ref?: string; // resolved once and locked to a commit
-      subdirectory?: string;
-      scope?: ToolkitScope;
-      skills?: SkillFilter;
-      layout?: {
-        skillRoots: string[]; // bounded relative paths, no traversal
-        recursive?: boolean;
-      };
-      activation?: "skills-only"; // custom Git cannot auto-inject bootstrap in the initial contract
-    };
-
-type WorkspaceOpenInput = {
-  repositoryUrl: string;
-  ref?: string;
-  idempotencyKey: string;
-  networkMode?: "none" | "bridge";
-  environmentId?: string;                 // existing runtime environment semantics
-  confirmEnvironmentInjection?: true;
-  toolkits?: ToolkitSelection[];          // default [], max e.g. 8
-  allowToolkitWorkspaceChanges?: true;    // required if any scope === workspace
-  confirmToolkitSecretUse?: true;         // required when a toolkit has a SecretRef
-};</code></pre>
-
-    <p><strong>Validation rules:</strong></p>
-    <ul>
-      <li><code>toolkits</code> omitted and <code>[]</code> are identical.</li>
-      <li>Duplicate <code>(id, instanceId)</code> selections fail.</li>
-      <li><code>include</code> and <code>exclude</code> cannot both be present.</li>
-      <li><code>workspace</code> scope requires <code>allowToolkitWorkspaceChanges: true</code>.</li>
-      <li>Any provisioning secret reference requires <code>confirmToolkitSecretUse: true</code>; it does <strong>not</strong> require or imply <code>confirmEnvironmentInjection</code>.</li>
-      <li>AgentKit config is accepted only for the AgentKit preset; its API key name is fixed/allowlisted.</li>
-      <li>Custom Git accepts declarative roots only. It cannot specify install commands, environment variables, hooks, arbitrary adapters, or automatic bootstrap paths.</li>
-      <li>Operator policy may require custom refs to be full commit SHAs. When a branch/tag is accepted, the result always records the resolved commit.</li>
-    </ul>
-
-    <p><strong>Example—three presets, offline executor, AgentKit key used only for provisioning:</strong></p>
-    <pre><code class="language-json">{
-  "repositoryUrl": "https://github.com/acme/service",
-  "idempotencyKey": "open-acme-service-42",
-  "networkMode": "none",
-  "toolkits": [
-    {
-      "kind": "preset",
-      "id": "mattpocock/skills",
-      "scope": "owner",
-      "skills": { "include": ["diagnosing-bugs", "tdd"] }
-    },
-    {
-      "kind": "preset",
-      "id": "obra/superpowers",
-      "scope": "owner",
-      "activation": "toolkit-default"
-    },
-    {
-      "kind": "preset",
-      "id": "bestagentkits/agentkit",
-      "scope": "owner",
-      "config": {
-        "kit": "engineer",
-        "target": "portable",
-        "apiKey": {
-          "scope": "environment",
-          "environmentId": "env_example",
-          "name": "AGENTKIT_API_KEY"
-        }
-      }
-    }
-  ],
-  "confirmToolkitSecretUse": true
-}</code></pre>
-
-    <p><strong>Example—custom pinned Git skills:</strong></p>
-    <pre><code class="language-json">{
-  "repositoryUrl": "https://github.com/acme/service",
-  "idempotencyKey": "open-acme-service-custom-1",
-  "toolkits": [
-    {
-      "kind": "git",
-      "instanceId": "acme-skills",
-      "url": "https://github.com/acme/agent-skills",
-      "ref": "4f3c2d1...full-commit...",
-      "layout": { "skillRoots": ["skills"], "recursive": true },
-      "scope": "owner",
-      "activation": "skills-only"
-    }
-  ]
-}</code></pre>
-
-    <h3>Output/status contract</h3>
-    <pre><code class="language-json">{
-  "toolkits": {
-    "requestFingerprint": "sha256...",
-    "items": [
-      {
-        "instanceId": "superpowers",
-        "id": "obra/superpowers",
-        "requestedVersion": null,
-        "resolvedVersion": "catalog-2026.08.1",
-        "resolvedRevision": "commit-sha",
-        "bundleSha256": "sha256",
-        "adapterVersion": 1,
-        "scope": "owner",
-        "status": "ready",
-        "cache": "hit",
-        "activation": "context-available",
-        "skillsCount": 14,
-        "verification": "catalog-pinned"
-      }
-    ],
-    "repositoryChanges": [],
-    "executorNetworkMode": "none",
-    "provisioningNetworkUsed": false
-  }
-}</code></pre>
-
-    <p>Do not return host paths, container names, cache paths, helper output, secret refs beyond safe name/metadata, or source credentials.</p>
-
-    <h3>Supporting APIs</h3>
-    <p>A dashboard needs more than a blind <code>workspace_open</code> field. Add two bounded, read-only surfaces rather than embedding duplicate catalog logic in the frontend:</p>
-    <ul>
-      <li><code>toolkits_list</code>: preset IDs, display names, pinned/default versions, description/license/source, supported scopes/targets, required secret slots, activation level, cache availability, compatibility, and deprecation/revocation status.</li>
-      <li><code>toolkits_preview</code>: validates selections against operator policy and returns prospective lock information available without mutation: cache hit/miss, required secret references, skill names/collisions, activation level, expected project target paths, and provisioning-network disclosure. It must not fetch uncached sources or expose secret values.</li>
-    </ul>
-
-    <p><code>skills_list/read</code> extends provenance with optional origin metadata:</p>
-    <pre><code class="language-typescript">origin?: {
-  kind: "toolkit";
-  instanceId: string;
-  toolkitId: string;
-  resolvedRevision?: string;
-  bundleSha256: string;
-  adapterVersion: number;
-  verification: "built-in" | "catalog-pinned" | "custom-unverified";
-};</code></pre>
-
-    <p>This keeps the four precedence sources intact while exposing third-party lineage.</p>
-
-    <h3>AgentKit secret and config handling</h3>
-    <ul>
-      <li>Keep <code>AGENTKIT_API_KEY</code> in the existing encrypted global/environment secret store. The fixed name is currently compatible with the secret-name policy.</li>
-      <li>Resolve only the referenced secret/version, not all environment secrets.</li>
-      <li>Seed the output redactor before invoking the helper.</li>
-      <li>Send the key over helper stdin; a rootless wrapper reads it, exports it only to the <code>ak</code> process, and runs with tmpfs <code>HOME</code>, <code>.config</code>, and <code>.agentkit</code> state.</li>
-      <li>Prefer current CLI capabilities such as a portable/build-only output into a staging mount. If an older supported CLI only provides <code>--global</code>, set its global home to a disposable staging directory, never the workspace or real owner home.</li>
-      <li>Cache the normalized kit output, not authenticated CLI state. The lock includes kit version, target, selected skills, adapter version, and <code>ak</code> version.</li>
-      <li>Mount any needed local-only <code>ak</code> binary read-only from an approved image/path. Do not download it at workspace startup.</li>
-      <li>If a later skill truly needs AgentKit network/API access at runtime, that is a separate explicit environment/network choice; the default provisioned toolkit must remain usable offline.</li>
-    </ul>
-  </section>
-
-  <!-- 4. RECOMMENDED DIRECTION -->
+  <!-- 4 CONTRACT FIELDS -->
   <section class="card">
-    <h2>4. Recommended Direction</h2>
+    <div class="card-header">
+      <div class="card-title">
+        <span>📋</span> Bounded Delivery Contract (4 Inviolable Fields)
+      </div>
+      <span class="badge badge-accent">Authoritative Spec</span>
+    </div>
+    <div class="grid-2">
+      <!-- 1. OUTCOME -->
+      <div class="contract-box">
+        <h3><span>🎯</span> 1. Outcome (End State)</h3>
+        <ul>
+          <li><strong>Universal Context Manifest:</strong> <code>workspace_context</code> returns a bounded, vendor-neutral manifest of known allowlisted instruction files discovered within declared scan bounds (such as <code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>.cursor/rules/*.mdc</code>, <code>.aider.conf.yml</code>), language manifests (<code>package.json</code>, <code>Cargo.toml</code>, etc.), declared test commands, and skill summaries across Claude, Codex, Cursor, and Aider.</li>
+          <li><strong>Explicit Provenance Attribution:</strong> Every returned item clearly identifies its source (<code>built-in</code>, <code>owner</code>, <code>workspace</code>, <code>repository</code>), trust level, content SHA-256, and mutation authority.</li>
+          <li><strong>Deterministic Skill Precedence:</strong> Same-name skills resolve in exact order <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidates fully visible.</li>
+          <li><strong>Durable Scoped Memories:</strong> Principal, repository, and workspace memories with CAS generation concurrency, TTL cleanup, tag filtering, and deletion.</li>
+          <li><strong>Safe Lifecycle Hooks:</strong> Declarative event registry with exact digest-pinned activation, sandboxed executor isolation, and strict pre-commit veto semantics.</li>
+        </ul>
+      </div>
+
+      <!-- 2. CONSTRAINTS -->
+      <div class="contract-box">
+        <h3><span>⛓️</span> 2. Constraints & Boundaries</h3>
+        <ul>
+          <li><strong>Untrusted Repository Data:</strong> All checkout text, instructions, and scripts are treated as untrusted data. No repository text can elevate itself to system policy or forge owner provenance.</li>
+          <li><strong>Byte-Budget Hard Caps:</strong> 32 KiB default (128 KiB max) for context manifests; 64 KiB max per memory note; max 256 scanned candidate files with 250ms deadline.</li>
+          <li><strong>Principal Isolation (#13):</strong> Every SQLite query and memory record is strictly scoped by server-derived <code>principal_id</code>. Zero cross-principal leakage.</li>
+          <li><strong>Executor Confinement:</strong> All skill/hook execution runs as unprivileged UID in isolated container with <code>networkMode: none</code> by default, zero access to broker tokens or Docker socket.</li>
+          <li><strong>Schema Migration:</strong> Metadata SQLite schema upgrades cleanly v4 &rarr; v5 with atomic transactions and downgrade refusal safety.</li>
+        </ul>
+      </div>
+
+      <!-- 3. NON-GOALS -->
+      <div class="contract-box">
+        <h3><span>🚫</span> 3. Non-Goals (Strictly Out of Scope)</h3>
+        <ul>
+          <li><strong>No Agent Reasoning Stream:</strong> Context manifest is strictly passive, bounded static file discovery; reasoning traces or active execution logs are not context primitives.</li>
+          <li><strong>No LLM Semantic Vector Embeddings:</strong> No runner-hosted vector databases, semantic RAG, or embeddings calculation.</li>
+          <li><strong>No Automatic Prompt Merging:</strong> Does NOT concatenate conflicting instruction files (e.g. <code>CLAUDE.md</code> + <code>AGENTS.md</code>) into one synthetic document.</li>
+          <li><strong>No Host-Level Hook Execution:</strong> Hooks never execute on the host OS and never receive control-plane broker credentials.</li>
+          <li><strong>No Cross-Principal Sharing:</strong> No collaborative multi-tenant memory sharing or public memory publishing.</li>
+          <li><strong>No Skill Marketplace:</strong> No dynamic remote package resolution, npm installation, or remote downloading of unreviewed skills.</li>
+        </ul>
+      </div>
+
+      <!-- 4. ACCEPTANCE CRITERIA -->
+      <div class="contract-box">
+        <h3><span>✅</span> 4. Observable Acceptance Criteria</h3>
+        <ul>
+          <li><strong>Passive Discovery Proof:</strong> Sentinel executable referenced in manifests remains completely untouched during all context, skill, memory, and hook scan operations.</li>
+          <li><strong>Adversarial Output-Boundary & Prompt-Injection Containment:</strong> An adversarial repository containing fake <code>SYSTEM</code> headers, forged provenance fields (<code>source: built-in</code>, <code>source: owner</code>), fake delimiters/NUL bytes, and prompt-injection instructions MUST:
+            <br>&bull; In <code>structuredContent</code>: remain strictly nested within <code>result.data</code> under <code>trust: "untrusted-executor"</code>;
+            <br>&bull; In text projection: be rendered by a dedicated provenance-aware formatter using trusted boundary labels/delimiters and JSON-escaped strings (or serialized JSON blocks) rather than raw string flattening;
+            <br>&bull; Never escape into top-level message, header, tool description, or audit fields, and create zero persistent/privileged SQLite memory records.
+          </li>
+          <li><strong>Precedence Verification:</strong> 4 same-name skill fixtures resolve strictly to <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidate visibility.</li>
+          <li><strong>Concurrency Guard:</strong> <code>memories_write</code> and <code>memories_delete</code> with mismatched <code>expectedGeneration</code> fail immediately with <code>CONFLICT</code>.</li>
+          <li><strong>TTL & Expiry Reaping:</strong> Expired memories are invisible immediately and reaped; workspace memories vanish on workspace closure; owner memories persist across restarts.</li>
+          <li><strong>Digest Pin Invalidation:</strong> Modifying a hook script file immediately invalidates its activation digest and blocks execution before process spawn.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARCHITECTURE & WORKFLOW DIAGRAMS -->
+  <section class="card">
+    <div class="card-header">
+      <div class="card-title">
+        <span>🏗️</span> System Architecture & Provenance Resolution Flow
+      </div>
+      <span class="badge badge-purple">Interactive Vector Flow</span>
+    </div>
     
-    <h3>Why Option A wins</h3>
-    <p>
-      It is the only option that satisfies all named constraints without making CloudHarness either an image-distribution matrix or a premature marketplace platform. It aligns with current implementation evidence:
-    </p>
-    <ul>
-      <li><code>workspace_open</code> already separates a bridge-connected clone/cache helper from the executor’s selected network mode.</li>
-      <li>The runner already has an owner-partitioned repository cache pattern and encrypted secret snapshots/redaction.</li>
-      <li>The executor already uses a read-only root, UID 10001, dropped capabilities, and writable host mounts.</li>
-      <li>The worker already knows <code>/opt/cloud-harness/skills</code>, <code>/opt/cloud-harness/owner-skills</code>, <code>.cloud-harness/skills</code>, and repository roots, with digest-pinned execution.</li>
-      <li>The current dashboard does not open workspaces—it explicitly tells users to open one from an MCP client—so dashboard workspace creation/preview is real new scope, not a small field addition.</li>
-      <li>Matt Pocock’s current repository has nested categorized skill roots, and Superpowers’ upstream porting guide says its bootstrap is required at session start. A normalization/activation layer is therefore necessary; raw repo mounting is insufficient.</li>
-    </ul>
+    <div class="svg-container">
+      <svg width="960" height="420" viewBox="0 0 960 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Background grid styling -->
+        <defs>
+          <linearGradient id="grad-client" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#0284c7" stop-opacity="0.3"/>
+            <stop offset="100%" stop-color="#0369a1" stop-opacity="0.1"/>
+          </linearGradient>
+          <linearGradient id="grad-runner" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#0284c7" stop-opacity="0.08"/>
+          </linearGradient>
+          <linearGradient id="grad-worker" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#34d399" stop-opacity="0.2"/>
+            <stop offset="100%" stop-color="#059669" stop-opacity="0.05"/>
+          </linearGradient>
+          <linearGradient id="grad-sqlite" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#c084fc" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#7e22ce" stop-opacity="0.08"/>
+          </linearGradient>
+          <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+            <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.4"/>
+          </filter>
+        </defs>
 
-    <p>
-      The recommended design deliberately borrows only one idea from pre-baked images: <strong>seed popular preset bundles and pin the <code>ak</code> executable in deployment artifacts.</strong> The runtime source of truth remains the same normalized bundle/cache contract; there is no image-per-combination matrix.
-    </p>
+        <!-- BOUNDARY ZONES -->
+        <!-- MCP Client Zone -->
+        <rect x="20" y="30" width="180" height="360" rx="10" fill="url(#grad-client)" stroke="#0284c7" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <text x="35" y="60" fill="#38bdf8" font-family="system-ui" font-size="13" font-weight="700">MCP CLIENTS</text>
+        <rect x="35" y="85" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
+        <text x="50" y="115" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Claude / Codex</text>
+        <rect x="35" y="150" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
+        <text x="50" y="180" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Cursor / Aider</text>
+        <rect x="35" y="215" width="150" height="50" rx="6" fill="#1e293b" stroke="#334155" filter="url(#shadow)"/>
+        <text x="50" y="245" fill="#f8fafc" font-family="system-ui" font-size="12" font-weight="600">Generic MCP Tools</text>
 
-    <h3>Internal bundle contract</h3>
-    <pre><code>bundle/
-  manifest.json
-  skills/&lt;normalized-name&gt;/SKILL.md
-  skills/&lt;normalized-name&gt;/references/...
-  skills/&lt;normalized-name&gt;/scripts/...
-  context/&lt;client&gt;/bootstrap.md        # approved presets only
-  bin/...                              # approved, pinned optional assets</code></pre>
-    <p><code>manifest.json</code> records source/revision, bundle digest, adapter/provisioner versions, skill names/digests, context assets, runtime requirements, license/source metadata, and whether content is public or owner-confidential. It contains no credentials and no free-form lifecycle command.</p>
+        <!-- RUNNER CONTROL PLANE ZONE -->
+        <rect x="240" y="30" width="440" height="360" rx="10" fill="url(#grad-runner)" stroke="#38bdf8" stroke-width="2"/>
+        <text x="260" y="60" fill="#38bdf8" font-family="system-ui" font-size="14" font-weight="700">TRUSTED RUNNER CONTROL PLANE (apps/runner)</text>
 
-    <h3>Provisioning/execution flow</h3>
-    <div class="diagram-container">
-      <svg class="diagram-svg" viewBox="0 0 920 400" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <rect x="10" y="10" width="260" height="380" rx="8" fill="var(--surface)" stroke="var(--line)" stroke-width="1.5" />
-        <text x="25" y="35" fill="var(--cyan)" font-family="monospace" font-size="12" font-weight="bold">1. INTAKE &amp; VALIDATION</text>
+        <!-- Runner Components -->
+        <rect x="260" y="85" width="200" height="75" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="275" y="110" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Provenance & Precedence</text>
+        <text x="275" y="130" fill="#94a3b8" font-family="system-ui" font-size="10">Resolver: built-in &gt; owner</text>
+        <text x="275" y="145" fill="#94a3b8" font-family="system-ui" font-size="10">&gt; workspace &gt; repository</text>
 
-        <rect x="290" y="10" width="320" height="380" rx="8" fill="var(--surface)" stroke="var(--line)" stroke-width="1.5" />
-        <text x="305" y="35" fill="var(--accent)" font-family="monospace" font-size="12" font-weight="bold">2. RUNNER CACHE &amp; PROVISIONING</text>
+        <rect x="260" y="175" width="200" height="85" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="275" y="200" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Context Budget Manager</text>
+        <text x="275" y="220" fill="#94a3b8" font-family="system-ui" font-size="10">Hard Cap: 32 KiB / 128 KiB</text>
+        <text x="275" y="235" fill="#94a3b8" font-family="system-ui" font-size="10">Deterministic Truncation & Cursors</text>
+        <text x="275" y="250" fill="#94a3b8" font-family="system-ui" font-size="10">No Prompt Merging</text>
 
-        <rect x="630" y="10" width="280" height="380" rx="8" fill="var(--surface)" stroke="var(--line)" stroke-width="1.5" />
-        <text x="645" y="35" fill="var(--success)" font-family="monospace" font-size="12" font-weight="bold">3. EXECUTOR RUNTIME</text>
+        <rect x="260" y="275" width="200" height="95" rx="8" fill="#0f172a" stroke="#0284c7" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="275" y="300" fill="#38bdf8" font-family="system-ui" font-size="12" font-weight="700">Hook Lifecycle Controller</text>
+        <text x="275" y="320" fill="#94a3b8" font-family="system-ui" font-size="10">Exact Digest Verification</text>
+        <text x="275" y="335" fill="#94a3b8" font-family="system-ui" font-size="10">Pre-commit Veto Enforcer</text>
+        <text x="275" y="350" fill="#94a3b8" font-family="system-ui" font-size="10">Audit Event Publisher (#10)</text>
 
-        <rect x="25" y="60" width="230" height="60" rx="6" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-        <text x="40" y="85" fill="var(--ink)" font-family="sans-serif" font-size="12" font-weight="bold">apps/api validates workspace_open</text>
-        <text x="40" y="105" fill="var(--ink-muted)" font-family="monospace" font-size="11">toolkits: [preset, git]</text>
+        <!-- SQLite Box inside Runner -->
+        <rect x="480" y="85" width="180" height="285" rx="8" fill="url(#grad-sqlite)" stroke="#c084fc" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="500" y="115" fill="#c084fc" font-family="system-ui" font-size="13" font-weight="700">SQLite StateStore v5</text>
+        <rect x="495" y="135" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
+        <text x="505" y="158" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">memories (Scoped)</text>
+        <rect x="495" y="185" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
+        <text x="505" y="208" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">memory_tags</text>
+        <rect x="495" y="235" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
+        <text x="505" y="258" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">hook_activations</text>
+        <rect x="495" y="285" width="150" height="40" rx="4" fill="#1e1b4b" stroke="#6366f1"/>
+        <text x="505" y="308" fill="#e0e7ff" font-family="system-ui" font-size="10" font-weight="600">audit_events (#10)</text>
 
-        <rect x="25" y="140" width="230" height="60" rx="6" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-        <text x="40" y="165" fill="var(--ink)" font-family="sans-serif" font-size="12" font-weight="bold">Runner Persists Fingerprint</text>
-        <text x="40" y="185" fill="var(--ink-muted)" font-family="sans-serif" font-size="11">CREATING state record</text>
+        <!-- WORKER EXECUTOR ZONE -->
+        <rect x="710" y="30" width="230" height="360" rx="10" fill="url(#grad-worker)" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4 4"/>
+        <text x="730" y="60" fill="#34d399" font-family="system-ui" font-size="13" font-weight="700">EXECUTOR (worker)</text>
+        
+        <rect x="725" y="85" width="200" height="95" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
+        <text x="740" y="110" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Passive File Scanner</text>
+        <text x="740" y="130" fill="#d1fae5" font-family="system-ui" font-size="9.5">• AGENTS.md, CLAUDE.md</text>
+        <text x="740" y="145" fill="#d1fae5" font-family="system-ui" font-size="9.5">• .cursor/rules, package.json</text>
+        <text x="740" y="160" fill="#fca5a5" font-family="system-ui" font-size="9.5">ZERO EXECUTION ON SCAN</text>
 
-        <rect x="310" y="60" width="280" height="60" rx="6" fill="var(--surface-raised)" stroke="var(--accent)" />
-        <text x="325" y="85" fill="var(--accent)" font-family="sans-serif" font-size="12" font-weight="bold">Resolve Toolkit Preset or Git</text>
-        <text x="325" y="105" fill="var(--ink-muted)" font-family="sans-serif" font-size="11">Check immutable CAS cache</text>
+        <rect x="725" y="195" width="200" height="75" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
+        <text x="740" y="220" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Sandboxed Hook Runner</text>
+        <text x="740" y="240" fill="#d1fae5" font-family="system-ui" font-size="9.5">• networkMode: none</text>
+        <text x="740" y="255" fill="#d1fae5" font-family="system-ui" font-size="9.5">• Read-only mounts & caps</text>
 
-        <rect x="310" y="135" width="280" height="95" rx="6" fill="var(--accent-soft)" stroke="var(--accent)" />
-        <text x="325" y="155" fill="var(--accent)" font-family="sans-serif" font-size="12" font-weight="bold">Cold Miss: Helper on Bridge</text>
-        <text x="325" y="175" fill="var(--ink)" font-family="sans-serif" font-size="11">• AGENTKIT_API_KEY via stdin pipe</text>
-        <text x="325" y="195" fill="var(--ink)" font-family="sans-serif" font-size="11">• Provider adapter normalizes into staging</text>
-        <text x="325" y="215" fill="var(--ink)" font-family="sans-serif" font-size="11">• Atomic CAS promotion</text>
+        <rect x="725" y="285" width="200" height="85" rx="6" fill="#064e3b" stroke="#059669" filter="url(#shadow)"/>
+        <text x="740" y="310" fill="#a7f3d0" font-family="system-ui" font-size="11" font-weight="700">Legacy File Projection</text>
+        <text x="740" y="330" fill="#d1fae5" font-family="system-ui" font-size="9.5">• .cloud-harness/memories/</text>
+        <text x="740" y="345" fill="#fca5a5" font-family="system-ui" font-size="9.5">Read-Only Untrusted Projection</text>
 
-        <rect x="310" y="245" width="280" height="60" rx="6" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-        <text x="325" y="270" fill="var(--ink)" font-family="sans-serif" font-size="12" font-weight="bold">Compose Owner Projection</text>
-        <text x="325" y="290" fill="var(--ink-muted)" font-family="sans-serif" font-size="11">Deduplicate &amp; apply verified patch</text>
+        <!-- CONNECTORS / ARROWS -->
+        <!-- Client to Runner -->
+        <path d="M 200 120 L 260 120" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+        <path d="M 260 210 L 200 210" stroke="#34d399" stroke-width="2" stroke-dasharray="3 3"/>
+        
+        <!-- Runner to Worker Scan -->
+        <path d="M 460 130 L 725 130" stroke="#34d399" stroke-width="2"/>
+        <text x="530" y="125" fill="#a7f3d0" font-family="system-ui" font-size="9" font-weight="600">Passive Scan (Zero Exec)</text>
 
-        <rect x="650" y="60" width="240" height="140" rx="6" fill="var(--surface-raised)" stroke="var(--success)" />
-        <text x="665" y="85" fill="var(--success)" font-family="sans-serif" font-size="12" font-weight="bold">Executor Container</text>
-        <text x="665" y="105" fill="var(--danger)" font-family="monospace" font-size="11">networkMode: none</text>
-        <text x="665" y="125" fill="var(--cyan)" font-family="sans-serif" font-size="11">• /opt/cloud-harness/owner-skills (ro)</text>
-        <text x="665" y="145" fill="var(--ink)" font-family="sans-serif" font-size="11">• /workspace (rw repository)</text>
-        <text x="665" y="165" fill="var(--ink-muted)" font-family="sans-serif" font-size="11">• /opt/cloud-harness/skills (built-in)</text>
-
-        <rect x="650" y="220" width="240" height="100" rx="6" fill="var(--surface-raised)" stroke="var(--line-strong)" />
-        <text x="665" y="245" fill="var(--ink)" font-family="sans-serif" font-size="12" font-weight="bold">Worker Skill Resolution</text>
-        <text x="665" y="265" fill="var(--accent)" font-family="monospace" font-size="11">built-in &gt; owner &gt; ws &gt; repo</text>
-        <text x="665" y="290" fill="var(--cyan)" font-family="monospace" font-size="11">skills_list / read / run</text>
-        <text x="665" y="305" fill="var(--cyan)" font-family="monospace" font-size="11">workspace_context</text>
+        <!-- Runner to Worker Hook Exec -->
+        <path d="M 460 320 L 725 230" stroke="#f59e0b" stroke-width="2"/>
+        <text x="520" y="270" fill="#fde68a" font-family="system-ui" font-size="9" font-weight="600">Digest-Pinned Exec (No-Net)</text>
       </svg>
     </div>
   </section>
 
-  <!-- 5. DASHBOARD AND UI/UX -->
+  <!-- ULTRA VERIFIER BENCHMARK & COMPARISON -->
   <section class="card">
-    <h2>5. Dashboard and UI/UX</h2>
-    <p>Because the current dashboard is observation/management oriented and tells users to open workspaces through MCP, toolkit support through the dashboard requires a first-class <strong>Open workspace</strong> flow:</p>
-    <ol>
-      <li>Repository URL and optional ref.</li>
-      <li>Environment/runtime network settings.</li>
-      <li>Toolkit picker.</li>
-      <li>Review/preview.</li>
-      <li>Open and show progress/result.</li>
-    </ol>
-    <p>Zero toolkits must remain the default. Do not silently apply an owner “favorite” toolkit unless a later explicit profile feature is approved.</p>
-
-    <!-- ANNOTATED INTERACTIVE MOCKUP (ILLUSTRATIVE) -->
-    <h3>Annotated Workspace-Open Modal Preview (UI/UX Contract — Illustrative Preview)</h3>
-    <div class="mockup-window">
-      <div class="mockup-header">
-        <div class="mockup-dots">
-          <div class="mockup-dot red"></div>
-          <div class="mockup-dot yellow"></div>
-          <div class="mockup-dot green"></div>
-        </div>
-        <span style="font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted);">CloudHarness Dashboard // Open Workspace Modal [Illustrative Mockup]</span>
-        <span class="badge badge-amber">OPERATOR CONSOLE</span>
+    <div class="card-header">
+      <div class="card-title">
+        <span>🔬</span> Ultra Verifier Mode: Best-of-5 Evaluation & Rubric Scoring
       </div>
-      <div class="mockup-body">
-        <div class="form-group">
-          <label class="form-label">Target Repository URL</label>
-          <input type="text" class="form-input" value="https://github.com/acme/service.git" readonly>
-        </div>
-
-        <div class="grid-2">
-          <div class="form-group">
-            <label class="form-label">Executor Network Mode</label>
-            <input type="text" class="form-input" value="none (Default Air-Gapped)" readonly style="color: var(--danger);">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Environment Secrets</label>
-            <input type="text" class="form-input" value="env_example (Contains provisioning secret references)" readonly>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Select Agent Toolkits (Optional)</label>
-          <div class="grid-3">
-            <div class="toolkit-card-select selected">
-              <div class="check-indicator">✓</div>
-              <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px;">mattpocock/skills</div>
-              <div style="font-size: 12px; color: var(--ink-muted); margin-bottom: 8px;">Categorized engineering skills (TDD, debugging).</div>
-              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <span class="badge badge-green">Cached</span>
-                <span class="badge badge-cyan">Owner Overlay</span>
-              </div>
-            </div>
-
-            <div class="toolkit-card-select selected">
-              <div class="check-indicator">✓</div>
-              <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px;">obra/superpowers</div>
-              <div style="font-size: 12px; color: var(--ink-muted); margin-bottom: 8px;">Superpowers skills &amp; session bootstrap.</div>
-              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <span class="badge badge-purple">Context-Ready</span>
-                <span class="badge badge-cyan">Owner Overlay</span>
-              </div>
-            </div>
-
-            <div class="toolkit-card-select selected">
-              <div class="check-indicator">✓</div>
-              <div style="font-weight: 700; font-size: 14px; margin-bottom: 4px;">bestagentkits/agentkit</div>
-              <div style="font-size: 12px; color: var(--ink-muted); margin-bottom: 8px;">Engineer kit (ak portable export).</div>
-              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <span class="badge badge-amber">Secret Bound</span>
-                <span class="badge badge-cyan">Owner Overlay</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Scope and AgentKit Secret Binding Preview -->
-        <div class="grid-2">
-          <div class="info-box">
-            <div class="info-box-title">Scope &amp; Git Impact Control</div>
-            <div style="font-size: 13px; margin-bottom: 6px;">Selected Scope: <strong>Owner Overlay (Clean Git)</strong></div>
-            <div style="font-size: 11px; color: var(--ink-muted);">Mounted read-only at <code>/opt/cloud-harness/owner-skills</code>. <code>git status</code> remains clean.</div>
-          </div>
-          <div class="info-box">
-            <div class="info-box-title">AgentKit Secret Binding (Provisioning-Only)</div>
-            <div style="font-size: 13px; margin-bottom: 6px;">Bound Key: <code>env_example -&gt; AGENTKIT_API_KEY</code></div>
-            <div style="font-size: 11px; color: var(--success);">Provisioning-only: Passed via stdin pipe to temporary helper on tmpfs. Never exposed in runtime container.</div>
-          </div>
-        </div>
-
-        <!-- Pre-flight Disclosure & Confirmation -->
-        <div class="info-box" style="background: rgba(0,0,0,0.25); border: 1px solid var(--accent);">
-          <div class="info-box-title" style="color: var(--accent);">Pre-Flight Disclosure &amp; Verification Summary [Illustrative Data]</div>
-          <div style="font-size: 12px; line-height: 1.6;">
-            <div>• <strong>Executor Network:</strong> <code>networkMode: none</code> (Executor has zero internet access).</div>
-            <div>• <strong>Provisioning Network:</strong> Short-lived runner helper uses <code>bridge</code> for cold downloads if needed.</div>
-            <div>• <strong>Resolved Skills:</strong> Normalized skill bundles matching selected kit configurations.</div>
-            <div>• <strong>Git Changes:</strong> 0 files modified (Owner Scope).</div>
-          </div>
-        </div>
-
-        <!-- Action Callouts -->
-        <div class="callout-box">
-          <strong>Design Token &amp; State Annotations:</strong>
-          <br>
-          • Primary Action: Safety Amber <code>--accent</code> with <code>--on-accent</code> dark ink (contrast ≥ 4.5:1).
-          <br>
-          • Interaction States: Focus ring uses <code>--accent-soft</code> (3:1 contrast); reduced-motion bypass via <code>prefers-reduced-motion</code>.
-          <br>
-          • Acceptance Proof: Illustrates Criteria 4 (secret non-disclosure), 7 (clean git), and 12 (dashboard parity).
-        </div>
-
-        <div style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 12px;">
-          <button style="background: var(--surface-raised); border: 1px solid var(--line); color: var(--ink); padding: 10px 20px; border-radius: var(--radius-md); font-family: var(--font-mono); font-size: 13px; cursor: pointer;">Cancel</button>
-          <button style="background: var(--accent); border: none; color: var(--on-accent); padding: 10px 24px; border-radius: var(--radius-md); font-family: var(--font-mono); font-weight: bold; font-size: 13px; cursor: pointer;">⚡ Open Workspace</button>
-        </div>
-      </div>
+      <span class="badge badge-purple">Scored by Kongming</span>
     </div>
 
-    <h3>Toolkit picker details</h3>
-    <p>Present catalog presets as multi-select cards/rows with:</p>
-    <ul>
-      <li>Human name and canonical ID.</li>
-      <li>Description, source, license, pinned version/commit.</li>
-      <li>Badges: <code>Cached</code>, <code>Download on open</code>, <code>Credential required</code>, <code>Creates project files</code>, <code>Skills only</code>, <code>Context activation</code>, <code>Custom/unverified</code>.</li>
-      <li>Scope choice phrased for users:
-        <ul>
-          <li><strong>Mounted for this workspace — recommended; does not change repository</strong> (<code>owner</code>).</li>
-          <li><strong>Install into repository — creates or modifies files</strong> (<code>workspace</code>).</li>
-        </ul>
-      </li>
-      <li>Skill include/exclude selection only after a toolkit is selected.</li>
-      <li>AgentKit-specific fields: kit name/version, compatible target, and a secret-reference dropdown populated with names/metadata only. Never render or accept the API key value in this form.</li>
-      <li>Custom Git advanced form: URL, immutable ref recommendation, subdirectory/skill roots, and a prominent warning that scripts are third-party code and bootstrap auto-activation is disabled.</li>
-    </ul>
-
-    <h3>Preview</h3>
-    <p>Before submitting, show:</p>
-    <ul>
-      <li>Exact selections and prospective resolved pins.</li>
-      <li>Cache status and whether runner-mediated outbound access may occur.</li>
-      <li>Explicit statement: “Executor network remains none; the runner may fetch missing bundles.”</li>
-      <li>Skill count and name collisions, including which built-in/repository skills will shadow or be shadowed.</li>
-      <li>Activation state per client: <code>discoverable</code>, <code>context available</code>, or <code>auto-activated</code>.</li>
-      <li>Required secret reference and whether it exists—never its value.</li>
-      <li>For workspace scope, every expected added/modified path and a confirmation checkbox. Existing non-identical-file conflicts block opening.</li>
-      <li>Estimated behavior, not deceptive time promises: “cached” versus “requires provisioning.”</li>
-    </ul>
-
-    <h3>Progress and workspace detail</h3>
-    <p>Use discrete states rather than a generic spinner:</p>
-    <pre><code>Validating → Resolving source → Cache hit/fetching → Normalizing → Mounting/materializing → Starting executor → Ready</code></pre>
-    <p>Workspace detail should show immutable toolkit locks, bundle digests, activation/compatibility state, cache source, project changes, and a link to effective/shadowed skills. Failure messages should be actionable and secret-safe: missing secret ref, uncached under offline policy, incompatible adapter/CLI, source rejected, collision, or project-file conflict.</p>
-
-    <h3>MCP client ergonomics</h3>
-    <ul>
-      <li>Tool descriptions must state that <code>toolkits</code> is optional and ordered only for display—never precedence.</li>
-      <li>Include compact examples for no toolkit, multiple presets, custom Git, and AgentKit secret references.</li>
-      <li><code>workspace_open</code> result should tell the agent which context URI/tool call is required to activate toolkit bootstrap content.</li>
-      <li>Publish a compatibility matrix for Claude/Codex/Cursor/other MCP hosts distinguishing disk provisioning from automatic session activation.</li>
-      <li>Never return a massive bootstrap directly in <code>workspace_open</code>; return bounded metadata and a digest-pinned <code>workspace_context</code>/resource reference.</li>
-    </ul>
-
-    <h3>Accessibility and secret UX</h3>
-    <ul>
-      <li>Cards must be keyboard-selectable with real checkboxes/radios and visible focus.</li>
-      <li>Warnings and errors use text/icons, not color alone.</li>
-      <li>Preview changes use an accessible list/diff summary.</li>
-      <li>Secret references are metadata; no secret value enters DOM state, browser storage, telemetry, or error messages.</li>
-    </ul>
-  </section>
-
-  <!-- 6. UNRESOLVED RISKS AND MITIGATIONS -->
-  <section class="card">
-    <h2>6. Unresolved Risks and Mitigations</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Risk</th>
-          <th>Why it matters</th>
-          <th>Mitigation / decision gate</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Superpowers is present but inert</td>
-          <td>Its own guide says session-start bootstrap is non-negotiable</td>
-          <td>Define activation separately from provisioning; expose an approved context artifact and test each supported client with a clean-session transcript. Mark unsupported clients <code>discoverable only</code>, not “fully compatible.”</td>
-        </tr>
-        <tr>
-          <td>AgentKit licensing and cache retention</td>
-          <td>Generated closed-source content may not be shareable or retainable indefinitely</td>
-          <td>Owner-scoped cache, mode 0700, no cross-owner CAS, documented retention/deletion, legal review of server-side caching, immediate revocation support for compromised versions.</td>
-        </tr>
-        <tr>
-          <td>Toolkit supply-chain compromise</td>
-          <td>Skills/scripts are executable instructions/code</td>
-          <td>Catalog pins, immutable commit/digest, origin display, optional signature/SBOM later, no automatic installer/hooks, explicit digest-pinned <code>skills_run</code>, revocation list checked on new opens.</td>
-        </tr>
-        <tr>
-          <td>Custom Git SSRF or archive bomb</td>
-          <td>Fetch and extraction cross a network/trust boundary</td>
-          <td>Reuse repository URL policy; reject credentials/private DNS; cap bytes/files/depth/ratio; reject symlinks/hardlinks/device nodes/submodules; stage and validate before atomic promotion.</td>
-        </tr>
-        <tr>
-          <td>Secret echoed or written by <code>ak</code></td>
-          <td>Third-party CLI controls output/config behavior</td>
-          <td>stdin-to-process env, tmpfs home, pre-seeded exact-value redactor, output limits, exact-secret scan of generated files, helper teardown, never inject into executor by default. Security test must inspect all retained surfaces.</td>
-        </tr>
-        <tr>
-          <td>Same-tier skill collisions</td>
-          <td>Multiple toolkit selection makes precedence ambiguous</td>
-          <td>Identical digest dedupe; otherwise fail before open and require include/exclude. Do not use array order as precedence.</td>
-        </tr>
-        <tr>
-          <td>Owner provenance overstates trust</td>
-          <td>Owner selected the content but did not author it</td>
-          <td>Keep precedence source for compatibility; add immutable third-party origin/verification metadata to every skill/context result and dashboard row.</td>
-        </tr>
-        <tr>
-          <td>Cache poisoning/cross-tenant leak</td>
-          <td>A shared path or mutable cache can serve wrong bytes</td>
-          <td>Digest-addressed immutable directories, atomic promotion, verify on mount, owner partition for private/proprietary, no secret in key, read-only mount, principal-aware metadata lookup.</td>
-        </tr>
-        <tr>
-          <td>Cache stampede and disk exhaustion</td>
-          <td>Concurrent opens can duplicate downloads; active bundles can be evicted</td>
-          <td>Single-flight lock per cache key, bounded staging quotas, lease/refcount active locks, LRU only for unreferenced entries, readiness/status metrics, preset prewarm.</td>
-        </tr>
-        <tr>
-          <td>CLI/adapter version skew</td>
-          <td><code>ak</code> output semantics may change</td>
-          <td>Catalog compatibility matrix, bundle cache key includes CLI + adapter versions, preflight <code>ak</code> capability/version check, fail closed rather than best-effort parsing.</td>
-        </tr>
-        <tr>
-          <td>Runtime dependency mismatch</td>
-          <td>Skill scripts may assume Python, Bash, Node, or utilities absent from image</td>
-          <td>Adapter-declared requirements checked against executor capability manifest; pre-bake only approved common runtimes; do not install dependencies over the network on open.</td>
-        </tr>
-        <tr>
-          <td>Project-scope data loss</td>
-          <td>Official toolkit emitters may rewrite existing CLAUDE/AGENTS files</td>
-          <td>Generate in disposable staging, compute bounded patch, preview paths, require explicit confirmation, fail on non-identical existing targets unless a future separately reviewed merge contract is introduced.</td>
-        </tr>
-        <tr>
-          <td>Upstream moving refs break reproducibility</td>
-          <td>Branch/tag may change between preview, fetch, and recovery</td>
-          <td>Resolve once to commit, verify fetched object, persist lock, key cache by commit/digest, never resolve again during recovery. Operator may require full commit for custom sources.</td>
-        </tr>
-        <tr>
-          <td>Offline promise is misunderstood</td>
-          <td>Runner helper egress can surprise users who selected executor <code>none</code></td>
-          <td>Name policies separately in API/UI/audit: <code>executorNetworkMode</code> and <code>provisioningNetworkUsed</code>; operator <code>cache-only</code> mode; no silent fallback to bridge executor.</td>
-        </tr>
-        <tr>
-          <td>Dashboard scope expansion</td>
-          <td>Dashboard currently does not create workspaces</td>
-          <td>Treat Open workspace as a complete audited flow with authorization/CSRF/session controls, not a quick client-side form. Alternatively expose toolkit selection only after the existing workspace-open dashboard capability is deliberately added.</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h3>Decisions that must be resolved before implementation planning</h3>
-    <ol>
-      <li><strong>Client activation support:</strong> which MCP hosts will CloudHarness claim as <code>auto-activated</code>, and what exact session-start/context ingestion mechanism exists for each? Until proven, advertise only provisioning/discovery.</li>
-      <li><strong>AgentKit legal/cache policy:</strong> may normalized kit output be retained server-side, for how long, and must it be encrypted at rest beyond owner filesystem isolation?</li>
-      <li><strong>Operator egress policy:</strong> deployment-wide <code>cache-only</code> versus allowlisted runner fetch, and whether custom Git hosts can differ from repository hosts.</li>
-      <li><strong>Workspace-scope merge policy:</strong> recommended initial answer is fail on existing non-identical files; do not silently let upstream CLIs rewrite project instructions.</li>
-      <li><strong>Preset update policy:</strong> recommended initial answer is admin-reviewed catalog pins with revocation, not upstream <code>latest</code> at every open.</li>
-    </ol>
-
-    <h3>Final recommendation summary</h3>
-    <p>
-      Adopt the runner-mediated bundle cache and read-only injection design, with a small internal normalized bundle manifest and exactly three maintained preset adapters plus a declarative custom-Git adapter. Prewarm the named presets and pin provisioning tools, but avoid image variants and avoid a public provider/plugin ABI. Keep executor networking and provisioning egress as distinct, visible policies. Treat AgentKit credentials as one-shot provisioning inputs, not workspace environment defaults. Preserve the four-tier resolver and add immutable origin metadata. Default to a repository-clean owner mount; require explicit, previewed consent for project changes. Most importantly, do not claim that raw skill installation equals full toolkit activation—prove the bootstrap path per MCP client.
-    </p>
-  </section>
-
-  <!-- SUPERVISORY ASSESSMENT & P0 CONTRACT GATE (APPENDED BY KONGMING) -->
-  <section class="card card-danger">
-    <h2>🛡️ Advisory Supervision Assessment &amp; Feasibility Gates (Kongming)</h2>
-    <div class="callout callout-red">
-      <strong>Supervisory Verdict: NO-GO to an immediate, execution-ready <code>/ak:plan</code> handoff; GO on Option A as the architectural direction.</strong>
-      <br>
-      Option A (runner-mediated immutable CAS + read-only owner mount) is sound and correctly chosen. However, implementation planning must not proceed as "ready to execute" until one P0 contract contradiction is corrected and external vendor feasibility is validated.
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Candidate Architecture Focus</th>
+            <th>Faithfulness (/20)</th>
+            <th>Evidence (/20)</th>
+            <th>Acceptance (/20)</th>
+            <th>Trade-offs (/20)</th>
+            <th>Total (/80)</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="winner-row">
+            <td><strong>#1</strong></td>
+            <td><strong>Candidate B: Client-Portability & Minimalist Engine</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Bounded passive scanner, multi-client adapters (Claude/Codex/Cursor/Aider), lightweight hybrid SQLite store, UTF-8 byte budgets.</span></td>
+            <td><strong>20</strong></td>
+            <td><strong>18</strong></td>
+            <td><strong>19</strong></td>
+            <td><strong>20</strong></td>
+            <td><strong>77</strong></td>
+            <td><span class="badge badge-success">WINNER</span></td>
+          </tr>
+          <tr>
+            <td>#2</td>
+            <td><strong>Candidate C: Developer-Experience & Scalable Context</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">In-memory layered manifest cache, adaptive token budgeting, rich FTS5 tag/scope memory queries, sandboxed hooks.</span></td>
+            <td>19</td>
+            <td>19</td>
+            <td>19</td>
+            <td>19</td>
+            <td>76</td>
+            <td><span class="badge badge-accent">Runner-Up</span></td>
+          </tr>
+          <tr>
+            <td>#3</td>
+            <td><strong>Candidate E: Threat-Model Containment & Production Governance</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">STRIDE threat modeling, approval grant tokens for persistent writes, durable pre-execution run state with INTERRUPTED recovery.</span></td>
+            <td>17</td>
+            <td>19</td>
+            <td>19</td>
+            <td>20</td>
+            <td>75</td>
+            <td><span class="badge badge-warning">Strong Threat Model</span></td>
+          </tr>
+          <tr>
+            <td>#4</td>
+            <td><strong>Candidate A: Security-First & HMAC Cryptographic Provenance</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Split-plane runner authority, HMAC-SHA-256 provenance integrity tags, provenance keyring, out-of-checkout workspace storage.</span></td>
+            <td>17</td>
+            <td>17</td>
+            <td>20</td>
+            <td>19</td>
+            <td>73</td>
+            <td><span class="badge badge-warning">Over-Engineered Crypto</span></td>
+          </tr>
+          <tr>
+            <td>#5</td>
+            <td><strong>Candidate D: Zero-Friction Backward Compatibility & Schema Evolution</strong><br><span style="font-size:0.75rem; color:var(--ink-muted);">Expand-migrate-contract overlay, separate new mutation tools (memories_put/query) to avoid rolling deploy field stripping, v5-to-v4 downgrade guards.</span></td>
+            <td>15</td>
+            <td>18</td>
+            <td>18</td>
+            <td>20</td>
+            <td>71</td>
+            <td><span class="badge badge-danger">Excessive Operations</span></td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
-    <h3>P0 Contract Contradiction &amp; Correction: Secret Purpose Classification</h3>
-    <p>
-      <strong>The Contradiction:</strong> Candidate E's proposal states that <code>AGENTKIT_API_KEY</code> is strictly provisioning-only and denied from the executor container. However, the schema allows referencing a generic global secret: <code>{ scope: "global", name: "AGENTKIT_API_KEY" }</code>.
-    </p>
-    <p>
-      In the current CloudHarness runner implementation (<code>apps/runner/src/workspace-service.ts:626-655</code>), <strong>all active global secrets are automatically decrypted and injected into every runtime executor container</strong> via <code>hasActiveGlobalSecrets</code>. A generic global secret reference would therefore silently leak the AgentKit API key into the runtime container's <code>Config.Env</code> (visible in <code>docker inspect</code>).
-    </p>
-    <div class="info-box" style="border-left: 3px solid var(--danger);">
-      <div class="info-box-title" style="color: var(--danger);">Required Data-Model Fix (P0 Invariant Before Planning)</div>
-      <p style="margin: 0; font-size: 13px;">
-        Add an explicit secret purpose classification (e.g., <code>purpose: "runtime" | "provisioning"</code>) to the CloudHarness secret store. Secrets marked <code>purpose: "provisioning"</code> are strictly excluded from global/environment runtime injection envelopes and workspace secret snapshots, and are accessible solely to ephemeral runner provisioning helpers.
+    <div class="callout callout-warning" style="margin-top: 1.5rem;">
+      <div class="callout-title">
+        <span>💡</span> Kongming Verifier Synthesis: Key Lessons to Adopt from Other Candidates
+      </div>
+      <p style="font-size: 0.85rem;">
+        While Candidate B is the single winner, the final implementation plan must incorporate key hardening elements:
+        <strong>(1) From Candidate D:</strong> Safe rolling upgrades with feature negotiation so old runners don't strip new mutation parameters;
+        <strong>(2) From Candidate 3:</strong> Snapshot-bound cursors for deterministic pagination;
+        <strong>(3) From Candidate 5:</strong> Durable pre-execution <code>REQUESTED</code> status for long lifecycle hooks to handle runner restarts without silent state corruption.
       </p>
     </div>
-
-    <h3>Required Resolution of the 5 Feasibility Gates</h3>
-    <ol>
-      <li><strong>Client Activation Support:</strong> Default to orthogonal capability reporting (<code>provisioned</code>, <code>discoverable</code>, <code>context-ready</code>). Never label a generic MCP host <code>auto-activated</code> without a clean-session integration transcript proving context ingestion before the first agent action.</li>
-      <li><strong>AgentKit Legal &amp; Offline Export Validation:</strong> Hard external gate. Validate vendor retention terms and run a live CLI export smoke test in disposable storage before planning AgentKit adapter implementation.</li>
-      <li><strong>Operator Egress Policy:</strong> Production deployments default to <code>cache-only</code> with prewarmed catalog bundles. Runner-mediated egress is an explicit operator setting, not user-escalated.</li>
-      <li><strong>Workspace-Scope Merge Policy:</strong> Adopt <code>fail-on-existing</code> non-identical target files. Require explicit confirmation literal (<code>allowToolkitWorkspaceChanges: true</code>) before mutating checkout files.</li>
-      <li><strong>Preset Update Policy:</strong> Use admin-reviewed immutable catalog pins. Normal pin updates affect new opens only; hard security revocations must actively block remounting/recovery of revoked bundle digests.</li>
-    </ol>
   </section>
 
-  <!-- ULTRA VERIFIER RANKING APPENDIX -->
+  <!-- UI / UX MOCKUPS & TOOL OUTPUT CONTRACT -->
   <section class="card">
-    <h2>🏆 Ultra Verifier (Kongming) Ranking Appendix</h2>
-    <p>5 independent candidates evaluated in parallel under best-of-5 rubric scoring by Kongming:</p>
+    <div class="card-header">
+      <div class="card-title">
+        <span>💻</span> UI/UX Mockups: Enriched MCP Tool Responses with Provenance Badges
+      </div>
+      <span class="badge badge-accent">MCP JSON Envelopes</span>
+    </div>
 
-    <table>
-      <thead>
-        <tr>
-          <th>Rank</th>
-          <th>Candidate</th>
-          <th>Score</th>
-          <th>Core Architecture</th>
-          <th>Kongming Assessment &amp; Selection Rationale</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr style="background: var(--accent-soft);">
-          <td><strong>1st</strong></td>
-          <td><strong>Candidate E (Winner)</strong></td>
-          <td><strong>97/100</strong></td>
-          <td>Runner CAS + Read-Only Mounts</td>
-          <td><strong>WINNER.</strong> Best balance of runner-egress and executor-offline; strict provision-only AgentKit secret boundary (no <code>exposeAtRuntime</code>); truthful activation states (<code>provisioned / discoverable / auto-activated</code>); portable <code>ak</code> export; clean opt-in semantics.</td>
-        </tr>
-        <tr>
-          <td>2nd</td>
-          <td>Candidate A</td>
-          <td>96/100</td>
-          <td>Runner CAS + 4-Layer Decomposition</td>
-          <td>Exceptional forensic detail on 4 layers and remote mount gap; penalized for proposing <code>exposeAtRuntime</code> and operator-default selection.</td>
-        </tr>
-        <tr>
-          <td>3rd</td>
-          <td>Candidate B</td>
-          <td>96/100</td>
-          <td>Bounded Hybrid Resolver</td>
-          <td>Excellent canary scanning and failure modes, but over-complicated "hybrid" framing and used staged <code>--global</code> rather than <code>portable</code> export.</td>
-        </tr>
-        <tr>
-          <td>4th</td>
-          <td>Candidate D</td>
-          <td>94/100</td>
-          <td>Runner Cache + Pinned Adapters</td>
-          <td>Strong analysis on full-tree digests and remote mount gap, but proposed broad runtime secret filters.</td>
-        </tr>
-        <tr>
-          <td>5th</td>
-          <td>Candidate C</td>
-          <td>89/100</td>
-          <td>Runner-Owned CAS + Placement</td>
-          <td>Good direction, but lacked explicit confirmation flags and allowed runtime key exposure.</td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="grid-2">
+      <!-- Mockup 1: workspace_context -->
+      <div class="mockup-window">
+        <div class="mockup-titlebar">
+          <span class="mockup-dot dot-red"></span>
+          <span class="mockup-dot dot-yellow"></span>
+          <span class="mockup-dot dot-green"></span>
+          <span style="color: #94a3b8; margin-left: 0.5rem;">MCP Tool: workspace_context</span>
+        </div>
+        <div class="mockup-body">
+<pre>{
+  <span class="token-key">"ok"</span>: <span class="token-bool">true</span>,
+  <span class="token-key">"data"</span>: {
+    <span class="token-key">"workspace"</span>: { <span class="token-key">"workspaceId"</span>: <span class="token-str">"ws_9f8e7d6c5b"</span>, <span class="token-key">"status"</span>: <span class="token-str">"ACTIVE"</span> },
+    <span class="token-key">"branch"</span>: <span class="token-str">"feat/issue-15"</span>,
+    <span class="token-key">"manifest"</span>: {
+      <span class="token-key">"contractVersion"</span>: <span class="token-num">1</span>,
+      <span class="token-key">"returnedBytes"</span>: <span class="token-num">12450</span>,
+      <span class="token-key">"truncated"</span>: <span class="token-bool">false</span>,
+      <span class="token-key">"items"</span>: [
+        {
+          <span class="token-key">"id"</span>: <span class="token-str">"ctx_claude_root"</span>,
+          <span class="token-key">"kind"</span>: <span class="token-str">"instruction"</span>,
+          <span class="token-key">"format"</span>: <span class="token-str">"claude"</span>,
+          <span class="token-key">"path"</span>: <span class="token-str">"CLAUDE.md"</span>,
+          <span class="token-key">"provenance"</span>: {
+            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">UNTRUSTED</span>,
+            <span class="token-key">"trust"</span>: <span class="token-str">"untrusted-executor"</span>,
+            <span class="token-key">"mutableBy"</span>: <span class="token-str">"repository-commit"</span>,
+            <span class="token-key">"contentSha256"</span>: <span class="token-str">"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"</span>
+          }
+        },
+        {
+          <span class="token-key">"id"</span>: <span class="token-str">"ctx_agents_portable"</span>,
+          <span class="token-key">"kind"</span>: <span class="token-str">"instruction"</span>,
+          <span class="token-key">"format"</span>: <span class="token-str">"codex"</span>,
+          <span class="token-key">"path"</span>: <span class="token-str">"AGENTS.md"</span>,
+          <span class="token-key">"provenance"</span>: {
+            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">UNTRUSTED</span>
+          }
+        }
+      ]
+    }
+  }
+}</pre>
+        </div>
+      </div>
+
+      <!-- Mockup 2: skills_list & memories_search -->
+      <div class="mockup-window">
+        <div class="mockup-titlebar">
+          <span class="mockup-dot dot-red"></span>
+          <span class="mockup-dot dot-yellow"></span>
+          <span class="mockup-dot dot-green"></span>
+          <span style="color: #94a3b8; margin-left: 0.5rem;">MCP Tool: skills_list (Precedence Resolution)</span>
+        </div>
+        <div class="mockup-body">
+<pre>{
+  <span class="token-key">"ok"</span>: <span class="token-bool">true</span>,
+  <span class="token-key">"data"</span>: {
+    <span class="token-key">"skills"</span>: [
+      {
+        <span class="token-key">"name"</span>: <span class="token-str">"cloudharness"</span>,
+        <span class="token-key">"selectedSource"</span>: <span class="token-str">"built-in"</span> <span class="token-tag tag-builtin">BUILT-IN</span>,
+        <span class="token-key">"contentSha256"</span>: <span class="token-str">"9a8b7c6d5e4f3a2b..."</span>,
+        <span class="token-key">"shadowed"</span>: [
+          {
+            <span class="token-key">"source"</span>: <span class="token-str">"repository"</span> <span class="token-tag tag-untrusted">SHADOWED</span>,
+            <span class="token-key">"root"</span>: <span class="token-str">".agents/skills"</span>,
+            <span class="token-key">"reason"</span>: <span class="token-str">"Overridden by higher-precedence built-in skill"</span>
+          }
+        ]
+      },
+      {
+        <span class="token-key">"name"</span>: <span class="token-str">"project-deploy"</span>,
+        <span class="token-key">"selectedSource"</span>: <span class="token-str">"owner"</span> <span class="token-tag tag-owner">OWNER-ASSERTED</span>,
+        <span class="token-key">"mutableBy"</span>: <span class="token-str">"owner"</span>
+      }
+    ]
+  }
+}</pre>
+        </div>
+      </div>
+    </div>
   </section>
 
-</div>
+  <!-- PHASED IMPLEMENTATION ROADMAP -->
+  <section class="card">
+    <div class="card-header">
+      <div class="card-title">
+        <span>🗺️</span> Phased Implementation & Delivery Roadmap
+      </div>
+      <span class="badge badge-accent">6 Implementation Phases</span>
+    </div>
+
+    <div class="grid-3">
+      <div class="contract-box">
+        <h3><span>1️⃣</span> Phase 1: Contracts & Threat Model</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Define Zod schemas in <code>runner-api.ts</code> and <code>tool-schemas.ts</code>: <code>ProvenanceSchema</code>, <code>ContextManifestItem</code>, <code>MemoryDescriptor</code>, <code>HookEvent</code>, and budget bounds.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>2️⃣</span> Phase 2: Passive Worker Scanner</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Implement zero-execution file discovery in <code>worker/harness-worker.mjs</code> for Claude, Codex, Cursor, Aider instruction files, and language manifests.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>3️⃣</span> Phase 3: Precedence & Skill Resolver</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Build runner resolver for <code>built-in &gt; owner &gt; workspace &gt; repository</code> with shadowed candidate visibility and SHA-256 digest execution checks.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>4️⃣</span> Phase 4: Scoped SQLite Memory</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Migrate <code>StateStore</code> schema v5: <code>memories</code>, <code>memory_tags</code> with principal/repo/workspace scoping, CAS generation, TTL, search, and delete.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>5️⃣</span> Phase 5: Declarative Hooks & Sandbox</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Implement JSON manifest parser, digest-pinned activation, and short-lived no-network executor container runs for <code>pre_commit</code> and <code>post_checkout</code>.</p>
+      </div>
+
+      <div class="contract-box">
+        <h3><span>6️⃣</span> Phase 6: Hardening & Verification</h3>
+        <p style="font-size: 0.82rem; color: var(--ink-muted);">Run prompt-injection fixtures, restart/crash tests, output boundary assertions, sync docs/skills, and execute full Docker/CI gates.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
 
 <script>
   function toggleTheme() {
@@ -1275,6 +788,7 @@ type WorkspaceOpenInput = {
     const current = html.getAttribute('data-theme');
     const next = current === 'dark' ? 'light' : 'dark';
     html.setAttribute('data-theme', next);
+    document.getElementById('theme-icon').textContent = next === 'dark' ? '🌙' : '☀️';
   }
 </script>
 

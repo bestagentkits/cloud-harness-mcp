@@ -21,7 +21,6 @@ export const ErrorCodeSchema = z.enum([
   'UNKNOWN_REMOTE_STATE',
   'STALE_HEAD',
   'RUNNER_RESTARTED',
-  'DEPENDENCY_EGRESS_UNAVAILABLE',
   'HOOK_FAILED',
   'EXECUTION_FAILED'
 ]);
