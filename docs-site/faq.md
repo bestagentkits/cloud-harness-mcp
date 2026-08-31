@@ -5,10 +5,6 @@ description: Answers to common questions about Cloud Harness MCP server.
 
 # Frequently Asked Questions (FAQ)
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/faq.md</code>.
-</div>
-
 ### What makes Cloud Harness MCP different from standard local MCP servers?
 Standard local MCP servers execute tools directly on your workstation with your user credentials and full filesystem permissions. Cloud Harness runs on a remote host inside dedicated, TTL-limited Docker containers, preventing rogue scripts or malicious dependencies from accessing your local machine.
 

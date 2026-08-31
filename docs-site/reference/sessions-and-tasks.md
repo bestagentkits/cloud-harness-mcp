@@ -5,10 +5,6 @@ description: Interactive PTY terminal sessions and directed acyclic task graph w
 
 # Sessions and Task DAGs
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/sessions-and-tasks.md</code>.
-</div>
-
 ## Persistent PTY Sessions
 
 For commands requiring user interaction, REPLs, or live monitoring:

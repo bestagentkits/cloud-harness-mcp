@@ -5,10 +5,6 @@ description: Account details, session management, and server-persisted theme set
 
 # Operator Profile & Appearance
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/dashboard/profile.md</code>.
-</div>
-
 ## Identity Details
 
 The Profile panel displays your authenticated Cloudflare Access principal information:

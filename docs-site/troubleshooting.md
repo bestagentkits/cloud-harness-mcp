@@ -5,10 +5,6 @@ description: Resolution playbooks for common errors, clone issues, and runtime s
 
 # Troubleshooting & Diagnostics
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/troubleshooting.md</code>.
-</div>
-
 ## Common Issues & Fixes
 
 ### 1. `docker: No such image: cloud-harness-executor:local`

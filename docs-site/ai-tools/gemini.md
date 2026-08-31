@@ -5,10 +5,6 @@ description: Configuring Google Gemini CLI for remote Streamable HTTP MCP.
 
 # Google Gemini CLI
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/gemini.md</code>.
-</div>
-
 ## Configuration
 
 Set your authorization token in your shell environment:

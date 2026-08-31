@@ -5,10 +5,6 @@ description: Version history and releases for Cloud Harness MCP server.
 
 # Release Changelog
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/changelog.md</code>.
-</div>
-
 Cloud Harness MCP follows [Semantic Versioning](https://semver.org/) and automated releases via [semantic-release](https://github.com/semantic-release/semantic-release).
 
 ## Recent Release Highlights

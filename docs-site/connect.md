@@ -5,10 +5,6 @@ description: Protocol lanes, authentication modes, and client routing in Cloud H
 
 # Connecting MCP Clients
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/connect.md</code>.
-</div>
-
 Cloud Harness MCP provides two distinct connection lanes over **Streamable HTTP MCP**:
 
 ```

@@ -5,10 +5,6 @@ description: Step-by-step walkthrough for opening a workspace, executing tools, 
 
 # Getting Started Guide
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/getting-started.md</code>.
-</div>
-
 ## The 4-Step Lifecycle
 
 Working with Cloud Harness MCP follows a disciplined lifecycle:

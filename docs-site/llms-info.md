@@ -5,10 +5,6 @@ description: Machine-readable documentation endpoints, .md URL extensions, and l
 
 # AI Crawler Access & LLMs.txt
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/llms-info.md</code>.
-</div>
-
 Cloud Harness MCP documentation is built from the ground up for both human operators and autonomous AI agents.
 
 ## 1. Raw Markdown at `.md` URLs

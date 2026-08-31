@@ -5,10 +5,6 @@ description: Integrating Cloud Harness MCP with xAI Responses API.
 
 # Grok / xAI Responses API
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/grok.md</code>.
-</div>
-
 ## API Configuration
 
 When using the xAI Responses API with remote tool calling, pass the static API gateway endpoint in your request tool definitions:

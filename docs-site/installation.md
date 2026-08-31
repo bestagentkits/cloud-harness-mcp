@@ -5,10 +5,6 @@ description: System requirements and setup instructions for Cloud Harness MCP se
 
 # Installation & Prerequisites
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/installation.md</code>.
-</div>
-
 ## System Requirements
 
 - **Linux OS:** Ubuntu 24.04 LTS (recommended) or Debian 12

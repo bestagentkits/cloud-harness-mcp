@@ -5,10 +5,6 @@ description: Monitoring and managing active Cloud Harness coding workspaces.
 
 # Workspaces
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/dashboard/workspaces.md</code>.
-</div>
-
 The Workspaces panel lists all currently active and recently closed workspace environments associated with your identity.
 
 ## Workspace Management
