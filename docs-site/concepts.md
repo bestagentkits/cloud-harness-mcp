@@ -38,3 +38,7 @@ Output files generated during workspace execution (logs, test reports, build out
 
 ### Sibling Git Transfer Helper
 An ephemeral container spawned by the Runner to handle `git_fetch`, `git_pull`, and `git_push`. It mounts the workspace repository as a sibling, receives a 10-minute GitHub App installation token via `stdin`, talks only to `github.com`, and is immediately destroyed.
+
+### Agent Toolkits
+Pre-packaged collections of agent skills (e.g. `mattpocock/skills`, `obra/superpowers`, or custom Git repositories) that can be dynamically mounted or staged into a workspace upon creation. Toolkits are resolved across 4 deterministic precedence tiers (`built-in > owner > workspace > repository`). The default `owner` scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills:ro`, keeping `git status` clean.
+
