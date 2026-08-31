@@ -1,3 +1,10 @@
+## [0.37.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.37.1...v0.37.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **deploy:** install service-compose and reload systemd unit after checkout and rollback ([#167](https://github.com/bestagentkits/cloud-harness-mcp/issues/167)) ([c04c3cf](https://github.com/bestagentkits/cloud-harness-mcp/commit/c04c3cf5a53ac940a352778cce752158aa40b212))
+
 ## [0.37.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.37.0...v0.37.1) (2026-08-31)
 
 
