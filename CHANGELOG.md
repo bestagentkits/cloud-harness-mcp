@@ -1,3 +1,10 @@
+# [0.36.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.35.3...v0.36.0) (2026-08-31)
+
+
+### Features
+
+* **deploy:** 1-click OSS installer, Caddy/Tunnel ingress pipeline, and multi-tenant isolation ADR ([#135](https://github.com/bestagentkits/cloud-harness-mcp/issues/135)) ([51030c8](https://github.com/bestagentkits/cloud-harness-mcp/commit/51030c84cd646ca25b919d38c252eac26fd5aff0))
+
 ## [0.35.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.35.2...v0.35.3) (2026-08-31)
 
 
