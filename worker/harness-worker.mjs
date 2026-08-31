@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { realpathSync, writeFileSync } from 'node:fs';
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
 function getWorkspaceRoot() {
@@ -158,29 +158,48 @@ async function git(args, options = {}) {
   return await command('git', gitArgs(args), { ...options, env: gitEnvironment });
 }
 
-async function computeSkillBundleDigest(skillDir, skillMdFile) {
+async function computeSkillBundleDigest(skillDir) {
   const parts = [];
+  let canonicalRoot;
   try {
-    const skillMdRaw = await readFile(skillMdFile);
-    parts.push(`SKILL.md:${sha256(skillMdRaw)}`);
+    canonicalRoot = realpathSync(skillDir);
   } catch {
-    parts.push('SKILL.md:missing');
+    canonicalRoot = skillDir;
   }
 
-  const scriptsDir = join(skillDir, 'scripts');
-  try {
-    const scriptEntries = (await readdir(scriptsDir, { withFileTypes: true }))
-      .filter(e => e.isFile())
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of scriptEntries) {
-      const scriptFile = join(scriptsDir, entry.name);
-      try {
-        const raw = await readFile(scriptFile);
-        parts.push(`scripts/${entry.name}:${sha256(raw)}`);
-      } catch { /* skip */ }
+  async function walk(dir, rel) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      const nextRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink()) {
+        let linkTarget;
+        try {
+          linkTarget = realpathSync(full);
+        } catch {
+          throw new Error(`broken symlink ${nextRel}`);
+        }
+        const relTarget = relative(canonicalRoot, linkTarget);
+        if (relTarget.startsWith('..') || isAbsolute(relTarget)) {
+          throw new Error(`symlink ${nextRel} escapes skill directory root`);
+        }
+        const st = await lstat(full);
+        const mode = (st.mode & 0o777).toString(8);
+        parts.push(`${nextRel}:${st.size}:${mode}:symlink->${relTarget}`);
+      } else if (entry.isDirectory()) {
+        await walk(full, nextRel);
+      } else if (entry.isFile()) {
+        const raw = await readFile(full);
+        const st = await stat(full);
+        const mode = (st.mode & 0o777).toString(8);
+        parts.push(`${nextRel}:${st.size}:${mode}:${sha256(raw)}`);
+      } else {
+        throw new Error(`unsupported special directory entry ${nextRel}`);
+      }
     }
-  } catch { /* scripts dir absent */ }
-
+  }
+  await walk(skillDir, '');
   return sha256(parts.join('\n'));
 }
 
@@ -604,7 +623,6 @@ async function scanWorkspaceContext(input = {}) {
           id: `ctx_skill_${s.name}`,
           kind: 'skill-summary',
           format: 'skill-md',
-          partition: s.source,
           clients: ['all'],
           path: relPath,
           activeForClient: true,
@@ -1195,37 +1213,76 @@ const handlers = {
     const selectedCand = (input.source ? entry.allCandidates.find(c => c.source === input.source) : null) || entry.allCandidates[0];
     if (!selectedCand) return fail('NOT_FOUND', 'skill source not found');
     let skillDir;
-    let scriptPath;
     if (selectedCand.source === 'built-in' || selectedCand.source === 'owner') {
       skillDir = join(selectedCand.root, entry.name);
-      scriptPath = join(selectedCand.root, entry.name, 'scripts', input.script);
     } else {
       skillDir = join(await safePath(selectedCand.root), entry.name);
-      scriptPath = await safePath(join(selectedCand.root, entry.name, 'scripts', input.script));
     }
-    const scriptContent = await readFile(scriptPath);
-    const actualScriptSha = sha256(scriptContent);
-    const currentBundleDigest = await computeSkillBundleDigest(skillDir, selectedCand.file);
+    const runId = `run-${Date.now()}-${randomBytes(4).toString('hex')}`;
+    const snapDir = `/tmp/cloud-harness-exec/${runId}`;
+    await mkdir(snapDir, { recursive: true, mode: 0o700 });
+    try {
+      await cp(skillDir, snapDir, { recursive: true, verbatimSymlinks: true });
+      let currentBundleDigest;
+      try {
+        currentBundleDigest = await computeSkillBundleDigest(snapDir);
+      } catch (err) {
+        return fail('CONFLICT', `skill integrity validation failed: ${err instanceof Error ? err.message : String(err)}`, false);
+      }
+      const snapScriptPath = join(snapDir, 'scripts', input.script);
+      let actualScriptSha = null;
+      try {
+        const snapScriptContent = await readFile(snapScriptPath);
+        actualScriptSha = sha256(snapScriptContent);
+      } catch {
+        const altScriptPath = join(snapDir, input.script);
+        try {
+          const snapScriptContent = await readFile(altScriptPath);
+          actualScriptSha = sha256(snapScriptContent);
+        } catch {
+          return fail('NOT_FOUND', `skill script ${input.script} not found in snapshot`);
+        }
+      }
 
-    const expectedSha = input.expectedContentSha256 || input.expectedSha256;
-    if (!expectedSha) {
-      return fail('INVALID_INPUT', 'expectedContentSha256 or expectedSha256 is required to run a skill');
-    }
-    if (expectedSha !== currentBundleDigest && expectedSha !== actualScriptSha) {
-      return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
-    }
+      const expectedSha = input.expectedContentSha256 || input.expectedSha256;
+      if (!expectedSha) {
+        return fail('INVALID_INPUT', 'expectedContentSha256 or expectedSha256 is required to run a skill');
+      }
+      if (expectedSha !== currentBundleDigest && expectedSha !== actualScriptSha) {
+        return fail('CONFLICT', `skill digest mismatch: expected ${expectedSha}, got bundle ${currentBundleDigest} (script: ${actualScriptSha})`, false);
+      }
 
-    const result = await command(scriptPath, input.args ?? [], { timeoutMs: input.timeoutMs });
-    if (result.exitCode !== 0) {
-      return {
-        ok: false,
-        message: `Skill script exited with ${result.exitCode}`,
-        data: result,
-        error: { code: 'EXECUTION_FAILED', message: `Skill script exited with ${result.exitCode}`, retryable: false },
-        truncated: result.truncated
-      };
+      async function makeReadOnly(dir) {
+        const items = await readdir(dir, { withFileTypes: true });
+        for (const item of items) {
+          const full = join(dir, item.name);
+          if (item.isDirectory()) {
+            await makeReadOnly(full);
+            await chmod(full, 0o500).catch(() => undefined);
+          } else if (item.isFile()) {
+            await chmod(full, 0o500).catch(() => undefined);
+          }
+        }
+        await chmod(dir, 0o500).catch(() => undefined);
+      }
+      await makeReadOnly(snapDir);
+
+      const targetExecPath = existsSync(snapScriptPath) ? snapScriptPath : join(snapDir, input.script);
+      const result = await command(targetExecPath, input.args ?? [], { timeoutMs: input.timeoutMs });
+      if (result.exitCode !== 0) {
+        return {
+          ok: false,
+          message: `Skill script exited with ${result.exitCode}`,
+          data: result,
+          error: { code: 'EXECUTION_FAILED', message: `Skill script exited with ${result.exitCode}`, retryable: false },
+          truncated: result.truncated
+        };
+      }
+      return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
+    } finally {
+      await chmod(snapDir, 0o700).catch(() => undefined);
+      await rm(snapDir, { recursive: true, force: true }).catch(() => undefined);
     }
-    return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
   },
   async hooks_list(input = {}) {
     const { manifestSha256, hooks } = await hookEntries();

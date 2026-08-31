@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { RunnerPrincipalSelectorSchema } from '@cloud-harness/contracts';
+import { RunnerPrincipalSelectorSchema, type ExecutorNetworkProfile } from '@cloud-harness/contracts';
 import type { EncryptedSecret } from './secret-keyring.js';
 import {
   applyLegacyPrincipalMapping,
@@ -25,7 +25,7 @@ export type {
   PrincipalRelinkResult,
   PrincipalSelector
 } from './principal-store.js';
-export { downgradeStateSchemaToV3, downgradeStateSchemaToV4 } from './principal-store.js';
+export { downgradeStateSchemaToV3, downgradeStateSchemaToV4, downgradeStateSchemaToV5, downgradeStateSchemaToV6 } from './principal-store.js';
 
 export type MemoryRecord = {
   id: string;
@@ -124,8 +124,8 @@ export type WorkspaceRecord = {
   containerName: string | null;
   workspacePath: string;
   environmentId: string | null;
-  status: 'CREATING' | 'ACTIVE' | 'REAPING' | 'CLOSED' | 'FAILED' | 'EXPIRED_RECOVERABLE';
-  networkMode: 'none' | 'bridge';
+  status: 'CREATING' | 'ACTIVE' | 'REAPING' | 'CLOSED' | 'FAILED' | 'EXPIRED_RECOVERABLE' | 'NETWORK_QUARANTINED';
+  networkProfile: ExecutorNetworkProfile;
   createdAt: number;
   lastActivityAt: number;
   expiresAt: number;
@@ -135,6 +135,59 @@ export type WorkspaceRecord = {
   mutationLockedUntil: number | null;
   generation: number;
   error: string | null;
+  requestFingerprint?: string | null;
+};
+
+export type ToolkitCacheEntryRecord = {
+  cacheKey: string;
+  ownerId: string;
+  sourceIdentity: string;
+  resolvedRevision: string;
+  adapterVersion: number;
+  bundleSha256: string;
+  status: 'INITIALIZING' | 'READY' | 'FAILED';
+  byteCount: number;
+  fileCount: number;
+  createdAt: number;
+  lastUsedAt: number;
+  errorSummary: string | null;
+};
+
+export type WorkspaceToolkitRecord = {
+  workspaceId: string;
+  ordinal: number;
+  ownerId: string;
+  toolkitId: string;
+  scope: 'owner' | 'workspace';
+  requestedJson: string;
+  resolvedJson: string;
+  bundleSha256: string;
+};
+
+type ToolkitCacheEntryRow = {
+  cache_key: string;
+  owner_id: string;
+  source_identity: string;
+  resolved_revision: string;
+  adapter_version: number;
+  bundle_sha256: string;
+  status: 'INITIALIZING' | 'READY' | 'FAILED';
+  byte_count: number;
+  file_count: number;
+  created_at: number;
+  last_used_at: number;
+  error_summary: string | null;
+};
+
+type WorkspaceToolkitRow = {
+  workspace_id: string;
+  ordinal: number;
+  owner_id: string;
+  toolkit_id: string;
+  scope: 'owner' | 'workspace';
+  requested_json: string;
+  resolved_json: string;
+  bundle_sha256: string;
 };
 
 export type PrivilegeGrantStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CONSUMED' | 'EXPIRED';
@@ -180,21 +233,22 @@ const fromPrivilegeGrantRow = (row: PrivilegeGrantRow): PrivilegeGrantRecord => 
 
 type Row = {
   id: string; owner_id: string; idempotency_key: string; repository_url: string; repository_ref: string | null;
-  container_name: string | null; workspace_path: string; environment_id?: string | null; status: WorkspaceRecord['status']; network_mode: 'none' | 'bridge';
+  container_name: string | null; workspace_path: string; environment_id?: string | null; status: WorkspaceRecord['status']; network_profile: ExecutorNetworkProfile;
   created_at: number; last_activity_at: number; expires_at: number; hard_expires_at?: number | null;
   git_author_name?: string | null; git_author_email?: string | null; mutation_locked_until?: number | null;
-  generation: number; error: string | null;
+  generation: number; error: string | null; request_fingerprint?: string | null;
 };
 
 const fromRow = (row: Row): WorkspaceRecord => ({
   id: row.id, ownerId: row.owner_id, idempotencyKey: row.idempotency_key, repositoryUrl: row.repository_url,
   repositoryRef: row.repository_ref, containerName: row.container_name, workspacePath: row.workspace_path,
   environmentId: row.environment_id ?? null,
-  status: row.status, networkMode: row.network_mode, createdAt: row.created_at, lastActivityAt: row.last_activity_at,
+  status: row.status, networkProfile: row.network_profile, createdAt: row.created_at, lastActivityAt: row.last_activity_at,
   expiresAt: row.expires_at, hardExpiresAt: row.hard_expires_at ?? (row.created_at + 14_400_000),
   gitAuthorName: row.git_author_name ?? null, gitAuthorEmail: row.git_author_email ?? null,
   mutationLockedUntil: row.mutation_locked_until ?? null,
-  generation: row.generation, error: row.error
+  generation: row.generation, error: row.error,
+  requestFingerprint: row.request_fingerprint ?? null
 });
 
 export class StateStore {
@@ -203,9 +257,10 @@ export class StateStore {
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.database = new DatabaseSync(path);
-    this.database.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);
+    try {
+      this.database.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);
       INSERT INTO schema_meta(version) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
       CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS workspaces (
@@ -217,7 +272,7 @@ export class StateStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner
         ON workspaces(owner_id)
-        WHERE status IN ('CREATING','ACTIVE','REAPING');
+        WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED');
       CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id
         ON workspaces(owner_id, id);
       CREATE TABLE IF NOT EXISTS privilege_grants (
@@ -253,6 +308,9 @@ export class StateStore {
     if (!cols.includes('environment_id')) {
       this.database.exec('ALTER TABLE workspaces ADD COLUMN environment_id TEXT;');
     }
+    if (!cols.includes('request_fingerprint')) {
+      this.database.exec('ALTER TABLE workspaces ADD COLUMN request_fingerprint TEXT;');
+    }
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS workspace_secret_snapshots (
         workspace_id TEXT NOT NULL,
@@ -285,8 +343,12 @@ export class StateStore {
       this.database.exec('ALTER TABLE comment_idempotency ADD COLUMN fingerprint TEXT;');
     }
     migratePrincipalSchema(this.database);
-    this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
-      .run('runner_instance_id', randomBytes(18).toString('hex'));
+      this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
+        .run('runner_instance_id', randomBytes(18).toString('hex'));
+    } catch (err) {
+      try { this.database.close(); } catch { /* ignore */ }
+      throw err;
+    }
   }
 
   instanceId(): string {
@@ -297,8 +359,8 @@ export class StateStore {
 
   create(record: WorkspaceRecord): void {
     this.database.prepare(`INSERT INTO workspaces
-      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status, network_mode, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, generation, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status, network_profile, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, generation, error, request_fingerprint)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         record.id,
         record.ownerId,
@@ -309,7 +371,7 @@ export class StateStore {
         record.workspacePath,
         record.environmentId ?? null,
         record.status,
-        record.networkMode,
+        record.networkProfile ?? ((record as unknown as { networkMode?: string }).networkMode === 'bridge' ? 'dependency-access' : 'network-none'),
         record.createdAt,
         record.lastActivityAt,
         record.expiresAt,
@@ -318,7 +380,8 @@ export class StateStore {
         record.gitAuthorEmail ?? null,
         record.mutationLockedUntil ?? null,
         record.generation ?? 1,
-        record.error ?? null
+        record.error ?? null,
+        record.requestFingerprint ?? null
       );
   }
 
@@ -512,7 +575,7 @@ export class StateStore {
   }
 
   active(): WorkspaceRecord[] {
-    return (this.database.prepare("SELECT * FROM workspaces WHERE status IN ('CREATING','ACTIVE','REAPING')").all() as Row[]).map(fromRow);
+    return (this.database.prepare("SELECT * FROM workspaces WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED')").all() as Row[]).map(fromRow);
   }
   update(id: string, changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'hardExpiresAt' | 'gitAuthorName' | 'gitAuthorEmail' | 'mutationLockedUntil' | 'generation' | 'error'>>): WorkspaceRecord {
     const current = this.byId(id);
@@ -727,11 +790,11 @@ export class StateStore {
     if (activeWorkspaces.length === 0) {
       if (preferred) {
         const record = this.byOwnerAndId(ownerId, preferred);
-        if (record && record.status === 'EXPIRED_RECOVERABLE') {
+        if (record && (record.status === 'EXPIRED_RECOVERABLE' || record.status === 'NETWORK_QUARANTINED')) {
           return record;
         }
       }
-      const recoverable = this.list(ownerId).filter((w) => w.status === 'EXPIRED_RECOVERABLE');
+      const recoverable = this.list(ownerId).filter((w) => w.status === 'EXPIRED_RECOVERABLE' || w.status === 'NETWORK_QUARANTINED');
       const firstRecoverable = recoverable[0];
       if (recoverable.length === 1 && firstRecoverable) {
         return firstRecoverable;
@@ -760,8 +823,8 @@ export class StateStore {
   claimForReaping(id: string, generation: number, force = false): boolean {
     const now = Date.now();
     const sql = force
-      ? "UPDATE workspaces SET status='REAPING', generation=generation+1, mutation_lock_count=0, mutation_locked_until=NULL WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE')"
-      : "UPDATE workspaces SET status='REAPING', generation=generation+1 WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE') AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?)";
+      ? "UPDATE workspaces SET status='REAPING', generation=generation+1, mutation_lock_count=0, mutation_locked_until=NULL WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE','NETWORK_QUARANTINED')"
+      : "UPDATE workspaces SET status='REAPING', generation=generation+1 WHERE id=? AND generation=? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE','NETWORK_QUARANTINED') AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?)";
     const result = force
       ? this.database.prepare(sql).run(id, generation)
       : this.database.prepare(sql).run(id, generation, now);
@@ -1938,6 +2001,135 @@ export class StateStore {
       createdAt: r.created_at,
       expiresAt: r.expires_at
     }));
+  }
+
+  upsertToolkitCacheEntry(entry: ToolkitCacheEntryRecord): void {
+    this.database.prepare(`
+      INSERT INTO toolkit_cache_entries (
+        cache_key, owner_id, source_identity, resolved_revision, adapter_version,
+        bundle_sha256, status, byte_count, file_count, created_at, last_used_at, error_summary
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        status = excluded.status,
+        bundle_sha256 = excluded.bundle_sha256,
+        byte_count = excluded.byte_count,
+        file_count = excluded.file_count,
+        last_used_at = excluded.last_used_at,
+        error_summary = excluded.error_summary
+    `).run(
+      entry.cacheKey,
+      entry.ownerId,
+      entry.sourceIdentity,
+      entry.resolvedRevision,
+      entry.adapterVersion,
+      entry.bundleSha256,
+      entry.status,
+      entry.byteCount,
+      entry.fileCount,
+      entry.createdAt,
+      entry.lastUsedAt,
+      entry.errorSummary ?? null
+    );
+  }
+
+  getToolkitCacheEntry(cacheKey: string): ToolkitCacheEntryRecord | undefined {
+    const row = this.database.prepare('SELECT * FROM toolkit_cache_entries WHERE cache_key = ?').get(cacheKey) as ToolkitCacheEntryRow | undefined;
+    if (!row) return undefined;
+    return {
+      cacheKey: row.cache_key,
+      ownerId: row.owner_id,
+      sourceIdentity: row.source_identity,
+      resolvedRevision: row.resolved_revision,
+      adapterVersion: row.adapter_version,
+      bundleSha256: row.bundle_sha256,
+      status: row.status,
+      byteCount: row.byte_count,
+      fileCount: row.file_count,
+      createdAt: row.created_at,
+      lastUsedAt: row.last_used_at,
+      errorSummary: row.error_summary
+    };
+  }
+
+  listToolkitCacheEntries(ownerId: string): ToolkitCacheEntryRecord[] {
+    const rows = this.database.prepare('SELECT * FROM toolkit_cache_entries WHERE owner_id = ? ORDER BY last_used_at DESC').all(ownerId) as ToolkitCacheEntryRow[];
+    return rows.map(row => ({
+      cacheKey: row.cache_key,
+      ownerId: row.owner_id,
+      sourceIdentity: row.source_identity,
+      resolvedRevision: row.resolved_revision,
+      adapterVersion: row.adapter_version,
+      bundleSha256: row.bundle_sha256,
+      status: row.status,
+      byteCount: row.byte_count,
+      fileCount: row.file_count,
+      createdAt: row.created_at,
+      lastUsedAt: row.last_used_at,
+      errorSummary: row.error_summary
+    }));
+  }
+
+  deleteToolkitCacheEntry(cacheKey: string): void {
+    this.database.prepare('DELETE FROM toolkit_cache_entries WHERE cache_key = ?').run(cacheKey);
+  }
+
+  saveWorkspaceToolkits(
+    workspaceId: string,
+    ownerId: string,
+    items: Array<{ ordinal: number; toolkitId: string; scope: 'owner' | 'workspace'; requestedJson: string; resolvedJson: string; bundleSha256: string }>
+  ): void {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare('DELETE FROM workspace_toolkits WHERE workspace_id = ?').run(workspaceId);
+      const insertStmt = this.database.prepare(`
+        INSERT INTO workspace_toolkits (workspace_id, ordinal, owner_id, toolkit_id, scope, requested_json, resolved_json, bundle_sha256)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const item of items) {
+        insertStmt.run(
+          workspaceId,
+          item.ordinal,
+          ownerId,
+          item.toolkitId,
+          item.scope,
+          item.requestedJson,
+          item.resolvedJson,
+          item.bundleSha256
+        );
+      }
+      this.database.exec('COMMIT');
+    } catch (err) {
+      this.database.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  getWorkspaceToolkits(workspaceId: string): WorkspaceToolkitRecord[] {
+    const rows = this.database.prepare('SELECT * FROM workspace_toolkits WHERE workspace_id = ? ORDER BY ordinal ASC').all(workspaceId) as WorkspaceToolkitRow[];
+    return rows.map(r => ({
+      workspaceId: r.workspace_id,
+      ordinal: r.ordinal,
+      ownerId: r.owner_id,
+      toolkitId: r.toolkit_id,
+      scope: r.scope,
+      requestedJson: r.requested_json,
+      resolvedJson: r.resolved_json,
+      bundleSha256: r.bundle_sha256
+    }));
+  }
+
+  deleteWorkspaceToolkits(workspaceId: string): void {
+    this.database.prepare('DELETE FROM workspace_toolkits WHERE workspace_id = ?').run(workspaceId);
+  }
+
+  listReferencedToolkitBundleShas(): Set<string> {
+    const rows = this.database.prepare(`
+      SELECT DISTINCT wt.bundle_sha256
+      FROM workspace_toolkits wt
+      JOIN workspaces w ON w.id = wt.workspace_id AND w.owner_id = wt.owner_id
+      WHERE w.status IN ('CREATING', 'ACTIVE', 'EXPIRED_RECOVERABLE')
+    `).all() as { bundle_sha256: string }[];
+    return new Set(rows.map(r => r.bundle_sha256));
   }
   close(): void {
     this.database.close();
