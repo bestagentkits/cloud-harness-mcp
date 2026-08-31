@@ -36,6 +36,7 @@ export interface GatewayConfig {
   port: number;
   controlSocket: string;
   profiles: ReadonlyMap<string, GatewayProfile>;
+  tlsCaFile?: string | undefined;
 }
 
 export interface LeaseGrant {

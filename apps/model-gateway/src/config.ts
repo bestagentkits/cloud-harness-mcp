@@ -234,6 +234,7 @@ export async function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): P
     host: env.MODEL_GATEWAY_HOST ?? '0.0.0.0',
     port: integer(Number(env.MODEL_GATEWAY_PORT ?? '3210'), 'MODEL_GATEWAY_PORT', 1, 65_535),
     controlSocket,
-    profiles
+    profiles,
+    tlsCaFile: mode === 'test' ? env.MODEL_GATEWAY_TEST_TLS_CA_FILE : undefined
   };
 }

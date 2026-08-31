@@ -256,7 +256,8 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
       MODEL_GATEWAY_HOST: '127.0.0.1',
       MODEL_GATEWAY_PORT: '3210',
-      MODEL_GATEWAY_PROFILES_JSON: '[]'
+      MODEL_GATEWAY_PROFILES_JSON: '[]',
+      MODEL_GATEWAY_TEST_TLS_CA_FILE: certFile
     });
 
     const gwRuntime = createGatewayRuntime(gwConfig);

@@ -76,7 +76,7 @@ export async function startUpstreamRequest(options: {
     ...(isIP(profile.upstream.hostname) === 0 ? { servername: profile.upstream.hostname } : (profile.testOnly ? { servername: 'localhost' } : {})),
     minVersion: 'TLSv1.2',
     ...(ca === undefined ? {} : { ca }),
-    rejectUnauthorized: profile.testOnly && ca === undefined ? false : true,
+    rejectUnauthorized: true,
     maxHeaderSize: profile.limits.maxHeaderBytes,
     agent: false,
     timeout: profile.limits.deadlineMs,

@@ -1,6 +1,4 @@
 import { chmod, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import type { GatewayConfig, GatewayProfile, LeaseIssueInput, ProfileLimits } from './types.js';
@@ -123,7 +121,7 @@ export async function startControlServer(options: {
                 limits,
                 testOnly: config.mode === 'test',
                 allowPrivateUpstream: config.mode === 'test',
-                tlsCaFile: (config.mode === 'test' && existsSync('.cloud-harness-test-fixtures/model-gateway/server-cert.pem')) ? resolve('.cloud-harness-test-fixtures/model-gateway/server-cert.pem') : undefined
+                tlsCaFile: config.mode === 'test' ? config.tlsCaFile : undefined
               };
 
               registry.profiles.set(revId, profile);
