@@ -15,7 +15,7 @@ Cloud Harness MCP allows callers to dynamically configure and pre-install third-
 
 ## Supported Presets
 
-Cloud Harness includes pinned, offline-cached open-source toolkit presets:
+Cloud Harness supports curated open-source toolkit presets whose normalized bundles are content-addressed upon acquisition (an explicit `version` can be specified for deterministic pinning):
 
 | Preset ID | Name | Description | Default Scope |
 |---|---|---|---|
