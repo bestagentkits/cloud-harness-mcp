@@ -5,10 +5,6 @@ description: Adding Cloud Harness MCP to Codex configuration file.
 
 # OpenAI Codex
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/codex.md</code>.
-</div>
-
 Codex App and the Codex CLI can connect to Cloud Harness MCP via **Native OAuth (Recommended)** or via the **Static API Key Gateway**.
 
 ## Option 1: Native OAuth Flow (Recommended)

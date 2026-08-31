@@ -5,10 +5,6 @@ description: Essential domain concepts, terminology, and invariants in Cloud Har
 
 # Concepts & Glossary
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/concepts.md</code>.
-</div>
-
 ## Core Concepts
 
 ### Workspace

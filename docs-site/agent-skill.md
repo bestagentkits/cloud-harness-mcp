@@ -5,10 +5,6 @@ description: Companion operating skill for AI coding agents.
 
 # Agent Skill: `cloudharness`
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/agent-skill.md</code>.
-</div>
-
 The `cloudharness` skill teaches AI coding agents how to autonomously navigate workspaces, execute tests, manage worktrees, and run tasks within Cloud Harness MCP.
 
 ## Installation

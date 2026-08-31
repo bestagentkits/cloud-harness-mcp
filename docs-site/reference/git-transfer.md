@@ -5,10 +5,6 @@ description: Deep dive on credential-isolated remote Git fetch, pull, and push h
 
 # Git Transfer Semantics
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/git-transfer.md</code>.
-</div>
-
 Cloud Harness MCP enforces strict isolation between repository execution containers and GitHub credentials.
 
 ## The Transfer Problem

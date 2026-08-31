@@ -5,10 +5,6 @@ description: Setting up Claude Desktop with Cloud Harness MCP via API Key gatewa
 
 # Claude Desktop
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/claude.md</code>.
-</div>
-
 Claude Desktop can connect to Cloud Harness MCP via **Native OAuth (Recommended)** or via the **Static API Key Gateway**.
 
 ## Option 1: Native OAuth via Connectors UI (Recommended)

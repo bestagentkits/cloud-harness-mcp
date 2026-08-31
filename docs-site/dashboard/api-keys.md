@@ -5,10 +5,6 @@ description: Creating, monitoring, and revoking static MCP gateway API keys.
 
 # API Keys
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/dashboard/api-keys.md</code>.
-</div>
-
 Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Codex), and scripts to authenticate against `https://api.harness.zuey.me/mcp` without an interactive browser OAuth flow.
 
 ## Key Rules & Limits

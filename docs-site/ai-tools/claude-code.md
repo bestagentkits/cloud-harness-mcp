@@ -5,10 +5,6 @@ description: Registering Cloud Harness MCP in Claude Code CLI with local authori
 
 # Claude Code
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/claude-code.md</code>.
-</div>
-
 Claude Code CLI natively connects to remote Streamable HTTP MCP servers.
 
 ## Quick Setup

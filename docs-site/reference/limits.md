@@ -5,10 +5,6 @@ description: Safety boundaries, truncation limits, pagination sizes, and timeout
 
 # Protocol Limits & Bounds
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/reference/limits.md</code>.
-</div>
-
 To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MCP enforces deterministic bounds across all operations:
 
 ## Resource Bounds

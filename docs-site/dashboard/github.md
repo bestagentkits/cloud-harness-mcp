@@ -5,10 +5,6 @@ description: Step-by-step instructions for configuring a GitHub App for private 
 
 # GitHub App Configuration Guide
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/dashboard/github.md</code>.
-</div>
-
 Cloud Harness MCP uses a **GitHub App integration** to clone private repositories and execute origin-only pushes (`git_push`) without storing long-lived personal access tokens or SSH private keys inside container environments.
 
 ---

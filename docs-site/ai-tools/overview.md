@@ -5,10 +5,6 @@ description: Compatibility matrix and connection protocols across major AI tools
 
 # AI Tools Integration Overview
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/overview.md</code>.
-</div>
-
 Cloud Harness MCP is compatible with all leading AI agent environments, IDEs, and coding tools. Depending on the client's authentication capabilities, you will connect using either **Managed OAuth** or a **Static API Key**.
 
 ## Compatibility Matrix

@@ -5,10 +5,6 @@ description: Guide to pre-installing open-source agent toolkits and custom Git s
 
 # Agent Toolkits & Skills
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/agent-toolkits.md</code>.
-</div>
-
 Cloud Harness MCP allows callers to dynamically configure and pre-install third-party agent toolkits upon opening a workspace. Toolkits provide pre-packaged agent instructions, workflows, and tools that AI collaborators can discover and run via `skills_list`, `skills_read`, and `skills_run`.
 
 ---

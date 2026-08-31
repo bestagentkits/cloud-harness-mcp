@@ -5,10 +5,6 @@ description: Inspecting immutable security logs and tool execution records.
 
 # Security Audit Trail
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/dashboard/audit.md</code>.
-</div>
-
 Cloud Harness MCP records an immutable audit log of all tool invocations and lifecycle operations in SQLite.
 
 ## Recorded Events

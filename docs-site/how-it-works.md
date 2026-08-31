@@ -5,10 +5,6 @@ description: System architecture and request flow of the Cloud Harness MCP remot
 
 # How It Works
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/how-it-works.md</code>.
-</div>
-
 Cloud Harness MCP is architected as a split control plane and execution runtime. This separation ensures that Internet-facing request handlers never possess Docker authority, while isolated containers executing repository code never inherit control plane credentials.
 
 ## System Architecture

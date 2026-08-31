@@ -5,10 +5,6 @@ description: Adding Cloud Harness MCP into Google Antigravity IDE.
 
 # Google Antigravity
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/antigravity.md</code>.
-</div>
-
 ## Configuration
 
 1. In Antigravity, open the **MCP Servers** panel.

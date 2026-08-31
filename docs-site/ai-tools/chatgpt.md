@@ -5,10 +5,6 @@ description: Step-by-step configuration for ChatGPT Custom MCP Apps via Managed 
 
 # ChatGPT Custom MCP App
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/chatgpt.md</code>.
-</div>
-
 ChatGPT supports remote MCP connectors via Developer Mode / Custom Plugins using Managed OAuth.
 
 ## 1. Cloudflare Zero Trust Configuration

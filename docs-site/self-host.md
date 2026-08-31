@@ -5,10 +5,6 @@ description: Deploying a private Cloud Harness MCP server on your own infrastruc
 
 # Self-Hosting & Deployment
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/self-host.md</code>.
-</div>
-
 Cloud Harness MCP is designed for straightforward self-hosting on any modern Linux VPS or cloud instance.
 
 ## Deployment Architectures

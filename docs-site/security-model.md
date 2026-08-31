@@ -5,10 +5,6 @@ description: Security boundaries, trust domains, and isolation mechanisms in Clo
 
 # Security & Threat Model
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/security-model.md</code>.
-</div>
-
 ## Intended Trust Model
 
 Cloud Harness MCP is intentionally a **private, single-owner remote coding harness**. It allows arbitrary repository-controlled execution inside a constrained executor, but it is **not a hostile multi-tenant sandbox**.

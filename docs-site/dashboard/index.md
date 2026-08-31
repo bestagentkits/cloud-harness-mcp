@@ -5,10 +5,6 @@ description: Tour of the Cloud Harness Mission Control operator dashboard.
 
 # Operator Dashboard
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/dashboard/index.md</code>.
-</div>
-
 The **Mission Control** operator dashboard is available at `https://harness.zuey.me/dashboard`. It provides operators with live visibility into active workspaces, security audit logs, API key management, and GitHub App integrations.
 
 ## Key Sections

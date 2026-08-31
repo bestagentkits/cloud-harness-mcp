@@ -5,10 +5,6 @@ description: Adding Cloud Harness MCP to Cursor settings via Streamable HTTP.
 
 # Cursor IDE
 
-<div class="md-twin-hint">
-  <strong>AI Crawler / Raw View:</strong> Fetch this page as raw Markdown at <code>/ai-tools/cursor.md</code>.
-</div>
-
 Cursor supports Cloud Harness MCP via **Streamable HTTP** (for remote cloud workspaces) and **stdio** (for direct local project workspaces).
 
 ## Option 1: Remote HTTP (API Key Gateway)
