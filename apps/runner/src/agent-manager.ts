@@ -84,6 +84,8 @@ export class AgentManager {
   private readonly runtimes = new Map<string, RuntimeContext>();
   private readonly launches = new Map<string, Promise<void>>();
   private readonly cleanupTargets = new Map<string, TerminalAgentStatus>();
+  private lastSyncedBootId?: string | undefined;
+  private lastSyncedDigest?: string | undefined;
   private readonly now: () => number;
   private accepting = true;
   private epoch = 0;
@@ -104,6 +106,25 @@ export class AgentManager {
     }
   }
 
+
+  async ensureGatewaySynced(): Promise<void> {
+    if (!this.modelProfiles || !this.gateway.applySnapshot || !this.gateway.queryDigest) return;
+    try {
+      const snapshot = this.modelProfiles.getExportSnapshot();
+      const digestResult = await this.gateway.queryDigest();
+      if (
+        digestResult.gatewayBootId !== this.lastSyncedBootId
+        || (Object.keys(snapshot.profiles).length > 0 && digestResult.activeProfileCount === 0)
+        || (this.lastSyncedDigest !== undefined && digestResult.snapshotDigest !== this.lastSyncedDigest)
+      ) {
+        const ack = await this.gateway.applySnapshot(snapshot);
+        this.lastSyncedBootId = ack.gatewayBootId;
+        this.lastSyncedDigest = ack.snapshotDigest;
+      }
+    } catch (err) {
+      throw new HarnessError('UNAVAILABLE', `model gateway reconciliation failed: ${err instanceof Error ? err.message : 'unreachable'}`, 503, true);
+    }
+  }
   static isPublicOperation(operation: RunnerOperation): boolean {
     return AGENT_OPERATIONS[operation] === true;
   }
@@ -118,9 +139,11 @@ export class AgentManager {
     if (this.modelProfiles && this.gateway.applySnapshot) {
       try {
         const snapshot = this.modelProfiles.getExportSnapshot();
-        await this.gateway.applySnapshot(snapshot);
+        const ack = await this.gateway.applySnapshot(snapshot);
+        this.lastSyncedBootId = ack.gatewayBootId;
+        this.lastSyncedDigest = ack.snapshotDigest;
       } catch {
-        // Gateway will be reconciled upon first lease or status check
+        // Gateway will be reconciled upon spawn or status check
       }
     }
     for (const workspace of this.store.active()) {
@@ -203,6 +226,9 @@ export class AgentManager {
       throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace', 409, false);
     }
     const profile = this.profile(input.profileId as string, ownerId);
+    if (this.modelProfiles && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id))) {
+      await this.ensureGatewaySynced();
+    }
     const tools = AgentProxyOperationSchema.array().parse(input.proxyOperations);
     if (tools.some((operation) => !profile.maxProxyOperations.includes(operation))) {
       throw new HarnessError('INVALID_INPUT', 'requested proxy operation exceeds the selected profile');

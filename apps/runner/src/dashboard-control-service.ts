@@ -231,15 +231,22 @@ export class DashboardControlService {
         case 'model_config_status': {
           const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
           const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
-          let gatewaySynced = this.lastGatewaySync?.synced ?? false;
-          let gatewayBootId = this.lastGatewaySync?.bootId ?? null;
-          let syncError = this.lastGatewaySync?.error ?? null;
+          let gatewaySynced = false;
+          let gatewayBootId: string | null = null;
+          let syncError: string | null = null;
           if (this.gatewayControl?.queryDigest) {
             try {
               const digest = await this.gatewayControl.queryDigest();
-              gatewaySynced = true;
               gatewayBootId = digest.gatewayBootId;
-              syncError = null;
+              if (activeProfiles > 0 && digest.activeProfileCount === 0 && this.gatewayControl.applySnapshot) {
+                const snapshot = this.models().getExportSnapshot();
+                const ack = await this.gatewayControl.applySnapshot(snapshot);
+                gatewayBootId = ack.gatewayBootId;
+                gatewaySynced = true;
+                this.lastGatewaySync = { synced: true, bootId: ack.gatewayBootId, time: Date.now(), error: null };
+              } else {
+                gatewaySynced = true;
+              }
             } catch (err) {
               gatewaySynced = false;
               syncError = err instanceof Error ? err.message : 'gateway unreachable';

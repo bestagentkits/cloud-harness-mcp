@@ -576,4 +576,169 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       await new Promise<void>((res) => upstreamServer.close(() => res()));
     }
   });
+
+  it('automatically re-hydrates Gateway RAM when Gateway restarts while Runner remains up', async () => {
+    const { repo, p, store } = setup();
+
+    const cred = repo.createCredential(p, { label: 'OpenAI Test', provider: 'openai', apiKey: 'sk-secret-rehydrate' });
+    const profile = repo.createProfile(p, {
+      profileId: ModelProfileIdSchema.parse('auto-rehydrate'),
+      displayName: 'Auto Rehydrate Agent',
+      credentialId: cred.id,
+      model: 'gpt-5.2',
+      apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      maxProxyOperations: ['files_read']
+    });
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-rehydrate-auto-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-rehydrate-auto-${randomBytes(6).toString('hex')}.sock`);
+
+    const sendGwControl = async (payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      const socket = connect(controlSocket);
+      const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
+      let buf = '';
+      socket.on('data', (d) => { buf += d.toString(); });
+      socket.on('end', () => {
+        try { resolve(JSON.parse(buf)); }
+        catch (e) { reject(e); }
+      });
+      socket.on('error', reject);
+      socket.end(JSON.stringify(payload) + '\n');
+      return promise;
+    };
+
+    const mockGatewayControl: AgentGatewayControl = {
+      gatewayContainer: async () => 'mock-gateway',
+      issue: async (input) => {
+        const res = await sendGwControl({ operation: 'issue', ...input }) as { ok: boolean; lease: string; error?: string };
+        if (!res.ok) throw new Error(res.error ?? 'issue failed');
+        return { ...input, lease: res.lease };
+      },
+      revokeAndDrain: async (leaseId) => {
+        await sendGwControl({ operation: 'revoke', leaseId });
+      },
+      cancelAndDrain: async (requestId) => {
+        await sendGwControl({ operation: 'cancel', requestId });
+      },
+      applySnapshot: async (snapshot) => {
+        const res = await sendGwControl({ operation: 'apply_snapshot', sequence: 1, generation: 1, credentials: snapshot.credentials, profiles: snapshot.profiles }) as { ok: boolean; ack: { gatewayBootId: string; snapshotDigest: string }; error?: string };
+        if (!res.ok) throw new Error(res.error ?? 'apply failed');
+        return res.ack;
+      },
+      queryDigest: async () => {
+        const res = await sendGwControl({ operation: 'digest' }) as { ok: boolean; digest: { gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }; error?: string };
+        if (!res.ok) throw new Error(res.error ?? 'digest failed');
+        return res.digest;
+      }
+    };
+
+    // 1. Start Gateway 1
+    const gwConfig1 = await loadGatewayConfig({
+      MODEL_GATEWAY_MODE: 'test',
+      MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
+      MODEL_GATEWAY_HOST: '127.0.0.1',
+      MODEL_GATEWAY_PORT: '3210',
+      MODEL_GATEWAY_PROFILES_JSON: '[]'
+    });
+    let gwRuntime = createGatewayRuntime(gwConfig1);
+    await gwRuntime.listen();
+
+    // 2. Start Runner with dynamic repository
+    const agentConfig = RunnerAgentsConfigSchema.parse({
+      image: 'agent:test',
+      networkMode: 'none',
+      gatewayUrl: 'http://model-gateway:3210',
+      profiles: [{
+        id: 'default',
+        displayName: 'Default',
+        provider: 'openai',
+        model: 'gpt-5',
+        inputMicrosPerMillionTokens: 1000,
+        outputMicrosPerMillionTokens: 2000,
+        maxInputTokens: 100000,
+        maxOutputTokens: 20000,
+        maxCostMicros: 2000000,
+        maxProxyOperations: ['files_read']
+      }]
+    });
+
+    const manager = new AgentManager(agentConfig, store, {
+      repository: new AgentStateRepository(store.database, agentConfig.limits, store.instanceId()),
+      gateway: mockGatewayControl,
+      launcher: { launch: async () => {}, stop: async () => {}, reconcile: async () => {} },
+      modelProfiles: repo,
+      toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+    });
+
+    await manager.start();
+
+    // 3. Restart Gateway: close Gateway 1 and start Gateway 2 with empty RAM
+    await gwRuntime.close();
+
+    const gwConfig2 = await loadGatewayConfig({
+      MODEL_GATEWAY_MODE: 'test',
+      MODEL_GATEWAY_CONTROL_SOCKET: controlSocket,
+      MODEL_GATEWAY_HOST: '127.0.0.1',
+      MODEL_GATEWAY_PORT: '3210',
+      MODEL_GATEWAY_PROFILES_JSON: '[]'
+    });
+    gwRuntime = createGatewayRuntime(gwConfig2);
+    await gwRuntime.listen();
+
+    // Verify Gateway 2 has empty profiles in RAM
+    const initialDigest = await mockGatewayControl.queryDigest();
+    expect(initialDigest.activeProfileCount).toBe(0);
+
+    // 4. Create workspace and spawn agent on Runner
+    const wsId = `ws_${'s'.repeat(24)}`;
+    const now = Date.now();
+    store.create({
+      id: wsId,
+      ownerId: p,
+      idempotencyKey: 'ws-rehydrate-key',
+      repositoryUrl: 'https://github.com/org/repo.git',
+      repositoryRef: null,
+      containerName: 'executor',
+      workspacePath: '/tmp/ws-s',
+      environmentId: null,
+      status: 'ACTIVE',
+      networkProfile: 'network-none',
+      createdAt: now,
+      lastActivityAt: now,
+      expiresAt: now + 3600_000,
+      hardExpiresAt: now + 7200_000,
+      gitAuthorName: null,
+      gitAuthorEmail: null,
+      mutationLockedUntil: null,
+      generation: 1,
+      error: null
+    });
+    const workspace = store.byId(wsId)!;
+
+    // Dispatch agent_spawn: Runner automatically detects Gateway restart, re-applies snapshot, and spawns!
+    const spawnRes = await manager.dispatch(p, workspace, 'agent_spawn', {
+      workspaceId: wsId,
+      prompt: 'test auto rehydration',
+      idempotencyKey: 'spawn-auto-rehydrate',
+      profileId: profile.id,
+      proxyOperations: ['files_read'],
+      ttlSeconds: 60,
+      maxOutputBytes: 65536,
+      maxInputTokens: 50000,
+      maxOutputTokens: 2000,
+      maxCostMicros: 100000
+    });
+
+    expect(spawnRes.ok).toBe(true);
+
+    // Verify Gateway 2 now has rehydrated profiles in RAM
+    const postDigest = await mockGatewayControl.queryDigest();
+    expect(postDigest.activeProfileCount).toBeGreaterThan(0);
+
+    await manager.stop();
+    await gwRuntime.close();
+  });
 });

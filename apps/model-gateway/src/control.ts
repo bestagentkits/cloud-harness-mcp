@@ -3,6 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import type { GatewayConfig, GatewayProfile, LeaseIssueInput, ProfileLimits } from './types.js';
 import type { LeaseRegistry } from './lease-registry.js';
+import { isUnsafeAddress, assertProductionHostname } from './config.js';
 
 const MAX_CONTROL_RECORD_BYTES = 1_048_576;
 
@@ -110,12 +111,20 @@ export async function startControlServer(options: {
                 maxCostMicros: revData.limits.maxCostMicros ?? 100_000_000
               } : defaultLimits();
 
+              const upstreamUrl = new URL(revData.upstreamUrl ?? 'https://api.openai.com/v1/chat/completions');
+              if (config.mode !== 'test') {
+                if (isUnsafeAddress(upstreamUrl.hostname)) {
+                  throw new Error(`unsafe upstream address ${upstreamUrl.hostname}`);
+                }
+                assertProductionHostname(upstreamUrl.hostname);
+              }
+
               const profile: GatewayProfile = {
                 id: revId,
                 provider: revData.model ?? 'default',
                 model: revData.model ?? 'default',
                 downstreamPath: revData.downstreamPath ?? '/v1/chat/completions',
-                upstream: new URL(revData.upstreamUrl ?? 'https://api.openai.com/v1/chat/completions'),
+                upstream: upstreamUrl,
                 credentialFile: '',
                 credentialSecret: cred.secret,
                 credentialHeader: cred.authMode === 'x-api-key' ? 'x-api-key' : 'authorization',
@@ -129,11 +138,7 @@ export async function startControlServer(options: {
               };
 
               registry.profiles.set(revId, profile);
-              if (revData.profileId) {
-                registry.profiles.set(revData.profileId, profile);
-              }
             }
-
             const snapshotDigest = `sha256:${createHash('sha256').update(record, 'utf8').digest('hex')}`;
             registry.snapshotDigest = snapshotDigest;
 
