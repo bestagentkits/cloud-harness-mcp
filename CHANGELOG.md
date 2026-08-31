@@ -1,3 +1,10 @@
+## [0.38.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.38.0...v0.38.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **docs-site:** render MarkdownActions in doc-before slot to prevent right sidebar TOC overlap ([#170](https://github.com/bestagentkits/cloud-harness-mcp/issues/170)) ([63d18ca](https://github.com/bestagentkits/cloud-harness-mcp/commit/63d18ca889b39ea138f5f510993efa1a16e0554f))
+
 # [0.38.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.37.2...v0.38.0) (2026-08-31)
 
 
