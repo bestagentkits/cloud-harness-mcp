@@ -36,3 +36,13 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 ### 4. Credential Safety
 - Private clone, push, and GitHub CLI operations use short-lived GitHub App tokens passed exclusively over `stdin` into ephemeral helpers.
 - Tokens are never stored in environment variables, configuration files, or repository commit history.
+
+### 5. Toolkit Provisioning Firewall & Content-Addressed Storage
+- **Internal Network Containment:** All toolkit clone helpers run attached strictly to an `internal: true` network with no default gateway. Raw TCP sockets fail at the kernel level (`ENETUNREACH`).
+- **Dual-Homed Provisioning Proxy:** All helper outbound traffic traverses `provisioning-proxy:3128`, enforcing DNS allowlists for approved Git hosts and blocking private subnets, loopback, and cloud metadata (`169.254.169.254`).
+- **Content-Addressed Storage (CAS):** Pinned bundles are verified with full-tree SHA-256 digests and published atomically with `fsync` ordering to `TOOLKIT_CACHE_ROOT`.
+
+### 6. Skill Tiers & Execution Isolation
+- **Built-in & Owner Tiers (`/opt/cloud-harness/skills:ro`, `/opt/cloud-harness/owner-skills:ro`):** Mounted read-only (`:ro`) at the container engine boundary, preventing in-container modification.
+- **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`):** Reside within the mutable repository checkout. Execution creates a snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest before execution to detect unintentional filesystem race conditions.
+

@@ -55,3 +55,5 @@ Enforces Optimistic Concurrency Control via `expectedGeneration` (CAS: 0 for cre
 
 ### Declarative Lifecycle Hooks
 Pre-configured automation commands declared in `.cloud-harness/hooks.json` for named lifecycle events (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest and runs exclusively inside an unprivileged executor container.
+### Agent Toolkits
+Pre-packaged collections of agent skills (e.g. `mattpocock/skills`, `obra/superpowers`, or custom Git repositories) that can be dynamically mounted or staged into a workspace upon creation. Toolkits are resolved across 4 deterministic precedence tiers (`built-in > owner > workspace > repository`). The default `owner` scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills:ro`, keeping `git status` clean.
