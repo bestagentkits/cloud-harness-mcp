@@ -6,6 +6,7 @@ import {
   appendAudit, auditView, environmentView, opaqueId, projectView, transaction,
   secretView, type AuditView, type EnvironmentView, type ProjectView, type SecretView
 } from './metadata-records.js';
+import type { SecretPurpose } from '@cloud-harness/contracts';
 import { SecretMetadataStore } from './secret-metadata-store.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
@@ -142,12 +143,16 @@ export class MetadataStore {
     return environment ? this.secrets.environmentValues(principalId, environmentId) : undefined;
   }
 
-  environmentSecretSnapshot(principalId: string, environmentId: string): Array<{ secretReferenceId: string; name: string; version: number }> | undefined {
-    const environment = this.database.prepare(`SELECT 1 FROM environments env
-      JOIN projects ON projects.principal_id = env.principal_id AND projects.id = env.project_id
-      WHERE env.principal_id = ? AND env.id = ? AND env.state = 'ACTIVE' AND projects.state = 'ACTIVE'`)
-      .get(principalId, environmentId);
-    return environment ? this.secrets.environmentSecretSnapshot(principalId, environmentId) : undefined;
+  createSecret(
+    principalId: string,
+    environmentId: string,
+    name: string,
+    value: string,
+    expectedGeneration: 0 = 0,
+    description: string | null = null,
+    purpose: SecretPurpose = 'runtime'
+  ): SecretView | undefined {
+    return this.secrets.create(principalId, environmentId, name, value, expectedGeneration, description, purpose);
   }
   environmentSecretEnvelopes(principalId: string, environmentId: string): Array<{ name: string; version: number; envelope: EncryptedSecret }> | undefined {
     const environment = this.database.prepare(`SELECT 1 FROM environments env
@@ -180,7 +185,7 @@ export class MetadataStore {
   }
 
   hasActiveGlobalSecrets(principalId: string): boolean {
-    return Boolean(this.database.prepare("SELECT 1 FROM global_secret_references WHERE principal_id = ? AND state = 'ACTIVE' LIMIT 1").get(principalId));
+    return Boolean(this.database.prepare("SELECT 1 FROM global_secret_references WHERE principal_id = ? AND state = 'ACTIVE' AND purpose = 'runtime' LIMIT 1").get(principalId));
   }
 
   listGlobalSecrets(principalId: string): SecretView[] {
@@ -195,9 +200,10 @@ export class MetadataStore {
     name: string,
     value: string,
     expectedGeneration: 0 = 0,
-    description: string | null = null
+    description: string | null = null,
+    purpose: SecretPurpose = 'runtime'
   ): SecretView | undefined {
-    return this.secrets.globalCreate(principalId, name, value, expectedGeneration, description);
+    return this.secrets.globalCreate(principalId, name, value, expectedGeneration, description, purpose);
   }
 
   rotateGlobalSecret(

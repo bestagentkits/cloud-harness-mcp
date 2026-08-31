@@ -42,6 +42,11 @@ The lifecycle contract is owned by
    optional ref, and a fresh idempotency key. To inject a retained dashboard
    environment, select its opaque ID and explicitly confirm the injection in
    the same request; omitting either injects nothing.
+   To pre-install agent toolkits (e.g. `mattpocock/skills`, `obra/superpowers`,
+   or custom Git repos), provide the `toolkits` parameter. Default `owner`
+   scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills` without
+   polluting git status; `workspace` scope materializes files into
+   `.cloud-harness/skills` with `allowToolkitWorkspaceChanges: true`.
 2. Subsequent tool calls can omit `workspaceId` when exactly one active
    workspace is open. The runner automatically resolves the active workspace,
    or returns a structured `CONFLICT` ambiguity error if multiple exist.
@@ -54,9 +59,64 @@ The lifecycle contract is owned by
 6. Close shells and sessions, cancel unwanted tasks, then call
    `workspace_close`.
 
-Reusing a `workspace_open`, `shell_open`, `sessions_open`, `tasks_run`, or
-`workspace_finalize` idempotency key returns the prior created resource for that
-workspace. This makes a lost response recoverable without duplicating work.
+Reusing a `workspace_open`, `shell_open`, `sessions_open`, `tasks_run`,
+`workspace_finalize`, `agent_spawn`, or `agent_message` idempotency key returns the
+prior created resource or delivery state for that workspace. This makes a lost
+response recoverable without duplicating work.
+
+## Coding-agent operations
+
+The six `agent_*` tools run a bounded Pi coding session against an existing
+`networkMode: "none"` workspace. Their exact input limits and result shapes
+are the executable `TOOL_SCHEMA_BY_NAME` and `Agent*DataSchema` definitions in
+[`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts)
+and
+[`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts).
+Agent calls do not refresh the parent workspace idle TTL.
+
+- `agent_spawn` durably reserves the prompt, budgets, profile, parent, and
+  requested proxy-tool subset before launch. Its result is an acknowledgement
+  with an opaque ID, generation, status, and replay flag—not prompt
+  completion.
+- `agent_status` accepts exactly one of the agent ID or spawn idempotency key.
+  While full state is retained, it reports lineage, configured policy and
+  budgets, usage, timestamps, terminal reason, and `outcomeUnknown`.
+  `SPAWNING`, `RUNNING`, and `CANCELLING` are nonterminal; `SUCCEEDED`,
+  `FAILED`, `CANCELLED`, `TIMED_OUT`, `LIMIT_EXCEEDED`, and `INTERRUPTED` are
+  terminal.
+- `agent_logs` uses a nonnegative decimal byte cursor. Continue with
+  `nextCursor` while `hasMore` is true. `truncated` means the requested cursor
+  predates `retainedBaseCursor`; it can also coexist with another bounded page,
+  so neither flag should be treated as the other.
+- `agent_message` accepts a bounded `steer` or `followUp` message and a
+  message-specific idempotency key. `RESERVED` means delivery was durably
+  admitted, `SENT` means it was written to the live worker channel (not that
+  the model acted on it), `REJECTED` means it was not accepted, and `UNKNOWN`
+  means restart or transport loss prevented a trustworthy determination.
+  Replaying the same key returns the recorded state without another send.
+- `agent_cancel` is idempotent and cancels descendants in post-order before the
+  target. Its bounded result identifies the affected agents; terminal agents
+  are not restarted.
+- `agent_list` returns a bounded workspace-scoped page without log payloads.
+  Its cursor is opaque (unlike a log cursor), and optional parent/status
+  filters narrow the page.
+
+Spawn and message idempotency records are durable for the active workspace.
+They are never evicted to admit fresh side effects: once the configured
+workspace lifetime-record cap is full, new spawn/message reservations are
+rejected. After closure and full-state retention, `agent_status` returns a
+bounded `compacted: true` outcome record containing the terminal status,
+generation, compaction time, and expiry. These tombstones preserve status
+and key-collision evidence through the configured lookup horizon; the SQLite
+schema and retention policy are owned by
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) and
+[`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts).
+
+A runner restart never replays prompts, messages, model requests, or proxy
+writes. Any active agent from a prior runner epoch is reconciled: its model
+lease is revoked, its container is removed, and its status transitions to
+`INTERRUPTED` with `outcomeUnknown: true`.
+
 ## Semantics that are easy to misread
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
@@ -183,10 +243,16 @@ workspace. This makes a lost response recoverable without duplicating work.
   explicitly applied Access subject relink. Expiry and revocation are checked
   on every request; `lastUsedAt` is coalesced telemetry and never an
   authorization input.
-- Executors have no network by default. Dependency installation, arbitrary
-  commands, and repository-defined deployments that need network access require
-  an explicitly requested/configured `bridge` workspace, which is a weaker
-  security boundary. Remote Git fetch, pull, and push do not require executor
+- Executors have no network by default (`networkProfile: "network-none"`).
+  Dependency installation, arbitrary networked commands, and repository-defined
+  deployments that need egress require an explicitly requested
+  `networkProfile: "dependency-access"` workspace. That profile permits only
+  public DNS and public TCP 80/443 and blocks loopback-to-host,
+  Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges below
+  the executor; it is a weaker boundary that still permits public exfiltration
+  and fails closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) when host firewall
+  attestation is unavailable. The legacy `networkMode` argument is rejected
+  with `INVALID_INPUT`. Remote Git fetch, pull, and push do not require executor
   networking: the runner stages them through ephemeral transfer helpers.
 - Remote Git is deliberately limited to the validated credential-free
   `origin`. Fetch and pull download into a sibling transfer repository, then

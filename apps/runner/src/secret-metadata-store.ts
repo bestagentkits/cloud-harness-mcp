@@ -1,9 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import {
-  validateSecretDescription,
-  validateSecretName,
-  validateSecretValue
-} from '@cloud-harness/contracts';
+import { validateSecretDescription, validateSecretName, validateSecretValue, type SecretPurpose } from '@cloud-harness/contracts';
 import { appendAudit, opaqueId, secretView, transaction, type SecretView } from './metadata-records.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
@@ -87,7 +83,7 @@ export class SecretMetadataStore {
       FROM secret_references refs JOIN secret_versions versions
         ON versions.principal_id = refs.principal_id AND versions.secret_reference_id = refs.id
         AND versions.version = refs.current_version
-      WHERE refs.principal_id = ? AND refs.environment_id = ? AND refs.state = 'ACTIVE'
+      WHERE refs.principal_id = ? AND refs.environment_id = ? AND refs.state = 'ACTIVE' AND refs.purpose = 'runtime'
       ORDER BY refs.name`).all(principalId, environmentId) as VersionRow[];
     return rows.map((r) => ({
       name: r.name,
@@ -129,9 +125,10 @@ export class SecretMetadataStore {
     name: string,
     value: string,
     expectedGeneration: 0 = 0,
-    description: string | null = null
+    description: string | null = null,
+    purpose: SecretPurpose = 'runtime'
   ): SecretView | undefined {
-    return transaction(this.database, () => this.createInTransaction(principalId, environmentId, name, value, expectedGeneration, description));
+    return transaction(this.database, () => this.createInTransaction(principalId, environmentId, name, value, expectedGeneration, description, purpose));
   }
 
   rotate(
@@ -179,6 +176,7 @@ export class SecretMetadataStore {
       name: string;
       value: string;
       description?: string | null | undefined;
+      purpose?: SecretPurpose | undefined;
       action: 'create' | 'rotate';
       expectedGeneration: number;
     }>
@@ -190,7 +188,7 @@ export class SecretMetadataStore {
       const results: SecretView[] = [];
       for (const item of items) {
         if (item.action === 'create') {
-          const created = this.createInTransaction(principalId, environmentId, item.name, item.value, 0, item.description ?? null);
+          const created = this.createInTransaction(principalId, environmentId, item.name, item.value, 0, item.description ?? null, item.purpose ?? 'runtime');
           if (!created) throw new Error(`failed to create secret ${item.name}: already exists or generation conflict`);
           results.push(created);
         } else if (item.action === 'rotate') {
@@ -236,9 +234,10 @@ export class SecretMetadataStore {
     name: string,
     value: string,
     expectedGeneration: 0 = 0,
-    description: string | null = null
+    description: string | null = null,
+    purpose: SecretPurpose = 'runtime'
   ): SecretView | undefined {
-    return transaction(this.database, () => this.globalCreateInTransaction(principalId, name, value, expectedGeneration, description));
+    return transaction(this.database, () => this.globalCreateInTransaction(principalId, name, value, expectedGeneration, description, purpose));
   }
 
   globalRotate(
@@ -282,6 +281,7 @@ export class SecretMetadataStore {
       name: string;
       value: string;
       description?: string | null | undefined;
+      purpose?: SecretPurpose | undefined;
       action: 'create' | 'rotate';
       expectedGeneration: number;
     }>
@@ -290,7 +290,7 @@ export class SecretMetadataStore {
       const results: SecretView[] = [];
       for (const item of items) {
         if (item.action === 'create') {
-          const created = this.globalCreateInTransaction(principalId, item.name, item.value, 0, item.description ?? null);
+          const created = this.globalCreateInTransaction(principalId, item.name, item.value, 0, item.description ?? null, item.purpose ?? 'runtime');
           if (!created) throw new Error(`failed to create global secret ${item.name}: already exists or generation conflict`);
           results.push(created);
         } else if (item.action === 'rotate') {
@@ -326,13 +326,60 @@ export class SecretMetadataStore {
       FROM global_secret_references refs JOIN global_secret_versions versions
         ON versions.principal_id = refs.principal_id AND versions.secret_reference_id = refs.id
         AND versions.version = refs.current_version
-      WHERE refs.principal_id = ? AND refs.state = 'ACTIVE'
+      WHERE refs.principal_id = ? AND refs.state = 'ACTIVE' AND refs.purpose = 'runtime'
       ORDER BY refs.name`).all(principalId) as GlobalVersionRow[];
     return rows.map((r) => ({
       name: r.name,
       version: r.version,
       envelope: envelope(r)
     }));
+  }
+
+  consumeProvisioningSecret(
+    principalId: string,
+    scope: 'global' | 'environment',
+    environmentId: string | undefined,
+    name: string
+  ): { secretReferenceId: string; name: string; version: number; plaintext: string } {
+    const secretName = normalizedName(name);
+    let row: (VersionRow & { purpose?: string }) | undefined;
+    if (scope === 'global') {
+      row = this.database.prepare(`
+        SELECT versions.*, refs.name, refs.purpose, refs.id as secret_reference_id
+        FROM global_secret_references refs
+        JOIN global_secret_versions versions
+          ON versions.principal_id = refs.principal_id AND versions.secret_reference_id = refs.id
+          AND versions.version = refs.current_version
+        WHERE refs.principal_id = ? AND refs.name = ? AND refs.state = 'ACTIVE' AND refs.purpose = 'provisioning'
+      `).get(principalId, secretName) as (VersionRow & { purpose?: string }) | undefined;
+    } else if (environmentId) {
+      row = this.database.prepare(`
+        SELECT versions.*, refs.name, refs.purpose, refs.id as secret_reference_id, refs.environment_id
+        FROM secret_references refs
+        JOIN secret_versions versions
+          ON versions.principal_id = refs.principal_id AND versions.secret_reference_id = refs.id
+          AND versions.version = refs.current_version
+        WHERE refs.principal_id = ? AND refs.environment_id = ? AND refs.name = ? AND refs.state = 'ACTIVE' AND refs.purpose = 'provisioning'
+      `).get(principalId, environmentId, secretName) as (VersionRow & { purpose?: string }) | undefined;
+    }
+
+    if (!row) {
+      throw new Error(`Provisioning secret ${name} not found or not marked purpose 'provisioning'`);
+    }
+
+    const plaintext = this.keyring.decrypt(envelope(row), {
+      principalId,
+      environmentId: scope === 'global' ? 'global' : environmentId!,
+      name: row.name,
+      version: row.version
+    });
+
+    return {
+      secretReferenceId: row.secret_reference_id,
+      name: row.name,
+      version: row.version,
+      plaintext
+    };
   }
 
   async reencrypt(signal?: AbortSignal): Promise<number> {
@@ -418,7 +465,8 @@ export class SecretMetadataStore {
     name: string,
     value: string,
     expectedGeneration: 0 = 0,
-    description: string | null = null
+    description: string | null = null,
+    purpose: SecretPurpose = 'runtime'
   ): SecretView | undefined {
     if (expectedGeneration !== 0) return undefined;
     const secretName = normalizedName(name);
@@ -433,8 +481,8 @@ export class SecretMetadataStore {
     const now = Date.now();
     const encrypted = this.keyring.encrypt(valCheck.value, { principalId, environmentId, name: secretName, version: 1 });
     this.database.prepare(`INSERT INTO secret_references
-      (id, principal_id, environment_id, name, description, state, current_version, generation, created_at, updated_at, deleted_at)
-      VALUES (?, ?, ?, ?, ?, 'ACTIVE', 1, 1, ?, ?, NULL)`).run(id, principalId, environmentId, secretName, descCheck.description, now, now);
+      (id, principal_id, environment_id, name, description, purpose, state, current_version, generation, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', 1, 1, ?, ?, NULL)`).run(id, principalId, environmentId, secretName, descCheck.description, purpose, now, now);
     this.insertVersion(principalId, id, 1, encrypted, now);
     appendAudit(this.database, principalId, 'secret.created', 'secret', id, 1, { environmentId, version: 1 }, now);
     return this.byName(principalId, environmentId, secretName)!;
@@ -478,7 +526,8 @@ export class SecretMetadataStore {
     name: string,
     value: string,
     expectedGeneration: 0 = 0,
-    description: string | null = null
+    description: string | null = null,
+    purpose: SecretPurpose = 'runtime'
   ): SecretView | undefined {
     if (expectedGeneration !== 0) return undefined;
     const secretName = normalizedName(name);
@@ -492,8 +541,8 @@ export class SecretMetadataStore {
     const now = Date.now();
     const encrypted = this.keyring.encrypt(valCheck.value, { principalId, environmentId: 'global', name: secretName, version: 1 });
     this.database.prepare(`INSERT INTO global_secret_references
-      (id, principal_id, name, description, state, current_version, generation, created_at, updated_at, deleted_at)
-      VALUES (?, ?, ?, ?, 'ACTIVE', 1, 1, ?, ?, NULL)`).run(id, principalId, secretName, descCheck.description, now, now);
+      (id, principal_id, name, description, purpose, state, current_version, generation, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, 'ACTIVE', 1, 1, ?, ?, NULL)`).run(id, principalId, secretName, descCheck.description, purpose, now, now);
     this.insertGlobalVersion(principalId, id, 1, encrypted, now);
     appendAudit(this.database, principalId, 'global_secret.created', 'global_secret', id, 1, { version: 1 }, now);
     return this.globalByName(principalId, secretName)!;

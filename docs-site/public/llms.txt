@@ -34,7 +34,7 @@
 - [Profile & Themes](https://docs.harness.agentkit.best/dashboard/profile.md): Account details and appearance settings.
 
 ## Technical References
-- [Tools Reference](https://docs.harness.agentkit.best/reference/tools.md): Complete catalog of 71 MCP tools.
+- [Tools Reference](https://docs.harness.agentkit.best/reference/tools.md): Complete catalog of 81 MCP tools.
 - [Environment Variables](https://docs.harness.agentkit.best/reference/environment-variables.md): Configuration reference.
 - [Git Transfer Semantics](https://docs.harness.agentkit.best/reference/git-transfer.md): Origin-only push/fetch/pull helper.
 - [Sessions & Tasks](https://docs.harness.agentkit.best/reference/sessions-and-tasks.md): PTY shells, sessions, and task DAGs.

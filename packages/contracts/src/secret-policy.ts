@@ -128,3 +128,6 @@ export const SecretDescriptionSchema = z.string().nullable().optional().superRef
   const trimmed = val.trim();
   return trimmed.length > 0 ? trimmed : null;
 });
+
+export const SecretPurposeSchema = z.enum(['runtime', 'provisioning']).default('runtime');
+export type SecretPurpose = z.infer<typeof SecretPurposeSchema>;

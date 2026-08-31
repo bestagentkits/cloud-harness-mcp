@@ -11,7 +11,7 @@ const baseConfig: RunnerConfig = {
   stateDb: '/tmp/state.db',
   executorImage: 'cloud-harness-executor:local',
   allowedGitHosts: ['github.com'],
-  networkMode: 'none',
+  networkProfile: 'network-none',
   wallTtlSeconds: 300,
   idleTtlSeconds: 180,
   maxOutputBytes: 262_144,

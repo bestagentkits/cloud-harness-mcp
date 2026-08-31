@@ -47,9 +47,17 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `ARTIFACT_RETENTION_SECONDS` | `86400` | **Required** | Required configuration. |
 | `REPO_CACHE_ROOT` | `/var/lib/cloud-harness/cache/repos` | **Required** | Required configuration. |
 | `ENABLE_REPO_CACHE` | `false` | Optional | Optional configuration. |
+| `TOOLKIT_CACHE_ROOT` | `/var/lib/cloud-harness/cache/toolkits` | **Required** | Required configuration. |
+| `ENABLE_TOOLKIT_CACHE` | `true` | Optional | Optional configuration. |
+| `TOOLKIT_NETWORK_POLICY` | `cache-only` | Optional | Optional configuration. |
 | `EXECUTOR_IMAGE` | `cloud-harness-executor:local` | **Required** | Required configuration. |
+| `NETWORK_GUARD_IMAGE` | `cloud-harness-network-guard:local` | **Required** | Required configuration. |
 | `ALLOWED_GIT_HOSTS` | `github.com` | **Required** | Required configuration. |
-| `WORKSPACE_NETWORK_MODE` | `none` | **Required** | Required configuration. |
+| `WORKSPACE_NETWORK_PROFILE` | `network-none` | **Required** | Required configuration. |
+| `DEPENDENCY_DNS_RESOLVERS` | `8.8.8.8,1.1.1.1` | Optional | dependency-access requires a Linux host firewall provisioned via deploy/scripts/setup-dependency-firewall.sh |
+| `DEPENDENCY_BRIDGE_SUBNET` | `172.30.240.0/24` | Optional | Optional configuration. |
+| `DEPENDENCY_BRIDGE_INTERFACE` | `chm-egress0` | Optional | Optional configuration. |
+| `DEPENDENCY_NETWORK_NAME` | `cloud-harness-dependency-access` | Optional | Optional configuration. |
 | `WORKSPACE_WALL_TTL_SECONDS` | `900` | **Required** | Required configuration. |
 | `WORKSPACE_IDLE_TTL_SECONDS` | `300` | **Required** | Required configuration. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |

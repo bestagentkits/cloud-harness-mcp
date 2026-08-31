@@ -112,9 +112,13 @@ content and user-supplied commands are untrusted execution input.
 - Executors run non-root with a read-only root filesystem, dropped capabilities,
   `no-new-privileges`, resource limits, bounded output, and TTL cleanup.
 - Only the repository workspace is writable.
-- Default `networkMode: "none"` blocks ordinary executor egress.
-- `networkMode: "bridge"` permits broad egress and increases exfiltration,
-  SSRF, callback, dependency-script, and repository-deployment risk.
+- Default `networkProfile: "network-none"` blocks all executor egress.
+- `networkProfile: "dependency-access"` permits only public DNS and public
+  TCP 80/443 while blocking loopback-to-host, Docker/control-plane, RFC 1918,
+  link-local, and cloud-metadata ranges below the executor. It still permits
+  exfiltration to public endpoints and increases SSRF, callback, and
+  dependency-script risk. Enforcement requires a Linux host with the dedicated
+  bridge and attested host firewall; if attestation fails it fails closed.
 - The executor receives no Docker socket, host credential, GitHub App token,
   deployment secret, or arbitrary host mount.
 

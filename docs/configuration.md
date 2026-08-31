@@ -102,11 +102,20 @@ must still be large enough for the intended operation.
 ## Workspace and repository policy
 
 `ALLOWED_GIT_HOSTS` is a host allowlist, not permission to use arbitrary URL
-schemes or private addresses. `WORKSPACE_NETWORK_MODE=none` is the safe
-baseline. `bridge` enables ordinary container egress and should be an explicit
-owner choice for a workspace that needs dependency downloads, arbitrary
-networked commands, or networked repository-defined deployments. Runner-owned
-remote Git helpers do not depend on executor network mode.
+schemes or private addresses. `WORKSPACE_NETWORK_PROFILE=network-none` is the
+safe baseline and blocks all executor egress. `dependency-access` is an explicit
+owner choice for a workspace that needs public dependency downloads: it permits
+public DNS and public TCP 80/443 only, while a Linux host firewall (attested by
+the runner before each dependency executor starts) blocks loopback-to-host,
+Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges. It is not
+an allowlist or DLP boundary and still permits exfiltration to public endpoints.
+If host firewall attestation fails, `dependency-access` fails closed
+(`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge egress.
+`DEPENDENCY_DNS_RESOLVERS`, `DEPENDENCY_BRIDGE_SUBNET`,
+`DEPENDENCY_BRIDGE_INTERFACE`, and `DEPENDENCY_NETWORK_NAME` configure the
+managed bridge and firewall. The legacy `WORKSPACE_NETWORK_MODE` variable is
+rejected at startup. Runner-owned remote Git helpers do not depend on the
+executor network profile.
 
 `WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`, and
 `REAPER_INTERVAL_SECONDS` define lifecycle timing. `MAX_OUTPUT_BYTES` bounds
@@ -127,6 +136,8 @@ schema and enforced by
 [`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts).
 `EXECUTOR_IMAGE` is chosen by the trusted operator; callers cannot select an
 image.
+`TOOLKIT_CACHE_ROOT` configures the runner's content-addressed storage volume for pre-cached agent toolkits (`/var/lib/cloud-harness/cache/toolkits`). `ENABLE_TOOLKIT_CACHE` toggles CAS persistence, and `TOOLKIT_NETWORK_POLICY` (`cache-only` vs `runner-fetch`) controls whether uncached toolkits can be fetched at workspace open.
+
 
 ## Dashboard secrets
 
@@ -145,6 +156,8 @@ keyring, quiescing writes, and using the runner-only re-encryption entry point d
 [operations guide](operations.md#secret-key-rotation). Missing or invalid key
 material disables secret-dependent operations without exposing key details;
 non-secret dashboard reads remain available.
+
+Secrets support purpose classification (`runtime` vs `provisioning`). Provisioning secrets are used exclusively during helper provisioning workflows and are strictly excluded from runtime executor containers.
 
 Dashboard-managed MCP API keys use a different write-only contract from
 encrypted environment secrets. The runner stores only a SHA-256 digest and

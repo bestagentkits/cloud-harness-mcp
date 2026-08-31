@@ -14,7 +14,7 @@ function record(ownerId: string): WorkspaceRecord {
   return {
     id: `ws_${'a'.repeat(24)}`, ownerId, idempotencyKey: 'request-1234',
     repositoryUrl: 'https://github.com/modelcontextprotocol/typescript-sdk.git', repositoryRef: null,
-    containerName: null, workspacePath: '/tmp/example', status: 'ACTIVE', networkMode: 'none',
+    containerName: null, workspacePath: '/tmp/example', status: 'ACTIVE', networkProfile: 'network-none',
     createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, generation: 1, error: null
   };
 }

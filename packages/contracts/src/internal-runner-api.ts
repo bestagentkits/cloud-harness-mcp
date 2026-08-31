@@ -2,11 +2,14 @@ import { z } from 'zod';
 import { WorkspaceIdSchema } from './identifiers.js';
 import { ToolResultSchema } from './mcp-results.js';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
-import { SecretDescriptionSchema, SecretNameSchema, SecretValueSchema } from './secret-policy.js';
+import { SecretDescriptionSchema, SecretNameSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
+import { ToolkitSelectionSchema } from './tool-schemas.js';
 
 export const InternalRunnerOperationSchema = z.enum([
   'workspace_detail',
-  'workspace_close_fenced'
+  'workspace_close_fenced',
+  'toolkits_list',
+  'toolkits_preview'
 ]);
 
 const workspaceDetailRequest = z.object({
@@ -25,10 +28,27 @@ const workspaceCloseFencedRequest = z.object({
     expectedGeneration: z.number().int().positive()
   }).strict()
 }).strict();
+const toolkitsListRequest = z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal('toolkits_list'),
+  input: z.object({}).strict()
+}).strict();
+
+const toolkitsPreviewRequest = z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal('toolkits_preview'),
+  input: z.object({
+    toolkits: z.array(ToolkitSelectionSchema).max(8)
+  }).strict()
+}).strict();
 
 export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   workspaceDetailRequest,
-  workspaceCloseFencedRequest
+  workspaceCloseFencedRequest,
+  toolkitsListRequest,
+  toolkitsPreviewRequest
 ]);
 
 export const InternalRunnerResponseSchema = ToolResultSchema;
@@ -59,8 +79,8 @@ const metadataInputs = {
   environment_update: z.object({ environmentId: internalId('env'), name, expectedGeneration: generation }).strict(),
   environment_delete: z.object({ environmentId: internalId('env'), expectedGeneration: generation }).strict(),
   secret_list: z.object({ environmentId: internalId('env') }).strict(),
-  secret_create: z.object({ environmentId: internalId('env'), name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: z.literal(0) }).strict(),
-  secret_rotate: z.object({ environmentId: internalId('env'), name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: generation }).strict(),
+  secret_create: z.object({ environmentId: internalId('env'), name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), purpose: SecretPurposeSchema.optional(), expectedGeneration: z.literal(0) }).strict(),
+  secret_rotate: z.object({ environmentId: internalId('env'), name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), purpose: SecretPurposeSchema.optional(), expectedGeneration: generation }).strict(),
   secret_update: z.object({ environmentId: internalId('env'), name: SecretNameSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: generation }).strict(),
   secret_delete: z.object({ environmentId: internalId('env'), name: SecretNameSchema, expectedGeneration: generation }).strict(),
   secret_bulk_apply: z.object({
@@ -69,13 +89,14 @@ const metadataInputs = {
       name: SecretNameSchema,
       value: SecretValueSchema,
       description: SecretDescriptionSchema.optional(),
+      purpose: SecretPurposeSchema.optional(),
       action: z.enum(['create', 'rotate']),
       expectedGeneration: z.number().int().min(0)
     })).min(1).max(200)
   }).strict(),
   global_secret_list: z.object({}).strict(),
-  global_secret_create: z.object({ name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: z.literal(0) }).strict(),
-  global_secret_rotate: z.object({ name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: generation }).strict(),
+  global_secret_create: z.object({ name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), purpose: SecretPurposeSchema.optional(), expectedGeneration: z.literal(0) }).strict(),
+  global_secret_rotate: z.object({ name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), purpose: SecretPurposeSchema.optional(), expectedGeneration: generation }).strict(),
   global_secret_update: z.object({ name: SecretNameSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: generation }).strict(),
   global_secret_delete: z.object({ name: SecretNameSchema, expectedGeneration: generation }).strict(),
   global_secret_bulk_apply: z.object({
@@ -83,6 +104,7 @@ const metadataInputs = {
       name: SecretNameSchema,
       value: SecretValueSchema,
       description: SecretDescriptionSchema.optional(),
+      purpose: SecretPurposeSchema.optional(),
       action: z.enum(['create', 'rotate']),
       expectedGeneration: z.number().int().min(0)
     })).min(1).max(200)

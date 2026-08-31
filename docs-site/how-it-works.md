@@ -70,7 +70,7 @@ Cloud Harness MCP is architected as a split control plane and execution runtime.
 
 ## Key Invariants
 
-- **Default Network: `none`** — Workspace executors cannot access LAN or WAN unless explicitly started with `networkMode: "bridge"`.
+- **Default Network: `network-none`** — Workspace executors cannot access LAN or WAN unless explicitly started with `networkProfile: "dependency-access"`, which permits only public DNS and TCP 80/443 through an attested Linux host firewall that blocks private, control-plane, and metadata ranges.
 - **No Docker-in-Docker** — The Docker socket is never mounted into the workspace container.
 - **Idempotent Lifecycle** — `workspace_open` requires an `idempotencyKey`. If a client disconnects and retries with the same key, it attaches to the existing workspace rather than starting a duplicate clone.
 - **TTL Bounds** — Workspaces enforce both a wall-clock TTL (default 15 minutes) and an idle TTL (default 5 minutes). When expired, all files and containers are permanently scrubbed.

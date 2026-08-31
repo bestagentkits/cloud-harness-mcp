@@ -15,7 +15,7 @@ The Workspaces panel lists all currently active and recently closed workspace en
 
 - **Status Indicators:** View workspace lifecycle phase (`ready`, `busy`, `closed`, `error`).
 - **TTL Countdown:** Inspect remaining wall-clock TTL and idle timer before automatic cleanup.
-- **Resource Details:** Check memory limits, container status, and network mode (`none` or `bridge`).
+- **Resource Details:** Check memory limits, container status, and network profile (`network-none` or `dependency-access`).
 - **Force Close:** Immediately terminate a stuck container and permanently purge all temporary workspace files from the host disk.
 
 ::: danger Data Purge on Close

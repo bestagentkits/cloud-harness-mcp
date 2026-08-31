@@ -26,6 +26,7 @@ COPY --from=build --chmod=0444 /app/packages/contracts/package.json ./packages/c
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --chown=node:node --chmod=0555 scripts/deploy-canary.mjs ./scripts/deploy-canary.mjs
 COPY --chown=node:node --chmod=0555 deploy/ingress-proxy.mjs ./deploy/ingress-proxy.mjs
+COPY --chown=node:node --chmod=0555 deploy/provisioning-proxy.mjs ./deploy/provisioning-proxy.mjs
 USER node
 EXPOSE 3000
 CMD ["node", "apps/api/dist/index.js"]

@@ -4,7 +4,7 @@ import type { RunnerResponse } from '@cloud-harness/contracts';
 const statuses: Record<string, number> = {
   AUTHENTICATION_FAILED: 401, FORBIDDEN: 404, INVALID_INPUT: 400, NOT_FOUND: 404,
   CONFLICT: 409, EXPIRED: 410, LIMIT_EXCEEDED: 429, TIMEOUT: 504,
-  CANCELLED: 409, UNAVAILABLE: 503, INTERNAL_ERROR: 500
+  CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500
 };
 
 const messages: Record<string, string> = {
@@ -18,12 +18,13 @@ const messages: Record<string, string> = {
   TIMEOUT: 'The workspace service took too long to respond.',
   CANCELLED: 'The operation was cancelled.',
   UNAVAILABLE: 'The workspace service is temporarily unavailable.',
+  DEPENDENCY_EGRESS_UNAVAILABLE: 'Dependency-access network egress is unavailable.',
   INTERNAL_ERROR: 'The workspace service could not complete the request.'
 };
 
 function cleanWorkspace(value: unknown): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  const allowed = ['workspaceId', 'repositoryUrl', 'ref', 'status', 'networkMode', 'createdAt', 'lastActivityAt', 'expiresAt'];
+  const allowed = ['workspaceId', 'repositoryUrl', 'ref', 'status', 'networkProfile', 'createdAt', 'lastActivityAt', 'expiresAt'];
   const clean = Object.fromEntries(allowed.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
   if (typeof item.generation === 'number') clean.version = item.generation;
   if (item.status === 'FAILED' && typeof item.error === 'string') clean.error = 'Workspace setup failed. Review runner logs.';
@@ -31,10 +32,13 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
 }
 
 export type DashboardResponseOperation =
+  | 'workspace_open'
   | 'workspace_list'
   | 'workspace_status'
   | 'workspace_detail'
   | 'workspace_close'
+  | 'toolkits_list'
+  | 'toolkits_preview'
   | 'files_list'
   | 'files_read'
   | 'files_write'
@@ -52,7 +56,6 @@ export type DashboardResponseOperation =
   | 'artifact_list' | 'artifact_snapshot' | 'artifact_read' | 'artifact_restore' | 'artifact_delete'
   | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect'
   | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject';
-
 function pick(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return Object.fromEntries(keys.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
@@ -87,7 +90,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     const workspaces = Array.isArray(data.workspaces) ? data.workspaces.map(cleanWorkspace) : [];
     return { workspaces };
   }
-  if (operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close') return cleanWorkspace(data);
+  if (operation === 'workspace_open' || operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close') return cleanWorkspace(data);
+  if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
     const entries = Array.isArray(data.entries) ? data.entries.map((entry) => {
       const item = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
