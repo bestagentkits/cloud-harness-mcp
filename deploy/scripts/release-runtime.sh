@@ -19,8 +19,21 @@ record_images() {
 }
 
 compose() {
+  local compose_files=(-f compose.yaml -f compose.production.yaml)
+  if [[ -f /etc/cloud-harness-mcp/ingress.conf ]]; then
+    # shellcheck disable=SC1091
+    source /etc/cloud-harness-mcp/ingress.conf 2>/dev/null || true
+    if [[ ${INGRESS_MODE:-} == "tunnel" && -f deploy/cloudflare-tunnel/compose.tunnel.yaml ]]; then
+      compose_files+=(-f deploy/cloudflare-tunnel/compose.tunnel.yaml)
+      if [[ -f /etc/cloud-harness-mcp/tunnel.env ]]; then
+        # shellcheck disable=SC1091
+        source /etc/cloud-harness-mcp/tunnel.env 2>/dev/null || true
+        export CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+      fi
+    fi
+  fi
   CLOUD_HARNESS_ENV_FILE="$env_file" HOST_JOBS_ROOT="$state/jobs" HOST_STATE_ROOT="$state/state" HOST_ARTIFACT_ROOT="$state/artifacts" \
-    docker compose -f compose.yaml -f compose.production.yaml "$@"
+    docker compose "${compose_files[@]}" "$@"
 }
 
 stop_release() {

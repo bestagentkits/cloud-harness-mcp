@@ -48,8 +48,10 @@ Rootful Docker and a shared kernel remain the principal limitation. A runner
 compromise can control the host, and a container escape crosses the executor
 boundary. Do not expose this design to mutually distrustful tenants. That
 requires a separate execution host or VM/microVM-grade boundary, quota-backed
-storage, per-tenant identity/authorization, and stronger abuse controls.
-
+storage, per-tenant identity/authorization, and stronger abuse controls. For the
+architectural roadmap, hardware-isolated microVM criteria, and formal owner
+gating governing future multi-tenant platform expansion, see
+[`docs/adr/0001-multi-tenant-isolation-and-haas-ladder.md`](adr/0001-multi-tenant-isolation-and-haas-ladder.md).
 ## Public authentication and request controls
 
 The default `owner-bearer` mode authenticates one long-lived replayable owner
