@@ -6,3 +6,4 @@ export * from './mcp-results.js';
 export * from './runner-api.js';
 export * from './tool-schemas.js';
 export * from './secret-policy.js';
+export * from './context-provenance.js';

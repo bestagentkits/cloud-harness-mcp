@@ -623,6 +623,7 @@ async function scanWorkspaceContext(input = {}) {
           id: `ctx_skill_${s.name}`,
           kind: 'skill-summary',
           format: 'skill-md',
+          partition: s.source,
           clients: ['all'],
           path: relPath,
           activeForClient: true,
