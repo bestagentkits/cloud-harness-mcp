@@ -69,3 +69,15 @@ docker compose --profile images build executor-image
 ### 7. Local Stdio: `--workspace path must be absolute` or Directory Error
 **Cause:** The `--workspace` argument provided to `cloud-harness-mcp --transport stdio` is relative, does not exist, or points to a regular file instead of a directory.
 **Fix:** Provide a valid, existing absolute directory path (e.g. `/home/user/project` or `/mnt/c/Users/user/project` in WSL). Native Windows path formats (like `C:\...`) are unsupported in v1 local stdio mode; run the process inside WSL instead.
+
+---
+
+### 8. ChatGPT: `FORBIDDEN: This conversation does not support developer MCPs`
+**Cause:** ChatGPT allows tool discovery, but blocks invocation because the active conversation surface (e.g. Custom GPT, Project chat, Canvas, Mobile app, or temporary chat) or user account restricts draft developer MCPs, or the connector is in draft state without workspace publishing.
+**Fix:**
+1. **Open Standard 1-on-1 Web Chat:** Use ChatGPT Web in a standard chat thread and select or `@mention` CloudHarness.
+2. **Enable Developer Mode:** Verify that **Settings → Apps → Advanced Settings → Developer mode** is enabled for your account.
+3. **Publish Connector (Workspace Admins):** In **Workspace Settings → Apps → Drafts**, select CloudHarness and click **Publish** to promote it from a draft Developer MCP to an approved workspace **Custom Connector**.
+4. **Verify Plan Support:** Full MCP write actions (such as `workspace_open`) are in beta for ChatGPT Business, Enterprise, and Edu plans.
+5. **Start Fresh Thread:** If the connector was recently created or authorized, open a new chat session to clear stale conversation state.
+6. See [ChatGPT Configuration Guide](/ai-tools/chatgpt) for complete setup steps.
