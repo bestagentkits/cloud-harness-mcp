@@ -189,9 +189,12 @@ export class KnowledgeStore {
         (principal_id, item_id, target_generation, content_sha256, state, attempts, error_message, created_at, updated_at)
         VALUES (?, ?, 1, ?, 'PENDING', 0, NULL, ?, ?)
       `).run(params.principalId, id, contentSha256, now, now);
-
       this.database.exec('COMMIT');
-
+      try {
+        this.searchEngine.indexItemChunks(params.principalId, id, 1, params.title.trim(), content);
+      } catch {
+        // Non-blocking index error
+      }
       return {
         id,
         principalId: params.principalId,
@@ -422,9 +425,12 @@ export class KnowledgeStore {
         (principal_id, item_id, target_generation, content_sha256, state, attempts, error_message, created_at, updated_at)
         VALUES (?, ?, ?, ?, 'PENDING', 0, NULL, ?, ?)
       `).run(params.principalId, existing.id, nextGeneration, contentSha256, now, now);
-
       this.database.exec('COMMIT');
-
+      try {
+        this.searchEngine.indexItemChunks(params.principalId, existing.id, nextGeneration, title, content);
+      } catch {
+        // Non-blocking index error
+      }
       return {
         success: true,
         item: {

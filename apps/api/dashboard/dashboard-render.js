@@ -546,7 +546,7 @@ export function renderKnowledgeDetail(item) {
         <button id="delete-knowledge-btn" class="danger" type="button" data-id="${escape(item.id)}" data-generation="${escape(item.generation)}">Delete</button>
       </div>
     </div>
-    <div class="knowledge-tags-row" style="margin-block-end: var(--space-3);">${tagsHtml}</div>
+    <div class="knowledge-tags-row">${tagsHtml}</div>
 
     <div class="knowledge-split-container">
       <div class="knowledge-editor-pane">
@@ -559,7 +559,7 @@ export function renderKnowledgeDetail(item) {
       </div>
     </div>
 
-    <div class="form-row" style="margin-block-start: var(--space-4);">
+    <div class="form-row knowledge-relations-row">
       <section class="panel" aria-labelledby="outbound-links-heading">
         <h3 id="outbound-links-heading">Outgoing Relations</h3>
         ${outboundHtml}
@@ -612,7 +612,7 @@ export function renderKnowledgeGraph(graphResult) {
   `).join('');
 
   const accessibleTable = `
-    <details style="margin-block-start: var(--space-3);">
+    <details class="knowledge-graph-details">
       <summary>Accessible Graph Edge List (${edges.length} edges)</summary>
       <ul>${edges.map((e) => `<li><strong>${escape(e.sourceId)}</strong> ${escape(e.relation)} <strong>${escape(e.targetId)}</strong> <small>(${escape(e.origin)})</small></li>`).join('')}</ul>
     </details>

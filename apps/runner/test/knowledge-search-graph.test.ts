@@ -43,23 +43,9 @@ describe('Knowledge Search Engine and Graph Service', () => {
         tags: ['react', 'frontend']
       });
       expect(item3.id).toBeDefined();
-
-      // Populate vector embeddings for item1 and item2 using local embedding generator
-      const vec1 = store.knowledge.searchEngine.generateLocalEmbeddingVector(item1.title + ' ' + item1.content);
-      const vec2 = store.knowledge.searchEngine.generateLocalEmbeddingVector(item2.title + ' ' + item2.content);
-      const now = Date.now();
-
-      store.database.prepare(`
-        INSERT INTO knowledge_embeddings
-        (principal_id, item_id, chunk_ordinal, chunk_sha256, vector_blob, dimensions, model_fingerprint, created_at)
-        VALUES
-        ('p_search_user', ?, 0, ?, ?, 128, 'local-v1', ?),
-        ('p_search_user', ?, 0, ?, ?, 128, 'local-v1', ?)
-      `).run(
-        item1.id, item1.contentSha256, Buffer.from(vec1.buffer), now,
-        item2.id, item2.contentSha256, Buffer.from(vec2.buffer), now
-      );
-
+      // Verify automatic embedding indexing happened on item creation
+      const embRows = store.database.prepare("SELECT count(*) as count FROM knowledge_embeddings WHERE principal_id = 'p_search_user'").get() as { count: number };
+      expect(embRows.count).toBeGreaterThanOrEqual(3);
       // 1. Exact Lexical Match
       const searchExact = store.knowledge.searchItems({
         principalId: 'p_search_user',

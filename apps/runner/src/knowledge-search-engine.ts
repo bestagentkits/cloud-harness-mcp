@@ -79,6 +79,68 @@ export class KnowledgeSearchEngine {
     }
     return vector;
   }
+  chunkMarkdown(text: string, title = '', targetTokens = 200): string[] {
+    const paragraphs = text.split(/\n\s*\n+/).map((p) => p.trim()).filter(Boolean);
+    if (paragraphs.length === 0) return [title ? `${title}` : ''];
+
+    const chunks: string[] = [];
+    let currentChunk = title ? `# ${title}\n` : '';
+    let currentTokens = currentChunk.split(/\s+/).length;
+
+    for (const paragraph of paragraphs) {
+      const pTokens = paragraph.split(/\s+/).length;
+      if (currentTokens + pTokens > targetTokens && currentChunk.trim().length > 0) {
+        chunks.push(currentChunk.trim());
+        currentChunk = (title ? `# ${title}\n` : '') + paragraph + '\n';
+        currentTokens = currentChunk.split(/\s+/).length;
+      } else {
+        currentChunk += paragraph + '\n';
+        currentTokens += pTokens;
+      }
+    }
+    if (currentChunk.trim().length > 0) {
+      chunks.push(currentChunk.trim());
+    }
+    return chunks.length > 0 ? chunks : [text];
+  }
+
+  indexItemChunks(principalId: string, itemId: string, targetGeneration: number, title: string, content: string, modelFingerprint = 'local-v1'): void {
+    const now = Date.now();
+    const chunks = this.chunkMarkdown(content, title);
+    const dimensions = 128;
+
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare(`
+        DELETE FROM knowledge_embeddings
+        WHERE principal_id = ? AND item_id = ? AND model_fingerprint = ?
+      `).run(principalId, itemId, modelFingerprint);
+
+      for (let ordinal = 0; ordinal < chunks.length; ordinal++) {
+        const chunkText = chunks[ordinal] ?? '';
+        const chunkSha256 = createHash('sha256').update(chunkText).digest('hex');
+        const vector = this.generateLocalEmbeddingVector(chunkText, dimensions);
+        const vectorBlob = Buffer.from(vector.buffer);
+
+        this.database.prepare(`
+          INSERT INTO knowledge_embeddings
+          (principal_id, item_id, chunk_ordinal, chunk_sha256, vector_blob, dimensions, model_fingerprint, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(principalId, itemId, ordinal, chunkSha256, vectorBlob, dimensions, modelFingerprint, now);
+      }
+
+      this.database.prepare(`
+        UPDATE knowledge_index_jobs
+        SET state = 'COMPLETED', updated_at = ?
+        WHERE principal_id = ? AND item_id = ? AND target_generation = ?
+      `).run(now, principalId, itemId, targetGeneration);
+
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
 
   search(params: SearchKnowledgeParams): { results: KnowledgeSearchResultItem[]; nextCursor?: string } {
     const now = Date.now();
@@ -166,7 +228,7 @@ export class KnowledgeSearchEngine {
         args.push(params.principalId, ...cleanTags);
       }
     }
-
+    sql += ' ORDER BY COALESCE(occurred_at, updated_at) DESC, id DESC LIMIT 200';
     interface ItemRow {
       id: string;
       principal_id: string;

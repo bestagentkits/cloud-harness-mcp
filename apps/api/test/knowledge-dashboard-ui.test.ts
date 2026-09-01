@@ -35,6 +35,9 @@ Referencing [[kn_mem1234567890|Cache Architecture]] doc.
     expect(html).toContain('<td>Val 1</td>');
     expect(html).toContain('href="/dashboard/knowledge/kn_mem1234567890"');
     expect(html).toContain('>Cache Architecture</a>');
+    expect(html).toContain('>Cache Architecture</a>');
+    expect(html).not.toContain('style=');
+    expect(html).not.toContain('<style>');
   });
 
   it('renders Mermaid diagrams into CSP-safe SVG with zero <style> tags and zero inline styles', () => {
@@ -79,6 +82,9 @@ graph TD
     expect(html).toContain('HYBRID 96%');
     expect(html).toContain('test');
     expect(html).toContain('arch');
+    expect(html).toContain('arch');
+    expect(html).not.toContain('style=');
+    expect(html).not.toContain('<style>');
   });
 
   it('renders Knowledge detail with split editor/preview and backlinks', () => {
@@ -103,6 +109,9 @@ graph TD
     expect(html).toContain('kn_jnl1234567890');
     expect(html).toContain('Backlinks');
     expect(html).toContain('kn_mem9876543210');
+    expect(html).toContain('kn_mem9876543210');
+    expect(html).not.toContain('style=');
+    expect(html).not.toContain('<style>');
   });
 
   it('renders Knowledge Graph with SVG nodes and accessible fallback', () => {
@@ -122,5 +131,8 @@ graph TD
     expect(html).toContain('data-node-id="kn_2"');
     expect(html).toContain('Accessible Graph Edge List');
     expect(html).toContain('<strong>kn_1</strong> references <strong>kn_2</strong>');
+    expect(html).toContain('<strong>kn_1</strong> references <strong>kn_2</strong>');
+    expect(html).not.toContain('style=');
+    expect(html).not.toContain('<style>');
   });
 });

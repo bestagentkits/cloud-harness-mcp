@@ -393,6 +393,10 @@ dialog::backdrop { background: oklch(0.14 0.02 255 / .55); }
 .knowledge-meta-bar { display: flex; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-12); color: var(--ink-muted); font-family: var(--font-mono); }
 
 .relevance-badge { display: inline-flex; align-items: center; gap: var(--space-1); padding: 0.125rem var(--space-2); border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: var(--text-11); font-weight: 700; }
+.knowledge-tags-row { margin-block-end: var(--space-3); }
+.knowledge-relations-row { margin-block-start: var(--space-4); }
+.knowledge-graph-details { margin-block-start: var(--space-3); }
+.status-error { color: var(--danger); }
 .relevance-badge.hybrid { background: var(--accent-soft); color: var(--accent-strong); border: 1px solid var(--accent-line); }
 .relevance-badge.lexical { background: var(--surface-muted); color: var(--ink); border: 1px solid var(--line); }
 .relevance-badge.semantic { background: var(--success-soft); color: var(--success); border: 1px solid var(--success-line); }

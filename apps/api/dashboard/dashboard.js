@@ -1056,7 +1056,7 @@ export function initializeDashboard() {
           graphMount.innerHTML = renderKnowledgeGraph(graphRes.data);
           bindKnowledgeGraphControls();
         } catch (err) {
-          graphMount.innerHTML = `<p class="form-status" style="color: var(--danger)">Graph error: ${escape(err.message)}</p>`;
+          graphMount.innerHTML = `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`;
         }
       }
     }
