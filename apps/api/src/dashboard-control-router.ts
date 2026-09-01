@@ -118,6 +118,30 @@ export function registerDashboardControlRoutes(
   router.delete('/api/v1/api-keys/:keyId', apiKeyEndpoint('api_key_revoke', (request) => ({
     keyId: internalId('apk').parse(request.params.keyId), ...generation.parse(request.body)
   })));
+  router.get('/api/v1/knowledge', endpoint('knowledge_dashboard_list', (request) => ({
+    ...(request.query.kind ? { kind: String(request.query.kind) } : {}),
+    ...(request.query.scope ? { scope: String(request.query.scope) } : {}),
+    ...(request.query.projectId ? { projectId: internalId('prj').parse(request.query.projectId) } : {}),
+    ...(request.query.journalType ? { journalType: String(request.query.journalType) } : {}),
+    ...(request.query.tags ? { tags: String(request.query.tags).split(',').map((t) => t.trim()).filter(Boolean) } : {}),
+    ...(request.query.tagMatch ? { tagMatch: String(request.query.tagMatch) } : {}),
+    ...(request.query.limit ? { limit: Number(request.query.limit) } : {}),
+    ...(request.query.cursor ? { cursor: String(request.query.cursor) } : {})
+  })));
+  router.get('/api/v1/knowledge/:id', endpoint('knowledge_dashboard_get', (request) => ({ id: request.params.id })));
+  router.post('/api/v1/knowledge', endpoint('knowledge_dashboard_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.put('/api/v1/knowledge/:id', endpoint('knowledge_dashboard_update', (request) => ({ id: request.params.id, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.delete('/api/v1/knowledge/:id', endpoint('knowledge_dashboard_delete', (request) => ({ id: request.params.id, ...generation.parse(request.body) })));
+  router.post('/api/v1/knowledge/search', endpoint('knowledge_dashboard_search', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.get('/api/v1/knowledge-graph', endpoint('knowledge_dashboard_graph', (request) => ({
+    ...(request.query.rootId ? { rootId: String(request.query.rootId) } : {}),
+    ...(request.query.depth ? { depth: Number(request.query.depth) } : {}),
+    ...(request.query.maxNodes ? { maxNodes: Number(request.query.maxNodes) } : {}),
+    ...(request.query.kinds ? { kinds: String(request.query.kinds).split(',').map((k) => k.trim()).filter(Boolean) } : {}),
+    ...(request.query.projectId ? { projectId: internalId('prj').parse(request.query.projectId) } : {})
+  })));
+  router.post('/api/v1/knowledge/links', endpoint('knowledge_dashboard_link_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.delete('/api/v1/knowledge/links', endpoint('knowledge_dashboard_link_delete', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
 
   function endpoint(operation: MetadataRunnerOperation, input: (request: DashboardRequest) => Record<string, unknown>) {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {

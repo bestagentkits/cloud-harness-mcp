@@ -38,9 +38,9 @@
         <a href="/dashboard/api-keys" data-section="api-keys"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 8-8"/><path d="m15.5 5.5 2 2"/><path d="m18.5 2.5 2.5 2.5"/></svg>API keys</a>
         <a href="/dashboard/github" data-section="github"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="17.5" cy="8" r="2.5"/><path d="M6 8.5v7"/><path d="M17.5 10.5a6 6 0 0 1-6 6H8.5"/></svg>GitHub</a>
         <p class="nav-group">Observability</p>
+        <a href="/dashboard/knowledge" data-section="knowledge"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6 6h10"/><path d="M6 10h10"/><path d="M6 14h6"/></svg>Knowledge</a>
         <a href="/dashboard/artifacts" data-section="artifacts"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>Artifacts</a>
         <a href="/dashboard/audit" data-section="audit"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4.5h6a1 1 0 0 1 1 1V6a1 1 0 0 1-1 1H9A1 1 0 0 1 8 6v-.5a1 1 0 0 1 1-1z"/><path d="M16 5.5h2a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5a1 1 0 0 1 1-1h2"/><path d="M9 12h6"/><path d="M9 16h4"/></svg>Audit</a>
-        <p class="nav-group">Account</p>
         <a href="/dashboard/profile" data-section="profile"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/></svg>Profile</a>
         <div id="context-nav"></div>
       </nav>
@@ -210,6 +210,76 @@
       <div class="dialog-actions">
         <button type="button" id="cancel-model-profile">Cancel</button>
         <button type="submit" id="submit-model-profile" class="accent-btn">Save profile</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="knowledge-conflict-dialog" aria-labelledby="knowledge-conflict-title" aria-describedby="knowledge-conflict-description">
+    <h2 id="knowledge-conflict-title">Knowledge item changed on server</h2>
+    <p id="knowledge-conflict-description">This item was updated by another process (generation mismatch). Review the versions below to resolve conflicts.</p>
+    <div class="conflict-3way-grid">
+      <div class="conflict-pane">
+        <h3>Base version (Gen <span id="conflict-base-gen"></span>)</h3>
+        <pre id="conflict-base-content" class="mono conflict-text"></pre>
+      </div>
+      <div class="conflict-pane">
+        <h3>Current on server (Gen <span id="conflict-current-gen"></span>)</h3>
+        <pre id="conflict-current-content" class="mono conflict-text"></pre>
+      </div>
+      <div class="conflict-pane">
+        <h3>Your changes (unsaved)</h3>
+        <pre id="conflict-yours-content" class="mono conflict-text"></pre>
+      </div>
+    </div>
+    <p id="knowledge-conflict-status" class="status-message" aria-live="polite"></p>
+    <div class="dialog-actions">
+      <button type="button" id="cancel-knowledge-conflict">Keep my draft & cancel</button>
+      <button type="button" id="copy-yours-conflict">Copy my draft</button>
+      <button type="button" id="overwrite-current-conflict" class="accent-btn">Load current server version</button>
+    </div>
+  </dialog>
+  <dialog id="create-knowledge-dialog" aria-labelledby="create-knowledge-title" aria-describedby="create-knowledge-description">
+    <h2 id="create-knowledge-title">Create Knowledge item</h2>
+    <p id="create-knowledge-description">Create a scoped memory note or chronological engineering journal.</p>
+    <form id="create-knowledge-form" class="stack-form">
+      <div class="form-row">
+        <div>
+          <label for="create-kn-kind">Kind</label>
+          <select id="create-kn-kind" name="kind">
+            <option value="memory" selected>Memory (Durable note)</option>
+            <option value="journal">Journal (Chronological entry)</option>
+          </select>
+        </div>
+        <div>
+          <label for="create-kn-scope">Scope</label>
+          <select id="create-kn-scope" name="scope">
+            <option value="owner" selected>Owner (Global)</option>
+            <option value="project">Project</option>
+            <option value="workspace">Workspace</option>
+          </select>
+        </div>
+      </div>
+      <div id="create-kn-project-row" class="form-row" hidden>
+        <label for="create-kn-project">Project</label>
+        <select id="create-kn-project" name="projectId"></select>
+      </div>
+      <div id="create-kn-journal-row" class="form-row" hidden>
+        <label for="create-kn-journal-type">Journal type</label>
+        <select id="create-kn-journal-type" name="journalType">
+          <option value="engineering-log" selected>Engineering Log</option>
+          <option value="decision-record">Decision Record</option>
+          <option value="session-reflection">Session Reflection</option>
+        </select>
+      </div>
+      <label for="create-kn-title">Title</label>
+      <input id="create-kn-title" name="title" required maxlength="120" placeholder="E.g. Database Connection Pooling">
+      <label for="create-kn-tags">Tags (comma-separated)</label>
+      <input id="create-kn-tags" name="tags" placeholder="postgres, caching, adr">
+      <label for="create-kn-content">Markdown content</label>
+      <textarea id="create-kn-content" name="content" rows="6" placeholder="# Title&#10;Write content here..." required></textarea>
+      <p id="create-knowledge-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-create-knowledge">Cancel</button>
+        <button type="submit" id="submit-create-knowledge" class="accent-btn">Create item</button>
       </div>
     </form>
   </dialog>

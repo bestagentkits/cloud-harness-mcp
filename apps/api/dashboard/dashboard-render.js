@@ -277,3 +277,357 @@ export function renderModelsPage(profiles = [], credentials = [], status = null)
     </section>
   `;
 }
+export function renderMarkdown(markdown = '') {
+  if (!markdown) return '<p class="empty">No content.</p>';
+  const lines = String(markdown).split('\n');
+  const html = [];
+  let inCode = false;
+  let codeLang = '';
+  let codeLines = [];
+  let inList = false;
+  let inTable = false;
+  let tableRows = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Code block toggle
+    if (line.trim().startsWith('```')) {
+      if (inCode) {
+        inCode = false;
+        const rawCode = codeLines.join('\n');
+        if (codeLang.toLowerCase() === 'mermaid') {
+          html.push(renderMermaidSvg(rawCode));
+        } else {
+          html.push(`<pre><code class="lang-${escape(codeLang)}">${escape(rawCode)}</code></pre>`);
+        }
+        codeLines = [];
+        codeLang = '';
+      } else {
+        inCode = true;
+        codeLang = line.trim().slice(3).trim();
+        codeLines = [];
+      }
+      continue;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+
+    // Table parsing
+    if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+      inTable = true;
+      tableRows.push(line.trim());
+      continue;
+    } else if (inTable) {
+      inTable = false;
+      html.push(renderMarkdownTable(tableRows));
+      tableRows = [];
+    }
+
+    // Blank lines
+    if (!line.trim()) {
+      if (inList) { inList = false; html.push('</ul>'); }
+      continue;
+    }
+
+    // Headings
+    if (line.startsWith('#### ')) { html.push(`<h4>${formatInline(line.slice(5))}</h4>`); continue; }
+    if (line.startsWith('### ')) { html.push(`<h3>${formatInline(line.slice(4))}</h3>`); continue; }
+    if (line.startsWith('## ')) { html.push(`<h2>${formatInline(line.slice(3))}</h2>`); continue; }
+    if (line.startsWith('# ')) { html.push(`<h1>${formatInline(line.slice(2))}</h1>`); continue; }
+
+    // Blockquote
+    if (line.startsWith('> ')) { html.push(`<blockquote>${formatInline(line.slice(2))}</blockquote>`); continue; }
+
+    // Lists
+    if (line.trim().startsWith('- [ ] ') || line.trim().startsWith('- [x] ')) {
+      if (!inList) { inList = true; html.push('<ul class="task-list">'); }
+      const checked = line.trim().startsWith('- [x] ');
+      const text = line.trim().slice(6);
+      html.push(`<li><input type="checkbox" ${checked ? 'checked' : ''} disabled> ${formatInline(text)}</li>`);
+      continue;
+    }
+    if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
+      if (!inList) { inList = true; html.push('<ul>'); }
+      html.push(`<li>${formatInline(line.trim().slice(2))}</li>`);
+      continue;
+    }
+
+    if (inList) { inList = false; html.push('</ul>'); }
+
+    // Regular paragraph
+    html.push(`<p>${formatInline(line)}</p>`);
+  }
+
+  if (inCode) {
+    html.push(`<pre><code>${escape(codeLines.join('\n'))}</code></pre>`);
+  }
+  if (inList) html.push('</ul>');
+  if (inTable) html.push(renderMarkdownTable(tableRows));
+
+  return html.join('\n');
+}
+
+function renderMarkdownTable(rows) {
+  if (!rows.length) return '';
+  const parsed = rows.map((r) => r.split('|').map((c) => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1));
+  if (parsed.length < 2) return `<p>${escape(rows.join('\n'))}</p>`;
+  const headers = parsed[0];
+  const bodyRows = parsed.slice(2);
+  const headerHtml = `<thead><tr>${headers.map((h) => `<th>${formatInline(h)}</th>`).join('')}</tr></thead>`;
+  const bodyHtml = `<tbody>${bodyRows.map((r) => `<tr>${r.map((c) => `<td>${formatInline(c)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+  return `<div class="desktop-table"><table>${headerHtml}${bodyHtml}</table></div>`;
+}
+
+function formatInline(text = '') {
+  let out = escape(text);
+  // Wikilinks: [[id|Label]] or [[id]]
+  out = out.replace(/\[\[(kn_[A-Za-z0-9_-]+)(?:\|([^\]]+))?\]\]/g, (_, id, label) => `<a class="wikilink" href="/dashboard/knowledge/${encodeURIComponent(id)}">${escape(label || id)}</a>`);
+  // Bold & Italic
+  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  // Inline code
+  out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+  return out;
+}
+
+export function renderMermaidSvg(code = '') {
+  const cleanCode = code.trim();
+  if (!cleanCode) return '<p class="empty">Empty diagram.</p>';
+  const lines = cleanCode.split('\n').map((l) => l.trim()).filter(Boolean);
+  const nodes = [];
+  const edges = [];
+
+  for (const line of lines) {
+    if (line.startsWith('graph ') || line.startsWith('flowchart ') || line.startsWith('sequenceDiagram') || line.startsWith('%%')) continue;
+    const arrowMatch = line.match(/^([A-Za-z0-9_-]+)(?:\[([^\]]+)\])?\s*-->\s*([A-Za-z0-9_-]+)(?:\[([^\]]+)\])?$/);
+    if (arrowMatch) {
+      const [, srcId, srcLabel, tgtId, tgtLabel] = arrowMatch;
+      if (!nodes.some((n) => n.id === srcId)) nodes.push({ id: srcId, label: srcLabel || srcId });
+      if (!nodes.some((n) => n.id === tgtId)) nodes.push({ id: tgtId, label: tgtLabel || tgtId });
+      edges.push({ from: srcId, to: tgtId });
+    } else {
+      const singleNodeMatch = line.match(/^([A-Za-z0-9_-]+)(?:\[([^\]]+)\])$/);
+      if (singleNodeMatch) {
+        const [, nId, nLabel] = singleNodeMatch;
+        if (!nodes.some((n) => n.id === nId)) nodes.push({ id: nId, label: nLabel || nId });
+      }
+    }
+  }
+
+  if (!nodes.length) {
+    return `<pre class="mermaid-fallback"><code>${escape(cleanCode)}</code></pre>`;
+  }
+
+  const nodeWidth = 140;
+  const nodeHeight = 40;
+  const spacingX = 180;
+  const spacingY = 80;
+  const width = Math.max(400, (nodes.length * spacingX) / 2 + 100);
+  const height = Math.max(200, Math.ceil(nodes.length / 2) * spacingY + 80);
+
+  const positionedNodes = nodes.map((n, idx) => ({
+    ...n,
+    x: 40 + (idx % 3) * spacingX,
+    y: 30 + Math.floor(idx / 3) * spacingY
+  }));
+
+  const nodeMap = new Map(positionedNodes.map((n) => [n.id, n]));
+
+  const edgeSvg = edges.map((e) => {
+    const src = nodeMap.get(e.from);
+    const tgt = nodeMap.get(e.to);
+    if (!src || !tgt) return '';
+    const x1 = src.x + nodeWidth / 2;
+    const y1 = src.y + nodeHeight;
+    const x2 = tgt.x + nodeWidth / 2;
+    const y2 = tgt.y;
+    return `<path class="mermaid-edge" d="M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}" marker-end="url(#mermaid-arrow)"/>`;
+  }).join('');
+
+  const nodeSvg = positionedNodes.map((n) => `
+    <g class="mermaid-node-group" transform="translate(${n.x}, ${n.y})">
+      <rect class="mermaid-node" width="${nodeWidth}" height="${nodeHeight}" rx="4"/>
+      <text class="mermaid-label" x="${nodeWidth / 2}" y="${nodeHeight / 2 + 4}" text-anchor="middle">${escape(n.label)}</text>
+    </g>
+  `).join('');
+
+  return `<div class="mermaid-diagram"><svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mermaid diagram"><defs><marker id="mermaid-arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 8 5 L 0 9 z" fill="var(--line-strong)"/></marker></defs>${edgeSvg}${nodeSvg}</svg></div>`;
+}
+export function renderKnowledgeIndex(data, query = {}, activeTab = 'all') {
+  const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data?.results) ? data.results.map((r) => r.item) : []);
+  const results = Array.isArray(data?.results) ? data.results : null;
+  const searchHint = query.q ? `<p class="form-status">Search results for: <strong>${escape(query.q)}</strong></p>` : '';
+  const tabNav = `
+    <div class="knowledge-nav-tabs" role="tablist" aria-label="Knowledge views">
+      <button type="button" class="knowledge-tab-btn ${activeTab === 'all' ? 'active' : ''}" data-kn-tab="all" role="tab" aria-selected="${activeTab === 'all'}">All (${items.length})</button>
+      <button type="button" class="knowledge-tab-btn ${activeTab === 'memories' ? 'active' : ''}" data-kn-tab="memories" role="tab" aria-selected="${activeTab === 'memories'}">Memories</button>
+      <button type="button" class="knowledge-tab-btn ${activeTab === 'journals' ? 'active' : ''}" data-kn-tab="journals" role="tab" aria-selected="${activeTab === 'journals'}">Journals</button>
+      <button type="button" class="knowledge-tab-btn ${activeTab === 'graph' ? 'active' : ''}" data-kn-tab="graph" role="tab" aria-selected="${activeTab === 'graph'}">Knowledge Graph</button>
+    </div>
+  `;
+
+  if (activeTab === 'graph') {
+    return `${tabNav}<div id="knowledge-graph-mount" class="knowledge-graph-container" aria-live="polite"><p class="form-status">Loading knowledge graph…</p></div>`;
+  }
+
+  const listItemsHtml = items.length ? items.map((item, idx) => {
+    const resultMeta = results ? results[idx] : null;
+    const relevanceHtml = resultMeta ? `<span class="relevance-badge ${escape(resultMeta.matchMode)}">${escape(resultMeta.matchMode.toUpperCase())} ${escape(resultMeta.relevancePercent)}%</span>` : '';
+    const tagsHtml = (item.tags || []).map((t) => `<span class="tag-badge">${escape(t)}</span>`).join(' ');
+    const dateStr = item.occurredAt ? new Date(item.occurredAt).toLocaleDateString() : (item.updatedAt ? new Date(item.updatedAt).toLocaleDateString() : '');
+    const journalTypeBadge = item.journalType ? `<span class="status">${escape(item.journalType)}</span>` : '';
+
+    return `
+      <li class="knowledge-card">
+        <div class="knowledge-card-header">
+          <div>
+            <h3 class="knowledge-card-title"><a href="/dashboard/knowledge/${encodeURIComponent(item.id)}">${escape(item.title)}</a></h3>
+            <div class="knowledge-meta-bar">
+              <span class="mono">${escape(item.id)}</span>
+              <span>${escape(item.scope.toUpperCase())}</span>
+              ${journalTypeBadge}
+              <span>${escape(dateStr)}</span>
+              <span>Gen ${escape(item.generation)}</span>
+            </div>
+          </div>
+          ${relevanceHtml}
+        </div>
+        <div class="knowledge-card-preview">${formatInline(item.content?.slice(0, 160) ?? '')}${item.content?.length > 160 ? '…' : ''}</div>
+        <div class="knowledge-tags-row">${tagsHtml}</div>
+      </li>
+    `;
+  }).join('') : '<li class="empty"><h3>No knowledge items match these filters.</h3><p>Create a memory note or journal to record durable context.</p></li>';
+
+  return `
+    <div class="page-note"><strong>Decoupled control-plane knowledge.</strong> Scoped memories and chronological journals persist independently from volatile workspace files and GitHub repository state.</div>
+    <div class="record-heading">
+      <div><h2>Knowledge Plane</h2><p>Durable memories, engineering journals, and interconnected graph relations.</p></div>
+      <button id="open-create-knowledge-btn" class="accent-btn" type="button">+ Create item</button>
+    ${tabNav}
+    ${searchHint}
+    <section aria-labelledby="knowledge-list-heading">
+      <h2 id="knowledge-list-heading" class="sr-only">Knowledge items</h2>
+      <ul class="knowledge-list">${listItemsHtml}</ul>
+    </section>
+  `;
+}
+
+export function renderKnowledgeDetail(item) {
+  const tagsHtml = (item.tags || []).map((t) => `<span class="tag-badge">${escape(t)}</span>`).join(' ');
+  const renderedContent = renderMarkdown(item.content);
+
+  const outboundHtml = (item.outboundLinks || []).length
+    ? `<ul>${item.outboundLinks.map((l) => `<li><a class="wikilink" href="/dashboard/knowledge/${encodeURIComponent(l.targetId)}">${escape(l.targetId)}</a> <small class="mono">(${escape(l.relation)})</small></li>`).join('')}</ul>`
+    : '<p class="empty">No outgoing links.</p>';
+
+  const backlinksHtml = (item.backlinks || []).length
+    ? `<ul>${item.backlinks.map((l) => `<li><a class="wikilink" href="/dashboard/knowledge/${encodeURIComponent(l.sourceId)}">${escape(l.sourceId)}</a> <small class="mono">(${escape(l.relation)})</small></li>`).join('')}</ul>`
+    : '<p class="empty">No incoming backlinks.</p>';
+
+  return `
+    <nav aria-label="Breadcrumb"><a href="/dashboard/knowledge">Knowledge</a><span>${escape(item.title)}</span></nav>
+    <div class="record-heading">
+      <div>
+        <h2>${escape(item.title)}</h2>
+        <div class="knowledge-meta-bar">
+          <span class="mono">${escape(item.id)}</span>
+          <span class="status">${escape(item.kind.toUpperCase())} (${escape(item.scope.toUpperCase())})</span>
+          ${item.journalType ? `<span class="status">${escape(item.journalType)}</span>` : ''}
+          <span>Generation <strong id="kn-current-generation">${escape(item.generation)}</strong></span>
+          ${time(item.updatedAt)}
+        </div>
+      </div>
+      <div class="row-actions">
+        <button id="save-knowledge-btn" class="accent-btn" type="button" data-id="${escape(item.id)}">Save changes</button>
+        <button id="delete-knowledge-btn" class="danger" type="button" data-id="${escape(item.id)}" data-generation="${escape(item.generation)}">Delete</button>
+      </div>
+    </div>
+    <div class="knowledge-tags-row">${tagsHtml}</div>
+
+    <div class="knowledge-split-container">
+      <div class="knowledge-editor-pane">
+        <div class="knowledge-pane-header"><span>Markdown source</span><span id="kn-edit-status">Saved</span></div>
+        <textarea id="knowledge-editor-input" class="knowledge-textarea" spellcheck="false">${escape(item.content)}</textarea>
+      </div>
+      <div class="knowledge-preview-pane">
+        <div class="knowledge-pane-header"><span>Live preview</span></div>
+        <div id="knowledge-preview-output" class="knowledge-preview-body">${renderedContent}</div>
+      </div>
+    </div>
+
+    <div class="form-row knowledge-relations-row">
+      <section class="panel" aria-labelledby="outbound-links-heading">
+        <h3 id="outbound-links-heading">Outgoing Relations</h3>
+        ${outboundHtml}
+      </section>
+      <section class="panel" aria-labelledby="backlinks-heading">
+        <h3 id="backlinks-heading">Backlinks</h3>
+        ${backlinksHtml}
+      </section>
+    </div>
+  `;
+}
+
+export function renderKnowledgeGraph(graphResult) {
+  const nodes = Array.isArray(graphResult?.nodes) ? graphResult.nodes : [];
+  const edges = Array.isArray(graphResult?.edges) ? graphResult.edges : [];
+
+  if (!nodes.length) {
+    return '<div class="empty"><h3>Knowledge graph is empty.</h3><p>Create memories, journals, or links to visualize relationships.</p></div>';
+  }
+
+  const width = 800;
+  const height = 500;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radius = Math.min(width, height) * 0.38;
+
+  const positionedNodes = nodes.map((n, idx) => {
+    const angle = (idx / nodes.length) * 2 * Math.PI;
+    return {
+      ...n,
+      x: centerX + radius * Math.cos(angle),
+      y: centerY + radius * Math.sin(angle)
+    };
+  });
+
+  const nodeMap = new Map(positionedNodes.map((n) => [n.id, n]));
+
+  const edgesSvg = edges.map((e) => {
+    const src = nodeMap.get(e.sourceId);
+    const tgt = nodeMap.get(e.targetId);
+    if (!src || !tgt) return '';
+    return `<line class="graph-edge-line ${escape(e.origin)}" x1="${src.x}" y1="${src.y}" x2="${tgt.x}" y2="${tgt.y}" stroke="var(--line-strong)" stroke-width="1.5"/>`;
+  }).join('');
+
+  const nodesSvg = positionedNodes.map((n) => `
+    <g class="graph-node-group" transform="translate(${n.x}, ${n.y})" tabindex="0" role="button" aria-label="${escape(n.title)}" data-node-id="${escape(n.id)}">
+      <circle class="graph-node-circle" r="8"/>
+      <text class="graph-node-label" y="20">${escape(n.title.slice(0, 16))}${n.title.length > 16 ? '…' : ''}</text>
+    </g>
+  `).join('');
+
+  const accessibleTable = `
+    <details class="knowledge-graph-details">
+      <summary>Accessible Graph Edge List (${edges.length} edges)</summary>
+      <ul>${edges.map((e) => `<li><strong>${escape(e.sourceId)}</strong> ${escape(e.relation)} <strong>${escape(e.targetId)}</strong> <small>(${escape(e.origin)})</small></li>`).join('')}</ul>
+    </details>
+  `;
+
+  return `
+    <svg class="knowledge-graph-svg" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Knowledge Graph Visualization">
+      ${edgesSvg}
+      ${nodesSvg}
+    </svg>
+    <div class="graph-controls">
+      <button type="button" id="graph-zoom-in" aria-label="Zoom in">+</button>
+      <button type="button" id="graph-zoom-out" aria-label="Zoom out">−</button>
+      <button type="button" id="graph-reset" aria-label="Reset view">Reset</button>
+    </div>
+    ${accessibleTable}
+  `;
+}

@@ -12,7 +12,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     const store = new StateStore(dbPath);
     try {
       const version = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(version).toBe(9);
+      expect(version).toBe(10);
     } finally {
       store.close();
     }
@@ -261,7 +261,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(9);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
       downgradeStateSchemaToV4(store.database, true);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(4);
       downgradeStateSchemaToV3(store.database);
@@ -300,8 +300,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       // Upgrade to v4
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(9);
-      // Verify row was migrated into git_operation_idempotency
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
       const migratedRow = store.getGitOperation(p, wsId, 'ik_legacy_fin_1');
       expect(migratedRow).toBeDefined();
       expect(migratedRow?.status).toBe('SUCCEEDED');
@@ -424,8 +423,7 @@ describe('StateStore Schema Version 4 Migration & Durable Primitives', () => {
 
       // Upgrade to schema version 4: MUST NOT throw foreign key constraint error!
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(9);
-      // Prior to principal mapping, git_operation_idempotency should NOT have the row (since FK to principals is enforced)
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
       const unmappedGitOp = store.database.prepare(
         'SELECT * FROM git_operation_idempotency WHERE workspace_id = ? AND idempotency_key = ?'
       ).get(wsId, 'ik_unmapped_fin');

@@ -9,6 +9,15 @@ import {
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 import { SecretDescriptionSchema, SecretNameSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
 import { ToolkitSelectionSchema } from './tool-schemas.js';
+import {
+  JournalTypeSchema,
+  KnowledgeItemIdSchema,
+  KnowledgeKindSchema,
+  KnowledgeLinkIdSchema,
+  KnowledgeRelationSchema,
+  KnowledgeScopeSchema,
+  KnowledgeTagSchema
+} from './knowledge-schemas.js';
 
 export const InternalRunnerOperationSchema = z.enum([
   'workspace_detail',
@@ -74,7 +83,10 @@ export const MetadataRunnerOperationSchema = z.enum([
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
-  'model_config_status'
+  'model_config_status',
+  'knowledge_dashboard_list', 'knowledge_dashboard_get', 'knowledge_dashboard_create', 'knowledge_dashboard_update',
+  'knowledge_dashboard_delete', 'knowledge_dashboard_search', 'knowledge_dashboard_graph',
+  'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete'
 ]);
 
 const metadataInputs = {
@@ -162,7 +174,78 @@ const metadataInputs = {
   model_profile_activate: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
   model_profile_disable: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
   model_profile_delete: z.object({ profileId: ModelProfileIdSchema, expectedGeneration: generation }).strict(),
-  model_config_status: z.object({}).strict()
+  model_config_status: z.object({}).strict(),
+  knowledge_dashboard_list: z.object({
+    kind: KnowledgeKindSchema.optional(),
+    scope: KnowledgeScopeSchema.optional(),
+    projectId: internalId('prj').optional(),
+    journalType: JournalTypeSchema.optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    tagMatch: z.enum(['all', 'any']).default('all'),
+    limit: z.number().int().min(1).max(100).default(50),
+    cursor: z.string().max(256).optional()
+  }).strict(),
+  knowledge_dashboard_get: z.object({
+    id: KnowledgeItemIdSchema
+  }).strict(),
+  knowledge_dashboard_create: z.object({
+    kind: KnowledgeKindSchema.default('memory'),
+    scope: KnowledgeScopeSchema.default('owner'),
+    projectId: internalId('prj').optional(),
+    workspaceId: WorkspaceIdSchema.optional(),
+    title: z.string().min(1).max(120),
+    content: z.string().max(262_144),
+    journalType: JournalTypeSchema.optional(),
+    occurredAt: z.number().int().positive().optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).default([]),
+    retentionSeconds: z.number().int().min(60).max(31_536_000).optional(),
+    expectedGeneration: z.literal(0)
+  }).strict(),
+  knowledge_dashboard_update: z.object({
+    id: KnowledgeItemIdSchema,
+    title: z.string().min(1).max(120).optional(),
+    content: z.string().max(262_144).optional(),
+    journalType: JournalTypeSchema.optional(),
+    occurredAt: z.number().int().positive().optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    retentionSeconds: z.number().int().min(60).max(31_536_000).optional(),
+    expectedGeneration: generation
+  }).strict(),
+  knowledge_dashboard_delete: z.object({
+    id: KnowledgeItemIdSchema,
+    expectedGeneration: generation
+  }).strict(),
+  knowledge_dashboard_search: z.object({
+    query: z.string().min(1).max(512),
+    kinds: z.array(KnowledgeKindSchema).max(2).optional(),
+    scope: KnowledgeScopeSchema.optional(),
+    projectId: internalId('prj').optional(),
+    journalType: JournalTypeSchema.optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    tagMatch: z.enum(['all', 'any']).default('all'),
+    limit: z.number().int().min(1).max(50).default(20),
+    cursor: z.string().max(256).optional()
+  }).strict(),
+  knowledge_dashboard_graph: z.object({
+    rootId: KnowledgeItemIdSchema.optional(),
+    depth: z.number().int().min(1).max(3).default(1),
+    maxNodes: z.number().int().min(1).max(200).default(50),
+    kinds: z.array(KnowledgeKindSchema).max(2).optional(),
+    projectId: internalId('prj').optional()
+  }).strict(),
+  knowledge_dashboard_link_create: z.object({
+    sourceId: KnowledgeItemIdSchema,
+    targetId: KnowledgeItemIdSchema,
+    relation: KnowledgeRelationSchema.default('relates-to'),
+    expectedGeneration: z.literal(0)
+  }).strict(),
+  knowledge_dashboard_link_delete: z.object({
+    linkId: KnowledgeLinkIdSchema.optional(),
+    sourceId: KnowledgeItemIdSchema.optional(),
+    targetId: KnowledgeItemIdSchema.optional(),
+    relation: KnowledgeRelationSchema.optional(),
+    expectedGeneration: generation.optional()
+  }).strict()
 } as const;
 
 const metadataRequest = <Operation extends keyof typeof metadataInputs>(operation: Operation) => z.object({
@@ -183,7 +266,10 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject'),
   metadataRequest('model_credential_list'), metadataRequest('model_credential_create'), metadataRequest('model_credential_rotate'), metadataRequest('model_credential_delete'),
   metadataRequest('model_profile_list'), metadataRequest('model_profile_create'), metadataRequest('model_profile_update'), metadataRequest('model_profile_activate'), metadataRequest('model_profile_disable'), metadataRequest('model_profile_delete'),
-  metadataRequest('model_config_status')
+  metadataRequest('model_config_status'),
+  metadataRequest('knowledge_dashboard_list'), metadataRequest('knowledge_dashboard_get'), metadataRequest('knowledge_dashboard_create'), metadataRequest('knowledge_dashboard_update'),
+  metadataRequest('knowledge_dashboard_delete'), metadataRequest('knowledge_dashboard_search'), metadataRequest('knowledge_dashboard_graph'),
+  metadataRequest('knowledge_dashboard_link_create'), metadataRequest('knowledge_dashboard_link_delete')
 ]);
 
 export type InternalRunnerOperation = z.infer<typeof InternalRunnerOperationSchema>;

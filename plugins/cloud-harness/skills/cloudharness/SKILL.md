@@ -21,7 +21,7 @@ network isolation.
 | List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |
 | Run a command, interactive shell, coding session, or dependency task | [Execution and tasks](references/execution-and-tasks.md) |
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |
-| Read/run repository skills, hooks, memories, or deployments | [Repository automation](references/repository-automation.md) |
+| Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
 
 Read a reference before using an unfamiliar, destructive, networked, or

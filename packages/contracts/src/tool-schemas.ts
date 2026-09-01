@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
-
+import {
+  JournalTypeSchema,
+  KnowledgeItemIdSchema,
+  KnowledgeKindSchema,
+  KnowledgeLinkIdSchema,
+  KnowledgeRelationSchema,
+  KnowledgeScopeSchema,
+  KnowledgeTagSchema,
+  ProjectIdSchema
+} from './knowledge-schemas.js';
 const relativePath = z.string().min(1).max(1_024).refine((value) => {
   const normalized = value.replaceAll('\\', '/');
   return !normalized.startsWith('/') && !/^[A-Za-z]:/.test(normalized) && !normalized.split('/').includes('..') && !normalized.includes('\0');
@@ -481,6 +490,97 @@ const schemas = {
   }).superRefine((input, context) => {
     if (!input.memoryId && !input.name) context.addIssue({ code: 'custom', message: 'memoryId or name is required' });
   }),
+  knowledge_create: z.object({
+    ...workspace,
+    kind: KnowledgeKindSchema.default('memory'),
+    scope: KnowledgeScopeSchema.default('workspace'),
+    projectId: ProjectIdSchema.optional(),
+    title: z.string().min(1).max(120),
+    content: z.string().max(262_144),
+    journalType: JournalTypeSchema.optional(),
+    occurredAt: z.number().int().positive().optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).default([]),
+    retentionSeconds: z.number().int().min(60).max(31_536_000).optional(),
+    expectedGeneration: z.number().int().min(0).default(0),
+    idempotencyKey: z.string().min(1).max(256).optional()
+  }).superRefine((input, ctx) => {
+    if (input.scope === 'project' && !input.projectId) {
+      ctx.addIssue({ code: 'custom', message: 'projectId is required for project-scoped knowledge' });
+    }
+    if (input.kind === 'journal' && !input.journalType) {
+      ctx.addIssue({ code: 'custom', message: 'journalType is required for journal items' });
+    }
+  }),
+  knowledge_read: z.object({
+    ...workspace,
+    id: KnowledgeItemIdSchema
+  }),
+  knowledge_update: z.object({
+    ...workspace,
+    id: KnowledgeItemIdSchema,
+    title: z.string().min(1).max(120).optional(),
+    content: z.string().max(262_144).optional(),
+    journalType: JournalTypeSchema.optional(),
+    occurredAt: z.number().int().positive().optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    retentionSeconds: z.number().int().min(60).max(31_536_000).optional(),
+    expectedGeneration: z.number().int().positive()
+  }),
+  knowledge_delete: z.object({
+    ...workspace,
+    id: KnowledgeItemIdSchema,
+    expectedGeneration: z.number().int().positive()
+  }),
+  knowledge_list: z.object({
+    ...workspace,
+    kind: KnowledgeKindSchema.optional(),
+    scope: KnowledgeScopeSchema.optional(),
+    projectId: ProjectIdSchema.optional(),
+    journalType: JournalTypeSchema.optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    tagMatch: z.enum(['all', 'any']).default('all'),
+    limit: z.number().int().min(1).max(100).default(50),
+    cursor: z.string().max(256).optional()
+  }),
+  knowledge_search: z.object({
+    ...workspace,
+    query: z.string().min(1).max(512),
+    kinds: z.array(KnowledgeKindSchema).max(2).optional(),
+    scope: KnowledgeScopeSchema.optional(),
+    projectId: ProjectIdSchema.optional(),
+    journalType: JournalTypeSchema.optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    tagMatch: z.enum(['all', 'any']).default('all'),
+    limit: z.number().int().min(1).max(50).default(20),
+    cursor: z.string().max(256).optional()
+  }),
+  knowledge_link: z.object({
+    ...workspace,
+    sourceId: KnowledgeItemIdSchema,
+    targetId: KnowledgeItemIdSchema,
+    relation: KnowledgeRelationSchema.default('relates-to'),
+    expectedGeneration: z.number().int().min(0).default(0)
+  }),
+  knowledge_unlink: z.object({
+    ...workspace,
+    linkId: KnowledgeLinkIdSchema.optional(),
+    sourceId: KnowledgeItemIdSchema.optional(),
+    targetId: KnowledgeItemIdSchema.optional(),
+    relation: KnowledgeRelationSchema.optional(),
+    expectedGeneration: z.number().int().positive().optional()
+  }).superRefine((input, ctx) => {
+    if (!input.linkId && (!input.sourceId || !input.targetId)) {
+      ctx.addIssue({ code: 'custom', message: 'linkId or (sourceId and targetId) is required' });
+    }
+  }),
+  knowledge_graph: z.object({
+    ...workspace,
+    rootId: KnowledgeItemIdSchema.optional(),
+    depth: z.number().int().min(1).max(3).default(1),
+    maxNodes: z.number().int().min(1).max(200).default(50),
+    kinds: z.array(KnowledgeKindSchema).max(2).optional(),
+    projectId: ProjectIdSchema.optional()
+  }),
   deployments_list: z.object(workspace),
   deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
   artifacts_snapshot: z.object({
@@ -580,6 +680,7 @@ const titles: Record<RunnerOperation, string> = {
   skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script',
   hooks_list: 'List hooks', hooks_run: 'Run hook', hooks_activate: 'Activate lifecycle hooks', hooks_deactivate: 'Deactivate lifecycle hooks',
   memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory', memories_search: 'Search memories', memories_delete: 'Delete memory note',
+  knowledge_create: 'Create knowledge note or journal', knowledge_read: 'Read knowledge item', knowledge_update: 'Update knowledge item', knowledge_delete: 'Delete knowledge item', knowledge_list: 'List knowledge items', knowledge_search: 'Hybrid search knowledge items', knowledge_link: 'Link knowledge items', knowledge_unlink: 'Unlink knowledge items', knowledge_graph: 'Query knowledge neighborhood graph',
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
   github_action: 'Perform brokered GitHub operations',
@@ -659,6 +760,15 @@ const descriptions: Record<RunnerOperation, string> = {
   memories_write: 'Create or replace one scoped Cloud Harness memory note with optimistic concurrency.',
   memories_search: 'Search scoped memory notes by literal text query and tag filters with bounded pagination.',
   memories_delete: 'Delete one scoped memory note with generation guard.',
+  knowledge_create: 'Create a new scoped memory or chronological journal entry in the control plane with CAS generation 0.',
+  knowledge_read: 'Read one scoped knowledge item by stable ID with metadata, tags, and link relationships.',
+  knowledge_update: 'Atomically update title, content, or metadata of one knowledge item with CAS expectedGeneration.',
+  knowledge_delete: 'Soft-delete one knowledge item by ID with generation guard.',
+  knowledge_list: 'List knowledge items across scopes with project, journal-type, tag, and date filters.',
+  knowledge_search: 'Perform hybrid search combining FTS5 lexical matching and semantic vector similarity with 0–100 relevance scoring.',
+  knowledge_link: 'Create a typed relationship link between two knowledge items.',
+  knowledge_unlink: 'Remove a relationship link between two knowledge items.',
+  knowledge_graph: 'Traverse and query the bounded neighborhood knowledge graph for a root node.',
   deployments_list: 'List repository-defined deployment targets without running them.',
   deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.',
   artifacts_snapshot: 'Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot.',
@@ -682,7 +792,8 @@ const readOnly = new Set<RunnerOperation>([
   'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph',
   'operation_status', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_identity_status',
-  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'deployments_list',
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search',
+  'knowledge_read', 'knowledge_list', 'knowledge_search', 'knowledge_graph', 'deployments_list',
   'artifacts_list', 'artifacts_read', 'secrets_list',
   'agent_status', 'agent_logs', 'agent_list'
 ]);
@@ -692,7 +803,9 @@ const destructive = new Set<RunnerOperation>([
   'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
   'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
-  'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete', 'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action',
+  'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete',
+  'knowledge_create', 'knowledge_update', 'knowledge_delete', 'knowledge_link', 'knowledge_unlink',
+  'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action',
   'agent_spawn', 'agent_message', 'agent_cancel'
 ]);
 const idempotent = new Set<RunnerOperation>([
@@ -702,7 +815,9 @@ const idempotent = new Set<RunnerOperation>([
   'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
   'operation_status', 'operation_cancel', 'operation_wait',
   'git_status', 'git_diff', 'git_log', 'git_add', 'git_identity_status', 'git_identity_set',
-  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'memories_write', 'deployments_list',
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'memories_write',
+  'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
+  'deployments_list',
   'artifacts_list', 'artifacts_read', 'secrets_list',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
 ]);

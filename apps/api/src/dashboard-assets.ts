@@ -38,6 +38,8 @@ export function createDashboardAssetsRouter(): Router {
     '/audit',
     '/github',
     '/api-keys',
+    '/knowledge',
+    '/knowledge/:id',
     '/profile',
   ], (request, response) => {
     const theme = forcedTheme(request);

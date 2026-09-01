@@ -10,11 +10,19 @@ import {
   activateModelProfile,
   disableModelProfile,
   deleteModelProfile,
-  getModelConfigStatus
+  getModelConfigStatus,
+  listKnowledge,
+  getKnowledgeItem,
+  createKnowledgeItem,
+  updateKnowledgeItem,
+  deleteKnowledgeItem,
+  searchKnowledge,
+  getKnowledgeGraph
 } from './dashboard-api.js';
 import {
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
-  renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName
+  renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName,
+  renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown
 } from './dashboard-render.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -232,7 +240,7 @@ export function initializeDashboard() {
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
   const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(files|runtime))?$/);
   const projectMatch = location.pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
-  if (matchMedia('(max-width: 47.9375rem)').matches) sidebar.hidden = true;
+  const knowledgeMatch = location.pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
   const apiKeyReveal = createApiKeyRevealController({
     dialog: revealDialog, secretField: document.querySelector('#api-key-secret'), copyButton: document.querySelector('#copy-api-key'),
@@ -391,6 +399,8 @@ export function initializeDashboard() {
       else if (location.pathname === '/dashboard/audit') await loadAudit();
       else if (location.pathname === '/dashboard/api-keys') await loadApiKeys();
       else if (location.pathname === '/dashboard/github') await loadGitHub();
+      else if (location.pathname === '/dashboard/knowledge') await loadKnowledge();
+      else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
       else if (location.pathname === '/dashboard/profile') await loadProfile();
       else if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
@@ -995,6 +1005,305 @@ export function initializeDashboard() {
   async function loadProfile() {
     selectNavigation('profile'); setTitle('Profile', 'Your signed-in identity and session details.'); document.querySelector('#command-surface').hidden = true;
     const result = await api('/profile'); content.innerHTML = renderProfile(result.data);
+  }
+  let currentKnowledgeItem;
+  async function loadKnowledge(activeTab = 'all') {
+    selectNavigation('knowledge');
+    setTitle('Knowledge Plane', 'Scoped memories, chronological journals, and knowledge graph relations.');
+    document.querySelector('#command-surface').hidden = true;
+
+    const parameters = new URLSearchParams(location.search);
+    const kind = parameters.get('kind') || (activeTab === 'memories' ? 'memory' : activeTab === 'journals' ? 'journal' : undefined);
+    const scope = parameters.get('scope') || undefined;
+    const projectId = parameters.get('projectId') || undefined;
+    const query = parameters.get('q') || '';
+    const cursor = parameters.get('cursor') || undefined;
+
+    let data;
+    if (activeTab === 'graph') {
+      data = { items: [] };
+    } else if (query) {
+      const searchRes = await searchKnowledge({
+        query,
+        ...(kind ? { kinds: [kind] } : {}),
+        ...(scope ? { scope } : {}),
+        ...(projectId ? { projectId } : {}),
+        ...(cursor ? { cursor } : {})
+      }).catch(() => ({ data: { results: [] } }));
+      data = searchRes.data ?? { results: [] };
+    } else {
+      const listRes = await listKnowledge({
+        ...(kind ? { kind } : {}),
+        ...(scope ? { scope } : {}),
+        ...(projectId ? { projectId } : {}),
+        ...(cursor ? { cursor } : {})
+      }).catch(() => ({ data: { items: [] } }));
+      data = listRes.data ?? { items: [] };
+    }
+
+    content.innerHTML = renderKnowledgeIndex(data, { q: query, kind, scope, projectId }, activeTab);
+    bindKnowledgeIndexControls(activeTab);
+
+    if (activeTab === 'graph') {
+      const graphMount = document.querySelector('#knowledge-graph-mount');
+      if (graphMount) {
+        try {
+          const graphRes = await getKnowledgeGraph({
+            ...(projectId ? { projectId } : {}),
+            depth: 2,
+            maxNodes: 50
+          });
+          graphMount.innerHTML = renderKnowledgeGraph(graphRes.data);
+          bindKnowledgeGraphControls();
+        } catch (err) {
+          graphMount.innerHTML = `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`;
+        }
+      }
+    }
+  }
+
+  function bindKnowledgeIndexControls(activeTab) {
+    for (const btn of document.querySelectorAll('.knowledge-tab-btn')) {
+      btn.addEventListener('click', (event) => {
+        const tab = event.currentTarget.dataset.knTab;
+        void loadKnowledge(tab);
+      });
+    }
+
+    const createKnDialog = document.querySelector('#create-knowledge-dialog');
+    const createKnForm = document.querySelector('#create-knowledge-form');
+    const kindSelect = document.querySelector('#create-kn-kind');
+    const scopeSelect = document.querySelector('#create-kn-scope');
+    const projectRow = document.querySelector('#create-kn-project-row');
+    const projectSelect = document.querySelector('#create-kn-project');
+    const journalRow = document.querySelector('#create-kn-journal-row');
+
+    kindSelect?.addEventListener('change', () => {
+      if (journalRow) journalRow.hidden = kindSelect.value !== 'journal';
+    });
+
+    scopeSelect?.addEventListener('change', async () => {
+      if (scopeSelect.value === 'project') {
+        if (projectRow) projectRow.hidden = false;
+        try {
+          const prjRes = await api('/projects');
+          const projects = prjRes.data?.projects ?? [];
+          if (projectSelect) {
+            projectSelect.innerHTML = projects.length
+              ? projects.map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')
+              : '<option value="">No projects available (create one first)</option>';
+          }
+        } catch {
+          /* ignore */
+        }
+      } else {
+        if (projectRow) projectRow.hidden = true;
+      }
+    });
+
+    document.querySelector('#open-create-knowledge-btn')?.addEventListener('click', () => {
+      createKnForm?.reset();
+      if (journalRow) journalRow.hidden = true;
+      if (projectRow) projectRow.hidden = true;
+      createKnDialog?.showModal();
+      document.querySelector('#create-kn-title')?.focus();
+    });
+
+    document.querySelector('#cancel-create-knowledge')?.addEventListener('click', () => {
+      createKnForm?.reset();
+      createKnDialog?.close();
+    });
+
+    createKnForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const values = new FormData(form);
+      const kind = String(values.get('kind') ?? 'memory');
+      const scope = String(values.get('scope') ?? 'owner');
+      const projectId = scope === 'project' ? String(values.get('projectId') ?? '').trim() || undefined : undefined;
+      const journalType = kind === 'journal' ? String(values.get('journalType') ?? 'engineering-log') : undefined;
+      const title = String(values.get('title') ?? '').trim();
+      const contentText = String(values.get('content') ?? '');
+      const rawTags = String(values.get('tags') ?? '').trim();
+      const tags = rawTags ? rawTags.split(',').map((t) => t.trim()).filter(Boolean) : [];
+
+      void submitForm(form, 'Creating…', async () => {
+        const res = await createKnowledgeItem({
+          kind,
+          scope,
+          ...(projectId ? { projectId } : {}),
+          title,
+          content: contentText,
+          ...(journalType ? { journalType } : {}),
+          tags,
+          expectedGeneration: 0
+        });
+        createKnDialog?.close();
+        announce('Knowledge item created.');
+        if (res.data?.id) {
+          location.href = `/dashboard/knowledge/${encodeURIComponent(res.data.id)}`;
+        } else {
+          await loadKnowledge(activeTab);
+        }
+      }, async () => {});
+    });
+  }
+
+  async function loadKnowledgeDetailView(id) {
+    selectNavigation('knowledge');
+    document.querySelector('#command-surface').hidden = true;
+    const res = await getKnowledgeItem(id);
+    const item = res.data;
+    currentKnowledgeItem = item;
+    setTitle(item.title, 'Knowledge item detail, Markdown editor, and relationship graph.');
+    content.innerHTML = renderKnowledgeDetail(item);
+    bindKnowledgeDetailControls(item);
+  }
+
+  function openKnowledgeConflict(baseItem, yoursContent, conflictData, invoker) {
+    const dialog = document.querySelector('#knowledge-conflict-dialog');
+    const baseGen = document.querySelector('#conflict-base-gen');
+    if (baseGen) baseGen.textContent = String(baseItem.generation);
+    const baseCont = document.querySelector('#conflict-base-content');
+    if (baseCont) baseCont.textContent = baseItem.content;
+    const currGen = document.querySelector('#conflict-current-gen');
+    if (currGen) currGen.textContent = String(conflictData.currentGeneration ?? '?');
+    const currCont = document.querySelector('#conflict-current-content');
+    if (currCont) currCont.textContent = conflictData.currentContent ?? '(No content returned)';
+    const yoursCont = document.querySelector('#conflict-yours-content');
+    if (yoursCont) yoursCont.textContent = yoursContent;
+
+    const copyBtn = document.querySelector('#copy-yours-conflict');
+    const overwriteBtn = document.querySelector('#overwrite-current-conflict');
+    const cancelBtn = document.querySelector('#cancel-knowledge-conflict');
+
+    if (copyBtn) {
+      copyBtn.onclick = async () => {
+        await globalThis.navigator.clipboard.writeText(yoursContent);
+        announce('Your unsaved draft was copied to clipboard.');
+      };
+    }
+
+    if (overwriteBtn) {
+      overwriteBtn.onclick = () => {
+        const textarea = document.querySelector('#knowledge-editor-input');
+        if (textarea) textarea.value = conflictData.currentContent ?? '';
+        const preview = document.querySelector('#knowledge-preview-output');
+        if (preview) preview.innerHTML = renderMarkdown(conflictData.currentContent ?? '');
+        const genEl = document.querySelector('#kn-current-generation');
+        if (genEl) genEl.textContent = String(conflictData.currentGeneration ?? '');
+        currentKnowledgeItem = { ...currentKnowledgeItem, generation: conflictData.currentGeneration, content: conflictData.currentContent };
+        dialog.close();
+        announce('Loaded server version.');
+      };
+    }
+
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        dialog.close();
+        invoker?.focus({ preventScroll: true });
+      };
+    }
+
+    dialog.showModal();
+    cancelBtn?.focus();
+  }
+
+  function bindKnowledgeDetailControls(item) {
+    const textarea = document.querySelector('#knowledge-editor-input');
+    const preview = document.querySelector('#knowledge-preview-output');
+    const saveBtn = document.querySelector('#save-knowledge-btn');
+    const editStatus = document.querySelector('#kn-edit-status');
+
+    let debounceTimer;
+    textarea?.addEventListener('input', () => {
+      if (editStatus) editStatus.textContent = 'Unsaved changes';
+      globalThis.clearTimeout(debounceTimer);
+      debounceTimer = globalThis.setTimeout(() => {
+        if (preview && textarea) preview.innerHTML = renderMarkdown(textarea.value);
+      }, 200);
+    });
+
+    textarea?.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+        event.preventDefault();
+        saveBtn?.click();
+      }
+    });
+
+    saveBtn?.addEventListener('click', async () => {
+      if (!textarea) return;
+      const contentValue = textarea.value;
+      const originalText = saveBtn.textContent;
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving…';
+      try {
+        const res = await updateKnowledgeItem(item.id, {
+          content: contentValue,
+          expectedGeneration: Number(item.generation)
+        });
+        announce('Knowledge item saved.');
+        if (editStatus) editStatus.textContent = 'Saved';
+        currentKnowledgeItem = res.data;
+        await loadKnowledgeDetailView(item.id);
+      } catch (err) {
+        if (err.status === 409) {
+          openKnowledgeConflict(item, contentValue, err.conflict ?? {}, saveBtn);
+        } else {
+          showError(err);
+        }
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = originalText;
+      }
+    });
+
+    document.querySelector('#delete-knowledge-btn')?.addEventListener('click', (event) => {
+      const btn = event.currentTarget;
+      const gen = Number(btn.dataset.generation ?? item.generation);
+      confirmAction({
+        title: 'Delete knowledge item?',
+        description: `Permanently delete "${item.title}"?`,
+        target: item.id,
+        label: 'Delete item',
+        pendingLabel: 'Deleting…',
+        action: async () => {
+          await deleteKnowledgeItem(item.id, gen);
+          announce('Knowledge item deleted.');
+          location.href = '/dashboard/knowledge';
+        }
+      }, btn);
+    });
+  }
+
+  function bindKnowledgeGraphControls() {
+    let zoomLevel = 1;
+    const svg = document.querySelector('.knowledge-graph-svg');
+    document.querySelector('#graph-zoom-in')?.addEventListener('click', () => {
+      zoomLevel = Math.min(zoomLevel * 1.25, 3);
+      if (svg) svg.style.transform = `scale(${zoomLevel})`;
+    });
+    document.querySelector('#graph-zoom-out')?.addEventListener('click', () => {
+      zoomLevel = Math.max(zoomLevel / 1.25, 0.5);
+      if (svg) svg.style.transform = `scale(${zoomLevel})`;
+    });
+    document.querySelector('#graph-reset')?.addEventListener('click', () => {
+      zoomLevel = 1;
+      if (svg) svg.style.transform = 'none';
+    });
+    for (const nodeGroup of document.querySelectorAll('.graph-node-group')) {
+      nodeGroup.addEventListener('click', (event) => {
+        const id = event.currentTarget.dataset.nodeId;
+        if (id) location.href = `/dashboard/knowledge/${encodeURIComponent(id)}`;
+      });
+      nodeGroup.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          const id = event.currentTarget.dataset.nodeId;
+          if (id) location.href = `/dashboard/knowledge/${encodeURIComponent(id)}`;
+        }
+      });
+    }
   }
   function bindWorkspaceDrawerLinks() {
     for (const link of content.querySelectorAll('a[href^="/dashboard/workspaces/"]')) link.addEventListener('click', async (event) => {
