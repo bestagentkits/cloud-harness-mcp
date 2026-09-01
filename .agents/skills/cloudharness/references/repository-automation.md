@@ -120,6 +120,106 @@ Names permit 1–120 ASCII letters, digits, `.`, `_`, or `-`.
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","memoryId":"mem_aaaaaaaaaaaaaaaaaaaa","expectedGeneration":1}
 -->
 
+## Knowledge (Memories & Journals)
+
+Knowledge items are control-plane scoped memories (`owner`, `project`, `workspace`) or chronological engineering journals (`engineering-log`, `decision-record`, `session-reflection`). They are stored in SQLite and completely separate from repository files.
+
+<!-- cloudharness-tool:knowledge_create -->
+### `knowledge_create`
+
+- Required: `title`, `content` (up to 262,144 characters).
+- Optional: `workspaceId`, `kind` (`memory` | `journal`), `scope` (`owner` | `project` | `workspace`), `projectId`, `journalType`, `occurredAt`, `tags`, `retentionSeconds`, `expectedGeneration` (0), `idempotencyKey`.
+- Creates a new scoped memory note or chronological journal entry.
+
+<!-- cloudharness-example:knowledge_create
+{"title":"Architecture Guide","content":"# System Overview\nDetails here","scope":"owner","kind":"memory"}
+-->
+
+<!-- cloudharness-tool:knowledge_read -->
+### `knowledge_read`
+
+- Required: `id` (`kn_...`).
+- Optional: `workspaceId`.
+- Reads one knowledge item by stable ID including metadata, tags, and link relationships.
+
+<!-- cloudharness-example:knowledge_read
+{"id":"kn_123456789012"}
+-->
+
+<!-- cloudharness-tool:knowledge_update -->
+### `knowledge_update`
+
+- Required: `id`, `expectedGeneration` positive integer.
+- Optional: `workspaceId`, `title`, `content`, `journalType`, `occurredAt`, `tags`, `retentionSeconds`.
+- Atomically updates a knowledge item with CAS optimistic concurrency.
+
+<!-- cloudharness-example:knowledge_update
+{"id":"kn_123456789012","content":"Updated content","expectedGeneration":1}
+-->
+
+<!-- cloudharness-tool:knowledge_delete -->
+### `knowledge_delete`
+
+- Required: `id`, `expectedGeneration` positive integer.
+- Optional: `workspaceId`.
+- Soft-deletes one knowledge item by ID.
+
+<!-- cloudharness-example:knowledge_delete
+{"id":"kn_123456789012","expectedGeneration":1}
+-->
+
+<!-- cloudharness-tool:knowledge_list -->
+### `knowledge_list`
+
+- Optional: `workspaceId`, `kind`, `scope`, `projectId`, `journalType`, `tags`, `tagMatch` (`all` | `any`), `limit`, `cursor`.
+- Lists knowledge items across scopes with project, category, tag, and date filters.
+
+<!-- cloudharness-example:knowledge_list
+{"kind":"journal","journalType":"engineering-log","limit":25}
+-->
+
+<!-- cloudharness-tool:knowledge_search -->
+### `knowledge_search`
+
+- Required: `query` (1–512 characters).
+- Optional: `workspaceId`, `kinds`, `scope`, `projectId`, `journalType`, `tags`, `tagMatch`, `limit`, `cursor`.
+- Performs hybrid search combining FTS5 lexical matching and semantic vector similarity with 0–100 relevance score.
+
+<!-- cloudharness-example:knowledge_search
+{"query":"database architecture","kinds":["memory","journal"],"limit":10}
+-->
+
+<!-- cloudharness-tool:knowledge_link -->
+### `knowledge_link`
+
+- Required: `sourceId`, `targetId`.
+- Optional: `workspaceId`, `relation` (`relates-to` | `references` | `supports` | `contradicts` | `supersedes`), `expectedGeneration` (0).
+- Creates a typed relationship link between two knowledge items.
+
+<!-- cloudharness-example:knowledge_link
+{"sourceId":"kn_123456789012","targetId":"kn_987654321098","relation":"references"}
+-->
+
+<!-- cloudharness-tool:knowledge_unlink -->
+### `knowledge_unlink`
+
+- Optional: `workspaceId`, `linkId`, `sourceId`, `targetId`, `relation`, `expectedGeneration`.
+- Removes a relationship link between two knowledge items.
+
+<!-- cloudharness-example:knowledge_unlink
+{"sourceId":"kn_123456789012","targetId":"kn_987654321098"}
+-->
+
+<!-- cloudharness-tool:knowledge_graph -->
+### `knowledge_graph`
+
+- Optional: `workspaceId`, `rootId`, `depth` (1–3), `maxNodes` (1–200), `kinds`, `projectId`.
+- Traverses and queries the bounded neighborhood knowledge graph.
+
+<!-- cloudharness-example:knowledge_graph
+{"rootId":"kn_123456789012","depth":2}
+-->
+
 ## Deployments
 
 Deployment targets are named, repository-controlled shell commands. They do not

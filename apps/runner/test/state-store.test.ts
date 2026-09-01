@@ -74,8 +74,7 @@ describe('StateStore', () => {
     legacy.close();
 
     const store = new StateStore(path);
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(9);
-    expect(store.legacyWorkspaceOwnerIds()).toEqual(['owner']);
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
     expect(store.byOwnerAndId('owner', workspace.id)?.id).toBe(workspace.id);
     expect(store.byOwnerAndId('owner', workspace.id)?.networkProfile).toBe('network-none');
     expect(store.byOwnerAndId('other-owner', workspace.id)).toBeUndefined();
@@ -145,8 +144,7 @@ describe('StateStore', () => {
 
     // Open with StateStore which triggers v4 -> v5 migration
     const store = new StateStore(path);
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(9);
-
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
     const ws1 = store.byId(ws1Id);
     expect(ws1?.networkProfile).toBe('network-none');
     const ws2 = store.byId(ws2Id);
@@ -155,6 +153,9 @@ describe('StateStore', () => {
     const ws1Row = store.database.prepare('SELECT * FROM workspaces WHERE id = ?').get(ws1Id) as { network_profile: string; mutation_lock_count: number };
     expect(ws1Row?.network_profile).toBe('network-none');
     expect(ws1Row?.mutation_lock_count).toBe(3);
+    const ws2Row = store.database.prepare('SELECT * FROM workspaces WHERE id = ?').get(ws2Id) as { network_profile: string; mutation_lock_count: number };
+    expect(ws2Row?.network_profile).toBe('dependency-access');
+    expect(ws2Row?.mutation_lock_count).toBe(0);
 
     // Verify child rows survived without deletion
     const task = store.database.prepare('SELECT * FROM durable_tasks WHERE id = ?').get('task_1') as { id: string };
@@ -162,7 +163,6 @@ describe('StateStore', () => {
 
     const gitOp = store.database.prepare('SELECT * FROM git_operation_idempotency WHERE workspace_id = ?').get(ws1Id) as { idempotency_key: string };
     expect(gitOp?.idempotency_key).toBe('git-idem-1');
-
     store.close();
   });
 

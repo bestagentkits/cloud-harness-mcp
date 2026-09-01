@@ -58,7 +58,8 @@ export type DashboardResponseOperation =
   | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject'
   | 'model_credential_list' | 'model_credential_create' | 'model_credential_rotate' | 'model_credential_delete'
   | 'model_profile_list' | 'model_profile_create' | 'model_profile_update' | 'model_profile_activate' | 'model_profile_disable' | 'model_profile_delete'
-  | 'model_config_status';
+  | 'model_config_status'
+  | 'knowledge_dashboard_list' | 'knowledge_dashboard_get' | 'knowledge_dashboard_create' | 'knowledge_dashboard_update' | 'knowledge_dashboard_delete' | 'knowledge_dashboard_search' | 'knowledge_dashboard_graph' | 'knowledge_dashboard_link_create' | 'knowledge_dashboard_link_delete';
 function pick(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return Object.fromEntries(keys.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
@@ -69,6 +70,8 @@ const environmentKeys = [...metadataKeys, 'projectId'] as const;
 const secretKeys = ['id', 'environmentId', 'name', 'description', 'state', 'version', 'generation', 'createdAt', 'updatedAt', 'deletedAt'] as const;
 const artifactKeys = ['artifactId', 'logicalName', 'sha256', 'sizeBytes', 'projectId', 'environmentId', 'workspaceId', 'createdAt', 'updatedAt', 'expiresAt', 'retentionMs', 'generation'] as const;
 const privilegeGrantKeys = ['id', 'ownerId', 'workspaceId', 'command', 'cwd', 'commandSha256', 'status', 'createdAt', 'expiresAt', 'consumedAt'] as const;
+const knowledgeItemKeys = ['id', 'kind', 'scope', 'projectId', 'workspaceId', 'title', 'content', 'contentSha256', 'journalType', 'occurredAt', 'generation', 'createdAt', 'updatedAt', 'expiresAt', 'tags', 'provenance', 'outboundLinks', 'backlinks'] as const;
+const knowledgeLinkKeys = ['id', 'sourceId', 'targetId', 'relation', 'origin', 'generation', 'createdAt'] as const;
 const list = (data: Record<string, unknown>, key: string, keys: readonly string[]) => ({
   [key]: Array.isArray(data[key]) ? data[key].map((record) => pick(record, keys)) : []
 });
@@ -132,15 +135,23 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect'].includes(operation)) return githubStatus(data);
   if (operation === 'privilege_grant_list') return list(data, 'grants', privilegeGrantKeys);
   if (operation === 'privilege_grant_approve' || operation === 'privilege_grant_reject') return { grant: pick(data.grant, privilegeGrantKeys) };
-  return {};
+  if (operation === 'knowledge_dashboard_list') return { items: Array.isArray(data.items) ? data.items.map((item) => pick(item, knowledgeItemKeys)) : [] };
+  if (operation === 'knowledge_dashboard_get' || operation === 'knowledge_dashboard_create' || operation === 'knowledge_dashboard_update') return pick(data, knowledgeItemKeys);
+  if (operation === 'knowledge_dashboard_delete') return pick(data, ['deleted']);
+  if (operation === 'knowledge_dashboard_search') return { results: Array.isArray(data.results) ? data.results.map((res) => (typeof res === 'object' && res ? { ...res, item: pick((res as Record<string, unknown>).item, knowledgeItemKeys) } : res)) : [] };
+  if (operation === 'knowledge_dashboard_graph') return { nodes: Array.isArray(data.nodes) ? data.nodes.map((n) => pick(n, ['id', 'kind', 'scope', 'title', 'journalType', 'tags', 'updatedAt'])) : [], edges: Array.isArray(data.edges) ? data.edges.map((e) => pick(e, knowledgeLinkKeys)) : [], truncated: Boolean(data.truncated) };
+  if (operation === 'knowledge_dashboard_link_create') return pick(data, knowledgeLinkKeys);
+  if (operation === 'knowledge_dashboard_link_delete') return pick(data, ['unlinked']);
+  return data;
 }
-
 const descriptiveOperations = new Set<string>([
   'secret_create', 'secret_rotate', 'secret_update', 'secret_delete', 'secret_bulk_apply',
   'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
   'project_create', 'project_update', 'project_delete',
   'environment_create', 'environment_update', 'environment_delete',
-  'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete'
+  'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
+  'knowledge_dashboard_create', 'knowledge_dashboard_update', 'knowledge_dashboard_delete',
+  'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete'
 ]);
 
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {

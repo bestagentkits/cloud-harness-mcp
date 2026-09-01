@@ -18,6 +18,17 @@ import {
   type PrincipalSelector
 } from './principal-store.js';
 
+import { KnowledgeStore } from './knowledge-store.js';
+export { KnowledgeStore } from './knowledge-store.js';
+export type {
+  CreateKnowledgeItemParams,
+  UpdateKnowledgeItemParams,
+  DeleteKnowledgeItemParams,
+  ListKnowledgeItemsParams,
+  CreateKnowledgeLinkParams,
+  DeleteKnowledgeLinkParams,
+  KnowledgeItemWithLinks
+} from './knowledge-store.js';
 export type {
   ExternalPrincipalSelector,
   PrincipalRecord,
@@ -31,7 +42,8 @@ export {
   downgradeStateSchemaToV5,
   downgradeStateSchemaToV6,
   downgradeStateSchemaToV7,
-  downgradeStateSchemaToV8
+  downgradeStateSchemaToV8,
+  downgradeStateSchemaToV9
 } from './principal-store.js';
 
 export type MemoryRecord = {
@@ -260,7 +272,7 @@ const fromRow = (row: Row): WorkspaceRecord => ({
 
 export class StateStore {
   readonly database: DatabaseSync;
-
+  readonly knowledge: KnowledgeStore;
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.database = new DatabaseSync(path);
@@ -352,6 +364,7 @@ export class StateStore {
     migratePrincipalSchema(this.database);
       this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
         .run('runner_instance_id', randomBytes(18).toString('hex'));
+      this.knowledge = new KnowledgeStore(this.database);
     } catch (err) {
       try { this.database.close(); } catch { /* ignore */ }
       throw err;

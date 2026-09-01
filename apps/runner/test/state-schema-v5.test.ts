@@ -13,7 +13,7 @@ describe('StateStore Schema Version 7 Migration & Agent Tables', () => {
     const store = new StateStore(dbPath);
     try {
       const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(row.version).toBe(9);
+      expect(row.version).toBe(10);
 
       // Verify agent tables exist
       const tableRows = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
@@ -41,7 +41,7 @@ describe('StateStore Schema Version 7 Migration & Agent Tables', () => {
     try {
       store.database.exec('PRAGMA foreign_keys = ON');
       const initial = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(initial.version).toBe(9);
+      expect(initial.version).toBe(10);
 
       // Downgrade to exact version 6
       downgradeStateSchemaToV6(store.database, true);
@@ -62,7 +62,7 @@ describe('StateStore Schema Version 7 Migration & Agent Tables', () => {
       // Upgrade from v5 back to exact version 7
       migratePrincipalSchema(store.database);
       const v7Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(v7Row.version).toBe(9);
+      expect(v7Row.version).toBe(10);
 
       const tableRowsV7 = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
       const tablesV7 = new Set(tableRowsV7.map((r) => r.name));

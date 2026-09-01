@@ -2586,6 +2586,146 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       return { ok: true, message: 'Memory note deleted', data: { deleted: true }, truncated: false };
     }
+    if (operation === 'knowledge_create') {
+      const scope = (validated.scope || 'workspace') as 'owner' | 'project' | 'workspace';
+      const kind = (validated.kind || 'memory') as 'memory' | 'journal';
+      const item = this.store.knowledge.createItem({
+        principalId: ownerId,
+        kind,
+        scope,
+        projectId: scope === 'project' ? (validated.projectId as string ?? null) : null,
+        workspaceId: scope === 'workspace' ? record.id : null,
+        title: validated.title as string,
+        content: validated.content as string,
+        journalType: validated.journalType as any,
+        occurredAt: typeof validated.occurredAt === 'number' ? validated.occurredAt : null,
+        tags: Array.isArray(validated.tags) ? validated.tags as string[] : [],
+        retentionSeconds: typeof validated.retentionSeconds === 'number' ? validated.retentionSeconds : null,
+        expectedGeneration: typeof validated.expectedGeneration === 'number' ? validated.expectedGeneration : 0,
+        idempotencyKey: typeof validated.idempotencyKey === 'string' ? validated.idempotencyKey : null
+      });
+      this.auditWorkspaceMutation(ownerId, 'knowledge.created', record, { id: item.id, kind: item.kind, scope: item.scope, title: item.title });
+      return { ok: true, message: 'Knowledge item created', data: item, truncated: false };
+    }
+    if (operation === 'knowledge_read') {
+      const item = this.store.knowledge.readItem({ principalId: ownerId, id: validated.id as string });
+      if (!item) {
+        throw new HarnessError('NOT_FOUND', 'knowledge item not found', 404, false);
+      }
+      return { ok: true, message: 'Knowledge item read', data: item, truncated: false };
+    }
+    if (operation === 'knowledge_update') {
+      const res = this.store.knowledge.updateItem({
+        principalId: ownerId,
+        id: validated.id as string,
+        expectedGeneration: validated.expectedGeneration as number,
+        ...(typeof validated.title === 'string' ? { title: validated.title } : {}),
+        ...(typeof validated.content === 'string' ? { content: validated.content } : {}),
+        ...(validated.journalType ? { journalType: validated.journalType as any } : {}),
+        ...(typeof validated.occurredAt === 'number' ? { occurredAt: validated.occurredAt } : {}),
+        ...(Array.isArray(validated.tags) ? { tags: validated.tags as string[] } : {}),
+        ...(typeof validated.retentionSeconds === 'number' ? { retentionSeconds: validated.retentionSeconds } : {})
+      });
+      if (!res.success) {
+        throw new HarnessError('CONFLICT', 'knowledge item generation conflict', 409, false);
+      }
+      this.auditWorkspaceMutation(ownerId, 'knowledge.updated', record, { id: res.item.id, generation: res.item.generation });
+      return { ok: true, message: 'Knowledge item updated', data: res.item, truncated: false };
+    }
+    if (operation === 'knowledge_delete') {
+      const res = this.store.knowledge.deleteItem({
+        principalId: ownerId,
+        id: validated.id as string,
+        expectedGeneration: validated.expectedGeneration as number
+      });
+      if (!res.success) {
+        throw new HarnessError('CONFLICT', 'knowledge item generation conflict', 409, false);
+      }
+      this.auditWorkspaceMutation(ownerId, 'knowledge.deleted', record, { id: validated.id as string });
+      return { ok: true, message: 'Knowledge item deleted', data: { deleted: true }, truncated: false };
+    }
+    if (operation === 'knowledge_list') {
+      const scope = validated.scope as 'owner' | 'project' | 'workspace' | undefined;
+      const { items, nextCursor } = this.store.knowledge.listItems({
+        principalId: ownerId,
+        ...(validated.kind ? { kind: validated.kind as any } : {}),
+        ...(scope ? { scope } : {}),
+        ...(validated.projectId ? { projectId: validated.projectId as string } : {}),
+        workspaceId: scope === 'workspace' ? record.id : null,
+        ...(validated.journalType ? { journalType: validated.journalType as any } : {}),
+        ...(Array.isArray(validated.tags) ? { tags: validated.tags as string[] } : {}),
+        ...(validated.tagMatch ? { tagMatch: validated.tagMatch as any } : {}),
+        ...(typeof validated.limit === 'number' ? { limit: validated.limit } : {}),
+        ...(typeof validated.cursor === 'string' ? { cursor: validated.cursor } : {})
+      });
+      return {
+        ok: true,
+        message: `Found ${items.length} knowledge items`,
+        data: { items },
+        truncated: Boolean(nextCursor),
+        ...(nextCursor ? { cursor: nextCursor } : {})
+      };
+    }
+    if (operation === 'knowledge_search') {
+      const scope = validated.scope as 'owner' | 'project' | 'workspace' | undefined;
+      const { results, nextCursor } = this.store.knowledge.searchItems({
+        principalId: ownerId,
+        query: validated.query as string,
+        ...(Array.isArray(validated.kinds) ? { kinds: validated.kinds as any } : {}),
+        ...(scope ? { scope } : {}),
+        ...(validated.projectId ? { projectId: validated.projectId as string } : {}),
+        workspaceId: scope === 'workspace' ? record.id : null,
+        ...(validated.journalType ? { journalType: validated.journalType as any } : {}),
+        ...(Array.isArray(validated.tags) ? { tags: validated.tags as string[] } : {}),
+        ...(validated.tagMatch ? { tagMatch: validated.tagMatch as any } : {}),
+        ...(typeof validated.limit === 'number' ? { limit: validated.limit } : {}),
+        ...(typeof validated.cursor === 'string' ? { cursor: validated.cursor } : {})
+      });
+      return {
+        ok: true,
+        message: `Found ${results.length} matching knowledge items`,
+        data: { results },
+        truncated: Boolean(nextCursor),
+        ...(nextCursor ? { cursor: nextCursor } : {})
+      };
+    }
+    if (operation === 'knowledge_link') {
+      const link = this.store.knowledge.createLink({
+        principalId: ownerId,
+        sourceId: validated.sourceId as string,
+        targetId: validated.targetId as string,
+        ...(validated.relation ? { relation: validated.relation as any } : {})
+      });
+      this.auditWorkspaceMutation(ownerId, 'knowledge.linked', record, { sourceId: link.sourceId, targetId: link.targetId, relation: link.relation });
+      return { ok: true, message: 'Knowledge link created', data: link, truncated: false };
+    }
+    if (operation === 'knowledge_unlink') {
+      const unlinked = this.store.knowledge.deleteLink({
+        principalId: ownerId,
+        ...(typeof validated.linkId === 'string' ? { linkId: validated.linkId } : {}),
+        ...(typeof validated.sourceId === 'string' ? { sourceId: validated.sourceId } : {}),
+        ...(typeof validated.targetId === 'string' ? { targetId: validated.targetId } : {}),
+        ...(validated.relation ? { relation: validated.relation as any } : {})
+      });
+      this.auditWorkspaceMutation(ownerId, 'knowledge.unlinked', record, { linkId: String(validated.linkId ?? ''), sourceId: String(validated.sourceId ?? ''), targetId: String(validated.targetId ?? '') });
+      return { ok: true, message: 'Knowledge link removed', data: { unlinked }, truncated: false };
+    }
+    if (operation === 'knowledge_graph') {
+      const graph = this.store.knowledge.getGraph({
+        principalId: ownerId,
+        ...(typeof validated.rootId === 'string' ? { rootId: validated.rootId } : {}),
+        ...(typeof validated.depth === 'number' ? { depth: validated.depth } : {}),
+        ...(typeof validated.maxNodes === 'number' ? { maxNodes: validated.maxNodes } : {}),
+        ...(Array.isArray(validated.kinds) ? { kinds: validated.kinds as any } : {}),
+        ...(typeof validated.projectId === 'string' ? { projectId: validated.projectId } : {})
+      });
+      return {
+        ok: true,
+        message: `Graph returned with ${graph.nodes.length} nodes and ${graph.edges.length} edges`,
+        data: graph,
+        truncated: graph.truncated
+      };
+    }
     if (operation === 'hooks_activate') {
       const events = validated.events as string[];
       const results = [];
@@ -3840,7 +3980,9 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
   }
   if (['files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir',
        'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_merge', 'git_rebase', 'git_push',
-       'workspace_finalize', 'worktrees_create', 'worktrees_remove', 'memories_write', 'skills_run', 'hooks_run', 'deployments_run',
+       'workspace_finalize', 'worktrees_create', 'worktrees_remove', 'memories_write', 'memories_delete',
+       'knowledge_create', 'knowledge_update', 'knowledge_delete', 'knowledge_link', 'knowledge_unlink',
+       'skills_run', 'hooks_run', 'deployments_run',
        'artifacts_snapshot', 'artifacts_restore'].includes(operation)) {
     return true;
   }

@@ -36,6 +36,34 @@ export const activateModelProfile = (id, expectedGeneration) => api(`/agent-mode
 export const disableModelProfile = (id, expectedGeneration) => api(`/agent-model-profiles/${encodeURIComponent(id)}/disable`, { method: 'POST', body: JSON.stringify({ expectedGeneration }) });
 export const deleteModelProfile = (id, expectedGeneration) => api(`/agent-model-profiles/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
 export const getModelConfigStatus = () => api('/agent-model-config-status');
+export const listKnowledge = (params = {}) => {
+  const query = new URLSearchParams();
+  if (params.kind) query.set('kind', params.kind);
+  if (params.scope) query.set('scope', params.scope);
+  if (params.projectId) query.set('projectId', params.projectId);
+  if (params.journalType) query.set('journalType', params.journalType);
+  if (params.tags && Array.isArray(params.tags) && params.tags.length) query.set('tags', params.tags.join(','));
+  if (params.cursor) query.set('cursor', params.cursor);
+  if (params.limit) query.set('limit', String(params.limit));
+  const qs = query.toString();
+  return api(`/knowledge${qs ? `?${qs}` : ''}`);
+};
+export const getKnowledgeItem = (id) => api(`/knowledge/${encodeURIComponent(id)}`);
+export const createKnowledgeItem = (payload) => api('/knowledge', { method: 'POST', body: JSON.stringify(payload) });
+export const updateKnowledgeItem = (id, payload) => api(`/knowledge/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) });
+export const deleteKnowledgeItem = (id, expectedGeneration) => api(`/knowledge/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
+export const searchKnowledge = (payload) => api('/knowledge/search', { method: 'POST', body: JSON.stringify(payload) });
+export const getKnowledgeGraph = (params = {}) => {
+  const query = new URLSearchParams();
+  if (params.rootId) query.set('rootId', params.rootId);
+  if (params.depth) query.set('depth', String(params.depth));
+  if (params.maxNodes) query.set('maxNodes', String(params.maxNodes));
+  if (params.projectId) query.set('projectId', params.projectId);
+  const qs = query.toString();
+  return api(`/knowledge-graph${qs ? `?${qs}` : ''}`);
+};
+export const createKnowledgeLink = (payload) => api('/knowledge/links', { method: 'POST', body: JSON.stringify(payload) });
+export const deleteKnowledgeLink = (payload) => api('/knowledge/links', { method: 'DELETE', body: JSON.stringify(payload) });
 
 async function problem(response) {
   let body = {};

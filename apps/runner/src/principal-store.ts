@@ -613,11 +613,192 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
     });
     version = 9;
   }
-  if (version !== 9) throw new Error(`unsupported state schema version ${version}`);
+  if (version === 9) {
+    transaction(database, () => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS knowledge_items (
+          id TEXT PRIMARY KEY,
+          principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          kind TEXT NOT NULL CHECK (kind IN ('memory','journal')),
+          scope TEXT NOT NULL CHECK (scope IN ('owner','project','workspace')),
+          project_id TEXT,
+          workspace_id TEXT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          content_sha256 TEXT NOT NULL,
+          journal_type TEXT CHECK (journal_type IN ('engineering-log','decision-record','session-reflection') OR journal_type IS NULL),
+          occurred_at INTEGER,
+          generation INTEGER NOT NULL CHECK (generation > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          deleted_at INTEGER,
+          provenance_json TEXT NOT NULL,
+          CHECK (
+            (scope='owner' AND project_id IS NULL AND workspace_id IS NULL) OR
+            (scope='project' AND project_id IS NOT NULL AND workspace_id IS NULL) OR
+            (scope='workspace' AND workspace_id IS NOT NULL)
+          ),
+          CHECK (
+            (kind='journal' AND journal_type IS NOT NULL AND occurred_at IS NOT NULL) OR
+            (kind='memory' AND journal_type IS NULL)
+          ),
+          FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS knowledge_items_owner_mem_active ON knowledge_items(principal_id, title) WHERE deleted_at IS NULL AND kind='memory' AND scope='owner';
+        CREATE UNIQUE INDEX IF NOT EXISTS knowledge_items_project_mem_active ON knowledge_items(principal_id, project_id, title) WHERE deleted_at IS NULL AND kind='memory' AND scope='project';
+        CREATE UNIQUE INDEX IF NOT EXISTS knowledge_items_workspace_mem_active ON knowledge_items(principal_id, workspace_id, title) WHERE deleted_at IS NULL AND kind='memory' AND scope='workspace';
+        CREATE INDEX IF NOT EXISTS knowledge_items_scope_lookup ON knowledge_items(principal_id, kind, scope, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS knowledge_items_project_lookup ON knowledge_items(principal_id, project_id, occurred_at DESC, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS knowledge_items_workspace_lookup ON knowledge_items(principal_id, workspace_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS knowledge_items_timeline ON knowledge_items(principal_id, occurred_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS knowledge_items_expiry ON knowledge_items(expires_at, deleted_at);
+
+        CREATE TABLE IF NOT EXISTS knowledge_tags (
+          principal_id TEXT NOT NULL,
+          item_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+          tag TEXT NOT NULL,
+          PRIMARY KEY(principal_id, item_id, tag)
+        );
+        CREATE INDEX IF NOT EXISTS knowledge_tags_lookup ON knowledge_tags(principal_id, tag, item_id);
+
+        CREATE TABLE IF NOT EXISTS knowledge_links (
+          id TEXT PRIMARY KEY,
+          principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          source_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+          target_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+          relation TEXT NOT NULL CHECK (relation IN ('relates-to','references','supports','contradicts','supersedes')),
+          origin TEXT NOT NULL CHECK (origin IN ('manual','wikilink')),
+          generation INTEGER NOT NULL CHECK (generation > 0),
+          created_at INTEGER NOT NULL,
+          UNIQUE(principal_id, source_id, target_id, relation)
+        );
+        CREATE INDEX IF NOT EXISTS knowledge_links_source_idx ON knowledge_links(principal_id, source_id);
+        CREATE INDEX IF NOT EXISTS knowledge_links_target_idx ON knowledge_links(principal_id, target_id);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(item_id UNINDEXED, title, tags, content, tokenize='unicode61');
+
+        CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+          principal_id TEXT NOT NULL,
+          item_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+          chunk_ordinal INTEGER NOT NULL,
+          chunk_sha256 TEXT NOT NULL,
+          vector_blob BLOB NOT NULL,
+          dimensions INTEGER NOT NULL,
+          model_fingerprint TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(principal_id, item_id, chunk_ordinal, model_fingerprint)
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_index_jobs (
+          principal_id TEXT NOT NULL,
+          item_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+          target_generation INTEGER NOT NULL,
+          content_sha256 TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('PENDING','PROCESSING','FAILED','COMPLETED')),
+          attempts INTEGER NOT NULL DEFAULT 0,
+          error_message TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(principal_id, item_id)
+        );
+      `);
+
+      const hasMemories = (database.prepare("SELECT count(*) as count FROM sqlite_master WHERE type='table' AND name='memories'").get() as { count: number }).count;
+      if (hasMemories > 0) {
+        interface LegacyMemoryRow {
+          id: string;
+          principal_id: string;
+          scope: string;
+          repository_key: string | null;
+          workspace_id: string | null;
+          name: string;
+          content: string;
+          content_sha256: string;
+          generation: number;
+          created_at: number;
+          updated_at: number;
+          expires_at: number;
+          deleted_at: number | null;
+          provenance_json: string;
+        }
+        const legacyRows = database.prepare('SELECT * FROM memories').all() as unknown as LegacyMemoryRow[];
+        for (const row of legacyRows) {
+          const knId = 'kn_' + (row.id.startsWith('mem_') ? row.id.slice(4) : row.id);
+          let scope = row.scope;
+          let projectId: string | null = null;
+          const workspaceId: string | null = row.workspace_id;
+          if (scope === 'repository') {
+            scope = 'project';
+            projectId = 'prj_imported_' + (row.repository_key ? row.repository_key.slice(0, 16) : 'legacy');
+          }
+          database.prepare(`
+            INSERT OR IGNORE INTO knowledge_items
+            (id, principal_id, kind, scope, project_id, workspace_id, title, content, content_sha256, journal_type, occurred_at, generation, created_at, updated_at, expires_at, deleted_at, provenance_json)
+            VALUES (?, ?, 'memory', ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+          `).run(
+            knId, row.principal_id, scope, projectId, workspaceId, row.name, row.content, row.content_sha256,
+            row.generation, row.created_at, row.updated_at, row.expires_at, row.deleted_at, row.provenance_json
+          );
+          const tags = database.prepare('SELECT tag FROM memory_tags WHERE memory_id = ?').all(row.id) as { tag: string }[];
+          const tagList: string[] = [];
+          for (const t of tags) {
+            database.prepare('INSERT OR IGNORE INTO knowledge_tags (principal_id, item_id, tag) VALUES (?, ?, ?)').run(row.principal_id, knId, t.tag);
+            tagList.push(t.tag);
+          }
+          if (!row.deleted_at) {
+            database.prepare('INSERT INTO knowledge_fts (item_id, title, tags, content) VALUES (?, ?, ?, ?)').run(knId, row.name, tagList.join(' '), row.content);
+          }
+        }
+      }
+
+      database.exec('UPDATE schema_meta SET version = 10;');
+    });
+    version = 10;
+  }
+  if (version !== 10) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 10) throw new Error(`state schema must be version 10 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const knCount = (database.prepare('SELECT count(*) as count FROM knowledge_items').get() as { count: number }).count;
+    if (knCount > 0) {
+      throw new Error('cannot downgrade state schema to v9: knowledge tables contain active records (export or discard required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      DROP TABLE IF EXISTS knowledge_index_jobs;
+      DROP TABLE IF EXISTS knowledge_embeddings;
+      DROP TABLE IF EXISTS knowledge_fts;
+      DROP TABLE IF EXISTS knowledge_links;
+      DROP TABLE IF EXISTS knowledge_tags;
+      DROP TABLE IF EXISTS knowledge_items;
+      DROP INDEX IF EXISTS knowledge_items_owner_mem_active;
+      DROP INDEX IF EXISTS knowledge_items_project_mem_active;
+      DROP INDEX IF EXISTS knowledge_items_workspace_mem_active;
+      DROP INDEX IF EXISTS knowledge_items_scope_lookup;
+      DROP INDEX IF EXISTS knowledge_items_project_lookup;
+      DROP INDEX IF EXISTS knowledge_items_workspace_lookup;
+      DROP INDEX IF EXISTS knowledge_items_timeline;
+      DROP INDEX IF EXISTS knowledge_items_expiry;
+      DROP INDEX IF EXISTS knowledge_tags_lookup;
+      DROP INDEX IF EXISTS knowledge_links_source_idx;
+      DROP INDEX IF EXISTS knowledge_links_target_idx;
+      UPDATE schema_meta SET version = 9;
+    `);
+  });
 }
 
 export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss = false): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 10) {
+    downgradeStateSchemaToV9(database, allowDataLoss);
+    version = 9;
+  }
   if (version !== 9) throw new Error(`state schema must be version 9 before downgrade, got ${version}`);
   if (!allowDataLoss) {
     const credCount = (database.prepare('SELECT count(*) as count FROM model_provider_credentials').get() as { count: number }).count;
@@ -642,6 +823,10 @@ export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 10) {
+    downgradeStateSchemaToV9(database, allowDataLoss);
+    version = 9;
+  }
   if (version === 9) {
     downgradeStateSchemaToV8(database, allowDataLoss);
     version = 8;
@@ -664,9 +849,12 @@ export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss =
     `);
   });
 }
-
 export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 10) {
+    downgradeStateSchemaToV9(database, allowDataLoss);
+    version = 9;
+  }
   if (version === 9) {
     downgradeStateSchemaToV8(database, allowDataLoss);
     version = 8;
@@ -695,6 +883,10 @@ export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 10) {
+    downgradeStateSchemaToV9(database, allowDataLoss);
+    version = 9;
+  }
   if (version === 9) {
     downgradeStateSchemaToV8(database, allowDataLoss);
     version = 8;
@@ -767,6 +959,10 @@ export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 10) {
+    downgradeStateSchemaToV9(database, allowDataLoss);
+    version = 9;
+  }
   if (version === 9) {
     downgradeStateSchemaToV8(database, allowDataLoss);
     version = 8;
@@ -808,6 +1004,18 @@ export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 10) {
+    downgradeStateSchemaToV9(database, true);
+    version = 9;
+  }
+  if (version === 9) {
+    downgradeStateSchemaToV8(database, true);
+    version = 8;
+  }
+  if (version === 8) {
+    downgradeStateSchemaToV7(database, true);
+    version = 7;
+  }
   if (version === 7) {
     downgradeStateSchemaToV6(database);
     version = 6;

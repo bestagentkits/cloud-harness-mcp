@@ -263,6 +263,117 @@ export class DashboardControlService {
             }
           });
         }
+        case 'knowledge_dashboard_list': {
+          const { items, nextCursor } = this.principals.knowledge.listItems({
+            principalId,
+            ...(parsed.input.kind ? { kind: parsed.input.kind } : {}),
+            ...(parsed.input.scope ? { scope: parsed.input.scope } : {}),
+            ...(parsed.input.projectId ? { projectId: parsed.input.projectId } : {}),
+            ...(parsed.input.journalType ? { journalType: parsed.input.journalType } : {}),
+            ...(parsed.input.tags ? { tags: parsed.input.tags } : {}),
+            ...(parsed.input.tagMatch ? { tagMatch: parsed.input.tagMatch } : {}),
+            ...(parsed.input.limit ? { limit: parsed.input.limit } : {}),
+            ...(parsed.input.cursor ? { cursor: parsed.input.cursor } : {})
+          });
+          return ok('Knowledge items listed', { items }, nextCursor);
+        }
+        case 'knowledge_dashboard_get': {
+          const item = this.principals.knowledge.readItem({ principalId, id: parsed.input.id });
+          if (!item) throw new HarnessError('NOT_FOUND', 'Knowledge item not found', 404, false);
+          return ok('Knowledge item retrieved', item);
+        }
+        case 'knowledge_dashboard_create': {
+          const item = this.principals.knowledge.createItem({
+            principalId,
+            kind: parsed.input.kind,
+            scope: parsed.input.scope,
+            projectId: parsed.input.projectId ?? null,
+            workspaceId: parsed.input.workspaceId ?? null,
+            title: parsed.input.title,
+            content: parsed.input.content,
+            journalType: parsed.input.journalType ?? null,
+            occurredAt: parsed.input.occurredAt ?? null,
+            tags: parsed.input.tags,
+            retentionSeconds: parsed.input.retentionSeconds ?? null,
+            expectedGeneration: parsed.input.expectedGeneration
+          });
+          return mutation('Knowledge item created', item);
+        }
+        case 'knowledge_dashboard_update': {
+          const res = this.principals.knowledge.updateItem({
+            principalId,
+            id: parsed.input.id,
+            expectedGeneration: parsed.input.expectedGeneration,
+            ...(parsed.input.title ? { title: parsed.input.title } : {}),
+            ...(parsed.input.content !== undefined ? { content: parsed.input.content } : {}),
+            ...(parsed.input.journalType ? { journalType: parsed.input.journalType } : {}),
+            ...(parsed.input.occurredAt !== undefined ? { occurredAt: parsed.input.occurredAt } : {}),
+            ...(parsed.input.tags ? { tags: parsed.input.tags } : {}),
+            ...(parsed.input.retentionSeconds !== undefined ? { retentionSeconds: parsed.input.retentionSeconds } : {})
+          });
+          if (!res.success) {
+            throw new HarnessError('CONFLICT', 'Knowledge item generation conflict', 409, false);
+          }
+          return mutation('Knowledge item updated', res.item);
+        }
+        case 'knowledge_dashboard_delete': {
+          const res = this.principals.knowledge.deleteItem({
+            principalId,
+            id: parsed.input.id,
+            expectedGeneration: parsed.input.expectedGeneration
+          });
+          if (!res.success) {
+            throw new HarnessError('CONFLICT', 'Knowledge item generation conflict', 409, false);
+          }
+          return ok('Knowledge item deleted', { deleted: true });
+        }
+        case 'knowledge_dashboard_search': {
+          const { results, nextCursor } = this.principals.knowledge.searchItems({
+            principalId,
+            query: parsed.input.query,
+            ...(parsed.input.kinds ? { kinds: parsed.input.kinds } : {}),
+            ...(parsed.input.scope ? { scope: parsed.input.scope } : {}),
+            ...(parsed.input.projectId ? { projectId: parsed.input.projectId } : {}),
+            ...(parsed.input.journalType ? { journalType: parsed.input.journalType } : {}),
+            ...(parsed.input.tags ? { tags: parsed.input.tags } : {}),
+            ...(parsed.input.tagMatch ? { tagMatch: parsed.input.tagMatch } : {}),
+            ...(parsed.input.limit ? { limit: parsed.input.limit } : {}),
+            ...(parsed.input.cursor ? { cursor: parsed.input.cursor } : {})
+          });
+          return ok('Knowledge search results', { results }, nextCursor);
+        }
+        case 'knowledge_dashboard_graph': {
+          const graph = this.principals.knowledge.getGraph({
+            principalId,
+            ...(parsed.input.rootId ? { rootId: parsed.input.rootId } : {}),
+            ...(parsed.input.depth ? { depth: parsed.input.depth } : {}),
+            ...(parsed.input.maxNodes ? { maxNodes: parsed.input.maxNodes } : {}),
+            ...(parsed.input.kinds ? { kinds: parsed.input.kinds } : {}),
+            ...(parsed.input.projectId ? { projectId: parsed.input.projectId } : {})
+          });
+          return ok('Knowledge graph retrieved', graph);
+        }
+        case 'knowledge_dashboard_link_create': {
+          const link = this.principals.knowledge.createLink({
+            principalId,
+            sourceId: parsed.input.sourceId,
+            targetId: parsed.input.targetId,
+            relation: parsed.input.relation,
+            expectedGeneration: parsed.input.expectedGeneration
+          });
+          return mutation('Knowledge link created', link);
+        }
+        case 'knowledge_dashboard_link_delete': {
+          const unlinked = this.principals.knowledge.deleteLink({
+            principalId,
+            ...(parsed.input.linkId ? { linkId: parsed.input.linkId } : {}),
+            ...(parsed.input.sourceId ? { sourceId: parsed.input.sourceId } : {}),
+            ...(parsed.input.targetId ? { targetId: parsed.input.targetId } : {}),
+            ...(parsed.input.relation ? { relation: parsed.input.relation } : {}),
+            ...(parsed.input.expectedGeneration ? { expectedGeneration: parsed.input.expectedGeneration } : {})
+          });
+          return ok('Knowledge link deleted', { unlinked });
+        }
       }
     } catch (error) {
       if (error instanceof HarnessError) throw error;
