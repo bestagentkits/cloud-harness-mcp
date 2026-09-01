@@ -92,6 +92,14 @@ Inspect with `claude mcp get cloud-harness`, then confirm it in `/mcp`.
   authorization flow. The owner deployment at `https://harness.zuey.me/mcp`
   uses Cloudflare Access Managed OAuth with allowlisted mutually trusted
   operators; it is not a hostile multi-tenant service.
+- In ChatGPT, custom MCP connectors operate in **Developer Mode (Draft)** or
+  **Workspace Published (Custom Connector)** mode. Draft apps execute only in
+  standard 1-on-1 ChatGPT Web chats with Developer Mode enabled. Invocations
+  rejected with `FORBIDDEN: This conversation does not support developer MCPs`
+  indicate an unsupported conversation surface (e.g. Custom GPTs, Projects,
+  Canvas, Mobile apps, or disabled Developer Mode); see the
+  [ChatGPT Configuration Guide](https://docs.harness.agentkit.best/ai-tools/chatgpt.md)
+  and [Troubleshooting Guide](https://docs.harness.agentkit.best/troubleshooting.md).
 - Marketplace installation and marketplace review/publication are different
   states. Local validation does not prove an approved public listing.
 

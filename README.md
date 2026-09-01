@@ -356,15 +356,22 @@ Granting either form of access grants remote execution authority. Read the
 ChatGPT custom MCP apps are configured in the web app and must be reachable
 from OpenAI's infrastructure. Enable Developer mode, then go to **Settings or
 Workspace settings → Apps → Create**, enter the endpoint above, scan its tools,
-and create the app. The exact availability and controls depend on the ChatGPT
-plan and workspace role; follow [OpenAI's current Developer mode guide](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
+and create the app. Initially, the connector is in **Draft (Dev)** state and
+can be tested in standard 1-on-1 ChatGPT Web chats with Developer Mode enabled.
+To enable access across team members without Developer Mode constraints, a
+Workspace Admin/Owner can publish the connector under **Workspace settings →
+Apps → Drafts → Publish**. The exact availability and controls depend on the
+ChatGPT plan (Business, Enterprise, or Edu beta for full MCP actions) and
+workspace role; follow [OpenAI's current Developer mode guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)
+and the [ChatGPT Configuration Guide](https://docs.harness.agentkit.best/ai-tools/chatgpt.md).
 
 The `owner-bearer` mode is not a documented direct path because the custom-app
 flow has no arbitrary-header field. In `cloudflare-access` mode, use the
 owner-controlled Access URL and complete its OAuth flow; keep the connection
 provisional until the live compatibility checklist passes. Never place the
-owner bearer in an app definition or a chat.
-
+owner bearer in an app definition or a chat. If invocation fails with
+`FORBIDDEN: This conversation does not support developer MCPs`, consult the
+[Troubleshooting Guide](https://docs.harness.agentkit.best/troubleshooting.md).
 </details>
 
 <details>
