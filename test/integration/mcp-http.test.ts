@@ -49,6 +49,8 @@ describe('official SDK interoperability', () => {
     expect(listed.tools.find((tool) => tool.name === 'sessions_close')?.annotations?.destructiveHint).toBe(true);
     const ghAction = listed.tools.find((tool) => tool.name === 'github_action');
     expect(ghAction).toBeDefined();
+    expect(ghAction?.description).toContain('issue_create');
+    expect(ghAction?.description).toContain('operations.issueCreate');
     expect(ghAction?.annotations?.destructiveHint).toBe(true);
     expect(ghAction?.annotations?.openWorldHint).toBe(true);
     const result = await client.callTool({ name: 'workspace_list', arguments: {} });
