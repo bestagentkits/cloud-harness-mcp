@@ -1,3 +1,15 @@
+# [0.39.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.38.1...v0.39.0) (2026-09-06)
+
+
+### Bug Fixes
+
+* **mcp:** enrich github_action tool description to expose discoverable issueCreate capability ([#174](https://github.com/bestagentkits/cloud-harness-mcp/issues/174)) ([#175](https://github.com/bestagentkits/cloud-harness-mcp/issues/175)) ([9058b9f](https://github.com/bestagentkits/cloud-harness-mcp/commit/9058b9fd6e11482a549304d4a726da0b8741b0f5))
+
+
+### Features
+
+* **knowledge:** memories, journals, hybrid search, knowledge graph, dashboard editor & MCP tools ([#173](https://github.com/bestagentkits/cloud-harness-mcp/issues/173)) ([b104cb1](https://github.com/bestagentkits/cloud-harness-mcp/commit/b104cb13ed03959a2b428fb4a33c2f9e771228a5))
+
 ## [0.38.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.38.0...v0.38.1) (2026-08-31)
 
 
