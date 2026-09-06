@@ -620,6 +620,40 @@ describe('contracts', () => {
       }
     }
   });
+  it('exposes discoverable GitHub issue and pull request operations in github_action tool spec with valid action invariants', () => {
+    const ghSpec = TOOL_SPECS.find((tool) => tool.name === 'github_action');
+    expect(ghSpec).toBeDefined();
+    const desc = ghSpec?.description ?? '';
+    const title = ghSpec?.title ?? '';
+    const combinedText = `${title} ${desc}`;
+
+    // (a) Front-loaded discovery keywords and bridge to advertised capabilities
+    expect(title).toContain('GitHub issues');
+    expect(desc.startsWith('Create GitHub issues (action: "issue_create")')).toBe(true);
+    expect(desc).toContain('operations.issueCreate');
+    expect(desc).toContain('pull request');
+    expect(desc).toContain('Uses broker-managed GitHub App credentials');
+
+    // (b) Bidirectional invariant: derive action.enum from JSON schema and assert every value appears in title + description
+    const schema = TOOL_SCHEMA_BY_NAME.github_action;
+    const jsonSchema = (typeof schema.toJSONSchema === 'function'
+      ? schema.toJSONSchema({ io: 'input' })
+      : z.toJSONSchema(schema, { io: 'input' })) as { properties?: { action?: { enum?: string[] } } };
+    const schemaActions = jsonSchema.properties?.action?.enum;
+    expect(Array.isArray(schemaActions)).toBe(true);
+    expect(schemaActions?.length).toBeGreaterThanOrEqual(15);
+
+    for (const action of schemaActions!) {
+      expect(combinedText, `action "${action}" must appear in github_action title or description`).toContain(action);
+    }
+
+    // And every action mentioned in the description must be in schemaActions
+    const actionsMentioned = [...desc.matchAll(/\b(issue_[a-z_]+|pr_[a-z_]+|label_[a-z_]+)\b/g)].map((m) => m[1]);
+    for (const mentioned of actionsMentioned) {
+      expect(schemaActions).toContain(mentioned);
+    }
+  });
+
 
   it('ensures all registered TOOL_SPECS emit top-level object schemas with properties for client ingestion', () => {
     for (const spec of TOOL_SPECS) {
