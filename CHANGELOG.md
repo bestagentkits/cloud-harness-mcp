@@ -1,3 +1,10 @@
+## [0.39.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.2...v0.39.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **auth:** gate the missing-key cache on a completed key document ([d951767](https://github.com/bestagentkits/cloud-harness-mcp/commit/d951767b2416e754726781d76bf6d6f3adee9503))
+
 ## [0.39.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.1...v0.39.2) (2026-09-13)
 
 
