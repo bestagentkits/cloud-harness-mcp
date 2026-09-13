@@ -173,18 +173,32 @@ describe('Cloudflare Access assertion verification', () => {
     await expect(verifier.verify(jwt(signingKey, claims()))).rejects.toMatchObject({ reason: 'jwks_unavailable' });
   });
 
-  it('keeps reporting the JWKS outage when the key document body fails or is negatively cached', async () => {
+  it('reports a signing-key response-body failure as an outage', async () => {
     const signingKey = sharedSigningKey;
     const erroredBody = new Response(
       new ReadableStream({ start(controller) { controller.error(new Error('connection reset')); } }),
       { status: 200, headers: { 'content-type': 'application/json' } }
     );
-    const fetcher = vi.fn(async () => erroredBody);
-    const verifier = new CloudflareAccessJwtVerifier({ issuer, audience, jwksUrl, fetcher, now: () => baseTime });
-    const assertion = jwt(signingKey, claims());
+    const verifier = new CloudflareAccessJwtVerifier({ issuer, audience, jwksUrl, fetcher: async () => erroredBody, now: () => baseTime });
+    await expect(verifier.verify(jwt(signingKey, claims()))).rejects.toMatchObject({ reason: 'jwks_unavailable' });
+  });
+
+  it('retries the signing-key document after an outage instead of caching a missing key', async () => {
+    const signingKey = sharedSigningKey;
+    let now = baseTime;
+    let offline = true;
+    const fetcher = vi.fn(async () => {
+      if (offline) throw new Error('jwks endpoint unreachable');
+      return new Response(JSON.stringify({ keys: [signingKey.jwk] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const verifier = new CloudflareAccessJwtVerifier({ issuer, audience, jwksUrl, fetcher, now: () => now });
+    const assertion = jwt(signingKey, claims({ exp: Math.floor(baseTime / 1_000) + 600 }));
+
     await expect(verifier.verify(assertion)).rejects.toMatchObject({ reason: 'jwks_unavailable' });
-    await expect(verifier.verify(assertion)).rejects.toMatchObject({ reason: 'jwks_unavailable' });
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    offline = false;
+    now += 1_100;
+    await expect(verifier.verify(assertion)).resolves.toBeDefined();
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });
 

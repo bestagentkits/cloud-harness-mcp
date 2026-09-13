@@ -4,7 +4,6 @@ import type { ExternalPrincipal } from '@cloud-harness/contracts';
 type JwtHeader = { alg?: unknown; kid?: unknown };
 type JwtPayload = Record<string, unknown>;
 type CachedKey = { key: KeyObject; freshUntil: number; staleUntil: number };
-type MissingKey = { until: number; reason: AccessAssertionFailure };
 const SERVICE_SUBJECT_PREFIX = 'cf-service:';
 
 export type AccessJwtVerifierOptions = {
@@ -94,7 +93,7 @@ export class CloudflareAccessJwtVerifier {
   private readonly maxNegativeKeys: number;
   private readonly maxJwksBytes: number;
   private readonly keys = new Map<string, CachedKey>();
-  private readonly missingKids = new Map<string, MissingKey>();
+  private readonly missingKids = new Map<string, number>();
   private refreshInFlight: Promise<void> | undefined;
   private lastRefreshAttempt = Number.NEGATIVE_INFINITY;
 
@@ -171,7 +170,7 @@ export class CloudflareAccessJwtVerifier {
     const existing = this.keys.get(kid);
     if (existing && now <= existing.freshUntil) return existing.key;
     const missing = this.missingKids.get(kid);
-    if (!existing && missing && now < missing.until) fail(missing.reason);
+    if (!existing && missing && now < missing) fail('unknown_key');
 
     let refreshFailure: AccessAssertionFailure | undefined;
     if (now - this.lastRefreshAttempt >= this.refreshCooldownMs) {
@@ -184,7 +183,10 @@ export class CloudflareAccessJwtVerifier {
     const refreshed = this.keys.get(kid);
     if (refreshed && checkedAt <= refreshed.staleUntil) return refreshed.key;
     const reason = refreshFailure ?? 'unknown_key';
-    this.rememberMissing(kid, checkedAt + this.negativeCacheTtlMs, reason);
+    // Only a completed key document may mark a kid absent. Caching an outage as a missing key
+    // would keep rejecting valid assertions for the whole negative-cache window after the
+    // endpoint recovers; an outage instead retries on the next request past the refresh cooldown.
+    if (!refreshFailure) this.rememberMissing(kid, checkedAt + this.negativeCacheTtlMs);
     return fail(reason);
   }
 
@@ -232,9 +234,9 @@ export class CloudflareAccessJwtVerifier {
     while (this.keys.size > this.maxKeys) this.keys.delete(this.keys.keys().next().value as string);
   }
 
-  private rememberMissing(kid: string, until: number, reason: AccessAssertionFailure): void {
+  private rememberMissing(kid: string, until: number): void {
     this.missingKids.delete(kid);
-    this.missingKids.set(kid, { until, reason });
+    this.missingKids.set(kid, until);
     while (this.missingKids.size > this.maxNegativeKeys) this.missingKids.delete(this.missingKids.keys().next().value as string);
   }
 }
