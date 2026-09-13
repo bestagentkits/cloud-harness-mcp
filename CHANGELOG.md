@@ -1,3 +1,11 @@
+## [0.39.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.0...v0.39.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **dashboard:** diagnose Cloudflare Access assertion rejections ([31dc776](https://github.com/bestagentkits/cloud-harness-mcp/commit/31dc776e0b76f6c764f547ee2fc5c71d335e09ff)), closes [#176](https://github.com/bestagentkits/cloud-harness-mcp/issues/176)
+* **review:** bound the rejection log path and pin the log contract ([291b4e8](https://github.com/bestagentkits/cloud-harness-mcp/commit/291b4e8d56e8d328592407346d2f9ec1358b8ed4))
+
 # [0.39.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.38.1...v0.39.0) (2026-09-06)
 
 
