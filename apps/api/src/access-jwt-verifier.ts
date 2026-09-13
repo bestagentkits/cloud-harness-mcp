@@ -96,6 +96,7 @@ export class CloudflareAccessJwtVerifier {
   private readonly missingKids = new Map<string, number>();
   private refreshInFlight: Promise<void> | undefined;
   private lastRefreshAttempt = Number.NEGATIVE_INFINITY;
+  private lastRefreshFailure: AccessAssertionFailure | undefined;
 
   constructor(private readonly options: AccessJwtVerifierOptions) {
     this.fetcher = options.fetcher ?? fetch;
@@ -173,21 +174,23 @@ export class CloudflareAccessJwtVerifier {
     if (!existing && missing && now < missing) fail('unknown_key');
 
     let refreshFailure: AccessAssertionFailure | undefined;
+    let refreshCompleted = false;
     if (now - this.lastRefreshAttempt >= this.refreshCooldownMs) {
-      try { await this.refresh(); } catch (error) { refreshFailure = error instanceof AccessJwtVerificationError ? error.reason : undefined; /* bounded stale keys remain usable */ }
+      try { await this.refresh(); refreshCompleted = true; } catch (error) { refreshFailure = error instanceof AccessJwtVerificationError ? error.reason : undefined; /* bounded stale keys remain usable */ }
     } else if (this.refreshInFlight) {
-      try { await this.refreshInFlight; } catch (error) { refreshFailure = error instanceof AccessJwtVerificationError ? error.reason : undefined; /* handled below */ }
+      try { await this.refreshInFlight; refreshCompleted = true; } catch (error) { refreshFailure = error instanceof AccessJwtVerificationError ? error.reason : undefined; /* handled below */ }
     }
+    if (refreshFailure) this.lastRefreshFailure = refreshFailure;
+    else if (refreshCompleted) this.lastRefreshFailure = undefined;
 
     const checkedAt = this.now();
     const refreshed = this.keys.get(kid);
     if (refreshed && checkedAt <= refreshed.staleUntil) return refreshed.key;
-    const reason = refreshFailure ?? 'unknown_key';
-    // Only a completed key document may mark a kid absent. Caching an outage as a missing key
-    // would keep rejecting valid assertions for the whole negative-cache window after the
-    // endpoint recovers; an outage instead retries on the next request past the refresh cooldown.
-    if (!refreshFailure) this.rememberMissing(kid, checkedAt + this.negativeCacheTtlMs);
-    return fail(reason);
+    // Only a completed key document may mark a kid absent: caching an outage would keep rejecting
+    // valid assertions after the endpoint recovers, so an outage retries on the next request past
+    // the refresh cooldown and is labelled by the failure that is still in force.
+    if (refreshCompleted) this.rememberMissing(kid, checkedAt + this.negativeCacheTtlMs);
+    return fail(refreshFailure ?? this.lastRefreshFailure ?? 'unknown_key');
   }
 
   private async refresh(): Promise<void> {

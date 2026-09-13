@@ -195,9 +195,25 @@ describe('Cloudflare Access assertion verification', () => {
     const assertion = jwt(signingKey, claims({ exp: Math.floor(baseTime / 1_000) + 600 }));
 
     await expect(verifier.verify(assertion)).rejects.toMatchObject({ reason: 'jwks_unavailable' });
+    // Inside the refresh cooldown no fetch is attempted; the valid kid must still not be marked absent.
+    await expect(verifier.verify(assertion)).rejects.toMatchObject({ reason: 'jwks_unavailable' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
     offline = false;
     now += 1_100;
     await expect(verifier.verify(assertion)).resolves.toBeDefined();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('labels each attempt of a sustained outage and keeps retrying past the refresh cooldown', async () => {
+    const signingKey = sharedSigningKey;
+    let now = baseTime;
+    const fetcher = vi.fn(async () => { throw new Error('jwks endpoint unreachable'); });
+    const verifier = new CloudflareAccessJwtVerifier({ issuer, audience, jwksUrl, fetcher, now: () => now });
+    const assertion = jwt(signingKey, claims());
+
+    await expect(verifier.verify(assertion)).rejects.toMatchObject({ reason: 'jwks_unavailable' });
+    now += 12_000;
+    await expect(verifier.verify(assertion)).rejects.toMatchObject({ reason: 'jwks_unavailable' });
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });
