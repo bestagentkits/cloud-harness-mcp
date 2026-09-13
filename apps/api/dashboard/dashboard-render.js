@@ -631,3 +631,17 @@ export function renderKnowledgeGraph(graphResult) {
     ${accessibleTable}
   `;
 }
+
+/**
+ * Renders the command palette result list. Options must be direct children of the
+ * `role="listbox"` element — a wrapper between them removes the options from the
+ * accessibility tree. Every dynamic value passes through the local `escape`.
+ */
+export function renderPaletteResults(entries, activeIndex) {
+  const list = Array.isArray(entries) ? entries : [];
+  if (!list.length) return '<li class="palette-empty" role="presentation">No matching pages or resources.</li>';
+  return list.map((entry, index) => {
+    const selected = index === activeIndex;
+    return `<li id="palette-opt-${index}" class="palette-option${selected ? ' selected' : ''}" role="option" aria-selected="${selected}" data-palette-index="${index}" data-href="${escape(entry.href)}"><span class="palette-option-label">${escape(entry.label)}</span><span class="palette-option-group">${escape(entry.group)}</span><span class="palette-option-hint mono wrap">${escape(entry.hint)}</span></li>`;
+  }).join('');
+}

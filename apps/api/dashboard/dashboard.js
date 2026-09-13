@@ -22,7 +22,7 @@ import {
 import {
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName,
-  renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown
+  renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults
 } from './dashboard-render.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -220,6 +220,222 @@ const FORBIDDEN_CLIENT_PREFIXES = [
   'XDG_', 'NPM_', 'NPM_CONFIG_', 'UV_', 'BUN_', 'PNPM_', 'GIT_', 'LD_'
 ];
 
+/** Theme cycle order. `system` is represented in the DOM by an absent html[data-theme]. */
+export const THEME_ORDER = ['system', 'light', 'dark'];
+export const normalizeTheme = (value) => (THEME_ORDER.includes(value) ? value : 'system');
+
+export function nextTheme(current) {
+  return THEME_ORDER[(THEME_ORDER.indexOf(normalizeTheme(current)) + 1) % THEME_ORDER.length];
+}
+
+export function themeActionLabel(current) {
+  const resolved = normalizeTheme(current);
+  return `Theme: ${resolved}. Activate to switch to ${nextTheme(resolved)}.`;
+}
+
+/**
+ * The per-principal limiter allows only 8 concurrent requests for the whole
+ * dashboard (apps/api/src/request-security.ts), and a page load already spends
+ * most of that. The palette therefore fetches in batches of three and never runs
+ * two fan-outs at once.
+ */
+export const PALETTE_BATCH_SIZE = 3;
+export const PALETTE_MAX_PER_SOURCE = 200;
+export const PALETTE_MAX_ENTRIES = 1_000;
+export const PALETTE_MAX_RENDERED = 50;
+
+/**
+ * The indexed sources. Only these keys are read, and per source only the fields
+ * named in `paletteEntryFor`. `knowledge` is deliberately absent: its list
+ * response carries each item's full content (apps/api/src/dashboard-response.ts)
+ * and the schema allows 262144 characters per item, which is far too large for a
+ * navigation palette. `audit` is absent because a palette is a navigator, not a
+ * log search, and per-environment secrets are absent because that endpoint is
+ * N+1 by construction.
+ */
+export const PALETTE_SOURCE_REQUESTS = [
+  { key: 'workspaces', path: '/workspaces?limit=100', rows: 'workspaces', group: 'Workspaces' },
+  { key: 'projects', path: '/projects', rows: 'projects', group: 'Projects' },
+  { key: 'secrets', path: '/secrets', rows: 'secrets', group: 'Secrets' },
+  { key: 'apiKeys', path: '/api-keys', rows: 'keys', group: 'API keys' },
+  { key: 'credentials', path: '/provider-credentials', rows: 'credentials', group: 'Models' },
+  { key: 'profiles', path: '/agent-model-profiles', rows: 'profiles', group: 'Models' },
+  { key: 'artifacts', path: '/artifacts?limit=100', rows: 'artifacts', group: 'Artifacts' }
+];
+
+export const PALETTE_PAGE_COMMANDS = [
+  { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
+  { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },
+  { id: 'page:projects', group: 'Pages', label: 'Projects', hint: 'Page', href: '/dashboard/projects' },
+  { id: 'page:secrets', group: 'Pages', label: 'Secrets', hint: 'Page', href: '/dashboard/secrets' },
+  { id: 'page:models', group: 'Pages', label: 'Models', hint: 'Page', href: '/dashboard/models' },
+  { id: 'page:api-keys', group: 'Pages', label: 'API keys', hint: 'Page', href: '/dashboard/api-keys' },
+  { id: 'page:github', group: 'Pages', label: 'GitHub', hint: 'Page', href: '/dashboard/github' },
+  { id: 'page:knowledge', group: 'Pages', label: 'Knowledge', hint: 'Search memories and journals here', href: '/dashboard/knowledge' },
+  { id: 'page:artifacts', group: 'Pages', label: 'Artifacts', hint: 'Page', href: '/dashboard/artifacts' },
+  { id: 'page:audit', group: 'Pages', label: 'Audit', hint: 'Page', href: '/dashboard/audit' },
+  { id: 'page:profile', group: 'Pages', label: 'Profile', hint: 'Page', href: '/dashboard/profile' }
+];
+
+export function isPaletteHotkey(event) {
+  return Boolean(event)
+    && Boolean(event.metaKey || event.ctrlKey)
+    && !event.altKey
+    && typeof event.key === 'string'
+    && event.key.toLowerCase() === 'k';
+}
+
+export function chunkPaletteRequests(requests) {
+  const list = Array.isArray(requests) ? requests : [];
+  const batches = [];
+  for (let index = 0; index < list.length; index += PALETTE_BATCH_SIZE) batches.push(list.slice(index, index + PALETTE_BATCH_SIZE));
+  return batches;
+}
+
+function paletteEntryFor(key, group, row) {
+  if (!row || typeof row !== 'object') return undefined;
+  if (key === 'workspaces') {
+    if (!row.workspaceId || !row.repositoryUrl) return undefined;
+    return { id: `workspace:${row.workspaceId}`, group, label: repositoryName(row.repositoryUrl), hint: String(row.workspaceId), href: `/dashboard/workspaces/${encodeURIComponent(row.workspaceId)}` };
+  }
+  if (key === 'projects') {
+    if (!row.id || !row.name) return undefined;
+    return { id: `project:${row.id}`, group, label: String(row.name), hint: String(row.id), href: `/dashboard/projects/${encodeURIComponent(row.id)}` };
+  }
+  if (key === 'secrets') {
+    // Secret descriptions are unredacted free text and are deliberately never indexed.
+    if (!row.name) return undefined;
+    return { id: `secret:${row.name}`, group, label: String(row.name), hint: 'Global secret', href: '/dashboard/secrets' };
+  }
+  if (key === 'apiKeys') {
+    if (!row.name) return undefined;
+    return { id: `api-key:${row.id ?? row.name}`, group, label: String(row.name), hint: String(row.state ?? 'API key'), href: '/dashboard/api-keys' };
+  }
+  if (key === 'credentials') {
+    if (!row.label) return undefined;
+    return { id: `credential:${row.id ?? row.label}`, group, label: String(row.label), hint: String(row.provider ?? 'Provider credential'), href: '/dashboard/models' };
+  }
+  if (key === 'profiles') {
+    const label = row.displayName ?? row.id;
+    if (!label) return undefined;
+    return { id: `profile:${row.id ?? label}`, group, label: String(label), hint: String(row.id ?? 'Model profile'), href: '/dashboard/models' };
+  }
+  if (key === 'artifacts') {
+    const label = row.logicalName ?? row.artifactId;
+    if (!label) return undefined;
+    return { id: `artifact:${row.artifactId ?? label}`, group, label: String(label), hint: String(row.artifactId ?? ''), href: '/dashboard/artifacts' };
+  }
+  return undefined;
+}
+
+export function buildPaletteIndex(sources) {
+  const provided = sources && typeof sources === 'object' ? sources : {};
+  const entries = [...PALETTE_PAGE_COMMANDS];
+  for (const request of PALETTE_SOURCE_REQUESTS) {
+    const rows = Array.isArray(provided[request.key]) ? provided[request.key] : [];
+    let added = 0;
+    for (const row of rows) {
+      if (added >= PALETTE_MAX_PER_SOURCE || entries.length >= PALETTE_MAX_ENTRIES) break;
+      const entry = paletteEntryFor(request.key, request.group, row);
+      if (!entry) continue;
+      entries.push(entry);
+      added += 1;
+    }
+  }
+  return entries
+    .slice(0, PALETTE_MAX_ENTRIES)
+    .filter((entry) => entry.label.trim().length > 0)
+    .map((entry) => ({ ...entry, haystack: `${entry.id} ${entry.label} ${entry.hint} ${entry.group}`.toLowerCase() }));
+}
+
+export function rankPaletteMatches(index, query) {
+  const entries = Array.isArray(index) ? index : [];
+  const term = String(query ?? '').trim().toLowerCase();
+  if (!term) return entries.slice(0, PALETTE_MAX_RENDERED);
+  const boundaries = [' ', '_', '-', '.', '/'];
+  const ranked = [];
+  for (const entry of entries) {
+    const label = String(entry.label ?? '').toLowerCase();
+    const position = label.indexOf(term);
+    let rank;
+    if (position === 0) rank = 0;
+    else if (position > 0 && boundaries.includes(label[position - 1])) rank = 1;
+    else if (String(entry.haystack ?? '').includes(term)) rank = 2;
+    else continue;
+    ranked.push({ rank, entry });
+  }
+  ranked.sort((left, right) => left.rank - right.rank);
+  return ranked.slice(0, PALETTE_MAX_RENDERED).map((item) => item.entry);
+}
+
+/**
+ * Refresh policy for the command palette index, extracted so it is testable
+ * without a DOM.
+ *
+ * Guarantees:
+ * - At most `PALETTE_BATCH_SIZE` requests are in flight at once (sequential batches),
+ *   which keeps the fan-out inside the dashboard's per-principal concurrency limit.
+ * - Concurrent callers share a single load.
+ * - An expired snapshot and an explicit invalidation both re-arm every source, so a
+ *   refresh never renews its timestamp without refetching.
+ * - A failed source stays pending and is retried on the next load instead of being
+ *   cached as an empty list.
+ * - An invalidation that lands mid-load supersedes that pass, and the same load
+ *   continues until it produces a current-generation index.
+ */
+export function createPaletteIndexLoader({ requests, fetchRows, buildIndex = buildPaletteIndex, now = Date.now, maxAgeMs = 60_000 }) {
+  const sources = {};
+  let pending = new Set(requests.map((request) => request.key));
+  let index;
+  let builtAt = 0;
+  let stale = true;
+  let generation = 0;
+  let inFlight;
+
+  async function load() {
+    // `for (;;)` is bounded by external invalidations: a pass repeats only when its
+    // generation was superseded, and a failed source returns through the commit
+    // path below rather than re-entering.
+    for (;;) {
+      if (index && !stale && now() - builtAt <= maxAgeMs) return index;
+      if (pending.size === 0) pending = new Set(requests.map((request) => request.key));
+      const pass = ++generation;
+      const wanted = requests.filter((request) => pending.has(request.key));
+      const settled = [];
+      for (const batch of chunkPaletteRequests(wanted)) {
+        settled.push(...await Promise.allSettled(batch.map((request) => fetchRows(request))));
+      }
+      if (pass !== generation) continue;
+      const nextPending = new Set();
+      wanted.forEach((request, position) => {
+        const outcome = settled[position];
+        if (outcome?.status === 'fulfilled' && Array.isArray(outcome.value)) sources[request.key] = outcome.value;
+        else nextPending.add(request.key);
+      });
+      pending = nextPending;
+      index = buildIndex(sources);
+      builtAt = now();
+      stale = pending.size > 0;
+      return index;
+    }
+  }
+
+  return {
+    ensure() {
+      if (!inFlight) inFlight = load().finally(() => { inFlight = undefined; });
+      return inFlight;
+    },
+    invalidate() {
+      // Re-arm every source: `wanted` is derived from `pending`, so marking only
+      // `stale` would make invalidation a no-op that re-serves the previous index.
+      stale = true;
+      pending = new Set(requests.map((request) => request.key));
+      generation += 1;
+    },
+    read() { return index; }
+  };
+}
+
 export function validateSecretClient(name, value) {
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,99}$/.test(name)) return 'name must be an environment-style identifier';
   const upper = name.toUpperCase();
@@ -254,6 +470,14 @@ export function initializeDashboard() {
   const bulkEnvIdField = document.querySelector('#bulk-import-env-id');
   let currentBulkEnvironment;
   let currentBulkProject;
+  // Command palette state. Declared before `announce` so its invalidation hook is safe.
+  const paletteLoader = createPaletteIndexLoader({
+    requests: PALETTE_SOURCE_REQUESTS,
+    fetchRows: (request) => api(request.path).then((result) => result?.data?.[request.rows])
+  });
+  let paletteActive = -1;
+  let paletteInvoker;
+  let paletteAnnounceTimer;
   function openBulkImport(environment, project) {
     currentBulkEnvironment = environment;
     currentBulkProject = project;
@@ -357,7 +581,7 @@ export function initializeDashboard() {
     });
   });
   const setBusy = (busy) => content.setAttribute('aria-busy', String(busy));
-  const announce = (message) => { announcer.textContent = message; toast(message); };
+  const announce = (message) => { announcer.textContent = message; toast(message); invalidatePalette(); };
   function toast(message, kind = '') {
     const region = document.querySelector('#toasts');
     if (!region) return;
@@ -1312,7 +1536,7 @@ export function initializeDashboard() {
       try {
         const modal = !matchMedia('(min-width: 73.75rem)').matches;
         const { id, item, heading } = await renderWorkspaceDrawer({ trigger, detail, content, fetchWorkspace: workspace, modal });
-        document.querySelector('.app-shell').classList.add('has-detail'); history.pushState({ drawer: id }, '', trigger.href); bindClose(item);
+        document.querySelector('.app-shell').classList.add('has-detail'); history.pushState({ drawer: id }, '', trigger.href); bindClose(item); invalidatePalette();
         if (modal) {
           const controller = createModalController({ panel: detail, backgrounds: [main, sidebar], trigger, initialFocus: () => heading, onClose: () => { document.querySelector('.app-shell').classList.remove('has-detail'); history.pushState({}, '', '/dashboard'); } });
           detail.querySelector('#close-detail').addEventListener('click', controller.close); controller.open();
@@ -1391,18 +1615,102 @@ export function initializeDashboard() {
     event.currentTarget.setAttribute('aria-expanded', String(!collapsed));
     event.currentTarget.setAttribute('aria-label', collapsed ? 'Expand navigation' : 'Collapse navigation');
   });
-  const themeControl = document.querySelector('.theme-control');
-  for (const option of themeControl.querySelectorAll('.theme-opt')) {
-    option.setAttribute('aria-pressed', String(option.dataset.themeValue === (document.documentElement.dataset.theme ?? 'system')));
-    option.addEventListener('click', (event) => {
-      const value = event.currentTarget.dataset.themeValue;
-      if (value === 'system') delete document.documentElement.dataset.theme;
-      else document.documentElement.dataset.theme = value;
-      for (const other of themeControl.querySelectorAll('.theme-opt')) other.setAttribute('aria-pressed', String(other === event.currentTarget));
-      void api('/preferences', { method: 'PUT', body: requestBody({ theme: value }) }).catch(() => announce('Theme preference was not saved.'));
-      announce(`Theme set to ${value}.`);
-    });
+  const themeToggle = document.querySelector('#theme-toggle');
+  const themeIcons = themeToggle.querySelectorAll('svg[data-theme-value]');
+  function renderThemeToggle() {
+    const active = normalizeTheme(document.documentElement.dataset.theme);
+    // `hidden` is an HTMLElement property; on an SVGElement the property form is an
+    // expando and never reflects to the attribute, so set the attribute directly.
+    for (const icon of themeIcons) {
+      if (icon.dataset.themeValue === active) icon.removeAttribute('hidden');
+      else icon.setAttribute('hidden', '');
+    }
+    themeToggle.setAttribute('aria-label', themeActionLabel(active));
   }
+  themeToggle.addEventListener('click', () => {
+    const value = nextTheme(document.documentElement.dataset.theme);
+    if (value === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = value;
+    renderThemeToggle();
+    announce(`Theme set to ${value}.`);
+    void api('/preferences', { method: 'PUT', body: requestBody({ theme: value }) }).catch(() => announce('Theme preference was not saved.'));
+  });
+  renderThemeToggle();
+  const paletteDialog = document.querySelector('#command-palette');
+  const paletteInput = document.querySelector('#palette-input');
+  const paletteResults = document.querySelector('#palette-results');
+  const paletteStatus = document.querySelector('#palette-status');
+  const openPaletteButton = document.querySelector('#open-palette');
+  function invalidatePalette() {
+    paletteLoader.invalidate();
+  }
+  function announcePaletteStatus(message) {
+    globalThis.clearTimeout(paletteAnnounceTimer);
+    paletteAnnounceTimer = globalThis.setTimeout(() => { paletteStatus.textContent = message; }, 150);
+  }
+  function renderPalette(query) {
+    const entries = rankPaletteMatches(paletteLoader.read() ?? PALETTE_PAGE_COMMANDS, query);
+    if (paletteActive >= entries.length) paletteActive = entries.length - 1;
+    if (paletteActive < 0 && entries.length) paletteActive = 0;
+    if (!entries.length) paletteActive = -1;
+    paletteResults.innerHTML = renderPaletteResults(entries, paletteActive);
+    paletteInput.setAttribute('aria-expanded', String(entries.length > 0));
+    if (paletteActive >= 0) paletteInput.setAttribute('aria-activedescendant', `palette-opt-${paletteActive}`);
+    else paletteInput.removeAttribute('aria-activedescendant');
+    paletteResults.querySelector(`#palette-opt-${paletteActive}`)?.scrollIntoView({ block: 'nearest' });
+    return entries;
+  }
+  function openPalette(invoker) {
+    if (paletteDialog.open || document.querySelector('dialog[open]')) return;
+    paletteInvoker = invoker ?? null;
+    paletteActive = -1;
+    paletteInput.value = '';
+    paletteDialog.showModal();
+    const entries = renderPalette('');
+    paletteInput.focus({ preventScroll: true });
+    announcePaletteStatus(`${entries.length} results.`);
+    void paletteLoader.ensure().then(() => {
+      if (!paletteDialog.open) return;
+      announcePaletteStatus(`${renderPalette(paletteInput.value).length} results.`);
+    }).catch(() => undefined);
+  }
+  function closePalette() {
+    if (paletteDialog.open) paletteDialog.close();
+    paletteInvoker?.focus({ preventScroll: true });
+  }
+  paletteInput.addEventListener('input', () => {
+    announcePaletteStatus(`${renderPalette(paletteInput.value).length} results.`);
+  });
+  paletteInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); closePalette(); return; }
+    const options = paletteResults.querySelectorAll('[role="option"]');
+    if (!options.length) return;
+    if (event.key === 'ArrowDown') paletteActive = (paletteActive + 1) % options.length;
+    else if (event.key === 'ArrowUp') paletteActive = (paletteActive - 1 + options.length) % options.length;
+    else if (event.key === 'Home') paletteActive = 0;
+    else if (event.key === 'End') paletteActive = options.length - 1;
+    else if (event.key === 'Enter') {
+      const href = options[paletteActive]?.dataset.href;
+      if (href) { event.preventDefault(); location.href = href; }
+      return;
+    } else return;
+    event.preventDefault();
+    renderPalette(paletteInput.value);
+  });
+  // Keep focus in the input: mousedown must not move it into the listbox.
+  paletteResults.addEventListener('mousedown', (event) => { if (event.target.closest?.('[role="option"]')) event.preventDefault(); });
+  paletteResults.addEventListener('click', (event) => {
+    const href = event.target.closest?.('[role="option"]')?.dataset.href;
+    if (href) location.href = href;
+  });
+  paletteDialog.addEventListener('cancel', (event) => { event.preventDefault(); closePalette(); });
+  openPaletteButton.addEventListener('click', (event) => openPalette(event.currentTarget));
+  document.addEventListener('keydown', (event) => {
+    if (!isPaletteHotkey(event)) return;
+    event.preventDefault();
+    if (paletteDialog.open) { closePalette(); return; }
+    openPalette(openPaletteButton);
+  });
   void api('/profile').then((result) => {
     const identity = result.data?.identity ?? {};
     document.querySelector('#profile-name').textContent = identity.name ?? identity.email ?? 'Signed in';
@@ -1416,7 +1724,7 @@ export function initializeDashboard() {
     if (!trigger) return;
     void globalThis.navigator.clipboard.writeText(trigger.dataset.copy).then(() => announce('Copied to clipboard.')).catch(() => announce('Copy failed. Select and copy the value manually.'));
   });
-  addEventListener('pagehide', () => apiKeyReveal.clear());
+  addEventListener('pagehide', () => { apiKeyReveal.clear(); paletteLoader.invalidate(); });
   addEventListener('popstate', () => location.reload()); void load();
 }
 

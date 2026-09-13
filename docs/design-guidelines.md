@@ -57,13 +57,16 @@ fonts the CSP forbids. We carry the same voice with a native stack instead:
 
 ### Adaptive dark theme
 
-The default follows `prefers-color-scheme`; a **system / light / dark** control
-in the top bar lets an operator force a theme. Client storage is forbidden, so
-the choice persists **server-side, not in the browser**: `PUT
-/api/v1/preferences` (CSRF-guarded) sets an HttpOnly `ch-dashboard-theme`
-cookie, and the shell handler injects `html[data-theme]` on first paint so a
-forced theme never flashes. The client only reads that DOM attribute. Owners:
-[`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) and
+The default follows `prefers-color-scheme`. A single **icon control** in the top
+bar cycles system → light → dark; `system` is represented by an absent
+`html[data-theme]`, so the media query governs again. The control is deliberately
+**not** `aria-pressed` — that attribute describes two states and this control has
+three, so the accessible name states the current state and the next action
+instead. Client storage is forbidden, so the choice persists **server-side, not
+in the browser**: `PUT /api/v1/preferences` (CSRF-guarded) sets an HttpOnly
+`ch-dashboard-theme` cookie, and the shell handler injects `html[data-theme]` on
+first paint so a forced theme never flashes. The client only reads that DOM
+attribute. Owners: the cycle state machine in `dashboard.js` and the injection in
 [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts).
 
 Dark is a tinted graphite, not black: surfaces **elevate by lightening**
@@ -85,14 +88,33 @@ against its surface.
 
 ## Components
 
-- **Top bar:** sticky header carrying the wordmark + `MCP Control Plane` tag,
-  the theme control, a profile chip (name, email, initials avatar), and Sign
-  out (Cloudflare Access logout at `/cdn-cgi/access/logout`).
+- **Top bar:** sticky header carrying the wordmark + `MCP Control Plane` tag, a
+  search trigger (`aria-keyshortcuts="Meta+K Control+K"`), the theme icon, a
+  profile chip (name, email, initials avatar), and Sign out (Cloudflare Access
+  logout at `/cdn-cgi/access/logout`).
+- **Command palette:** opened by the search trigger or `CMD+K` / `CTRL+K`. It
+  indexes page commands plus an allowlisted projection from seven existing
+  resource list endpoints, fetched in batches of at most three so it cannot
+  exhaust the dashboard's per-principal concurrency budget, and bounded to 200
+  entries per source and 50 rendered matches. It covers only the first page of
+  each paginated resource, which the dialog states outright. Secret values,
+  secret descriptions, and knowledge content are never indexed — `GET
+  /api/v1/knowledge` returns full item content, so Knowledge keeps its own
+  page-level search. Combobox/listbox semantics with `aria-activedescendant`;
+  focus never leaves the input. Owners: `renderPaletteResults` in
+  `dashboard-render.js`, and the index build, ranking, and batching in
+  `dashboard.js`.
 - **Navigation:** left icon+label rail, grouped by concern (Runtime,
   Configuration, Observability, Account) with an Overview home. Active item gets
   the amber rail + soft fill. A chevron control collapses the rail to icons on
   desktop (toggling `.app-shell.nav-collapsed`); it also collapses to icons on
-  tablet and to a drawer on mobile.
+  tablet and to a drawer on mobile. The rail foot carries the running **server
+  version** and hides it when the rail collapses to icons. It is labelled "Server
+  version" rather than "Release" because production runs the pre-version-bump
+  commit, so the readout legitimately lags the newest tag by one release. Owners:
+  [`apps/api/src/version.ts`](../apps/api/src/version.ts) for the value,
+  [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts) for the
+  injection.
 - **Overview:** monospace metric tiles (corner-bracketed) capped at four above
   the fold, a recent-activity feed, an Access panel, and a Server panel. Tiles
   and feed aggregate client-side from allowlisted endpoints; the Server panel

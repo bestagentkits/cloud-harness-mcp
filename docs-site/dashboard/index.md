@@ -17,10 +17,15 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 - **[GitHub App](/dashboard/github):** Manage GitHub App installation bindings for private repository cloning and push access.
 - **[Artifacts](/dashboard/artifacts):** Download and inspect workspace output files, build logs, and test results.
 - **[Audit Trail](/dashboard/audit):** Review immutable security logs of every tool invocation and authorization event.
-- **[Profile & Preferences](/dashboard/profile):** View signed-in identity details and configure server-persisted theme preferences (System, Light, Dark).
+- **[Profile & Preferences](/dashboard/profile):** View signed-in identity details and switch the theme with the icon control in the top bar, which cycles System, Light, and Dark and persists server-side.
+
+## Search and Version
+
+- **Search:** press `CMD+K` or `CTRL+K` (or use the search button in the top bar) to jump to any dashboard page or find a workspace, project, secret, API key, model credential or profile, or artifact. Results cover the first page of each resource type. Memories and journals are searched on the Knowledge page, which has its own search.
+- **Server version:** the left rail shows the version of the running MCP server, so you can confirm which build answered a request.
 
 ## Design System & Security Invariants
 
-- **Zero Secrets Rendered:** Container tokens, SSH private keys, and runner authentication credentials are never sent to or displayed in the dashboard.
-- **No Client Storage:** Theme preferences and session states are managed strictly via HttpOnly cookies and server session headers.
+- **Zero Secrets Rendered:** Container tokens, SSH private keys, and runner authentication credentials are never sent to or displayed in the dashboard. Dashboard search reads an allowlisted projection from seven resource endpoints and never indexes secret values, secret descriptions, or knowledge content.
+- **No Client Storage:** Theme preferences and session states are managed strictly via HttpOnly cookies and server session headers. Search results are cached in memory for the current page view only.
 - **Strict Content Security Policy (CSP):** Runs under `default-src 'none'` with no external CDN dependencies or tracking scripts.
