@@ -1,9 +1,16 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ApiConfig } from '@cloud-harness/contracts';
+import { z } from 'zod';
 import { createApiApp, type ApiRuntime } from '../src/app.js';
 import { createDashboardAssetsRouter } from '../src/dashboard-assets.js';
+import { normalizeServerVersion } from '../src/version.js';
+
+const manifestVersion = z.object({ version: z.string() })
+  .parse(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')))
+  .version;
 
 const runnerToken = 'runner-token-that-is-longer-than-32-characters';
 const bearerToken = 'owner-token-that-is-longer-than-32-characters';
@@ -34,7 +41,7 @@ describe('dashboard application mount', () => {
     await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server failed');
-    for (const path of ['/overview', '/projects', '/projects/prj_abcdefghijklmnopqrst', '/artifacts', '/audit', '/github', '/api-keys', '/profile']) {
+    for (const path of ['/overview', '/projects', '/projects/prj_abcdefghijklmnopqrst', '/models', '/artifacts', '/audit', '/github', '/api-keys', '/profile']) {
       const response = await fetch(`http://127.0.0.1:${address.port}/dashboard${path}`);
       expect(response.status, path).toBe(200);
       expect(await response.text(), path).toContain('<title>Workspaces | Cloud Harness</title>');
@@ -52,6 +59,31 @@ describe('dashboard application mount', () => {
     expect(await (await fetch(base)).text()).toContain('<html lang="en">');
     expect(await (await fetch(base, { headers: { cookie: 'ch-dashboard-theme=dark' } })).text()).toContain('<html lang="en" data-theme="dark">');
     expect(await (await fetch(base, { headers: { cookie: 'ch-dashboard-theme=neon' } })).text()).toContain('<html lang="en">');
+  });
+
+  it('injects the server version into the shell without leaking the placeholder', async () => {
+    const app = express();
+    app.use('/dashboard', createDashboardAssetsRouter());
+    server = createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server failed');
+    const base = `http://127.0.0.1:${address.port}/dashboard/overview`;
+    const plain = await (await fetch(base)).text();
+    expect(plain).toContain(`v${manifestVersion}`);
+    expect(plain).not.toContain('__CH_VERSION__');
+    const forced = await (await fetch(base, { headers: { cookie: 'ch-dashboard-theme=dark' } })).text();
+    expect(forced).toContain('<html lang="en" data-theme="dark">');
+    expect(forced).toContain(`v${manifestVersion}`);
+  });
+
+  it('accepts every version form the release tooling writes and rejects markup', () => {
+    for (const accepted of [manifestVersion, '0.39.0', '0.40.0-beta.12', '1.2.3+build.7', '1.0.0-rc.1+build.9']) {
+      expect(normalizeServerVersion(accepted), accepted).toBe(accepted);
+    }
+    for (const rejected of ['</script>', '0.39.0" onload="x', '', 42, null, undefined, `v${'1'.repeat(80)}`]) {
+      expect(normalizeServerVersion(rejected), String(rejected)).toBe('unknown');
+    }
   });
 
   it('does not expose dashboard routes in owner-bearer mode', async () => {

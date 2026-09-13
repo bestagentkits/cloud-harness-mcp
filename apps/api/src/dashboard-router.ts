@@ -7,17 +7,9 @@ import { dashboardSecurity, requireJson } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { registerDashboardControlRoutes } from './dashboard-control-router.js';
-import { createRequire } from 'node:module';
+import { serverVersion } from './version.js';
 
 const THEME_COOKIE = 'ch-dashboard-theme';
-let apiVersion = 'unknown';
-try {
-  // Local build-time package manifest; shape is known and trusted, not external input.
-  const manifest = createRequire(import.meta.url)('../package.json') as { version?: string };
-  apiVersion = manifest.version ?? 'unknown';
-} catch {
-  apiVersion = 'unknown';
-}
 
 const workspaceId = z.string().regex(/^ws_[A-Za-z0-9_-]{20,80}$/);
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
@@ -83,7 +75,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
           ? { enabled: true, endpoint: config.apiKeyGatewayPublicUrl ?? null }
           : { enabled: false },
         limits: { maxRequestBytes: config.maxBodyBytes, requestTimeoutMs: config.requestTimeoutMs },
-        version: apiVersion,
+        version: serverVersion,
         session: {
           expiresAt: typeof request.auth?.expiresAt === 'number' ? new Date(request.auth.expiresAt * 1_000).toISOString() : null,
           scopes: request.auth?.scopes ?? []

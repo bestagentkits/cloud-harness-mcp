@@ -60,6 +60,37 @@ describe('dashboard static UI contract', () => {
     for (const forbidden of ['sessionStorage', 'document.cookie', 'secret.value', 'secretValue', 'privateKey', 'accessToken']) expect(script).not.toContain(forbidden);
   });
 
+  it('keeps the server version in the persistent sidebar rail', () => {
+    expect(html).toContain('class="sidebar-version"');
+    expect(html).toContain('__CH_VERSION__');
+    expect(html).toContain('<span class="sr-only">Server version</span>');
+    expect(css).toContain('.sidebar-version');
+    expect(css).toContain('.app-shell.nav-collapsed .sidebar-version');
+  });
+
+  it('exposes a bounded keyboard command palette without a second search landmark', () => {
+    expect(html).toContain('<dialog id="command-palette"');
+    expect(html).toContain('id="palette-input"');
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('aria-controls="palette-results"');
+    expect(html).toContain('aria-autocomplete="list"');
+    expect(html).toContain('id="palette-results"');
+    expect(html).toContain('role="listbox"');
+    expect(html).toContain('id="palette-status"');
+    expect(html).toContain('id="open-palette"');
+    expect(html).toContain('aria-keyshortcuts="Meta+K Control+K"');
+    expect(html).toContain('class="palette-note"');
+    // The workspaces toolbar already owns the page's single search landmark.
+    expect((html.match(/role="search"/g) ?? [])).toHaveLength(1);
+    const paletteStart = html.indexOf('<dialog id="command-palette"');
+    const palette = html.slice(paletteStart, html.indexOf('</dialog>', paletteStart));
+    expect(palette).not.toContain('<form');
+    expect(palette).toContain('Results cover the first page');
+    expect(script).toContain('isPaletteHotkey');
+    expect(script).toContain('buildPaletteIndex');
+    expect(script).toContain('rankPaletteMatches');
+  });
+
   it('keeps API keys transient while exposing create, list, and generation-fenced revoke controls', () => {
     for (const text of [
       'id="api-key-reveal-dialog"', 'This is the only time the complete key will be shown',
@@ -77,6 +108,16 @@ describe('dashboard static UI contract', () => {
     expect(html).toContain('<header class="topbar">');
     expect(html).toContain('href="/cdn-cgi/access/logout"');
     for (const theme of ['data-theme-value="system"', 'data-theme-value="light"', 'data-theme-value="dark"']) expect(html).toContain(theme);
+    const themeStart = html.indexOf('<button id="theme-toggle"');
+    expect(themeStart, 'a single icon theme control exists').toBeGreaterThan(-1);
+    const themeButton = html.slice(themeStart, html.indexOf('</button>', themeStart));
+    expect(themeButton).toContain('class="icon-btn theme-toggle"');
+    expect(themeButton).toContain('aria-label="Theme: system.');
+    // A three-state cycler must not advertise a two-state pressed condition.
+    expect(themeButton).not.toContain('aria-pressed');
+    expect(html).not.toContain('class="theme-control"');
+    expect(html).not.toContain('class="theme-opt"');
+    expect(css).not.toContain('theme-opt');
     expect(html).toContain('id="profile-name"');
     expect(html).toContain('id="nav-toggle"');
     expect(html).not.toContain('>Collapse navigation</button>');

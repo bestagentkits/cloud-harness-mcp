@@ -8,6 +8,7 @@ import { parseCliOptions, getCliHelp } from './cli-options.js';
 import { LocalWorkspaceBackend } from './local/local-workspace-backend.js';
 import { apiLogger } from './logging.js';
 import { createCloudHarnessServer } from './mcp-server.js';
+import { serverVersion } from './version.js';
 
 const parsed = parseCliOptions(process.argv.slice(2));
 if (!parsed.ok) {
@@ -23,7 +24,7 @@ if (options.help) {
 }
 
 if (options.version) {
-  process.stdout.write('0.19.2\n');
+  process.stdout.write(`${serverVersion}\n`);
   process.exit(0);
 }
 

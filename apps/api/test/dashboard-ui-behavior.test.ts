@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
-  parseDotEnv, renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm, validateSecretClient
+  parseDotEnv, renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm, validateSecretClient,
+  THEME_ORDER, nextTheme, themeActionLabel,
+  PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
 
 class FakeElement {
   hidden = false;
@@ -31,6 +33,111 @@ class FakeElement {
 }
 
 describe('dashboard UI behavior', () => {
+  it('cycles the three theme states in order and names the next action', () => {
+    expect(THEME_ORDER).toEqual(['system', 'light', 'dark']);
+    expect(nextTheme('system')).toBe('light');
+    expect(nextTheme('light')).toBe('dark');
+    expect(nextTheme('dark')).toBe('system');
+    // An unknown or absent current state is treated as system, so the first press moves to light.
+    expect(nextTheme(undefined)).toBe('light');
+    expect(nextTheme('neon')).toBe('light');
+    expect(themeActionLabel('dark')).toBe('Theme: dark. Activate to switch to system.');
+    expect(themeActionLabel(undefined)).toBe('Theme: system. Activate to switch to light.');
+  });
+
+  it('detects the palette hotkey across platforms and ignores partial matches', () => {
+    expect(isPaletteHotkey({ metaKey: true, key: 'k' })).toBe(true);
+    expect(isPaletteHotkey({ ctrlKey: true, key: 'K' })).toBe(true);
+    expect(isPaletteHotkey({ key: 'k' })).toBe(false);
+    expect(isPaletteHotkey({ metaKey: true, altKey: true, key: 'k' })).toBe(false);
+    expect(isPaletteHotkey({ ctrlKey: true, key: 'j' })).toBe(false);
+    expect(isPaletteHotkey({})).toBe(false);
+    expect(isPaletteHotkey(undefined)).toBe(false);
+    expect(isPaletteHotkey(null)).toBe(false);
+  });
+
+  it('batches palette requests below the concurrent principal limit', () => {
+    const requests = Array.from({ length: 7 }, (_, index) => ({ key: `s${index}` }));
+    const batches = chunkPaletteRequests(requests);
+    expect(batches.map((batch) => batch.length)).toEqual([3, 3, 1]);
+    for (const batch of batches) expect(batch.length).toBeLessThanOrEqual(PALETTE_BATCH_SIZE);
+    expect(batches.flat().map((request) => request.key)).toEqual(requests.map((request) => request.key));
+    expect(chunkPaletteRequests([])).toEqual([]);
+  });
+
+  it('indexes page commands plus allowlisted resource projections only', () => {
+    const workspaceId = `ws_${'a'.repeat(24)}`;
+    const projectId = `prj_${'b'.repeat(24)}`;
+    const index = buildPaletteIndex({
+      workspaces: [{ workspaceId, repositoryUrl: 'https://github.com/org/repo.git', status: 'ACTIVE' }],
+      projects: [{ id: projectId, name: 'Alpha', generation: 2 }],
+      secrets: [{ name: 'OPENAI_KEY', description: 'leaked-note-marker' }],
+      apiKeys: [{ id: 'apk_abcdefghijklmnopqrst', name: 'laptop', state: 'ACTIVE', generation: 3 }],
+      credentials: [{ id: `cred_${'d'.repeat(24)}`, label: 'Prod OpenAI', provider: 'openai', activeVersion: 4 }],
+      profiles: [{ id: 'coding-fast', displayName: 'Fast Coding', status: 'ACTIVE' }],
+      artifacts: [{ artifactId: `art_${'c'.repeat(24)}`, logicalName: 'build.log' }],
+      // Not an indexed source: must be ignored entirely.
+      knowledge: [{ id: 'kn_abc', title: 'Memory', content: 'secret-content-marker' }]
+    });
+
+    const hrefs = index.map((entry) => entry.href);
+    expect(hrefs).toContain('/dashboard/overview');
+    expect(hrefs).toContain(`/dashboard/workspaces/${workspaceId}`);
+    expect(hrefs).toContain(`/dashboard/projects/${projectId}`);
+    expect(hrefs).toContain('/dashboard/secrets');
+    expect(hrefs).toContain('/dashboard/api-keys');
+    expect(hrefs).toContain('/dashboard/models');
+    expect(hrefs).toContain('/dashboard/artifacts');
+
+    const workspace = index.find((entry) => entry.group === 'Workspaces');
+    expect(workspace.label).toBe('org/repo');
+    expect(workspace.hint).toBe(workspaceId);
+    const secret = index.find((entry) => entry.group === 'Secrets');
+    expect(secret.label).toBe('OPENAI_KEY');
+    expect(secret.hint).toBe('Global secret');
+
+    // Free text the palette must never carry into its index.
+    const serialized = JSON.stringify(index);
+    expect(serialized).not.toContain('leaked-note-marker');
+    expect(serialized).not.toContain('secret-content-marker');
+  });
+
+  it('tolerates a missing source and caps per-source and rendered counts', () => {
+    const index = buildPaletteIndex({ workspaces: undefined, knowledge: undefined });
+    expect(index.every((entry) => entry.group === 'Pages')).toBe(true);
+
+    const workspaces = Array.from({ length: 250 }, (_, position) => ({
+      workspaceId: `ws_${String(position).padStart(24, '0')}`,
+      repositoryUrl: `https://github.com/org/repo-${position}.git`
+    }));
+    const capped = buildPaletteIndex({ workspaces });
+    expect(capped.filter((entry) => entry.group === 'Workspaces')).toHaveLength(200);
+    expect(rankPaletteMatches(capped, '').length).toBe(50);
+  });
+
+  it('ranks prefix matches above word-start matches and bounds the result set', () => {
+    const index = buildPaletteIndex({
+      projects: [{ id: `prj_${'1'.repeat(24)}`, name: 'zebra-alpha' }, { id: `prj_${'2'.repeat(24)}`, name: 'alpha-zebra' }]
+    });
+    const labels = rankPaletteMatches(index, 'alpha').map((entry) => entry.label);
+    expect(labels).toContain('alpha-zebra');
+    expect(labels).toContain('zebra-alpha');
+    expect(labels.indexOf('alpha-zebra')).toBeLessThan(labels.indexOf('zebra-alpha'));
+    expect(rankPaletteMatches(index, 'nothing-matches-this').length).toBe(0);
+  });
+
+  it('escapes palette labels and marks exactly one active option', () => {
+    const markup = renderPaletteResults([
+      { id: 'a', group: 'Secrets', label: '<img src=x onerror=alert(1)>', hint: 'Global secret', href: '/dashboard/secrets' },
+      { id: 'b', group: 'Projects', label: 'Alpha', hint: 'prj_1', href: '/dashboard/projects/prj_1' }
+    ], 1);
+    expect(markup).not.toContain('<img src=x');
+    expect(markup).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect((markup.match(/aria-selected="true"/g) ?? [])).toHaveLength(1);
+    expect((markup.match(/aria-selected="false"/g) ?? [])).toHaveLength(1);
+    expect((markup.match(/role="option"/g) ?? [])).toHaveLength(2);
+  });
+
   it('traps modal focus, inerts the background, and restores its invoking control', () => {
     const panel = new FakeElement(); const first = new FakeElement(); const last = new FakeElement();
     const background = new FakeElement(); const trigger = new FakeElement(); panel.items = [first, last];

@@ -1,9 +1,23 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Router, type Request } from 'express';
+import { serverVersion } from './version.js';
 
 const directory = fileURLToPath(new URL('../dashboard/', import.meta.url));
 const shellHtml = readFileSync(new URL('../dashboard/index.html', import.meta.url), 'utf8');
+
+/**
+ * The server version and the three theme variants are constant for the process,
+ * so every shell is built once here and the request path is a map lookup with no
+ * string work. `light` and `dark` both derive from `versionedShell`, so neither
+ * mutates the other and the map is concurrency-safe.
+ */
+const versionedShell = shellHtml.replaceAll('__CH_VERSION__', serverVersion);
+const shells = {
+  system: versionedShell,
+  light: versionedShell.replace('<html lang="en">', '<html lang="en" data-theme="light">'),
+  dark: versionedShell.replace('<html lang="en">', '<html lang="en" data-theme="dark">')
+} as const;
 
 function forcedTheme(request: Request): 'light' | 'dark' | undefined {
   const header = request.headers.cookie;
@@ -34,6 +48,7 @@ export function createDashboardAssetsRouter(): Router {
     '/projects',
     '/projects/:projectId',
     '/secrets',
+    '/models',
     '/artifacts',
     '/audit',
     '/github',
@@ -42,10 +57,8 @@ export function createDashboardAssetsRouter(): Router {
     '/knowledge/:id',
     '/profile',
   ], (request, response) => {
-    const theme = forcedTheme(request);
-    const html = theme ? shellHtml.replace('<html lang="en">', `<html lang="en" data-theme="${theme}">`) : shellHtml;
     response.setHeader('Cache-Control', 'no-store');
-    response.type('html').send(html);
+    response.type('html').send(shells[forcedTheme(request) ?? 'system']);
   });
   return router;
 }
