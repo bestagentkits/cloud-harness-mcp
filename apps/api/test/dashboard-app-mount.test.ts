@@ -78,10 +78,10 @@ describe('dashboard application mount', () => {
   });
 
   it('accepts every version form the release tooling writes and rejects markup', () => {
-    for (const accepted of [manifestVersion, '0.39.0', '0.40.0-beta.12', '1.2.3+build.7', '1.0.0-rc.1+build.9']) {
+    for (const accepted of [manifestVersion, '0.39.0', '0.40.0-beta.12', '1.2.3+build.7', '1.0.0-rc.1+build.9', `1.2.3+${'a'.repeat(80)}`]) {
       expect(normalizeServerVersion(accepted), accepted).toBe(accepted);
     }
-    for (const rejected of ['</script>', '0.39.0" onload="x', '', 42, null, undefined, `v${'1'.repeat(80)}`]) {
+    for (const rejected of ['</script>', '0.39.0" onload="x', '', ' ', '1.0.0 ', '1.0.0/../x', '<b>', 42, null, undefined]) {
       expect(normalizeServerVersion(rejected), String(rejected)).toBe('unknown');
     }
   });

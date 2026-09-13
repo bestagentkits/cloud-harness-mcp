@@ -368,6 +368,74 @@ export function rankPaletteMatches(index, query) {
   return ranked.slice(0, PALETTE_MAX_RENDERED).map((item) => item.entry);
 }
 
+/**
+ * Refresh policy for the command palette index, extracted so it is testable
+ * without a DOM.
+ *
+ * Guarantees:
+ * - At most `PALETTE_BATCH_SIZE` requests are in flight at once (sequential batches),
+ *   which keeps the fan-out inside the dashboard's per-principal concurrency limit.
+ * - Concurrent callers share a single load.
+ * - An expired snapshot and an explicit invalidation both re-arm every source, so a
+ *   refresh never renews its timestamp without refetching.
+ * - A failed source stays pending and is retried on the next load instead of being
+ *   cached as an empty list.
+ * - An invalidation that lands mid-load supersedes that pass, and the same load
+ *   continues until it produces a current-generation index.
+ */
+export function createPaletteIndexLoader({ requests, fetchRows, buildIndex = buildPaletteIndex, now = Date.now, maxAgeMs = 60_000 }) {
+  const sources = {};
+  let pending = new Set(requests.map((request) => request.key));
+  let index;
+  let builtAt = 0;
+  let stale = true;
+  let generation = 0;
+  let inFlight;
+
+  async function load() {
+    // `for (;;)` is bounded by external invalidations: a pass repeats only when its
+    // generation was superseded, and a failed source returns through the commit
+    // path below rather than re-entering.
+    for (;;) {
+      if (index && !stale && now() - builtAt <= maxAgeMs) return index;
+      if (pending.size === 0) pending = new Set(requests.map((request) => request.key));
+      const pass = ++generation;
+      const wanted = requests.filter((request) => pending.has(request.key));
+      const settled = [];
+      for (const batch of chunkPaletteRequests(wanted)) {
+        settled.push(...await Promise.allSettled(batch.map((request) => fetchRows(request))));
+      }
+      if (pass !== generation) continue;
+      const nextPending = new Set();
+      wanted.forEach((request, position) => {
+        const outcome = settled[position];
+        if (outcome?.status === 'fulfilled' && Array.isArray(outcome.value)) sources[request.key] = outcome.value;
+        else nextPending.add(request.key);
+      });
+      pending = nextPending;
+      index = buildIndex(sources);
+      builtAt = now();
+      stale = pending.size > 0;
+      return index;
+    }
+  }
+
+  return {
+    ensure() {
+      if (!inFlight) inFlight = load().finally(() => { inFlight = undefined; });
+      return inFlight;
+    },
+    invalidate() {
+      // Re-arm every source: `wanted` is derived from `pending`, so marking only
+      // `stale` would make invalidation a no-op that re-serves the previous index.
+      stale = true;
+      pending = new Set(requests.map((request) => request.key));
+      generation += 1;
+    },
+    read() { return index; }
+  };
+}
+
 export function validateSecretClient(name, value) {
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,99}$/.test(name)) return 'name must be an environment-style identifier';
   const upper = name.toUpperCase();
@@ -403,13 +471,10 @@ export function initializeDashboard() {
   let currentBulkEnvironment;
   let currentBulkProject;
   // Command palette state. Declared before `announce` so its invalidation hook is safe.
-  const paletteSources = {};
-  let paletteIndex;
-  let paletteBuiltAt = 0;
-  let paletteLoadPromise;
-  let paletteLoadGeneration = 0;
-  let paletteStale = true;
-  let palettePending = new Set(PALETTE_SOURCE_REQUESTS.map((request) => request.key));
+  const paletteLoader = createPaletteIndexLoader({
+    requests: PALETTE_SOURCE_REQUESTS,
+    fetchRows: (request) => api(request.path).then((result) => result?.data?.[request.rows])
+  });
   let paletteActive = -1;
   let paletteInvoker;
   let paletteAnnounceTimer;
@@ -1577,54 +1642,14 @@ export function initializeDashboard() {
   const paletteStatus = document.querySelector('#palette-status');
   const openPaletteButton = document.querySelector('#open-palette');
   function invalidatePalette() {
-    // Re-arm every source: `wanted` is derived from `palettePending`, so marking
-    // only `paletteStale` would make invalidation a no-op that silently re-serves
-    // the previous index.
-    paletteStale = true;
-    palettePending = new Set(PALETTE_SOURCE_REQUESTS.map((request) => request.key));
-    paletteLoadGeneration += 1;
-  }
-  function ensurePaletteIndex() {
-    if (paletteLoadPromise) return paletteLoadPromise;
-    if (paletteIndex && !paletteStale && Date.now() - paletteBuiltAt <= 60_000) return Promise.resolve(paletteIndex);
-    const generation = ++paletteLoadGeneration;
-    const wanted = PALETTE_SOURCE_REQUESTS.filter((request) => palettePending.has(request.key));
-    // Batches are awaited in sequence, so at most PALETTE_BATCH_SIZE requests are
-    // ever in flight. The per-principal limiter allows only 8 concurrent requests
-    // for the entire dashboard and a page load already spends most of them.
-    // Sequential batches also keep `settled` aligned with `wanted`.
-    const load = (async () => {
-      const settled = [];
-      for (const batch of chunkPaletteRequests(wanted)) {
-        settled.push(...await Promise.allSettled(
-          batch.map((request) => api(request.path).then((result) => result?.data?.[request.rows]))
-        ));
-      }
-      // A later invalidation supersedes this load entirely; do not repopulate a stale index.
-      if (generation !== paletteLoadGeneration) return paletteIndex ?? PALETTE_PAGE_COMMANDS;
-      const pending = new Set();
-      wanted.forEach((request, position) => {
-        const outcome = settled[position];
-        // A rejected or malformed response stays pending so a later open retries it
-        // instead of freezing the source as permanently empty.
-        if (outcome?.status === 'fulfilled' && Array.isArray(outcome.value)) paletteSources[request.key] = outcome.value;
-        else pending.add(request.key);
-      });
-      palettePending = pending;
-      paletteIndex = buildPaletteIndex(paletteSources);
-      paletteBuiltAt = Date.now();
-      paletteStale = pending.size > 0;
-      return paletteIndex;
-    })();
-    paletteLoadPromise = load.finally(() => { paletteLoadPromise = undefined; });
-    return paletteLoadPromise;
+    paletteLoader.invalidate();
   }
   function announcePaletteStatus(message) {
     globalThis.clearTimeout(paletteAnnounceTimer);
     paletteAnnounceTimer = globalThis.setTimeout(() => { paletteStatus.textContent = message; }, 150);
   }
   function renderPalette(query) {
-    const entries = rankPaletteMatches(paletteIndex ?? PALETTE_PAGE_COMMANDS, query);
+    const entries = rankPaletteMatches(paletteLoader.read() ?? PALETTE_PAGE_COMMANDS, query);
     if (paletteActive >= entries.length) paletteActive = entries.length - 1;
     if (paletteActive < 0 && entries.length) paletteActive = 0;
     if (!entries.length) paletteActive = -1;
@@ -1644,7 +1669,10 @@ export function initializeDashboard() {
     const entries = renderPalette('');
     paletteInput.focus({ preventScroll: true });
     announcePaletteStatus(`${entries.length} results.`);
-    void ensurePaletteIndex().then(() => { if (paletteDialog.open) renderPalette(paletteInput.value); });
+    void paletteLoader.ensure().then(() => {
+      if (!paletteDialog.open) return;
+      announcePaletteStatus(`${renderPalette(paletteInput.value).length} results.`);
+    }).catch(() => undefined);
   }
   function closePalette() {
     if (paletteDialog.open) paletteDialog.close();
@@ -1696,7 +1724,7 @@ export function initializeDashboard() {
     if (!trigger) return;
     void globalThis.navigator.clipboard.writeText(trigger.dataset.copy).then(() => announce('Copied to clipboard.')).catch(() => announce('Copy failed. Select and copy the value manually.'));
   });
-  addEventListener('pagehide', () => { apiKeyReveal.clear(); paletteIndex = undefined; paletteLoadGeneration += 1; });
+  addEventListener('pagehide', () => { apiKeyReveal.clear(); paletteLoader.invalidate(); });
   addEventListener('popstate', () => location.reload()); void load();
 }
 

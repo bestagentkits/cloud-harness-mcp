@@ -10,9 +10,11 @@ import { createRequire } from 'node:module';
  * rejected. A SemVer grammar here would duplicate the release tooling's own
  * definition (see `scripts/update-release-version.mjs`, which accepts build
  * metadata such as `1.2.3+build.7`) and could degrade a valid manifest to
- * `unknown` on the public `GET /api/v1/server` response.
+ * `unknown` on the public `GET /api/v1/server` response. There is deliberately no
+ * length cap: the release writer imposes none, and a length limit here would
+ * narrow that public contract without adding any injection safety.
  */
-const VERSION_ALLOWLIST = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
+const VERSION_ALLOWLIST = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/;
 
 /** Exported as the validation seam for both the shell injection and the CLI flag. */
 export function normalizeServerVersion(value: unknown): string {

@@ -3,7 +3,8 @@ import {
   apiKeyCreateInput, conflictRecovery, createApiKeyRevealController, createAsyncDialogController, createModalController, githubCallbackParameters,
   parseDotEnv, renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm, validateSecretClient,
   THEME_ORDER, nextTheme, themeActionLabel,
-  PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches
+  PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches,
+  createPaletteIndexLoader
 } from '../dashboard/dashboard.js';
 import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
 
@@ -124,6 +125,139 @@ describe('dashboard UI behavior', () => {
     expect(labels).toContain('zebra-alpha');
     expect(labels.indexOf('alpha-zebra')).toBeLessThan(labels.indexOf('zebra-alpha'));
     expect(rankPaletteMatches(index, 'nothing-matches-this').length).toBe(0);
+  });
+
+  const paletteRequests = (count = 5) => Array.from({ length: count }, (_, index) => ({ key: `s${index}`, path: `/s${index}`, rows: 'rows' }));
+
+  it('fetches the palette index in sequential batches and shares one load between callers', async () => {
+    const requests = paletteRequests();
+    const seen: string[] = [];
+    const gate = Promise.withResolvers<void>();
+    let active = 0;
+    let peak = 0;
+    const loader = createPaletteIndexLoader({
+      requests,
+      fetchRows: async (request) => {
+        seen.push(request.key);
+        active += 1;
+        peak = Math.max(peak, active);
+        await gate.promise;
+        active -= 1;
+        return [];
+      },
+      buildIndex: () => [],
+      now: () => 0
+    });
+
+    const first = loader.ensure();
+    const second = loader.ensure();
+    // A batch invokes its members synchronously, so the in-flight count is observable
+    // before anything settles. A whole-fan-out implementation would show all five.
+    expect(peak).toBe(PALETTE_BATCH_SIZE);
+    gate.resolve();
+    const [firstIndex, secondIndex] = await Promise.all([first, second]);
+
+    expect(peak).toBe(PALETTE_BATCH_SIZE);
+    // Concurrent callers share the single in-flight load.
+    expect(seen).toHaveLength(requests.length);
+    expect(firstIndex).toBe(secondIndex);
+  });
+
+  it('refetches every source once the palette snapshot outlives its TTL', async () => {
+    const requests = paletteRequests();
+    const seen: string[] = [];
+    const rows: Record<string, unknown[]> = { s0: [{ id: 'before' }] };
+    let clock = 0;
+    const loader = createPaletteIndexLoader({
+      requests,
+      fetchRows: async (request) => { seen.push(request.key); return rows[request.key] ?? []; },
+      buildIndex: (sources) => sources.s0 ?? [],
+      now: () => clock
+    });
+
+    expect(await loader.ensure()).toEqual([{ id: 'before' }]);
+    expect(seen).toHaveLength(requests.length);
+
+    // Inside the window the cached snapshot is served without touching the network.
+    await loader.ensure();
+    expect(seen).toHaveLength(requests.length);
+
+    clock = 61_000;
+    rows.s0 = [{ id: 'after' }];
+    expect(await loader.ensure()).toEqual([{ id: 'after' }]);
+    expect(seen).toHaveLength(requests.length * 2);
+  });
+
+  it('retries only the failed sources and keeps the successful ones', async () => {
+    const requests = paletteRequests();
+    const seen: string[] = [];
+    let throttleProjects = true;
+    const loader = createPaletteIndexLoader({
+      requests,
+      fetchRows: async (request) => {
+        seen.push(request.key);
+        if (request.key === 's1' && throttleProjects) {
+          throttleProjects = false;
+          throw new Error('rate_limited');
+        }
+        return [{ key: request.key }];
+      },
+      buildIndex: (sources) => Object.values(sources).flat(),
+      now: () => 0
+    });
+
+    const first = await loader.ensure();
+    // The throttled source is absent but never cached as an empty list.
+    const firstKeys = first.map((row: { key: string }) => row.key);
+    expect(firstKeys).not.toContain('s1');
+    expect(firstKeys).toContain('s0');
+    expect(seen.filter((key) => key === 's1')).toHaveLength(1);
+
+    const second = await loader.ensure();
+    // Only the pending source is retried; the successful ones are not refetched.
+    expect(seen.filter((key) => key === 's1')).toHaveLength(2);
+    expect(seen.filter((key) => key === 's0')).toHaveLength(1);
+    expect(second.map((row: { key: string }) => row.key)).toContain('s1');
+  });
+
+  it('converges on the current generation through repeated supersession', async () => {
+    const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    let call = 0;
+    const loader = createPaletteIndexLoader({
+      requests: paletteRequests(1),
+      fetchRows: async () => {
+        call += 1;
+        const issued = call;
+        await gates[issued - 1]?.promise;
+        return [{ id: issued }];
+      },
+      buildIndex: (sources) => sources.s0 ?? [],
+      now: () => 0
+    });
+    // Microtask yield only: no wall-clock wait, and it terminates as soon as the
+    // expected pass starts.
+    const untilCall = async (expected: number) => {
+      for (let spin = 0; spin < 200 && call < expected; spin += 1) await Promise.resolve();
+      expect(call).toBeGreaterThanOrEqual(expected);
+    };
+
+    const inFlight = loader.ensure();
+    // The first fetch starts synchronously, so no yield is needed before invalidating.
+    expect(call).toBe(1);
+
+    // Supersede the first pass, then supersede its replacement as well. A loader with
+    // a fixed replacement budget would give up here and resolve with stale data.
+    loader.invalidate();
+    loader.invalidate();
+    gates[0].resolve();
+    await untilCall(2);
+
+    loader.invalidate();
+    gates[1].resolve();
+    await untilCall(3);
+
+    gates[2].resolve();
+    expect(await inFlight).toEqual([{ id: 3 }]);
   });
 
   it('escapes palette labels and marks exactly one active option', () => {
