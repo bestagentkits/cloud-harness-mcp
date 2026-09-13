@@ -81,3 +81,16 @@ docker compose --profile images build executor-image
 4. **Verify Plan Support:** Full MCP write actions (such as `workspace_open`) are in beta for ChatGPT Business, Enterprise, and Edu plans.
 5. **Start Fresh Thread:** If the connector was recently created or authorized, open a new chat session to clear stale conversation state.
 6. See [ChatGPT Configuration Guide](/ai-tools/chatgpt) for complete setup steps.
+
+---
+
+### 9. Dashboard Shows a Diagnostic Page or JSON `authentication_failed`
+**Cause:** The request reached the Cloud Harness origin without a valid Cloudflare Access assertion, so the API could not identify the caller. Typical causes: the Access application does not cover the dashboard hostname and path, a bypass or service-auth policy matched the request, the browser resolved the origin address instead of the Cloudflare-proxied hostname, or the origin no longer agrees with the live Access application (for example after the application was recreated, or after the team's signing keys rotated).
+
+**Fix:**
+1. Read the reason code shown on the page, or the `access assertion rejected` line in the API log. It names the failing check: `missing_assertion`, `malformed_assertion`, `wrong_audience`, `wrong_issuer`, `unknown_key`, `jwks_unavailable`, `expired_assertion`, `inactive_assertion`, or `assertion_identity_not_accepted`.
+2. In [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications**, confirm the application covers the dashboard hostname and path, and compare its **Application Audience (AUD) tag** with the origin's `CLOUDFLARE_ACCESS_AUDIENCE`.
+3. Open the dashboard on the Cloudflare-proxied public hostname (`https://harness.zuey.me/dashboard`). A hosts-file or router override that resolves it to the origin address bypasses Access and produces this page.
+4. For `jwks_unavailable` or `unknown_key`, check that the API container can reach the team's `/cdn-cgi/access/certs` endpoint and that the host clock is correct.
+
+Non-browser clients keep receiving the compact `{"error":"authentication_failed"}` JSON body; only browser navigations render the diagnostic page, and no token, assertion, or identity claim is ever shown.

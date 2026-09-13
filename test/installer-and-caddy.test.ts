@@ -58,6 +58,8 @@ describe('OSS 1-Click Installer & Ingress Templates', () => {
     const systemdService = readFileSync('deploy/systemd/cloud-harness-mcp.service', 'utf8');
     expect(systemdService).toContain('/usr/local/sbin/cloud-harness-service-compose up --remove-orphans');
     expect(systemdService).toContain('/usr/local/sbin/cloud-harness-service-compose down');
+    expect(systemdService).toContain('deploy/scripts/service-compose.sh up --remove-orphans');
+    expect(systemdService).toContain('deploy/scripts/service-compose.sh down');
     const deployRelease = readFileSync('deploy/scripts/deploy-release.sh', 'utf8');
     expect(deployRelease).toContain('/usr/local/sbin/cloud-harness-service-compose');
     const releaseRuntime = readFileSync('deploy/scripts/release-runtime.sh', 'utf8');

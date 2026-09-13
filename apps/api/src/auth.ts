@@ -2,7 +2,9 @@ import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import type { AuthInfo } from '@modelcontextprotocol/server';
 import { RunnerPrincipalSelectorSchema, type ApiConfig, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
-import { CloudflareAccessJwtVerifier, type AccessJwtVerifierOptions } from './access-jwt-verifier.js';
+import { AccessJwtVerificationError, CloudflareAccessJwtVerifier, type AccessJwtVerifierOptions } from './access-jwt-verifier.js';
+import { renderAccessDiagnostic, type AccessDiagnosticReason } from './access-diagnostic.js';
+import { apiLogger } from './logging.js';
 
 type ApiKeyAuthenticator = {
   authenticateApiKey(apiKey: string): Promise<
@@ -11,7 +13,7 @@ type ApiKeyAuthenticator = {
   >;
 };
 
-type AuthenticatedRequest = Request & { auth?: AuthInfo };
+export type AuthenticatedRequest = Request & { auth?: AuthInfo };
 
 function equal(actual: string, expected: string | undefined): boolean {
   if (!expected) return false;
@@ -29,6 +31,61 @@ function isApiKeyGatewaySubject(config: ApiConfig, subject: string): boolean {
 function reject(response: Response): void {
   response.setHeader('WWW-Authenticate', 'Bearer realm="cloud-harness-mcp"');
   response.status(401).json({ error: 'authentication_failed' });
+}
+
+function verificationReason(error: unknown): AccessDiagnosticReason {
+  return error instanceof AccessJwtVerificationError ? error.reason : 'unexpected_verification_error';
+}
+
+// Bound the logged path: a rejected request is unauthenticated input, and an oversized path
+// must not let a scanner roll the container's log ring and evict its own forensic trail.
+const MAX_LOGGED_PATH = 256;
+
+function logAssertionRejection(request: AuthenticatedRequest, reason: AccessDiagnosticReason): void {
+  apiLogger.warn(
+    {
+      reason,
+      method: request.method,
+      path: (request.originalUrl ?? '').split('?')[0]?.slice(0, MAX_LOGGED_PATH),
+      host: request.header('host') ?? null
+    },
+    'access assertion rejected'
+  );
+}
+
+// An entry only counts as an HTML request when text/html is acceptable (q > 0); explicit
+// exclusions such as "application/json,text/html;q=0" stay JSON.
+function acceptsHtml(accept: string): boolean {
+  return accept.split(',').some((entry) => {
+    const [type, ...parameters] = entry.split(';').map((part) => part.trim().toLowerCase());
+    if (type !== 'text/html') return false;
+    const quality = parameters.find((parameter) => parameter.startsWith('q='));
+    return quality === undefined || Number(quality.slice(2)) > 0;
+  });
+}
+
+// Only a browser document navigation gets the diagnostic page; dashboard XHR/fetch calls and
+// the MCP surfaces always keep the compact JSON body.
+function wantsDiagnosticPage(request: AuthenticatedRequest): boolean {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  const destination = request.header('sec-fetch-dest');
+  if (destination && destination !== 'document') return false;
+  return acceptsHtml(request.header('accept') ?? '');
+}
+
+function rejectAssertion(request: AuthenticatedRequest, response: Response, reason: AccessDiagnosticReason): void {
+  logAssertionRejection(request, reason);
+  reject(response);
+}
+
+function rejectDashboardAssertion(request: AuthenticatedRequest, response: Response, reason: AccessDiagnosticReason): void {
+  logAssertionRejection(request, reason);
+  if (!wantsDiagnosticPage(request)) {
+    response.status(401).json({ error: 'authentication_failed' });
+    return;
+  }
+  response.setHeader('Content-Security-Policy', "default-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  response.status(401).type('html').send(renderAccessDiagnostic(reason));
 }
 
 export function principalFromAuthInfo(authInfo: AuthInfo | undefined): RunnerPrincipalSelector | undefined {
@@ -65,7 +122,7 @@ export function accessAssertionAuth(config: ApiConfig, verifierOptions: Verifier
     try {
       const identity = await verifier.verify(request.header('cf-access-jwt-assertion') ?? '');
       if (isApiKeyGatewaySubject(config, identity.principal.subject)) {
-        response.status(401).json({ error: 'authentication_failed' });
+        rejectDashboardAssertion(request, response, 'assertion_identity_not_accepted');
         return;
       }
       const principal: RunnerPrincipalSelector = { kind: 'external', ...identity.principal };
@@ -77,8 +134,8 @@ export function accessAssertionAuth(config: ApiConfig, verifierOptions: Verifier
         extra: { principal, externalPrincipal: identity.principal }
       };
       next();
-    } catch {
-      response.status(401).json({ error: 'authentication_failed' });
+    } catch (error) {
+      rejectDashboardAssertion(request, response, verificationReason(error));
     } finally {
       activeVerifications -= 1;
     }
@@ -115,7 +172,7 @@ export function bearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides
       const assertion = request.header('cf-access-jwt-assertion') ?? '';
       const identity = await verifier.verify(assertion);
       if (isApiKeyGatewaySubject(config, identity.principal.subject)) {
-        reject(response);
+        rejectAssertion(request, response, 'assertion_identity_not_accepted');
         return;
       }
       const principal: RunnerPrincipalSelector = { kind: 'external', ...identity.principal };
@@ -127,8 +184,8 @@ export function bearerAuth(config: ApiConfig, verifierOptions: VerifierOverrides
         extra: { principal, externalPrincipal: identity.principal }
       };
       next();
-    } catch {
-      reject(response);
+    } catch (error) {
+      rejectAssertion(request, response, verificationReason(error));
     } finally {
       activeVerifications -= 1;
     }
@@ -162,7 +219,7 @@ export function apiKeyGatewayAuth(
     try {
       const identity = await verifier.verify(request.header('cf-access-jwt-assertion') ?? '');
       if (!isApiKeyGatewaySubject(config, identity.principal.subject)) {
-        reject(response);
+        rejectAssertion(request, response, 'assertion_identity_not_accepted');
         return;
       }
       const authorization = request.header('authorization') ?? '';
@@ -181,8 +238,8 @@ export function apiKeyGatewayAuth(
         extra: { principal, apiKeyId: authenticated.data.keyId }
       };
       next();
-    } catch {
-      reject(response);
+    } catch (error) {
+      rejectAssertion(request, response, verificationReason(error));
     } finally {
       activeVerifications -= 1;
     }
