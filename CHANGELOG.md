@@ -1,3 +1,10 @@
+## [0.39.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.1...v0.39.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* **auth:** retry the Access key document after an outage ([a89f74d](https://github.com/bestagentkits/cloud-harness-mcp/commit/a89f74df73fddb9f57ae79cf58836a6d3716634a)), closes [#176](https://github.com/bestagentkits/cloud-harness-mcp/issues/176)
+
 ## [0.39.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.0...v0.39.1) (2026-09-13)
 
 
