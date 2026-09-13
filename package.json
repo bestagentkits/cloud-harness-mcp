@@ -1,6 +1,6 @@
 {
   "name": "cloud-harness-mcp",
-  "version": "0.39.3",
+  "version": "0.39.4",
   "private": true,
   "type": "module",
   "bin": {

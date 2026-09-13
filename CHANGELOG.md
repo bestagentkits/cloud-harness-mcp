@@ -1,3 +1,10 @@
+## [0.39.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.3...v0.39.4) (2026-09-13)
+
+
+### Bug Fixes
+
+* **deploy:** send networkProfile in the canary and production verification ([e1011c1](https://github.com/bestagentkits/cloud-harness-mcp/commit/e1011c15db4c7272192639b75d9e34cf940a2e32)), closes [#181](https://github.com/bestagentkits/cloud-harness-mcp/issues/181)
+
 ## [0.39.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.2...v0.39.3) (2026-09-13)
 
 
