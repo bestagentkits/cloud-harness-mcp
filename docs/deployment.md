@@ -259,10 +259,13 @@ checks the hardcoded public origin, stops writes, snapshots the state database,
 artifact store, and root-owned configuration/key files as one recovery set,
 checks out the exact commit, builds fixed local images, starts systemd, waits
 for readiness, and performs an auth-mode-aware canary. On error it restores the
-prior recorded release plus the database and artifacts when available, reusing
-the unchanged live configuration; the config/key copy is retained for coherent
-manual recovery. A failed first install is disabled. Active job checkouts are
-not part of the snapshot.
+prior recorded release plus the database and artifacts when available, and
+replaces `/etc/cloud-harness-mcp` with the configuration snapshot recorded at
+the last successful deploy; the config/key copy is retained for coherent manual
+recovery. Configuration edits made after that snapshot are therefore not part of
+a rollback: re-apply them after the host is healthy, or make them through a
+deploy that succeeds. A failed first install is disabled. Active job checkouts
+are not part of the snapshot.
 
 The deploy command takes a nonblocking host lock before reading or mutating the
 shared checkout, service, snapshots, or release metadata. A concurrent manual
