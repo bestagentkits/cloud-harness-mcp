@@ -37,9 +37,18 @@ function verificationReason(error: unknown): AccessDiagnosticReason {
   return error instanceof AccessJwtVerificationError ? error.reason : 'unexpected_verification_error';
 }
 
+// Bound the logged path: a rejected request is unauthenticated input, and an oversized path
+// must not let a scanner roll the container's log ring and evict its own forensic trail.
+const MAX_LOGGED_PATH = 256;
+
 function logAssertionRejection(request: AuthenticatedRequest, reason: AccessDiagnosticReason): void {
   apiLogger.warn(
-    { reason, method: request.method, path: (request.originalUrl ?? '').split('?')[0], host: request.header('host') ?? null },
+    {
+      reason,
+      method: request.method,
+      path: (request.originalUrl ?? '').split('?')[0]?.slice(0, MAX_LOGGED_PATH),
+      host: request.header('host') ?? null
+    },
     'access assertion rejected'
   );
 }

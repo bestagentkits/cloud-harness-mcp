@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApiConfig } from '@cloud-harness/contracts';
 import { CloudflareAccessJwtVerifier } from '../src/access-jwt-verifier.js';
 import { accessAssertionAuth, bearerAuth, type AuthenticatedRequest } from '../src/auth.js';
+import { apiLogger } from '../src/logging.js';
 
 const issuer = 'https://team.cloudflareaccess.com';
 const audience = 'application-audience';
@@ -295,5 +296,32 @@ describe('Access authentication middleware', () => {
       vi.fn()
     );
     expect(String(reply.send.mock.calls[0]?.[0])).toContain('wrong_audience');
+  });
+
+  it('logs one bounded rejection line carrying the query-free path', async () => {
+    const warn = vi.spyOn(apiLogger, 'warn');
+    try {
+      const middleware = accessAssertionAuth(config, { fetcher: fetchJwks([sharedSigningKey.jwk]), now: () => baseTime });
+      await middleware(
+        requestFor('GET', '/dashboard/api/v1/workspaces?token=secret-sentinel', { accept: 'application/json', host: 'localhost' }),
+        response() as unknown as Response,
+        vi.fn()
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      // Mock argument read: the guard's log fields are the operator-facing contract under test.
+      const fields = warn.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(fields).toEqual({ reason: 'missing_assertion', method: 'GET', path: '/dashboard/api/v1/workspaces', host: 'localhost' });
+      expect(JSON.stringify(fields)).not.toContain('secret-sentinel');
+
+      await middleware(
+        requestFor('GET', `/dashboard/${'a'.repeat(512)}`, { accept: 'application/json' }),
+        response() as unknown as Response,
+        vi.fn()
+      );
+      const longPath = warn.mock.calls[1]?.[0] as Record<string, unknown>;
+      expect(String(longPath.path)).toHaveLength(256);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
