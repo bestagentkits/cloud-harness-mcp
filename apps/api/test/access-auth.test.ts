@@ -1,8 +1,9 @@
 import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import type { Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiConfig } from '@cloud-harness/contracts';
 import { CloudflareAccessJwtVerifier } from '../src/access-jwt-verifier.js';
-import { bearerAuth } from '../src/auth.js';
+import { accessAssertionAuth, bearerAuth, type AuthenticatedRequest } from '../src/auth.js';
 
 const issuer = 'https://team.cloudflareaccess.com';
 const audience = 'application-audience';
@@ -134,6 +135,56 @@ describe('Cloudflare Access assertion verification', () => {
     now += 4_000;
     await expect(verifier.verify(assertion)).rejects.toThrow('assertion verification failed');
   });
+
+  it.each([
+    ['wrong issuer', { iss: 'https://other.cloudflareaccess.com' }, 'wrong_issuer'],
+    ['wrong audience', { aud: ['other-audience'] }, 'wrong_audience'],
+    ['wrong token type', { type: 'org' }, 'wrong_token_type'],
+    ['expired', { exp: Math.floor(baseTime / 1_000) }, 'expired_assertion'],
+    ['not active', { nbf: Math.floor(baseTime / 1_000) + 1 }, 'inactive_assertion'],
+    ['missing expiration', { exp: undefined }, 'invalid_lifetime'],
+    ['missing not-before', { nbf: undefined }, 'invalid_lifetime'],
+    ['empty subject without service identity', { sub: '', common_name: undefined }, 'invalid_subject'],
+    ['human subject in reserved service namespace', { sub: 'cf-service:collision' }, 'invalid_subject']
+  ])('classifies %s as %s', async (_name, override, reason) => {
+    const signingKey = sharedSigningKey;
+    const verifier = new CloudflareAccessJwtVerifier({ issuer, audience, jwksUrl, fetcher: fetchJwks([signingKey.jwk]), now: () => baseTime });
+    await expect(verifier.verify(jwt(signingKey, claims(override)))).rejects.toMatchObject({ reason });
+  });
+
+  it('classifies absent, malformed, mis-algorithm, unknown-key, and mis-signed assertions distinctly', async () => {
+    const signingKey = sharedSigningKey;
+    const verifier = new CloudflareAccessJwtVerifier({ issuer, audience, jwksUrl, fetcher: fetchJwks([signingKey.jwk]), now: () => baseTime });
+    await expect(verifier.verify('')).rejects.toMatchObject({ reason: 'missing_assertion' });
+    await expect(verifier.verify('not-a-jwt')).rejects.toMatchObject({ reason: 'malformed_assertion' });
+    await expect(verifier.verify(jwt(signingKey, claims(), { alg: 'RS512' }))).rejects.toMatchObject({ reason: 'unsupported_algorithm' });
+    await expect(verifier.verify(jwt(key('absent'), claims()))).rejects.toMatchObject({ reason: 'unknown_key' });
+    await expect(verifier.verify(jwt(key('current'), claims()))).rejects.toMatchObject({ reason: 'invalid_signature' });
+  });
+
+  it('classifies an unreachable signing-key document as a JWKS outage', async () => {
+    const signingKey = sharedSigningKey;
+    const verifier = new CloudflareAccessJwtVerifier({
+      issuer, audience, jwksUrl,
+      fetcher: async () => { throw new Error('jwks endpoint unreachable'); },
+      now: () => baseTime
+    });
+    await expect(verifier.verify(jwt(signingKey, claims()))).rejects.toMatchObject({ reason: 'jwks_unavailable' });
+  });
+
+  it('keeps reporting the JWKS outage when the key document body fails or is negatively cached', async () => {
+    const signingKey = sharedSigningKey;
+    const erroredBody = new Response(
+      new ReadableStream({ start(controller) { controller.error(new Error('connection reset')); } }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+    const fetcher = vi.fn(async () => erroredBody);
+    const verifier = new CloudflareAccessJwtVerifier({ issuer, audience, jwksUrl, fetcher, now: () => baseTime });
+    const assertion = jwt(signingKey, claims());
+    await expect(verifier.verify(assertion)).rejects.toMatchObject({ reason: 'jwks_unavailable' });
+    await expect(verifier.verify(assertion)).rejects.toMatchObject({ reason: 'jwks_unavailable' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('Access authentication middleware', () => {
@@ -148,7 +199,9 @@ describe('Access authentication middleware', () => {
     return {
       setHeader: vi.fn(),
       status: vi.fn(function (this: unknown) { return this; }),
-      json: vi.fn()
+      type: vi.fn(function (this: unknown) { return this; }),
+      json: vi.fn(),
+      send: vi.fn()
     };
   }
 
@@ -191,5 +244,56 @@ describe('Access authentication middleware', () => {
     await middleware(request, reply as any, next);
     expect(next).not.toHaveBeenCalled();
     expect(reply.status).toHaveBeenCalledWith(401);
+  });
+
+  // Test seam: the assertion guard only reads the method, path, and request headers.
+  function requestFor(method: string, path: string, headers: Record<string, string> = {}): AuthenticatedRequest {
+    return { method, path, originalUrl: path, header: (name: string) => headers[name.toLowerCase()] } as unknown as AuthenticatedRequest;
+  }
+
+  it('answers a dashboard document navigation with the diagnostic page and every other dashboard request with the compact body', async () => {
+    const middleware = accessAssertionAuth(config, { fetcher: fetchJwks([sharedSigningKey.jwk]), now: () => baseTime });
+
+    const page = response();
+    await middleware(requestFor('GET', '/dashboard', { accept: 'text/html,application/xhtml+xml', 'sec-fetch-dest': 'document' }), page as unknown as Response, vi.fn());
+    expect(page.status).toHaveBeenCalledWith(401);
+    expect(page.json).not.toHaveBeenCalled();
+    expect(page.type).toHaveBeenCalledWith('html');
+    const html = String(page.send.mock.calls[0]?.[0]);
+    expect(html).toContain('missing_assertion');
+    expect(html).not.toContain('eyJ');
+    expect(page.setHeader.mock.calls.find(([name]) => name === 'WWW-Authenticate')).toBeUndefined();
+
+    for (const headers of [
+      { accept: 'application/json' },
+      { accept: 'application/json,text/html;q=0' },
+      { accept: 'text/html', 'sec-fetch-dest': 'empty' }
+    ]) {
+      const reply = response();
+      await middleware(requestFor('GET', '/dashboard/api/v1/workspaces', headers), reply as unknown as Response, vi.fn());
+      expect(reply.status).toHaveBeenCalledWith(401);
+      expect(reply.json).toHaveBeenCalledWith({ error: 'authentication_failed' });
+      expect(reply.send).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps the MCP lane on the compact JSON body even when a client asks for HTML', async () => {
+    const middleware = bearerAuth(config, { fetcher: fetchJwks([sharedSigningKey.jwk]), now: () => baseTime });
+    const reply = response();
+    await middleware(requestFor('GET', '/mcp', { accept: 'text/html', 'sec-fetch-dest': 'document' }), reply as unknown as Response, vi.fn());
+    expect(reply.json).toHaveBeenCalledWith({ error: 'authentication_failed' });
+    expect(reply.send).not.toHaveBeenCalled();
+    expect(reply.setHeader).toHaveBeenCalledWith('WWW-Authenticate', 'Bearer realm="cloud-harness-mcp"');
+  });
+
+  it('names the audience mismatch when a dashboard navigation carries a foreign assertion', async () => {
+    const middleware = accessAssertionAuth(config, { fetcher: fetchJwks([sharedSigningKey.jwk]), now: () => baseTime });
+    const reply = response();
+    await middleware(
+      requestFor('GET', '/dashboard', { accept: 'text/html', 'cf-access-jwt-assertion': jwt(sharedSigningKey, claims({ aud: ['other-audience'] })) }),
+      reply as unknown as Response,
+      vi.fn()
+    );
+    expect(String(reply.send.mock.calls[0]?.[0])).toContain('wrong_audience');
   });
 });

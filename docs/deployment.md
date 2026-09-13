@@ -270,6 +270,14 @@ or automated invocation exits with status 75 and performs no rollback; rerun it
 only after the active deployment finishes. This prevents one release from
 rolling back another release's in-progress state.
 
+[`deploy/systemd/cloud-harness-mcp.service`](../deploy/systemd/cloud-harness-mcp.service)
+starts the stack through the installed
+`/usr/local/sbin/cloud-harness-service-compose` wrapper when it exists and
+otherwise through the release's own `deploy/scripts/service-compose.sh`. The
+fallback keeps a release startable on a host whose installed deploy script
+predates the wrapper, which would otherwise leave the unit waiting for a binary
+that only a newer deploy script installs.
+
 Release deployment installs the fixed `cloud-harness-upgrade-nginx` command.
 In Access mode it invokes the same fail-closed operation before the public
 canary; owner-bearer deployments do not change nginx. If a later manual

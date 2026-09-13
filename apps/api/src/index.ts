@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { createServer } from 'node:http';
 import { realpath, stat } from 'node:fs/promises';
-import pino from 'pino';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { createApiApp } from './app.js';
 import { loadApiConfig } from './config.js';
 import { parseCliOptions, getCliHelp } from './cli-options.js';
 import { LocalWorkspaceBackend } from './local/local-workspace-backend.js';
+import { apiLogger } from './logging.js';
 import { createCloudHarnessServer } from './mcp-server.js';
 
 const parsed = parseCliOptions(process.argv.slice(2));
@@ -80,16 +80,15 @@ if (options.transport === 'stdio') {
   process.stdin.on('close', () => void shutdown('EOF'));
   process.stdin.on('end', () => void shutdown('EOF'));
 } else {
-  const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
   const config = loadApiConfig();
   const runtime = createApiApp(config);
   const server = createServer(runtime.app);
   server.listen(config.port, config.host, () =>
-    logger.info({ host: config.host, port: config.port }, 'API listening')
+    apiLogger.info({ host: config.host, port: config.port }, 'API listening')
   );
 
   async function shutdown(signal: string) {
-    logger.info({ signal }, 'API shutting down');
+    apiLogger.info({ signal }, 'API shutting down');
     server.close();
     await runtime.close();
     process.exit(0);

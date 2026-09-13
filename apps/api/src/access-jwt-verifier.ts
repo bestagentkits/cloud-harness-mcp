@@ -4,6 +4,7 @@ import type { ExternalPrincipal } from '@cloud-harness/contracts';
 type JwtHeader = { alg?: unknown; kid?: unknown };
 type JwtPayload = Record<string, unknown>;
 type CachedKey = { key: KeyObject; freshUntil: number; staleUntil: number };
+type MissingKey = { until: number; reason: AccessAssertionFailure };
 const SERVICE_SUBJECT_PREFIX = 'cf-service:';
 
 export type AccessJwtVerifierOptions = {
@@ -24,15 +25,36 @@ export type AccessJwtVerifierOptions = {
 
 export type VerifiedAccessIdentity = { principal: ExternalPrincipal; expiresAt: number };
 
+export type AccessAssertionFailure =
+  | 'missing_assertion'
+  | 'malformed_assertion'
+  | 'unsupported_algorithm'
+  | 'invalid_signature'
+  | 'unknown_key'
+  | 'jwks_unavailable'
+  | 'wrong_issuer'
+  | 'wrong_audience'
+  | 'wrong_token_type'
+  | 'invalid_subject'
+  | 'invalid_lifetime'
+  | 'expired_assertion'
+  | 'inactive_assertion';
+
 export class AccessJwtVerificationError extends Error {
-  constructor() { super('Cloudflare Access assertion verification failed'); }
+  readonly reason: AccessAssertionFailure;
+
+  constructor(reason: AccessAssertionFailure) {
+    super('Cloudflare Access assertion verification failed');
+    this.name = 'AccessJwtVerificationError';
+    this.reason = reason;
+  }
 }
 
-function fail(): never { throw new AccessJwtVerificationError(); }
+function fail(reason: AccessAssertionFailure): never { throw new AccessJwtVerificationError(reason); }
 
 function decodeJsonSegment(segment: string): unknown {
-  if (!/^[A-Za-z0-9_-]+$/.test(segment) || segment.length > 32_768) fail();
-  try { return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8')); } catch { return fail(); }
+  if (!/^[A-Za-z0-9_-]+$/.test(segment) || segment.length > 32_768) fail('malformed_assertion');
+  try { return JSON.parse(Buffer.from(segment, 'base64url').toString('utf8')); } catch { return fail('malformed_assertion'); }
 }
 
 function optionalDisplayValue(value: unknown, maxLength: number): string | undefined {
@@ -42,7 +64,7 @@ function optionalDisplayValue(value: unknown, maxLength: number): string | undef
 
 async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
   const declaredLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) fail();
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) fail('jwks_unavailable');
   if (!response.body) return '';
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -53,7 +75,7 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
     length += value.byteLength;
     if (length > maxBytes) {
       await reader.cancel();
-      fail();
+      fail('jwks_unavailable');
     }
     chunks.push(value);
   }
@@ -72,7 +94,7 @@ export class CloudflareAccessJwtVerifier {
   private readonly maxNegativeKeys: number;
   private readonly maxJwksBytes: number;
   private readonly keys = new Map<string, CachedKey>();
-  private readonly missingKids = new Map<string, number>();
+  private readonly missingKids = new Map<string, MissingKey>();
   private refreshInFlight: Promise<void> | undefined;
   private lastRefreshAttempt = Number.NEGATIVE_INFINITY;
 
@@ -90,37 +112,42 @@ export class CloudflareAccessJwtVerifier {
   }
 
   async verify(assertion: string): Promise<VerifiedAccessIdentity> {
+    if (!assertion) fail('missing_assertion');
     const parts = assertion.split('.');
-    if (parts.length !== 3) fail();
+    if (parts.length !== 3) fail('malformed_assertion');
     const encodedHeader = parts[0]!;
     const encodedPayload = parts[1]!;
     const encodedSignature = parts[2]!;
-    if (!encodedHeader || !encodedPayload || !encodedSignature || !/^[A-Za-z0-9_-]+$/.test(encodedSignature)) fail();
+    if (!encodedHeader || !encodedPayload || !encodedSignature || !/^[A-Za-z0-9_-]+$/.test(encodedSignature)) fail('malformed_assertion');
     const header = decodeJsonSegment(encodedHeader) as JwtHeader;
-    if (!header || typeof header !== 'object' || header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid || header.kid.length > 200) fail();
+    if (!header || typeof header !== 'object' || header.alg !== 'RS256') fail('unsupported_algorithm');
+    if (typeof header.kid !== 'string' || !header.kid || header.kid.length > 200) fail('malformed_assertion');
     const kid = header.kid;
     const key = await this.keyFor(kid);
     const signature = Buffer.from(encodedSignature, 'base64url');
-    if (!verify('RSA-SHA256', Buffer.from(`${encodedHeader}.${encodedPayload}`), key, signature)) fail();
+    if (!verify('RSA-SHA256', Buffer.from(`${encodedHeader}.${encodedPayload}`), key, signature)) fail('invalid_signature');
 
     const payload = decodeJsonSegment(encodedPayload) as JwtPayload;
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail();
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('malformed_assertion');
     const nowSeconds = Math.floor(this.now() / 1_000);
-    if (payload.iss !== this.options.issuer || !this.hasAudience(payload.aud) || payload.type !== 'app') fail();
+    if (payload.iss !== this.options.issuer) fail('wrong_issuer');
+    if (!this.hasAudience(payload.aud)) fail('wrong_audience');
+    if (payload.type !== 'app') fail('wrong_token_type');
     const rawSubject = payload.sub;
-    if (typeof rawSubject !== 'string') fail();
+    if (typeof rawSubject !== 'string') fail('invalid_subject');
     const serviceName = optionalDisplayValue(payload.common_name, 320);
     const isService = rawSubject === '';
-    if (isService && !serviceName) fail();
-    if (!isService && (!rawSubject || rawSubject.length > 512 || rawSubject !== rawSubject.trim() || rawSubject.startsWith(SERVICE_SUBJECT_PREFIX))) fail();
+    if (isService && !serviceName) fail('invalid_subject');
+    if (!isService && (!rawSubject || rawSubject.length > 512 || rawSubject !== rawSubject.trim() || rawSubject.startsWith(SERVICE_SUBJECT_PREFIX))) fail('invalid_subject');
     const subject = isService
       ? `${SERVICE_SUBJECT_PREFIX}${Buffer.from(serviceName!).toString('base64url')}`
       : rawSubject;
-    if (!Number.isInteger(payload.exp)) fail();
-    if (!isService && !Number.isInteger(payload.nbf)) fail();
-    if (payload.nbf !== undefined && !Number.isInteger(payload.nbf)) fail();
+    if (!Number.isInteger(payload.exp)) fail('invalid_lifetime');
+    if (!isService && !Number.isInteger(payload.nbf)) fail('invalid_lifetime');
+    if (payload.nbf !== undefined && !Number.isInteger(payload.nbf)) fail('invalid_lifetime');
     const expiresAt = payload.exp as number;
-    if (nowSeconds >= expiresAt || (payload.nbf !== undefined && nowSeconds < (payload.nbf as number))) fail();
+    if (nowSeconds >= expiresAt) fail('expired_assertion');
+    if (payload.nbf !== undefined && nowSeconds < (payload.nbf as number)) fail('inactive_assertion');
 
     const email = optionalDisplayValue(payload.email, 320);
     const name = optionalDisplayValue(payload.name, 200);
@@ -143,20 +170,22 @@ export class CloudflareAccessJwtVerifier {
     const now = this.now();
     const existing = this.keys.get(kid);
     if (existing && now <= existing.freshUntil) return existing.key;
-    const negativeUntil = this.missingKids.get(kid);
-    if (!existing && negativeUntil && now < negativeUntil) fail();
+    const missing = this.missingKids.get(kid);
+    if (!existing && missing && now < missing.until) fail(missing.reason);
 
+    let refreshFailure: AccessAssertionFailure | undefined;
     if (now - this.lastRefreshAttempt >= this.refreshCooldownMs) {
-      try { await this.refresh(); } catch { /* bounded stale keys remain usable */ }
+      try { await this.refresh(); } catch (error) { refreshFailure = error instanceof AccessJwtVerificationError ? error.reason : undefined; /* bounded stale keys remain usable */ }
     } else if (this.refreshInFlight) {
-      try { await this.refreshInFlight; } catch { /* handled below */ }
+      try { await this.refreshInFlight; } catch (error) { refreshFailure = error instanceof AccessJwtVerificationError ? error.reason : undefined; /* handled below */ }
     }
 
     const checkedAt = this.now();
     const refreshed = this.keys.get(kid);
     if (refreshed && checkedAt <= refreshed.staleUntil) return refreshed.key;
-    this.rememberMissing(kid, checkedAt + this.negativeCacheTtlMs);
-    return fail();
+    const reason = refreshFailure ?? 'unknown_key';
+    this.rememberMissing(kid, checkedAt + this.negativeCacheTtlMs, reason);
+    return fail(reason);
   }
 
   private async refresh(): Promise<void> {
@@ -172,25 +201,28 @@ export class CloudflareAccessJwtVerifier {
       headers: { accept: 'application/json' },
       redirect: 'error',
       signal: AbortSignal.timeout(this.fetchTimeoutMs)
+    }).catch(() => fail('jwks_unavailable'));
+    if (!response.ok) fail('jwks_unavailable');
+    const body = await readBoundedBody(response, this.maxJwksBytes).catch((error: unknown) => {
+      if (error instanceof AccessJwtVerificationError) throw error;
+      fail('jwks_unavailable');
     });
-    if (!response.ok) fail();
-    const body = await readBoundedBody(response, this.maxJwksBytes);
     let document: unknown;
-    try { document = JSON.parse(body); } catch { fail(); }
-    if (!document || typeof document !== 'object' || !Array.isArray((document as { keys?: unknown }).keys)) fail();
+    try { document = JSON.parse(body); } catch { fail('jwks_unavailable'); }
+    if (!document || typeof document !== 'object' || !Array.isArray((document as { keys?: unknown }).keys)) fail('jwks_unavailable');
     const jwks = (document as { keys: unknown[] }).keys;
-    if (jwks.length < 1 || jwks.length > this.maxKeys) fail();
+    if (jwks.length < 1 || jwks.length > this.maxKeys) fail('jwks_unavailable');
     const fetchedAt = this.now();
     const next = new Map<string, KeyObject>();
     for (const candidate of jwks) {
-      if (!candidate || typeof candidate !== 'object') fail();
+      if (!candidate || typeof candidate !== 'object') fail('jwks_unavailable');
       const jwk = candidate as Record<string, unknown>;
       const kid = jwk.kid;
       const modulus = jwk.n;
       const exponent = jwk.e;
-      if (typeof kid !== 'string' || !kid || kid.length > 200 || jwk.kty !== 'RSA' || jwk.alg !== 'RS256' || jwk.use !== 'sig' || typeof modulus !== 'string' || typeof exponent !== 'string') fail();
-      if (next.has(kid)) fail();
-      try { next.set(kid, createPublicKey({ key: { kty: 'RSA', n: modulus, e: exponent }, format: 'jwk' })); } catch { fail(); }
+      if (typeof kid !== 'string' || !kid || kid.length > 200 || jwk.kty !== 'RSA' || jwk.alg !== 'RS256' || jwk.use !== 'sig' || typeof modulus !== 'string' || typeof exponent !== 'string') fail('jwks_unavailable');
+      if (next.has(kid)) fail('jwks_unavailable');
+      try { next.set(kid, createPublicKey({ key: { kty: 'RSA', n: modulus, e: exponent }, format: 'jwk' })); } catch { fail('jwks_unavailable'); }
     }
     for (const [kid, key] of next) {
       this.keys.set(kid, { key, freshUntil: fetchedAt + this.cacheTtlMs, staleUntil: fetchedAt + this.maxStaleMs });
@@ -200,9 +232,9 @@ export class CloudflareAccessJwtVerifier {
     while (this.keys.size > this.maxKeys) this.keys.delete(this.keys.keys().next().value as string);
   }
 
-  private rememberMissing(kid: string, until: number): void {
+  private rememberMissing(kid: string, until: number, reason: AccessAssertionFailure): void {
     this.missingKids.delete(kid);
-    this.missingKids.set(kid, until);
+    this.missingKids.set(kid, { until, reason });
     while (this.missingKids.size > this.maxNegativeKeys) this.missingKids.delete(this.missingKids.keys().next().value as string);
   }
 }
