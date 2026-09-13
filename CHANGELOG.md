@@ -1,3 +1,15 @@
+# [0.40.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.4...v0.40.0) (2026-09-13)
+
+
+### Bug Fixes
+
+* **dashboard:** make the palette refresh lifecycle correct and testable ([ca42809](https://github.com/bestagentkits/cloud-harness-mcp/commit/ca428098ac89aff17fb05a1023d0fdc7049059c0)), closes [#178](https://github.com/bestagentkits/cloud-harness-mcp/issues/178)
+
+
+### Features
+
+* **dashboard:** add sidebar version, theme icon, and CMD+K palette ([bf1b6a8](https://github.com/bestagentkits/cloud-harness-mcp/commit/bf1b6a82faa4549e58c5dd17771c54545fdd6999))
+
 ## [0.39.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.3...v0.39.4) (2026-09-13)
 
 
