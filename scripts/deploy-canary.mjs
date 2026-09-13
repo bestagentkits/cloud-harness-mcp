@@ -58,7 +58,7 @@ try {
     arguments: {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
       idempotencyKey: `deploy-canary-${suffix}`,
-      networkMode: 'none'
+      networkProfile: 'network-none'
     }
   }), 'workspace_open');
   workspaceId = opened.workspaceId;
