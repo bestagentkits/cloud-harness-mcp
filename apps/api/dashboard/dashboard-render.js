@@ -53,7 +53,7 @@ export function renderGlobalSecrets(secrets = [], readiness = { ready: true }) {
 }
 
 export function renderArtifactIndex(artifacts, cursor) {
-  const rows = artifacts.length ? artifacts.map((artifact) => `<tr><th scope="row">${escape(artifact.logicalName)}<small class="mono wrap">${escape(artifact.artifactId)}</small></th><td>${escape(formatBytes(artifact.sizeBytes))}</td><td class="mono wrap">${escape(artifact.sha256)}</td><td>${time(artifact.expiresAt)}</td><td><a class="secondary button download-artifact" href="/api/v1/artifacts/${encodeURIComponent(artifact.artifactId)}/download" download="${escape(artifact.logicalName)}">Download</a> <button class="danger delete-artifact" type="button" data-artifact-id="${escape(artifact.artifactId)}" data-generation="${escape(artifact.generation)}">Delete</button></td></tr>`).join('') : '<tr><td colspan="5">No retained snapshots.</td></tr>';
+  const rows = artifacts.length ? artifacts.map((artifact) => `<tr><th scope="row">${escape(artifact.logicalName)}<small class="mono wrap">${escape(artifact.artifactId)}</small></th><td>${escape(formatBytes(artifact.sizeBytes))}</td><td class="mono wrap">${escape(artifact.sha256)}</td><td>${time(artifact.expiresAt)}</td><td><a class="secondary button download-artifact" href="/dashboard/api/v1/artifacts/${encodeURIComponent(artifact.artifactId)}/download" download="${escape(artifact.logicalName)}">Download</a> <button class="danger delete-artifact" type="button" data-artifact-id="${escape(artifact.artifactId)}" data-generation="${escape(artifact.generation)}">Delete</button></td></tr>`).join('') : '<tr><td colspan="5">No retained snapshots.</td></tr>';
   return `<div class="page-note"><strong>Retained artifact snapshots.</strong> These bounded copies persist until their displayed expiry or deletion. Tasks and sessions are volatile runtime state.</div><section class="panel" aria-labelledby="snapshot-heading"><h2 id="snapshot-heading">Create snapshot</h2><form id="snapshot-form" class="stack-form"><label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default"><button type="submit">Create retained snapshot</button><p class="form-status" aria-live="polite"></p></form></section><section aria-labelledby="artifact-list-heading"><h2 id="artifact-list-heading">Retained artifacts</h2><div class="desktop-table"><table><caption>${artifacts.length} snapshots</caption><thead><tr><th>Name</th><th>Size</th><th>SHA-256</th><th>Expires</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>${cursor ? `<button id="load-more-artifacts" type="button" data-cursor="${escape(cursor)}">Load more</button>` : ''}</section>`;
 }
 
@@ -647,7 +647,7 @@ export function renderKnowledgeGraph(graphResult) {
  */
 const MCP_STATUS = {
   connected: { label: 'Connected', className: 'active' },
-  connecting: { label: 'Connecting', className: 'reaping' },
+  connecting: { label: 'Connecting', className: 'info' },
   disconnected: { label: 'Disconnected', className: '' },
   error: { label: 'Error', className: 'failed' },
   disabled: { label: 'Disabled', className: '' },
@@ -845,7 +845,7 @@ function renderMcpPermissionsPanel(server, tools) {
         <select id="mcp-permission-default" name="permissionDefault"><option value="allow"${defaultDeny ? '' : ' selected'}>Allow</option><option value="deny"${defaultDeny ? ' selected' : ''}>Deny</option></select>
         <h3>Per-tool overrides</h3>
         <ul class="record-list mcp-permission-list">${toolRows}</ul>
-        <div class="form-row-actions"><button type="submit">Save permissions</button></div>
+        <div class="form-row-actions"><button type="submit" class="accent-btn">Save permissions</button></div>
         <p class="form-status" aria-live="polite"></p>
       </form>
     </section>

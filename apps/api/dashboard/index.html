@@ -91,7 +91,7 @@
       <textarea id="bulk-import-input" class="mono" rows="8" spellcheck="false" autocomplete="off" placeholder="# Description&#10;KEY=value" required></textarea>
       <div id="bulk-import-preview" class="bulk-diff-preview" aria-live="polite"></div>
       <p id="bulk-import-status" class="status-message" aria-live="polite"></p>
-      <div class="dialog-actions"><button type="button" id="cancel-bulk-import">Cancel</button><button type="submit" id="submit-bulk-import">Apply import</button></div>
+      <div class="dialog-actions"><button type="button" id="cancel-bulk-import">Cancel</button><button type="submit" id="submit-bulk-import" class="accent-btn">Apply import</button></div>
     </form>
   </dialog>
   <dialog id="open-workspace-dialog" aria-labelledby="open-workspace-title" aria-describedby="open-workspace-description">
@@ -291,8 +291,8 @@
       <input type="hidden" name="expectedGeneration" value="0">
       <label for="mcp-server-name">Name</label>
       <input id="mcp-server-name" name="name" required maxlength="63" pattern="^[a-z0-9][a-z0-9-]{0,62}$" autocomplete="off" spellcheck="false" placeholder="e.g. linear">
-      <label for="mcp-server-description">Description <span class="optional">Optional</span></label>
-      <input id="mcp-server-description" name="description" maxlength="500" autocomplete="off">
+      <label for="mcp-server-description-input">Description <span class="optional">Optional</span></label>
+      <input id="mcp-server-description-input" name="description" maxlength="500" autocomplete="off">
       <label for="mcp-server-transport">Transport</label>
       <select id="mcp-server-transport" name="transport">
         <option value="streamable-http" selected>streamable-http</option>

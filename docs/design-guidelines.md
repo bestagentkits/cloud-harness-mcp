@@ -7,24 +7,62 @@ owns the **what** (every token and rule). The static UI contract is enforced by
 
 ## Direction
 
-- **Register:** product (a tool an operator must trust), not marketing. Bar is
-  earned familiarity and legibility, not novelty.
+The dashboard shares the **marketing site's design system**: the
+"Cyber-Engineering HUD" declared by `site/index.html` and `site/haas.html`. Those
+two pages are the palette source of truth. `site/styles.css` is **not** part of
+it — only the policy pages link it — and nothing here derives from it.
+
+- **Register:** product (a tool an operator must trust), rendered in the HUD's
+  visual language. Bar is earned familiarity and legibility, not novelty.
 - **Voice:** industrial / utilitarian "mission control" console. Calm, dense,
   instrument-grade.
 - **Dials:** variance 3, motion 2, density 7. State-conveying motion only
   (150-250ms); no page-load choreography.
-- **Memorable element:** amber corner-bracket frames on the framed surfaces
-  (metric tiles, command toolbar), echoed by the amber active-rail on the
-  navigation.
+- **Memorable element:** cyan corner-bracket frames on the framed surfaces
+  (metric tiles, command toolbar), echoed by the cyan active-rail on the
+  navigation. The brackets were amber before this became a HUD system; only the
+  hue changed, not the grammar.
+
+## Deviations from the marketing source
+
+The HUD is shared, but four things cannot be copied literally. Each is a
+constraint, not a preference:
+
+- **No grid or glow backdrop.** The landing page builds its grid and radial glow
+  from `linear-gradient` / `radial-gradient`, and the UI contract test rejects
+  `gradient(`. The HUD reads instead through hairlines, cyan corner brackets, and
+  monospace type.
+- **No web fonts.** Marketing uses JetBrains Mono and Plus Jakarta Sans; the CSP
+  has no `font-src`. The native `--font-sans` and `--font-mono` stacks carry the
+  same treatment: 700-800 display weight with tight tracking on headings, and wide
+  tracking with uppercase on labels, table headers, and status pills.
+- **Light-theme accent and semantic values are darker than the marketing hexes.**
+  The marketing light accents fail AA as pill and button text (measured: green
+  3.06:1, red 4.01:1, amber 4.27:1, white-on-cyan 4.09:1). The dashboard keeps the
+  same hues, darkened and chroma-clamped into the sRGB gamut, and the numbers are
+  asserted by the contrast test.
+- **Light surfaces keep a three-step ramp** (white / near-white / muted) rather
+  than marketing's flat white for both panel and card, because dense tables need a
+  visible header and hover surface.
+
+One more consequence worth stating: the `-line` family is opaque here, while
+marketing tints its borders. See the `-soft` / `-line` split under Color.
 
 ## Hard constraints (do not violate)
 
-- **CSP `default-src 'none'`** with no `font-src`: no web fonts, no self-hosted
-  fonts, no external assets, no inline `style=` attributes, no
-  storage/telemetry. All styling lives in `dashboard.css`; behavior in the
-  dashboard JS.
+- **No web fonts, no external assets, no inline styles.** The dashboard document
+  is served under a strict CSP set by `dashboardSecurity` in
+  `apps/api/src/dashboard-router.ts`: no `font-src`, so no self-hosted or web
+  fonts, and no external assets, `style=` attributes, or storage. All styling
+  lives in `dashboard.css`; behavior in the dashboard JS. The contract test
+  asserts the absence of `@font-face`, `@import`, `url(`, and `style=`. One limit
+  worth knowing: that middleware runs on the router mounted at `/dashboard`, which
+  sits after `accessAssertionAuth` in `apps/api/src/app.ts`, so an unauthenticated
+  401 from a dashboard path carries no CSP or `X-Frame-Options`.
 - **OKLCH only.** No hex colors and no `gradient()` anywhere (the UI contract
-  test rejects both).
+  test rejects both). Note that CSS composites alpha on the encoded channel
+  values, so a translucent tint over a near-black canvas is far darker than it
+  looks on paper.
 - **DOM is a contract.** Preserve the landmarks, single `<h1>`, dialogs, nav
   labels, and required CSS tokens/rules the contract test asserts.
 
@@ -44,37 +82,60 @@ fonts the CSP forbids. We carry the same voice with a native stack instead:
 
 ## Color
 
-- **Strategy:** restrained. Cool blue-tinted concrete-gray neutral ramp plus one
-  safety-amber accent used only for the primary action, active nav, selection,
-  focus, and the corner brackets. Accent stays under ~10% of any surface.
-- **Amber is never body text on a light surface** (poor contrast). Links use ink
-  with an amber underline and shift to `--accent-strong` on hover; primary
-  buttons use amber fill with dark `--on-accent` text.
-- **Semantic hues are separated from the accent:** success green (H155), warning
-  yellow (H100, deliberately yellower than the amber accent H62), danger red
-  (H27). Status is a pill with a leading dot.
+- **Strategy:** dark-first HUD. The `:root` base is the marketing ramp — a
+  near-black canvas, a blue-tinted panel and card ramp, and the HUD accent. The
+  accent is used only for the primary action, active nav, selection, focus, and
+  the corner brackets, and stays under ~10% of any surface.
+- **Cyan is the single accent.** `--accent` is the **fill** token: button and tab
+  backgrounds, brackets, borders, the focus ring. `--accent-strong` is the
+  **text** token for links and emphasis. The bare `--accent` must never be used as
+  a `color`, because as text it cannot reach AA on the light surfaces; the
+  contrast test asserts that no `color: var(--accent)` exists at all.
+- **Semantic hues are separated from the accent:** success green, warning amber,
+  danger red, and an **info** tier (violet) for neutral in-progress states.
+  Status is a pill with a leading dot. Amber survives only as `--warning`; it is
+  no longer the accent.
+- **`-soft` is a translucent fill; `-line` is an opaque border.** This split is
+  load-bearing. `-soft` tints sit behind text and always pair with an opaque text
+  colour or border. `-line` draws brackets, borders, and underlines, and must stay
+  opaque: a translucent cyan line measures about 1.5:1 over the canvas and the
+  brackets would effectively disappear. The contrast test asserts the whole
+  `-line` family has no alpha component.
 - **One gray family**, brand-tinted toward the console's cool blue.
 
 ### Adaptive dark theme
 
-The default follows `prefers-color-scheme`. A single **icon control** in the top
-bar cycles system → light → dark; `system` is represented by an absent
-`html[data-theme]`, so the media query governs again. The control is deliberately
-**not** `aria-pressed` — that attribute describes two states and this control has
-three, so the accessible name states the current state and the next action
-instead. Client storage is forbidden, so the choice persists **server-side, not
-in the browser**: `PUT /api/v1/preferences` (CSRF-guarded) sets an HttpOnly
+Dark is the **authoring base**: `:root` holds the dark HUD palette, mirroring
+`site/index.html`'s `<html data-theme="dark">` foundation. Light is a companion
+declared **twice**, because CSS cannot share one token set across a media query:
+`:root[data-theme="light"]` for the forced choice and
+`@media (prefers-color-scheme: light) { :root:not([data-theme]) { ... } }` for
+`system`. Both blocks must be edited together, and
+[`apps/api/test/dashboard-design-tokens.test.ts`](../apps/api/test/dashboard-design-tokens.test.ts)
+asserts that their declaration sets are identical.
+
+A single **icon control** in the top bar cycles system → light → dark; `system`
+is represented by an absent `html[data-theme]`, so the media query governs again.
+The four cases therefore all resolve: no attribute on a dark-preference machine
+renders the base; no attribute on a light-preference machine renders the light
+companion; and a forced `light` or `dark` always wins, because the media query is
+scoped to `:root:not([data-theme])`. The control is deliberately **not**
+`aria-pressed` — that attribute describes two states and this control has three,
+so the accessible name states the current state and the next action instead.
+Client storage is forbidden, so the choice persists **server-side, not in the
+browser**: `PUT /api/v1/preferences` (CSRF-guarded) sets an HttpOnly
 `ch-dashboard-theme` cookie, and the shell handler injects `html[data-theme]` on
 first paint so a forced theme never flashes. The client only reads that DOM
 attribute. Owners: the cycle state machine in `dashboard.js` and the injection in
 [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts).
 
-Dark is a tinted graphite, not black: surfaces **elevate by lightening**
-(`--canvas` -> `--surface` -> `--surface-raised`), the amber accent is
-**brightened** so it stays legible, and shadows deepen. Both themes are verified
-at WCAG AA: body text and muted text >= 4.5:1, primary-button text and status
-pills pass against their actual backgrounds, and the focus ring is >= 3:1
-against its surface.
+Both themes are verified at WCAG AA by
+[`apps/api/test/dashboard-design-tokens.test.ts`](../apps/api/test/dashboard-design-tokens.test.ts):
+body and muted text >= 4.5:1, primary-button text and every status pill pass
+against their actual composited backgrounds, accent emphasis text passes on every
+surface it lands on, and the accent line and focus ring clear 3:1. The light
+accent and semantic values are deliberately darker and chroma-clamped relative to
+the raw marketing light hexes, because those fail AA as pill and button text.
 
 ### Operator display name
 
@@ -123,7 +184,7 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
   starts inside the dialog).
 - **Navigation:** left icon+label rail, grouped by concern (Runtime,
   Configuration, Observability, Account) with an Overview home. Active item gets
-  the amber rail + soft fill. The rail is **fixed to the viewport below the top
+  the cyan rail + soft fill. The rail is **fixed to the viewport below the top
   bar and scrolls internally**, so a long navigation list never pushes the page
   or hides entries; the rail foot carries the running **server version** outside
   that scroll and hides it when the rail collapses to icons. A chevron control
@@ -170,5 +231,18 @@ attacker-influenceable value.
 
 Edit `dashboard.css` (and the dashboard JS/render only when structure must
 change). Keep the contract tokens and rules the UI test asserts, run
-`npx vitest run apps/api/test/dashboard-*.test.ts`, then `npm run verify`, and
-re-check both light and dark themes plus 375px in a browser before shipping.
+`npx vitest run dashboard`, then `npm run verify`, and re-check both light and
+dark themes plus 375px in a browser before shipping.
+
+Three extra gates apply to specific kinds of change:
+
+- **A colour change** must be re-verified by
+  [`apps/api/test/dashboard-design-tokens.test.ts`](../apps/api/test/dashboard-design-tokens.test.ts),
+  which asserts every text, pill, emphasis, accent-line, and focus pair in both
+  themes. If you touch a `-line` token, keep it opaque; if you touch a `-soft`
+  token, keep it translucent.
+- **A spacing change** must keep every `--space-*` step a member of the marketing
+  scale, which the contract test asserts.
+- **A light-theme change** must be applied to **both** light blocks. They are
+  duplicated because CSS cannot share a token set across a media query, and the
+  contrast test fails if they diverge.
