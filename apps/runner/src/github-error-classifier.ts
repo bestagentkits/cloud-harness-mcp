@@ -16,6 +16,8 @@ type ClassifierRule = {
   patterns: readonly RegExp[];
 };
 
+const MAX_MESSAGE_CHARS = 2_000;
+
 const CLASSIFIER_RULES: readonly ClassifierRule[] = [
   // 1. Rate limits MUST be checked before generic 403 / permission errors
   {
@@ -150,10 +152,12 @@ export function classifyGitHubFailure(
       if (pattern.test(text)) {
         const detail = `GitHub ${action} failed: ${stderr || stdout}`.trim();
         // A permission failure is only actionable with its remedy: the broker has no
-        // way to know which credential GitHub rejected after the helper ran.
+        // way to know which credential GitHub rejected after the helper ran. The
+        // remedy must survive truncation of a long helper message.
+        const remedy = 'the credential used for this action is missing the required GitHub permission. Add it to the GitHub App and approve the pending installation change, or configure an operator GH_TOKEN runtime secret.';
         const message = rule.code === 'GITHUB_PERMISSION_MISSING'
-          ? `${detail} — the credential used for this action is missing the required GitHub permission. Add it to the GitHub App and approve the pending installation change, or configure an operator GH_TOKEN runtime secret.`.slice(0, 2_000)
-          : detail.slice(0, 2_000);
+          ? `${detail.slice(0, MAX_MESSAGE_CHARS - remedy.length - 3)} — ${remedy}`
+          : detail.slice(0, MAX_MESSAGE_CHARS);
         return {
           code: rule.code,
           message,
@@ -167,7 +171,7 @@ export function classifyGitHubFailure(
 
   return {
     code: 'GITHUB_ACTION_FAILED',
-    message: `GitHub ${action} failed: ${stderr || stdout}`.trim().slice(0, 2_000),
+    message: `GitHub ${action} failed: ${stderr || stdout}`.trim().slice(0, MAX_MESSAGE_CHARS),
     retryable: false,
     ...(step ? { step } : {})
   };

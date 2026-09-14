@@ -482,7 +482,9 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     const [, opts] = dockerCall!;
     expect(opts?.stdin).toBe(`${fallbackToken}\n`);
     const audit = metadata.listAudit(principalId).find((a) => a.action === 'github_action.issue_create');
-    expect(audit!.details).toMatchObject({ success: true, credentialSource: 'operator-fallback' });
+    // The owner-bearer environment credential is operator-wide; the audit must not
+    // label it as if it were the principal's own secret.
+    expect(audit!.details).toMatchObject({ success: true, credentialSource: 'runner-environment' });
     expect(JSON.stringify(audit)).not.toContain(fallbackToken);
   });
 

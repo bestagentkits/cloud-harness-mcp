@@ -73,10 +73,26 @@ export function resolveGitHubFallbackToken(input: {
  principalId: string;
  metadata?: MetadataStore | undefined;
 }): string | undefined {
- return (
-  envFallbackGitHubToken(input.config) ??
-  globalFallbackGitHubToken(input.principalId, input.metadata)
- );
+ return resolveGitHubFallbackCredential(input)?.token;
+}
+
+/**
+ * The fallback credential and the boundary it came from. The two sources are not
+ * interchangeable: the runner environment credential is operator-wide and is
+ * refused in `cloudflare-access` mode, while a principal's global runtime secret
+ * belongs to — and is injected into the workspaces of — that principal alone.
+ * Callers that record or report which credential performed an action need the
+ * source, not just the value.
+ */
+export function resolveGitHubFallbackCredential(input: {
+ config: RunnerConfig;
+ principalId: string;
+ metadata?: MetadataStore | undefined;
+}): { token: string; source: 'runner-environment' | 'principal-global-secret' } | undefined {
+ const environmentToken = envFallbackGitHubToken(input.config);
+ if (environmentToken) return { token: environmentToken, source: 'runner-environment' };
+ const principalToken = globalFallbackGitHubToken(input.principalId, input.metadata);
+ return principalToken ? { token: principalToken, source: 'principal-global-secret' } : undefined;
 }
 
 /**

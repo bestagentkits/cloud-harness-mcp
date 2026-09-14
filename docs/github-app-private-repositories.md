@@ -48,12 +48,34 @@ choose the narrowest permission level:
 | Clone, fetch, and pull | **Contents: Read-only** |
 | Push ordinary repository changes | **Contents: Read and write** |
 | Push changes under `.github/workflows/` | **Contents: Read and write** and **Workflows: Read and write** |
+| Read issues and pull requests through `github_action` | **Issues: Read-only** and **Pull requests: Read-only** |
+| Create, comment on, label, or close issues; comment on or update pull requests; create pull requests | **Issues: Read and write** and **Pull requests: Read and write** |
 
-Leave every other repository, organization, and account permission at **No
-access**. GitHub recommends minimum permissions and documents `Contents` as the
-permission for HTTP Git access. `Workflows` is needed only when the App must
-access or edit GitHub Actions workflow files. See GitHub's
+Every other repository, organization, and account permission can stay at **No
+access**. `Contents` is the permission for HTTP Git access, and `Workflows` is
+needed only when the App must access or edit GitHub Actions workflow files. The
+issue and pull-request permissions are required only for the brokered
+`github_action` operations: without them, `gh` is authenticated and the clone and
+push paths still work, but a write returns `GITHUB_PERMISSION_MISSING` (GitHub's
+`403 Resource not accessible by integration`) naming the scope to add. GitHub's
+comment and label endpoints accept **either** `Issues: write` **or** `Pull
+requests: write`, so a pull-request action is satisfied by the Pull requests
+permission alone; issue actions need the Issues permission. See GitHub's
 [permission guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app).
+
+### Adding a permission later
+
+GitHub Apps permissions are declared on the App and granted per installation.
+After adding a permission, the App's installations keep the old grant until the
+owner approves the change:
+
+1. Open the App's settings, add the permission, and save.
+2. Open each installation and approve the updated permissions when GitHub marks
+   the installation as needing attention; GitHub shows a banner on the App's
+   installations page until this is done.
+3. Reconcile the installation from the dashboard GitHub page so the runner
+   records the newly granted levels; the runner reads permissions during that
+   verification, not at startup, so restarting alone does not refresh them.
 
 ## 1. Register the GitHub App
 
@@ -216,6 +238,9 @@ successful private clone proves read access only; it does not prove push access.
 | Token minting returns `UNAVAILABLE` | Recheck App ID versus Client ID, installation ID, PEM/App pairing, key revocation, and runner DNS/egress to `api.github.com`; Git transport also needs `github.com`. |
 | Clone works but push returns `403` | Change `Contents` to **Read and write**, approve the changed installation permission, and check branch/ruleset restrictions. |
 | A push touching `.github/workflows/` fails | Add **Workflows: Read and write** only if modifying workflow files is intended, then approve the updated installation permission. |
+| `github_action` returns `GITHUB_PERMISSION_MISSING` / `403 Resource not accessible by integration` | Add **Issues: Read and write** (issue, comment, and label actions) or **Pull requests: Read and write** (pull-request actions) to the App, approve the changed installation permission, then reconcile the installation. `workspace_capabilities` reports the granted level per scope. |
+| A write fails while clone and push still work | Expected when only `Contents` is granted: Git access and `gh` authentication do not imply issue or pull-request permissions. Configure an operator `GH_TOKEN`/`GITHUB_TOKEN` (owner-bearer) or a per-principal global runtime secret (Access mode) only as the documented fallback, not instead of the App grant. |
+| `gh` inside a workspace reports no authentication | The runner-environment fallback credential never enters an executor; create a global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN` for the workspace's principal and open a workspace with egress. |
 
 The broker deliberately returns a sanitized error instead of GitHub's raw
 credential-bearing response. Use GitHub's installation settings and runner

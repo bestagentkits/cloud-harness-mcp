@@ -39,6 +39,7 @@ import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
 import {
   hasGitHubFallbackCredential,
+  resolveGitHubFallbackCredential,
   resolveGitHubFallbackToken
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
@@ -1829,7 +1830,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     action: string,
     args: string[],
     signal?: AbortSignal
-  ): Promise<{ result: RunnerResponse; credentialSource: 'app' | 'operator-fallback' }> {
+  ): Promise<{ result: RunnerResponse; credentialSource: 'app' | 'runner-environment' | 'principal-global-secret' }> {
     const requirement = requiredGitHubPermissions(action);
     if (!requirement) throw new HarnessError('INVALID_INPUT', `unsupported github_action: ${action}`);
     const isWrite = requirement.write;
@@ -1867,17 +1868,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const grantedLevel = appPermissions?.[permissionScope];
     const appSatisfies = appToken !== undefined
       && (grantedLevel === 'write' || (!isWrite && grantedLevel === 'read'));
-    const operatorFallback = resolveGitHubFallbackToken({
-      config: this.config,
-      principalId: record.ownerId,
-      metadata: this.metadata
-    });
     const authorizationReason = appAuthorizationError instanceof HarnessError
       ? (appAuthorizationError.details as { reason?: string } | undefined)?.reason
       : undefined;
 
     let token: string | undefined;
-    let credentialSource: 'app' | 'operator-fallback' = 'operator-fallback';
+    let credentialSource: 'app' | 'runner-environment' | 'principal-global-secret' = 'runner-environment';
     // An infrastructure mint failure is not evidence that the App cannot perform the
     // action, so it propagates instead of quietly falling back.
     const propagateMintFailure = appAuthorizationError !== undefined
@@ -1886,10 +1882,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (appSatisfies) {
       token = appToken;
       credentialSource = 'app';
-    } else if (!propagateMintFailure && operatorFallback) {
-      // A configured operator credential is the documented remedy when the App
-      // installation cannot perform the action.
-      token = operatorFallback;
+    } else if (!propagateMintFailure) {
+      // Resolved only when the App path cannot satisfy the action, so a usable App
+      // token never decrypts the principal's stored credential.
+      const fallback = resolveGitHubFallbackCredential({
+        config: this.config,
+        principalId: record.ownerId,
+        metadata: this.metadata
+      });
+      if (fallback) {
+        token = fallback.token;
+        credentialSource = fallback.source;
+      }
     }
     if (!token) {
       const auditFailure = (errorCode: string) => {
@@ -3715,7 +3719,21 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (parsed.operation === 'settings_get' || parsed.operation === 'settings_update') {
       if (parsed.operation === 'settings_update') {
+        const previous = this.store.getWorkspaceDefaultNetworkProfile();
         this.store.setWorkspaceDefaultNetworkProfile(parsed.input.defaultNetworkProfile, Date.now());
+        // An instance-wide security posture change is operator-visible state: record
+        // the transition, never a credential or probe value.
+        this.metadata?.recordAudit(
+          ownerId,
+          'settings.default_network_profile.changed',
+          'instance',
+          'instance_settings',
+          1,
+          {
+            previous: previous ?? 'runner-default',
+            next: parsed.input.defaultNetworkProfile ?? 'runner-default'
+          }
+        );
       }
       const stored = this.store.getWorkspaceDefaultNetworkProfile();
       return {

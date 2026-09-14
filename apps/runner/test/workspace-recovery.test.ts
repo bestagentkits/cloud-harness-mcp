@@ -698,7 +698,9 @@ describe('Workspace network default resolution', () => {
     await expect(openWithoutProfile(service, principal, 'resolution-unattested-egress-1')).rejects.toMatchObject({
       code: 'DEPENDENCY_EGRESS_UNAVAILABLE'
     });
-    expect(store.list(store.resolvePrincipal(principal)).every((record) => record.status === 'FAILED')).toBe(true);
+    const records = store.list(store.resolvePrincipal(principal));
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ status: 'FAILED', networkProfile: 'dependency-access' });
   });
 
   it('lets an explicit request override the persisted instance default', async () => {

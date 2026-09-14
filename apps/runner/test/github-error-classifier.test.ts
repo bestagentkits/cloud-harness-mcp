@@ -78,6 +78,12 @@ describe('GitHub Error Classifier', () => {
     );
     expect(rateLimited.code).toBe('GITHUB_RATE_LIMITED');
     expect(rateLimited.message).not.toContain('GH_TOKEN');
+
+    // A long helper message must not push the remedy past the message bound.
+    const long = classifyGitHubFailure(`${'GraphQL: HTTP 403 '.repeat(300)}Resource not accessible by integration`, '', 'issue_create');
+    expect(long.code).toBe('GITHUB_PERMISSION_MISSING');
+    expect(long.message.length).toBeLessThanOrEqual(2_000);
+    expect(long.message).toContain('GH_TOKEN');
   });
 
   it('classifies invalid PR base branch as INVALID_PULL_REQUEST_BASE for PR actions', () => {
