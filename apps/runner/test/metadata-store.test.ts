@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-import { downgradeMetadataSchemaToV1, downgradeMetadataSchemaToV2, downgradeMetadataSchemaToV3, downgradeMetadataSchemaToV5, migrateMetadataSchema } from '../src/metadata-schema.js';
+import { downgradeMetadataSchemaToV1, downgradeMetadataSchemaToV2, downgradeMetadataSchemaToV3, downgradeMetadataSchemaToV4, downgradeMetadataSchemaToV5, migrateMetadataSchema } from '../src/metadata-schema.js';
 import { downgradeStateDbToV5 } from '../src/metadata-schema-down-v5.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
@@ -450,5 +450,29 @@ describe('MetadataStore', () => {
     const migratedRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
     expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(6);
     db.close();
+  });
+
+  it('enters v4, v2, and v1 directly from v6 without leaving gateway tables', () => {
+    const gatewayTables = ['mcp_gateway_servers', 'mcp_gateway_tools', 'mcp_gateway_tool_permissions', 'mcp_gateway_traces'];
+    const cases: Array<{ target: number; downgrade: (database: DatabaseSync) => void }> = [
+      { target: 4, downgrade: downgradeMetadataSchemaToV4 },
+      { target: 2, downgrade: downgradeMetadataSchemaToV2 },
+      { target: 1, downgrade: downgradeMetadataSchemaToV1 }
+    ];
+    for (const entry of cases) {
+      const { store, keyring } = fixture();
+      expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
+      for (const table of gatewayTables) {
+        expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeDefined();
+      }
+
+      entry.downgrade(store.database);
+      expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(entry.target);
+      for (const table of gatewayTables) {
+        expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeUndefined();
+      }
+      store.close();
+      keyring.close();
+    }
   });
 });

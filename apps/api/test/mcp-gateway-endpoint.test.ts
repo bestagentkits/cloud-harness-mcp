@@ -12,7 +12,7 @@ import {
 } from '@cloud-harness/contracts';
 import { createApiApp, type ApiRuntime } from '../src/app.js';
 import type { RunnerClient } from '../src/runner-client.js';
-import type { GatewayFetchLike } from '../src/mcp-gateway/redaction.js';
+import { guardedFetchOptions, type GatewayFetchLike } from '../src/mcp-gateway/redaction.js';
 
 // The resolver is mocked so the rebinding case is deterministic and offline. Every
 // other test uses an IP-literal endpoint or a hostname the mock resolves to a public
@@ -494,11 +494,14 @@ describe('/mcp-gateway execute credential boundary', () => {
   });
 
   it('scopes the credential to exactly the tools/call request and to no trace', async () => {
+    const credential = `Bearer ${SECRET}`;
     const { runner, state: runnerState } = createFakeRunner();
     const { fetchImpl, state } = createFakeDownstream({
+      // The downstream echoes the resolved header value back, so the scrub assertions
+      // below can actually fail if the success payload is no longer sanitized.
       toolResult: () => ({
-        content: [{ type: 'text', text: 'report ready' }],
-        structuredContent: { reports: 3 },
+        content: [{ type: 'text', text: `report ready for ${credential}` }],
+        structuredContent: { reports: 3, echoed: credential },
         isError: false
       })
     });
@@ -510,7 +513,10 @@ describe('/mcp-gateway execute credential boundary', () => {
       });
       const envelope = toolResult(result as { structuredContent?: unknown });
       expect(envelope.ok).toBe(true);
-      expect((envelope.data as { structuredContent: unknown }).structuredContent).toEqual({ reports: 3 });
+      expect((envelope.data as { structuredContent: unknown }).structuredContent).toEqual({
+        reports: 3,
+        echoed: '[REDACTED_SECRET]'
+      });
 
       // The caller's arguments arrive byte-identical.
       const call = state.requests.find((request) => request.body.method === 'tools/call');
@@ -521,12 +527,8 @@ describe('/mcp-gateway execute credential boundary', () => {
       // Exactly one tools/call, never a retry.
       expect(state.requests.filter((request) => request.body.method === 'tools/call')).toHaveLength(1);
 
-      // The credential never reaches a discovery-path request.
-      for (const request of state.requests) {
-        if (request.path !== '/mcp') expect(request.authorization).toBeNull();
-      }
-
-      // The credential appears in no client result and in no recorded trace.
+      // The credential appears in no client result and in no recorded trace. The
+      // downstream echoed it, so these assertions are not vacuous.
       expect(JSON.stringify(result)).not.toContain(SECRET);
       expect(JSON.stringify(runnerState.traces)).not.toContain(SECRET);
       expect(runnerState.traces).toHaveLength(1);
@@ -560,14 +562,37 @@ describe('/mcp-gateway execute credential boundary', () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]!.authorization).toBe(`Bearer ${SECRET}`);
       expect(calls[0]!.toolArguments).toEqual(CALLER_ARGUMENTS);
-      expect(state.requests.some((request) => request.authorization !== null)).toBe(true);
+      expect(state.requests.length).toBeGreaterThan(0);
       for (const request of state.requests) {
-        expect(request.url.startsWith(ENDPOINT)).toBe(true);
+        const target = new URL(request.url);
+        expect(`${target.origin}${target.pathname}`).toBe(ENDPOINT);
+        expect(request.authorization).toBe(`Bearer ${SECRET}`);
       }
       expect(JSON.stringify(runnerState.traces)).not.toContain(SECRET);
     } finally {
       await harness.close();
     }
+  });
+
+  it('leaves a request to another origin or path uncredentialed', async () => {
+    // The SDK never requests a URL other than the configured endpoint, so the guard
+    // itself is exercised directly with the injected fake fetch as the observer. A
+    // regression that attaches the credential to any URL fails here.
+    const seen: Array<{ url: string; authorization: string | null }> = [];
+    const record: GatewayFetchLike = async (input, init) => {
+      seen.push({ url: String(input), authorization: new Headers(init?.headers).get('authorization') });
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const guarded = guardedFetchOptions(new URL(ENDPOINT), { Authorization: `Bearer ${SECRET}` }, record);
+    await guarded(ENDPOINT, { method: 'POST' });
+    await guarded('https://upstream.example.com/.well-known/oauth-protected-resource', { method: 'GET' });
+    await guarded('https://other.example.com/mcp', { method: 'POST' });
+
+    expect(seen).toEqual([
+      { url: ENDPOINT, authorization: `Bearer ${SECRET}` },
+      { url: 'https://upstream.example.com/.well-known/oauth-protected-resource', authorization: null },
+      { url: 'https://other.example.com/mcp', authorization: null }
+    ]);
   });
 
   it('returns a denied envelope without calling downstream', async () => {

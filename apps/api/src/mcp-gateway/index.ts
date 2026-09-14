@@ -3,9 +3,9 @@ import type { FetchLike } from '@modelcontextprotocol/client';
 import type { ApiConfig } from '@cloud-harness/contracts';
 import type { RunnerClient } from '../runner-client.js';
 import { serverVersion } from '../version.js';
-import { GatewayConnectionManager } from './connection-manager.js';
+import { GatewayConnectionManager, type GatewayConnectionOptions } from './connection-manager.js';
 import { registerGatewayTools } from './meta-tools.js';
-import { McpGatewayService } from './service.js';
+import { McpGatewayService, type McpGatewayServiceOptions } from './service.js';
 
 /**
  * The gateway composition root.
@@ -17,6 +17,58 @@ import { McpGatewayService } from './service.js';
  */
 
 export type McpGatewayOverrides = { fetchImpl?: FetchLike };
+
+/**
+ * Documented defaults for the gateway limits. `ApiConfigSchema` owns the same
+ * values when it parses the environment; these exist so a config object that
+ * bypassed `ApiConfigSchema.parse` can never put `undefined`/`NaN` into a numeric
+ * context (`Math.max(1, undefined)` is `NaN`, and `AbortSignal.timeout(NaN)`
+ * throws `RangeError [ERR_OUT_OF_RANGE]` on the first downstream connect).
+ */
+export const MCP_GATEWAY_DEFAULTS = {
+  timeoutMs: 30_000,
+  maxResponseBytes: 262_144,
+  maxToolsPerServer: 500,
+  maxSchemaBytes: 65_536,
+  maxCatalogBytes: 2_097_152,
+  maxTraceRows: 20_000,
+  maxConnections: 32
+} as const;
+
+export type ResolvedMcpGatewayOptions = {
+  connection: GatewayConnectionOptions;
+  service: McpGatewayServiceOptions;
+};
+
+function finiteOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Normalizes the gateway's numeric options at the composition boundary. A missing
+ * or non-finite value falls back to its documented default; a valid value is
+ * preserved unchanged. Both consumers read the normalized object, so no downstream
+ * `Math.max(1, …)` or `AbortSignal.timeout(…)` can ever see `NaN`.
+ */
+export function resolveMcpGatewayOptions(config: ApiConfig): ResolvedMcpGatewayOptions {
+  return {
+    connection: {
+      timeoutMs: finiteOr(config.mcpGatewayTimeoutMs, MCP_GATEWAY_DEFAULTS.timeoutMs),
+      maxResponseBytes: finiteOr(config.mcpGatewayMaxResponseBytes, MCP_GATEWAY_DEFAULTS.maxResponseBytes),
+      maxConnections: finiteOr(config.mcpGatewayMaxConnections, MCP_GATEWAY_DEFAULTS.maxConnections),
+      allowInsecureHttp: config.mcpGatewayAllowInsecureHttp === true,
+      allowPrivateEndpoints: config.mcpGatewayAllowPrivateEndpoints === true
+    },
+    service: {
+      timeoutMs: finiteOr(config.mcpGatewayTimeoutMs, MCP_GATEWAY_DEFAULTS.timeoutMs),
+      maxResponseBytes: finiteOr(config.mcpGatewayMaxResponseBytes, MCP_GATEWAY_DEFAULTS.maxResponseBytes),
+      maxToolsPerServer: finiteOr(config.mcpGatewayMaxToolsPerServer, MCP_GATEWAY_DEFAULTS.maxToolsPerServer),
+      maxSchemaBytes: finiteOr(config.mcpGatewayMaxSchemaBytes, MCP_GATEWAY_DEFAULTS.maxSchemaBytes),
+      maxCatalogBytes: finiteOr(config.mcpGatewayMaxCatalogBytes, MCP_GATEWAY_DEFAULTS.maxCatalogBytes),
+      maxTraceRows: finiteOr(config.mcpGatewayMaxTraceRows, MCP_GATEWAY_DEFAULTS.maxTraceRows)
+    }
+  };
+}
 
 const GATEWAY_INSTRUCTIONS = [
   'This endpoint manages your configured downstream MCP servers through a small, stable tool set.',
@@ -30,22 +82,12 @@ export function createMcpGateway(
   runnerClient: RunnerClient,
   overrides: McpGatewayOverrides = {}
 ): { factory: (context: McpRequestContext) => McpServer; service: McpGatewayService } {
+  const resolved = resolveMcpGatewayOptions(config);
   const connections = new GatewayConnectionManager({
-    timeoutMs: config.mcpGatewayTimeoutMs,
-    maxResponseBytes: config.mcpGatewayMaxResponseBytes,
-    maxConnections: config.mcpGatewayMaxConnections,
-    allowInsecureHttp: config.mcpGatewayAllowInsecureHttp,
-    allowPrivateEndpoints: config.mcpGatewayAllowPrivateEndpoints,
+    ...resolved.connection,
     ...(overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl } : {})
   });
-  const service = new McpGatewayService(runnerClient, connections, {
-    timeoutMs: config.mcpGatewayTimeoutMs,
-    maxResponseBytes: config.mcpGatewayMaxResponseBytes,
-    maxToolsPerServer: config.mcpGatewayMaxToolsPerServer,
-    maxSchemaBytes: config.mcpGatewayMaxSchemaBytes,
-    maxCatalogBytes: config.mcpGatewayMaxCatalogBytes,
-    maxTraceRows: config.mcpGatewayMaxTraceRows
-  });
+  const service = new McpGatewayService(runnerClient, connections, resolved.service);
   const factory = (context: McpRequestContext): McpServer => {
     const server = new McpServer(
       { name: 'cloud-harness-mcp-gateway', version: serverVersion },

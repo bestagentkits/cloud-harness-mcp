@@ -224,7 +224,11 @@ describe('estimateCatalogBytes', () => {
     }
     expect(thrown).toBeInstanceOf(HarnessError);
     expect((thrown as HarnessError).code).toBe('LIMIT_EXCEEDED');
-    expect(() => assertCatalogWithinLimit(catalog, bytes)).not.toThrow();
+    // Pin the boundary instead of re-asserting the same computation: one byte below
+    // the measured size must throw, and one byte above must pass. Dropping or
+    // inverting the cap check breaks one of these.
+    expect(() => assertCatalogWithinLimit(catalog, bytes - 1)).toThrow(HarnessError);
+    expect(() => assertCatalogWithinLimit(catalog, bytes + 1)).not.toThrow();
   });
 });
 

@@ -199,7 +199,7 @@ package/runtime subsystem this task forbids. Remote transports (`streamable-http
 - [x] `npm run lint`, `npm run typecheck`, `npm test` (or the targeted suites recorded in
       each phase) pass; `npm run plugin:check` passes after `npm run plugin:sync`; and
       `npm run verify:compose` (or `node scripts/verify-compose-boundaries.mjs`) passes.
-      Verified: `npm run verify` exits 0 (122 files / 944 tests) and
+      Verified: `npm run verify` exits 0 (122 files / 956 tests) and
       `node scripts/verify-compose-boundaries.mjs` prints `compose-boundaries=pass`.
 
 ## Risks

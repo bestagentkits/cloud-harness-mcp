@@ -66,6 +66,16 @@ type ConnectionEntry = {
 const DEFAULT_CACHE_TTL_MS = 60_000;
 const BACKOFF_BASE_MS = 25;
 const BACKOFF_JITTER_MS = 75;
+// Fallbacks for a direct construction that bypassed `resolveMcpGatewayOptions`.
+// They mirror the defaults `ApiConfigSchema` documents, so a missing/NaN value
+// becomes the documented bound rather than a `NaN` that breaks `AbortSignal.timeout`.
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 262_144;
+const DEFAULT_MAX_CONNECTIONS = 32;
+
+function finiteOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
 
 /**
  * Disables SDK output-schema validation. `getValidator()` always validates
@@ -141,14 +151,14 @@ export class GatewayConnectionManager {
   private closed = false;
 
   constructor(options: GatewayConnectionOptions) {
-    this.timeoutMs = Math.max(1, options.timeoutMs);
-    this.maxResponseBytes = Math.max(1, options.maxResponseBytes);
-    this.maxConnections = Math.max(1, Math.floor(options.maxConnections));
+    this.timeoutMs = Math.max(1, finiteOr(options.timeoutMs, DEFAULT_TIMEOUT_MS));
+    this.maxResponseBytes = Math.max(1, finiteOr(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES));
+    this.maxConnections = Math.max(1, Math.floor(finiteOr(options.maxConnections, DEFAULT_MAX_CONNECTIONS)));
     this.now = options.now ?? (() => Date.now());
     this.fetchImpl = options.fetchImpl;
     this.policy = {
-      allowInsecureHttp: options.allowInsecureHttp,
-      allowPrivateEndpoints: options.allowPrivateEndpoints
+      allowInsecureHttp: options.allowInsecureHttp === true,
+      allowPrivateEndpoints: options.allowPrivateEndpoints === true
     };
     this.shutdown = new Promise<never>((_resolve, reject) => {
       this.shutdownController.signal.addEventListener('abort', () => reject(this.closedError), { once: true });

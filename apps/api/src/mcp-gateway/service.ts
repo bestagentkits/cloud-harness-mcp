@@ -81,9 +81,20 @@ type TraceContext = {
 
 const DEFAULT_CATALOG_TTL_MS = 5_000;
 const DEFAULT_MAX_TRACE_ROWS = 20_000;
+// Fallbacks for a direct construction that bypassed `resolveMcpGatewayOptions`.
+// They mirror the defaults `ApiConfigSchema` documents, so a missing/NaN value
+// becomes the documented limit instead of a `NaN` bound.
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 262_144;
+const DEFAULT_MAX_TOOLS_PER_SERVER = 500;
+const DEFAULT_MAX_SCHEMA_BYTES = 65_536;
+const DEFAULT_MAX_CATALOG_BYTES = 2_097_152;
 const UNKNOWN_TOOL_MESSAGE = 'unknown or inaccessible MCP tool';
 const DENIED_MESSAGE = 'the MCP tool is not permitted for this principal';
-const MAX_TRACE_SECRETS = 8;
+
+function finiteOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
 
 function bytes(value: unknown): number {
   try {
@@ -93,14 +104,18 @@ function bytes(value: unknown): number {
   }
 }
 
-/** The resolved header values a trace write is allowed to scrub, bounded and never logged. */
+/**
+ * Every resolved header value a trace write is allowed to scrub. The resolved set is
+ * bounded by the contract's own header maximum (20), so it is never truncated: a
+ * value that reaches the client must be scrubbable. The values are held in memory
+ * for one call and are never logged or sent to the runner.
+ */
 function credentialValues(headers: Record<string, string> | undefined): string[] {
   if (!headers) return [];
   const values: string[] = [];
   for (const value of Object.values(headers)) {
     if (typeof value !== 'string' || value.length === 0) continue;
     values.push(value);
-    if (values.length >= MAX_TRACE_SECRETS) break;
   }
   return values;
 }
@@ -169,13 +184,13 @@ export class McpGatewayService {
     private readonly connections: GatewayConnectionManager,
     options: McpGatewayServiceOptions
   ) {
-    this.timeoutMs = Math.max(1, options.timeoutMs);
-    this.maxResponseBytes = Math.max(1, options.maxResponseBytes);
-    this.maxToolsPerServer = Math.max(1, options.maxToolsPerServer);
-    this.maxSchemaBytes = Math.max(1, options.maxSchemaBytes);
-    this.maxCatalogBytes = Math.max(1, options.maxCatalogBytes);
-    this.maxTraceRows = Math.max(100, options.maxTraceRows ?? DEFAULT_MAX_TRACE_ROWS);
-    this.catalogTtlMs = Math.max(0, options.catalogTtlMs ?? DEFAULT_CATALOG_TTL_MS);
+    this.timeoutMs = Math.max(1, finiteOr(options.timeoutMs, DEFAULT_TIMEOUT_MS));
+    this.maxResponseBytes = Math.max(1, finiteOr(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES));
+    this.maxToolsPerServer = Math.max(1, finiteOr(options.maxToolsPerServer, DEFAULT_MAX_TOOLS_PER_SERVER));
+    this.maxSchemaBytes = Math.max(1, finiteOr(options.maxSchemaBytes, DEFAULT_MAX_SCHEMA_BYTES));
+    this.maxCatalogBytes = Math.max(1, finiteOr(options.maxCatalogBytes, DEFAULT_MAX_CATALOG_BYTES));
+    this.maxTraceRows = Math.max(100, finiteOr(options.maxTraceRows, DEFAULT_MAX_TRACE_ROWS));
+    this.catalogTtlMs = Math.max(0, finiteOr(options.catalogTtlMs, DEFAULT_CATALOG_TTL_MS));
     this.now = options.now ?? (() => Date.now());
   }
 

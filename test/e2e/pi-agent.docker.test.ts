@@ -113,7 +113,16 @@ beforeAll(async () => {
     publicHosts: ['127.0.0.1'],
     allowedOrigins: [],
     requestTimeoutMs: 120_000,
-    maxBodyBytes: 262_144
+    maxBodyBytes: 262_144,
+    mcpGatewayTimeoutMs: 30_000,
+    mcpGatewayMaxResponseBytes: 262_144,
+    mcpGatewayMaxToolsPerServer: 500,
+    mcpGatewayMaxSchemaBytes: 65_536,
+    mcpGatewayMaxCatalogBytes: 2_097_152,
+    mcpGatewayMaxTraceRows: 20_000,
+    mcpGatewayMaxConnections: 32,
+    mcpGatewayAllowInsecureHttp: false,
+    mcpGatewayAllowPrivateEndpoints: false
   };
   apiRuntime = createApiApp(apiConfig);
   apiServer = createServer(apiRuntime.app);

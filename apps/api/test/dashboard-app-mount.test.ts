@@ -90,7 +90,10 @@ describe('dashboard application mount', () => {
     const url = await serve({
       authMode: 'owner-bearer', host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken,
       runnerUrl: 'http://127.0.0.1:9', runnerToken, publicHosts: ['127.0.0.1'],
-      allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536
+      allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
+      mcpGatewayTimeoutMs: 30_000, mcpGatewayMaxResponseBytes: 262_144, mcpGatewayMaxToolsPerServer: 500,
+      mcpGatewayMaxSchemaBytes: 65_536, mcpGatewayMaxCatalogBytes: 2_097_152, mcpGatewayMaxTraceRows: 20_000,
+      mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
     });
     expect((await fetch(`${url}/dashboard`)).status).toBe(404);
     expect((await fetch(`${url}/operator`)).status).toBe(404);
@@ -102,7 +105,10 @@ describe('dashboard application mount', () => {
       accessIssuer: 'https://team.cloudflareaccess.com', accessAudience: 'dashboard-audience',
       accessJwksUrl: 'https://team.cloudflareaccess.com/cdn-cgi/access/certs',
       runnerUrl: 'http://127.0.0.1:9', runnerToken, publicHosts: ['127.0.0.1'],
-      allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536
+      allowedOrigins: [], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
+      mcpGatewayTimeoutMs: 30_000, mcpGatewayMaxResponseBytes: 262_144, mcpGatewayMaxToolsPerServer: 500,
+      mcpGatewayMaxSchemaBytes: 65_536, mcpGatewayMaxCatalogBytes: 2_097_152, mcpGatewayMaxTraceRows: 20_000,
+      mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
     });
     const response = await fetch(`${url}/dashboard`);
     expect(response.status).toBe(401);

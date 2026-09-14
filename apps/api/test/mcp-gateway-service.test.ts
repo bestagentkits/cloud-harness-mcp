@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  ApiConfig,
   McpGatewayResolvedCredentials,
   McpGatewayServerView,
   McpGatewayToolView,
@@ -9,7 +10,8 @@ import type {
 import type { Client } from '@modelcontextprotocol/client';
 import type { RunnerClient } from '../src/runner-client.js';
 import { McpGatewayService } from '../src/mcp-gateway/service.js';
-import type { GatewayConnectionManager, GatewayConnectionHealth } from '../src/mcp-gateway/connection-manager.js';
+import { GatewayConnectionManager, type GatewayConnectionHealth } from '../src/mcp-gateway/connection-manager.js';
+import { createMcpGateway, resolveMcpGatewayOptions } from '../src/mcp-gateway/index.js';
 import type { GatewayCatalogFilter } from '../src/mcp-gateway/types.js';
 
 const principal: RunnerPrincipalSelector = { kind: 'owner', ownerId: 'owner' };
@@ -158,11 +160,12 @@ type FakeConnectionOptions = {
   listTools?: () => Promise<{ tools: unknown[] }>;
   callTool?: (name: string, args: Record<string, unknown>, client: Client) => Promise<unknown>;
   failure?: unknown;
-  health?: GatewayConnectionHealth;
+  health?: GatewayConnectionHealth | ((serverId: string) => GatewayConnectionHealth);
 };
 
 function createFakeConnections(options: FakeConnectionOptions = {}) {
   const health = options.health ?? 'unknown';
+  const healthFor = typeof health === 'function' ? health : () => health;
   const withConnection = vi.fn(
     async (
       _server: McpGatewayServerView,
@@ -182,7 +185,7 @@ function createFakeConnections(options: FakeConnectionOptions = {}) {
   );
   const manager = {
     withConnection,
-    health: vi.fn(() => health),
+    health: vi.fn((serverId: string) => healthFor(serverId)),
     invalidate: vi.fn(),
     closeAll: vi.fn(async () => undefined)
   } as unknown as GatewayConnectionManager;
@@ -551,6 +554,66 @@ describe('McpGatewayService: execute', () => {
     expect(data.isError).toBe(false);
   });
 
+  it('scrubs the last of twelve resolved headers from a returning downstream result', async () => {
+    const secrets = Array.from({ length: 12 }, (_value, index) => `ghp_header_secret_${index}_${'a'.repeat(12)}`);
+    const headers: Record<string, string> = { Authorization: 'Bearer primary-token-value' };
+    secrets.forEach((value, index) => {
+      headers[`x-secret-${index}`] = value;
+    });
+    const leaked = secrets[secrets.length - 1]!;
+    const { runner, traces } = createFakeRunner({
+      credentials: { allowed: true, transport: 'streamable-http', endpoint: 'https://upstream.test/mcp', headers }
+    });
+    const { manager } = createFakeConnections({
+      callTool: async () => ({
+        content: [{ type: 'text', text: `last header echoed: ${leaked}` }],
+        structuredContent: { leaked, keep: 'kept' },
+        isError: false
+      })
+    });
+    const service = serviceFor(runner, manager);
+
+    const result = await service.execute(principal, { tool: 'github.issue_create', arguments: {} });
+    expect(result.ok).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(leaked);
+    expect((result.data as { content: Array<{ text: string }> }).content[0]!.text).toBe(
+      'last header echoed: [REDACTED_SECRET]'
+    );
+    expect((result.data as { structuredContent: Record<string, unknown> }).structuredContent).toEqual({
+      leaked: '[REDACTED_SECRET]',
+      keep: 'kept'
+    });
+    expect(JSON.stringify(traces)).not.toContain(leaked);
+  });
+
+  it('scrubs the last of twelve resolved headers from a thrown failure and its trace', async () => {
+    const secrets = Array.from({ length: 12 }, (_value, index) => `ghp_error_secret_${index}_${'b'.repeat(12)}`);
+    const headers: Record<string, string> = { Authorization: 'Bearer primary-token-value' };
+    secrets.forEach((value, index) => {
+      headers[`x-secret-${index}`] = value;
+    });
+    const leaked = secrets[secrets.length - 1]!;
+    const { runner, traces } = createFakeRunner({
+      credentials: { allowed: true, transport: 'streamable-http', endpoint: 'https://upstream.test/mcp', headers }
+    });
+    const withConnection = vi.fn(async () => {
+      throw new Error(`upstream rejected header ${leaked}`);
+    });
+    const manager = {
+      withConnection,
+      health: vi.fn(() => 'unknown' as const),
+      invalidate: vi.fn(),
+      closeAll: vi.fn(async () => undefined)
+    } as unknown as GatewayConnectionManager;
+    const service = serviceFor(runner, manager);
+
+    const result = await service.execute(principal, { tool: 'github.issue_create', arguments: {} });
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(leaked);
+    expect(JSON.stringify(traces)).not.toContain(leaked);
+    expect(result.message).toContain('[REDACTED_SECRET]');
+  });
+
   it('normalizes a connection-manager timeout into a TIMEOUT result', async () => {
     const { HarnessError } = await import('@cloud-harness/contracts');
     const { runner, traces } = createFakeRunner();
@@ -642,7 +705,11 @@ describe('McpGatewayService: status', () => {
     });
     CATALOG.servers.push(broken);
     try {
-      const { manager } = createFakeConnections({ health: 'connected' });
+      // Health is keyed by server id: a regression that ignores the argument (or asks
+      // for the wrong id) would report `github` as connected too and fail below.
+      const { manager } = createFakeConnections({
+        health: (serverId) => (serverId === broken.id ? 'connected' : 'disconnected')
+      });
       const service = serviceFor(runner, manager);
 
       const result = await service.status(principal);
@@ -656,6 +723,7 @@ describe('McpGatewayService: status', () => {
         lastConnectedAt: 5,
         lastCheckedAt: 6
       });
+      expect(servers.find((entry) => entry.server === 'github')?.connection).toBe('disconnected');
       expect(servers.find((entry) => entry.server === 'legacy')?.connection).toBe('disabled');
       expect(servers.find((entry) => entry.server === 'github')?.toolCount).toBe(1);
     } finally {
@@ -752,5 +820,79 @@ describe('McpGatewayService: refresh and test use the connect purpose', () => {
 
     service.invalidateConnection(github.id);
     expect(manager.invalidate).toHaveBeenCalledWith(github.id);
+  });
+});
+
+describe('McpGatewayService: composition-root defaults', () => {
+  // An `ApiConfig` that bypassed `ApiConfigSchema.parse` — exactly the shape the
+  // two hand-written test configs used to have — with every `mcpGateway*` key absent.
+  const configWithoutGatewayKeys = {
+    host: '127.0.0.1',
+    port: 3_000,
+    ownerId: 'owner',
+    bearerToken: 'owner-token-that-is-long-enough-123456',
+    runnerUrl: 'http://runner:3001',
+    runnerToken: 'runner-token-that-is-longer-than-32-characters',
+    publicHosts: ['localhost'],
+    allowedOrigins: [],
+    requestTimeoutMs: 2_000,
+    maxBodyBytes: 65_536
+  } as unknown as ApiConfig;
+
+  it('resolves the documented default for every missing gateway value', () => {
+    const resolved = resolveMcpGatewayOptions(configWithoutGatewayKeys);
+    expect(resolved.connection).toEqual({
+      timeoutMs: 30_000,
+      maxResponseBytes: 262_144,
+      maxConnections: 32,
+      allowInsecureHttp: false,
+      allowPrivateEndpoints: false
+    });
+    expect(resolved.service).toEqual({
+      timeoutMs: 30_000,
+      maxResponseBytes: 262_144,
+      maxToolsPerServer: 500,
+      maxSchemaBytes: 65_536,
+      maxCatalogBytes: 2_097_152,
+      maxTraceRows: 20_000
+    });
+  });
+
+  it('replaces a non-finite gateway value with its documented default', () => {
+    const resolved = resolveMcpGatewayOptions({
+      ...configWithoutGatewayKeys,
+      mcpGatewayTimeoutMs: Number.NaN,
+      mcpGatewayMaxResponseBytes: Number.POSITIVE_INFINITY,
+      mcpGatewayMaxConnections: Number.NaN
+    } as ApiConfig);
+    expect(resolved.connection.timeoutMs).toBe(30_000);
+    expect(resolved.connection.maxResponseBytes).toBe(262_144);
+    expect(resolved.connection.maxConnections).toBe(32);
+    expect(resolved.service.timeoutMs).toBe(30_000);
+  });
+
+  it('assembles the gateway from an ApiConfig that omits every mcpGateway key', () => {
+    const { runner } = createFakeRunner();
+    expect(() => createMcpGateway(configWithoutGatewayKeys, runner)).not.toThrow();
+  });
+
+  it('does not throw a RangeError from a NaN timeout on the first connect', async () => {
+    const manager = new GatewayConnectionManager({
+      timeoutMs: Number.NaN,
+      maxResponseBytes: Number.NaN,
+      maxConnections: Number.NaN,
+      allowInsecureHttp: true,
+      allowPrivateEndpoints: true,
+      fetchImpl: async () => new Response('', { status: 500 })
+    });
+    let thrown: unknown;
+    try {
+      await manager.withConnection(serverView({ endpoint: 'http://127.0.0.1:1/mcp' }), {}, async () => 'ok');
+    } catch (error) {
+      thrown = error;
+    }
+    await manager.closeAll();
+    expect(thrown).toBeDefined();
+    expect(thrown).not.toBeInstanceOf(RangeError);
   });
 });

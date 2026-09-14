@@ -154,9 +154,10 @@ function mergeHeaders(initHeaders: HeadersInit | undefined, extra: Record<string
 
 /**
  * Wraps a transport fetch so the resolved credential headers are attached only to a
- * request whose origin and pathname equal the configured endpoint's. Every other SDK
- * request — OAuth protected-resource discovery, session DELETE, SSE resume — goes out
- * without them.
+ * request whose origin and pathname equal the configured endpoint's — the MCP
+ * requests the server is configured for. A request to any other origin or path goes
+ * out without them, which is what keeps a redirect target, an SDK discovery probe,
+ * or an OAuth metadata fetch from carrying the credential.
  */
 export function guardedFetchOptions(
   endpointUrl: URL,

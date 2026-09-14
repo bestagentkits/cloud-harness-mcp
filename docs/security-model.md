@@ -140,8 +140,10 @@ path in this system. Three facts define its boundary.
    `mcp_gateway.credentials_resolved`. A resolved value never reaches a
    browser, tool result, trace, or log; error and text redaction covers raw and
    encoded forms. The API attaches the resolved headers only to a request whose
-   origin and pathname equal the configured endpoint's, so discovery probes and
-   session requests carry no credential.
+   origin and pathname equal the configured endpoint's — the MCP requests the
+   server is configured for. A request to any other origin or path, including a
+   redirect target, a discovery probe, or an OAuth metadata fetch, never carries
+   them.
 3. **Honest residual risk.** The API process heap becomes a place where a
    plaintext global secret exists while a credentialed downstream call is in
    flight, and because the principal chooses both the `secretRef` and the

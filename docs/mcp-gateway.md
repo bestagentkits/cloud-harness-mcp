@@ -93,8 +93,9 @@ global secret:
 - Every resolution is audited as `mcp_gateway.credentials_resolved` with the
   server, purpose, and header count. No value reaches the audit trail.
 - The API attaches resolved headers only to a request whose origin and pathname
-  equal the configured endpoint's, so discovery probes and session requests go
-  out without them.
+  equal the configured endpoint's — the MCP requests the server is configured
+  for. A request to a different origin or path, including a redirect target, a
+  discovery probe, or an OAuth metadata fetch, goes out without them.
 - A missing reference fails with `NOT_FOUND` naming the reference, never a
   value.
 
