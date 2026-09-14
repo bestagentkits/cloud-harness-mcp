@@ -81,7 +81,8 @@ export class LocalWorkspaceBackend implements OperationBackend {
           sessions: true,
           deployments: true,
           privileged: false,
-          networkProfile: 'local-host'
+          networkProfile: 'local-host',
+          defaultNetworkProfile: 'local-host'
         },
         mode: 'local',
         platform: process.platform,

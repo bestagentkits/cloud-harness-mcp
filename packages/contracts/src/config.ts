@@ -192,7 +192,13 @@ export const RunnerConfigSchema = z.object({
   executorImage: z.string().min(1),
   networkGuardImage: z.string().min(1).default('cloud-harness-network-guard:local'),
   allowedGitHosts: z.array(z.string().min(1)).min(1),
-  networkProfile: ExecutorNetworkProfileSchema.default('network-none'),
+  networkProfile: ExecutorNetworkProfileSchema.default('dependency-access'),
+  /**
+   * Shipped default is egress-enabled so a workspace can reach the GitHub API
+   * and the bundled `gh` CLI. `network-none` remains available per workspace or
+   * as an instance default; `dependency-access` is refused at open time unless
+   * the host firewall is attested, and never silently downgraded.
+   */
   dependencyDnsResolvers: z.array(z.string().regex(/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/)).min(1).default(['8.8.8.8', '1.1.1.1']),
   dependencyBridgeSubnet: z.string().default('172.30.240.0/24'),
   dependencyBridgeInterface: z.string().default('chm-egress0'),

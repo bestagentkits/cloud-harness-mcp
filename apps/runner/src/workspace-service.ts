@@ -20,7 +20,7 @@ import {
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
-import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken } from './github-app-broker.js';
+import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
 import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
@@ -761,7 +761,9 @@ export class WorkspaceService {
       id: workspaceId, ownerId, idempotencyKey: parsed.idempotencyKey, repositoryUrl: url.toString(),
       repositoryRef: parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
       environmentId: parsed.environmentId ?? null,
-      status: 'CREATING', networkProfile: parsed.networkProfile ?? this.config.networkProfile, createdAt: now,
+      // Resolution order: explicit request, then the operator's persisted instance
+      // default, then the runner configuration (shipped default: dependency-access).
+      status: 'CREATING', networkProfile: parsed.networkProfile ?? this.store.getWorkspaceDefaultNetworkProfile() ?? this.config.networkProfile, createdAt: now,
       lastActivityAt: now, expiresAt: this.expiry(now, now), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
       mutationLockedUntil: null, generation: 1, error: null, requestFingerprint
     };
@@ -1040,16 +1042,26 @@ export class WorkspaceService {
           ) {
             contentsRead = true;
             contentsWrite = grant.contents === 'write';
-            issuesRead = true;
-            issuesWrite = grant.contents === 'write';
-            pullRequestsRead = true;
-            pullRequestsWrite = grant.contents === 'write';
+            // The installation's granted levels are the authority for issue and
+            // pull-request access. `null` means this runner has not verified the
+            // installation since the permission columns existed, so the previous
+            // optimistic value is kept until the next verification.
+            const grantedIssues = installation.issues ?? null;
+            const grantedPullRequests = installation.pullRequests ?? null;
+            issuesRead = grantedIssues === null || grantedIssues !== 'none';
+            issuesWrite = grantedIssues === null ? grant.contents === 'write' : grantedIssues === 'write';
+            pullRequestsRead = grantedPullRequests === null || grantedPullRequests !== 'none';
+            pullRequestsWrite = grantedPullRequests === null ? grant.contents === 'write' : grantedPullRequests === 'write';
           }
         }
       }
       // A principal's own global secret is that principal's credential, so it
-      // authorizes the operations its scopes allow even without an App grant.
-      if (!contentsWrite && fallbackAvailable) {
+      // authorizes the operations its scopes allow even without an App grant. Issue
+      // and pull-request access is independent of Contents, so this widening is not
+      // gated on `contentsWrite`. The fallback credential's own permission set is
+      // unknown to the harness, so these flags mean "a credential exists and is
+      // expected to be able to perform this", not "the harness verified it".
+      if (fallbackAvailable) {
         contentsRead = true;
         contentsWrite = true;
         issuesRead = true;
@@ -1060,12 +1072,20 @@ export class WorkspaceService {
     } else {
       // owner-bearer mode
       if (isGitHub && (this.config.githubApp?.installationId || fallbackAvailable)) {
+        const boundInstallationId = this.config.githubApp?.installationId;
+        const installation = this.githubInstallations && boundInstallationId
+          ? this.githubInstallations.getInstallation(record.ownerId, String(boundInstallationId))
+          : undefined;
+        // A fallback credential can perform the action, an unverified installation
+        // keeps the previous optimistic value, and a verified grant decides.
+        const grantedIssues = installation?.issues ?? null;
+        const grantedPullRequests = installation?.pullRequests ?? null;
         contentsRead = true;
         contentsWrite = true;
-        issuesRead = true;
-        issuesWrite = true;
-        pullRequestsRead = true;
-        pullRequestsWrite = true;
+        issuesRead = fallbackAvailable || grantedIssues === null || grantedIssues !== 'none';
+        issuesWrite = fallbackAvailable || grantedIssues === null || grantedIssues === 'write';
+        pullRequestsRead = fallbackAvailable || grantedPullRequests === null || grantedPullRequests !== 'none';
+        pullRequestsWrite = fallbackAvailable || grantedPullRequests === null || grantedPullRequests === 'write';
       }
     }
 
@@ -1090,7 +1110,8 @@ export class WorkspaceService {
           sessions: true,
           deployments: true,
           privileged,
-          networkProfile: record.networkProfile
+          networkProfile: record.networkProfile,
+          defaultNetworkProfile: this.store.getWorkspaceDefaultNetworkProfile() ?? this.config.networkProfile
         }
       },
       permissions: {
@@ -1808,9 +1829,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     action: string,
     args: string[],
     signal?: AbortSignal
-  ): Promise<RunnerResponse> {
-    const isWrite = ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
-    const permissionScope = action.startsWith('pr_') ? 'pull_requests' : 'issues';
+  ): Promise<{ result: RunnerResponse; credentialSource: 'app' | 'operator-fallback' }> {
+    const requirement = requiredGitHubPermissions(action);
+    if (!requirement) throw new HarnessError('INVALID_INPUT', `unsupported github_action: ${action}`);
+    const isWrite = requirement.write;
+    const permissionScope = requirement.scope;
     const requiredCapability = permissionScope === 'pull_requests'
       ? (isWrite ? 'repository.pullRequestsWrite' : 'repository.pullRequestsRead')
       : (isWrite ? 'repository.issuesWrite' : 'repository.issuesRead');
@@ -1822,10 +1845,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     const repoStr = this.extractRepositoryName(repoUrl);
 
-    let token: string | undefined;
+    let appToken: string | undefined;
+    let appPermissions: Record<string, string> | undefined;
     let appAuthorizationError: unknown;
     try {
-      token = await mintPrincipalRepositoryScopedToken({
+      const minted = await mintPrincipalRepositoryScopedToken({
         config: this.config,
         principalId: record.ownerId,
         repositoryUrl: repoUrl,
@@ -1833,42 +1857,72 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         permissionScope,
         requiredPermission: isWrite ? 'write' : 'read'
       });
+      appToken = minted?.token;
+      appPermissions = minted?.permissions;
     } catch (err: unknown) {
       appAuthorizationError = err;
     }
-    token ??= resolveGitHubFallbackToken({
+    // A minted token can still be short of the requirement, so acceptance is decided
+    // by the permission GitHub reports for the token, never by the mint alone.
+    const grantedLevel = appPermissions?.[permissionScope];
+    const appSatisfies = appToken !== undefined
+      && (grantedLevel === 'write' || (!isWrite && grantedLevel === 'read'));
+    const operatorFallback = resolveGitHubFallbackToken({
       config: this.config,
       principalId: record.ownerId,
       metadata: this.metadata
     });
-    if (!token && appAuthorizationError) {
-      const err = appAuthorizationError;
-      if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
-        if (isWrite) {
-          this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
-            repository: record.repositoryUrl,
-            action,
-            success: false,
-            errorCode: 'REPOSITORY_OPERATION_NOT_AUTHORIZED'
-          });
-        }
-        throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', err.message, 403, false, {
+    const authorizationReason = appAuthorizationError instanceof HarnessError
+      ? (appAuthorizationError.details as { reason?: string } | undefined)?.reason
+      : undefined;
+
+    let token: string | undefined;
+    let credentialSource: 'app' | 'operator-fallback' = 'operator-fallback';
+    // An infrastructure mint failure is not evidence that the App cannot perform the
+    // action, so it propagates instead of quietly falling back.
+    const propagateMintFailure = appAuthorizationError !== undefined
+      && !(appAuthorizationError instanceof HarnessError
+        && (appAuthorizationError.code === 'FORBIDDEN' || appAuthorizationError.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED'));
+    if (appSatisfies) {
+      token = appToken;
+      credentialSource = 'app';
+    } else if (!propagateMintFailure && operatorFallback) {
+      // A configured operator credential is the documented remedy when the App
+      // installation cannot perform the action.
+      token = operatorFallback;
+    }
+    if (!token) {
+      const auditFailure = (errorCode: string) => {
+        if (!isWrite) return;
+        this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
+          repository: record.repositoryUrl,
+          action,
+          success: false,
+          errorCode
+        });
+      };
+      if (propagateMintFailure) throw appAuthorizationError;
+      if (authorizationReason === 'permission_not_granted' || appToken !== undefined) {
+        const requiredLabel = `${permissionScope}:${isWrite ? 'write' : 'read'}`;
+        auditFailure('GITHUB_PERMISSION_MISSING');
+        throw new HarnessError(
+          'GITHUB_PERMISSION_MISSING',
+          `GitHub App installation cannot satisfy github_action ${action}: ${requiredLabel} is not granted. Add the permission to the GitHub App and approve the pending installation change, or configure an operator GH_TOKEN runtime secret.`,
+          403,
+          false,
+          { operation: `github_action.${action}`, repository: repoStr ?? undefined, requiredCapability }
+        );
+      }
+      if (appAuthorizationError instanceof HarnessError
+        && (appAuthorizationError.code === 'FORBIDDEN' || appAuthorizationError.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
+        auditFailure('REPOSITORY_OPERATION_NOT_AUTHORIZED');
+        throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', appAuthorizationError.message, 403, false, {
           operation: `github_action.${action}`,
           repository: repoStr ?? undefined,
           requiredCapability
         });
       }
-      throw err;
-    }
-    if (!token) {
-      if (isWrite) {
-        this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
-          repository: record.repositoryUrl,
-          action,
-          success: false,
-          errorCode: 'REPOSITORY_OPERATION_NOT_AUTHORIZED'
-        });
-      }
+      auditFailure('REPOSITORY_OPERATION_NOT_AUTHORIZED');
       throw new HarnessError('REPOSITORY_OPERATION_NOT_AUTHORIZED', `No GitHub App installation available for ${record.repositoryUrl}`, 403, false, {
         operation: `github_action.${action}`,
         repository: repoStr ?? undefined,
@@ -1911,25 +1965,31 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
       if (result.exitCode === 0) {
         return {
-          ok: true,
-          message: `GitHub ${action} successful`,
-          data: { output: result.stdout || result.stderr },
-          truncated: result.truncated
+          result: {
+            ok: true,
+            message: `GitHub ${action} successful`,
+            data: { output: result.stdout || result.stderr },
+            truncated: result.truncated
+          },
+          credentialSource
         };
       }
 
       const classified = classifyGitHubFailure(result.stderr, result.stdout, action);
       return {
-        ok: false,
-        message: classified.message,
-        data: { output: result.stdout || result.stderr },
-        error: {
-          code: classified.code,
+        result: {
+          ok: false,
           message: classified.message,
-          retryable: classified.retryable,
-          ...(classified.retryAfterMs ? { retryAfterMs: classified.retryAfterMs } : {})
+          data: { output: result.stdout || result.stderr },
+          error: {
+            code: classified.code,
+            message: classified.message,
+            retryable: classified.retryable,
+            ...(classified.retryAfterMs ? { retryAfterMs: classified.retryAfterMs } : {})
+          },
+          truncated: result.truncated
         },
-        truncated: result.truncated
+        credentialSource
       };
     } finally {
       await removeContainer(helperName);
@@ -3168,13 +3228,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           String(validated.createMissingLabels ?? true)
         ]; break;
       }
-      const result = await this.runBrokeredGitHubAction(record, action, args, signal);
-      const isWrite = ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
-      if (isWrite) {
+      const requirement = requiredGitHubPermissions(action);
+      if (!requirement) throw new HarnessError('INVALID_INPUT', `unsupported github_action: ${action}`);
+      const { result, credentialSource } = await this.runBrokeredGitHubAction(record, action, args, signal);
+      if (requirement.write) {
         const details: Record<string, string | number | boolean> = {
           repository: record.repositoryUrl,
           action,
-          success: result.ok
+          success: result.ok,
+          credentialSource
         };
         if (typeof validated.prNumber === 'number') details.prNumber = validated.prNumber;
         if (typeof validated.issueNumber === 'number') details.issueNumber = validated.issueNumber;
@@ -3648,6 +3710,32 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           requestFingerprint: fingerprint,
           toolkitsCount: parsed.input.toolkits.length
         },
+        truncated: false
+      };
+    }
+    if (parsed.operation === 'settings_get' || parsed.operation === 'settings_update') {
+      if (parsed.operation === 'settings_update') {
+        this.store.setWorkspaceDefaultNetworkProfile(parsed.input.defaultNetworkProfile, Date.now());
+      }
+      const stored = this.store.getWorkspaceDefaultNetworkProfile();
+      return {
+        ok: true,
+        message: 'Instance workspace settings',
+        data: {
+          defaultNetworkProfile: {
+            value: stored ?? this.config.networkProfile,
+            source: stored === undefined ? 'environment' : 'setting'
+          }
+        },
+        truncated: false
+      };
+    }
+    if (parsed.operation === 'settings_network_check') {
+      const readiness = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
+      return {
+        ok: true,
+        message: 'Dependency egress readiness',
+        data: { ready: readiness.ok, reason: readiness.reason ?? null },
         truncated: false
       };
     }

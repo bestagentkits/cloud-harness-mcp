@@ -33,7 +33,7 @@ import {
 } from './dashboard-api.js';
 import {
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
-  renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName,
+  renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail
 } from './dashboard-render.js';
@@ -315,6 +315,7 @@ export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:github', group: 'Pages', label: 'GitHub', hint: 'Page', href: '/dashboard/github' },
   { id: 'page:knowledge', group: 'Pages', label: 'Knowledge', hint: 'Search memories and journals here', href: '/dashboard/knowledge' },
   { id: 'page:mcp-servers', group: 'Pages', label: 'MCP Servers', hint: 'Manage downstream MCP integrations', href: '/dashboard/mcp-servers' },
+  { id: 'page:settings', group: 'Pages', label: 'Settings', hint: 'Instance defaults for workspaces and network egress', href: '/dashboard/settings' },
   { id: 'page:artifacts', group: 'Pages', label: 'Artifacts', hint: 'Page', href: '/dashboard/artifacts' },
   { id: 'page:audit', group: 'Pages', label: 'Audit', hint: 'Page', href: '/dashboard/audit' },
   { id: 'page:profile', group: 'Pages', label: 'Profile', hint: 'Page', href: '/dashboard/profile' }
@@ -671,6 +672,7 @@ export function initializeDashboard() {
       else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
       else if (location.pathname === '/dashboard/mcp-servers') await loadMcpServers();
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
+      else if (location.pathname === '/dashboard/settings') await loadSettings();
       else if (location.pathname === '/dashboard/profile') await loadProfile();
       else if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
@@ -1288,6 +1290,61 @@ export function initializeDashboard() {
     });
     document.querySelector('#clear-display-name').addEventListener('click', () => {
       void submitForm(form, 'Saving…', () => saveDisplayName(''), async () => { announce('Display name reset to your sign-on name.'); await refreshIdentity(); await loadProfile(); });
+    });
+  }
+  let settingsPageData;
+  let settingsReadiness;
+  async function loadSettings() {
+    selectNavigation('settings');
+    setTitle('Settings', 'Instance-wide defaults applied to new workspaces.');
+    document.querySelector('#command-surface').hidden = true;
+    content.innerHTML = '<div class="skeleton tile" aria-hidden="true"></div>';
+    const { data } = await api('/settings');
+    settingsPageData = data;
+    settingsReadiness = undefined;
+    renderSettingsView();
+  }
+  function renderSettingsView() {
+    content.innerHTML = renderSettings(settingsPageData, settingsReadiness);
+    bindSettingsControls();
+  }
+  function settingsStatus(message) {
+    const status = document.querySelector('#settings-status');
+    if (status) status.textContent = message;
+  }
+  async function settingsAction(button, pendingLabel, action) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = pendingLabel;
+    settingsStatus(pendingLabel);
+    try { await action(); }
+    catch (error) { settingsStatus(''); showError(error); }
+    finally { button.disabled = false; button.textContent = original; }
+  }
+  function bindSettingsControls() {
+    document.querySelector('#save-settings-network-profile').addEventListener('click', (event) => {
+      const selected = document.querySelector('#settings-network-profile').value;
+      void settingsAction(event.currentTarget, 'Saving…', async () => {
+        const { data } = await api('/settings', { method: 'POST', body: requestBody({ defaultNetworkProfile: selected === '' ? null : selected }) });
+        settingsPageData = data;
+        renderSettingsView();
+        settingsStatus(selected === '' ? 'Runner default restored.' : 'Default network profile saved.');
+      });
+    });
+    document.querySelector('#reset-settings-network-profile').addEventListener('click', (event) => {
+      void settingsAction(event.currentTarget, 'Resetting…', async () => {
+        const { data } = await api('/settings', { method: 'POST', body: requestBody({ defaultNetworkProfile: null }) });
+        settingsPageData = data;
+        renderSettingsView();
+        settingsStatus('Runner default restored.');
+      });
+    });
+    document.querySelector('#check-settings-network').addEventListener('click', (event) => {
+      void settingsAction(event.currentTarget, 'Checking…', async () => {
+        const { data } = await api('/settings/network-check', { method: 'POST', body: requestBody({}) });
+        settingsReadiness = data;
+        renderSettingsView();
+        settingsStatus(data.ready === true ? 'Egress readiness confirmed.' : `Egress is not ready: ${data.reason ?? 'the readiness probe reported no reason'}`);
+      });
     });
   }
   let currentKnowledgeItem;

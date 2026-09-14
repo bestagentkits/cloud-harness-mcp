@@ -16,7 +16,7 @@ function fixture() {
   const jobsRoot = join(directory, 'jobs');
   const workspacePath = join(jobsRoot, `ws_${'a'.repeat(24)}`);
   mkdirSync(join(workspacePath, 'repo'), { recursive: true });
-  const config = { jobsRoot, stateDb: join(directory, 'state.db') } as RunnerConfig;
+  const config = { jobsRoot, stateDb: join(directory, 'state.db'), networkProfile: 'dependency-access' } as RunnerConfig;
   const store = new StateStore(config.stateDb);
   const principal = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'owner' };
   const ownerId = store.resolvePrincipal(principal);
@@ -78,6 +78,50 @@ describe('internal runner operations', () => {
         input: { workspaceId: record.id, expectedGeneration: record.generation }
       })).rejects.toMatchObject({ code: 'EXPIRED' });
       expect(store.byId(record.id)).toMatchObject({ status: 'CLOSED', generation: record.generation + 1 });
+    } finally { store.close(); }
+  });
+
+  it('persists an instance network default and resets it to the runner default', async () => {
+    const { principal, service, store } = fixture();
+    try {
+      const initial = await executeInternalRunnerOperation(service, { version: 2, principal, operation: 'settings_get', input: {} });
+      expect(initial.data).toMatchObject({ defaultNetworkProfile: { value: 'dependency-access', source: 'environment' } });
+
+      const updated = await executeInternalRunnerOperation(service, {
+        version: 2, principal, operation: 'settings_update', input: { defaultNetworkProfile: 'network-none' }
+      });
+      expect(updated.data).toMatchObject({ defaultNetworkProfile: { value: 'network-none', source: 'setting' } });
+      expect(store.getWorkspaceDefaultNetworkProfile()).toBe('network-none');
+
+      const reset = await executeInternalRunnerOperation(service, {
+        version: 2, principal, operation: 'settings_update', input: { defaultNetworkProfile: null }
+      });
+      expect(reset.data).toMatchObject({ defaultNetworkProfile: { value: 'dependency-access', source: 'environment' } });
+      expect(store.getWorkspaceDefaultNetworkProfile()).toBeUndefined();
+    } finally { store.close(); }
+  });
+
+  it('refuses an exposure-only profile as an instance default', async () => {
+    const { principal, service, store } = fixture();
+    try {
+      await expect(executeInternalRunnerOperation(service, {
+        version: 2, principal, operation: 'settings_update', input: { defaultNetworkProfile: 'local-host' }
+      })).rejects.toBeTruthy();
+      expect(store.getWorkspaceDefaultNetworkProfile()).toBeUndefined();
+    } finally { store.close(); }
+  });
+
+  it('reports dependency egress readiness without starting a workspace', async () => {
+    const { principal, service, store } = fixture();
+    try {
+      service.networkProfileManager.checkAttestation = async () => ({ ok: false, reason: 'host firewall is not attested' });
+      const unavailable = await executeInternalRunnerOperation(service, { version: 2, principal, operation: 'settings_network_check', input: {} });
+      expect(unavailable.data).toEqual({ ready: false, reason: 'host firewall is not attested' });
+
+      service.networkProfileManager.checkAttestation = async () => ({ ok: true });
+      const ready = await executeInternalRunnerOperation(service, { version: 2, principal, operation: 'settings_network_check', input: {} });
+      expect(ready.data).toEqual({ ready: true, reason: null });
+      expect(store.list(store.resolvePrincipal(principal))).toHaveLength(1);
     } finally { store.close(); }
   });
 });

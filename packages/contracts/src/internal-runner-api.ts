@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ModelCredentialIdSchema, ModelProfileIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { ExecutorNetworkProfileSchema, ModelCredentialIdSchema, ModelProfileIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { ToolResultSchema } from './mcp-results.js';
 import {
   AgentModelProfileInputSchema,
@@ -36,7 +36,10 @@ export const InternalRunnerOperationSchema = z.enum([
   'workspace_detail',
   'workspace_close_fenced',
   'toolkits_list',
-  'toolkits_preview'
+  'toolkits_preview',
+  'settings_get',
+  'settings_update',
+  'settings_network_check'
 ]);
 
 const workspaceDetailRequest = z.object({
@@ -71,11 +74,37 @@ const toolkitsPreviewRequest = z.object({
   }).strict()
 }).strict();
 
+const settingsGetRequest = z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal('settings_get'),
+  input: z.object({}).strict()
+}).strict();
+
+const settingsUpdateRequest = z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal('settings_update'),
+  input: z.object({
+    defaultNetworkProfile: z.union([ExecutorNetworkProfileSchema, z.null()])
+  }).strict()
+}).strict();
+
+const settingsNetworkCheckRequest = z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal('settings_network_check'),
+  input: z.object({}).strict()
+}).strict();
+
 export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   workspaceDetailRequest,
   workspaceCloseFencedRequest,
   toolkitsListRequest,
-  toolkitsPreviewRequest
+  toolkitsPreviewRequest,
+  settingsGetRequest,
+  settingsUpdateRequest,
+  settingsNetworkCheckRequest
 ]);
 
 export const InternalRunnerResponseSchema = ToolResultSchema;

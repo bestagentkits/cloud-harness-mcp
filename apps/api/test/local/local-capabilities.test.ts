@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LocalWorkspaceBackend } from '../../src/local/local-workspace-backend.js';
 import type { CliOptions } from '../../src/cli-options.js';
+import { WorkspaceCapabilityResultSchema } from '@cloud-harness/contracts';
 
 describe('Local Workspace Capabilities', () => {
   let tempRoot: string;
@@ -79,6 +80,9 @@ describe('Local Workspace Capabilities', () => {
 
     expect(data.capabilities.repository.push).toBe(true);
     expect(data.capabilities.workspace.networkProfile).toBe('local-host');
+    expect(data.capabilities.workspace.defaultNetworkProfile).toBe('local-host');
+    // The reported default must satisfy the advertised contract, not just be asserted by hand.
+    expect(() => WorkspaceCapabilityResultSchema.parse(res.data)).not.toThrow();
     expect(data.operations.gitFetch).toBe(true);
     expect(data.operations.gitPull).toBe(true);
     expect(data.operations.gitPush).toBe(true);
