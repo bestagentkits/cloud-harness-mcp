@@ -9,10 +9,17 @@ import {
 
 const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
 
+// The stylesheet is authored as compact single-line rules, but a formatter may
+// reflow them. Normalizing whitespace keeps the structural assertions below
+// about the declarations themselves rather than about their layout, so a reflow
+// cannot silently drop the contract.
+const squish = (value: string) => value.replace(/\s+/g, ' ').trim();
+
 describe('dashboard static UI contract', () => {
   const html = asset('index.html');
   const css = asset('dashboard.css');
   const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}`;
+  const squishedCss = squish(css);
 
   it('provides native landmarks, focus entry, live status, and destructive confirmation', () => {
     expect(html).toContain('href="#main"');
@@ -28,14 +35,58 @@ describe('dashboard static UI contract', () => {
   });
 
   it('uses tokenized responsive styling with reduced-motion and narrow-screen rules', () => {
-    for (const token of ['--canvas:', '--surface:', '--ink:', '--accent:', '--space-4:', '--motion-state:']) expect(css).toContain(token);
+    for (const token of ['--canvas:', '--surface:', '--ink:', '--accent:', '--space-4:', '--motion-state:', '--info:', '--hud-cyan:', '--void:', '--panel:']) expect(css).toContain(token);
     expect(css).toContain('@media (max-width: 47.9375rem)');
+    expect(css).toContain('@media (prefers-color-scheme: light)');
+    expect(css).toContain(':root[data-theme="light"]');
     expect(css).toContain('@media (prefers-reduced-motion: reduce)');
     expect(css).toContain('min-height: 2.75rem');
-    expect(css).toContain('.drawer-close { display: block; margin-inline-start: auto; margin-block-end: var(--space-4); }');
+    expect(squishedCss).toContain(squish('.drawer-close { display: block; margin-inline-start: auto; margin-block-end: var(--space-4); }'));
     expect(css).not.toContain('.drawer-close { float:');
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(css).not.toContain('gradient(');
+  });
+
+  it('keeps the dashboard free of external assets and inline styles', () => {
+    // The dashboard document is served with a strict CSP (`style-src 'self'`, no
+    // 'unsafe-inline'), so a web font, an external stylesheet, or a markup
+    // `style=` attribute would either be blocked at runtime or silently widen the
+    // policy. Nothing asserted this before.
+    expect(css).not.toMatch(/@font-face|@import|url\(/i);
+    expect(html).not.toMatch(/\sstyle=/i);
+    expect(html).not.toMatch(/<link[^>]+href="https?:/i);
+    expect(script).not.toMatch(/setAttribute\('style'|setAttribute\("style"/);
+    // The artifact download is served under the /dashboard mount, so a bare
+    // /api/v1 href would 404. Pin both directions.
+    expect(script).toContain('/dashboard/api/v1/artifacts/');
+    expect(script).not.toContain('href="/api/v1/artifacts/');
+    // Three CSSOM inline-style mutations remain, all in the knowledge-graph zoom
+    // (svg.style.transform). CSSOM inline-style handling under CSP is
+    // browser-dependent, so they are pinned by identity rather than asserted
+    // away: any new inline-style site fails this count, and the zoom control is
+    // called out for a browser check in the PR.
+    expect([...script.matchAll(/\.style\.[A-Za-z]+/g)].map((m) => m[0])).toEqual(['.style.transform', '.style.transform', '.style.transform']);
+  });
+
+  it('keeps every spacing step on the marketing 4px rhythm', () => {
+    const steps = [...css.matchAll(/--space-(\d+):\s*([\d.]+)rem;/g)].map((m) => [Number(m[1]), Number(m[2])]);
+    expect(steps.length).toBeGreaterThan(0);
+    for (const [step, value] of steps) expect((value * 16) % 4, `--space-${step} is ${value * 16}px`).toBe(0);
+    // The marketing scale is exactly this set; 20px is the trap it excludes.
+    expect(steps.map(([step]) => step).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 6, 8]);
+  });
+
+  it('never removes a focus indicator without a replacement', () => {
+    expect(css).not.toContain('outline: none');
+    expect(css).not.toContain('outline: 0');
+  });
+
+  it('keeps the interactive target floor at 24px', () => {
+    const start = css.indexOf('.checkbox-label input {');
+    expect(start, 'the checkbox rule exists').toBeGreaterThan(-1);
+    const rule = css.slice(start, css.indexOf('}', start));
+    expect(rule).toContain('1.5rem');
+    expect(rule).not.toContain('1.25rem');
   });
 
   it('backs files and runtime with bounded APIs and exposes no execution surface', () => {
@@ -112,13 +163,13 @@ describe('dashboard static UI contract', () => {
   });
 
   it('keeps the navigation rail fixed and internally scrollable with a global footer', () => {
-    expect(css).toContain('.sidebar { position: sticky; inset-block-start: 3.5rem; height: calc(100dvh - 3.5rem); overflow: hidden;');
-    expect(css).toContain('.sidebar nav { display: grid; gap: var(--space-1); align-content: start; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }');
+    expect(squishedCss).toContain(squish('.sidebar { position: sticky; inset-block-start: 3.5rem; height: calc(100dvh - 3.5rem); overflow: hidden;'));
+    expect(squishedCss).toContain(squish('.sidebar nav { display: grid; gap: var(--space-1); align-content: start; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }'));
     expect(css).toContain('.site-footer');
     expect(css).toContain('.profile-chip:hover');
     // An author display rule beats the UA [hidden] rule, so the shell's hiding of
     // the workspaces toolbar and conditional form rows needs an explicit rule.
-    expect(css).toContain('.command-surface[hidden], .form-row[hidden] { display: none; }');
+    expect(squishedCss).toContain(squish('.command-surface[hidden], .form-row[hidden] { display: none; }'));
     expect(html).toContain('<footer class="site-footer">');
     expect(html).toContain('Made with ❤️ by <a href="https://agentkit.best"');
     expect(html).toContain('>AgentKit</a>');
