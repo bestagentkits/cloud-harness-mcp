@@ -5,6 +5,7 @@ status: completed
 priority: P1
 effort: 2d
 issue: 193
+pr: 194
 tags: [frontend, refactor, feature]
 blockedBy: []
 blocks: []
