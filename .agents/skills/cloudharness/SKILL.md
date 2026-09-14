@@ -15,7 +15,7 @@ network isolation.
 
 | Need | Read |
 | --- | --- |
-| Install the skill, connect a client, or understand trust boundaries | [Installation and security](references/installation-and-security.md) |
+| Install the skill, connect a client, use the MCP gateway surface, or understand trust boundaries | [Installation and security](references/installation-and-security.md) |
 | Choose a tool and locate its detailed contract | [Tool reference index](references/tool-reference.md) |
 | Open, recover, inspect, or close a workspace; interpret results/errors | [Workspace lifecycle and results](references/workspace-lifecycle-and-results.md) |
 | List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |
@@ -27,6 +27,23 @@ network isolation.
 Read a reference before using an unfamiliar, destructive, networked, or
 recovery-sensitive operation. The references are bundled with this skill and do
 not require a source checkout.
+
+## MCP gateway surface
+
+Cloud Harness also serves `/mcp-gateway`, a **separate** MCP endpoint that
+fronts downstream MCP servers the operator configures in the dashboard. It is
+not part of the coding-harness tool set described in this skill: none of the
+workspace, file, execution, Git, or artifact operations above exist on it, and
+it is not the endpoint you open a workspace through.
+
+Its tool set is exactly `search`, `inspect`, `execute`, `permissions`, and
+`status`. Downstream tools are never aggregated into `tools/list`, so work
+progressively: `search` by intent, `inspect` one qualified `<server>.<tool>`
+name for its real input schema, then `execute` with matching arguments.
+`permissions` reports the effective allow/deny decision and `status` reports
+server health. Credentials are referenced as dashboard global secrets and are
+never echoed back. Downstream `stdio` servers, OAuth-protected downstream
+servers, and HTTP redirects are unsupported.
 
 ## Effective workflow
 

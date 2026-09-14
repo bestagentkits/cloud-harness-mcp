@@ -17,12 +17,25 @@ import {
   updateKnowledgeItem,
   deleteKnowledgeItem,
   searchKnowledge,
-  getKnowledgeGraph
+  getKnowledgeGraph,
+  listMcpServers,
+  getMcpServer,
+  createMcpServer,
+  updateMcpServer,
+  deleteMcpServer,
+  setMcpServerEnabled,
+  setMcpServerPermissions,
+  testMcpServer,
+  refreshMcpServerTools,
+  listMcpServerLogs,
+  getMcpGatewayEndpoint,
+  listGlobalSecrets
 } from './dashboard-api.js';
 import {
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName,
-  renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName
+  renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
+  renderMcpServersIndex, renderMcpServerDetail
 } from './dashboard-render.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -293,6 +306,7 @@ export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:api-keys', group: 'Pages', label: 'API keys', hint: 'Page', href: '/dashboard/api-keys' },
   { id: 'page:github', group: 'Pages', label: 'GitHub', hint: 'Page', href: '/dashboard/github' },
   { id: 'page:knowledge', group: 'Pages', label: 'Knowledge', hint: 'Search memories and journals here', href: '/dashboard/knowledge' },
+  { id: 'page:mcp-servers', group: 'Pages', label: 'MCP Servers', hint: 'Manage downstream MCP integrations', href: '/dashboard/mcp-servers' },
   { id: 'page:artifacts', group: 'Pages', label: 'Artifacts', hint: 'Page', href: '/dashboard/artifacts' },
   { id: 'page:audit', group: 'Pages', label: 'Audit', hint: 'Page', href: '/dashboard/audit' },
   { id: 'page:profile', group: 'Pages', label: 'Profile', hint: 'Page', href: '/dashboard/profile' }
@@ -478,6 +492,7 @@ export function initializeDashboard() {
   const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(files|runtime))?$/);
   const projectMatch = location.pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
   const knowledgeMatch = location.pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
+  const mcpServerMatch = location.pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
   const apiKeyReveal = createApiKeyRevealController({
     dialog: revealDialog, secretField: document.querySelector('#api-key-secret'), copyButton: document.querySelector('#copy-api-key'),
@@ -646,6 +661,8 @@ export function initializeDashboard() {
       else if (location.pathname === '/dashboard/github') await loadGitHub();
       else if (location.pathname === '/dashboard/knowledge') await loadKnowledge();
       else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
+      else if (location.pathname === '/dashboard/mcp-servers') await loadMcpServers();
+      else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
       else if (location.pathname === '/dashboard/profile') await loadProfile();
       else if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
@@ -1577,6 +1594,311 @@ export function initializeDashboard() {
           detail.querySelector('#close-detail').addEventListener('click', controller.close); controller.open();
         } else { detail.hidden = false; heading.focus({ preventScroll: true }); }
       } catch (error) { showError(error); }
+    });
+  }
+  let currentMcpServers = [];
+  let currentMcpServer;
+  let currentMcpTools = [];
+  let currentMcpTraces = [];
+  let currentMcpLogCursor;
+  let currentMcpGateway;
+  let currentMcpTab = 'overview';
+  function mcpServerEndpoint(server) {
+    const raw = typeof server?.endpoint === 'string' ? server.endpoint : '';
+    try {
+      const url = new URL(raw);
+      url.username = '';
+      url.password = '';
+      url.search = '';
+      url.hash = '';
+      return url.toString();
+    } catch { return raw; }
+  }
+  async function loadMcpServers() {
+    selectNavigation('mcp-servers');
+    setTitle('MCP Servers', 'Downstream MCP integrations available through the Cloud Harness gateway.');
+    document.querySelector('#command-surface').hidden = true;
+    setBusy(true);
+    try {
+      const [serversResult, gatewayResult] = await Promise.all([listMcpServers(), getMcpGatewayEndpoint()]);
+      currentMcpServers = Array.isArray(serversResult.data?.servers) ? serversResult.data.servers : [];
+      currentMcpGateway = gatewayResult.data;
+      content.innerHTML = renderMcpServersIndex({ servers: currentMcpServers, gateway: currentMcpGateway });
+      bindMcpServersControls();
+    } finally { setBusy(false); }
+  }
+  async function loadMcpServerDetail(serverId, tab = 'overview') {
+    selectNavigation('mcp-servers');
+    document.querySelector('#command-surface').hidden = true;
+    currentMcpTab = tab;
+    setBusy(true);
+    try {
+      const [serverResult, logsResult, gatewayResult] = await Promise.all([
+        getMcpServer(serverId),
+        tab === 'logs' ? listMcpServerLogs(serverId) : Promise.resolve(undefined),
+        getMcpGatewayEndpoint().catch(() => undefined)
+      ]);
+      currentMcpServer = serverResult.data?.server ?? serverResult.data;
+      currentMcpTools = Array.isArray(serverResult.data?.tools) ? serverResult.data.tools : [];
+      currentMcpGateway = gatewayResult?.data;
+      if (currentMcpServer?.name) setTitle(currentMcpServer.name, 'MCP server detail, tools, permissions, and gateway logs.');
+      currentMcpTraces = Array.isArray(logsResult?.data?.traces) ? logsResult.data.traces : [];
+      currentMcpLogCursor = logsResult?.cursor;
+      content.innerHTML = renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, tab, currentMcpLogCursor, currentMcpGateway);
+      bindMcpServersControls();
+    } finally { setBusy(false); }
+  }
+  function mcpHeaderRow(header = {}, secrets = []) {
+    const node = document.createElement('div');
+    node.className = 'form-row mcp-header-row';
+    const name = document.createElement('label');
+    name.textContent = 'Header name';
+    const nameInput = document.createElement('input');
+    nameInput.name = 'headerName';
+    nameInput.maxLength = 64;
+    nameInput.autocomplete = 'off';
+    nameInput.spellcheck = false;
+    nameInput.placeholder = 'authorization';
+    nameInput.value = header.name ?? '';
+    name.appendChild(nameInput);
+    const mode = document.createElement('label');
+    mode.textContent = 'Value mode';
+    const modeSelect = document.createElement('select');
+    modeSelect.name = 'headerMode';
+    for (const [value, label] of [['literal', 'Literal value'], ['secret', 'Secret reference']]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      modeSelect.appendChild(option);
+    }
+    modeSelect.value = header.kind === 'secret' ? 'secret' : 'literal';
+    mode.appendChild(modeSelect);
+    const value = document.createElement('label');
+    value.textContent = 'Header value';
+    const valueInput = document.createElement('input');
+    valueInput.name = 'headerValue';
+    valueInput.maxLength = 2048;
+    valueInput.autocomplete = 'off';
+    valueInput.spellcheck = false;
+    valueInput.value = header.kind === 'secret' ? '' : (header.value ?? '');
+    value.appendChild(valueInput);
+    const reference = document.createElement('label');
+    reference.textContent = 'Secret reference';
+    const secretSelect = document.createElement('select');
+    secretSelect.name = 'headerSecretRef';
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = 'Select a global secret';
+    secretSelect.appendChild(blank);
+    for (const secret of secrets) {
+      const option = document.createElement('option');
+      option.value = secret.name;
+      option.textContent = secret.name;
+      secretSelect.appendChild(option);
+    }
+    if (header.secretRef) secretSelect.value = header.secretRef;
+    reference.appendChild(secretSelect);
+    node.append(name, mode, value, reference);
+    const applyMode = () => {
+      const secretMode = modeSelect.value === 'secret';
+      valueInput.hidden = secretMode;
+      secretSelect.hidden = !secretMode;
+      if (secretMode) valueInput.value = '';
+    };
+    modeSelect.addEventListener('change', applyMode);
+    applyMode();
+    return node;
+  }
+  function openMcpDialog(server, secrets) {
+    const dialog = document.querySelector('#mcp-server-dialog');
+    const form = document.querySelector('#mcp-server-form');
+    if (!dialog || !form) return;
+    form.reset();
+    document.querySelector('#mcp-server-title').textContent = server ? 'Edit MCP server' : 'Add MCP server';
+    document.querySelector('#submit-mcp-server').textContent = server ? 'Save server' : 'Create server';
+    form.elements.serverId.value = server?.id ?? '';
+    form.elements.expectedGeneration.value = String(server?.generation ?? 0);
+    form.elements.name.value = server?.name ?? '';
+    form.elements.description.value = server?.description ?? '';
+    form.elements.transport.value = server?.transport ?? 'streamable-http';
+    form.elements.endpoint.value = server ? mcpServerEndpoint(server) : '';
+    form.elements.enabled.checked = server ? server.enabled !== false : true;
+    const rows = document.querySelector('#mcp-header-rows');
+    rows.replaceChildren();
+    for (const header of (Array.isArray(server?.headers) ? server.headers : [])) rows.appendChild(mcpHeaderRow(header, secrets));
+    document.querySelector('#mcp-dialog-status').textContent = '';
+    dialog.showModal();
+    form.elements.name.focus();
+  }
+  function mcpHeadersFromForm(form) {
+    const headers = [];
+    for (const row of form.querySelectorAll('.mcp-header-row')) {
+      const headerName = String(row.querySelector('[name="headerName"]')?.value ?? '').trim();
+      if (!headerName) continue;
+      const mode = row.querySelector('[name="headerMode"]')?.value;
+      if (mode === 'secret') {
+        const secretRef = String(row.querySelector('[name="headerSecretRef"]')?.value ?? '');
+        if (!secretRef) continue;
+        headers.push({ name: headerName, value: { secretRef } });
+      } else {
+        headers.push({ name: headerName, value: String(row.querySelector('[name="headerValue"]')?.value ?? '') });
+      }
+    }
+    return headers;
+  }
+  function reloadMcp(tab = currentMcpTab) {
+    const match = location.pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
+    return match ? loadMcpServerDetail(match[1], tab) : loadMcpServers();
+  }
+  function bindMcpServersControls() {
+    let secrets = [];
+    document.querySelector('[data-mcp-add]')?.addEventListener('click', (event) => {
+      const invoker = event.currentTarget;
+      void listGlobalSecrets().then((result) => {
+        secrets = Array.isArray(result.data?.secrets) ? result.data.secrets : [];
+        openMcpDialog(undefined, secrets);
+      }).catch((error) => showError(error)).finally(() => invoker.focus?.({ preventScroll: true }));
+    });
+    document.querySelector('#mcp-server-dialog')?.addEventListener('close', () => {
+      document.querySelector('#mcp-dialog-status').textContent = '';
+    });
+    document.querySelector('[data-mcp-add-header]')?.addEventListener('click', () => {
+      document.querySelector('#mcp-header-rows')?.appendChild(mcpHeaderRow({}, secrets));
+    });
+    document.querySelector('[data-mcp-dialog-test]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const form = document.querySelector('#mcp-server-form');
+      const status = document.querySelector('#mcp-dialog-status');
+      const serverId = form?.elements.serverId.value;
+      if (!serverId) { status.textContent = 'Save this server before testing the connection.'; return; }
+      button.disabled = true;
+      status.textContent = 'Testing connection…';
+      try {
+        const result = await testMcpServer(serverId);
+        const data = result.data ?? {};
+        status.textContent = data.status === 'connected'
+          ? `Connected — ${data.toolCount ?? 0} tools discovered.`
+          : `Connection failed: ${data.error ?? 'the server did not connect.'}`;
+      } catch (error) { status.textContent = error.message; }
+      finally { button.disabled = false; }
+    });
+    document.querySelector('#mcp-server-form')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      if (form.elements.name.value.trim() && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(form.elements.name.value.trim())) {
+        document.querySelector('#mcp-dialog-status').textContent = 'Server names are 1-63 lowercase letters, numbers, or hyphens.';
+        form.elements.name.focus();
+        return;
+      }
+      const serverId = form.elements.serverId.value;
+      const description = String(form.elements.description.value ?? '').trim();
+      const payload = {
+        name: form.elements.name.value.trim(),
+        ...(description ? { description } : (serverId ? { description: null } : {})),
+        transport: form.elements.transport.value,
+        endpoint: form.elements.endpoint.value.trim(),
+        headers: mcpHeadersFromForm(form),
+        enabled: form.elements.enabled.checked
+      };
+      const action = serverId
+        ? () => updateMcpServer(serverId, { ...payload, expectedGeneration: Number(form.elements.expectedGeneration.value) })
+        : () => createMcpServer({ ...payload, permissionDefault: 'allow', expectedGeneration: 0 });
+      void submitForm(form, 'Saving…', action, async () => {
+        document.querySelector('#mcp-server-dialog')?.close();
+        const status = document.querySelector('#mcp-dialog-status');
+        if (status) status.textContent = '';
+        announce('MCP server saved.');
+        if (serverId) await loadMcpServerDetail(serverId);
+        else await loadMcpServers();
+      });
+    });
+    document.querySelector('#cancel-mcp-server')?.addEventListener('click', () => document.querySelector('#mcp-server-dialog')?.close());
+    for (const button of document.querySelectorAll('[data-mcp-edit]')) button.addEventListener('click', (event) => {
+      const server = currentMcpServers.find((item) => item.id === event.currentTarget.dataset.mcpEdit) ?? currentMcpServer;
+      void listGlobalSecrets().then((result) => {
+        secrets = Array.isArray(result.data?.secrets) ? result.data.secrets : [];
+        openMcpDialog(server, secrets);
+      }).catch((error) => showError(error));
+    });
+    for (const button of document.querySelectorAll('[data-mcp-toggle]')) button.addEventListener('click', async (event) => {
+      const target = event.currentTarget;
+      target.disabled = true;
+      try {
+        await setMcpServerEnabled(target.dataset.mcpToggle, target.dataset.nextEnabled === 'true', Number(target.dataset.generation));
+        announce(target.dataset.nextEnabled === 'true' ? 'MCP server enabled.' : 'MCP server disabled.');
+        await reloadMcp();
+      } catch (error) { showError(error); } finally { target.disabled = false; }
+    });
+    for (const button of document.querySelectorAll('[data-mcp-test]')) button.addEventListener('click', async (event) => {
+      const target = event.currentTarget;
+      target.disabled = true;
+      try {
+        const result = await testMcpServer(target.dataset.mcpTest);
+        const data = result.data ?? {};
+        announce(data.status === 'connected' ? `Connected — ${data.toolCount ?? 0} tools discovered.` : `Connection failed: ${data.error ?? 'the server did not connect.'}`);
+      } catch (error) { showError(error); } finally { target.disabled = false; }
+    });
+    for (const button of document.querySelectorAll('[data-mcp-refresh]')) button.addEventListener('click', async (event) => {
+      const serverId = event.currentTarget.dataset.mcpRefresh || currentMcpServer?.id;
+      if (!serverId) return;
+      try {
+        await refreshMcpServerTools(serverId);
+        announce('MCP tools refreshed.');
+        await reloadMcp();
+      } catch (error) { showError(error); }
+    });
+    for (const button of document.querySelectorAll('[data-mcp-delete]')) button.addEventListener('click', (event) => confirmAction({
+      title: 'Delete MCP server?',
+      description: `Delete "${button.dataset.mcpName ?? 'this server'}"? Its cached tools, permission overrides, and recorded logs are removed.`,
+      target: button.dataset.mcpDelete,
+      label: 'Delete server',
+      pendingLabel: 'Deleting…',
+      action: async () => {
+        await deleteMcpServer(button.dataset.mcpDelete, Number(button.dataset.generation));
+        announce('MCP server deleted.');
+        location.href = '/dashboard/mcp-servers';
+      }
+    }, event.currentTarget));
+    for (const button of document.querySelectorAll('[data-mcp-tab]')) button.addEventListener('click', (event) => {
+      const serverId = currentMcpServer?.id;
+      if (serverId) void loadMcpServerDetail(serverId, event.currentTarget.dataset.mcpTab);
+    });
+    const toolSearch = document.querySelector('#mcp-tool-search');
+    toolSearch?.addEventListener('input', () => {
+      const term = toolSearch.value.trim().toLowerCase();
+      const scopes = [document.querySelector('.mcp-tools-panel'), content];
+      for (const scope of scopes) {
+        if (!scope) continue;
+        for (const row of scope.querySelectorAll('.desktop-table tbody tr, .mobile-list li')) {
+          const match = !term || row.textContent.toLowerCase().includes(term);
+          row.hidden = !match;
+        }
+      }
+    });
+    document.querySelector('#mcp-permissions-form')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const serverId = currentMcpServer?.id;
+      if (!serverId) return;
+      const tools = [];
+      for (const select of form.querySelectorAll('select[name^="tool:"]')) tools.push({ name: select.name.slice('tool:'.length), permission: select.value });
+      const payload = {
+        permissionDefault: form.elements.permissionDefault.value,
+        tools,
+        expectedGeneration: Number(form.elements.expectedGeneration.value)
+      };
+      void submitForm(form, 'Saving…', () => setMcpServerPermissions(serverId, payload), async () => {
+        announce('MCP permissions saved.');
+        await loadMcpServerDetail(serverId, 'permissions');
+      });
+    });
+    document.querySelector('#mcp-load-more-logs')?.addEventListener('click', async (event) => {
+      const serverId = currentMcpServer?.id;
+      if (!serverId) return;
+      const result = await listMcpServerLogs(serverId, event.currentTarget.dataset.cursor);
+      currentMcpTraces = [...currentMcpTraces, ...(result.data?.traces ?? [])];
+      content.innerHTML = renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, 'logs', result.cursor, currentMcpGateway);
+      bindMcpServersControls();
     });
   }
   async function workspace(id) { return (await api(`/workspaces/${encodeURIComponent(id)}`)).data; }

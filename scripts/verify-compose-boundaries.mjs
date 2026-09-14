@@ -107,24 +107,34 @@ const locationBlock = (pattern) => nginx.match(pattern)?.[0] ?? '';
 const dashboardEntry = locationBlock(/location = \/dashboard \{[^}]+\}/s);
 const dashboardPrefix = locationBlock(/location \^~ \/dashboard\/ \{[^}]+\}/s);
 const mcp = locationBlock(/location = \/mcp \{[^}]+\}/s);
+const gatewayMcp = locationBlock(/location = \/mcp-gateway \{[^}]+\}/s);
 const apiKeyMcp = locationBlock(/location = \/mcp-api-key \{[^}]+\}/s);
 requireBoundary(dashboardEntry.includes('proxy_pass http://127.0.0.1:3100/dashboard;'), 'nginx dashboard entry point must preserve its upstream path');
 requireBoundary(dashboardPrefix.includes('proxy_pass http://127.0.0.1:3100/dashboard/;'), 'nginx dashboard prefix must preserve asset and BFF paths');
 for (const directive of ['proxy_http_version 1.1;', 'proxy_buffering off;', 'proxy_request_buffering off;', 'proxy_read_timeout 3600s;']) {
   requireBoundary(mcp.includes(directive), `nginx MCP streaming directive is missing: ${directive}`);
+  requireBoundary(gatewayMcp.includes(directive), `nginx MCP gateway streaming directive is missing: ${directive}`);
   requireBoundary(apiKeyMcp.includes(directive), `nginx API-key MCP streaming directive is missing: ${directive}`);
 }
+requireBoundary(gatewayMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-gateway;'), 'nginx MCP gateway route must preserve its upstream path');
 requireBoundary(apiKeyMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key;'), 'nginx API-key MCP route must preserve its hidden upstream path');
 
 const nginxUpgrade = readFileSync('deploy/scripts/upgrade-nginx-dashboard.sh', 'utf8');
 requireBoundary(
-  nginxUpgrade.includes('dashboard_installed -eq 1 && $api_key_installed -eq 1'),
-  'nginx upgrade must not return early until dashboard and API-key routes are installed'
+  nginxUpgrade.includes('dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1'),
+  'nginx upgrade must not return early until dashboard, API-key, and gateway routes are installed'
 );
 requireBoundary(
   nginxUpgrade.includes('location = /mcp-api-key {') &&
     nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key;') &&
     nginxUpgrade.includes('add_api_key="$((1 - api_key_installed))"'),
   'nginx upgrade must install the hidden API-key route when it is absent'
+);
+requireBoundary(
+  nginxUpgrade.includes('location = /mcp-gateway {') &&
+    nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-gateway;') &&
+    nginxUpgrade.includes('add_gateway="$((1 - gateway_installed))"') &&
+    nginxUpgrade.includes('gateway_installed -eq 0'),
+  'nginx upgrade must install the MCP gateway route when it is absent'
 );
 console.log('compose-boundaries=pass');

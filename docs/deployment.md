@@ -66,8 +66,9 @@ This command reads the configured `API_PUBLIC_HOSTS` allowlist without sourcing
 the runtime file, selects the unique matching TLS server block, and refuses
 ambiguous or pre-existing nonstandard application routing. It backs up the live
 site under `/etc/cloud-harness-mcp/nginx-backups/`, installs the two
-`/dashboard` locations and the exact streaming `/mcp-api-key` location when
-they are missing, validates with `nginx -t`, and reloads nginx. Existing routes
+`/dashboard` locations and the exact streaming `/mcp-gateway` and
+`/mcp-api-key` locations when they are missing, validates with `nginx -t`, and
+reloads nginx. Existing routes
 must match the managed blocks exactly after comments and blank lines are
 removed; otherwise the command fails closed without changing the site. A
 failed validation or reload restores the exact backup and attempts to reload
@@ -141,7 +142,8 @@ and
 [Google](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/google/).
 Then use **Zero Trust → Access controls → Applications → Create new
 application → Self-hosted and private**. Add the selected public hostname
-without a path so the same application protects `/mcp` and `/dashboard`, add
+without a path so the same application protects `/mcp`, `/mcp-gateway`, and
+`/dashboard`, add
 the trusted-operator Allow policy, and select both IdPs under Authentication.
 Edit the application, then enable **Advanced settings → Managed OAuth** as
 described in Cloudflare's
@@ -288,6 +290,43 @@ rollback must remove those routes, restore the printed backup path to
 `/etc/nginx/sites-available/cloud-harness-mcp.conf`, run `nginx -t`, and reload
 nginx; normal application rollback can leave the backward-compatible routes in
 place.
+
+### MCP gateway release order and schema v6
+
+The gateway introduces metadata schema v6 and a new internal runner operation
+set, so its deployment is ordered:
+
+1. **Upgrade the runner first, then the API.** The runner validates the internal
+   RPC against its own operation set and refuses an unsupported metadata schema
+   version. A pre-v6 runner cannot serve a v6 database, and an API built for the
+   gateway cannot be paired with a runner that does not know the new metadata
+   operations. Confirm the runner is ready and the v5 → v6 migration applied
+   before starting the new API.
+2. **Install the `/mcp-gateway` route before advertising it.** Run
+   `sudo /usr/local/sbin/cloud-harness-upgrade-nginx` (the deploy script does
+   this in Access mode) and confirm the exact `/mcp-gateway` location is
+   present. The Cloudflare Access application that protects `/mcp` must also
+   cover `/mcp-gateway` with the same audience and policy; this is the same
+   authentication system, not a new one.
+3. **Prove the v6 → v5 rollback path before the release ships.** A pre-v6 runner
+   cannot start on a v6 ledger. Rolling back to a pre-v6 release requires the
+   bounded, quiesced v6 → v5 downgrade, run from the exact release checkout with
+   the state database offline:
+
+   ```bash
+   npm run metadata:down:v5 -w @cloud-harness/runner -- /path/to/db
+   ```
+
+   It requires the ledger to be version 6 and drops only the four gateway tables
+   (servers, cached tools, tool permissions, and traces), destroying the gateway
+   registry by design while leaving `api_keys`, the global secret tables, and
+   `secret_references.purpose` intact. Unlike `metadata:down:v1`, it never chains
+   further down. The ladder is owned by
+   [`apps/runner/src/metadata-schema.ts`](../apps/runner/src/metadata-schema.ts);
+   exercise the command on a copy of the production database and record the
+   result before promoting the release. Restore-from-backup remains the fallback:
+   keep a coherent recovery backup and restore it instead of retrying a downgrade
+   that does not complete.
 
 Owner-bearer canary uses the private bearer path. Access canary requires an
 owner-provisioned Access service-token client ID/secret and the public HTTPS

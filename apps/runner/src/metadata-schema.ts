@@ -11,7 +11,7 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number };
-    if (row.version === 5) {
+    if (row.version === 6) {
       database.exec('COMMIT');
       return;
     }
@@ -156,8 +156,115 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
       ALTER TABLE global_secret_references ADD COLUMN purpose TEXT NOT NULL DEFAULT 'runtime' CHECK (purpose IN ('runtime', 'provisioning'));
       UPDATE metadata_schema_meta SET version = 5 WHERE singleton = 1;
     `);
+    const postV5 = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
+    if (postV5 === 5) {
+      if (!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='principals'").get()) {
+        throw new Error('metadata migration requires the principals table; construct StateStore on this database first');
+      }
+      database.exec(`
+      CREATE TABLE mcp_gateway_servers (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+        name TEXT NOT NULL,
+        description TEXT,
+        transport TEXT NOT NULL CHECK (transport IN ('streamable-http', 'sse')),
+        endpoint TEXT NOT NULL,
+        headers_json TEXT NOT NULL,
+        enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+        status TEXT NOT NULL CHECK (status IN ('unknown', 'connected', 'connecting', 'disconnected', 'error', 'disabled')),
+        tool_count INTEGER NOT NULL DEFAULT 0,
+        last_connected_at INTEGER,
+        last_error TEXT,
+        last_checked_at INTEGER,
+        permission_default TEXT NOT NULL CHECK (permission_default IN ('allow', 'deny')),
+        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'DELETED')),
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(principal_id, id),
+        UNIQUE(principal_id, name)
+      );
+      CREATE INDEX mcp_servers_principal_updated ON mcp_gateway_servers(principal_id, updated_at DESC, id);
+
+      CREATE TABLE mcp_gateway_tools (
+        id TEXT NOT NULL UNIQUE,
+        principal_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        upstream_name TEXT NOT NULL,
+        qualified_name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        input_schema_json TEXT NOT NULL,
+        schema_bytes INTEGER NOT NULL DEFAULT 0,
+        annotations_json TEXT,
+        availability TEXT NOT NULL CHECK (availability IN ('available', 'unavailable')),
+        discovered_at INTEGER NOT NULL,
+        PRIMARY KEY(principal_id, server_id, upstream_name),
+        UNIQUE(principal_id, qualified_name),
+        FOREIGN KEY(principal_id, server_id) REFERENCES mcp_gateway_servers(principal_id, id) ON DELETE CASCADE
+      );
+      CREATE INDEX mcp_tools_principal_server ON mcp_gateway_tools(principal_id, server_id);
+
+      CREATE TABLE mcp_gateway_tool_permissions (
+        principal_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        permission TEXT NOT NULL CHECK (permission IN ('allow', 'deny')),
+        PRIMARY KEY(principal_id, server_id, tool_name),
+        FOREIGN KEY(principal_id, server_id) REFERENCES mcp_gateway_servers(principal_id, id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE mcp_gateway_traces (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+        server_id TEXT,
+        server_name TEXT NOT NULL,
+        tool TEXT,
+        operation TEXT NOT NULL,
+        client_id TEXT,
+        duration_ms INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('success', 'error', 'denied')),
+        error_code TEXT,
+        error_message TEXT,
+        request_bytes INTEGER,
+        response_bytes INTEGER,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX mcp_traces_principal_created ON mcp_gateway_traces(principal_id, created_at DESC, id);
+      CREATE INDEX mcp_traces_principal_server ON mcp_gateway_traces(principal_id, server_id, created_at DESC);
+
+      UPDATE metadata_schema_meta SET version = 6 WHERE singleton = 1;
+    `);
+    }
     const migrated = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
-    if (migrated !== 5) throw new Error(`unsupported metadata schema version ${migrated}`);
+    if (migrated !== 6) throw new Error(`unsupported metadata schema version ${migrated}`);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+const metadataVersion = (database: DatabaseSync): number | undefined =>
+  (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined)?.version;
+
+/** Unwind a v6 ledger to v5. Must run before the caller opens its own transaction. */
+function unwindFromV6(database: DatabaseSync): void {
+  if (metadataVersion(database) === 6) downgradeMetadataSchemaToV5(database);
+}
+
+export function downgradeMetadataSchemaToV5(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+    if (!row || row.version !== 6) throw new Error('metadata schema must be version 6 before downgrade');
+    database.exec(`
+      DROP TABLE IF EXISTS mcp_gateway_traces;
+      DROP TABLE IF EXISTS mcp_gateway_tool_permissions;
+      DROP TABLE IF EXISTS mcp_gateway_tools;
+      DROP TABLE IF EXISTS mcp_gateway_servers;
+      UPDATE metadata_schema_meta SET version = 5 WHERE singleton = 1;
+    `);
     database.exec('COMMIT');
   } catch (error) {
     database.exec('ROLLBACK');
@@ -166,6 +273,7 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
 }
 
 export function downgradeMetadataSchemaToV4(database: DatabaseSync): void {
+  unwindFromV6(database);
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
@@ -183,8 +291,8 @@ export function downgradeMetadataSchemaToV4(database: DatabaseSync): void {
 }
 
 export function downgradeMetadataSchemaToV3(database: DatabaseSync): void {
-  const check = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
-  if (check?.version === 5) {
+  unwindFromV6(database);
+  if (metadataVersion(database) === 5) {
     downgradeMetadataSchemaToV4(database);
   }
   database.exec('BEGIN IMMEDIATE');
@@ -204,8 +312,8 @@ export function downgradeMetadataSchemaToV3(database: DatabaseSync): void {
 }
 
 export function downgradeMetadataSchemaToV2(database: DatabaseSync): void {
-  const check = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
-  if (check?.version === 5) {
+  unwindFromV6(database);
+  if (metadataVersion(database) === 5) {
     downgradeMetadataSchemaToV4(database);
   }
   database.exec('BEGIN IMMEDIATE');
@@ -230,14 +338,14 @@ export function downgradeMetadataSchemaToV2(database: DatabaseSync): void {
 }
 
 export function downgradeMetadataSchemaToV1(database: DatabaseSync): void {
-  const check = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
-  if (check?.version === 5) {
+  unwindFromV6(database);
+  if (metadataVersion(database) === 5) {
     downgradeMetadataSchemaToV4(database);
   }
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
-    if (!row || (row.version !== 2 && row.version !== 3 && row.version !== 4 && row.version !== 5)) throw new Error('metadata schema must be version 2, 3, 4, or 5 before downgrade');
+    if (!row || (row.version !== 2 && row.version !== 3 && row.version !== 4 && row.version !== 5 && row.version !== 6)) throw new Error('metadata schema must be version 2, 3, 4, 5, or 6 before downgrade');
     if (row.version === 4) {
       database.exec(`
         DROP TABLE IF EXISTS global_secret_versions;

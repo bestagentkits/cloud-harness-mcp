@@ -176,6 +176,36 @@ schemas are owned by
 [`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts)
 and [`apps/runner/src/api-key-store.ts`](../apps/runner/src/api-key-store.ts).
 
+## MCP gateway
+
+The `/mcp-gateway` composition root adds nine settings. Their exact defaults,
+ranges, and code owners remain
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts) and
+[`apps/api/src/config.ts`](../apps/api/src/config.ts); the generated
+[environment-variable reference](../docs-site/reference/environment-variables.md)
+and [`.env.example`](../.env.example) carry the current values.
+
+| Variable | Default | Decision |
+|---|---|---|
+| `MCP_GATEWAY_TIMEOUT_MS` | `30000` | Bounds one downstream connect or call. |
+| `MCP_GATEWAY_MAX_RESPONSE_BYTES` | `262144` | Caps a downstream response body before it is parsed. |
+| `MCP_GATEWAY_MAX_TOOLS_PER_SERVER` | `500` | Caps cached tool metadata per server. |
+| `MCP_GATEWAY_MAX_SCHEMA_BYTES` | `65536` | An oversized upstream schema is cached as `unavailable`, never truncated. |
+| `MCP_GATEWAY_MAX_CATALOG_BYTES` | `2097152` | Bounds the whole per-principal catalog. |
+| `MCP_GATEWAY_MAX_TRACE_ROWS` | `20000` | Retention cap for gateway traces. |
+| `MCP_GATEWAY_MAX_CONNECTIONS` | `32` | Bounds the per-process connection cache with LRU eviction. |
+| `MCP_GATEWAY_ALLOW_PRIVATE_ENDPOINTS` | `false` | Permits loopback, private, and link-local MCP endpoints. |
+| `MCP_GATEWAY_ALLOW_INSECURE_HTTP` | `false` | Permits cleartext HTTP MCP endpoints. |
+
+Both opt-ins are default-off and gate separate hazards. A private endpoint
+requires `MCP_GATEWAY_ALLOW_PRIVATE_ENDPOINTS=true`; a cleartext `http` endpoint
+requires **both** that opt-in and `MCP_GATEWAY_ALLOW_INSECURE_HTTP=true`.
+Validation refuses `MCP_GATEWAY_ALLOW_INSECURE_HTTP=true` on its own. In
+`cloudflare-access` mode both opt-ins are refused outright, so the only
+permitted endpoints there are public https URLs. The endpoint policy itself is
+owned by [`apps/api/src/mcp-gateway/url-policy.ts`](../apps/api/src/mcp-gateway/url-policy.ts),
+and the gateway boundary is described in the [MCP gateway](mcp-gateway.md).
+
 ## Optional GitHub App repository access
 
 The same GitHub App settings also govern authenticated fetch, pull, and push.

@@ -36,6 +36,16 @@ a replacement, updating the client, verifying it, then revoking the old key.
 The lifecycle contract is owned by
 [`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts).
 
+### MCP gateway
+
+A second composition root, `https://<host>/mcp-gateway`, exposes five
+meta-tools over a principal-scoped registry of downstream MCP servers. It is a
+distinct surface with its own tool list, its own contracts, and its own
+authentication-lane limitation; it is not a mode of `/mcp`. The semantics of
+every `/mcp` tool above are unchanged by its presence. See the
+[MCP gateway](mcp-gateway.md) for the registry, credential references,
+permissions, traces, transports, and the managed API-key lane limitation.
+
 ## Normal workflow
 
 1. Call `workspace_open` with a credential-free HTTPS repository URL, an

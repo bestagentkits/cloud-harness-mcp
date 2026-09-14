@@ -7,6 +7,8 @@ import { dashboardSecurity, requireJson } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { registerDashboardControlRoutes } from './dashboard-control-router.js';
+import { registerDashboardGatewayRoutes } from './dashboard-gateway-router.js';
+import type { McpGatewayService } from './mcp-gateway/service.js';
 import { serverVersion } from './version.js';
 
 const THEME_COOKIE = 'ch-dashboard-theme';
@@ -59,7 +61,7 @@ function input(operation: RunnerOperation, value: unknown): Record<string, unkno
   return TOOL_SCHEMA_BY_NAME[operation].parse(value) as Record<string, unknown>;
 }
 
-export function createDashboardRouter(config: ApiConfig, runner: DashboardRunnerClient): Router {
+export function createDashboardRouter(config: ApiConfig, runner: DashboardRunnerClient, gateway?: McpGatewayService): Router {
   const router = Router();
   const sessions = createDashboardSessions();
   router.use(dashboardSecurity(config));
@@ -74,7 +76,8 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) sessions.verify(request as DashboardRequest, response, next);
     else next();
   });
-  registerDashboardControlRoutes(router, runner, principal, config);
+  registerDashboardControlRoutes(router, runner, principal, config, gateway);
+  if (gateway) registerDashboardGatewayRoutes(router, gateway, principal, config);
 
   router.get('/api/v1/profile', (request: DashboardRequest, response) => {
     const selected = principal(request, response);

@@ -12,7 +12,7 @@ import { RunnerClient } from './runner-client.js';
 import type { OperationBackend } from './operation-backend.js';
 import { formatToolResultText } from './mcp-response-text.js';
 
-function resultToMcp(result: ToolResult): CallToolResult {
+export function resultToMcp(result: ToolResult): CallToolResult {
   return {
     content: [{ type: 'text', text: formatToolResultText(result) }],
     structuredContent: result,

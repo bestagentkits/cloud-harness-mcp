@@ -1,10 +1,11 @@
 import {
-  HarnessError, MetadataRunnerRequestSchema,
+  HarnessError, MetadataRunnerRequestSchema, qualifiedToolName,
   type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse
 } from '@cloud-harness/contracts';
 import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import type { GitHubInstallationStore } from './github-installation-store.js';
+import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import type { PrivilegeGrantRecord, StateStore } from './state-store.js';
 import type { WorkspaceService } from './workspace-service.js';
@@ -374,6 +375,85 @@ export class DashboardControlService {
           });
           return ok('Knowledge link deleted', { unlinked });
         }
+        case 'mcp_server_list': return ok('MCP servers listed', { servers: this.mcp().listServers(principalId) });
+        case 'mcp_server_get': {
+          const server = this.mcp().getServer(principalId, parsed.input.serverId);
+          if (!server) throw new HarnessError('NOT_FOUND', 'MCP server not found', 404, false);
+          return ok('MCP server retrieved', { server, tools: this.mcp().getServerTools(principalId, server.id) });
+        }
+        case 'mcp_server_create': return mutation('MCP server created', this.mcp().createServer(principalId, {
+          name: parsed.input.name,
+          description: parsed.input.description,
+          transport: parsed.input.transport,
+          endpoint: parsed.input.endpoint,
+          headers: storedMcpHeaders(parsed.input.headers),
+          permissionDefault: parsed.input.permissionDefault,
+          enabled: parsed.input.enabled
+        }, 0));
+        case 'mcp_server_update': return mutation('MCP server updated', this.mcp().updateServer(
+          principalId, parsed.input.serverId, parsed.input.expectedGeneration, {
+            ...(parsed.input.name !== undefined ? { name: parsed.input.name } : {}),
+            ...(parsed.input.description !== undefined ? { description: parsed.input.description } : {}),
+            ...(parsed.input.transport !== undefined ? { transport: parsed.input.transport } : {}),
+            ...(parsed.input.endpoint !== undefined ? { endpoint: parsed.input.endpoint } : {}),
+            ...(parsed.input.headers !== undefined ? { headers: storedMcpHeaders(parsed.input.headers) } : {}),
+            ...(parsed.input.permissionDefault !== undefined ? { permissionDefault: parsed.input.permissionDefault } : {})
+          }
+        ));
+        case 'mcp_server_delete': return mutation('MCP server deleted', this.mcp().deleteServer(
+          principalId, parsed.input.serverId, parsed.input.expectedGeneration
+        ));
+        case 'mcp_server_set_enabled': return mutation(
+          parsed.input.enabled ? 'MCP server enabled' : 'MCP server disabled',
+          this.mcp().setEnabled(principalId, parsed.input.serverId, parsed.input.enabled, parsed.input.expectedGeneration)
+        );
+        case 'mcp_server_set_permissions': return mutation('MCP permissions updated', this.mcp().setPermissions(principalId, {
+          serverId: parsed.input.serverId,
+          permissionDefault: parsed.input.permissionDefault,
+          tools: parsed.input.tools,
+          expectedGeneration: parsed.input.expectedGeneration
+        }));
+        case 'mcp_server_replace_tools': {
+          const tools = this.mcp().replaceTools(
+            principalId, parsed.input.serverId, parsed.input.tools, parsed.input.cap, parsed.input.status
+          );
+          const server = this.mcp().getServer(principalId, parsed.input.serverId);
+          if (!server) throw new HarnessError('NOT_FOUND', 'MCP server not found', 404, false);
+          return ok('MCP tools replaced', { server, tools });
+        }
+        case 'mcp_server_connection_result': return mutation('MCP connection result recorded', this.mcp().recordConnectionResult(
+          principalId, parsed.input.serverId, parsed.input.status, parsed.input.error
+        ));
+        case 'mcp_server_get_credentials': return this.mcpCredentials(principalId, parsed.input);
+        case 'mcp_gateway_catalog': return ok('MCP gateway catalog', this.mcp().catalog(principalId, {
+          ...(parsed.input.serverId ? { serverId: parsed.input.serverId } : {}),
+          ...(parsed.input.qualifiedName ? { qualifiedName: parsed.input.qualifiedName } : {})
+        }));
+        case 'mcp_gateway_trace_append': {
+          const trace = this.mcp().appendTrace(principalId, {
+            serverId: parsed.input.serverId,
+            serverName: parsed.input.serverName,
+            tool: parsed.input.tool,
+            operation: parsed.input.operation,
+            clientId: parsed.input.clientId,
+            durationMs: parsed.input.durationMs,
+            status: parsed.input.status,
+            errorCode: parsed.input.errorCode,
+            errorMessage: parsed.input.errorMessage,
+            requestBytes: parsed.input.requestBytes,
+            responseBytes: parsed.input.responseBytes,
+            secrets: parsed.input.secrets
+          }, parsed.input.maxRows);
+          return ok('MCP trace recorded', { trace });
+        }
+        case 'mcp_gateway_trace_list': {
+          const page = this.mcp().listTraces(principalId, {
+            ...(parsed.input.serverId ? { serverId: parsed.input.serverId } : {}),
+            limit: parsed.input.limit,
+            ...(parsed.input.cursor ? { cursor: parsed.input.cursor } : {})
+          });
+          return ok('MCP traces listed', { traces: page.traces }, page.cursor);
+        }
       }
     } catch (error) {
       if (error instanceof HarnessError) throw error;
@@ -397,6 +477,54 @@ export class DashboardControlService {
       throw new HarnessError('UNAVAILABLE', 'Secret operations are temporarily unavailable', 503, false);
     }
     return this.metadata.secrets;
+  }
+  private mcp() {
+    return this.metadata.mcpGateway;
+  }
+  /**
+   * Resolve one server's referenced credentials for an explicit purpose. `execute` is
+   * gated by the cached tool's effective permission; `connect` is the audited
+   * server-level grant that keeps a deny-by-default server testable. No value ever
+   * reaches the audit trail or a disabled server.
+   */
+  private mcpCredentials(
+    principalId: string,
+    input: { serverId: string; toolName?: string | undefined; purpose: 'execute' | 'connect' }
+  ): RunnerResponse {
+    const server = this.mcp().getServer(principalId, input.serverId);
+    if (!server) throw new HarnessError('NOT_FOUND', 'MCP server is unavailable', 404, false);
+    if (!server.enabled) return ok('MCP server is disabled', { allowed: false, reason: 'server_disabled' });
+    if (input.purpose === 'execute') {
+      const tool = input.toolName
+        ? this.mcp().getTool(principalId, qualifiedToolName(server.name, input.toolName))
+        : undefined;
+      if (!tool || tool.permission !== 'allow') {
+        return ok('MCP tool access denied', { allowed: false, reason: 'tool_denied' });
+      }
+    }
+    const headers: Record<string, string> = {};
+    for (const header of server.headers) {
+      if (header.kind === 'secret') {
+        const reference = header.secretRef;
+        const value = reference ? this.metadata.globalSecretValue(principalId, reference) : undefined;
+        if (value === undefined) {
+          // Name the reference, never a value: the missing grant must be actionable.
+          throw new HarnessError('NOT_FOUND', `referenced secret ${reference ?? header.name} is unavailable`, 404, false);
+        }
+        headers[header.name] = value;
+      } else if (header.value !== undefined) {
+        headers[header.name] = header.value;
+      }
+    }
+    this.metadata.recordAudit(principalId, 'mcp_gateway.credentials_resolved', 'mcp_server', server.id, server.generation, {
+      serverId: server.id,
+      purpose: input.purpose,
+      toolName: input.toolName ?? '',
+      headerCount: Object.keys(headers).length
+    });
+    return ok('MCP credentials resolved', {
+      allowed: true, transport: server.transport, endpoint: server.endpoint, headers
+    });
   }
   private beginGitHubSetup(principalId: string, expectedAccountId?: string) {
     const binding = this.requireGitHubBinding(); const github = this.config.githubApp;
@@ -431,5 +559,13 @@ const ok = (message: string, data: unknown, cursor?: string): RunnerResponse => 
 function mutation(message: string, value: unknown): RunnerResponse {
   if (!value) throw new HarnessError('CONFLICT', 'resource generation changed or resource is unavailable', 409, false);
   return ok(message, value);
+}
+/** Split the contract's header union into the store's literal/secretRef row shape. */
+function storedMcpHeaders(
+  headers: Array<{ name: string; value: string | { secretRef: string } }>
+): McpGatewayStoredHeader[] {
+  return headers.map((header) => typeof header.value === 'string'
+    ? { name: header.name, value: header.value }
+    : { name: header.name, secretRef: header.value.secretRef });
 }
 const statusFor = (code: ArtifactStoreError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;

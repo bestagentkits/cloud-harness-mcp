@@ -124,7 +124,16 @@ export const ApiConfigSchema = z.object({
   publicHosts: z.array(z.string().min(1)).min(1),
   allowedOrigins: z.array(z.url()).default([]),
   requestTimeoutMs: z.coerce.number().int().min(1_000).max(300_000).default(60_000),
-  maxBodyBytes: z.coerce.number().int().min(1_024).max(4_194_304).default(1_048_576)
+  maxBodyBytes: z.coerce.number().int().min(1_024).max(4_194_304).default(1_048_576),
+  mcpGatewayTimeoutMs: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+  mcpGatewayMaxResponseBytes: z.coerce.number().int().min(1_024).max(1_048_576).default(262_144),
+  mcpGatewayMaxToolsPerServer: z.coerce.number().int().min(1).max(2_000).default(500),
+  mcpGatewayMaxSchemaBytes: z.coerce.number().int().min(1_024).max(262_144).default(65_536),
+  mcpGatewayMaxCatalogBytes: z.coerce.number().int().min(65_536).max(8_388_608).default(2_097_152),
+  mcpGatewayMaxTraceRows: z.coerce.number().int().min(100).max(1_000_000).default(20_000),
+  mcpGatewayMaxConnections: z.coerce.number().int().min(1).max(256).default(32),
+  mcpGatewayAllowInsecureHttp: enabled,
+  mcpGatewayAllowPrivateEndpoints: enabled
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
@@ -133,7 +142,16 @@ export const ApiConfigSchema = z.object({
     if (!config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'bearer token is required in owner-bearer mode' });
     if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: 'Cloudflare Access settings are forbidden in owner-bearer mode' });
     if (config.apiKeyAuthEnabled || apiKeyValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway is only valid in cloudflare-access mode' });
+    if (config.mcpGatewayAllowInsecureHttp && !config.mcpGatewayAllowPrivateEndpoints) {
+      context.addIssue({ code: 'custom', path: ['mcpGatewayAllowInsecureHttp'], message: 'cleartext http MCP gateway endpoints require private endpoint opt-in' });
+    }
     return;
+  }
+  if (config.mcpGatewayAllowInsecureHttp) {
+    context.addIssue({ code: 'custom', path: ['authMode'], message: 'cleartext http MCP gateway endpoints are forbidden in cloudflare-access mode' });
+  }
+  if (config.mcpGatewayAllowPrivateEndpoints) {
+    context.addIssue({ code: 'custom', path: ['authMode'], message: 'private MCP gateway endpoints are forbidden in cloudflare-access mode' });
   }
   if (config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'owner bearer token is forbidden in cloudflare-access mode' });
   for (const [path, value] of [

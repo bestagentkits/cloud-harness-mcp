@@ -34,6 +34,7 @@
         <a href="/dashboard/models" data-section="models"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L15 14h3a3 3 0 0 1 3 3v4H3v-4a3 3 0 0 1 3-3h3l2.25-4.07A4.002 4.002 0 0 1 12 2z"/></svg>Models</a>
         <a href="/dashboard/api-keys" data-section="api-keys"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 8-8"/><path d="m15.5 5.5 2 2"/><path d="m18.5 2.5 2.5 2.5"/></svg>API keys</a>
         <a href="/dashboard/github" data-section="github"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="17.5" cy="8" r="2.5"/><path d="M6 8.5v7"/><path d="M17.5 10.5a6 6 0 0 1-6 6H8.5"/></svg>GitHub</a>
+        <a href="/dashboard/mcp-servers" data-section="mcp-servers"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V3"/><path d="M15 7V3"/><path d="M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v5"/></svg>MCP Servers</a>
         <p class="nav-group">Observability</p>
         <a href="/dashboard/knowledge" data-section="knowledge"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6 6h10"/><path d="M6 10h10"/><path d="M6 14h6"/></svg>Knowledge</a>
         <a href="/dashboard/artifacts" data-section="artifacts"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>Artifacts</a>
@@ -279,6 +280,37 @@
       <div class="dialog-actions">
         <button type="button" id="cancel-create-knowledge">Cancel</button>
         <button type="submit" id="submit-create-knowledge" class="accent-btn">Create item</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="mcp-server-dialog" aria-labelledby="mcp-server-title" aria-describedby="mcp-server-description">
+    <h2 id="mcp-server-title">Add MCP server</h2>
+    <p id="mcp-server-description">Register a downstream MCP server. Header secret values are write-only and are never returned to this page.</p>
+    <form id="mcp-server-form" class="stack-form">
+      <input type="hidden" name="serverId">
+      <input type="hidden" name="expectedGeneration" value="0">
+      <label for="mcp-server-name">Name</label>
+      <input id="mcp-server-name" name="name" required maxlength="63" pattern="^[a-z0-9][a-z0-9-]{0,62}$" autocomplete="off" spellcheck="false" placeholder="e.g. linear">
+      <label for="mcp-server-description">Description <span class="optional">Optional</span></label>
+      <input id="mcp-server-description" name="description" maxlength="500" autocomplete="off">
+      <label for="mcp-server-transport">Transport</label>
+      <select id="mcp-server-transport" name="transport">
+        <option value="streamable-http" selected>streamable-http</option>
+        <option value="sse">sse</option>
+        <option value="stdio" disabled>stdio (unsupported)</option>
+      </select>
+      <label for="mcp-server-url">Endpoint URL</label>
+      <input id="mcp-server-url" name="endpoint" type="url" required maxlength="2048" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://vendor.example.com/mcp">
+      <div class="form-section-title">Headers <span class="optional">Optional</span></div>
+      <p>Send a literal header value or reference an existing global secret. Secret values are write-only and are not shown after saving.</p>
+      <div id="mcp-header-rows"></div>
+      <div class="form-row-actions"><button type="button" data-mcp-add-header>Add header</button></div>
+      <label class="checkbox-label"><input name="enabled" type="checkbox" checked><span>Enabled</span></label>
+      <div class="form-row-actions"><button type="button" data-mcp-dialog-test>Test connection</button></div>
+      <p id="mcp-dialog-status" class="form-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-mcp-server">Cancel</button>
+        <button type="submit" id="submit-mcp-server" class="accent-btn">Save server</button>
       </div>
     </form>
   </dialog>

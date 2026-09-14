@@ -7,6 +7,7 @@ import {
   secretView, type AuditView, type EnvironmentView, type ProjectView, type SecretView
 } from './metadata-records.js';
 import type { SecretPurpose } from '@cloud-harness/contracts';
+import { McpGatewayStore } from './mcp-gateway-store.js';
 import { SecretMetadataStore } from './secret-metadata-store.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
@@ -18,6 +19,7 @@ const normalizedName = (name: string): string => {
 
 export class MetadataStore {
   readonly database: DatabaseSync;
+  private readonly availableMcpGateway: McpGatewayStore;
   private readonly availableSecretStore?: SecretMetadataStore;
   private readonly secretReadinessError?: Error;
 
@@ -26,6 +28,7 @@ export class MetadataStore {
     this.database = new DatabaseSync(path);
     this.database.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     migrateMetadataSchema(this.database);
+    this.availableMcpGateway = new McpGatewayStore(this.database);
     if (!keyring) {
       this.secretReadinessError = new Error(secretReadinessError ?? 'secret keyring is unavailable');
       return;
@@ -35,6 +38,10 @@ export class MetadataStore {
     } catch (error) {
       this.secretReadinessError = error instanceof Error ? error : new Error('secret store is unavailable');
     }
+  }
+
+  get mcpGateway(): McpGatewayStore {
+    return this.availableMcpGateway;
   }
 
   get secrets(): SecretMetadataStore {
@@ -248,6 +255,11 @@ export class MetadataStore {
 
   globalSecretEnvelopes(principalId: string): Array<{ name: string; version: number; envelope: EncryptedSecret }> {
     return this.secrets.globalSecretEnvelopes(principalId);
+  }
+
+  /** Resolve one active global secret to plaintext for gateway credential injection. */
+  globalSecretValue(principalId: string, name: string): string | undefined {
+    return this.secrets.globalValue(principalId, name);
   }
 
   createEnvironment(principalId: string, projectId: string, name: string, expectedGeneration: 0): EnvironmentView | undefined {

@@ -335,6 +335,30 @@ export class SecretMetadataStore {
     }));
   }
 
+  /**
+   * Resolve one principal's active global secret to plaintext by name, regardless of
+   * its purpose. The ciphertext lives in `global_secret_versions` and is bound to the
+   * `'global'` AES-GCM associated data; any other context fails the auth tag.
+   */
+  globalValue(principalId: string, name: string): string | undefined {
+    const secretName = normalizedName(name);
+    const row = this.database.prepare(`
+      SELECT versions.*, refs.name, refs.id as secret_reference_id
+      FROM global_secret_references refs
+      JOIN global_secret_versions versions
+        ON versions.principal_id = refs.principal_id AND versions.secret_reference_id = refs.id
+        AND versions.version = refs.current_version
+      WHERE refs.principal_id = ? AND refs.name = ? AND refs.state = 'ACTIVE'
+    `).get(principalId, secretName) as GlobalVersionRow | undefined;
+    if (!row) return undefined;
+    return this.keyring.decrypt(envelope(row), {
+      principalId,
+      environmentId: 'global',
+      name: row.name,
+      version: row.version
+    });
+  }
+
   consumeProvisioningSecret(
     principalId: string,
     scope: 'global' | 'environment',

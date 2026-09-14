@@ -642,6 +642,280 @@ export function renderKnowledgeGraph(graphResult) {
 }
 
 /**
+ * MCP gateway status vocabulary. The runner status names are lowercase; the pill
+ * classes reuse the workspace status palette so the console keeps one visual language.
+ */
+const MCP_STATUS = {
+  connected: { label: 'Connected', className: 'active' },
+  connecting: { label: 'Connecting', className: 'reaping' },
+  disconnected: { label: 'Disconnected', className: '' },
+  error: { label: 'Error', className: 'failed' },
+  disabled: { label: 'Disabled', className: '' },
+  // In-memory connection health is unknown until the API first contacts the server.
+  unknown: { label: 'Not yet contacted', className: '' }
+};
+
+export function mcpStatusLabel(status) {
+  return (MCP_STATUS[status] ?? MCP_STATUS.unknown).label;
+}
+
+export function mcpStatusClass(status) {
+  return (MCP_STATUS[status] ?? MCP_STATUS.unknown).className;
+}
+
+/**
+ * A downstream endpoint URL is operator-supplied. It is rendered as text only, and
+ * userinfo, query, and fragment are dropped rather than echoed back into the page.
+ */
+function displayEndpoint(value) {
+  if (typeof value !== 'string') return 'Unavailable';
+  try {
+    const url = new URL(value);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch { return value; }
+}
+
+const count = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+
+function renderMcpStatusPill(status) {
+  const className = mcpStatusClass(status);
+  return `<span class="status${className ? ` ${className}` : ''}">${escape(mcpStatusLabel(status))}</span>`;
+}
+
+/**
+ * The single endpoint a user configures in an MCP client. The card names the
+ * credential lane `/mcp-gateway` actually accepts and the two hard limitations an
+ * operator hits first; the managed API-key lane is deliberately not shown as an option.
+ */
+function renderMcpGatewayCard(gateway) {
+  const gatewayData = gateway ?? {};
+  const endpoint = typeof gatewayData.publicUrl === 'string' && gatewayData.publicUrl
+    ? gatewayData.publicUrl
+    : (typeof gatewayData.endpoint === 'string' && gatewayData.endpoint ? gatewayData.endpoint : '/mcp-gateway');
+  const lane = gatewayData.authMode === 'owner-bearer'
+    ? 'Authenticates with your Cloud Harness owner bearer token.'
+    : 'Authenticates with your Cloud Harness Access session.';
+  return `
+    <section class="panel mcp-gateway-card" aria-labelledby="mcp-gateway-heading">
+      <h2 id="mcp-gateway-heading">Your Cloud Harness MCP Gateway</h2>
+      <p class="mcp-endpoint"><span class="mono wrap">${escape(endpoint)}</span> <button type="button" class="copy" data-copy="${escape(endpoint)}">Copy</button></p>
+      <p>Connect this single MCP endpoint to your AI client. Tools from your configured MCP servers are discovered and executed through Cloud Harness.</p>
+      <p class="mcp-endpoint-lane">${escape(lane)} The managed API-key lane is not yet available for this endpoint.</p>
+      <div class="page-note">
+        <strong>Hard limitations.</strong>
+        <ul>
+          <li>HTTP redirects are refused. A vendor base URL that redirects must be configured as its final URL.</li>
+          <li><code class="mono">stdio</code> downstream servers are unsupported; use <code class="mono">streamable-http</code> or <code class="mono">sse</code>.</li>
+        </ul>
+      </div>
+    </section>
+  `;
+}
+
+function mcpServerActions(server) {
+  const id = escape(server.id);
+  const generation = escape(server.generation);
+  return `<div class="row-actions">
+          <button class="mcp-edit" type="button" data-mcp-edit="${id}">Edit</button>
+          <button class="mcp-toggle" type="button" data-mcp-toggle="${id}" data-next-enabled="${server.enabled ? 'false' : 'true'}" data-generation="${generation}">${server.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="mcp-test" type="button" data-mcp-test="${id}">Test</button>
+          <button class="mcp-refresh" type="button" data-mcp-refresh="${id}">Refresh tools</button>
+          <button class="danger mcp-delete" type="button" data-mcp-delete="${id}" data-generation="${generation}" data-mcp-name="${escape(server.name)}">Delete</button>
+        </div>`;
+}
+
+export function renderMcpServersIndex(data) {
+  const servers = Array.isArray(data?.servers) ? data.servers : (Array.isArray(data) ? data : []);
+  const gateway = data?.gateway ?? data ?? {};
+  const rows = servers.length ? servers.map((server) => `<tr>
+        <th scope="row"><a href="/dashboard/mcp-servers/${encodeURIComponent(server.id)}">${escape(server.name)}</a><small class="mono wrap">${escape(server.id)}</small></th>
+        <td class="mono">${escape(server.transport)}</td>
+        <td>${renderMcpStatusPill(server.status)}</td>
+        <td class="mono">${escape(count(server.toolCount))}</td>
+        <td>${optionalTime(server.lastConnectedAt)}</td>
+        <td>${server.enabled ? 'Enabled' : 'Disabled'}</td>
+        <td>${mcpServerActions(server)}</td>
+      </tr>`).join('') : '<tr><td colspan="7">No MCP servers configured.</td></tr>';
+  const cards = servers.length ? servers.map((server) => {
+    const details = `<dl><dt>Transport</dt><dd class="mono">${escape(server.transport)}</dd><dt>Status</dt><dd>${renderMcpStatusPill(server.status)}</dd><dt>Tools</dt><dd class="mono">${escape(count(server.toolCount))}</dd><dt>Last connected</dt><dd>${optionalTime(server.lastConnectedAt)}</dd><dt>Enabled</dt><dd>${server.enabled ? 'Enabled' : 'Disabled'}</dd></dl>`;
+    return `<li><h3><a href="/dashboard/mcp-servers/${encodeURIComponent(server.id)}">${escape(server.name)}</a></h3>${details}${mcpServerActions(server)}</li>`;
+  }).join('') : '<li class="empty"><h3>No MCP servers configured.</h3><p>Add a downstream MCP server to discover and execute its tools through Cloud Harness.</p></li>';
+  return `
+    ${renderMcpGatewayCard(gateway)}
+    <div class="record-heading">
+      <div><h2>MCP servers</h2><p>Downstream MCP integrations available to your signed-in identity.</p></div>
+      <div class="row-actions"><button class="accent-btn" type="button" data-mcp-add aria-haspopup="dialog">Add MCP server</button></div>
+    </div>
+    <section aria-labelledby="mcp-server-list-heading">
+      <h2 id="mcp-server-list-heading" class="sr-only">MCP servers</h2>
+      <div class="desktop-table">
+        <table>
+          <caption>${escape(servers.length)} MCP servers</caption>
+          <thead><tr><th>Name</th><th>Transport</th><th>Status</th><th>Tools</th><th>Last connected</th><th>Enabled</th><th>Actions</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <ul class="mobile-list">${cards}</ul>
+    </section>
+  `;
+}
+
+function renderMcpOverviewPanel(server, gateway) {
+  const description = server.description ? `<p class="wrap">${escape(server.description)}</p>` : '';
+  const lastError = server.lastError ? `<p class="warning wrap">${escape(server.lastError)}</p>` : '';
+  const headers = Array.isArray(server.headers) ? server.headers : [];
+  const headerItems = headers.length ? headers.map((header) => {
+    const reference = header.kind === 'secret'
+      ? `<span class="mono wrap">${escape(header.secretRef)}</span> <span class="status">Write-only secret</span>`
+      : `<span class="mono wrap">${escape(header.value ?? '')}</span>`;
+    return `<li><strong class="mono">${escape(header.name)}</strong> ${reference}</li>`;
+  }).join('') : '<li>No custom headers.</li>';
+  return `
+    <section class="panel" aria-labelledby="mcp-overview-heading">
+      <h2 id="mcp-overview-heading">Overview</h2>
+      ${description}
+      <dl class="facts">
+        <dt>Server ID</dt><dd class="mono wrap">${escape(server.id)}</dd>
+        <dt>Transport</dt><dd class="mono">${escape(server.transport)}</dd>
+        <dt>Endpoint</dt><dd class="wrap">${escape(displayEndpoint(server.endpoint))}</dd>
+        <dt>Status</dt><dd>${renderMcpStatusPill(server.status)}</dd>
+        <dt>Enabled</dt><dd>${server.enabled ? 'Enabled' : 'Disabled'}</dd>
+        <dt>Tools</dt><dd class="mono">${escape(count(server.toolCount))}</dd>
+        <dt>Last connected</dt><dd>${optionalTime(server.lastConnectedAt)}</dd>
+        <dt>Last checked</dt><dd>${optionalTime(server.lastCheckedAt)}</dd>
+        <dt>Default permission</dt><dd>${server.permissionDefault === 'deny' ? 'Deny' : 'Allow'}</dd>
+        <dt>Generation</dt><dd class="mono">${escape(server.generation)}</dd>
+      </dl>
+      ${lastError}
+      <h3>Headers</h3>
+      <ul class="record-list">${headerItems}</ul>
+    </section>
+    ${renderMcpGatewayCard(gateway)}
+  `;
+}
+
+function renderMcpToolsPanel(tools) {
+  const list = Array.isArray(tools) ? tools : [];
+  const permission = (tool) => tool.permission === 'deny' ? '<span class="status failed">Deny</span>' : '<span class="status active">Allow</span>';
+  const availability = (tool) => `<span class="status ${tool.availability === 'available' ? 'active' : 'failed'}">${escape(tool.availability === 'available' ? 'Available' : 'Unavailable')}</span>`;
+  const schema = (tool) => `<details class="mcp-tool-detail"><summary>Input schema</summary><pre class="mono wrap">${escape(JSON.stringify(tool.inputSchema ?? {}, null, 2))}</pre></details>`;
+  const rows = list.length ? list.map((tool) => `<tr>
+        <th scope="row"><span class="mono wrap">${escape(tool.upstreamName)}</span><small class="mono wrap">${escape(tool.qualifiedName)}</small></th>
+        <td class="wrap">${escape(tool.description ?? '')}</td>
+        <td>${permission(tool)}</td>
+        <td>${availability(tool)}</td>
+        <td>${schema(tool)}</td>
+      </tr>`).join('') : '<tr><td colspan="5">No tools discovered yet. Refresh tools to run discovery.</td></tr>';
+  const cards = list.length ? list.map((tool) => `<li><h3 class="mono wrap">${escape(tool.upstreamName)}</h3><p class="wrap">${escape(tool.description ?? '')}</p><dl><dt>Permission</dt><dd>${permission(tool)}</dd><dt>Availability</dt><dd>${availability(tool)}</dd></dl>${schema(tool)}</li>`).join('') : '<li class="empty"><h3>No tools discovered yet.</h3><p>Refresh tools to run discovery.</p></li>';
+  return `
+    <section class="panel mcp-tools-panel" aria-labelledby="mcp-tools-heading">
+      <h2 id="mcp-tools-heading">Tools</h2>
+      <div class="inline-form">
+        <label for="mcp-tool-search">Search tools</label>
+        <input id="mcp-tool-search" name="q" type="search" autocomplete="off" spellcheck="false" placeholder="Filter by tool name or description">
+        <button type="button" class="mcp-refresh" data-mcp-refresh>Refresh tools</button>
+      </div>
+      <div class="desktop-table">
+        <table>
+          <caption>${escape(list.length)} cached tools</caption>
+          <thead><tr><th>Tool</th><th>Description</th><th>Permission</th><th>Availability</th><th>Schema</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <ul class="mobile-list">${cards}</ul>
+    </section>
+  `;
+}
+
+function renderMcpPermissionsPanel(server, tools) {
+  const list = Array.isArray(tools) ? tools : [];
+  const defaultDeny = server.permissionDefault === 'deny';
+  const toolRows = list.length ? list.map((tool) => `<li class="permission-row"><label><span class="mono wrap">${escape(tool.upstreamName)}</span><select name="tool:${escape(tool.upstreamName)}"><option value="allow"${tool.permission === 'allow' ? ' selected' : ''}>Allow</option><option value="deny"${tool.permission === 'deny' ? ' selected' : ''}>Deny</option></select></label></li>`).join('') : '<li>No tools discovered yet. Refresh tools before setting per-tool overrides.</li>';
+  return `
+    <section class="panel" aria-labelledby="mcp-permissions-heading">
+      <h2 id="mcp-permissions-heading">Permissions</h2>
+      <p>Permissions apply to gateway execution. A deny-by-default server stays testable and refreshable.</p>
+      <form id="mcp-permissions-form" class="stack-form">
+        <input type="hidden" name="expectedGeneration" value="${escape(server.generation)}">
+        <label for="mcp-permission-default">Server default</label>
+        <select id="mcp-permission-default" name="permissionDefault"><option value="allow"${defaultDeny ? '' : ' selected'}>Allow</option><option value="deny"${defaultDeny ? ' selected' : ''}>Deny</option></select>
+        <h3>Per-tool overrides</h3>
+        <ul class="record-list mcp-permission-list">${toolRows}</ul>
+        <div class="form-row-actions"><button type="submit">Save permissions</button></div>
+        <p class="form-status" aria-live="polite"></p>
+      </form>
+    </section>
+  `;
+}
+
+function renderMcpLogsPanel(traces, cursor) {
+  const list = Array.isArray(traces) ? traces : [];
+  const statusPill = (trace) => `<span class="status ${trace.status === 'success' ? 'active' : 'failed'}">${escape(trace.status)}</span>`;
+  const detail = (trace) => `<details class="mcp-tool-detail"><summary>Detail</summary><pre class="mono wrap">${escape(JSON.stringify({ traceId: trace.id, operation: trace.operation, errorCode: trace.errorCode, errorMessage: trace.errorMessage, requestBytes: trace.requestBytes, responseBytes: trace.responseBytes }, null, 2))}</pre></details>`;
+  const rows = list.length ? list.map((trace) => `<tr>
+        <th scope="row">${time(trace.createdAt)}</th>
+        <td class="mono wrap">${escape(trace.tool ?? trace.operation ?? '')}</td>
+        <td class="mono wrap">${escape(trace.clientId ?? 'Unknown client')}</td>
+        <td class="mono">${escape(count(trace.durationMs))} ms</td>
+        <td>${statusPill(trace)}${detail(trace)}</td>
+      </tr>`).join('') : '<tr><td colspan="5">No recorded gateway calls yet.</td></tr>';
+  const cards = list.length ? list.map((trace) => `<li><h3>${time(trace.createdAt)}</h3><dl><dt>Tool</dt><dd class="mono wrap">${escape(trace.tool ?? trace.operation ?? '')}</dd><dt>Client</dt><dd class="mono wrap">${escape(trace.clientId ?? 'Unknown client')}</dd><dt>Duration</dt><dd class="mono">${escape(count(trace.durationMs))} ms</dd><dt>Status</dt><dd>${statusPill(trace)}</dd></dl>${detail(trace)}</li>`).join('') : '<li class="empty"><h3>No recorded gateway calls yet.</h3><p>Calls appear here after a client executes a tool.</p></li>';
+  return `
+    <section class="panel" aria-labelledby="mcp-logs-heading">
+      <h2 id="mcp-logs-heading">Logs</h2>
+      <p>Recent gateway calls for this server. Arguments, results, and credentials are never recorded here.</p>
+      <div class="desktop-table">
+        <table>
+          <caption>${escape(list.length)} recorded calls</caption>
+          <thead><tr><th>Time</th><th>Tool</th><th>Client</th><th>Duration</th><th>Status</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <ul class="mobile-list">${cards}</ul>
+      ${cursor ? `<button id="mcp-load-more-logs" type="button" data-cursor="${escape(cursor)}">Load more</button>` : ''}
+    </section>
+  `;
+}
+
+export function renderMcpServerDetail(server, tools, traces, activeTab = 'overview', cursor, gateway) {
+  if (!server) return '<div class="empty"><h3>MCP server not found.</h3><p>It may have been deleted or belong to another identity.</p></div>';
+  const tabs = [['overview', 'Overview'], ['tools', 'Tools'], ['permissions', 'Permissions'], ['logs', 'Logs']];
+  const tabNav = `<div class="mcp-nav-tabs" role="tablist" aria-label="MCP server sections">${tabs.map(([key, label]) => `<button type="button" class="mcp-tab-btn${activeTab === key ? ' active' : ''}" data-mcp-tab="${key}" role="tab" aria-selected="${activeTab === key ? 'true' : 'false'}">${escape(label)}</button>`).join('')}</div>`;
+  const toolCount = Array.isArray(tools) ? tools.length : count(server.toolCount);
+  const panels = { overview: renderMcpOverviewPanel(server, gateway), tools: renderMcpToolsPanel(tools), permissions: renderMcpPermissionsPanel(server, tools), logs: renderMcpLogsPanel(traces, cursor) };
+  return `
+    <nav aria-label="Breadcrumb"><a href="/dashboard/mcp-servers">MCP servers</a><span>${escape(server.name)}</span></nav>
+    <div class="record-heading">
+      <div>
+        <h2>${escape(server.name)}</h2>
+        <div class="mcp-meta-bar">
+          <span class="mono wrap">${escape(server.id)}</span>
+          ${renderMcpStatusPill(server.status)}
+          <span class="mono">${escape(server.transport)}</span>
+          <span class="mono wrap">${escape(displayEndpoint(server.endpoint))}</span>
+          <span>${server.enabled ? 'Enabled' : 'Disabled'}</span>
+          <span class="mono">${escape(toolCount)} tools</span>
+          ${time(server.lastConnectedAt ?? server.createdAt)}
+        </div>
+      </div>
+      <div class="row-actions">
+        <button class="mcp-edit" type="button" data-mcp-edit="${escape(server.id)}">Edit</button>
+        <button class="mcp-toggle" type="button" data-mcp-toggle="${escape(server.id)}" data-next-enabled="${server.enabled ? 'false' : 'true'}" data-generation="${escape(server.generation)}">${server.enabled ? 'Disable' : 'Enable'}</button>
+        <button class="mcp-test" type="button" data-mcp-test="${escape(server.id)}">Test</button>
+        <button class="mcp-refresh" type="button" data-mcp-refresh="${escape(server.id)}">Refresh tools</button>
+        <button class="danger mcp-delete" type="button" data-mcp-delete="${escape(server.id)}" data-generation="${escape(server.generation)}" data-mcp-name="${escape(server.name)}">Delete</button>
+      </div>
+    </div>
+    ${tabNav}
+    ${panels[activeTab] ?? panels.overview}
+  `;
+}
+
+/**
  * Renders the command palette result list. Options must be direct children of the
  * `role="listbox"` element — a wrapper between them removes the options from the
  * accessibility tree. Every dynamic value passes through the local `escape`.
