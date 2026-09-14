@@ -1,3 +1,18 @@
+# [0.46.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.45.0...v0.46.0) (2026-09-14)
+
+
+### Bug Fixes
+
+* **api:** stop advertising the retired networkMode field ([0fdef1f](https://github.com/bestagentkits/cloud-harness-mcp/commit/0fdef1fb27ce6c89f812588fdd3e8e9dd30e97a6))
+* **github:** keep GitHub's own rejection detail on a denied token mint ([b59a0a8](https://github.com/bestagentkits/cloud-harness-mcp/commit/b59a0a8ded4080ad19532a79261cb2cb84a182ae))
+* **github:** name the remedy when the helper reports a permission failure ([da9fe3e](https://github.com/bestagentkits/cloud-harness-mcp/commit/da9fe3e7a51b110c2018403a04e83d40ef25cbcc))
+* **github:** use a credential that can satisfy each brokered action ([30bbce4](https://github.com/bestagentkits/cloud-harness-mcp/commit/30bbce49a34dbb72b15a4ad91d862cb5b29ffc02))
+
+
+### Features
+
+* **workspace:** default to egress-capable workspaces with dashboard settings ([603322d](https://github.com/bestagentkits/cloud-harness-mcp/commit/603322d9ce72d14c6284b0b58a37bc52aa9f7469))
+
 # [0.45.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.44.0...v0.45.0) (2026-09-14)
 
 
