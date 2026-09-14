@@ -1,3 +1,10 @@
+# [0.44.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.43.0...v0.44.0) (2026-09-14)
+
+
+### Features
+
+* **site:** add light theme and icon theme toggle (system/light/dark) ([07a5fc7](https://github.com/bestagentkits/cloud-harness-mcp/commit/07a5fc7042c7223967aae8ad11157670fcac567d)), closes [hi#contrast](https://github.com/hi/issues/contrast)
+
 # [0.43.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.42.0...v0.43.0) (2026-09-14)
 
 
