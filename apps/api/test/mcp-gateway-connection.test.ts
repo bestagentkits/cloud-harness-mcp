@@ -185,6 +185,101 @@ describe('GatewayConnectionManager: connect and reuse', () => {
     await manager.closeAll();
   });
 
+  it('never evicts an in-flight client when a concurrent caller presents a different credential', async () => {
+    const { fetchImpl, state } = createFakeServer({ tools: TOOLS });
+    const manager = managerFor(fetchImpl);
+    const server = serverView();
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstEnteredFn!: () => void;
+    const firstInFn = new Promise<void>((resolve) => {
+      firstEnteredFn = resolve;
+    });
+
+    const first = manager.withConnection(server, { Authorization: 'Bearer first' }, async (client) => {
+      events.push('first:enter');
+      firstEnteredFn();
+      await firstHeld;
+      const result = await client.listTools();
+      events.push('first:exit');
+      return result;
+    });
+    await firstInFn;
+
+    const second = manager.withConnection(server, { Authorization: 'Bearer second' }, async (client) => {
+      events.push('second:enter');
+      const result = await client.listTools();
+      events.push('second:exit');
+      return result;
+    });
+    // Give the second caller time to reach the slot gate while the first is parked.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(events).toEqual(['first:enter']);
+
+    releaseFirst();
+    const outcomes = await Promise.allSettled([first, second]);
+    const rejectionMessages = outcomes
+      .filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+      // The reproduced defect rejected the parked caller with the SDK's `Not connected` error.
+      .map((outcome) => (outcome.reason as Error)?.message ?? String(outcome.reason));
+    expect(rejectionMessages).toEqual([]);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(['fulfilled', 'fulfilled']);
+    expect((outcomes[0] as PromiseFulfilledResult<{ tools: unknown[] }>).value.tools).toHaveLength(1);
+    expect((outcomes[1] as PromiseFulfilledResult<{ tools: unknown[] }>).value.tools).toHaveLength(1);
+    // Option A serialization: the credential-scoped second connect happens only after
+    // the first caller's `fn` has settled, so no live client is ever closed underneath it.
+    expect(events).toEqual(['first:enter', 'first:exit', 'second:enter', 'second:exit']);
+    expect(state.initializeCount).toBe(2);
+    expect(manager.size()).toBe(1);
+    expect(manager.health(server.id)).toBe('connected');
+    await manager.closeAll();
+  });
+
+  it('still opens exactly one connection for concurrent identical-credential callers', async () => {
+    const { fetchImpl, state } = createFakeServer({ tools: TOOLS });
+    const manager = managerFor(fetchImpl);
+    const server = serverView();
+    const headers = { Authorization: 'Bearer secret' };
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstEnteredFn!: () => void;
+    const firstInFn = new Promise<void>((resolve) => {
+      firstEnteredFn = resolve;
+    });
+
+    const first = manager.withConnection(server, headers, async (client) => {
+      events.push('first:enter');
+      firstEnteredFn();
+      await firstHeld;
+      const result = await client.listTools();
+      events.push('first:exit');
+      return result;
+    });
+    await firstInFn;
+    const second = manager.withConnection(server, headers, async (client) => {
+      events.push('second:enter');
+      const result = await client.listTools();
+      events.push('second:exit');
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(events).toEqual(['first:enter']);
+    releaseFirst();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.tools).toHaveLength(1);
+    expect(secondResult.tools).toHaveLength(1);
+    expect(events).toEqual(['first:enter', 'first:exit', 'second:enter', 'second:exit']);
+    expect(state.initializeCount).toBe(1);
+    expect(manager.size()).toBe(1);
+    await manager.closeAll();
+  });
+
   it('attaches the credential to the configured endpoint and not to another path on the same origin', async () => {
     const endpoint = new URL(ENDPOINT);
     const seen: Array<{ url: string; authorization: string | null }> = [];
@@ -328,6 +423,34 @@ describe('GatewayConnectionManager: deadline, cancellation, and reconnect', () =
     ).rejects.toBeTruthy();
     expect(manager.size()).toBe(0);
     expect(manager.health(server.id)).toBe('disconnected');
+    await manager.withConnection(server, headers, (client) => client.listTools());
+    expect(state.initializeCount).toBe(2);
+    await manager.closeAll();
+  });
+
+  it('re-asserts that a caller abort keeps the entry while a transport failure evicts it', async () => {
+    const { fetchImpl, state } = createFakeServer({ tools: TOOLS, failToolCallTimes: 1 });
+    const manager = managerFor(fetchImpl);
+    const server = serverView();
+    const headers = { Authorization: 'Bearer secret' };
+    await manager.withConnection(server, headers, (client) => client.listTools());
+    expect(state.initializeCount).toBe(1);
+
+    const controller = new AbortController();
+    const aborted = manager.withConnection(server, headers, () => new Promise<never>(() => undefined), controller.signal);
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(manager.size()).toBe(1);
+    expect(manager.health(server.id)).toBe('connected');
+    await manager.withConnection(server, headers, (client) => client.listTools());
+    expect(state.initializeCount).toBe(1);
+
+    await expect(
+      manager.withConnection(server, headers, (client) => client.callTool({ name: 'issue_create', arguments: {} }))
+    ).rejects.toBeTruthy();
+    expect(manager.size()).toBe(0);
+    expect(manager.health(server.id)).toBe('disconnected');
+
     await manager.withConnection(server, headers, (client) => client.listTools());
     expect(state.initializeCount).toBe(2);
     await manager.closeAll();

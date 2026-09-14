@@ -195,6 +195,14 @@ export class GatewayConnectionManager {
    * starts only after the caller owns the server slot, so a queued caller is never
    * failed for waiting on someone else's connect. The caller's own abort never evicts
    * the shared entry; a transport failure or our own timeout does.
+   *
+   * The slot is held for the whole operation — connect, `fn`, and the teardown
+   * decision — because credential-scoped connection reuse is only correct if a
+   * caller's live client cannot be evicted from under it. Per-server serialization
+   * is deliberate: correctness of credential-scoped connection reuse over per-server
+   * call concurrency. A second caller with a different credential fingerprint (or a
+   * retry after a transport failure) can therefore only reach `ensureEntry`'s evict
+   * branch after the previous holder's `fn` has settled.
    */
   async withConnection<T>(
     server: McpGatewayServerView,
@@ -205,23 +213,26 @@ export class GatewayConnectionManager {
     if (this.closed) throw this.closedError;
     const fingerprint = headerFingerprint(headers);
     const release = await this.acquireSlot(server.id);
-    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-    const signals: AbortSignal[] = [timeoutSignal, this.shutdownController.signal];
-    if (signal) signals.push(signal);
-    const combined = AbortSignal.any(signals);
+    try {
+      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+      const signals: AbortSignal[] = [timeoutSignal, this.shutdownController.signal];
+      if (signal) signals.push(signal);
+      const combined = AbortSignal.any(signals);
 
-    let entry: ConnectionEntry;
-    try {
-      entry = await this.raceAbort(this.ensureEntry(server, headers, fingerprint, combined), combined, timeoutSignal, signal);
-    } catch (error) {
+      let entry: ConnectionEntry;
+      try {
+        entry = await this.raceAbort(this.ensureEntry(server, headers, fingerprint, combined), combined, timeoutSignal, signal);
+      } catch (error) {
+        throw this.classifyFailure(server.id, error, timeoutSignal, signal);
+      }
+      try {
+        return await this.raceAbort(fn(entry.client), combined, timeoutSignal, signal);
+      } catch (error) {
+        throw this.classifyFailure(server.id, error, timeoutSignal, signal);
+      }
+    } finally {
+      // Released last so eviction decisions above happen while the slot is still held.
       release();
-      throw this.classifyFailure(server.id, error, timeoutSignal, signal);
-    }
-    release();
-    try {
-      return await this.raceAbort(fn(entry.client), combined, timeoutSignal, signal);
-    } catch (error) {
-      throw this.classifyFailure(server.id, error, timeoutSignal, signal);
     }
   }
 
