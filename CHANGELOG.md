@@ -1,3 +1,16 @@
+# [0.43.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.42.0...v0.43.0) (2026-09-14)
+
+
+### Bug Fixes
+
+* **mcp:** hold the connection slot for the whole downstream call ([3a1c936](https://github.com/bestagentkits/cloud-harness-mcp/commit/3a1c9362d46ba9b1d7182a92e16995f88f39f9e0))
+* **mcp:** resolve PR review findings for the gateway ([8b00cd1](https://github.com/bestagentkits/cloud-harness-mcp/commit/8b00cd1f3f3f6f067346507cde2205a0bf66db78))
+
+
+### Features
+
+* **mcp:** add MCP gateway with progressive tool disclosure ([f90143f](https://github.com/bestagentkits/cloud-harness-mcp/commit/f90143f9af3ec2447c2e9f37cea77d0b2bf093ab)), closes [#188](https://github.com/bestagentkits/cloud-harness-mcp/issues/188)
+
 # [0.42.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.41.0...v0.42.0) (2026-09-14)
 
 
