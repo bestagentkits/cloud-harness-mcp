@@ -282,6 +282,23 @@ describe('GitHub App broker', () => {
     });
   });
 
+  it('keeps the upstream 422 message so a validation rejection stays diagnosable', async () => {
+    authMocks.installationAuth.mockRejectedValueOnce(Object.assign(new Error('Validation Failed: repository not found'), { status: 422 }));
+    const installations = new InMemoryGitHubInstallationStore();
+    installations.replaceVerified('principal-a', activeInstallation({ issues: 'write', pullRequests: 'write' }), 1_000);
+
+    const failure = await mintPrincipalRepositoryScopedToken({
+      config: { ...config, authMode: 'owner-bearer' as const }, principalId: 'principal-a',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'issues',
+      requiredPermission: 'write'
+    }).catch((error: unknown) => error as Error);
+
+    expect(failure.message).toContain('GitHub App installation cannot grant the requested permissions');
+    expect(failure.message).toContain('Validation Failed: repository not found');
+  });
+
   it('keeps a mint failure that is not a rejected grant as UNAVAILABLE', async () => {
     authMocks.installationAuth.mockRejectedValueOnce({ status: 500 });
     const installations = new InMemoryGitHubInstallationStore();

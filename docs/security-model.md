@@ -167,7 +167,13 @@ The shipped default executor network profile is `dependency-access`, so a
 workspace can reach the GitHub API and the bundled `gh` CLI without an explicit
 request. `network-none` is the per-workspace or instance-wide opt-out that
 blocks all executor egress, including dependency installation and networked
-repository commands. The `dependency-access` profile is enforced below MCP
+repository commands. The dashboard Settings page owns that instance-wide default
+through dashboard-only internal runner operations; it is instance state rather
+than principal state, so in a deployment that serves more than one principal any
+authenticated dashboard principal can change the posture of future workspaces.
+That matches the single-owner threat model this harness is built for; a
+multi-tenant deployment needs an admin gate on the settings mutation before it
+can rely on per-principal policy. The `dependency-access` profile is enforced below MCP
 tool policy: the executor attaches only to a dedicated managed Docker bridge
 (`chm-egress0`) with inter-container communication disabled and Docker's
 default masquerade off, and a transactional host firewall (installed via a

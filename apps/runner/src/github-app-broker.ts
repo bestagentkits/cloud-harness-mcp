@@ -168,10 +168,20 @@ async function mintForInstallationScoped(
     return { token: authentication.token, permissions: authentication.permissions };
   } catch (error) {
     if (installationTokenStatus(error) === 422) {
-      throw new HarnessError('FORBIDDEN', 'GitHub App installation cannot grant the requested permissions', 403, false, {
-        reason: 'permission_not_granted',
-        requiredScopes: [permissionScope]
-      });
+      // GitHub answers 422 both for permissions the installation does not grant and
+      // for other validation failures, so keep its own message for diagnosis while
+      // the type still tells the caller which remedy applies.
+      const detail = error instanceof Error ? error.message : '';
+      throw new HarnessError(
+        'FORBIDDEN',
+        `GitHub App installation cannot grant the requested permissions${detail ? `: ${detail.slice(0, 300)}` : ''}`,
+        403,
+        false,
+        {
+          reason: 'permission_not_granted',
+          requiredScopes: [permissionScope]
+        }
+      );
     }
     throw new HarnessError('UNAVAILABLE', `GitHub App could not mint an installation token with ${permissionScope} permission`, 502, true);
   }
