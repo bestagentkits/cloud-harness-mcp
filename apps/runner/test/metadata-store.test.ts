@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-import { downgradeMetadataSchemaToV1, downgradeMetadataSchemaToV2, downgradeMetadataSchemaToV3, migrateMetadataSchema } from '../src/metadata-schema.js';
+import { downgradeMetadataSchemaToV1, downgradeMetadataSchemaToV2, downgradeMetadataSchemaToV3, downgradeMetadataSchemaToV4, downgradeMetadataSchemaToV5, migrateMetadataSchema } from '../src/metadata-schema.js';
+import { downgradeStateDbToV5 } from '../src/metadata-schema-down-v5.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
@@ -35,7 +36,7 @@ describe('MetadataStore', () => {
   it('migrates once, survives restart, and enforces owner-qualified foreign keys', () => {
     const { path, owner, foreign, store, keyring } = fixture();
     const { project, environment } = projectEnvironment(store, owner);
-    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(5);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
     expect(() => store.database.prepare(`INSERT INTO environments
       (id, principal_id, project_id, name, state, generation, created_at, updated_at)
       VALUES (?, ?, ?, 'Foreign', 'ACTIVE', 1, 1, 1)`).run(`env_${'x'.repeat(24)}`, foreign, project.id)).toThrow();
@@ -356,6 +357,74 @@ describe('MetadataStore', () => {
     keyring.close();
   });
 
+  it('upgrades an existing v5 ledger to v6 in place and creates the gateway tables', () => {
+    const { path, store, keyring } = fixture();
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
+
+    // Rewind to the shipped v5 shape, then migrate the same database forward again.
+    downgradeMetadataSchemaToV5(store.database);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(5);
+    expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mcp_gateway_servers'").get()).toBeUndefined();
+
+    migrateMetadataSchema(store.database);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
+    for (const table of ['mcp_gateway_servers', 'mcp_gateway_tools', 'mcp_gateway_tool_permissions', 'mcp_gateway_traces']) {
+      expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeDefined();
+    }
+
+    // Every public downgrade can be entered directly from v6 without leaving gateway tables behind.
+    downgradeMetadataSchemaToV3(store.database);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(3);
+    expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mcp_gateway_servers'").get()).toBeUndefined();
+
+    store.close();
+    keyring.close();
+    void path;
+  });
+
+  it('runs the bounded v6 -> v5 entry point and refuses a non-v6 ledger', () => {
+    const { path, owner, store, keyring } = fixture();
+    const { environment } = projectEnvironment(store, owner);
+    const secret = store.secrets.create(owner, environment.id, 'API_TOKEN', 'value', 0)!;
+    const globalSecret = store.createGlobalSecret(owner, 'GLOBAL_KEY', 'global-value', 0)!;
+    const apiKeyId = `apk_${'a'.repeat(24)}`;
+    store.database.prepare(`INSERT INTO api_keys
+      (id, principal_id, name, display_prefix, secret_hash, state, generation, created_at, expires_at)
+      VALUES (?, ?, 'CLI', 'chm_key_apk_', ?, 'ACTIVE', 1, 1, 4102444800000)`).run(apiKeyId, owner, new Uint8Array(32));
+    store.close();
+    keyring.close();
+
+    const out: string[] = [];
+    const errors: string[] = [];
+    const io = { out: (line: string) => out.push(line), error: (line: string) => errors.push(line) };
+    expect(downgradeStateDbToV5(path, io)).toBe(0);
+    expect(out).toEqual(['metadata-schema-version=5']);
+    expect(errors).toEqual([]);
+
+    const db = new DatabaseSync(path);
+    const version = (db.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
+    expect(version).toBe(5);
+    // The v5 tables and columns survive a bounded downgrade: only the gateway tables go.
+    const columns = (db.prepare("SELECT name FROM pragma_table_info('secret_references')").all() as { name: string }[])
+      .map((column) => column.name);
+    expect(columns).toContain('purpose');
+    expect(db.prepare('SELECT purpose FROM secret_references WHERE id = ?').get(secret.id)).toEqual({ purpose: 'runtime' });
+    expect(db.prepare('SELECT 1 FROM global_secret_references WHERE id = ?').get(globalSecret.id)).toBeDefined();
+    expect(db.prepare('SELECT COUNT(*) AS count FROM api_keys').get()).toEqual({ count: 1 });
+    for (const table of ['mcp_gateway_servers', 'mcp_gateway_tools', 'mcp_gateway_tool_permissions', 'mcp_gateway_traces']) {
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeUndefined();
+    }
+    db.close();
+
+    // A second run finds v5 and refuses with a clear message without changing anything.
+    expect(downgradeStateDbToV5(path, io)).toBe(1);
+    expect(errors.join(' ')).toContain('metadata schema must be version 6');
+    const refused = new DatabaseSync(path);
+    expect((refused.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version).toBe(5);
+    expect(refused.prepare('SELECT COUNT(*) AS count FROM api_keys').get()).toEqual({ count: 1 });
+    refused.close();
+  });
+
   it('supports schema migration and downgrade ladders v4 -> v3 -> v2 -> v1', () => {
     const { path, store, keyring } = fixture();
     store.close();
@@ -363,7 +432,7 @@ describe('MetadataStore', () => {
 
     const db = new DatabaseSync(path);
     const initialRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
-    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(5);
+    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(6);
 
     downgradeMetadataSchemaToV3(db);
     const v3Row = db.prepare('SELECT version FROM metadata_schema_meta').get();
@@ -379,7 +448,31 @@ describe('MetadataStore', () => {
 
     migrateMetadataSchema(db);
     const migratedRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
-    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(5);
+    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(6);
     db.close();
+  });
+
+  it('enters v4, v2, and v1 directly from v6 without leaving gateway tables', () => {
+    const gatewayTables = ['mcp_gateway_servers', 'mcp_gateway_tools', 'mcp_gateway_tool_permissions', 'mcp_gateway_traces'];
+    const cases: Array<{ target: number; downgrade: (database: DatabaseSync) => void }> = [
+      { target: 4, downgrade: downgradeMetadataSchemaToV4 },
+      { target: 2, downgrade: downgradeMetadataSchemaToV2 },
+      { target: 1, downgrade: downgradeMetadataSchemaToV1 }
+    ];
+    for (const entry of cases) {
+      const { store, keyring } = fixture();
+      expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
+      for (const table of gatewayTables) {
+        expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeDefined();
+      }
+
+      entry.downgrade(store.database);
+      expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(entry.target);
+      for (const table of gatewayTables) {
+        expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeUndefined();
+      }
+      store.close();
+      keyring.close();
+    }
   });
 });

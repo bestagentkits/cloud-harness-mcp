@@ -156,6 +156,26 @@ binary, keep `API_KEY_AUTH_ENABLED=false`, and canary readiness, OAuth,
 dashboard, unrelated metadata, and the absence of the hidden route. Restore
 the backup instead of retrying manually if the downgrade does not complete.
 
+## MCP gateway schema rollback
+
+A pre-v6 runner cannot start on a v6 ledger. Downgrading from metadata schema v6
+to a pre-v6 runner destroys the MCP gateway registry by design. Quiesce dashboard
+and MCP writes, stop the service, and take a coherent recovery backup before
+running the runner's bounded downgrade from the exact release checkout:
+
+```bash
+npm run metadata:down:v5 -w @cloud-harness/runner -- /path/to/db
+```
+
+Keep the database offline for the command. It requires version 6, drops only the
+four `mcp_gateway_*` tables (servers, cached tools, tool permissions, and
+traces), and resets the metadata version to 5. Unlike `metadata:down:v1`, it does
+not chain further down, so `api_keys`, `global_secret_references`,
+`global_secret_versions`, and `secret_references.description` are preserved.
+Then deploy the prior runner and canary readiness, the dashboard, unrelated
+metadata, and the absence of the `/mcp-gateway` route. Restore-from-backup
+remains the fallback instead of retrying a downgrade that does not complete.
+
 ## Release rollback
 
 An automatic deployment failure restores the prior recorded commit, the

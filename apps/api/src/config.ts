@@ -26,7 +26,16 @@ export function loadApiConfig(): ApiConfig {
     publicHosts: csv(process.env.API_PUBLIC_HOSTS, 'localhost,127.0.0.1'),
     allowedOrigins: csv(process.env.API_ALLOWED_ORIGINS),
     requestTimeoutMs: process.env.REQUEST_TIMEOUT_MS,
-    maxBodyBytes: process.env.MAX_BODY_BYTES
+    maxBodyBytes: process.env.MAX_BODY_BYTES,
+    mcpGatewayTimeoutMs: environment('MCP_GATEWAY_TIMEOUT_MS'),
+    mcpGatewayMaxResponseBytes: environment('MCP_GATEWAY_MAX_RESPONSE_BYTES'),
+    mcpGatewayMaxToolsPerServer: environment('MCP_GATEWAY_MAX_TOOLS_PER_SERVER'),
+    mcpGatewayMaxSchemaBytes: environment('MCP_GATEWAY_MAX_SCHEMA_BYTES'),
+    mcpGatewayMaxCatalogBytes: environment('MCP_GATEWAY_MAX_CATALOG_BYTES'),
+    mcpGatewayMaxTraceRows: environment('MCP_GATEWAY_MAX_TRACE_ROWS'),
+    mcpGatewayMaxConnections: environment('MCP_GATEWAY_MAX_CONNECTIONS'),
+    mcpGatewayAllowInsecureHttp: environment('MCP_GATEWAY_ALLOW_INSECURE_HTTP'),
+    mcpGatewayAllowPrivateEndpoints: environment('MCP_GATEWAY_ALLOW_PRIVATE_ENDPOINTS')
     ,apiKeyAuthEnabled: environment('API_KEY_AUTH_ENABLED'),
     apiKeyGatewayAccessAudience: environment('API_KEY_GATEWAY_ACCESS_AUDIENCE'),
     apiKeyGatewayServiceSubject: environment('API_KEY_GATEWAY_SERVICE_SUBJECT'),

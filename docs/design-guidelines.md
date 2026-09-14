@@ -141,6 +141,17 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
   exposes no owner ID, runner URL, token, or secret.
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
+- **MCP Servers:** the section lists a principal's downstream MCP servers with
+  transport, status, cached tool count, last connected, and enabled state, and
+  offers add, edit, enable/disable, Test, Refresh tools, delete, and a detail
+  view with Overview / Tools / Permissions / Logs. Its gateway card shows the one
+  copyable `/mcp-gateway` endpoint, names the credential lane the endpoint
+  actually accepts (owner bearer or Access session), states that the managed
+  API-key lane is not yet available, and lists the two hard limitations an
+  operator hits first: HTTP redirects are refused, and `stdio` downstream
+  servers are unsupported. Owners: `renderMcpGatewayCard` and
+  `renderMcpServersIndex` in `dashboard-render.js`, and the MCP server routes in
+  [`apps/api/src/dashboard-gateway-router.ts`](../apps/api/src/dashboard-gateway-router.ts).
 - **Interaction states:** every control ships default / hover / `:focus-visible`
   / active / disabled; touch targets >= 44px (small controls expand their hit
   area via `::before`); inputs >= 16px.

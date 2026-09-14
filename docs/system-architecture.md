@@ -17,6 +17,14 @@ Static-header MCP client
   -> harness.zuey.me/mcp-api-key (exact hidden origin route)
   -> API (verified gateway subject AND principal-bound API key)
   -> the same runner and execution path above
+
+MCP gateway client
+  -> harness.zuey.me/mcp-gateway (same owner bearer or verified Access assertion)
+  -> credential-free TCP ingress proxy (loopback-published)
+  -> API (gateway composition root; registry, policy, traces, and secret
+     resolution stay in the runner)
+  -> principal-configured downstream MCP server over an API-owned, address-pinned
+     outbound socket
 ```
 
 Cloudflare Access is an optional public authentication edge in front of nginx;
@@ -42,8 +50,16 @@ port mapping for a service attached only to an `internal` network on the target
 Linux engine. Docker documents internal networks as having no connection to
 host network interfaces or external gateway in its
 [Compose networking guide](https://docs.docker.com/compose/how-tos/networking/#internal-networks).
-Publishing from a separate, secret-free proxy preserves the loopback listener
+Published from a separate, secret-free proxy preserves the loopback listener
 without granting the API an external gateway.
+
+The gateway adds one egress path from the API: it dials downstream MCP servers
+at principal-configured URLs. That socket is validated and pinned at connect
+time, stays on the API's egress network, and never runs in the runner. The
+runner instead resolves the referenced global secrets for one server and one
+explicit purpose and returns them over the internal service-token channel; the
+[security model](security-model.md) records the boundary change and its
+residual risk.
 
 The executor is where repository-controlled code runs. It is non-root, has a
 read-only root filesystem, receives one writable repository mount, and has no
@@ -70,13 +86,24 @@ Third-party agent toolkits are acquired and normalized via disposable clone help
 
 ## Composition roots and transports
 
-Cloud Harness MCP supports two distinct composition roots sharing the same public `TOOL_SPECS` and result envelopes:
+Cloud Harness MCP supports three distinct composition roots. The two
+coding-harness roots share the public `TOOL_SPECS` and result envelopes; the
+gateway root owns its own constant five-tool contract.
 
 1. **Streamable HTTP mode (default):**
    `cloud-harness-mcp --transport http` (or default without flags).
    Assembles Express routes, bearer/Access authentication, and translates requests through `RunnerClient` to the isolated Docker runner on a private network.
 
-2. **Local stdio mode:**
+2. **MCP gateway mode:**
+   `https://<host>/mcp-gateway`.
+   A second Streamable HTTP composition root that exposes the constant five
+   meta-tools over a principal-scoped registry of downstream MCP servers. The
+   runner owns registry persistence, cached tool metadata, the allow/deny
+   decision, traces, and encrypted-secret resolution; the API owns the outbound
+   MCP client socket and never dials a configured URL from the runner. See the
+   [MCP gateway](mcp-gateway.md).
+
+3. **Local stdio mode:**
    `cloud-harness-mcp --transport stdio --workspace <path>`.
    Assembles `serveStdio` directly connected to `LocalWorkspaceBackend`. Binds to one canonical local project directory, manages host subprocesses via `LocalOperationManager`, and parameterizes `worker/harness-worker.mjs` via `HARNESS_WORKSPACE_ROOT`.
 
@@ -102,6 +129,10 @@ Executable owners:
 - Versioned dashboard-only runner contracts:
   [`packages/contracts/src/internal-runner-api.ts`](../packages/contracts/src/internal-runner-api.ts)
   and [`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts)
+- MCP gateway contracts, registry, connection manager, URL policy, and traces:
+  [`packages/contracts/src/mcp-gateway-schemas.ts`](../packages/contracts/src/mcp-gateway-schemas.ts),
+  [`apps/runner/src/mcp-gateway-store.ts`](../apps/runner/src/mcp-gateway-store.ts), and
+  [`apps/api/src/mcp-gateway/`](../apps/api/src/mcp-gateway/)
 - Workspace lifecycle, Docker policy, unified reaper, and repository caching:
   [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts) and
   [`apps/runner/src/repository-cache-manager.ts`](../apps/runner/src/repository-cache-manager.ts)
@@ -208,8 +239,8 @@ Principal, project/environment, encrypted global and environment secret
 references/versions (`global_secret_references`, `global_secret_versions`,
 `secret_references`, `secret_versions`), workspace secret snapshots
 (`workspace_secret_snapshots`, `workspace_secret_snapshot_headers`), API-key digests,
-GitHub bindings, artifact metadata, and audit state share the runner-owned SQLite
-database. Ingest-time stream redactors in the runner sanitize exact secret matches
+GitHub bindings, artifact metadata, MCP gateway registry/tool/permission/trace tables,
+and audit state share the runner-owned SQLite database. Ingest-time stream redactors in the runner sanitize exact secret matches
 (≥ 4 UTF-8 bytes) across streaming task, shell, and session stdout/stderr chunks before
 retained buffering, while synchronous `exec_run` command outputs are sanitized after
 capture before return. Artifact payloads persist under the artifact root until deletion
@@ -229,11 +260,11 @@ Production Compose binds the credential-free ingress proxy to
 `127.0.0.1:3100`; the API and runner have no published host ports. Runner
 egress does not expose an ingress port. Existing
 nginx is the only intended origin host listener and proxies `/mcp`,
-`/mcp-api-key`, `/dashboard`,
+`/mcp-gateway`, `/mcp-api-key`, `/dashboard`,
 `/healthz`, and `/readyz` to loopback. In Access mode the owned public hostname
-uses one Access application for `/mcp` and `/dashboard`, plus a separate
-application scoped exactly to `/mcp-api-key`. The external Worker owns the
-public static-key hostname and cannot proxy dashboard or arbitrary origin
+uses one Access application for `/mcp`, `/mcp-gateway`, and `/dashboard`, plus a
+separate application scoped exactly to `/mcp-api-key`. The external Worker owns
+the public static-key hostname and cannot proxy dashboard or arbitrary origin
 traffic. The
 [deployment guide](deployment.md) explains the safe install order and the TLS
 step that is intentionally outside Compose.

@@ -65,6 +65,19 @@ export const getKnowledgeGraph = (params = {}) => {
 export const createKnowledgeLink = (payload) => api('/knowledge/links', { method: 'POST', body: JSON.stringify(payload) });
 export const deleteKnowledgeLink = (payload) => api('/knowledge/links', { method: 'DELETE', body: JSON.stringify(payload) });
 
+export const listMcpServers = () => api('/mcp-servers');
+export const getMcpServer = (serverId) => api(`/mcp-servers/${encodeURIComponent(serverId)}`);
+export const createMcpServer = (payload) => api('/mcp-servers', { method: 'POST', body: JSON.stringify(payload) });
+export const updateMcpServer = (serverId, payload) => api(`/mcp-servers/${encodeURIComponent(serverId)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+export const deleteMcpServer = (serverId, expectedGeneration) => api(`/mcp-servers/${encodeURIComponent(serverId)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
+export const setMcpServerEnabled = (serverId, enabled, expectedGeneration) => api(`/mcp-servers/${encodeURIComponent(serverId)}/enabled`, { method: 'POST', body: JSON.stringify({ enabled, expectedGeneration }) });
+export const setMcpServerPermissions = (serverId, payload) => api(`/mcp-servers/${encodeURIComponent(serverId)}/permissions`, { method: 'PUT', body: JSON.stringify(payload) });
+export const testMcpServer = (serverId) => api(`/mcp-servers/${encodeURIComponent(serverId)}/test`, { method: 'POST' });
+export const refreshMcpServerTools = (serverId) => api(`/mcp-servers/${encodeURIComponent(serverId)}/refresh`, { method: 'POST' });
+export const listMcpServerLogs = (serverId, cursor) => api(`/mcp-servers/${encodeURIComponent(serverId)}/logs${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
+export const getMcpGatewayEndpoint = () => api('/mcp-gateway');
+export const listGlobalSecrets = () => api('/secrets');
+
 async function problem(response) {
   let body = {};
   try { body = await response.json(); } catch { /* sanitized fallback */ }

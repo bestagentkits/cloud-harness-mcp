@@ -45,6 +45,7 @@ describe('dashboard static UI contract', () => {
       ['/dashboard/overview', 'Overview'], ['/dashboard', 'Workspaces'], ['/dashboard/projects', 'Projects'],
       ['/dashboard/secrets', 'Secrets'], ['/dashboard/models', 'Models'], ['/dashboard/artifacts', 'Artifacts'],
       ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub'],
+      ['/dashboard/mcp-servers', 'MCP Servers'],
       ['/dashboard/profile', 'Profile']
     ]) {
       expect(html).toContain(`href="${path}"`);

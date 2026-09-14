@@ -55,6 +55,8 @@ export function createDashboardAssetsRouter(): Router {
     '/api-keys',
     '/knowledge',
     '/knowledge/:id',
+    '/mcp-servers',
+    '/mcp-servers/:serverId',
     '/profile',
   ], (request, response) => {
     response.setHeader('Cache-Control', 'no-store');

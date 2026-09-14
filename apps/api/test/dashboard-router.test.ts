@@ -17,7 +17,10 @@ const config: ApiConfig = {
   apiKeyAuthEnabled: true, apiKeyGatewayAccessAudience: 'api-key-audience',
   apiKeyGatewayServiceSubject: 'cf-service:d29ya2Vy', apiKeyGatewayPublicUrl: 'https://api.example/mcp',
   runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['dashboard.example'],
-  allowedOrigins: ['https://dashboard.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536
+  allowedOrigins: ['https://dashboard.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
+  mcpGatewayTimeoutMs: 30_000, mcpGatewayMaxResponseBytes: 262_144, mcpGatewayMaxToolsPerServer: 500,
+  mcpGatewayMaxSchemaBytes: 65_536, mcpGatewayMaxCatalogBytes: 2_097_152, mcpGatewayMaxTraceRows: 20_000,
+  mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
 };
 
 type Reply = { status: number; headers: Record<string, string | string[] | undefined>; text: string; json: any };

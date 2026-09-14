@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { NextFunction, Response, Router } from 'express';
-import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
+import { validateGatewayEndpoint } from './mcp-gateway/url-policy.js';
+import type { McpGatewayService } from './mcp-gateway/service.js';
 
 const internalId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9_-]{20,80}$`));
 const generation = z.object({ expectedGeneration: z.number().int().positive() }).strict();
@@ -13,7 +15,8 @@ export function registerDashboardControlRoutes(
   router: Router,
   runner: DashboardRunnerClient,
   principal: (request: DashboardRequest, response: Response) => RunnerPrincipalSelector | undefined,
-  config?: ApiConfig
+  config?: ApiConfig,
+  gateway?: McpGatewayService
 ): void {
   router.get('/api/v1/projects', endpoint('project_list', () => ({})));
   router.post('/api/v1/projects', endpoint('project_create', (request) => createName.parse(request.body)));
@@ -142,14 +145,81 @@ export function registerDashboardControlRoutes(
   })));
   router.post('/api/v1/knowledge/links', endpoint('knowledge_dashboard_link_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.delete('/api/v1/knowledge/links', endpoint('knowledge_dashboard_link_delete', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.get('/api/v1/mcp-servers', endpoint('mcp_server_list', () => ({})));
+  router.post('/api/v1/mcp-servers', endpoint('mcp_server_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {}), { evict: true, validateEndpoint: true }));
+  router.get('/api/v1/mcp-servers/:serverId', endpoint('mcp_server_get', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId) })));
+  router.patch('/api/v1/mcp-servers/:serverId', endpoint('mcp_server_update', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId), ...(request.body && typeof request.body === 'object' ? request.body : {}) }), { evict: true, validateEndpoint: true }));
+  router.delete('/api/v1/mcp-servers/:serverId', endpoint('mcp_server_delete', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId), ...generation.parse(request.body) }), { evict: true }));
+  router.post('/api/v1/mcp-servers/:serverId/enabled', endpoint('mcp_server_set_enabled', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId), ...(request.body && typeof request.body === 'object' ? request.body : {}) }), { evict: true }));
+  // The frozen permission payload uses `permissionDefault`; `default` is never forwarded.
+  router.put('/api/v1/mcp-servers/:serverId/permissions', endpoint('mcp_server_set_permissions', (request) => {
+    const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+    return {
+      serverId: internalId('mcps').parse(request.params.serverId),
+      ...(body.permissionDefault !== undefined ? { permissionDefault: body.permissionDefault } : {}),
+      ...(body.tools !== undefined ? { tools: body.tools } : {}),
+      ...(body.expectedGeneration !== undefined ? { expectedGeneration: body.expectedGeneration } : {})
+    };
+  }, { evict: true }));
+  router.get('/api/v1/mcp-servers/:serverId/logs', endpoint('mcp_gateway_trace_list', (request) => ({ serverId: internalId('mcps').parse(request.params.serverId), limit: Number(request.query.limit ?? 50), ...(request.query.cursor ? { cursor: String(request.query.cursor) } : {}) })));
 
-  function endpoint(operation: MetadataRunnerOperation, input: (request: DashboardRequest) => Record<string, unknown>) {
+  /**
+   * Write-time SSRF validation for a downstream endpoint. The runner re-validates
+   * on connect, but an unsafe URL must be refused before it is persisted or
+   * forwarded. Validation never echoes userinfo, query string, or fragment, so
+   * `validation.error` is safe to return. A payload without an endpoint (a
+   * partial update) is left to the runner.
+   */
+  async function rejectUnsafeEndpoint(payload: Record<string, unknown>, response: Response): Promise<boolean> {
+    if (typeof payload.endpoint !== 'string') return false;
+    const validation = await validateGatewayEndpoint(payload.endpoint, {
+      allowInsecureHttp: config?.mcpGatewayAllowInsecureHttp === true,
+      allowPrivateEndpoints: config?.mcpGatewayAllowPrivateEndpoints === true
+    });
+    if (validation.ok) return false;
+    response.status(400).json({ error: 'invalid_input', message: validation.error });
+    return true;
+  }
+
+  /**
+   * An SSE downstream server's JSON-RPC POST goes to a message path different from
+   * the configured endpoint, so a secret-reference header cannot be attached there
+   * without widening credential scope. Reject the combination before the runner call
+   * so the browser gets the reason instead of saving a server whose Test/Refresh
+   * succeeds while every real call fails.
+   */
+  function rejectAuthenticatedSse(payload: Record<string, unknown>, response: Response): boolean {
+    if (payload.transport !== 'sse') return false;
+    const headers = Array.isArray(payload.headers) ? payload.headers : [];
+    const hasSecretHeader = headers.some((header) => {
+      if (!header || typeof header !== 'object') return false;
+      const value = (header as { value?: unknown }).value;
+      return Boolean(value) && typeof value === 'object' && 'secretRef' in (value as Record<string, unknown>);
+    });
+    if (!hasSecretHeader) return false;
+    response.status(400).json({ error: 'invalid_input', message: MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE });
+    return true;
+  }
+
+  function endpoint(operation: MetadataRunnerOperation, input: (request: DashboardRequest) => Record<string, unknown>, options?: { evict?: boolean; validateEndpoint?: boolean }) {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
       try {
         const selected = principal(request, response);
         if (!selected) return;
         if (!runner.callInternal) throw new Error('dashboard controls are unavailable');
-        sendRunnerResponse(response, operation, await runner.callInternal(operation, input(request), selected));
+        const payload = input(request);
+        if ((operation === 'mcp_server_create' || operation === 'mcp_server_update') && rejectAuthenticatedSse(payload, response)) return;
+        if (options?.validateEndpoint && await rejectUnsafeEndpoint(payload, response)) return;
+        const result = await runner.callInternal(operation, payload, selected);
+        sendRunnerResponse(response, operation, result);
+        // A successful mutation evicts the API-side catalog and, when the route names
+        // a server, closes its cached downstream connection so stale credentials or
+        // endpoints cannot ride a connection the registry no longer describes.
+        if (options?.evict && result.ok) {
+          gateway?.invalidateCatalog(selected);
+          const serverId = typeof payload.serverId === 'string' ? payload.serverId : undefined;
+          if (serverId) gateway?.invalidateConnection(serverId);
+        }
       } catch (error) { next(error); }
     };
   }

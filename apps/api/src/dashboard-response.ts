@@ -59,7 +59,11 @@ export type DashboardResponseOperation =
   | 'model_credential_list' | 'model_credential_create' | 'model_credential_rotate' | 'model_credential_delete'
   | 'model_profile_list' | 'model_profile_create' | 'model_profile_update' | 'model_profile_activate' | 'model_profile_disable' | 'model_profile_delete'
   | 'model_config_status'
-  | 'knowledge_dashboard_list' | 'knowledge_dashboard_get' | 'knowledge_dashboard_create' | 'knowledge_dashboard_update' | 'knowledge_dashboard_delete' | 'knowledge_dashboard_search' | 'knowledge_dashboard_graph' | 'knowledge_dashboard_link_create' | 'knowledge_dashboard_link_delete';
+  | 'knowledge_dashboard_list' | 'knowledge_dashboard_get' | 'knowledge_dashboard_create' | 'knowledge_dashboard_update' | 'knowledge_dashboard_delete' | 'knowledge_dashboard_search' | 'knowledge_dashboard_graph' | 'knowledge_dashboard_link_create' | 'knowledge_dashboard_link_delete'
+  | 'mcp_server_list' | 'mcp_server_get' | 'mcp_server_create' | 'mcp_server_update' | 'mcp_server_delete'
+  | 'mcp_server_set_enabled' | 'mcp_server_set_permissions' | 'mcp_server_replace_tools'
+  | 'mcp_server_connection_result' | 'mcp_server_get_credentials'
+  | 'mcp_gateway_catalog' | 'mcp_gateway_trace_append' | 'mcp_gateway_trace_list';
 function pick(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return Object.fromEntries(keys.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
@@ -71,6 +75,34 @@ const secretKeys = ['id', 'environmentId', 'name', 'description', 'state', 'vers
 const artifactKeys = ['artifactId', 'logicalName', 'sha256', 'sizeBytes', 'projectId', 'environmentId', 'workspaceId', 'createdAt', 'updatedAt', 'expiresAt', 'retentionMs', 'generation'] as const;
 const privilegeGrantKeys = ['id', 'ownerId', 'workspaceId', 'command', 'cwd', 'commandSha256', 'status', 'createdAt', 'expiresAt', 'consumedAt'] as const;
 const knowledgeItemKeys = ['id', 'kind', 'scope', 'projectId', 'workspaceId', 'title', 'content', 'contentSha256', 'journalType', 'occurredAt', 'generation', 'createdAt', 'updatedAt', 'expiresAt', 'tags', 'provenance', 'outboundLinks', 'backlinks'] as const;
+const mcpServerKeys = ['id', 'name', 'description', 'transport', 'endpoint', 'headers', 'enabled', 'status', 'toolCount', 'lastConnectedAt', 'lastError', 'lastCheckedAt', 'permissionDefault', 'generation', 'createdAt', 'updatedAt'] as const;
+const mcpToolKeys = ['id', 'serverId', 'qualifiedName', 'upstreamName', 'description', 'inputSchema', 'annotations', 'availability', 'permission', 'discoveredAt'] as const;
+const mcpTraceKeys = ['id', 'serverId', 'serverName', 'tool', 'operation', 'clientId', 'durationMs', 'status', 'errorCode', 'errorMessage', 'requestBytes', 'responseBytes', 'createdAt'] as const;
+const mcpCredentialKeys = ['allowed', 'reason'] as const;
+const mcpConnectionKeys = ['status', 'toolCount', 'error'] as const;
+
+/**
+ * Project header metadata only. A literal value stays projectable so the dashboard
+ * can edit it, but a secret header's value is never projected — not even when a
+ * misbehaving runner attaches one alongside `kind: 'secret'`.
+ */
+function mcpHeader(value: unknown): Record<string, unknown> {
+  const header = pick(value, ['name', 'kind', 'secretRef', 'value']);
+  if (header.kind !== 'literal') delete header.value;
+  return header;
+}
+
+/** Re-map a server through the allowlist, projecting header metadata only. */
+function mcpServer(value: unknown): Record<string, unknown> {
+  const server = pick(value, mcpServerKeys);
+  const headers = Array.isArray(server.headers) ? server.headers : [];
+  return { ...server, headers: headers.map((header) => mcpHeader(header)) };
+}
+
+function mcpServerResult(data: Record<string, unknown>): Record<string, unknown> {
+  return { server: mcpServer(data.server), ...list(data, 'tools', mcpToolKeys) };
+}
+
 const knowledgeLinkKeys = ['id', 'sourceId', 'targetId', 'relation', 'origin', 'generation', 'createdAt'] as const;
 const list = (data: Record<string, unknown>, key: string, keys: readonly string[]) => ({
   [key]: Array.isArray(data[key]) ? data[key].map((record) => pick(record, keys)) : []
@@ -142,6 +174,12 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'knowledge_dashboard_graph') return { nodes: Array.isArray(data.nodes) ? data.nodes.map((n) => pick(n, ['id', 'kind', 'scope', 'title', 'journalType', 'tags', 'updatedAt'])) : [], edges: Array.isArray(data.edges) ? data.edges.map((e) => pick(e, knowledgeLinkKeys)) : [], truncated: Boolean(data.truncated) };
   if (operation === 'knowledge_dashboard_link_create') return pick(data, knowledgeLinkKeys);
   if (operation === 'knowledge_dashboard_link_delete') return pick(data, ['unlinked']);
+  if (operation === 'mcp_server_list') return { servers: Array.isArray(data.servers) ? data.servers.map((server) => mcpServer(server)) : [] };
+  if (operation === 'mcp_server_get') return mcpServerResult(data);
+  if (operation === 'mcp_server_create' || operation === 'mcp_server_update' || operation === 'mcp_server_set_enabled' || operation === 'mcp_server_set_permissions' || operation === 'mcp_server_delete' || operation === 'mcp_server_replace_tools') return mcpServer(data);
+  if (operation === 'mcp_server_connection_result') return pick(data, mcpConnectionKeys);
+  if (operation === 'mcp_server_get_credentials' || operation === 'mcp_gateway_catalog' || operation === 'mcp_gateway_trace_append') return pick(data, mcpCredentialKeys);
+  if (operation === 'mcp_gateway_trace_list') return { traces: Array.isArray(data.traces) ? data.traces.map((trace) => pick(trace, mcpTraceKeys)) : [] };
   return data;
 }
 const descriptiveOperations = new Set<string>([
@@ -151,15 +189,30 @@ const descriptiveOperations = new Set<string>([
   'environment_create', 'environment_update', 'environment_delete',
   'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'knowledge_dashboard_create', 'knowledge_dashboard_update', 'knowledge_dashboard_delete',
-  'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete'
+  'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
+  'mcp_server_create', 'mcp_server_update', 'mcp_server_delete', 'mcp_server_set_enabled', 'mcp_server_set_permissions',
+  'mcp_server_replace_tools', 'mcp_server_connection_result',
+  'mcp_server_list', 'mcp_server_get', 'mcp_gateway_trace_list'
 ]);
+
+/** Gateway operations need gateway wording; the shared table is workspace-oriented. */
+const operationMessages: Partial<Record<DashboardResponseOperation, Record<string, string>>> = {
+  mcp_server_list: { UNAVAILABLE: 'The MCP registry is temporarily unavailable.' },
+  mcp_server_get: { NOT_FOUND: 'MCP server not found.' },
+  mcp_gateway_trace_list: { NOT_FOUND: 'MCP server not found.' },
+  mcp_server_set_permissions: { CONFLICT: 'This MCP server changed after you opened it.' },
+  mcp_server_update: { CONFLICT: 'This MCP server changed after you opened it.' },
+  mcp_server_delete: { CONFLICT: 'This MCP server changed after you opened it.' },
+  mcp_server_set_enabled: { CONFLICT: 'This MCP server changed after you opened it.' }
+};
 
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {
   if (!result.ok) {
     const code = result.error?.code ?? 'INTERNAL_ERROR';
-    const message = result.error?.message && descriptiveOperations.has(operation)
+    const perOperation = operationMessages[operation]?.[code];
+    const message = perOperation ?? (result.error?.message && descriptiveOperations.has(operation)
       ? result.error.message
-      : (messages[code] ?? messages.INTERNAL_ERROR);
+      : (messages[code] ?? messages.INTERNAL_ERROR));
     response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message });
     return;
   }

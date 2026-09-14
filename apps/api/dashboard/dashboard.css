@@ -472,6 +472,27 @@ dialog::backdrop { background: oklch(0.14 0.02 255 / .55); }
 .conflict-pane h3 { font-size: var(--text-13); font-family: var(--font-mono); margin: 0 0 var(--space-2) 0; color: var(--ink-muted); }
 .conflict-text { flex: 1; max-height: 18rem; overflow-y: auto; font-family: var(--font-mono); font-size: var(--text-12); padding: var(--space-2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); white-space: pre-wrap; word-break: break-word; margin: 0; }
 
+/* MCP Servers section. Reuses the panel, table, facts, status, and form language. */
+#mcp-server-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); }
+.mcp-nav-tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-block: var(--space-3); border-bottom: 1px solid var(--line); padding-bottom: var(--space-2); }
+.mcp-tab-btn { padding: var(--space-2) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); color: var(--ink); font-size: var(--text-13); font-weight: 600; cursor: pointer; transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
+.mcp-tab-btn:hover { border-color: var(--line-strong); }
+.mcp-tab-btn.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.mcp-meta-bar { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; font-size: var(--text-12); color: var(--ink-muted); }
+.mcp-gateway-card .page-note { margin-block: var(--space-4) 0; }
+.mcp-gateway-card .page-note ul { margin: var(--space-2) 0 0; padding-inline-start: var(--space-5); }
+.mcp-endpoint { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-block: var(--space-3); padding: var(--space-3); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-raised); }
+.mcp-endpoint .copy { margin-inline-start: auto; }
+.mcp-header-rows { display: grid; gap: var(--space-3); }
+.mcp-header-row label { font-size: var(--text-12); }
+.mcp-tool-detail pre { max-height: 18rem; overflow: auto; margin: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--code-bg); color: var(--code-ink); font-size: var(--text-12); }
+
+/* Mobile: hide the desktop tables and show the stacked MCP cards. */
+@media (max-width: 47.9375rem) {
+  .mcp-tools-panel .desktop-table { display: none; }
+  .mcp-tools-panel .mobile-list { display: grid; }
+}
+
 /* Tablet: collapse detail drawer to overlay, sidebar to icon rail. */
 @media (max-width: 73.6875rem) {
   .app-shell, .app-shell.has-detail { grid-template-columns: 4rem minmax(0, 1fr); }

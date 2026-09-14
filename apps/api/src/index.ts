@@ -91,7 +91,13 @@ if (options.transport === 'stdio') {
   async function shutdown(signal: string) {
     apiLogger.info({ signal }, 'API shutting down');
     server.close();
-    await runtime.close();
+    // A rejected close (for example a downstream socket that refuses to shut down)
+    // must never skip process.exit and leave the API running after SIGTERM.
+    try {
+      await runtime.close();
+    } catch (error) {
+      apiLogger.error({ err: error }, 'API shutdown encountered an error');
+    }
     process.exit(0);
   }
 

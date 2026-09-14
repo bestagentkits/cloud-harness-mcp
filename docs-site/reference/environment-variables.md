@@ -36,6 +36,15 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `API_PORT` | `3000` | **Required** | Required configuration. |
 | `RUNNER_PORT` | `3001` | **Required** | Required configuration. |
 | `RUNNER_URL` | `http://runner:3001` | **Required** | Required configuration. |
+| `MCP_GATEWAY_TIMEOUT_MS` | `30000` | Optional | MCP gateway (/mcp-gateway) downstream connection bounds and safe defaults. |
+| `MCP_GATEWAY_MAX_RESPONSE_BYTES` | `262144` | Optional | Optional configuration. |
+| `MCP_GATEWAY_MAX_TOOLS_PER_SERVER` | `500` | Optional | Optional configuration. |
+| `MCP_GATEWAY_MAX_SCHEMA_BYTES` | `65536` | Optional | Optional configuration. |
+| `MCP_GATEWAY_MAX_CATALOG_BYTES` | `2097152` | Optional | Optional configuration. |
+| `MCP_GATEWAY_MAX_TRACE_ROWS` | `20000` | Optional | Optional configuration. |
+| `MCP_GATEWAY_MAX_CONNECTIONS` | `32` | Optional | Optional configuration. |
+| `MCP_GATEWAY_ALLOW_PRIVATE_ENDPOINTS` | `false` | Optional | Localhost, loopback, link-local, metadata, and private MCP endpoints are rejected unless the private-endpoint opt-in is enabled. Cleartext http endpoints additionally require both the insecure-http and private-endpoint opt-ins. Both opt-ins are refused in cloudflare-access mode; use https public endpoints there. |
+| `MCP_GATEWAY_ALLOW_INSECURE_HTTP` | `false` | Optional | Optional configuration. |
 | `JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | **Required** | Required configuration. |
 | `STATE_DB` | `/var/lib/cloud-harness/state/cloud-harness.db` | **Required** | Required configuration. |
 | `ARTIFACT_ROOT` | `/var/lib/cloud-harness/artifacts` | **Required** | Required configuration. |

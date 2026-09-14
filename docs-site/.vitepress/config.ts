@@ -58,6 +58,7 @@ export default defineConfig({
           { text: 'Installation', link: '/installation' },
           { text: 'Getting Started', link: '/getting-started' },
           { text: 'Connect MCP Client', link: '/connect' },
+          { text: 'MCP Gateway', link: '/mcp-gateway' },
           { text: 'Agent Toolkits & Skills', link: '/agent-toolkits' }
         ]
       },

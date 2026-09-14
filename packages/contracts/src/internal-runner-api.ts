@@ -18,6 +18,19 @@ import {
   KnowledgeScopeSchema,
   KnowledgeTagSchema
 } from './knowledge-schemas.js';
+import {
+  McpGatewayCatalogFilterSchema,
+  McpGatewayCreateInputSchema,
+  McpGatewayCredentialPurposeSchema,
+  McpGatewayServerNameSchema,
+  McpGatewayServerStatusSchema,
+  McpGatewaySetPermissionsInputSchema,
+  McpGatewayToolAnnotationsSchema,
+  McpGatewayToolAvailabilitySchema,
+  McpGatewayToolNameSchema,
+  McpGatewayTraceStatusSchema,
+  McpGatewayUpdateInputSchema
+} from './mcp-gateway-schemas.js';
 
 export const InternalRunnerOperationSchema = z.enum([
   'workspace_detail',
@@ -86,7 +99,10 @@ export const MetadataRunnerOperationSchema = z.enum([
   'model_config_status',
   'knowledge_dashboard_list', 'knowledge_dashboard_get', 'knowledge_dashboard_create', 'knowledge_dashboard_update',
   'knowledge_dashboard_delete', 'knowledge_dashboard_search', 'knowledge_dashboard_graph',
-  'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete'
+  'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
+  'mcp_server_list', 'mcp_server_get', 'mcp_server_create', 'mcp_server_update', 'mcp_server_delete',
+  'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools', 'mcp_server_connection_result',
+  'mcp_server_get_credentials', 'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list'
 ]);
 
 const metadataInputs = {
@@ -245,6 +261,67 @@ const metadataInputs = {
     targetId: KnowledgeItemIdSchema.optional(),
     relation: KnowledgeRelationSchema.optional(),
     expectedGeneration: generation.optional()
+  }).strict(),
+  mcp_server_list: z.object({}).strict(),
+  mcp_server_get: z.object({ serverId: internalId('mcps') }).strict(),
+  mcp_server_create: McpGatewayCreateInputSchema,
+  mcp_server_update: McpGatewayUpdateInputSchema.extend({ serverId: internalId('mcps') }),
+  mcp_server_delete: z.object({ serverId: internalId('mcps'), expectedGeneration: generation }).strict(),
+  mcp_server_set_enabled: z.object({
+    serverId: internalId('mcps'),
+    enabled: z.boolean(),
+    expectedGeneration: generation
+  }).strict(),
+  mcp_server_set_permissions: McpGatewaySetPermissionsInputSchema
+    .omit({ serverId: true, expectedGeneration: true })
+    .extend({ serverId: internalId('mcps'), expectedGeneration: generation }),
+  mcp_server_replace_tools: z.object({
+    serverId: internalId('mcps'),
+    tools: z.array(z.object({
+      upstreamName: McpGatewayToolNameSchema,
+      description: z.string().max(2_000),
+      inputSchema: z.unknown(),
+      annotations: McpGatewayToolAnnotationsSchema.nullable().default(null),
+      availability: McpGatewayToolAvailabilitySchema,
+      schemaBytes: z.number().int().min(0)
+    }).strict()).max(2_000),
+    status: McpGatewayServerStatusSchema.default('connected'),
+    cap: z.number().int().min(1).max(2_000).default(500)
+  }).strict(),
+  mcp_server_connection_result: z.object({
+    serverId: internalId('mcps'),
+    status: McpGatewayServerStatusSchema,
+    error: z.string().max(2_000).nullable().default(null)
+  }).strict(),
+  mcp_server_get_credentials: z.object({
+    serverId: internalId('mcps'),
+    toolName: z.string().max(120).optional(),
+    purpose: McpGatewayCredentialPurposeSchema
+  }).strict(),
+  mcp_gateway_catalog: McpGatewayCatalogFilterSchema,
+  mcp_gateway_trace_append: z.object({
+    serverId: internalId('mcps').nullable().default(null),
+    serverName: McpGatewayServerNameSchema,
+    tool: z.string().max(190).nullable().default(null),
+    operation: z.string().trim().min(1).max(32),
+    clientId: z.string().max(120).nullable().default(null),
+    durationMs: z.number().int().min(0),
+    status: McpGatewayTraceStatusSchema,
+    errorCode: z.string().max(64).nullable().default(null),
+    errorMessage: z.string().max(4_000).nullable().default(null),
+    requestBytes: z.number().int().min(0).nullable().default(null),
+    responseBytes: z.number().int().min(0).nullable().default(null),
+    /**
+     * Resolved credential values must never be sent to the runner. This wire field
+     * exists only for runner-local tests; the API must always pass an empty array.
+     */
+    secrets: z.array(z.string().min(1).max(4_096)).max(8).default([]),
+    maxRows: z.number().int().min(100).max(1_000_000).default(20_000)
+  }).strict(),
+  mcp_gateway_trace_list: z.object({
+    serverId: internalId('mcps').optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+    cursor: z.string().max(256).optional()
   }).strict()
 } as const;
 
@@ -269,7 +346,11 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('model_config_status'),
   metadataRequest('knowledge_dashboard_list'), metadataRequest('knowledge_dashboard_get'), metadataRequest('knowledge_dashboard_create'), metadataRequest('knowledge_dashboard_update'),
   metadataRequest('knowledge_dashboard_delete'), metadataRequest('knowledge_dashboard_search'), metadataRequest('knowledge_dashboard_graph'),
-  metadataRequest('knowledge_dashboard_link_create'), metadataRequest('knowledge_dashboard_link_delete')
+  metadataRequest('knowledge_dashboard_link_create'), metadataRequest('knowledge_dashboard_link_delete'),
+  metadataRequest('mcp_server_list'), metadataRequest('mcp_server_get'), metadataRequest('mcp_server_create'), metadataRequest('mcp_server_update'),
+  metadataRequest('mcp_server_delete'), metadataRequest('mcp_server_set_enabled'), metadataRequest('mcp_server_set_permissions'),
+  metadataRequest('mcp_server_replace_tools'), metadataRequest('mcp_server_connection_result'), metadataRequest('mcp_server_get_credentials'),
+  metadataRequest('mcp_gateway_catalog'), metadataRequest('mcp_gateway_trace_append'), metadataRequest('mcp_gateway_trace_list')
 ]);
 
 export type InternalRunnerOperation = z.infer<typeof InternalRunnerOperationSchema>;

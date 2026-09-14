@@ -82,6 +82,29 @@ claude mcp add --transport http --scope user \
 
 Inspect with `claude mcp get cloud-harness`, then confirm it in `/mcp`.
 
+## MCP gateway surface
+
+Cloud Harness also serves `/mcp-gateway`, a separate MCP endpoint that fronts
+downstream MCP servers the operator registers in the dashboard. It is not part
+of the coding-harness tool set: the workspace, file, execution, Git, and
+artifact operations described by this skill are not available on it, and it is
+not the endpoint you use to open a workspace.
+
+- **Constant tool set.** It exposes exactly `search`, `inspect`, `execute`,
+  `permissions`, and `status`. Downstream tools are never added to `tools/list`.
+- **Progressive discovery.** `search` by intent, `inspect` one qualified
+  `<server>.<tool>` name to read its real input schema, then `execute` with
+  matching arguments. `permissions` reports the effective allow/deny decision
+  and `status` reports server health. A mutating call is never retried.
+- **Credentials.** A server header may reference an operator-managed global
+  secret by name. The resolved value is never shown to the client, a result, a
+  trace, or a log. Never try to print or exfiltrate a referenced secret.
+- **Connection.** Use the same Access session or owner bearer token as `/mcp`.
+  Point the client at `https://<your-cloud-harness-host>/mcp-gateway`. The
+  managed API-key lane is not available for this endpoint.
+- **Unsupported.** Downstream `stdio` servers, OAuth-protected downstream
+  servers, and HTTP redirects are not supported.
+
 ## Marketplace compatibility
 
 - The bundled skill is provider-neutral and can be packaged for Claude,

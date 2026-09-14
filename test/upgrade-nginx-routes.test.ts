@@ -30,6 +30,19 @@ const apiKeyRoute = `
         proxy_read_timeout 3600s;
         add_header X-Accel-Buffering no always;
     }`;
+const gatewayRoute = `
+    location = /mcp-gateway {
+        proxy_pass http://127.0.0.1:3100/mcp-gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        add_header X-Accel-Buffering no always;
+    }`;
 
 function createFixture(extraRoutes = dashboardRoutes) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-nginx-'));
@@ -73,11 +86,12 @@ function backups(root: string) {
 }
 
 describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
-  it('adds the API-key route to a dashboard-only install and is idempotent', () => {
+  it('adds the API-key and gateway routes to a dashboard-only install and is idempotent', () => {
     const fixture = createFixture();
     const first = runUpgrade(fixture.root);
     expect(first.status, first.stderr).toBe(0);
     expect(readFileSync(fixture.site, 'utf8')).toContain(apiKeyRoute);
+    expect(readFileSync(fixture.site, 'utf8')).toContain(gatewayRoute);
     expect(backups(fixture.root)).toHaveLength(1);
 
     const second = runUpgrade(fixture.root);
@@ -85,6 +99,22 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     expect(second.stdout).toContain('already installed');
     expect(backups(fixture.root)).toHaveLength(1);
     expect(readFileSync(join(fixture.root, 'systemctl.calls'), 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
+  it('adds only the missing gateway route to a dashboard and API-key install', () => {
+    const fixture = createFixture(`${dashboardRoutes}\n${apiKeyRoute}`);
+    const first = runUpgrade(fixture.root);
+    expect(first.status, first.stderr).toBe(0);
+    const installed = readFileSync(fixture.site, 'utf8');
+    expect(installed).toContain(apiKeyRoute);
+    expect(installed).toContain(gatewayRoute);
+    expect((installed.match(/location = \/mcp-api-key \{/g) ?? [])).toHaveLength(1);
+    expect((installed.match(/location = \/mcp-gateway \{/g) ?? [])).toHaveLength(1);
+
+    const second = runUpgrade(fixture.root);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('already installed');
+    expect((readFileSync(fixture.site, 'utf8').match(/location = \/mcp-gateway \{/g) ?? [])).toHaveLength(1);
   });
 
   it('rejects a commented canonical route with an active wrong upstream', () => {
@@ -97,6 +127,20 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     const fixture = createFixture(malformed);
     const result = runUpgrade(fixture.root);
     expect(result.status, result.stderr).toBe(7);
+    expect(result.stderr).toContain('not the managed shape');
+    expect(readFileSync(fixture.site, 'utf8')).toBe(fixture.source);
+    expect(backups(fixture.root)).toHaveLength(0);
+  });
+
+  it('rejects an unmanaged gateway route without touching the site', () => {
+    const malformed = `${dashboardRoutes}
+    location = /mcp-gateway {
+        proxy_pass http://127.0.0.1:9999/mcp-gateway;
+        proxy_http_version 1.1;
+    }`;
+    const fixture = createFixture(malformed);
+    const result = runUpgrade(fixture.root);
+    expect(result.status, result.stderr).toBe(8);
     expect(result.stderr).toContain('not the managed shape');
     expect(readFileSync(fixture.site, 'utf8')).toBe(fixture.source);
     expect(backups(fixture.root)).toHaveLength(0);

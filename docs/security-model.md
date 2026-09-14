@@ -118,6 +118,43 @@ restart both control services. Review logs for exposure before resuming
 service; tokens must not appear in URLs, commands, documentation, or source
 control.
 
+## MCP gateway egress and credential resolution
+
+The `/mcp-gateway` composition root adds the first user-configurable API egress
+path in this system. Three facts define its boundary.
+
+1. **The API dials principal-configured MCP URLs.** Endpoints are validated at
+   write time and again before every request: https-only (cleartext HTTP only in
+   `owner-bearer` mode, and only with both `MCP_GATEWAY_ALLOW_INSECURE_HTTP` and
+   `MCP_GATEWAY_ALLOW_PRIVATE_ENDPOINTS`), no URL userinfo, query, or fragment,
+   and rejection of loopback, private, link-local, CGNAT, and cloud-metadata
+   targets. The socket is **pinned at connect time** to the addresses that
+   validation resolved through a dedicated undici `Agent`, so a rebinding
+   resolver cannot redirect a credentialed request. Redirects are refused, and
+   the body and connection lifetime are bounded. This traffic uses only the
+   API's dedicated egress network; the runner never dials a configured URL.
+2. **The runner resolves referenced global secrets to the API over the existing
+   service-token channel.** Resolution is scoped to one server and an explicit
+   `execute` or `connect` purpose, is refused for a disabled server and for a
+   denied or unknown tool on the `execute` path, and is audited as
+   `mcp_gateway.credentials_resolved`. A resolved value never reaches a
+   browser, tool result, trace, or log; error and text redaction covers raw and
+   encoded forms. The API attaches the resolved headers only to a request whose
+   origin and pathname equal the configured endpoint's — the MCP requests the
+   server is configured for. A request to any other origin or path, including a
+   redirect target, a discovery probe, or an OAuth metadata fetch, never carries
+   them.
+3. **Honest residual risk.** The API process heap becomes a place where a
+   plaintext global secret exists while a credentialed downstream call is in
+   flight, and because the principal chooses both the `secretRef` and the
+   endpoint, a principal who references a secret authorizes sending that secret
+   to that endpoint. **An API-process compromise is therefore a global-secret
+   compromise**, and the URL policy, socket pinning, header scoping, and
+   redaction limit that exposure without eliminating it. Treat API-process
+   memory as secret-bearing: do not attach debuggers, heap dumps, or core dumps
+   to a running API, and rotate the referenced secrets if that boundary is
+   crossed.
+
 ## Executor and repository controls
 
 Executors run as a non-root UID with a read-only root filesystem, dropped
