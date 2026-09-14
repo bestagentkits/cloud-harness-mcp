@@ -1,3 +1,10 @@
+# [0.42.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.41.0...v0.42.0) (2026-09-14)
+
+
+### Features
+
+* **site:** add favicon and social/SEO meta tags; center telemetry bar and add mobile/tablet loop marquee ([d985e98](https://github.com/bestagentkits/cloud-harness-mcp/commit/d985e9810c709de920863502328687db334166e3))
+
 # [0.41.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.40.0...v0.41.0) (2026-09-14)
 
 
