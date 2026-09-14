@@ -263,6 +263,38 @@ describe('dashboard BFF', () => {
     expect(String(cleared.headers['set-cookie']?.[0])).toContain('Max-Age=0');
     const invalid = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ theme: 'purple' }) });
     expect(invalid.status).toBe(400);
+    const unsupported = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ nickname: 'quiet' }) });
+    expect(unsupported.status).toBe(400);
+  });
+
+  it('persists and clears an operator display name without trusting cookie content', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    const named = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ displayName: '  Ops Lead  ' }) });
+    expect(named.status).toBe(200);
+    expect(named.json.data.displayName).toBe('Ops Lead');
+    const setCookie = String(named.headers['set-cookie']?.[0]);
+    expect(setCookie).toContain(`ch-dashboard-display-name=${encodeURIComponent('Ops Lead')}`);
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('SameSite=Strict');
+    expect(setCookie).toContain('Path=/dashboard');
+
+    const unicode = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ displayName: 'Nguyễn Văn A' }) });
+    expect(unicode.status).toBe(200);
+    expect(unicode.json.data.displayName).toBe('Nguyễn Văn A');
+
+    const cleared = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ displayName: '   ' }) });
+    expect(cleared.status).toBe(200);
+    expect(cleared.json.data.displayName).toBeNull();
+    expect(String(cleared.headers['set-cookie']?.[0])).toContain('Max-Age=0');
+
+    for (const rejected of ['<script>alert(1)</script>', 'a\nb', 'x'.repeat(65), '.leading-dot', 'a@b.com']) {
+      const response = await send('/api/v1/preferences', { method: 'PUT', headers, body: JSON.stringify({ displayName: rejected }) });
+      expect(response.status, rejected).toBe(400);
+      expect(response.text).not.toContain(rejected);
+    }
   });
 
   it('Issue #109 and #110: exposes artifact read, restore, and streaming download with safe headers', async () => {
@@ -359,9 +391,9 @@ describe('dashboard profile', () => {
     profilePort = address.port;
   }
 
-  function get(): Promise<Reply> {
+  function get(cookie?: string): Promise<Reply> {
     const { promise, resolve, reject } = Promise.withResolvers<Reply>();
-    const request = httpRequest({ hostname: '127.0.0.1', port: profilePort, path: '/dashboard/api/v1/profile', method: 'GET', headers: { host: 'dashboard.example' } }, (response) => {
+    const request = httpRequest({ hostname: '127.0.0.1', port: profilePort, path: '/dashboard/api/v1/profile', method: 'GET', headers: { host: 'dashboard.example', ...(cookie ? { cookie } : {}) } }, (response) => {
       const chunks: Buffer[] = [];
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('end', () => {
@@ -392,10 +424,25 @@ describe('dashboard profile', () => {
     expect(response.json.data).toEqual({
       identity: { issuer: 'https://team.cloudflareaccess.com', subject: 'operator', email: 'op@example.com', name: 'Op Erator' },
       scopes: ['workspace:read', 'workspace:write'],
+      preferences: { displayName: null },
       sessionExpiresAt: new Date(expiresAt * 1_000).toISOString()
     });
     expect(calls.length).toBe(before);
     expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('reports the operator-editable display name and ignores a tampered cookie', async () => {
+    await serveProfile({
+      token: 'cloudflare-access', clientId: 'operator', scopes: [],
+      extra: { principal: { kind: 'external', issuer: 'https://team.cloudflareaccess.com', subject: 'operator', name: 'Op Erator' } }
+    });
+    const named = await get(`ch-dashboard-display-name=${encodeURIComponent('Ops Lead')}`);
+    expect(named.json.data.identity).toEqual({ issuer: 'https://team.cloudflareaccess.com', subject: 'operator', name: 'Op Erator' });
+    expect(named.json.data.preferences).toEqual({ displayName: 'Ops Lead' });
+
+    for (const hostile of ['%3Cscript%3Ealert(1)%3C%2Fscript%3E', 'a%0Ab', 'x'.repeat(65), '%E0%A4%A']) {
+      expect((await get(`ch-dashboard-display-name=${hostile}`)).json.data.preferences, hostile).toEqual({ displayName: null });
+    }
   });
 
   it('omits absent optional identity fields and reports no expiry', async () => {

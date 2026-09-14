@@ -10,6 +10,36 @@ import { registerDashboardControlRoutes } from './dashboard-control-router.js';
 import { serverVersion } from './version.js';
 
 const THEME_COOKIE = 'ch-dashboard-theme';
+const DISPLAY_NAME_COOKIE = 'ch-dashboard-display-name';
+const PREFERENCE_ATTRIBUTES = 'Path=/dashboard; HttpOnly; Secure; SameSite=Strict';
+// Letters and numbers in any script, plus the punctuation operators use in names.
+const DISPLAY_NAME_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ._'-]{0,63}$/u;
+const preferencesSchema = z.object({
+  theme: z.enum(['system', 'light', 'dark']).optional(),
+  displayName: z.string().max(64).nullable().optional()
+}).strict().refine((value) => value.theme !== undefined || value.displayName !== undefined, { message: 'No supported preference.' });
+
+function cookieValue(request: DashboardRequest, name: string): string | undefined {
+  const header = request.headers.cookie;
+  if (!header) return undefined;
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=');
+    if (index === -1) continue;
+    if (part.slice(0, index).trim() !== name) continue;
+    return part.slice(index + 1).trim();
+  }
+  return undefined;
+}
+
+/** The operator-editable label, ignored unless it still matches the display-name rule. */
+function preferredDisplayName(request: DashboardRequest): string | null {
+  const raw = cookieValue(request, DISPLAY_NAME_COOKIE);
+  if (!raw) return null;
+  try {
+    const decoded = decodeURIComponent(raw).trim();
+    return DISPLAY_NAME_PATTERN.test(decoded) ? decoded : null;
+  } catch { return null; }
+}
 
 const workspaceId = z.string().regex(/^ws_[A-Za-z0-9_-]{20,80}$/);
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
@@ -58,6 +88,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
           ...(selected.name ? { name: selected.name } : {})
         },
         scopes: request.auth?.scopes ?? [],
+        preferences: { displayName: preferredDisplayName(request) },
         sessionExpiresAt: typeof request.auth?.expiresAt === 'number' ? new Date(request.auth.expiresAt * 1_000).toISOString() : null
       }
     });
@@ -88,14 +119,34 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   router.put('/api/v1/preferences', (request: DashboardRequest, response) => {
     const selected = principal(request, response);
     if (!selected || selected.kind !== 'external') return;
-    const parsed = z.object({ theme: z.enum(['system', 'light', 'dark']) }).strict().safeParse(request.body);
-    if (!parsed.success) { response.status(400).json({ error: 'invalid_request', message: 'Unsupported theme preference.' }); return; }
+    const parsed = preferencesSchema.safeParse(request.body);
+    if (!parsed.success) { response.status(400).json({ error: 'invalid_request', message: 'Unsupported dashboard preference.' }); return; }
     const { theme } = parsed.data;
-    const attributes = 'Path=/dashboard; HttpOnly; Secure; SameSite=Strict';
-    response.setHeader('Set-Cookie', theme === 'system'
-      ? `${THEME_COOKIE}=; ${attributes}; Max-Age=0`
-      : `${THEME_COOKIE}=${theme}; ${attributes}; Max-Age=31536000`);
-    response.json({ data: { theme } });
+    const cookies: string[] = [];
+    if (theme !== undefined) {
+      cookies.push(theme === 'system'
+        ? `${THEME_COOKIE}=; ${PREFERENCE_ATTRIBUTES}; Max-Age=0`
+        : `${THEME_COOKIE}=${theme}; ${PREFERENCE_ATTRIBUTES}; Max-Age=31536000`);
+    }
+    let displayName: string | null | undefined;
+    if (parsed.data.displayName !== undefined) {
+      const trimmed = (parsed.data.displayName ?? '').trim();
+      if (trimmed && !DISPLAY_NAME_PATTERN.test(trimmed)) {
+        response.status(400).json({ error: 'invalid_request', message: 'Display names may use letters, numbers, spaces, and . _ - \' only (up to 64 characters).' });
+        return;
+      }
+      displayName = trimmed || null;
+      cookies.push(displayName === null
+        ? `${DISPLAY_NAME_COOKIE}=; ${PREFERENCE_ATTRIBUTES}; Max-Age=0`
+        : `${DISPLAY_NAME_COOKIE}=${encodeURIComponent(displayName)}; ${PREFERENCE_ATTRIBUTES}; Max-Age=31536000`);
+    }
+    response.setHeader('Set-Cookie', cookies);
+    response.json({
+      data: {
+        ...(theme !== undefined ? { theme } : {}),
+        ...(parsed.data.displayName !== undefined ? { displayName: displayName ?? null } : {})
+      }
+    });
   });
 
   router.get('/api/v1/toolkits', async (request: DashboardRequest, response, next) => {

@@ -22,7 +22,7 @@ import {
 import {
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, repositoryName,
-  renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults
+  renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName
 } from './dashboard-render.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -58,6 +58,27 @@ export function createModalController({ panel, backgrounds, trigger, initialFocu
     onClose?.(); trigger.focus({ preventScroll: true });
   }
   return { open, close, get active() { return active; } };
+}
+
+export function backdropHit(event, bounds) {
+  if (!bounds) return true;
+  return event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom;
+}
+
+/**
+ * Dismiss a modal `<dialog>` when the operator taps or clicks the backdrop.
+ * The coordinate check keeps clicks on the dialog's own padding from closing it,
+ * and the pointerdown guard ignores a drag that started inside the dialog.
+ */
+export function dismissOnBackdrop(dialog, dismiss) {
+  const bounds = () => (typeof dialog.getBoundingClientRect === 'function' ? dialog.getBoundingClientRect() : undefined);
+  let armed = false;
+  dialog.addEventListener('pointerdown', (event) => { armed = event.target === dialog && backdropHit(event, bounds()); });
+  dialog.addEventListener('click', (event) => {
+    if (!armed) return;
+    armed = false;
+    if (event.target === dialog && backdropHit(event, bounds())) dismiss();
+  });
 }
 
 export function createAsyncDialogController({ dialog, cancelButton, actionButton, status, reportError }) {
@@ -1227,8 +1248,22 @@ export function initializeDashboard() {
     }
   }
   async function loadProfile() {
-    selectNavigation('profile'); setTitle('Profile', 'Your signed-in identity and session details.'); document.querySelector('#command-surface').hidden = true;
-    const result = await api('/profile'); content.innerHTML = renderProfile(result.data);
+    selectNavigation('profile'); setTitle('Profile', 'Your signed-in identity, display name, and session details.'); document.querySelector('#command-surface').hidden = true;
+    const result = await api('/profile'); content.innerHTML = renderProfile(result.data); bindProfileControls();
+  }
+  function saveDisplayName(value) {
+    return api('/preferences', { method: 'PUT', body: requestBody({ displayName: value }) });
+  }
+  function bindProfileControls() {
+    const form = document.querySelector('#profile-name-form');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const value = String(new FormData(event.currentTarget).get('displayName') ?? '').trim();
+      void submitForm(form, 'Saving…', () => saveDisplayName(value), async () => { announce('Display name updated.'); await refreshIdentity(); await loadProfile(); });
+    });
+    document.querySelector('#clear-display-name').addEventListener('click', () => {
+      void submitForm(form, 'Saving…', () => saveDisplayName(''), async () => { announce('Display name reset to your sign-on name.'); await refreshIdentity(); await loadProfile(); });
+    });
   }
   let currentKnowledgeItem;
   async function loadKnowledge(activeTab = 'all') {
@@ -1704,6 +1739,7 @@ export function initializeDashboard() {
     if (href) location.href = href;
   });
   paletteDialog.addEventListener('cancel', (event) => { event.preventDefault(); closePalette(); });
+  dismissOnBackdrop(paletteDialog, closePalette);
   openPaletteButton.addEventListener('click', (event) => openPalette(event.currentTarget));
   document.addEventListener('keydown', (event) => {
     if (!isPaletteHotkey(event)) return;
@@ -1711,13 +1747,19 @@ export function initializeDashboard() {
     if (paletteDialog.open) { closePalette(); return; }
     openPalette(openPaletteButton);
   });
-  void api('/profile').then((result) => {
-    const identity = result.data?.identity ?? {};
-    document.querySelector('#profile-name').textContent = identity.name ?? identity.email ?? 'Signed in';
+  // Header identity: the editable display name wins, then the verified assertion.
+  function applyIdentity(data) {
+    const identity = data?.identity ?? {};
+    const display = profileDisplayName(data);
+    document.querySelector('#profile-name').textContent = display;
     document.querySelector('#profile-email').textContent = identity.email ?? '';
-    const parts = String(identity.name ?? identity.email ?? '?').trim().split(/[\s@._-]+/).filter(Boolean).slice(0, 2);
+    const parts = String(display).trim().split(/[\s@._-]+/).filter(Boolean).slice(0, 2);
     document.querySelector('#profile-avatar').textContent = (parts.map((part) => part[0]).join('') || '?').toUpperCase();
-  }).catch(() => undefined);
+  }
+  async function refreshIdentity() {
+    try { applyIdentity((await api('/profile')).data); } catch { /* identity chip keeps its last value */ }
+  }
+  void refreshIdentity();
   document.addEventListener('click', (event) => { if (event.target.closest?.('a[href]')) apiKeyReveal.clear(); }, { capture: true });
   document.addEventListener('click', (event) => {
     const trigger = event.target.closest?.('[data-copy]');

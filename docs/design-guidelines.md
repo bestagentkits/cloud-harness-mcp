@@ -76,6 +76,18 @@ at WCAG AA: body text and muted text >= 4.5:1, primary-button text and status
 pills pass against their actual backgrounds, and the focus ring is >= 3:1
 against its surface.
 
+### Operator display name
+
+The Profile page edits a cosmetic **display name** shown in the top-bar chip.
+Client storage is forbidden, so it follows the theme's server-side pattern: the
+same CSRF-guarded `PUT /api/v1/preferences` writes an HttpOnly
+`ch-dashboard-display-name` cookie and `GET /api/v1/profile` returns it as
+`preferences.displayName`. The value is a presentation-only override: it never
+replaces the verified assertion, never authorizes anything, is validated against
+a bounded pattern on write, is re-validated on read (a tampered cookie is ignored
+rather than trusted), and is escaped like any other attacker-influenceable
+value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
+
 ## Depth, shape, motion
 
 - **One depth strategy:** hairline borders (`--line`, `--line-strong`). Floating
@@ -89,9 +101,12 @@ against its surface.
 ## Components
 
 - **Top bar:** sticky header carrying the wordmark + `MCP Control Plane` tag, a
-  search trigger (`aria-keyshortcuts="Meta+K Control+K"`), the theme icon, a
-  profile chip (name, email, initials avatar), and Sign out (Cloudflare Access
-  logout at `/cdn-cgi/access/logout`).
+  search trigger (`aria-keyshortcuts="Meta+K Control+K"`), the theme icon, the
+  profile chip, and Sign out. The chip is a link to the Profile page showing the
+  operator **display name** (or the verified sign-on name/email until one is
+  set); Sign out is an icon-only Cloudflare Access logout at
+  `/cdn-cgi/access/logout` with an accessible name and title, so the header
+  carries identity rather than an account menu.
 - **Command palette:** opened by the search trigger or `CMD+K` / `CTRL+K`. It
   indexes page commands plus an allowlisted projection from seven existing
   resource list endpoints, fetched in batches of at most three so it cannot
@@ -103,18 +118,22 @@ against its surface.
   page-level search. Combobox/listbox semantics with `aria-activedescendant`;
   focus never leaves the input. Owners: `renderPaletteResults` in
   `dashboard-render.js`, and the index build, ranking, and batching in
-  `dashboard.js`.
+  `dashboard.js`. `Escape`, the visible search trigger, and a tap or click on
+  the backdrop all dismiss it (`dismissOnBackdrop` also ignores a drag that
+  starts inside the dialog).
 - **Navigation:** left icon+label rail, grouped by concern (Runtime,
   Configuration, Observability, Account) with an Overview home. Active item gets
-  the amber rail + soft fill. A chevron control collapses the rail to icons on
-  desktop (toggling `.app-shell.nav-collapsed`); it also collapses to icons on
-  tablet and to a drawer on mobile. The rail foot carries the running **server
-  version** and hides it when the rail collapses to icons. It is labelled "Server
-  version" rather than "Release" because production runs the pre-version-bump
-  commit, so the readout legitimately lags the newest tag by one release. Owners:
-  [`apps/api/src/version.ts`](../apps/api/src/version.ts) for the value,
-  [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts) for the
-  injection.
+  the amber rail + soft fill. The rail is **fixed to the viewport below the top
+  bar and scrolls internally**, so a long navigation list never pushes the page
+  or hides entries; the rail foot carries the running **server version** outside
+  that scroll and hides it when the rail collapses to icons. A chevron control
+  collapses the rail to icons on desktop (toggling `.app-shell.nav-collapsed`);
+  it also collapses to icons on tablet and to a drawer on mobile. The version is
+  labelled "Server version" rather than "Release" because production runs the
+  pre-version-bump commit, so the readout legitimately lags the newest tag by one
+  release. Owners: [`apps/api/src/version.ts`](../apps/api/src/version.ts) for the
+  value, [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
+  for the injection.
 - **Overview:** monospace metric tiles (corner-bracketed) capped at four above
   the fold, a recent-activity feed, an Access panel, and a Server panel. Tiles
   and feed aggregate client-side from allowlisted endpoints; the Server panel
@@ -125,6 +144,9 @@ against its surface.
 - **Interaction states:** every control ships default / hover / `:focus-visible`
   / active / disabled; touch targets >= 44px (small controls expand their hit
   area via `::before`); inputs >= 16px.
+- **Footer:** the shell ends every route with one global footer crediting
+  AgentKit (`https://agentkit.best`). It is authored once in the shell rather
+  than per page, so a new view inherits it automatically.
 
 ## Security in the UI
 

@@ -4,9 +4,9 @@ import {
   parseDotEnv, renderWorkspaceDrawer, resetWriteOnlyFields, submitPatchEdit, submitPatchForm, validateSecretClient,
   THEME_ORDER, nextTheme, themeActionLabel,
   PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches,
-  createPaletteIndexLoader
+  createPaletteIndexLoader, backdropHit, dismissOnBackdrop
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
 
 class FakeElement {
   hidden = false;
@@ -16,6 +16,7 @@ class FakeElement {
   textContent = '';
   value = '';
   items: FakeElement[] = [];
+  bounds?: { top: number; bottom: number; left: number; right: number };
   focus = vi.fn();
   private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Set<(event: any) => void>>();
@@ -24,6 +25,7 @@ class FakeElement {
   getAttribute(name: string) { return this.attributes.get(name); }
   removeAttribute(name: string) { this.attributes.delete(name); }
   querySelectorAll() { return this.items; }
+  getBoundingClientRect() { return this.bounds; }
   addEventListener(name: string, listener: (event: any) => void) {
     const listeners = this.listeners.get(name) ?? new Set(); listeners.add(listener); this.listeners.set(name, listeners);
   }
@@ -270,6 +272,65 @@ describe('dashboard UI behavior', () => {
     expect((markup.match(/aria-selected="true"/g) ?? [])).toHaveLength(1);
     expect((markup.match(/aria-selected="false"/g) ?? [])).toHaveLength(1);
     expect((markup.match(/role="option"/g) ?? [])).toHaveLength(2);
+  });
+
+  it('closes the command palette on a backdrop tap or click and ignores everything else', () => {
+    const dialog = new FakeElement();
+    dialog.bounds = { top: 100, bottom: 240, left: 50, right: 450 };
+    const dismiss = vi.fn();
+    dismissOnBackdrop(dialog, dismiss);
+    const inside = { target: dialog, clientX: 200, clientY: 150 };
+    const outside = { target: dialog, clientX: 10, clientY: 10 };
+    const inner = { target: { tagName: 'INPUT' }, clientX: 200, clientY: 150 };
+
+    expect(backdropHit(inside, dialog.bounds)).toBe(false);
+    expect(backdropHit(outside, dialog.bounds)).toBe(true);
+    expect(backdropHit(outside, undefined)).toBe(true);
+
+    // A click inside the dialog box is content, not backdrop.
+    dialog.dispatch('pointerdown', inside); dialog.dispatch('click', inside);
+    expect(dismiss).not.toHaveBeenCalled();
+
+    // A drag that starts inside the palette and ends outside it stays open.
+    dialog.dispatch('pointerdown', inside); dialog.dispatch('click', outside);
+    expect(dismiss).not.toHaveBeenCalled();
+
+    // A backdrop tap dismisses on the matching click.
+    dialog.dispatch('pointerdown', outside); dialog.dispatch('click', outside);
+    expect(dismiss).toHaveBeenCalledOnce();
+
+    // A stray click with no matching pointerdown never dismisses.
+    dialog.dispatch('click', outside);
+    expect(dismiss).toHaveBeenCalledOnce();
+
+    // Clicks that land on the palette's own children never dismiss.
+    dialog.dispatch('pointerdown', inner); dialog.dispatch('click', inner);
+    expect(dismiss).toHaveBeenCalledOnce();
+  });
+
+  it('prefers an operator display name over the verified sign-on name', () => {
+    const identity = { name: 'Op Erator', email: 'op@example.com' };
+    expect(profileDisplayName({ identity, preferences: { displayName: 'Ops Lead' } })).toBe('Ops Lead');
+    expect(profileDisplayName({ identity, preferences: { displayName: '  ' } })).toBe('Op Erator');
+    expect(profileDisplayName({ identity })).toBe('Op Erator');
+    expect(profileDisplayName({ identity: { email: 'op@example.com' } })).toBe('op@example.com');
+    expect(profileDisplayName({})).toBe('Signed in');
+  });
+
+  it('offers an editable display name while keeping the verified assertion read-only', () => {
+    const html = renderProfile({
+      identity: { name: 'Op Erator', email: 'op@example.com', subject: 'operator', issuer: 'https://team.cloudflareaccess.com' },
+      preferences: { displayName: 'Ops Lead' },
+      scopes: [], sessionExpiresAt: null
+    });
+    expect(html).toContain('id="profile-name-form"');
+    expect(html).toContain('id="save-display-name"');
+    expect(html).toContain('id="clear-display-name"');
+    expect(html).toContain('value="Ops Lead"');
+    expect(html).toContain('Use sign-on name');
+    expect(html).toContain('op@example.com');
+    expect(html).toContain('Identity provider');
+    expect(renderProfile({ preferences: { displayName: '"><script>alert(1)</script>' } })).not.toContain('<script>');
   });
 
   it('traps modal focus, inerts the background, and restores its invoking control', () => {
