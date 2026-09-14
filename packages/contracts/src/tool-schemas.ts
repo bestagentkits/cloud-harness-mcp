@@ -276,7 +276,10 @@ const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
     networkProfile: ExecutorNetworkProfileSchema.optional(),
-    networkMode: z.unknown().optional(),
+    networkMode: z.unknown().optional().meta({
+      deprecated: true,
+      description: 'Retired and rejected: this field was replaced by networkProfile.'
+    }),
     environmentId: EnvironmentIdSchema.optional(),
     confirmEnvironmentInjection: z.literal(true).optional(),
     toolkits: z.array(ToolkitSelectionSchema).max(8).default([]),

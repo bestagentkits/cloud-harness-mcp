@@ -158,11 +158,12 @@ function renderToolMarkdown(spec) {
       const prop = properties[key] || {};
       const isReq = required.has(key) ? '**Yes**' : 'No';
       const { typeStr, constraints } = formatTypeAndConstraints(prop);
+      const typeCell = prop.deprecated === true ? `${typeStr} · **Deprecated**` : typeStr;
       let desc = prop.description || '';
       if (constraints) {
         desc = desc ? `${desc} (${constraints})` : constraints;
       }
-      md += `| \`${key}\` | ${typeStr} | ${isReq} | ${desc.trim() || '—'} |\n`;
+      md += `| \`${key}\` | ${typeCell} | ${isReq} | ${desc.trim() || '—'} |\n`;
     }
     md += `\n`;
   }
