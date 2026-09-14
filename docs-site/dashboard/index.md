@@ -17,12 +17,15 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 - **[GitHub App](/dashboard/github):** Manage GitHub App installation bindings for private repository cloning and push access.
 - **[Artifacts](/dashboard/artifacts):** Download and inspect workspace output files, build logs, and test results.
 - **[Audit Trail](/dashboard/audit):** Review immutable security logs of every tool invocation and authorization event.
-- **[Profile & Preferences](/dashboard/profile):** View signed-in identity details and switch the theme with the icon control in the top bar, which cycles System, Light, and Dark and persists server-side.
+- **[Profile & Preferences](/dashboard/profile):** View signed-in identity details, edit the display name shown in the top-bar chip, and switch the theme with the icon control in the top bar, which cycles System, Light, and Dark and persists server-side.
 
 ## Search and Version
 
-- **Search:** press `CMD+K` or `CTRL+K` (or use the search button in the top bar) to jump to any dashboard page or find a workspace, project, secret, API key, model credential or profile, or artifact. Results cover the first page of each resource type. Memories and journals are searched on the Knowledge page, which has its own search.
-- **Server version:** the left rail shows the version of the running MCP server, so you can confirm which build answered a request.
+- **Search:** press `CMD+K` or `CTRL+K` (or use the search button in the top bar) to jump to any dashboard page or find a workspace, project, secret, API key, model credential or profile, or artifact. Results cover the first page of each resource type. Memories and journals are searched on the Knowledge page, which has its own search. Press `Escape` or tap/click outside the palette to close it.
+- **Server version:** the left rail shows the version of the running MCP server, so you can confirm which build answered a request. The rail stays fixed beside the page and scrolls on its own when the navigation is taller than the window.
+- **Account controls:** the top-bar chip shows your display name and opens the Profile page; the adjacent icon signs you out.
+
+Every dashboard page ends with the same footer crediting [AgentKit](https://agentkit.best).
 
 ## Design System & Security Invariants
 

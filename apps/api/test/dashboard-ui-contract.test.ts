@@ -104,6 +104,34 @@ describe('dashboard static UI contract', () => {
     expect(html).not.toContain('value="chm_key_');
   });
 
+  it('keeps the navigation rail fixed and internally scrollable with a global footer', () => {
+    expect(css).toContain('.sidebar { position: sticky; inset-block-start: 3.5rem; height: calc(100dvh - 3.5rem); overflow: hidden;');
+    expect(css).toContain('.sidebar nav { display: grid; gap: var(--space-1); align-content: start; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }');
+    expect(css).toContain('.site-footer');
+    expect(css).toContain('.profile-chip:hover');
+    // An author display rule beats the UA [hidden] rule, so the shell's hiding of
+    // the workspaces toolbar and conditional form rows needs an explicit rule.
+    expect(css).toContain('.command-surface[hidden], .form-row[hidden] { display: none; }');
+    expect(html).toContain('<footer class="site-footer">');
+    expect(html).toContain('Made with ❤️ by <a href="https://agentkit.best"');
+    expect(html).toContain('>AgentKit</a>');
+  });
+
+  it('routes the header identity to the profile page and keeps sign out as an icon control', () => {
+    expect(html).toContain('<a class="profile-chip" id="profile-chip" href="/dashboard/profile" aria-label="Open profile">');
+    expect(html).toContain('<a class="icon-btn signout" id="signout" href="/cdn-cgi/access/logout" aria-label="Sign out" title="Sign out">');
+    expect(html).not.toContain('>Sign out</a>');
+    expect(html).toContain('id="profile-name"');
+    expect(script).toContain('profileDisplayName');
+    expect(script).toContain('dismissOnBackdrop');
+  });
+
+  it('lets an operator edit the display name from the profile page', () => {
+    expect(script).toContain('id="profile-name-form"');
+    expect(script).toContain('profileDisplayName(data)');
+    expect(script).toContain("method: 'PUT', body: requestBody({ displayName: value })");
+  });
+
   it('provides a top header with profile, theme control, sign out, an icon collapse, and server status', () => {
     expect(html).toContain('<header class="topbar">');
     expect(html).toContain('href="/cdn-cgi/access/logout"');
