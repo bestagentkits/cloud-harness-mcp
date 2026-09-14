@@ -143,18 +143,22 @@ content and user-supplied commands are untrusted execution input.
 - Executors run non-root with a read-only root filesystem, dropped capabilities,
   `no-new-privileges`, resource limits, bounded output, and TTL cleanup.
 - Only the repository workspace is writable.
-- Default `networkProfile: "network-none"` blocks all executor egress.
-- `networkProfile: "dependency-access"` permits only public DNS and public
-  TCP 80/443 while blocking loopback-to-host, Docker/control-plane, RFC 1918,
-  link-local, and cloud-metadata ranges below the executor. It still permits
-  exfiltration to public endpoints and increases SSRF, callback, and
-  dependency-script risk. Enforcement requires a Linux host with the dedicated
-  bridge and attested host firewall; if attestation fails it fails closed.
+- Default `networkProfile: "dependency-access"` grants GitHub-capable executor
+  egress: public DNS and public TCP 80/443 only, through a Linux host with the
+  dedicated bridge and an attested host firewall. It still permits exfiltration
+  to public endpoints and increases SSRF, callback, and dependency-script risk;
+  if attestation fails it fails closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) and is
+  never silently downgraded.
+- `networkProfile: "network-none"` blocks all executor egress and is the
+  per-workspace or instance-wide opt-out.
 - The executor receives no Docker socket, host credential, GitHub App token,
   deployment secret, or arbitrary host mount. The single documented exception is
   an operator-owned GitHub runtime secret (`GH_TOKEN`/`GITHUB_TOKEN`) that the
   operator deliberately injects to authenticate the workspace `gh` CLI; treat
-  any workspace carrying one as credential-bearing and keep `network-none`.
+  any workspace carrying one as credential-bearing. Egress is the default, so
+  repository-controlled code can exfiltrate it: prefer a fine-grained token
+  scoped to the repositories the workspace needs, or keep the instance or the
+  workspace on `network-none`.
 
 ## Repository and Git credential boundary
 
@@ -170,6 +174,12 @@ content and user-supplied commands are untrusted execution input.
   the principal's global runtime secret) for `github_action` and private Git
   operations. A personal access token is not repository-scoped, so prefer an App
   or a fine-grained token where practical.
+- For `github_action`, the runner mints the installation token with the scope the
+  action family needs (`issues` or `pull_requests`), checks the permissions
+  GitHub actually granted that token, and uses the fallback credential when the
+  installation cannot satisfy the action. When no credential can, it fails with
+  `GITHUB_PERMISSION_MISSING` (403), naming the missing scope and both remedies;
+  a `403` from the helper is never retried.
 - Fetch, pull, and push use isolated transfer helpers. They do not require
   executor networking and do not expose the broker credential to repository code.
 

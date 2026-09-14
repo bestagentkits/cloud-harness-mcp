@@ -23,7 +23,7 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 - **Hardened Standard Mode:** Standard executors strictly maintain `--read-only`, `--cap-drop ALL`, and `--security-opt no-new-privileges`.
 - **3-Zone Storage Partitioning:** Ephemeral secrets/config in RAM tmpfs (`/tmp/cloud-harness-home`), persistent user-space toolchains in `/opt/user-tools` & `/var/cache/harness`, and clean Git checkout in `/workspace`.
 - **No Docker Authority:** No socket mount or host filesystem access.
-- **Default Network `network-none`:** Outbound network is disabled unless explicitly requested as `dependency-access`, which permits only public DNS and TCP 80/443 while an attested Linux host firewall blocks loopback-to-host, Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges. It fails closed if attestation is unavailable and still permits public exfiltration.
+- **Network Egress On by Default (`dependency-access`):** Workspace executors have outbound network access by default, so a workspace can reach the GitHub API and the bundled `gh` CLI. `dependency-access` permits only public DNS and TCP 80/443 while an attested Linux host firewall blocks loopback-to-host, Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges. It fails closed if attestation is unavailable and still permits public exfiltration. `network-none` blocks all egress and is the per-workspace or instance-wide opt-out.
 
 ### 3. Privileged Execution & Operator Grants
 
@@ -36,7 +36,7 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 
 - Private clone, push, and GitHub CLI operations use short-lived GitHub App tokens passed exclusively over `stdin` into ephemeral helpers.
 - When no GitHub App token is available, an operator-supplied `GH_TOKEN`/`GITHUB_TOKEN` fallback is used instead: the runner environment credential (owner-bearer mode only), then the requesting principal's global runtime secret. The fallback is also passed only over `stdin`.
-- Tokens are never stored in configuration files, MCP results, audit payloads, or repository commit history. The one documented exception is an operator-created GitHub runtime secret, which is deliberately injected into executor environments to authenticate the workspace `gh` CLI.
+- Tokens are never stored in configuration files, MCP results, audit payloads, or repository commit history. The one documented exception is an operator-created GitHub runtime secret, which is deliberately injected into executor environments to authenticate the workspace `gh` CLI. Because egress is the default posture, repository-controlled code can exfiltrate such a credential; prefer a fine-grained token scoped to the repositories the workspace needs, or keep the instance or workspace on `network-none`.
 
 ### 5. Secrets Management & Ingest-Time Redaction
 

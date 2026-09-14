@@ -163,10 +163,21 @@ lease is revoked, its container is removed, and its status transitions to
   updating title, body, base branch, and closing or reopening PRs; `pr_comment` adds comments with
   idempotency support. `issue_publish` provides a single brokered request
   that posts a comment and adds or removes labels (with automatic missing-label creation).
+  The runner mints the installation token with the permission scope the action
+  family needs (`issues` for issue and label actions, `pull_requests` for
+  pull-request actions), then checks the permissions GitHub actually granted that
+  token before executing. When the App installation cannot satisfy the action, it
+  uses an operator-wide `GH_TOKEN`/`GITHUB_TOKEN` credential; when
+  neither can, it returns `GITHUB_PERMISSION_MISSING` naming the missing scope and
+  both remedies. The selection is owned by
+  [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
+  and
+  [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts).
   Tokens are supplied exclusively via stdin and are never written to workspace files.
   All write actions emit structured `github_action.<action>` events in `audit_events`.
   Failures return typed machine-actionable error codes (`GITHUB_RATE_LIMITED` with retryAfterMs,
-  `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`).
+  `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`);
+  a `403` from the helper is never retried.
   Comment, label, and publish mutations support idempotency keys with a 24-hour
   retention window; retries within 24 hours replay the cached result or reject
   payload mismatches with `CONFLICT`, after which the key expires and the request
@@ -265,16 +276,18 @@ lease is revoked, its container is removed, and its status transitions to
   explicitly applied Access subject relink. Expiry and revocation are checked
   on every request; `lastUsedAt` is coalesced telemetry and never an
   authorization input.
-- Executors have no network by default (`networkProfile: "network-none"`).
-  Dependency installation, arbitrary networked commands, and repository-defined
-  deployments that need egress require an explicitly requested
-  `networkProfile: "dependency-access"` workspace. That profile permits only
-  public DNS and public TCP 80/443 and blocks loopback-to-host,
-  Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges below
-  the executor; it is a weaker boundary that still permits public exfiltration
-  and fails closed (`DEPENDENCY_EGRESS_UNAVAILABLE`) when host firewall
-  attestation is unavailable. The legacy `networkMode` argument is rejected
-  with `INVALID_INPUT`. Remote Git fetch, pull, and push do not require executor
+- Executors are egress-capable by default: `workspace_open` without
+  `networkProfile` resolves an explicit request, then the instance-wide default
+  persisted from the dashboard Settings page, then `WORKSPACE_NETWORK_PROFILE`
+  (shipped default `dependency-access`). That profile permits only public DNS and
+  public TCP 80/443 and blocks loopback-to-host, Docker/control-plane, RFC 1918,
+  link-local, and cloud-metadata ranges below the executor; it is a weaker
+  boundary that still permits public exfiltration and fails closed
+  (`DEPENDENCY_EGRESS_UNAVAILABLE`, 503) when host firewall attestation is
+  unavailable, never silently downgrading. Callers narrow a workspace only when
+  isolation is required by passing `networkProfile: "network-none"`, which blocks
+  all executor egress. The legacy `networkMode` argument is rejected with
+  `INVALID_INPUT`. Remote Git fetch, pull, and push do not require executor
   networking: the runner stages them through ephemeral transfer helpers.
 - Remote Git is deliberately limited to the validated credential-free
   `origin`. Fetch and pull download into a sibling transfer repository, then
@@ -342,7 +355,11 @@ push requires a configured App installation with Contents read and write
 access. `workspace_capabilities` and `workspace_status` expose structured preflight
 information (`capabilities.repository`, `permissions`, `operations`) so clients can
 verify whether operations like `git_push` or GitHub actions are authorized before
-starting work. Unauthorized repository operations fail with `REPOSITORY_OPERATION_NOT_AUTHORIZED`
+starting work. `capabilities.repository.issuesRead`/`issuesWrite` and
+`pullRequestsRead`/`pullRequestsWrite` are derived from the permissions the
+verified installation actually grants, not merely from an App being configured,
+and `capabilities.workspace.defaultNetworkProfile` reports the effective profile
+that `workspace_open` applies when it omits `networkProfile`. Unauthorized repository operations fail with `REPOSITORY_OPERATION_NOT_AUTHORIZED`
 identifying the missing capability. The broker and leak boundary are owned by
 [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts),
 [`apps/runner/test/git-transfer-leak.test.ts`](../apps/runner/test/git-transfer-leak.test.ts),

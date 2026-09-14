@@ -48,9 +48,12 @@ servers, and HTTP redirects are unsupported.
 ## Effective workflow
 
 1. **Preflight and authorization.** Confirm the target repository. Use a
-   credential-free HTTPS repository URL. Keep `networkProfile` at `network-none`
-   unless the owner explicitly authorizes public dependency egress via
-   `dependency-access`. Workspaces
+   credential-free HTTPS repository URL. `networkProfile` is optional: the
+   instance default already grants GitHub-capable egress (public DNS and TCP
+   80/443 through an attested host firewall), so omit it for normal work. Pass
+   `networkProfile: 'network-none'` to block all executor egress only when the
+   owner asks for isolation. Subagents require a network-disabled workspace, so
+   open a separate `network-none` workspace for `agent_spawn`. Workspaces
    automatically inherit active **Global Secrets** for your signed-in identity.
    When project-specific environment credentials are also required, provide
    `environmentId` with `confirmEnvironmentInjection: true` (environment secrets
@@ -58,8 +61,8 @@ servers, and HTTP redirects are unsupported.
    A global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN` additionally lets the
    workspace's bundled `gh` CLI authenticate without a login step, and serves as
    the runner's fallback credential for `github_action` and private Git operations
-   when no GitHub App is configured. Treat such a workspace as credential-bearing:
-   never echo that value, and keep `networkProfile: network-none`.
+   when no GitHub App is configured. Treat such a workspace as credential-bearing
+   and never echo that value.
    To mount agent skills or toolkits (such as `mattpocock/skills`, `obra/superpowers`,
    or custom Git repos), pass `toolkits: [{ kind: 'preset', id: '...' }]` during `workspace_open`.
 2. **Open and set active context.** Call `workspace_open` with a fresh
@@ -68,7 +71,9 @@ servers, and HTTP redirects are unsupported.
 3. **Inspect capabilities early.** Run `workspace_capabilities` before planning
    write actions (e.g. `git_push`, `github_action` for issues/PRs). This prevents
    wasting execution effort on operations that current GitHub App grants, or an
-   available operator fallback credential, do not authorize.
+   available operator fallback credential, do not authorize. `github_action`
+   reports `GITHUB_PERMISSION_MISSING` when no configured credential can perform
+   the action.
 4. **Inspect code with native tools.** Prefer `files_list`, `files_read`,
    `grep_search`, `symbols_search`, and `symbols_references` over shell commands
    for code navigation. Use byte-offset limits and cursors for large files.

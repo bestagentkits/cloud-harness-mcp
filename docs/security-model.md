@@ -163,9 +163,11 @@ capabilities, `no-new-privileges`, bounded CPU/memory/PIDs/file descriptors,
 bounded per-operation and aggregate retained output, bounded operation-handle
 counts, and TTL cleanup. Only the workspace repository mount is writable.
 
-The default executor network profile is `network-none`, which blocks all
-executor egress, including dependency installation and networked repository
-commands. The owner opt-in `dependency-access` profile is enforced below MCP
+The shipped default executor network profile is `dependency-access`, so a
+workspace can reach the GitHub API and the bundled `gh` CLI without an explicit
+request. `network-none` is the per-workspace or instance-wide opt-out that
+blocks all executor egress, including dependency installation and networked
+repository commands. The `dependency-access` profile is enforced below MCP
 tool policy: the executor attaches only to a dedicated managed Docker bridge
 (`chm-egress0`) with inter-container communication disabled and Docker's
 default masquerade off, and a transactional host firewall (installed via a
@@ -306,7 +308,7 @@ Cloud Harness provides credential management partitioned by scope, lifecycle, an
 4. **GitHub Credential Injection (Explicit Owner-Approved Weakening):**
    - `GH_TOKEN` and `GITHUB_TOKEN` are accepted secret names, unlike every other control-plane, GitHub App, and toolchain name, so an operator can authenticate the executor's bundled `gh` CLI without an interactive login.
    - Because they are ordinary runtime secrets, they are also inherited by every remote workspace of that principal (global scope) or by the selected project environment, and any process in the executor can read them. This is the only harness-supported path that places a repository credential inside an executor environment, and it is an operator opt-in rather than a default: no secret exists unless the operator creates one.
-   - The narrowest supported credential is a fine-grained token limited to the repositories the workspace needs. Combine it with the default `network-none` profile: a credential readable by repository code is exfiltratable once the executor has egress (`dependency-access`).
+   - Egress is the shipped default, so a credential readable by repository-controlled code is exfiltratable by that code. Mitigate by using a fine-grained token limited to the repositories the workspace needs, or by switching the instance default or the individual workspace back to `network-none`.
    - `GITHUB_APP_*`, `RUNNER_*`, `ACCESS_*`, `CF_*`, `CLOUDFLARE_*`, `HARNESS_*`, `CH_*`, `DOCKER_*`, `XDG_*`, `NPM_*`, `UV_*`, `BUN_*`, `PNPM_*`, `GIT_*`, and `LD_*` names remain reserved and are rejected at both the dashboard and runner boundaries.
 
 5. **Ingest-Time Stream Redaction (Defense-in-Depth):**

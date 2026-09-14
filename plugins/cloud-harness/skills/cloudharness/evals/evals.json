@@ -4,7 +4,7 @@
     "prompt": "Use Cloud Harness MCP to open my approved repository, inspect its architecture without changing files, and close the workspace when done.",
     "assertions": [
       "Uses a credential-free HTTPS repository URL and a fresh idempotency key",
-      "Keeps network profile network-none unless the owner explicitly requests dependency-access",
+      "Relies on the instance default egress-capable network profile, and narrows with networkProfile network-none only when the owner asks for isolation",
       "Uses read-only file, search, and Git tools before any command",
       "Reads structured results and preserves the opaque workspace ID",
       "Closes the workspace and reports cleanup status"

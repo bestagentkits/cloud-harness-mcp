@@ -94,3 +94,25 @@ docker compose --profile images build executor-image
 4. For `jwks_unavailable` or `unknown_key`, check that the API container can reach the team's `/cdn-cgi/access/certs` endpoint and that the host clock is correct.
 
 Non-browser clients keep receiving the compact `{"error":"authentication_failed"}` JSON body; only browser navigations render the diagnostic page, and no token, assertion, or identity claim is ever shown.
+
+---
+
+### 10. `DEPENDENCY_EGRESS_UNAVAILABLE` on `workspace_open` (HTTP 503)
+**Cause:** The effective network profile is `dependency-access` — the shipped default — but the Linux host firewall is not provisioned, or its rules have drifted, so the runner fails the open closed instead of silently downgrading to `network-none`.
+**Fix:**
+1. Provision the host firewall on the Docker host:
+```bash
+bash deploy/scripts/setup-dependency-firewall.sh
+```
+2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page.
+3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
+To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"`.
+
+---
+
+### 11. `GITHUB_PERMISSION_MISSING` / `403 Resource not accessible by integration`
+**Cause:** No configured credential can perform the requested `github_action`. The GitHub App installation did not grant the scope the action needs, and no operator fallback credential is available.
+**Fix:**
+1. The error names the missing scope. Add that permission to the GitHub App and approve the pending installation change on GitHub, then retry.
+2. Alternatively, configure an operator-wide `GH_TOKEN`/`GITHUB_TOKEN` runtime secret as the fallback credential.
+A `403` from the helper is never retried, because the operation may already have had side effects; inspect the issue or pull request before retrying.

@@ -95,9 +95,12 @@ of those names:
 
 Because runtime secrets are injected into the executor environment, **any process
 in that workspace can read the value**. Create one only when you intend the
-workspace to act as you on GitHub, prefer the narrowest fine-grained token, and
-keep `networkProfile: network-none`: a readable credential is exfiltratable once
-the executor has egress.
+workspace to act as you on GitHub, and prefer the narrowest fine-grained token
+scoped to the repositories the workspace needs. Egress is the shipped default, so
+a readable credential is exfiltratable by repository-controlled code; to remove
+that exposure, switch the instance default on
+[Settings](/dashboard/settings) or the individual workspace back to
+`networkProfile: network-none`, which blocks all executor egress.
 
 The runner-environment alternative (`GH_TOKEN` in the deployment environment)
 authenticates harness-side operations only and is never injected into a
