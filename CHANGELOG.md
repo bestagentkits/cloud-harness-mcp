@@ -1,3 +1,10 @@
+## [0.46.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.46.0...v0.46.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **runner:** make the settings audit trail and credential source honest ([74ba948](https://github.com/bestagentkits/cloud-harness-mcp/commit/74ba948dfa4955d41d449f2b509ca5ee48f43796))
+
 # [0.46.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.45.0...v0.46.0) (2026-09-14)
 
 
