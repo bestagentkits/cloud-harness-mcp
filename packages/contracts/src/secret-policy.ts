@@ -1,5 +1,20 @@
 import { z } from 'zod';
 
+/**
+ * GitHub credential names an operator may inject as a `runtime` secret.
+ *
+ * These names are deliberately *not* reserved. A workspace secret with one of
+ * these names is both injected into the executor environment (so the bundled
+ * `gh` CLI authenticates without a login step) and usable by the runner as a
+ * principal-scoped fallback credential when no GitHub App repository token is
+ * available. Keep them out of both `FORBIDDEN_SECRET_NAMES` and
+ * `FORBIDDEN_SECRET_PREFIXES`: a reserved entry or prefix that matches one of
+ * these names would silently re-block the documented workspace `gh` path.
+ * Every other control-plane, GitHub App, and toolchain name stays reserved.
+ * See `docs/security-model.md` for the boundary this opens.
+ */
+export const GITHUB_CREDENTIAL_SECRET_NAMES = ['GH_TOKEN', 'GITHUB_TOKEN'] as const;
+
 export const FORBIDDEN_SECRET_NAMES: Record<string, true> = {
   PATH: true,
   HOME: true,
@@ -11,8 +26,6 @@ export const FORBIDDEN_SECRET_NAMES: Record<string, true> = {
   AUTHORIZATION: true,
   OWNER_ID: true,
   RUNNER_TOKEN: true,
-  GITHUB_TOKEN: true,
-  GH_TOKEN: true,
   SECRET_KEYRING: true,
   SECRET_KEYRING_FILE: true,
   STATE_DB: true,

@@ -7,6 +7,39 @@ description: Step-by-step instructions for configuring a GitHub App for private 
 
 Cloud Harness MCP uses a **GitHub App integration** to clone private repositories and execute origin-only pushes (`git_push`) without storing long-lived personal access tokens or SSH private keys inside container environments.
 
+A GitHub App is **optional**. Without one, GitHub operations resolve an operator-supplied fallback credential instead: `GH_TOKEN` then `GITHUB_TOKEN` from the runner environment (owner-bearer mode only), or a global runtime secret named `GH_TOKEN`/`GITHUB_TOKEN` held by the requesting principal. See [GitHub credential fallback](#github-credential-fallback) below.
+
+---
+
+## GitHub credential fallback
+
+Use this when you want GitHub operations without registering a GitHub App.
+
+Resolution order for `github_action` and private Git operations (clone, fetch, pull, push):
+
+1. A GitHub App repository-scoped token, when an App is configured and authorized.
+2. `GH_TOKEN`, then `GITHUB_TOKEN`, from the **runner process environment** (each also accepting a `_FILE` form). This source is honored **only** in `owner-bearer` mode.
+3. An active **global runtime secret** named `GH_TOKEN`, then `GITHUB_TOKEN`, held by the requesting principal.
+
+In `cloudflare-access` mode step 2 is refused entirely: a single operator-wide credential must never stand in for a different principal's App grant. Use step 3 there.
+
+Setting the runner environment credential:
+
+```bash
+# In the runner's environment file (e.g. .env). Read GH_TOKEN first, then GITHUB_TOKEN.
+GH_TOKEN=github_pat_...
+```
+
+Or create it in the dashboard under **Secrets**, which requires no restart and is scoped per principal.
+
+**Behavior notes:**
+
+- A value that cannot be a GitHub credential (shorter than 20 characters, or containing whitespace) is ignored rather than sent to GitHub.
+- Resolved credentials are passed over `stdin` to ephemeral helpers and are registered with the ingest-time redactor. They are never written to results, logs, audit payloads, or the Git remote.
+- `workspace_capabilities` reports GitHub read/write capability when either an App or a fallback credential is available.
+- A personal access token is **not** repository-scoped and cannot be limited by an installation grant. Prefer a GitHub App, or the narrowest fine-grained token.
+- The environment credential authenticates **harness-side** operations only; it is never placed in an executor environment. To authenticate the workspace's own `gh` CLI, create a global runtime secret named `GH_TOKEN`/`GITHUB_TOKEN` (see [Secrets & Credentials](secrets.md#github-credentials-in-workspaces)).
+
 ---
 
 ## How It Works
@@ -37,7 +70,7 @@ Cloud Harness MCP uses a **GitHub App integration** to clone private repositorie
 Before creating the App in GitHub, choose the minimum required permission level:
 
 | Goal | Required Permission |
-|---|---|
+| --- | --- |
 | **Clone, fetch, and pull private repos** | **Contents: Read-only** |
 | **Push ordinary code & branch commits** | **Contents: Read and write** |
 | **Push CI/CD workflows (`.github/workflows/`)** | **Contents: Read and write** + **Workflows: Read and write** |
@@ -91,9 +124,11 @@ After creating the App:
 4. Select the private repositories you want Cloud Harness agents to access.
 5. Click **Install**.
 6. After installation, GitHub redirects to a settings page URL such as:
+
    ```text
    https://github.com/settings/installations/78901234
    ```
+
    The trailing number (`78901234`) is your **Installation ID**.
 
 ---
@@ -103,6 +138,7 @@ After creating the App:
 On your Cloud Harness production server or VPS:
 
 ### 1. Secure the Private Key File
+
 Place the downloaded `.pem` file on the host filesystem with strict root permissions:
 
 ```bash
@@ -111,6 +147,7 @@ sudo install -m 600 -o root -g root /path/to/downloaded-key.pem /etc/cloud-harne
 ```
 
 ### 2. Update Environment Variables (`.env`)
+
 In your server's `.env` or `/etc/cloud-harness-mcp/runtime.env`:
 
 ```dotenv
@@ -128,6 +165,7 @@ GITHUB_APP_PRIVATE_KEY_FILE=/run/cloud-harness-secrets/github-app-private-key.pe
 ```
 
 ### 3. Restart the Runner
+
 Restart containers so the runner picks up the new configuration:
 
 ```bash
@@ -159,6 +197,7 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 
 - Confirm `workspace_status` returns `status: "ready"`.
 - Test committing and pushing on a disposable branch:
+
   ```json
   // Tool: git_push
   {
@@ -172,7 +211,7 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 ## Troubleshooting
 
 | Issue | Cause | Resolution |
-|---|---|---|
+| --- | --- | --- |
 | **`Repository clone failed: unauthorized (404/401)`** | Repository not selected in GitHub App installation. | Go to [github.com/settings/installations](https://github.com/settings/installations), click **Configure** on your App, and add the repository to **Repository access**. |
 | **`Push failed: 403 Forbidden`** | App has Read-only permissions for `Contents`. | In App settings → **Permissions**, change **Contents** to **Read and write**. Then accept the permission update under your installation settings. |
 | **`Push touching workflows failed: 403`** | Missing `Workflows` permission when editing `.github/workflows/*`. | Add **Workflows: Read and write** to Repository Permissions in GitHub App settings. |

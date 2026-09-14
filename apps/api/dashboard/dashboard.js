@@ -243,13 +243,21 @@ export function parseDotEnv(text) {
   }
   return items;
 }
-const FORBIDDEN_CLIENT_NAMES = new Set([
+/**
+ * Browser-side mirror of the reserved-name policy in
+ * `packages/contracts/src/secret-policy.ts`, so the form can reject a name
+ * before spending a request on it. `GITHUB_TOKEN` and `GH_TOKEN` are
+ * deliberately absent: an operator may inject a GitHub credential as a runtime
+ * secret to authenticate the executor's `gh` CLI. The parity test in
+ * `apps/api/test/dashboard-ui-contract.test.ts` fails if the two lists drift.
+ */
+export const FORBIDDEN_CLIENT_NAMES = new Set([
   'PATH', 'HOME', 'SHELL', 'USER', 'LOGNAME', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT',
-  'AUTHORIZATION', 'OWNER_ID', 'RUNNER_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'SECRET_KEYRING',
+  'AUTHORIZATION', 'OWNER_ID', 'RUNNER_TOKEN', 'SECRET_KEYRING',
   'SECRET_KEYRING_FILE', 'STATE_DB', 'JOBS_ROOT', 'DOCKER_HOST',
   'LD_PRELOAD', 'LD_LIBRARY_PATH'
 ]);
-const FORBIDDEN_CLIENT_PREFIXES = [
+export const FORBIDDEN_CLIENT_PREFIXES = [
   'HARNESS_', 'CH_', 'CLOUDFLARE_', 'CF_', 'GITHUB_APP_', 'ACCESS_', 'RUNNER_', 'DOCKER_',
   'XDG_', 'NPM_', 'NPM_CONFIG_', 'UV_', 'BUN_', 'PNPM_', 'GIT_', 'LD_'
 ];

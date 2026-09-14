@@ -192,6 +192,8 @@ List available global and environment secret names and descriptions without reve
 - Optional: `workspaceId`, `environmentId`, `query` (case-insensitive substring filter for names and descriptions), `cursor`, `limit` (default 100, max 500).
 - Returns value-free metadata records: `{ name, description, scope: 'global' | 'environment', environmentId, version, updatedAt }[]`.
 - Global secrets (inherited by all workspaces) and environment secrets are both returned. Environment secrets override global secrets on name collision.
+- `GH_TOKEN` and `GITHUB_TOKEN` are accepted secret names. A global runtime secret with one of those names authenticates the workspace's bundled `gh` CLI and also serves as the runner's fallback GitHub credential for `github_action` and private Git operations. Every other control-plane, GitHub App, and toolchain name (including every `GITHUB_APP_` name) is reserved and rejected.
+- A GitHub credential stored this way is injected into the executor environment, so any process in the workspace can read it. Never create one to work around a missing scope; prefer the narrowest fine-grained token.
 - Secret values are strictly write-only and never exposed via MCP tools.
 - In local stdio mode, returns a structured error explaining that retained environment secrets require remote runner storage.
 

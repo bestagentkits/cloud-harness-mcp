@@ -37,6 +37,10 @@ import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
+import {
+  hasGitHubFallbackCredential,
+  resolveGitHubFallbackToken
+} from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
@@ -235,6 +239,15 @@ export class WorkspaceService {
     } else if (record.environmentId) {
       Object.assign(values, this.metadata?.environmentValues(record.ownerId, record.environmentId) ?? {});
     }
+    // The fallback credential is defense-in-depth: it is never placed in the
+    // executor environment, but a helper or command that echoes it must still
+    // not reach a client result.
+    const fallbackToken = resolveGitHubFallbackToken({
+      config: this.config,
+      principalId: record.ownerId,
+      metadata: this.metadata
+    });
+    if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
     const redactor = new SecretSnapshotRedactor(values);
     this.redactorCache.set(workspaceId, redactor);
     return redactor;
@@ -797,7 +810,14 @@ export class WorkspaceService {
             decrypted[item.name] = this.metadata?.decryptEnvelope(ownerId, item.environmentId, item.name, item.version, item.envelope) ?? '';
           }
           environment = decrypted;
-          this.redactorCache.set(workspaceId, new SecretSnapshotRedactor(environment));
+          const fallbackToken = resolveGitHubFallbackToken({
+            config: this.config,
+            principalId: ownerId,
+            metadata: this.metadata
+          });
+          this.redactorCache.set(workspaceId, new SecretSnapshotRedactor(
+            fallbackToken ? { ...environment, GH_TOKEN: fallbackToken } : environment
+          ));
         } catch (error) {
           if (error instanceof HarnessError) throw error;
           throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
@@ -997,6 +1017,10 @@ export class WorkspaceService {
     }
 
     const authMode = this.config.authMode ?? 'owner-bearer';
+    // A fallback credential is a GitHub credential: it never widens capability
+    // for a non-GitHub host, and in cloudflare-access mode the operator-wide
+    // environment token is excluded by `envFallbackGitHubToken`.
+    const fallbackAvailable = isGitHub && hasGitHubFallbackCredential(this.config, record.ownerId, this.metadata);
     let contentsRead = true;
     let contentsWrite = false;
     let issuesRead = false;
@@ -1023,9 +1047,19 @@ export class WorkspaceService {
           }
         }
       }
+      // A principal's own global secret is that principal's credential, so it
+      // authorizes the operations its scopes allow even without an App grant.
+      if (!contentsWrite && fallbackAvailable) {
+        contentsRead = true;
+        contentsWrite = true;
+        issuesRead = true;
+        issuesWrite = true;
+        pullRequestsRead = true;
+        pullRequestsWrite = true;
+      }
     } else {
       // owner-bearer mode
-      if (isGitHub && this.config.githubApp?.installationId) {
+      if (isGitHub && (this.config.githubApp?.installationId || fallbackAvailable)) {
         contentsRead = true;
         contentsWrite = true;
         issuesRead = true;
@@ -1789,6 +1823,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const repoStr = this.extractRepositoryName(repoUrl);
 
     let token: string | undefined;
+    let appAuthorizationError: unknown;
     try {
       token = await mintPrincipalRepositoryScopedToken({
         config: this.config,
@@ -1799,6 +1834,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         requiredPermission: isWrite ? 'write' : 'read'
       });
     } catch (err: unknown) {
+      appAuthorizationError = err;
+    }
+    token ??= resolveGitHubFallbackToken({
+      config: this.config,
+      principalId: record.ownerId,
+      metadata: this.metadata
+    });
+    if (!token && appAuthorizationError) {
+      const err = appAuthorizationError;
       if (err instanceof HarnessError && (err.code === 'FORBIDDEN' || err.code === 'REPOSITORY_OPERATION_NOT_AUTHORIZED')) {
         if (isWrite) {
           this.auditWorkspaceOutcome(record.ownerId, `github_action.${action}`, record, {
@@ -3391,11 +3435,21 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   return await dispatchAction();
 }
 
+  /**
+   * Resolve a Git credential for one workspace operation. GitHub App
+   * credentials are preferred; the operator-supplied fallback is used only when
+   * no App token can be minted, so existing App deployments are unaffected.
+   */
   private async repositoryToken(ownerId: string, repositoryUrl: URL, permission: 'read' | 'write'): Promise<string | undefined> {
+    const fallback = () => resolveGitHubFallbackToken({
+      config: this.config,
+      principalId: ownerId,
+      metadata: this.metadata
+    });
     if ((this.config.authMode ?? 'owner-bearer') !== 'cloudflare-access') {
-      return await mintRepositoryToken(this.config, repositoryUrl);
+      return await mintRepositoryToken(this.config, repositoryUrl) ?? fallback();
     }
-    if (!this.githubInstallations || !this.config.githubApp) return undefined;
+    if (!this.githubInstallations || !this.config.githubApp) return fallback();
 
     let token: string | undefined;
     let mintError: unknown;
@@ -3414,6 +3468,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       const refreshed = await this.refreshRepositoryToken(ownerId, repositoryUrl, 'write');
       if (refreshed) return refreshed;
     }
+
+    const fallbackToken = fallback();
+    if (fallbackToken) return fallbackToken;
 
     if (mintError) throw mintError;
     return undefined;

@@ -58,6 +58,7 @@ AI agents can inspect available secret names and descriptions without reading se
 ```
 
 **Example Response (`structuredContent` / `data`):**
+
 ```json
 {
   "secrets": [
@@ -81,6 +82,33 @@ AI agents can inspect available secret names and descriptions without reading se
 }
 ```
 
+### GitHub credentials in workspaces
+
+`GH_TOKEN` and `GITHUB_TOKEN` are accepted secret names, unlike every other
+control-plane, GitHub App, and toolchain name. A global `runtime` secret with one
+of those names:
+
+- authenticates the workspace's bundled `gh` CLI without an interactive login;
+- serves as the runner's fallback credential for `github_action` and private Git
+  operations (clone, fetch, pull, push) when no GitHub App token is available; and
+- can be referenced as a `secretRef` for MCP gateway headers.
+
+Because runtime secrets are injected into the executor environment, **any process
+in that workspace can read the value**. Create one only when you intend the
+workspace to act as you on GitHub, prefer the narrowest fine-grained token, and
+keep `networkProfile: network-none`: a readable credential is exfiltratable once
+the executor has egress.
+
+The runner-environment alternative (`GH_TOKEN` in the deployment environment)
+authenticates harness-side operations only and is never injected into a
+workspace. That environment source is ignored in `cloudflare-access` mode, where
+the per-principal secret above is used instead.
+
+Names that remain rejected include `RUNNER_TOKEN`, `PATH`, `HOME`, `SHELL`,
+`SECRET_KEYRING*`, `STATE_DB`, `JOBS_ROOT`, `DOCKER_HOST`, and everything under
+the `GITHUB_APP_`, `RUNNER_`, `ACCESS_`, `CF_`, `CLOUDFLARE_`, `HARNESS_`, `CH_`,
+`DOCKER_`, `XDG_`, `NPM_`, `UV_`, `BUN_`, `PNPM_`, `GIT_`, and `LD_` prefixes.
+
 ## Keyring Rotation
 
 To rotate the underlying AES-256-GCM encryption key without losing access to existing secret versions:
@@ -89,7 +117,9 @@ To rotate the underlying AES-256-GCM encryption key without losing access to exi
 2. Add the new active key version to `SECRET_KEYRING_FILE` while retaining all previous key versions.
 3. Restart the runner with the updated keyring file.
 4. Quiesce secret writes and run the runner re-encryption script:
+
    ```bash
    npm run secrets:rekey -w @cloud-harness/runner
    ```
+
 5. Verify completion, take a post-rotation backup, and retain old decrypt keys throughout the rollback window.

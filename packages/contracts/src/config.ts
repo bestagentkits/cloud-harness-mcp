@@ -227,6 +227,20 @@ export const RunnerConfigSchema = z.object({
     privateKey: z.string().includes('PRIVATE KEY').max(32_768),
     appSlug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/).optional()
   }).optional(),
+  /**
+   * Operator-wide GitHub fallback credential, assembled from `GH_TOKEN` and
+   * then `GITHUB_TOKEN` (each also accepting a `_FILE` form). It is used only by
+   * the runner, only when no GitHub App repository token is available, and only
+   * in `owner-bearer` mode: an operator-wide credential must never authorize a
+   * different principal, so `cloudflare-access` deployments use a
+   * principal-scoped global secret instead. It is never placed in an executor
+   * environment and never returned to a client.
+   *
+   * Length and shape are validated at load time so an unrelated environment
+   * variable cannot fail runner startup; a value that cannot be a GitHub
+   * credential is ignored with a warning rather than rejected.
+   */
+  githubToken: z.string().min(1).max(512).optional(),
   agents: RunnerAgentsConfigSchema.optional()
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';

@@ -1,5 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { FORBIDDEN_SECRET_NAMES, FORBIDDEN_SECRET_PREFIXES, validateSecretName } from '@cloud-harness/contracts';
+import {
+  FORBIDDEN_CLIENT_NAMES,
+  FORBIDDEN_CLIENT_PREFIXES,
+  validateSecretClient
+} from '../dashboard/dashboard.js';
 
 const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
 
@@ -154,5 +160,26 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain("api('/preferences'");
     expect(script).toContain("classList.toggle('nav-collapsed')");
     expect(css).toContain('.app-shell.nav-collapsed');
+  });
+});
+
+describe('dashboard secret-name policy parity', () => {
+  it('mirrors the reserved-name policy exactly so the browser cannot drift from the server', () => {
+    expect([...FORBIDDEN_CLIENT_NAMES].sort()).toEqual(Object.keys(FORBIDDEN_SECRET_NAMES).sort());
+    expect([...FORBIDDEN_CLIENT_PREFIXES].sort()).toEqual([...FORBIDDEN_SECRET_PREFIXES].sort());
+  });
+
+  it('accepts GitHub credential names in the form instead of rejecting them as reserved', () => {
+    for (const name of ['GITHUB_TOKEN', 'GH_TOKEN']) {
+      expect(validateSecretClient(name, 'ghp_example_value'), name).toBeNull();
+      expect(validateSecretName(name).ok, name).toBe(true);
+    }
+  });
+
+  it('still rejects control-plane and toolchain names', () => {
+    for (const name of ['RUNNER_TOKEN', 'PATH', 'GITHUB_APP_PRIVATE_KEY', 'CLOUDFLARE_API_TOKEN']) {
+      expect(validateSecretClient(name, 'ghp_example_value'), name).not.toBeNull();
+      expect(validateSecretName(name).ok, name).toBe(false);
+    }
   });
 });
