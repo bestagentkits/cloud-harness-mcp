@@ -3,12 +3,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RunnerConfig } from '@cloud-harness/contracts';
+import { MetadataStore } from '../src/metadata-store.js';
+import { SecretKeyring } from '../src/secret-keyring.js';
+import { randomBytes } from 'node:crypto';
 import { executeInternalRunnerOperation } from '../src/internal-runner-operations.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
-afterEach(() => { for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true }); });
+const openMetadataStores: MetadataStore[] = [];
+afterEach(() => {
+  for (const metadata of openMetadataStores.splice(0)) metadata.database.close();
+  for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-internal-operations-'));
@@ -28,7 +35,9 @@ function fixture() {
     createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, generation: 4, error: null
   };
   store.create(record);
-  return { principal, record, store, service: new WorkspaceService(config, store) };
+  const metadata = new MetadataStore(config.stateDb, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
+  openMetadataStores.push(metadata);
+  return { principal, record, store, metadata, service: new WorkspaceService(config, store, metadata) };
 }
 
 describe('internal runner operations', () => {
@@ -82,7 +91,7 @@ describe('internal runner operations', () => {
   });
 
   it('persists an instance network default and resets it to the runner default', async () => {
-    const { principal, service, store } = fixture();
+    const { principal, service, store, metadata } = fixture();
     try {
       const initial = await executeInternalRunnerOperation(service, { version: 2, principal, operation: 'settings_get', input: {} });
       expect(initial.data).toMatchObject({ defaultNetworkProfile: { value: 'dependency-access', source: 'environment' } });
@@ -98,6 +107,17 @@ describe('internal runner operations', () => {
       });
       expect(reset.data).toMatchObject({ defaultNetworkProfile: { value: 'dependency-access', source: 'environment' } });
       expect(store.getWorkspaceDefaultNetworkProfile()).toBeUndefined();
+
+      // An instance-wide posture change must leave an operator-visible trail that
+      // records the transition without a probe or credential value.
+      const audits = metadata.listAudit(store.resolvePrincipal(principal), 10)
+        .filter((entry) => entry.action === 'settings.default_network_profile.changed');
+      expect(audits).toHaveLength(2);
+      // Newest first: the reset, then the value it replaced.
+      expect(audits[0]!.details).toMatchObject({ previous: 'network-none', next: 'runner-default' });
+      expect(audits[1]!.details).toMatchObject({ previous: 'runner-default', next: 'network-none' });
+      expect(audits[1]!.subjectType).toBe('instance');
+      expect(JSON.stringify(audits)).not.toContain('firewall');
     } finally { store.close(); }
   });
 
