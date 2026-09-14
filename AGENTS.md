@@ -15,7 +15,7 @@ instead of copying behavior, defaults, command inventories, or configuration.
 ## Navigation
 
 | Concern | Read first | Executable authority and evidence |
-|---|---|---|
+| --- | --- | --- |
 | Trust model and isolation | [`docs/security-model.md`](docs/security-model.md) | `apps/api/src/request-security.ts`, `apps/runner/src/workspace-service.ts`, `test/integration/docker-sandbox.docker.test.ts` |
 | Public MCP contract | [`docs/mcp-api.md`](docs/mcp-api.md) | `packages/contracts/src/`, `apps/api/src/mcp-server.ts`, `packages/contracts/test/`, `test/integration/` |
 | API/runner boundary | [`docs/system-architecture.md`](docs/system-architecture.md) | `apps/api/src/`, `apps/runner/src/`, `compose*.yaml`, `scripts/verify-compose-boundaries.mjs` |
@@ -34,15 +34,20 @@ instead of copying behavior, defaults, command inventories, or configuration.
   the ingress must not receive secrets or join the control network.
 - Keep Docker authority, job/state mounts, and optional GitHub App credentials
   confined to the runner. The API must not receive host mounts or the Docker
-  socket. Executors must not receive control-plane or repository credentials.
+  socket. Executors must not receive control-plane credentials, and the harness
+  must not push repository credentials into them. The single documented
+  exception is an operator-created GitHub runtime secret (`GH_TOKEN` or
+  `GITHUB_TOKEN`), which is an explicit owner opt-in for authenticating the
+  workspace `gh` CLI and is recorded in `docs/security-model.md`.
 - Preserve the executor restrictions and resource bounds owned by
   `apps/runner/src/workspace-service.ts`. Network mode remains `none` by
   default; `bridge` is an explicit owner-approved weakening, not an isolation
   guarantee.
 - Preserve credential-free HTTPS repository URLs, host/address validation, and
   constrained cloning. Private-clone credentials stay in the trusted broker
-  and must never persist in the checkout, remote URL, executor environment,
-  logs, fixtures, or command output.
+  and must never persist in the checkout, remote URL, logs, fixtures, or command
+  output; the executor-environment exception is the operator-injected GitHub
+  runtime secret named above.
 - Treat the schemas and result envelope in `packages/contracts/src/` and the
   lifecycle, idempotency, restart, and truncation semantics in
   `docs/mcp-api.md` as public contracts. Change their source, tests, and user
@@ -98,6 +103,7 @@ site (`docs-site/`). Keep user and operator guides in sync (such as
 
 Whenever MCP tool surfaces, schemas, capabilities, options, execution behaviors,
 or workspace lifecycle features change or are added:
+
 - Update `.agents/skills/cloudharness/SKILL.md` and the affected reference
   documents under `.agents/skills/cloudharness/references/` to keep agent tool
   usage guidance accurate and effective.

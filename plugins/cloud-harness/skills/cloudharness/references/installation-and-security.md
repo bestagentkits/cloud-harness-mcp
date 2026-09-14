@@ -151,7 +151,10 @@ content and user-supplied commands are untrusted execution input.
   dependency-script risk. Enforcement requires a Linux host with the dedicated
   bridge and attested host firewall; if attestation fails it fails closed.
 - The executor receives no Docker socket, host credential, GitHub App token,
-  deployment secret, or arbitrary host mount.
+  deployment secret, or arbitrary host mount. The single documented exception is
+  an operator-owned GitHub runtime secret (`GH_TOKEN`/`GITHUB_TOKEN`) that the
+  operator deliberately injects to authenticate the workspace `gh` CLI; treat
+  any workspace carrying one as credential-bearing and keep `network-none`.
 
 ## Repository and Git credential boundary
 
@@ -162,6 +165,11 @@ content and user-supplied commands are untrusted execution input.
   smudging.
 - Optional private GitHub access is brokered outside the executor with a
   short-lived repository-scoped token. The stored remote remains credential-free.
+- A GitHub App is optional. Without one, the runner resolves an operator-supplied
+  `GH_TOKEN`/`GITHUB_TOKEN` fallback (runner environment in owner-bearer mode, or
+  the principal's global runtime secret) for `github_action` and private Git
+  operations. A personal access token is not repository-scoped, so prefer an App
+  or a fine-grained token where practical.
 - Fetch, pull, and push use isolated transfer helpers. They do not require
   executor networking and do not expose the broker credential to repository code.
 

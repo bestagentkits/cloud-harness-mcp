@@ -9,13 +9,42 @@ executor environment, or MCP result.
 This guide covers GitHub.com. It assumes the private, single-owner deployment
 described by the [security model](security-model.md).
 
+## Optional: use a token instead of an App
+
+A GitHub App is optional. When no App repository token can be minted, the
+runner falls back to an operator-supplied credential, resolved in this order:
+
+1. `GH_TOKEN`, then `GITHUB_TOKEN`, from the runner's process environment (each
+   also accepting a `_FILE` form).
+2. An active global `runtime` secret named `GH_TOKEN`, then `GITHUB_TOKEN`, held
+   by the requesting principal (create it in the dashboard).
+
+Step 1 is honored only in `owner-bearer` mode. `cloudflare-access` deployments
+use step 2 so that one operator-wide credential cannot authorize a different
+principal. A value shorter than 20 characters, or containing whitespace, is
+ignored rather than sent to GitHub.
+
+A token is inherently weaker than an App: it is not scoped to one repository
+and cannot be bounded by an installation grant. Prefer a fine-grained token
+limited to the repositories the workspaces need, and expect it to authorize any
+operation its own scopes allow, because the runner cannot narrow it.
+
+The credential is used for `github_action` and for private clone, fetch, pull,
+and push. It travels over `stdin` into ephemeral helpers exactly like an App
+token, and is registered with the ingest-time redactor.
+
+This environment credential authenticates harness-side operations only; it is
+never placed in an executor environment. To authenticate the `gh` CLI inside a
+workspace, create a global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN`,
+which is injected into the executor and readable by workspace processes.
+
 ## Decide the required access
 
 Before creating the App, list the repositories Cloud Harness must access and
 choose the narrowest permission level:
 
 | Intended operation | Repository permission |
-|---|---|
+| --- | --- |
 | Clone, fetch, and pull | **Contents: Read-only** |
 | Push ordinary repository changes | **Contents: Read and write** |
 | Push changes under `.github/workflows/` | **Contents: Read and write** and **Workflows: Read and write** |
@@ -68,6 +97,7 @@ tokens.
 Use **All repositories** only when that broader and future access is an
 explicit owner decision. GitHub documents this flow in
 [Installing your own GitHub App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app).
+
 ## 3. Collect the App ID, installation ID, and private key
 
 Cloud Harness requires three values together:
@@ -179,7 +209,7 @@ successful private clone proves read access only; it does not prove push access.
 ## Troubleshooting
 
 | Symptom | Check |
-|---|---|
+| --- | --- |
 | GitHub App access appears disabled | Confirm both IDs and one key form are present in the runner's runtime environment, then restart the runner. |
 | Runner fails while reading the key | Confirm the environment uses the container path, the production mount exists, and the host PEM is root-owned with mode `600`. |
 | Repository not found or clone returns `404` | Confirm the App is installed on the repository's owning account and that the repository is included in **Only select repositories**. |
@@ -224,3 +254,5 @@ environment template, [`apps/runner/src/config.ts`](../apps/runner/src/config.ts
 [`compose.production.yaml`](../compose.production.yaml). Repository token
 scoping is implemented by
 [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts).
+Fallback resolution is implemented by
+[`apps/runner/src/github-credential-fallback.ts`](../apps/runner/src/github-credential-fallback.ts).

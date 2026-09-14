@@ -49,7 +49,7 @@ afterEach(() => {
   }
 });
 
-function createFixture(options: { authMode?: 'owner-bearer' | 'cloudflare-access'; githubApp?: RunnerConfig['githubApp'] } = {}) {
+function createFixture(options: { authMode?: 'owner-bearer' | 'cloudflare-access'; githubApp?: RunnerConfig['githubApp']; githubToken?: string } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ch-cap-test-'));
   temporaryDirectories.push(directory);
   const workspaceId = `ws_${'c'.repeat(24)}`;
@@ -72,7 +72,8 @@ function createFixture(options: { authMode?: 'owner-bearer' | 'cloudflare-access
     minFreeBytes: 0,
     maxWorkspaceBytes: 1_048_576,
     reaperIntervalSeconds: 30,
-    githubApp: options.githubApp
+    githubApp: options.githubApp,
+    githubToken: options.githubToken
   };
 
   const store = new StateStore(config.stateDb);
@@ -267,5 +268,56 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
     const contextData = contextRes.data as Record<string, unknown>;
     expect(contextData.capabilities).toBeDefined();
     expect((contextData.capabilities as { repository: Record<string, boolean> }).repository.push).toBe(true);
+  });
+
+  it('reports GitHub write capabilities in owner-bearer mode from an operator-supplied fallback credential', async () => {
+    const { service, workspaceId } = createFixture({
+      authMode: 'owner-bearer',
+      githubToken: `ghp_${'f'.repeat(36)}`
+    });
+
+    const res = await service.execute('principal_1', 'workspace_capabilities', { workspaceId });
+    const data = res.data as { capabilities: { repository: Record<string, boolean> }; operations: Record<string, boolean> };
+    expect(data.capabilities.repository.push).toBe(true);
+    expect(data.capabilities.repository.issuesWrite).toBe(true);
+    expect(data.capabilities.repository.pullRequestsWrite).toBe(true);
+    expect(data.operations.gitPush).toBe(true);
+    expect(data.operations.issueCreate).toBe(true);
+  });
+
+  it('refuses the operator-wide fallback credential in cloudflare-access mode so it cannot stand in for a grant', async () => {
+    const { service, workspaceId } = createFixture({
+      authMode: 'cloudflare-access',
+      githubApp: {
+        appId: 100,
+        privateKey: 'key',
+        appSlug: 'test-app'
+      },
+      githubToken: `ghp_${'f'.repeat(36)}`
+    });
+
+    const res = await service.execute('principal_1', 'workspace_capabilities', { workspaceId });
+    const data = res.data as { capabilities: { repository: Record<string, boolean> } };
+    expect(data.capabilities.repository.push).toBe(false);
+    expect(data.capabilities.repository.issuesWrite).toBe(false);
+
+    const token = await (service as unknown as {
+      repositoryToken: (ownerId: string, url: URL, permission: 'read' | 'write') => Promise<string | undefined>;
+    }).repositoryToken('principal_1', new URL('https://github.com/test-org/test-repo.git'), 'write');
+    expect(token).toBeUndefined();
+  });
+
+  it('resolves the fallback credential for Git read and write operations when no App token is minted', async () => {
+    const fallbackToken = `ghp_${'f'.repeat(36)}`;
+    const { service } = createFixture({
+      authMode: 'owner-bearer',
+      githubToken: fallbackToken
+    });
+    const call = (service as unknown as {
+      repositoryToken: (ownerId: string, url: URL, permission: 'read' | 'write') => Promise<string | undefined>;
+    });
+    const repositoryUrl = new URL('https://github.com/test-org/test-repo.git');
+    await expect(call.repositoryToken('principal_1', repositoryUrl, 'read')).resolves.toBe(fallbackToken);
+    await expect(call.repositoryToken('principal_1', repositoryUrl, 'write')).resolves.toBe(fallbackToken);
   });
 });

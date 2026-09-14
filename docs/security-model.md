@@ -52,6 +52,7 @@ storage, per-tenant identity/authorization, and stronger abuse controls. For the
 architectural roadmap, hardware-isolated microVM criteria, and formal owner
 gating governing future multi-tenant platform expansion, see
 [`docs/adr/0001-multi-tenant-isolation-and-haas-ladder.md`](adr/0001-multi-tenant-isolation-and-haas-ladder.md).
+
 ## Public authentication and request controls
 
 The default `owner-bearer` mode authenticates one long-lived replayable owner
@@ -194,15 +195,44 @@ Optional GitHub App credentials remain in the runner. Access GitHub SSO never
 grants repository access. A separate principal-bound App installation and
 verified repository grant authorize private Git operations. Short-lived,
 repository-scoped tokens are supplied over stdin only to ephemeral clone,
-fetch, or push helpers; the stored remote stays credential-free and the
-executor never receives a token. Remote fetch/pull first stage outside the
+fetch, or push helpers; the stored remote stays credential-free and the helper
+environment never receives a token. Remote fetch/pull first stage outside the
 executor and import without network or credentials. Push first stages a bare
 snapshot without credentials, then uses a separate networked helper. Transfer
 directories and helper containers are removed after the operation.
 
+#### Operator-supplied GitHub credential fallback
+
+A GitHub App is optional. When no App repository token can be minted, Git and
+`github_action` operations fall back to an operator-supplied GitHub credential,
+resolved in this order:
+
+1. `GH_TOKEN`, then `GITHUB_TOKEN`, from the runner process environment (each
+also accepting a `_FILE` form); then
+2. an active global runtime secret named `GH_TOKEN`, then `GITHUB_TOKEN`, held by
+the requesting principal.
+
+The environment source is honored **only** in `owner-bearer` mode. In
+`cloudflare-access` (multi-principal) mode it is refused entirely, because a
+single operator-wide credential must never stand in for a different
+principal's App grant; those deployments use the per-principal secret instead.
+Values that cannot be GitHub credentials (shorter than 20 characters or
+containing whitespace) are ignored, so an unrelated environment variable or
+secret cannot be sent to GitHub as a token. Resolved credentials are registered
+with the ingest-time redactor. The owning resolution logic and its tests are
+[`apps/runner/src/github-credential-fallback.ts`](../apps/runner/src/github-credential-fallback.ts)
+and
+[`apps/runner/test/github-credential-fallback.test.ts`](../apps/runner/test/github-credential-fallback.test.ts).
+
+This fallback is deliberately weaker than an App token: a personal access token
+is not scoped to one repository and cannot be bounded by an installation grant,
+so prefer the narrowest fine-grained token, or a GitHub App where one is
+practical.
+
 ### Owner-scoped repository cache isolation
 
 When repository caching is enabled (`enableRepoCache: true`):
+
 1. Bare repository caches are stored under `repoCacheRoot` partitioned strictly by the authenticated principal's opaque ID (`<repoCacheRoot>/<principalId>/...`). Cross-principal cache access is structurally impossible.
 2. Cache initialization uses ephemeral helper containers that mount the owner's cache directory writable (`:rw`) to clone the bare repository mirror. Once READY, existing mirrors are referenced without ongoing background synchronization.
 3. Initial workspace checkouts mount the cache directory strictly read-only (`:ro`) in the clone helper and use `git clone --reference-if-able <cache> --dissociate <workspace>`. The `--dissociate` flag copies referenced objects into the workspace repository during creation, severing any ongoing link to the shared object store before the executor starts.
@@ -210,12 +240,14 @@ When repository caching is enabled (`enableRepoCache: true`):
 
 ### Brokered GitHub actions
 
-Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`) are minted by the runner from the trusted GitHub App installation and passed exclusively via `stdin`. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Tokens never enter the workspace filesystem or environment.
+Authenticated GitHub operations (`pr_list`, `pr_view`, `pr_create`, `pr_update`, `pr_comment`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`, `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`, `issue_update`, `issue_publish`) are executed through the `github_action` tool using an ephemeral helper container (`worker/gh-helper.sh`). Action-scoped tokens (`pull_requests: read|write`, `issues: read|write`) are minted by the runner from the trusted GitHub App installation, or resolved from the operator fallback described above when no App token is available, and passed exclusively via `stdin`. The helper container runs read-only with dropped capabilities, and is forcibly removed on all exit paths in a `try/finally` block. Credentials resolved this way never enter the helper environment, workspace filesystem, workspace environment, client result, or audit payload.
 
 All write mutations and token authorization denials emit auditable events (`github_action.<action>`) into `audit_events` recording principal, repository, target entity numbers, success status, and structured error codes without storing token secrets or unbounded request payloads. Helper execution failures are classified into structured, typed error codes (`GITHUB_RATE_LIMITED` with retryAfterMs, `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`) to provide deterministic machine-readable recovery semantics for autonomous agents.
+
 ### Three-zone storage and toolchain isolation
 
 Executors operate across three partitioned storage zones:
+
 1. **Zone A (Secrets & Session Config)**: `/tmp/cloud-harness-home` backed by RAM tmpfs (`128MB`), containing ephemeral configurations, temporary tokens, and tool cache metadata. Destroyed on container exit and cannot be committed into Git.
 2. **Zone B (User-Space Toolchains & Caches)**: `/opt/user-tools` and `/var/cache/harness` mounted from runner-managed job paths with UID `10001:10001` ownership and mode `0755`. Accommodates global user-space toolchain installations (`npm -g`, `bun`, `uv`, `pnpm`, `wrangler`) without requiring root.
 3. **Zone C (Git Repository)**: `/workspace` containing the clean repository working tree.
@@ -225,6 +257,7 @@ Workspace disk usage metering calculates the combined footprint of all three per
 ### Skill tiers and execution isolation
 
 Skills are resolved across four deterministic precedence tiers (`built-in > owner > workspace > repository`):
+
 1. **Built-in & Owner Tiers (`/opt/cloud-harness/skills:ro`, `/opt/cloud-harness/owner-skills:ro`)**: Mounted read-only (`:ro`) at the container boundary. Because they reside on immutable host mounts, processes within the executor (including any process running as UID 10001) cannot modify these skill files.
 2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope.
 
@@ -233,6 +266,7 @@ Skills are resolved across four deterministic precedence tiers (`built-in > owne
 Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, and user `10001:10001`. Sudo/root execution is treated as an explicit owner-approved threat model weakening (similar to `networkMode: bridge`).
 
 When `exec_run` is invoked with `privileged: true`:
+
 1. Privileged execution is supported in `cloudflare-access` mode (where the operator dashboard is authenticated via Cloudflare Access) and is disabled in `owner-bearer` mode to prevent self-approval.
 2. In `cloudflare-access` mode, an unapproved request is rejected with `PRIVILEGE_APPROVAL_REQUIRED` and returns a single-use `grantId` bound to the command and working directory with a 60-second TTL.
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
@@ -240,7 +274,8 @@ When `exec_run` is invoked with `privileged: true`:
 The public contract fixes remote transfers to `origin`, permits only branch
 push refspecs, rejects deletion refspecs, and permits force only through
 force-with-lease. Private clone/fetch/pull require GitHub App Contents read
-access; push requires Contents read and write access. The executable boundary
+access, or the operator fallback above; push requires Contents read and write
+access, or the operator fallback above. The executable boundary
 and its evidence are
 [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts),
 [`worker/git-transfer-helper.sh`](../worker/git-transfer-helper.sh),
@@ -268,7 +303,13 @@ Cloud Harness provides credential management partitioned by scope, lifecycle, an
    - Neither the browser dashboard nor MCP tools (`secrets_list`) ever return secret values or ciphertext.
    - During executor creation, runtime secrets are briefly written to an ephemeral mode-0600 host environment file for Docker creation and immediately removed.
 
-4. **Ingest-Time Stream Redaction (Defense-in-Depth):**
+4. **GitHub Credential Injection (Explicit Owner-Approved Weakening):**
+   - `GH_TOKEN` and `GITHUB_TOKEN` are accepted secret names, unlike every other control-plane, GitHub App, and toolchain name, so an operator can authenticate the executor's bundled `gh` CLI without an interactive login.
+   - Because they are ordinary runtime secrets, they are also inherited by every remote workspace of that principal (global scope) or by the selected project environment, and any process in the executor can read them. This is the only harness-supported path that places a repository credential inside an executor environment, and it is an operator opt-in rather than a default: no secret exists unless the operator creates one.
+   - The narrowest supported credential is a fine-grained token limited to the repositories the workspace needs. Combine it with the default `network-none` profile: a credential readable by repository code is exfiltratable once the executor has egress (`dependency-access`).
+   - `GITHUB_APP_*`, `RUNNER_*`, `ACCESS_*`, `CF_*`, `CLOUDFLARE_*`, `HARNESS_*`, `CH_*`, `DOCKER_*`, `XDG_*`, `NPM_*`, `UV_*`, `BUN_*`, `PNPM_*`, `GIT_*`, and `LD_*` names remain reserved and are rejected at both the dashboard and runner boundaries.
+
+5. **Ingest-Time Stream Redaction (Defense-in-Depth):**
    - Secret values meeting the minimum length threshold (≥ 4 UTF-8 bytes) are compiled into the runner's streaming redactor.
    - Streaming task, shell, and session stdout/stderr chunks are sanitized—including matches spanning stream chunk boundaries—before retained memory buffering, preserving monotonic byte cursor offsets. Synchronous `exec_run` command outputs and worker error messages are sanitized after capture before return.
    - Redaction is defense-in-depth: it targets exact raw byte matches and does not match transformed, encoded (e.g., base64 or hex), hashed, or partial secret derivatives. Repository code and commands must not deliberately echo secret material.

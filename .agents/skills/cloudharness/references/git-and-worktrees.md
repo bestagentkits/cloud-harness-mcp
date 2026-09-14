@@ -195,6 +195,7 @@ List managed worktrees and their branch/HEAD state for `workspaceId`.
 
 - Required: `workspaceId`, `action`.
 - Uses trusted GitHub App broker tokens passed via stdin to an ephemeral helper container. Tokens are never exposed to workspace files.
+- When no GitHub App repository token can be minted, the runner falls back to an operator-supplied credential: `GH_TOKEN` then `GITHUB_TOKEN` from the runner environment (owner-bearer mode only), then the requesting principal's global runtime secret of the same name. The credential still travels over stdin only and never enters a result, log, or audit payload.
 - Read actions:
   - `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state` (`open`, `closed`, or `all`).
   - `pr_view`: required `prNumber`.

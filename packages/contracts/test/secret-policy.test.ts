@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GITHUB_CREDENTIAL_SECRET_NAMES,
   validateSecretDescription,
   validateSecretName,
   validateSecretValue,
@@ -31,11 +32,16 @@ describe('secret-policy', () => {
       expect(validateSecretName('HOME').ok).toBe(false);
       expect(validateSecretName('SHELL').ok).toBe(false);
       expect(validateSecretName('USER').ok).toBe(false);
-      expect(validateSecretName('GITHUB_TOKEN').ok).toBe(false);
-      expect(validateSecretName('GH_TOKEN').ok).toBe(false);
       expect(validateSecretName('RUNNER_TOKEN').ok).toBe(false);
       expect(validateSecretName('AUTHORIZATION').ok).toBe(false);
       expect(validateSecretName('LD_PRELOAD').ok).toBe(false);
+    });
+
+    it('accepts GitHub credential names so an operator can authenticate the workspace gh CLI', () => {
+      for (const name of GITHUB_CREDENTIAL_SECRET_NAMES) {
+        expect(validateSecretName(name), name).toEqual({ ok: true, name });
+        expect(validateSecretName(name.toLowerCase()), name).toEqual({ ok: true, name: name.toLowerCase() });
+      }
     });
 
     it('rejects reserved prefixes', () => {

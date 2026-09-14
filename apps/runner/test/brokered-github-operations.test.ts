@@ -342,6 +342,32 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     });
   });
 
+  it('falls back to the configured GitHub credential when no App token can be minted', async () => {
+    const { config, store, workspaceId, principalSelector } = fixture();
+    const emptyInstallations = new InMemoryGitHubInstallationStore();
+    const fallbackToken = `ghp_${'f'.repeat(36)}`;
+    config.authMode = 'owner-bearer';
+    config.githubToken = fallbackToken;
+    const service = new WorkspaceService(config, store, undefined, emptyInstallations);
+
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(undefined);
+
+    const result = await service.execute(principalSelector, 'github_action', {
+      workspaceId,
+      action: 'pr_list'
+    });
+
+    expect(result.ok).toBe(true);
+    const dockerCall = docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'));
+    expect(dockerCall).toBeDefined();
+    const [args, opts] = dockerCall!;
+    // The fallback credential reaches the ephemeral helper over stdin only.
+    expect(opts?.stdin).toBe(`${fallbackToken}\n`);
+    expect(args).toContain('pr_list');
+    expect(args.join(' ')).not.toContain(fallbackToken);
+    expect(JSON.stringify(result)).not.toContain(fallbackToken);
+  });
+
   it('returns structured GITHUB_RATE_LIMITED error when GitHub CLI is rate limited and records failure audit', async () => {
     const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, metadata, installations);

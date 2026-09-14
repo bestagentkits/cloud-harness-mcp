@@ -7,6 +7,24 @@ function secret(name: string): string | undefined {
   return process.env[name];
 }
 
+/**
+ * `GH_TOKEN` and `GITHUB_TOKEN` are ordinary environment names that unrelated
+ * tooling also sets, so a value that cannot be a GitHub credential is ignored
+ * after a warning rather than failing runner startup. The credential is used
+ * only when no GitHub App repository token is available and only in
+ * `owner-bearer` mode; `resolveGitHubFallbackToken` owns that policy, and the
+ * resolved value is registered with the ingest-time redactor rather than being
+ * logged or placed in an executor environment.
+ */
+function plausibleGitHubToken(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value.length < 20 || /[\s\0]/.test(value)) {
+    console.warn('[runner-config] ignoring GH_TOKEN/GITHUB_TOKEN: value is not a plausible GitHub credential');
+    return undefined;
+  }
+  return value;
+}
+
 const csv = (value: string | undefined, fallback: string) => (value ?? fallback).split(',').map((entry) => entry.trim()).filter(Boolean);
 
 const json = (value: string | undefined): unknown => value === undefined ? undefined : JSON.parse(value) as unknown;
@@ -46,6 +64,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
   const githubInstallationId = process.env.GITHUB_APP_INSTALLATION_ID;
   const githubPrivateKey = secret('GITHUB_APP_PRIVATE_KEY');
   const githubAppSlug = process.env['GITHUB_APP_SLUG'];
+  const githubToken = plausibleGitHubToken(secret('GH_TOKEN') ?? secret('GITHUB_TOKEN'));
   const legacyOwnerId = process.env.ACCESS_LEGACY_OWNER_ID;
   const legacyIssuer = process.env.ACCESS_LEGACY_ISSUER;
   const legacySubject = process.env.ACCESS_LEGACY_SUBJECT;
@@ -129,6 +148,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       privateKey: githubPrivateKey,
       appSlug: process.env.GITHUB_APP_SLUG
     } : undefined,
+    githubToken,
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,
       networkMode: process.env.AGENT_NETWORK_MODE,
