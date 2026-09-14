@@ -68,10 +68,13 @@ the deprecation rejection.
 - **Subagent isolation stays strict**: `agent_spawn`/admission still require
   `network-none`; only the error message gains the remediation.
 - **GitHub credential selection is verified before execution.** Mint the App
-  token with the union of permissions the action needs, read back the granted
-  permissions GitHub returns, and prefer the operator fallback when the App
-  cannot satisfy the union. No retry after a `403` (the operation may already
-  have side effects).
+  token with the single permission scope the action family needs, read back the
+  granted permissions GitHub returns, and prefer the principal's configured
+  fallback when the App cannot satisfy the action. Official endpoint contracts
+  accept either `Issues: write` or `Pull requests: write` for the comment and
+  label endpoints, so no action requests both: a union would over-constrain the
+  mint and can fail with `422` for an App that grants one and not the other. No
+  retry after a `403` (the operation may already have side effects).
 - **Capability advertisement reflects granted permissions** captured during
   installation verification, not merely "an App id is configured".
 

@@ -167,9 +167,15 @@ lease is revoked, its container is removed, and its status transitions to
   family needs (`issues` for issue and label actions, `pull_requests` for
   pull-request actions), then checks the permissions GitHub actually granted that
   token before executing. When the App installation cannot satisfy the action, it
-  uses an operator-wide `GH_TOKEN`/`GITHUB_TOKEN` credential; when
+  falls back to the requesting principal's configured credential: the
+  runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in `owner-bearer` mode (refused in
+  `cloudflare-access` mode, where an operator-wide credential must never stand in
+  for a different principal) or that principal's own global runtime secret. When
   neither can, it returns `GITHUB_PERMISSION_MISSING` naming the missing scope and
-  both remedies. The selection is owned by
+  both remedies. Neither fallback authenticates `gh` inside a workspace: the
+  environment credential is never placed in an executor, and a global runtime
+  secret authenticates the workspace `gh` only when the operator created one for
+  that principal. The selection is owned by
   [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
   and
   [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts).

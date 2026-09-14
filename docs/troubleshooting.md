@@ -101,10 +101,16 @@ a lost response; do not create a second key until the first result is resolved.
 - `github_action` returns `GITHUB_PERMISSION_MISSING` following GitHub's `403
   Resource not accessible by integration`: no configured credential can perform
   the action. The error names the missing scope. Add that permission to the
-  GitHub App and approve the pending installation change on GitHub, or configure
-  an operator-wide `GH_TOKEN`/`GITHUB_TOKEN` runtime secret as the fallback
-  credential. A `403` from the helper is never retried, because the operation may
-  already have had side effects.
+  GitHub App and approve the pending installation change on GitHub (the App's own
+  table in [GitHub App setup](github-app-private-repositories.md) lists which
+  operations need which permission), or configure the fallback credential for the
+  requesting principal: the runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in
+  `owner-bearer` mode, or that principal's global runtime secret in
+  `cloudflare-access` mode, where the operator-wide environment token is refused.
+  Either fallback authenticates harness-side operations only; the workspace `gh`
+  CLI needs its own global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN`. A
+  `403` from the helper is never retried, because the operation may already have
+  had side effects.
 - Private fetch/pull failure: verify GitHub App installation access and Contents
   read permission. Push additionally requires Contents read and write
   permission; only `origin`, branch refspecs, and optional force-with-lease are
