@@ -8,7 +8,39 @@
       content="CloudHarness HaaS (Harness as a Service) — Architectural roadmap and multi-tenant cloud specification for AI agent fleets with hardware-isolated Firecracker MicroVMs."
     />
     <title>CloudHarness HaaS // Multi-Tenant Cloud Platform &amp; MicroVM Architecture</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
+
+    <!-- SEO / canonical -->
+    <link rel="canonical" href="https://harness.agentkit.best/haas.html" />
+    <meta name="theme-color" content="#05070a" />
+    <meta name="robots" content="index, follow" />
+    <meta name="application-name" content="Cloud Harness MCP" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Cloud Harness MCP" />
+    <meta property="og:url" content="https://harness.agentkit.best/haas.html" />
+    <meta property="og:title" content="CloudHarness HaaS // Multi-Tenant Cloud Platform &amp; MicroVM Architecture" />
+    <meta
+      property="og:description"
+      content="CloudHarness HaaS (Harness as a Service) — Architectural roadmap and multi-tenant cloud specification for AI agent fleets with hardware-isolated Firecracker MicroVMs."
+    />
+    <meta property="og:image" content="https://harness.agentkit.best/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Cloud Harness MCP — private remote coding harness for autonomous AI agents." />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="CloudHarness HaaS // Multi-Tenant Cloud Platform &amp; MicroVM Architecture" />
+    <meta
+      name="twitter:description"
+      content="CloudHarness HaaS (Harness as a Service) — Architectural roadmap and multi-tenant cloud specification for AI agent fleets with hardware-isolated Firecracker MicroVMs."
+    />
+    <meta name="twitter:image" content="https://harness.agentkit.best/og-image.png" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;0,800;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
@@ -88,11 +120,21 @@
         font-size: 0.75rem;
         padding: 0.45rem 1.5rem;
         display: flex;
-        justify-content: space-between;
         align-items: center;
         overflow-x: auto;
         white-space: nowrap;
-        -webkit-overflow-scrolling: touch;
+      }
+
+      /* Marquee track: one centered set on desktop; a duplicated set loops on small screens */
+      .telemetry-marquee {
+        display: flex;
+        flex: 0 0 auto;
+        margin: 0 auto;
+        align-items: center;
+        gap: 1.75rem;
+      }
+      .telemetry-marquee .is-clone {
+        display: none;
       }
 
       .telemetry-group {
@@ -509,31 +551,91 @@
       @media (max-width: 640px) {
         .telemetry-bar { font-size: 0.7rem; padding: 0.4rem 1rem; }
       }
+
+      /* Loop slide animation for the telemetry strip on mobile/tablet */
+      @media (max-width: 1024px) {
+        .telemetry-bar {
+          justify-content: flex-start;
+          overflow: hidden;
+          -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+        }
+        .telemetry-marquee {
+          gap: 0;
+          margin-left: 0;
+          margin-right: 0;
+          animation: telemetry-scroll 22s linear infinite;
+          will-change: transform;
+        }
+        .telemetry-marquee .is-clone { display: flex; }
+        .telemetry-group {
+          flex: 0 0 auto;
+          padding-right: 1.75rem;
+        }
+        @keyframes telemetry-scroll {
+          from { transform: translateX(0); }
+          to { transform: translateX(-50%); }
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .telemetry-marquee { animation: none; }
+        .telemetry-marquee .is-clone { display: none; }
+        .telemetry-bar {
+          justify-content: flex-start;
+          overflow-x: auto;
+          -webkit-mask-image: none;
+          mask-image: none;
+        }
+      }
     </style>
   </head>
   <body id="top">
     <header class="site-header-hud">
       <!-- Top Telemetry HUD -->
       <aside class="telemetry-bar" aria-label="System telemetry">
-        <div class="telemetry-group">
-          <div class="telemetry-item">
-            <span class="pulse-dot"></span>
-            <span>HAAS CLUSTER:</span>
-            <span style="color: var(--purple-laser)">PREVIEW // ADR 0001 GATED</span>
+        <div class="telemetry-marquee">
+          <div class="telemetry-group">
+            <div class="telemetry-item">
+              <span class="pulse-dot"></span>
+              <span>HAAS CLUSTER:</span>
+              <span style="color: var(--purple-laser)">PREVIEW // ADR 0001 GATED</span>
+            </div>
+            <div class="telemetry-item">
+              <span>ISOLATION TARGET:</span>
+              <span style="color: var(--cyan-glow)">FIRECRACKER KVM &lt;150ms</span>
+            </div>
+            <div class="telemetry-item">
+              <span>STORAGE QUOTA:</span>
+              <span style="color: var(--green-neon)">DM-THIN 20GB HARD LIMIT</span>
+            </div>
           </div>
-          <div class="telemetry-item">
-            <span>ISOLATION TARGET:</span>
-            <span style="color: var(--cyan-glow)">FIRECRACKER KVM &lt;150ms</span>
+          <div class="telemetry-group">
+            <div class="telemetry-item">
+              <span>PROTOCOL:</span>
+              <span style="color: var(--text-bright)">gRPC / mTLS OUTBOUND</span>
+            </div>
           </div>
-          <div class="telemetry-item">
-            <span>STORAGE QUOTA:</span>
-            <span style="color: var(--green-neon)">DM-THIN 20GB HARD LIMIT</span>
+          <div class="telemetry-group is-clone" aria-hidden="true">
+            <div class="telemetry-item">
+              <span class="pulse-dot"></span>
+              <span>HAAS CLUSTER:</span>
+              <span style="color: var(--purple-laser)">PREVIEW // ADR 0001 GATED</span>
+            </div>
+            <div class="telemetry-item">
+              <span>ISOLATION TARGET:</span>
+              <span style="color: var(--cyan-glow)">FIRECRACKER KVM &lt;150ms</span>
+            </div>
+            <div class="telemetry-item">
+              <span>STORAGE QUOTA:</span>
+              <span style="color: var(--green-neon)">DM-THIN 20GB HARD LIMIT</span>
+            </div>
           </div>
-        </div>
-        <div class="telemetry-group">
-          <div class="telemetry-item">
-            <span>PROTOCOL:</span>
-            <span style="color: var(--text-bright)">gRPC / mTLS OUTBOUND</span>
+          <div class="telemetry-group is-clone" aria-hidden="true">
+            <div class="telemetry-item">
+              <span>PROTOCOL:</span>
+              <span style="color: var(--text-bright)">gRPC / mTLS OUTBOUND</span>
+            </div>
           </div>
         </div>
       </aside>
