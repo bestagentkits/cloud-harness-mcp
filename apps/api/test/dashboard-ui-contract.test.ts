@@ -29,7 +29,7 @@ describe('dashboard static UI contract', () => {
   });
 
   it('uses tokenized responsive styling with reduced-motion and narrow-screen rules', () => {
-    for (const token of ['--canvas:', '--surface:', '--ink:', '--accent:', '--space-4:', '--motion-state:', '--info:', '--hud-cyan:', '--void:', '--panel:', '--stroke:']) expect(css).toContain(token);
+    for (const token of ['--canvas:', '--surface:', '--ink:', '--accent:', '--space-4:', '--motion-state:', '--info:', '--hud-cyan:', '--void:', '--panel:']) expect(css).toContain(token);
     expect(css).toContain('@media (max-width: 47.9375rem)');
     expect(css).toContain('@media (prefers-color-scheme: light)');
     expect(css).toContain(':root[data-theme="light"]');
@@ -50,6 +50,10 @@ describe('dashboard static UI contract', () => {
     expect(html).not.toMatch(/\sstyle=/i);
     expect(html).not.toMatch(/<link[^>]+href="https?:/i);
     expect(script).not.toMatch(/setAttribute\('style'|setAttribute\("style"/);
+    // The artifact download is served under the /dashboard mount, so a bare
+    // /api/v1 href would 404. Pin both directions.
+    expect(script).toContain('/dashboard/api/v1/artifacts/');
+    expect(script).not.toContain('href="/api/v1/artifacts/');
     // Three CSSOM inline-style mutations remain, all in the knowledge-graph zoom
     // (svg.style.transform). CSSOM inline-style handling under CSP is
     // browser-dependent, so they are pinned by identity rather than asserted
@@ -63,7 +67,7 @@ describe('dashboard static UI contract', () => {
     expect(steps.length).toBeGreaterThan(0);
     for (const [step, value] of steps) expect((value * 16) % 4, `--space-${step} is ${value * 16}px`).toBe(0);
     // The marketing scale is exactly this set; 20px is the trap it excludes.
-    expect(steps.map(([step]) => step).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 6, 8, 10, 12]);
+    expect(steps.map(([step]) => step).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 6, 8]);
   });
 
   it('never removes a focus indicator without a replacement', () => {

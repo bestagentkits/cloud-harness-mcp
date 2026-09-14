@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mcpStatusLabel, renderMcpServerDetail, renderMcpServersIndex } from '../dashboard/dashboard-render.js';
+import { mcpStatusClass, mcpStatusLabel, renderMcpServerDetail, renderMcpServersIndex } from '../dashboard/dashboard-render.js';
 
 const gateway = {
   endpoint: '/mcp-gateway',
@@ -95,6 +95,8 @@ describe('MCP servers dashboard renderers', () => {
   it('maps the runner connection states onto the console status vocabulary', () => {
     expect(mcpStatusLabel('connected')).toBe('Connected');
     expect(mcpStatusLabel('connecting')).toBe('Connecting');
+    // A neutral in-progress state must not wear the warning palette.
+    expect(mcpStatusClass('connecting')).toBe('info');
     expect(mcpStatusLabel('disconnected')).toBe('Disconnected');
     expect(mcpStatusLabel('error')).toBe('Error');
     expect(mcpStatusLabel('disabled')).toBe('Disabled');

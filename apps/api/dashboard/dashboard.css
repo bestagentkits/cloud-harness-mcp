@@ -11,7 +11,6 @@
   --card-hover: oklch(0.192 0.026 266.6);    /* --bg-card-hover */
   --bright: oklch(0.984 0.003 247.9);        /* --text-bright   */
   --muted: oklch(0.711 0.035 256.8);         /* --text-muted    */
-  --dim: oklch(0.554 0.041 257.4);           /* --text-dim      */
   --hud-cyan: oklch(0.870 0.148 202.9);      /* --cyan-glow     */
   --hud-green: oklch(0.696 0.149 162.5);     /* --green-neon    */
   --hud-amber: oklch(0.769 0.165 70.1);      /* --amber-warn    */
@@ -71,16 +70,15 @@
   --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
   --text-11: .6875rem; --text-12: .75rem; --text-13: .8125rem; --text-14: .875rem; --text-16: 1rem; --text-24: 1.5rem; --text-28: 1.75rem; --text-36: 2.25rem;
-  --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem; --space-6: 1.5rem; --space-8: 2rem; --space-10: 2.5rem; --space-12: 3rem;
+  --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem; --space-6: 1.5rem; --space-8: 2rem;
   --radius-sm: .25rem; --radius-md: .375rem; --radius-lg: .5rem; --radius-pill: 99rem;
 
-  --stroke: 1px;
   --motion-fast: 150ms; --motion-state: 220ms; --ease-out: cubic-bezier(.16, 1, .3, 1);
 }
 
 /* Light companion - forced choice (server-injected `data-theme` from the
    ch-dashboard-theme cookie). This block and the media-query block below must
-   stay byte-identical: CSS cannot share one token set across a media query, so
+   declare the same token set: CSS cannot share one across a media query, so
    the set is duplicated on purpose and
    apps/api/test/dashboard-design-tokens.test.ts asserts the two match. */
 :root[data-theme="light"] {
@@ -617,9 +615,9 @@ dialog::backdrop { background: oklch(0 0 0 / .66); }
 /* Explicit primary control. The positional `button[type="submit"]:not(.danger)`
    rule stays the default primary for form submits; this adds the same treatment
    for controls that rule cannot reach, which is `type="button"` and `<a>`. */
-.accent-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: 2.75rem; padding: var(--space-2) var(--space-4); border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--accent); color: var(--on-accent); font-weight: 600; letter-spacing: .01em; text-transform: uppercase; font-size: var(--text-13); text-decoration: none; cursor: pointer; transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out); }
-.accent-btn:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
-.accent-btn:active:not(:disabled):not([aria-disabled="true"]) { background: var(--accent-hover); }
+.accent-btn:not(.danger) { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: 2.75rem; padding: var(--space-2) var(--space-4); border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--accent); color: var(--on-accent); font-weight: 600; letter-spacing: .01em; text-transform: uppercase; font-size: var(--text-13); text-decoration: none; cursor: pointer; transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out); }
+.accent-btn:not(.danger):hover:not(:disabled):not([aria-disabled="true"]) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
+.accent-btn:not(.danger):active:not(:disabled):not([aria-disabled="true"]) { background: var(--accent-hover); }
 .accent-btn:disabled, .accent-btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
 
 /* Secondary control, so an anchor rendered as a button reads as a control. */
