@@ -1,3 +1,10 @@
+# [0.41.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.40.0...v0.41.0) (2026-09-14)
+
+
+### Features
+
+* **dashboard:** editable profile name, icon sign-out, footer, fixed nav rail ([e651e90](https://github.com/bestagentkits/cloud-harness-mcp/commit/e651e9074d60044354c9946951a74c79d71965ba))
+
 # [0.40.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.39.4...v0.40.0) (2026-09-13)
 
 
