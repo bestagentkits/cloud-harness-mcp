@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -48,10 +48,12 @@
     />
     <style>
       :root {
+        color-scheme: dark;
         --bg-void: #000000;
         --bg-panel: #05070a;
         --bg-card: #090c12;
         --bg-card-hover: #0f1420;
+        --header-bg: rgba(0, 0, 0, 0.88);
         --cyan-glow: #00f0ff;
         --cyan-dim: rgba(0, 240, 255, 0.12);
         --green-neon: #10b981;
@@ -70,6 +72,31 @@
         --header-offset: 7.25rem;
       }
 
+      /* Light theme token overrides (activated by the theme toggle boot script:
+         toggles data-theme to "light"). Mirrors site/index.html so the HaaS page
+         stays consistent with the landing page across theme switches. */
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg-void: #eef2f7;
+        --bg-panel: #ffffff;
+        --bg-card: #ffffff;
+        --bg-card-hover: #f2f6fb;
+        --header-bg: rgba(255, 255, 255, 0.9);
+        --cyan-glow: #0284c7;
+        --cyan-dim: rgba(2, 132, 199, 0.12);
+        --green-neon: #0f9d58;
+        --green-dim: rgba(15, 157, 88, 0.12);
+        --amber-warn: #b45309;
+        --purple-laser: #7c3aed;
+        --purple-dim: rgba(124, 58, 237, 0.12);
+        --border-hud: rgba(2, 132, 199, 0.32);
+        --border-soft: rgba(15, 23, 42, 0.12);
+        --border-hover: rgba(15, 23, 42, 0.24);
+        --text-bright: #0f172a;
+        --text-muted: #475569;
+        --text-dim: #64748b;
+      }
+
       * {
         box-sizing: border-box;
         margin: 0;
@@ -79,7 +106,7 @@
       html {
         scroll-behavior: smooth;
         scroll-padding-top: var(--header-offset);
-        background-color: #000000;
+        background-color: var(--bg-void);
       }
 
       body {
@@ -106,7 +133,7 @@
         position: sticky;
         top: 0;
         z-index: 100;
-        background: rgba(0, 0, 0, 0.88);
+        background: var(--header-bg);
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
         border-bottom: 1px solid var(--border-soft);
@@ -202,7 +229,7 @@
         font-size: 0.68rem;
         background: var(--purple-dim);
         border: 1px solid rgba(168, 85, 247, 0.3);
-        color: #d8b4fe;
+        color: var(--purple-laser);
         padding: 0.15rem 0.45rem;
         border-radius: 4px;
         margin-left: 0.35rem;
@@ -369,7 +396,7 @@
         border-radius: 9999px;
         background: rgba(168, 85, 247, 0.1);
         border: 1px solid rgba(168, 85, 247, 0.3);
-        color: #d8b4fe;
+        color: var(--purple-laser);
         margin-bottom: 2rem;
       }
 
@@ -448,7 +475,7 @@
       }
 
       .tier-oss { background: rgba(0, 240, 255, 0.12); color: var(--cyan-glow); border: 1px solid rgba(0, 240, 255, 0.3); }
-      .tier-beta { background: rgba(168, 85, 247, 0.15); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.3); }
+      .tier-beta { background: rgba(124, 58, 237, 0.12); color: var(--purple-laser); border: 1px solid rgba(124, 58, 237, 0.3); }
       .tier-ga { background: rgba(16, 185, 129, 0.15); color: var(--green-neon); border: 1px solid rgba(16, 185, 129, 0.3); }
 
       .feature-list {
@@ -588,7 +615,58 @@
           mask-image: none;
         }
       }
+      /* Theme toggle icon button (desktop header + mobile drawer) */
+      .theme-toggle-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        padding: 0;
+        cursor: pointer;
+        background: transparent;
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        color: var(--text-bright);
+        transition: border-color 0.2s ease, color 0.2s ease;
+      }
+      .theme-toggle-btn:hover {
+        border-color: var(--purple-laser);
+        color: var(--purple-laser);
+      }
+      .theme-toggle-btn svg {
+        width: 20px;
+        height: 20px;
+        display: none;
+      }
+      .theme-toggle-btn[data-mode="light"] .theme-icon-sun,
+      .theme-toggle-btn[data-mode="dark"] .theme-icon-moon,
+      .theme-toggle-btn[data-mode="system"] .theme-icon-system,
+      .theme-toggle-btn:not([data-mode]) .theme-icon-system {
+        display: block;
+      }
+
     </style>
+
+    <script>
+      // Apply persisted/system theme before first paint to prevent a theme flash
+      // (FOUC). Mirrors site/index.html so the HaaS page follows the same theme.
+      (function () {
+        try {
+          var STORE = "harness-theme";
+          var root = document.documentElement;
+          var saved = localStorage.getItem(STORE) || "system";
+          var sysLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+          var resolved =
+            saved === "light" ? "light" : saved === "dark" ? "dark" : sysLight ? "light" : "dark";
+          root.setAttribute("data-theme", resolved);
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", resolved === "light" ? "#eef2f7" : "#05070a");
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
   <body id="top">
     <header class="site-header-hud">
@@ -661,6 +739,12 @@
         </nav>
 
         <div class="nav-actions">
+          <!-- Theme Toggle Button (system / light / dark) -->
+          <button class="theme-toggle-btn" data-mode="system" type="button" aria-label="Switch theme (currently system)" title="Theme: system">
+            <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg class="theme-icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a9 9 0 0 1 0 18z"/></svg>
+          </button>
           <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" class="hud-button hud-button-outline">
             GitHub Repo ★
           </a>
@@ -682,6 +766,11 @@
         <div class="logo-hud">
           <span style="font-size: 1.05rem;">CLOUD HARNESS HaaS</span>
         </div>
+        <button class="theme-toggle-btn" data-mode="system" type="button" aria-label="Switch theme (currently system)" title="Theme: system">
+          <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="theme-icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a9 9 0 0 1 0 18z"/></svg>
+        </button>
         <button class="drawer-close-btn" onclick="toggleMobileMenu()" aria-label="Close navigation menu">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -924,7 +1013,7 @@
       <!-- Waitlist & Early Access Section -->
       <section class="section-wrap" id="waitlist">
         <div style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(9, 12, 18, 0.95)); border: 1px solid rgba(168, 85, 247, 0.4); border-radius: 16px; padding: 3.5rem 2rem; text-align: center; max-width: 900px; margin: 0 auto; box-shadow: 0 0 40px rgba(168, 85, 247, 0.15);">
-          <div class="section-tag" style="color: #d8b4fe;">// Dedicated Beta Program</div>
+          <div class="section-tag" style="color: var(--purple-laser);">// Dedicated Beta Program</div>
           <h2 style="font-size: clamp(2rem, 3.5vw, 2.5rem); font-weight: 800; margin-bottom: 1rem;">
             Ready to Scale Dedicated AI Coding Infrastructure?
           </h2>
@@ -983,6 +1072,52 @@
         navigator.clipboard.writeText(text);
         alert('Copied snippet to clipboard!');
       }
+    </script>
+
+    <script>
+      // Theme toggle: cycles system → light → dark, persists the choice in
+      // localStorage, keeps system mode live as the OS scheme changes, and keeps
+      // the theme-color meta in sync. Shared behavior with site/index.html.
+      (function () {
+        var STORE = "harness-theme";
+        var root = document.documentElement;
+        var btns = Array.prototype.slice.call(document.querySelectorAll(".theme-toggle-btn"));
+        var mq = window.matchMedia("(prefers-color-scheme: light)");
+        var DARK_BG = "#05070a";
+        var LIGHT_BG = "#eef2f7";
+        function current() {
+          try { return localStorage.getItem(STORE) || "system"; } catch (e) { return "system"; }
+        }
+        function save(t) {
+          try { localStorage.setItem(STORE, t); } catch (e) {}
+        }
+        function resolve(theme) {
+          return theme === "light" ? "light" : theme === "dark" ? "dark" : (mq.matches ? "light" : "dark");
+        }
+        function apply(theme) {
+          var resolved = resolve(theme);
+          root.setAttribute("data-theme", resolved);
+          for (var i = 0; i < btns.length; i++) {
+            btns[i].setAttribute("data-mode", theme);
+            btns[i].setAttribute("aria-label", "Switch theme (currently " + theme + ")");
+            btns[i].setAttribute("title", "Theme: " + theme);
+          }
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", resolved === "light" ? LIGHT_BG : DARK_BG);
+        }
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].addEventListener("click", function () {
+            var order = ["system", "light", "dark"];
+            var next = order[(order.indexOf(current()) + 1) % order.length];
+            save(next);
+            apply(next);
+          });
+        }
+        if (typeof mq.addEventListener === "function") {
+          mq.addEventListener("change", function () { apply(current()); });
+        }
+        apply(current());
+      })();
     </script>
   </body>
 </html>

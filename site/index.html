@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -49,10 +49,12 @@
     />
     <style>
       :root {
+        color-scheme: dark;
         --bg-void: #000000;
         --bg-panel: #05070a;
         --bg-card: #090c12;
         --bg-card-hover: #0f1420;
+        --header-bg: rgba(0, 0, 0, 0.88);
         --cyan-glow: #00f0ff;
         --cyan-dim: rgba(0, 240, 255, 0.12);
         --green-neon: #10b981;
@@ -70,6 +72,32 @@
         --header-offset: 7.25rem;
       }
 
+      /* Light theme token overrides (activated by the theme toggle boot script:
+         toggles data-theme to "light"). Dark is the default; light is a
+         companion scheme with light surfaces, dark text, and tuned accent tints.
+         The grid/glow overlays on <body> and the section shadows intentionally
+         use low-contrast neutral values so they read on either background. */
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg-void: #eef2f7;
+        --bg-panel: #ffffff;
+        --bg-card: #ffffff;
+        --bg-card-hover: #f2f6fb;
+        --header-bg: rgba(255, 255, 255, 0.9);
+        --cyan-glow: #0284c7;
+        --cyan-dim: rgba(2, 132, 199, 0.12);
+        --green-neon: #0f9d58;
+        --green-dim: rgba(15, 157, 88, 0.12);
+        --amber-warn: #b45309;
+        --purple-laser: #7c3aed;
+        --border-hud: rgba(2, 132, 199, 0.32);
+        --border-soft: rgba(15, 23, 42, 0.12);
+        --border-hover: rgba(15, 23, 42, 0.24);
+        --text-bright: #0f172a;
+        --text-muted: #475569;
+        --text-dim: #64748b;
+      }
+
       * {
         box-sizing: border-box;
         margin: 0;
@@ -79,7 +107,7 @@
       html {
         scroll-behavior: smooth;
         scroll-padding-top: var(--header-offset);
-        background-color: #000000;
+        background-color: var(--bg-void);
       }
 
       body {
@@ -106,7 +134,7 @@
         position: sticky;
         top: 0;
         z-index: 100;
-        background: rgba(0, 0, 0, 0.88);
+        background: var(--header-bg);
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
         border-bottom: 1px solid var(--border-soft);
@@ -190,7 +218,7 @@
       .logo-icon {
         width: 34px;
         height: 34px;
-        background: #090c12;
+        background: var(--bg-card);
         border: 1px solid var(--cyan-glow);
         border-radius: 6px;
         display: flex;
@@ -449,7 +477,7 @@
 
       /* Live Interactive Terminal HUD */
       .terminal-hud {
-        background: #05070a;
+        background: var(--bg-panel);
         border: 1px solid var(--border-hud);
         border-radius: 12px;
         overflow: hidden;
@@ -457,7 +485,7 @@
       }
 
       .terminal-header {
-        background: #020305;
+        background: var(--bg-void);
         padding: 0.75rem 1.25rem;
         display: flex;
         justify-content: space-between;
@@ -497,7 +525,7 @@
       }
 
       .term-tab-btn.active {
-        background: #0c101a;
+        background: var(--bg-card-hover);
         color: var(--cyan-glow);
         border-color: var(--border-hud);
       }
@@ -507,8 +535,8 @@
         font-family: var(--font-mono);
         font-size: clamp(0.76rem, 1.8vw, 0.84rem);
         min-height: 360px;
-        background: #040508;
-        color: #d1d5db;
+        background: var(--bg-panel);
+        color: var(--text-muted);
         line-height: 1.7;
         position: relative;
         overflow-x: auto;
@@ -516,7 +544,7 @@
 
       .term-prompt { color: var(--green-neon); }
       .term-keyword { color: var(--cyan-glow); }
-      .term-string { color: #fcd34d; }
+      .term-string { color: var(--amber-warn); }
 
       .term-badge {
         display: inline-block;
@@ -535,7 +563,7 @@
         padding: 1px 6px;
         border-radius: 3px;
         background: rgba(168, 85, 247, 0.18);
-        color: #d8b4fe;
+        color: var(--purple-laser);
         border: 1px solid rgba(168, 85, 247, 0.4);
       }
 
@@ -570,7 +598,7 @@
 
       /* Responsive Diagram Scroll Containers */
       .diagram-container {
-        background: #040508;
+        background: var(--bg-panel);
         border: 1px solid var(--border-soft);
         border-radius: 14px;
         padding: clamp(1.25rem, 3vw, 2.5rem);
@@ -696,7 +724,7 @@
       }
 
       .arch-card {
-        background: #05070a;
+        background: var(--bg-panel);
         border: 1px solid var(--border-soft);
         border-radius: 10px;
         padding: 2rem;
@@ -768,7 +796,7 @@
         font-family: var(--font-mono);
         font-size: 0.8rem;
         padding: 0.5rem 1rem;
-        background: #05070a;
+        background: var(--bg-panel);
         border: 1px solid var(--border-soft);
         border-radius: 6px;
         color: var(--text-muted);
@@ -790,7 +818,7 @@
       }
 
       .tool-card {
-        background: #05070a;
+        background: var(--bg-panel);
         border: 1px solid var(--border-soft);
         border-radius: 8px;
         padding: 1.35rem;
@@ -825,7 +853,7 @@
 
       /* Client Connectors */
       .client-matrix {
-        background: #05070a;
+        background: var(--bg-panel);
         border: 1px solid var(--border-hud);
         border-radius: 12px;
         overflow: hidden;
@@ -834,7 +862,7 @@
       .client-tabs {
         display: flex;
         border-bottom: 1px solid var(--border-soft);
-        background: #020305;
+        background: var(--bg-void);
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
       }
@@ -854,7 +882,7 @@
       }
 
       .client-tab-btn.active {
-        background: #090c12;
+        background: var(--bg-card);
         color: var(--cyan-glow);
         border-bottom: 2px solid var(--cyan-glow);
       }
@@ -867,7 +895,7 @@
       }
 
       .code-box {
-        background: #000000;
+        background: var(--bg-card);
         border: 1px solid var(--border-soft);
         border-radius: 8px;
         padding: 1.25rem;
@@ -881,7 +909,7 @@
         position: absolute;
         top: 0.75rem;
         right: 0.75rem;
-        background: #090c12;
+        background: var(--bg-card);
         border: 1px solid var(--border-soft);
         color: var(--text-muted);
         padding: 0.3rem 0.65rem;
@@ -898,7 +926,7 @@
 
       /* Security Invariants Section */
       .security-box {
-        background: #05070a;
+        background: var(--bg-panel);
         border: 1px solid var(--border-hud);
         border-radius: 14px;
         padding: clamp(1.5rem, 4vw, 3rem);
@@ -912,7 +940,7 @@
       }
 
       .invariant-card {
-        background: #000000;
+        background: var(--bg-card);
         border: 1px solid var(--border-soft);
         border-radius: 8px;
         padding: 1.5rem;
@@ -931,7 +959,7 @@
 
       /* CTA Cyber Banner */
       .cta-cyber {
-        background: linear-gradient(135deg, rgba(0, 240, 255, 0.08) 0%, rgba(168, 85, 247, 0.06) 100%), #05070a;
+        background: linear-gradient(135deg, rgba(0, 240, 255, 0.08) 0%, rgba(168, 85, 247, 0.06) 100%), var(--bg-panel);
         border: 1px solid var(--cyan-glow);
         border-radius: 16px;
         padding: clamp(3rem, 6vw, 4.5rem) clamp(1.25rem, 3vw, 2.5rem);
@@ -1043,7 +1071,59 @@
           mask-image: none;
         }
       }
+      /* Theme toggle icon button (desktop header + mobile drawer) */
+      .theme-toggle-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        padding: 0;
+        cursor: pointer;
+        background: transparent;
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        color: var(--text-bright);
+        transition: border-color 0.2s ease, color 0.2s ease;
+      }
+      .theme-toggle-btn:hover {
+        border-color: var(--cyan-glow);
+        color: var(--cyan-glow);
+      }
+      .theme-toggle-btn svg {
+        width: 20px;
+        height: 20px;
+        display: none;
+      }
+      .theme-toggle-btn[data-mode="light"] .theme-icon-sun,
+      .theme-toggle-btn[data-mode="dark"] .theme-icon-moon,
+      .theme-toggle-btn[data-mode="system"] .theme-icon-system,
+      .theme-toggle-btn:not([data-mode]) .theme-icon-system {
+        display: block;
+      }
+
     </style>
+
+    <script>
+      // Apply persisted/system theme before first paint to prevent a theme flash
+      // (FOUC). The <html data-theme="dark"> default loads instantly for dark; a
+      // stored/system "light" preference is forced here before the body renders.
+      (function () {
+        try {
+          var STORE = "harness-theme";
+          var root = document.documentElement;
+          var saved = localStorage.getItem(STORE) || "system";
+          var sysLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+          var resolved =
+            saved === "light" ? "light" : saved === "dark" ? "dark" : sysLight ? "light" : "dark";
+          root.setAttribute("data-theme", resolved);
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", resolved === "light" ? "#eef2f7" : "#05070a");
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
   <body id="top">
     <header class="site-header-hud">
@@ -1112,6 +1192,12 @@
         </nav>
 
         <div class="nav-actions">
+          <!-- Theme Toggle Button (system / light / dark) -->
+          <button class="theme-toggle-btn" data-mode="system" type="button" aria-label="Switch theme (currently system)" title="Theme: system">
+            <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg class="theme-icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a9 9 0 0 1 0 18z"/></svg>
+          </button>
           <!-- GitHub Star Badge Button -->
           <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" class="hud-button hud-button-outline github-star-btn" aria-label="GitHub Repository">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -1145,6 +1231,11 @@
           </div>
           <span style="font-size: 1.05rem;">CLOUD HARNESS</span>
         </div>
+        <button class="theme-toggle-btn" data-mode="system" type="button" aria-label="Switch theme (currently system)" title="Theme: system">
+          <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="theme-icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a9 9 0 0 1 0 18z"/></svg>
+        </button>
         <button class="drawer-close-btn" onclick="toggleMobileMenu()" aria-label="Close navigation menu">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -1581,21 +1672,21 @@
           <!-- Coming Soon Agent Tools -->
           <div class="tool-card" data-cat="agent" style="border-color: rgba(168, 85, 247, 0.3);">
             <div>
-              <div class="tool-name"><span style="color: #d8b4fe;">agents_spawn</span> <span class="coming-soon-badge">COMING SOON</span></div>
+              <div class="tool-name"><span style="color: var(--purple-laser);">agents_spawn</span> <span class="coming-soon-badge">COMING SOON</span></div>
               <p class="tool-desc">Instantly boot autonomous subagent peers within dedicated micro-workspaces.</p>
             </div>
           </div>
 
           <div class="tool-card" data-cat="agent" style="border-color: rgba(168, 85, 247, 0.3);">
             <div>
-              <div class="tool-name"><span style="color: #d8b4fe;">agents_delegate</span> <span class="coming-soon-badge">COMING SOON</span></div>
+              <div class="tool-name"><span style="color: var(--purple-laser);">agents_delegate</span> <span class="coming-soon-badge">COMING SOON</span></div>
               <p class="tool-desc">Delegate bounded sub-tasks to specialized subagents with strict output schemas.</p>
             </div>
           </div>
 
           <div class="tool-card" data-cat="agent" style="border-color: rgba(168, 85, 247, 0.3);">
             <div>
-              <div class="tool-name"><span style="color: #d8b4fe;">agents_inbox & wait</span> <span class="coming-soon-badge">COMING SOON</span></div>
+              <div class="tool-name"><span style="color: var(--purple-laser);">agents_inbox & wait</span> <span class="coming-soon-badge">COMING SOON</span></div>
               <p class="tool-desc">Peer-to-peer asynchronous messaging and coordination across distributed agent fleets.</p>
             </div>
           </div>
@@ -2046,6 +2137,52 @@
           tabs[nextIdx].click();
         });
       });
+    </script>
+
+    <script>
+      // Theme toggle: cycles system → light → dark, persists the choice in
+      // localStorage, keeps system mode live as the OS color scheme changes,
+      // and keeps the theme-color meta in sync with the resolved scheme.
+      (function () {
+        var STORE = "harness-theme";
+        var root = document.documentElement;
+        var btns = Array.prototype.slice.call(document.querySelectorAll(".theme-toggle-btn"));
+        var mq = window.matchMedia("(prefers-color-scheme: light)");
+        var DARK_BG = "#05070a";
+        var LIGHT_BG = "#eef2f7";
+        function current() {
+          try { return localStorage.getItem(STORE) || "system"; } catch (e) { return "system"; }
+        }
+        function save(t) {
+          try { localStorage.setItem(STORE, t); } catch (e) {}
+        }
+        function resolve(theme) {
+          return theme === "light" ? "light" : theme === "dark" ? "dark" : (mq.matches ? "light" : "dark");
+        }
+        function apply(theme) {
+          var resolved = resolve(theme);
+          root.setAttribute("data-theme", resolved);
+          for (var i = 0; i < btns.length; i++) {
+            btns[i].setAttribute("data-mode", theme);
+            btns[i].setAttribute("aria-label", "Switch theme (currently " + theme + ")");
+            btns[i].setAttribute("title", "Theme: " + theme);
+          }
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", resolved === "light" ? LIGHT_BG : DARK_BG);
+        }
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].addEventListener("click", function () {
+            var order = ["system", "light", "dark"];
+            var next = order[(order.indexOf(current()) + 1) % order.length];
+            save(next);
+            apply(next);
+          });
+        }
+        if (typeof mq.addEventListener === "function") {
+          mq.addEventListener("change", function () { apply(current()); });
+        }
+        apply(current());
+      })();
     </script>
   </body>
 </html>
