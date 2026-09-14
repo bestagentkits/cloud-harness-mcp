@@ -1,3 +1,16 @@
+# [0.45.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.44.0...v0.45.0) (2026-09-14)
+
+
+### Bug Fixes
+
+* **dashboard:** drop dead tokens, harden the primary variant, pin review findings ([fd4bf4d](https://github.com/bestagentkits/cloud-harness-mcp/commit/fd4bf4d7ebc0cb0ec250f35b982a83dc6b03e790))
+
+
+### Features
+
+* **dashboard:** adopt the marketing HUD design system and repair UI/UX defects ([b8ff0ca](https://github.com/bestagentkits/cloud-harness-mcp/commit/b8ff0ca8678b1de9e90b52aeceac253d694b01c2)), closes [#193](https://github.com/bestagentkits/cloud-harness-mcp/issues/193)
+* **github:** fall back to operator GH_TOKEN/GITHUB_TOKEN credentials ([1e070b7](https://github.com/bestagentkits/cloud-harness-mcp/commit/1e070b7010109a6ec64d38b58ff18d533cede1a0))
+
 # [0.44.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.43.0...v0.44.0) (2026-09-14)
 
 
