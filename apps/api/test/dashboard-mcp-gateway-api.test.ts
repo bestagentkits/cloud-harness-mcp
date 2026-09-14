@@ -267,6 +267,7 @@ describe('Dashboard MCP server registry API', () => {
     const res = await send('/api/v1/mcp-servers/mcps_tooshort');
     expect(res.status).toBe(400);
     expect(res.json.error).toBe('invalid_request');
+    expect(res.json.message).toContain('mcps_');
     expect(calls).toHaveLength(0);
   });
 

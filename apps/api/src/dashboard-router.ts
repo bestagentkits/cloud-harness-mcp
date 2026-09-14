@@ -73,8 +73,8 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     next();
   });
   router.use('/api/v1', (request, response, next) => {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) sessions.verify(request as DashboardRequest, response, next);
-    else next();
+    if (['GET', 'HEAD', 'OPTIONS'].includes(request.method)) next();
+    else sessions.verify(request as DashboardRequest, response, next);
   });
   registerDashboardControlRoutes(router, runner, principal, config, gateway);
   if (gateway) registerDashboardGatewayRoutes(router, gateway, principal, config);
@@ -146,8 +146,8 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     response.setHeader('Set-Cookie', cookies);
     response.json({
       data: {
-        ...(theme !== undefined ? { theme } : {}),
-        ...(parsed.data.displayName !== undefined ? { displayName: displayName ?? null } : {})
+        ...(theme === undefined ? {} : { theme }),
+        ...(parsed.data.displayName === undefined ? {} : { displayName: displayName ?? null })
       }
     });
   });
@@ -239,7 +239,11 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
 
   router.use((error: unknown, _request: DashboardRequest, response: Response, _next: NextFunction) => {
     void _next;
-    if (error instanceof z.ZodError) { response.status(400).json({ error: 'invalid_request', message: 'The request could not be processed.' }); return; }
+    if (error instanceof z.ZodError) {
+      const firstIssue = error.issues[0]?.message ?? 'The request could not be processed.';
+      response.status(400).json({ error: 'invalid_request', message: firstIssue });
+      return;
+    }
     const bodyError = error as { type?: string };
     if (bodyError?.type === 'entity.too.large') { response.status(413).json({ error: 'request_too_large' }); return; }
     response.status(500).json({ error: 'internal_error', message: 'The workspace service could not complete the request.' });
