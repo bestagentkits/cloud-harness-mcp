@@ -223,7 +223,7 @@ export class AgentManager {
       throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
     }
     if (workspace.networkProfile !== 'network-none') {
-      throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace', 409, false);
+      throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace; open a separate workspace with networkProfile "network-none"', 409, false);
     }
     const profile = this.profile(input.profileId as string, ownerId);
     if (this.modelProfiles && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id))) {

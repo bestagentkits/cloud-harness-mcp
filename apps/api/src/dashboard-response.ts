@@ -39,6 +39,7 @@ export type DashboardResponseOperation =
   | 'workspace_close'
   | 'toolkits_list'
   | 'toolkits_preview'
+  | 'settings_get' | 'settings_update' | 'settings_network_check'
   | 'files_list'
   | 'files_read'
   | 'files_write'
@@ -203,7 +204,10 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   mcp_server_set_permissions: { CONFLICT: 'This MCP server changed after you opened it.' },
   mcp_server_update: { CONFLICT: 'This MCP server changed after you opened it.' },
   mcp_server_delete: { CONFLICT: 'This MCP server changed after you opened it.' },
-  mcp_server_set_enabled: { CONFLICT: 'This MCP server changed after you opened it.' }
+  mcp_server_set_enabled: { CONFLICT: 'This MCP server changed after you opened it.' },
+  settings_get: { UNAVAILABLE: 'Instance settings are temporarily unavailable.' },
+  settings_update: { UNAVAILABLE: 'Instance settings are temporarily unavailable.', INVALID_INPUT: 'The default network profile must be network-none or dependency-access.' },
+  settings_network_check: { UNAVAILABLE: 'The egress readiness check is temporarily unavailable.' }
 };
 
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {

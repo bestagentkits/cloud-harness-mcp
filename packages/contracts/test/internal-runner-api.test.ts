@@ -17,16 +17,40 @@ const principal = {
 
 describe('internal runner API contract', () => {
   it('keeps dashboard-only operations outside the public MCP contract', () => {
-    expect(InternalRunnerOperationSchema.options).toEqual(['workspace_detail', 'workspace_close_fenced', 'toolkits_list', 'toolkits_preview']);
+    expect(InternalRunnerOperationSchema.options).toEqual([
+      'workspace_detail', 'workspace_close_fenced', 'toolkits_list', 'toolkits_preview',
+      'settings_get', 'settings_update', 'settings_network_check'
+    ]);
     expect(RunnerOperationSchema.options).not.toContain('workspace_detail');
     expect(RunnerOperationSchema.options).not.toContain('workspace_close_fenced');
     expect(RunnerOperationSchema.options).not.toContain('toolkits_list');
     expect(RunnerOperationSchema.options).not.toContain('toolkits_preview');
+    expect(RunnerOperationSchema.options).not.toContain('settings_get');
+    expect(RunnerOperationSchema.options).not.toContain('settings_update');
+    expect(RunnerOperationSchema.options).not.toContain('settings_network_check');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('workspace_detail');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('workspace_close_fenced');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('toolkits_list');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('toolkits_preview');
+    expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('settings_get');
+    expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('settings_update');
+    expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('settings_network_check');
     expect(() => RunnerRequestSchema.parse({ version: 2, principal, operation: 'workspace_detail', input: { workspaceId: `ws_${'a'.repeat(24)}` } })).toThrow();
+  });
+
+  it('accepts an instance network default, including an explicit reset, and refuses an exposure-only profile', () => {
+    expect(InternalRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'settings_update', input: { defaultNetworkProfile: 'network-none' }
+    })).toMatchObject({ operation: 'settings_update', input: { defaultNetworkProfile: 'network-none' } });
+    expect(InternalRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'settings_update', input: { defaultNetworkProfile: null }
+    })).toMatchObject({ operation: 'settings_update', input: { defaultNetworkProfile: null } });
+    expect(() => InternalRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'settings_update', input: { defaultNetworkProfile: 'local-host' }
+    })).toThrow();
+    expect(() => InternalRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'settings_get', input: { defaultNetworkProfile: 'network-none' }
+    })).toThrow();
   });
 
   it('requires the v2 principal selector and generation fence', () => {

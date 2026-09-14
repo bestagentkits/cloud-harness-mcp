@@ -47,6 +47,9 @@ const workspaceId = z.string().regex(/^ws_[A-Za-z0-9_-]{20,80}$/);
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
 const fileQuery = pageQuery.extend({ path: z.string().min(1).max(1_024).default('.') });
 const readQuery = z.object({ path: z.string().min(1).max(1_024), offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(262_144).default(65_536) });
+const settingsUpdateSchema = z.object({
+  defaultNetworkProfile: z.union([z.enum(['network-none', 'dependency-access']), z.null()])
+}).strict();
 
 function principal(request: DashboardRequest, response: Response): RunnerPrincipalSelector | undefined {
   const selected = principalFromAuthInfo(request.auth);
@@ -173,6 +176,42 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
         return;
       }
       sendRunnerResponse(response, 'toolkits_preview', await runner.callInternal('toolkits_preview', request.body ?? {}, selected));
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/v1/settings', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) {
+        response.status(503).json({ error: 'settings_unavailable', message: 'Settings are temporarily unavailable.' });
+        return;
+      }
+      sendRunnerResponse(response, 'settings_get', await runner.callInternal('settings_get', {}, selected));
+    } catch (error) { next(error); }
+  });
+
+  router.post('/api/v1/settings', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) {
+        response.status(503).json({ error: 'settings_unavailable', message: 'Settings are temporarily unavailable.' });
+        return;
+      }
+      sendRunnerResponse(response, 'settings_update', await runner.callInternal('settings_update', settingsUpdateSchema.parse(request.body), selected));
+    } catch (error) { next(error); }
+  });
+
+  router.post('/api/v1/settings/network-check', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) {
+        response.status(503).json({ error: 'settings_unavailable', message: 'Settings are temporarily unavailable.' });
+        return;
+      }
+      sendRunnerResponse(response, 'settings_network_check', await runner.callInternal('settings_network_check', {}, selected));
     } catch (error) { next(error); }
   });
 

@@ -44,6 +44,14 @@ beforeEach(async () => {
     }),
     callInternal: vi.fn(async (operation, input, selected): Promise<RunnerResponse> => {
       calls.push({ operation, input, principal: selected });
+      if (operation === 'settings_get' || operation === 'settings_update') {
+        const chosen = input.defaultNetworkProfile as string | null | undefined;
+        return { ok: true, message: 'Instance workspace settings', truncated: false, data: { defaultNetworkProfile: {
+          value: chosen ?? 'dependency-access',
+          source: chosen === undefined || chosen === null ? 'environment' : 'setting'
+        } } };
+      }
+      if (operation === 'settings_network_check') return { ok: true, message: 'Dependency egress readiness', truncated: false, data: { ready: true, reason: null } };
       return { ok: true, message: 'detail', truncated: false, data: {
         workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkProfile: 'network-none', generation: 7,
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z'
@@ -374,6 +382,48 @@ describe('dashboard BFF', () => {
     expect(downloadResp.headers['content-type']).toBe('application/octet-stream');
     expect(downloadResp.headers['content-disposition']).toBe('attachment; filename="report.txt"');
     expect(downloadResp.text).toBe('artifact payload bytes test 123');
+  });
+
+  it('proxies instance settings reads, updates, and egress readiness through the runner', async () => {
+    const read = await send('/api/v1/settings');
+    expect(read.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'settings_get', input: {}, principal });
+    expect(read.json.data.defaultNetworkProfile).toEqual({ value: 'dependency-access', source: 'environment' });
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    const stored = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ defaultNetworkProfile: 'network-none' }) });
+    expect(stored.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'settings_update', input: { defaultNetworkProfile: 'network-none' }, principal });
+    expect(stored.json.data.defaultNetworkProfile).toEqual({ value: 'network-none', source: 'setting' });
+
+    const reset = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ defaultNetworkProfile: null }) });
+    expect(reset.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'settings_update', input: { defaultNetworkProfile: null }, principal });
+    expect(reset.json.data.defaultNetworkProfile).toEqual({ value: 'dependency-access', source: 'environment' });
+
+    const checked = await send('/api/v1/settings/network-check', { method: 'POST', headers, body: JSON.stringify({}) });
+    expect(checked.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'settings_network_check', input: {}, principal });
+    expect(checked.json.data).toEqual({ ready: true, reason: null });
+  });
+
+  it('rejects an unsupported or unknown default network profile without calling the runner', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    for (const body of [
+      JSON.stringify({ defaultNetworkProfile: 'local-host' }),
+      JSON.stringify({ defaultNetworkProfile: 'network-none', instanceWide: true }),
+      JSON.stringify({})
+    ]) {
+      const rejected = await send('/api/v1/settings', { method: 'POST', headers, body });
+      expect(rejected.status, body).toBe(400);
+    }
+    expect(calls.some((call) => call.operation === 'settings_update')).toBe(false);
   });
 });
 

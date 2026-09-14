@@ -603,7 +603,7 @@ replace those entries with the hostname and origins of your deployment.
 | `API_PUBLIC_HOSTS` | `localhost,127.0.0.1` | Comma-separated `Host` allowlist. Add the public MCP hostname in a deployed environment. |
 | `API_ALLOWED_ORIGINS` | empty | Comma-separated exact browser origins allowed to send requests. CLI clients that omit `Origin` do not need an entry. |
 | `ALLOWED_GIT_HOSTS` | `github.com` | Comma-separated repository-host allowlist. Repository URLs must still use credential-free HTTPS. |
-| `WORKSPACE_NETWORK_PROFILE` | `network-none` | Executor networking: `network-none` blocks all egress (safe default); `dependency-access` permits only public DNS and TCP 80/443 via a Linux host firewall attested before each executor start. The legacy `WORKSPACE_NETWORK_MODE` is rejected. |
+| `WORKSPACE_NETWORK_PROFILE` | `dependency-access` | Executor networking default. `dependency-access` permits only public DNS and TCP 80/443 via a Linux host firewall attested before each executor start, and is required for `gh` and the GitHub API; `network-none` blocks all egress. A default saved on the dashboard Settings page overrides this variable, and `workspace_open.networkProfile` overrides both. The legacy `WORKSPACE_NETWORK_MODE` is rejected. |
 | `WORKSPACE_WALL_TTL_SECONDS` | `900` | Maximum workspace lifetime, from 60 to 86,400 seconds. |
 | `WORKSPACE_IDLE_TTL_SECONDS` | `300` | Maximum idle time, from 30 to 43,200 seconds. |
 | `JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | Runner path for ephemeral workspace directories. |

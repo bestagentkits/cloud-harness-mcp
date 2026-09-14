@@ -352,6 +352,11 @@ export class StateStore {
     `);
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS preferred_workspaces (owner_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS instance_settings (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        default_network_profile TEXT CHECK(default_network_profile IN ('network-none','dependency-access')),
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS git_identities (owner_id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS comment_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
       CREATE TABLE IF NOT EXISTS finalize_idempotency (owner_id TEXT NOT NULL, workspace_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, workspace_id, idempotency_key));
@@ -739,6 +744,26 @@ export class StateStore {
   getPreferredWorkspace(ownerId: string): string | undefined {
     const row = this.database.prepare('SELECT workspace_id FROM preferred_workspaces WHERE owner_id = ?').get(ownerId) as { workspace_id: string } | undefined;
     return row?.workspace_id;
+  }
+
+  /**
+   * The operator-selected default network profile for newly opened workspaces.
+   * `undefined` means no choice has been persisted, so the runner configuration
+   * (`WORKSPACE_NETWORK_PROFILE` or the built-in default) applies.
+   */
+  getWorkspaceDefaultNetworkProfile(): ExecutorNetworkProfile | undefined {
+    const row = this.database
+      .prepare('SELECT default_network_profile FROM instance_settings WHERE id = 1')
+      .get() as { default_network_profile: string | null } | undefined;
+    const value = row?.default_network_profile;
+    return value === 'network-none' || value === 'dependency-access' ? value : undefined;
+  }
+
+  /** Persist the operator's default, or clear it with `null` to restore the runner default. */
+  setWorkspaceDefaultNetworkProfile(value: ExecutorNetworkProfile | null, updatedAt: number = Date.now()): void {
+    this.database.prepare(`INSERT INTO instance_settings(id, default_network_profile, updated_at) VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET default_network_profile = excluded.default_network_profile, updated_at = excluded.updated_at`)
+      .run(value, updatedAt);
   }
 
   setGitIdentity(ownerId: string, identity: { name: string; email: string }): void {

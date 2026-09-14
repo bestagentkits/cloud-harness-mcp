@@ -102,20 +102,40 @@ must still be large enough for the intended operation.
 ## Workspace and repository policy
 
 `ALLOWED_GIT_HOSTS` is a host allowlist, not permission to use arbitrary URL
-schemes or private addresses. `WORKSPACE_NETWORK_PROFILE=network-none` is the
-safe baseline and blocks all executor egress. `dependency-access` is an explicit
-owner choice for a workspace that needs public dependency downloads: it permits
-public DNS and public TCP 80/443 only, while a Linux host firewall (attested by
-the runner before each dependency executor starts) blocks loopback-to-host,
+schemes or private addresses. The effective executor network profile resolves in
+three tiers, each of which outranks the next:
+
+1. an explicit `workspace_open.networkProfile`;
+2. the instance-wide default persisted from the dashboard Settings page
+   (`GET`/`POST /api/v1/settings`);
+3. `WORKSPACE_NETWORK_PROFILE`, whose shipped and built-in default is
+   `dependency-access`.
+
+`dependency-access` is therefore the default posture: it exists so a workspace
+can reach the GitHub API and the bundled `gh` CLI, and it permits public DNS and
+public TCP 80/443 only, while a Linux host firewall (attested by the runner
+before each dependency executor starts) blocks loopback-to-host,
 Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges. It is not
 an allowlist or DLP boundary and still permits exfiltration to public endpoints.
-If host firewall attestation fails, `dependency-access` fails closed
-(`DEPENDENCY_EGRESS_UNAVAILABLE`) and never falls back to broad bridge egress.
+Host firewall attestation is a hard prerequisite: provision the firewall with
+`deploy/scripts/setup-dependency-firewall.sh` and confirm readiness from the
+Settings page before relying on egress. If attestation fails,
+`dependency-access` fails closed (`DEPENDENCY_EGRESS_UNAVAILABLE`, HTTP 503) and
+is never silently downgraded to `network-none`. `network-none` remains available
+as the per-workspace or instance-wide opt-out that blocks all executor egress;
+existing deployments that pin `WORKSPACE_NETWORK_PROFILE` keep that value until
+the operator changes it in Settings or edits the variable.
 `DEPENDENCY_DNS_RESOLVERS`, `DEPENDENCY_BRIDGE_SUBNET`,
 `DEPENDENCY_BRIDGE_INTERFACE`, and `DEPENDENCY_NETWORK_NAME` configure the
 managed bridge and firewall. The legacy `WORKSPACE_NETWORK_MODE` variable is
-rejected at startup. Runner-owned remote Git helpers do not depend on the
-executor network profile.
+rejected at startup. The precedence and fail-closed behavior are owned by
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
+and
+[`apps/runner/src/network-profile-manager.ts`](../apps/runner/src/network-profile-manager.ts);
+the persisted default and its reset semantics by
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) and
+[`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
+Runner-owned remote Git helpers do not depend on the executor network profile.
 
 `WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`, and
 `REAPER_INTERVAL_SECONDS` define lifecycle timing. `MAX_OUTPUT_BYTES` bounds

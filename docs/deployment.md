@@ -54,6 +54,16 @@ project's dedicated nginx target with the repository's HTTP template, including
 Certbot edits in that file. Back up and deliberately reapply TLS configuration
 before any rerun.
 
+The generated `/etc/cloud-harness-mcp/runtime.env` pins
+`WORKSPACE_NETWORK_PROFILE=dependency-access`, so a fresh host opens workspaces
+with public DNS and TCP 80/443 egress for the GitHub API and the bundled `gh`
+CLI. Provision the host firewall with `deploy/scripts/setup-dependency-firewall.sh`
+before the first workspace open, or set that variable to `network-none` for an
+air-gapped host; an unattested egress profile fails the open closed rather than
+downgrading it. An existing runtime file is never rewritten: an upgraded host
+keeps the value it already has and changes it from the dashboard Settings page or
+by editing that variable.
+
 For an existing TLS-enabled installation, the Access-mode release deploy runs
 the dedicated application-route upgrade before its public canary. It can also be
 run idempotently after deploying a release that contains it:

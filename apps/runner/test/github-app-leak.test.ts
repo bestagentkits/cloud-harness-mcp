@@ -14,8 +14,12 @@ const dockerMocks = vi.hoisted(() => ({
 
 vi.mock('../src/docker-engine.js', () => dockerMocks);
 vi.mock('../src/repository-policy.js', () => ({ validateRepositoryUrl: async (value: string) => new URL(value) }));
-vi.mock('../src/github-app-broker.js', () => ({ mintRepositoryToken: async () => secretToken }));
+vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubAppBroker>()),
+  mintRepositoryToken: async () => secretToken
+}));
 
+import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];

@@ -76,8 +76,11 @@ Clone an approved repository and start its bounded executor.
 
 - Required: `repositoryUrl` (credential-free HTTPS URL), `idempotencyKey`.
 - Optional: `ref` (1–255 characters, cannot start with `-`), `networkProfile`
-  (`network-none` or `dependency-access`; service default when omitted). The
-  legacy `networkMode` field is rejected.
+  (`dependency-access` or `network-none`). Omit `networkProfile` to use the
+  instance default, which already grants GitHub-capable egress (public DNS and
+  TCP 80/443 through an attested host firewall). Pass
+  `networkProfile: "network-none"` only when the owner asks for isolation; it
+  blocks all executor egress. The legacy `networkMode` field is rejected.
 - Returns workspace metadata including opaque `workspaceId`, status, network
   profile, timestamps, and expiry.
 - Side effects: clone, state record, workspace directory, executor creation;
@@ -86,7 +89,7 @@ Clone an approved repository and start its bounded executor.
   a new open request and may hit the one-active-workspace limit.
 
 <!-- cloudharness-example:workspace_open
-{"repositoryUrl":"https://github.com/example/project.git","ref":"main","idempotencyKey":"open-project-20260817","networkProfile":"network-none"}
+{"repositoryUrl":"https://github.com/example/project.git","ref":"main","idempotencyKey":"open-project-20260817"}
 -->
 
 <!-- cloudharness-tool:workspace_list -->
@@ -114,7 +117,7 @@ Read one workspace record by opaque ID.
 Inspect workspace and bound repository authorization capabilities without modifying state or minting tokens.
 
 - Optional: `workspaceId`.
-- Returns high-level capabilities (`repository`, `workspace`), fine-grained permissions (`contents`, `issues`, `pullRequests`), and direct operation authorizations (`gitPush`, `issueCreate`, `pullRequestCreate`, etc.).
+- Returns high-level capabilities (`repository`, `workspace`), fine-grained permissions (`contents`, `issues`, `pullRequests`), and direct operation authorizations (`gitPush`, `issueCreate`, `pullRequestCreate`, etc.). `workspace.defaultNetworkProfile` reports the effective profile applied when `workspace_open` omits `networkProfile`, and the `repository` issue/pull-request flags reflect the permissions the verified installation actually grants.
 - Read-only and safe to repeat.
 
 <!-- cloudharness-example:workspace_capabilities

@@ -37,7 +37,7 @@ Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding 
 | `ref` | `string` | No | length: 1–255 |
 | `idempotencyKey` | `string` | **Yes** | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 | `networkProfile` | `"network-none"` \| `"dependency-access"` | No | — |
-| `networkMode` | `any` | No | — |
+| `networkMode` | `any` · **Deprecated** | No | Retired and rejected: this field was replaced by networkProfile. |
 | `environmentId` | `string` | No | pattern: `^env_[A-Za-z0-9_-]{20,80}$` |
 | `confirmEnvironmentInjection` | `true` | No | — |
 | `toolkits` | any[] | No | default: `[]` |

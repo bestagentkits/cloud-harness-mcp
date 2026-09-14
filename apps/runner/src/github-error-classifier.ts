@@ -148,9 +148,15 @@ export function classifyGitHubFailure(
     }
     for (const pattern of rule.patterns) {
       if (pattern.test(text)) {
+        const detail = `GitHub ${action} failed: ${stderr || stdout}`.trim();
+        // A permission failure is only actionable with its remedy: the broker has no
+        // way to know which credential GitHub rejected after the helper ran.
+        const message = rule.code === 'GITHUB_PERMISSION_MISSING'
+          ? `${detail} — the credential used for this action is missing the required GitHub permission. Add it to the GitHub App and approve the pending installation change, or configure an operator GH_TOKEN runtime secret.`.slice(0, 2_000)
+          : detail.slice(0, 2_000);
         return {
           code: rule.code,
-          message: `GitHub ${action} failed: ${stderr || stdout}`.trim().slice(0, 2_000),
+          message,
           retryable: rule.retryable,
           ...(rule.retryAfterMs ? { retryAfterMs: rule.retryAfterMs } : {}),
           ...(step ? { step } : {})

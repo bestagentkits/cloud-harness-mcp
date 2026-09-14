@@ -6,7 +6,7 @@ import {
   PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches,
   createPaletteIndexLoader, backdropHit, dismissOnBackdrop
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
 
 class FakeElement {
   hidden = false;
@@ -306,6 +306,69 @@ describe('dashboard UI behavior', () => {
     // Clicks that land on the palette's own children never dismiss.
     dialog.dispatch('pointerdown', inner); dialog.dispatch('click', inner);
     expect(dismiss).toHaveBeenCalledOnce();
+  });
+
+  it('exposes the settings page to the command palette with its label and href', () => {
+    const index = buildPaletteIndex({});
+    const entry = index.find((item: { id: string }) => item.id === 'page:settings');
+    expect(entry).toMatchObject({
+      id: 'page:settings', group: 'Pages', label: 'Settings',
+      hint: 'Instance defaults for workspaces and network egress', href: '/dashboard/settings'
+    });
+
+    // Selecting the entry navigates through the href the palette renders as data-href.
+    expect(rankPaletteMatches(index, 'settings').map((item: { href: string }) => item.href)).toContain('/dashboard/settings');
+    const markup = renderPaletteResults([entry], 0);
+    expect(markup).toContain('>Settings<');
+    expect(markup).toContain('data-href="/dashboard/settings"');
+    expect(markup).toContain('role="option"');
+  });
+
+  it('marks the stored default network profile selected and falls back to the runner default', () => {
+    const stored = renderSettings({ defaultNetworkProfile: { value: 'network-none', source: 'setting' } });
+    expect(stored).toContain('id="settings-network-profile"');
+    expect(stored).toMatch(/<option value="network-none" selected>/);
+    expect(stored).not.toMatch(/<option value="dependency-access" selected>/);
+    expect(stored).not.toMatch(/<option value="" selected>/);
+    expect(stored).toContain('Set in this dashboard');
+    expect(stored).toContain('No network');
+    expect(stored).toContain('id="settings-status"');
+
+    const runnerDefault = renderSettings({ defaultNetworkProfile: { value: 'dependency-access', source: 'environment' } });
+    expect(runnerDefault).toMatch(/<option value="" selected>/);
+    expect(runnerDefault).not.toMatch(/<option value="dependency-access" selected>/);
+    expect(runnerDefault).toContain('Runner default (WORKSPACE_NETWORK_PROFILE or built-in)');
+    expect(runnerDefault).toContain('Dependency access');
+    expect(runnerDefault).toContain('Use runner default');
+  });
+
+  it('states the credential-exfiltration tradeoff and escapes the readiness reason', () => {
+    const html = renderSettings(
+      { defaultNetworkProfile: { value: 'dependency-access', source: 'setting' } },
+      { ready: false, reason: '<script>egress</script>' }
+    );
+    expect(html).toContain('exfiltrate');
+    expect(html).toContain('GH_TOKEN');
+    expect(html).toContain('A fine-grained token');
+    expect(html).toContain('Not ready:');
+    expect(html).not.toContain('<script>egress</script>');
+    expect(html).toContain('&lt;script&gt;egress&lt;/script&gt;');
+
+    // No readiness line is rendered until the check has run.
+    expect(renderSettings({ defaultNetworkProfile: { value: 'dependency-access', source: 'setting' } })).not.toContain('Egress readiness');
+    expect(renderSettings({ defaultNetworkProfile: { value: 'dependency-access', source: 'setting' } }, { ready: true, reason: null })).toContain('Ready');
+  });
+
+  it('warns about executor network access only for the dependency-access profile', () => {
+    const workspace = {
+      workspaceId: `ws_${'a'.repeat(24)}`, repositoryUrl: 'https://github.com/org/repo.git', status: 'ACTIVE',
+      createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T01:00:00.000Z', version: 3
+    };
+    expect(renderWorkspaceDetail({ ...workspace, networkProfile: 'dependency-access' })).toContain('Executor network access is enabled');
+    expect(renderWorkspaceDetail({ ...workspace, networkProfile: 'network-none' })).not.toContain('Executor network access is enabled');
+    // A legacy record still carrying the retired field no longer implies egress.
+    expect(renderWorkspaceDetail({ ...workspace, networkMode: 'bridge' })).not.toContain('Executor network access is enabled');
+    expect(renderWorkspaceDetail({ ...workspace, networkMode: 'bridge' })).toContain('Network');
   });
 
   it('prefers an operator display name over the verified sign-on name', () => {

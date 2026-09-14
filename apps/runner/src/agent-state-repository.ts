@@ -477,7 +477,7 @@ export class AgentStateRepository {
         } | undefined;
       if (!workspace) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
       if (workspace.status !== 'ACTIVE' || workspace.network_profile !== 'network-none') {
-        throw new HarnessError('CONFLICT', 'workspace is not eligible for agent admission', 409, false);
+        throw new HarnessError('CONFLICT', 'workspace is not eligible for agent admission; subagents require a workspace opened with networkProfile "network-none"', 409, false);
       }
 
       this.database.prepare(`INSERT OR IGNORE INTO agent_workspace_admission

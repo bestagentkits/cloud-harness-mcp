@@ -81,13 +81,30 @@ a lost response; do not create a second key until the first result is resolved.
 - Missing shell/session handle after a runner restart: interactive PTY streams
   are in memory and cannot be reconnected. Background task metadata and output
   logs persist across restarts and can be inspected via `tasks_status` or `tasks_list`.
+- `workspace_open` fails with `DEPENDENCY_EGRESS_UNAVAILABLE` (HTTP 503): the
+  effective profile is `dependency-access` — the shipped default — but the Linux
+  host firewall is missing or drifted. Provision it with
+  `deploy/scripts/setup-dependency-firewall.sh`, confirm egress readiness from
+  the dashboard Settings page, then open with a fresh idempotency key: the failed
+  open recorded its key with a `FAILED` status, and replaying that key returns the
+  failed record without retrying. The open fails closed by design and is never
+  silently downgraded to `network-none`. To keep working without egress in the
+  meantime, select `network-none` and Save on the Settings page, or open with
+  `networkProfile: "network-none"`; the Reset action only clears the instance
+  setting, so it returns a host with the egress default to `dependency-access`.
 - A dependency download, arbitrary network command, or networked deployment
-  fails in a `network-none` workspace: open a new owner-approved
-  `dependency-access` workspace if public egress is necessary and accept the
-  weaker boundary (public DNS and TCP 80/443 only). If it fails with
-  `DEPENDENCY_EGRESS_UNAVAILABLE`, the Linux host firewall is missing or drifted;
-  reprovision it with `deploy/scripts/setup-dependency-firewall.sh`. Remote Git
-  fetch/pull/push use runner-owned helpers and do not require executor egress.
+  fails with a network error: the workspace is on `network-none`. Open a new
+  workspace on `dependency-access` — or select `dependency-access` and Save as the
+  instance default in Settings — if public egress is necessary, and accept the
+  weaker boundary (public DNS and TCP 80/443 only). Remote Git fetch/pull/push use
+  runner-owned helpers and do not require executor egress.
+- `github_action` returns `GITHUB_PERMISSION_MISSING` following GitHub's `403
+  Resource not accessible by integration`: no configured credential can perform
+  the action. The error names the missing scope. Add that permission to the
+  GitHub App and approve the pending installation change on GitHub, or configure
+  an operator-wide `GH_TOKEN`/`GITHUB_TOKEN` runtime secret as the fallback
+  credential. A `403` from the helper is never retried, because the operation may
+  already have had side effects.
 - Private fetch/pull failure: verify GitHub App installation access and Contents
   read permission. Push additionally requires Contents read and write
   permission; only `origin`, branch refspecs, and optional force-with-lease are

@@ -71,6 +71,10 @@ export class HarnessError extends Error {
   public readonly currentHeadOid?: string | undefined;
   public readonly expectedHeadOid?: string | undefined;
   public readonly resumeAction?: string | undefined;
+  public readonly details?: {
+    reason?: string | undefined;
+    requiredScopes?: readonly string[] | undefined;
+  };
   constructor(
     public readonly code: z.infer<typeof ErrorCodeSchema>,
     message: string,
@@ -85,9 +89,14 @@ export class HarnessError extends Error {
       currentHeadOid?: string | undefined;
       expectedHeadOid?: string | undefined;
       resumeAction?: string | undefined;
+      reason?: string | undefined;
+      requiredScopes?: readonly string[] | undefined;
     }
   ) {
     super(message);
+    if (details?.reason !== undefined || details?.requiredScopes !== undefined) {
+      this.details = { reason: details.reason, requiredScopes: details.requiredScopes };
+    }
     if (details?.operation !== undefined) {
       this.operation = details.operation;
     }

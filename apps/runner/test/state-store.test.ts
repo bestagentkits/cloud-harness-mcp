@@ -32,6 +32,25 @@ describe('StateStore', () => {
     reopened.close();
   });
 
+  it('persists one instance-wide default network profile across restarts and clears it on reset', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
+    temporaryDirectories.push(directory);
+    const path = join(directory, 'state.db');
+    const store = new StateStore(path);
+    expect(store.getWorkspaceDefaultNetworkProfile()).toBeUndefined();
+    store.setWorkspaceDefaultNetworkProfile('network-none');
+    expect(store.getWorkspaceDefaultNetworkProfile()).toBe('network-none');
+    store.close();
+
+    const reopened = new StateStore(path);
+    expect(reopened.getWorkspaceDefaultNetworkProfile()).toBe('network-none');
+    reopened.setWorkspaceDefaultNetworkProfile('dependency-access');
+    expect(reopened.getWorkspaceDefaultNetworkProfile()).toBe('dependency-access');
+    reopened.setWorkspaceDefaultNetworkProfile(null);
+    expect(reopened.getWorkspaceDefaultNetworkProfile()).toBeUndefined();
+    reopened.close();
+  });
+
   it('atomically admits only one active workspace per owner', () => {
     const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
     temporaryDirectories.push(directory);

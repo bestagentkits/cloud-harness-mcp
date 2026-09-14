@@ -43,7 +43,7 @@ Cloud Harness MCP is architected as a split control plane and execution runtime.
         │   WORKSPACE EXECUTOR  │           │   GIT TRANSFER HELPER │
         │  • Non-root (UID 10001│           │  • Ephemeral bare repo│
         │  • 3-Zone Storage     │           │  • GitHub App Token   │
-        │  • Network: NONE (def)│           │    passed via STDIN   │
+        │  • Network: dep-access│           │    passed via STDIN   │
         │  • No Docker socket   │           │  • Origin-only push   │
         │  • TTL auto-cleanup   │           │  • Ephemeral cleanup  │
         └───────────────────────┘           └───────────────────────┘
@@ -66,7 +66,7 @@ Cloud Harness MCP is architected as a split control plane and execution runtime.
 
 ## Key Invariants
 
-- **Default Network: `network-none`** — Workspace executors cannot access LAN or WAN unless explicitly started with `networkProfile: "dependency-access"`, which permits only public DNS and TCP 80/443 through an attested Linux host firewall that blocks private, control-plane, and metadata ranges.
+- **Default Network: `dependency-access`** — Workspace executors have outbound network access by default, so they can reach the GitHub API and the bundled `gh` CLI. That profile permits only public DNS and TCP 80/443 through an attested Linux host firewall that blocks private, control-plane, and metadata ranges, and fails closed when attestation is unavailable. Pass `networkProfile: "network-none"` to block all executor egress.
 - **No Docker-in-Docker** — The Docker socket is never mounted into the workspace container.
 - **Idempotent Lifecycle** — `workspace_open` requires an `idempotencyKey`. If a client disconnects and retries with the same key, it attaches to the existing workspace rather than starting a duplicate clone.
 - **TTL Bounds** — Workspaces enforce both a wall-clock TTL (default 15 minutes) and an idle TTL (default 5 minutes). When expired, all files and containers are permanently scrubbed.

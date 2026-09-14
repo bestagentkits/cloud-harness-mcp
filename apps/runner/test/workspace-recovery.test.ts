@@ -52,16 +52,45 @@ const docker = vi.hoisted(() => ({
 
 vi.mock('../src/docker-engine.js', () => docker);
 vi.mock('../src/repository-policy.js', () => ({ validateRepositoryUrl: vi.fn(async (value: string) => new URL(value)) }));
-vi.mock('../src/github-app-broker.js', () => ({
+vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubAppBroker>()),
   mintRepositoryToken: vi.fn(async () => 'mock-token'),
-  mintPrincipalRepositoryScopedToken: vi.fn(async () => 'mock-token'),
+  mintPrincipalRepositoryScopedToken: vi.fn(async () => ({ token: 'mock-token', permissions: { issues: 'write', pull_requests: 'write' } })),
   mintPrincipalRepositoryToken: vi.fn(async () => 'mock-token')
 }));
 
+import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
 const openStores: StateStore[] = [];
+
+/**
+ * Opening without an explicit profile is the shipped default path: a workspace
+ * must receive the instance setting when one is persisted and the runner
+ * configuration otherwise, and an explicit request must always win.
+ */
+function resolutionFixture(ownerId: string) {
+  const directory = mkdtempSync(join(tmpdir(), 'ch-open-resolution-'));
+  temporaryDirectories.push(directory);
+  const jobsRoot = join(directory, 'jobs');
+  mkdirSync(jobsRoot, { recursive: true });
+  const config = {
+    jobsRoot,
+    stateDb: join(directory, 'state.db'),
+    wallTtlSeconds: 900,
+    idleTtlSeconds: 300,
+    maxOutputBytes: 262144,
+    maxWorkspaceBytes: 104857600,
+    minFreeBytes: 0,
+    networkProfile: 'network-none',
+    allowedGitHosts: ['github.com'],
+    executorImage: 'cloud-harness-executor:test'
+  } as RunnerConfig;
+  const store = new StateStore(config.stateDb);
+  openStores.push(store);
+  return { config, store, service: new WorkspaceService(config, store), principal: { kind: 'owner' as const, ownerId } };
+}
 
 afterEach(() => {
   docker.workerResult = { ok: true, message: 'worker complete', data: {}, truncated: false };
@@ -636,5 +665,46 @@ describe('Workspace Recovery and Lease Renewal (Issue #103)', () => {
     });
 
     unreadyMetadata.close();
+  });
+});
+
+describe('Workspace network default resolution', () => {
+  const openWithoutProfile = (service: WorkspaceService, principal: { kind: 'owner'; ownerId: string }, idempotencyKey: string, overrides: Record<string, unknown> = {}) =>
+    service.execute(principal, 'workspace_open', {
+      repositoryUrl: 'https://github.com/example/repo.git',
+      idempotencyKey,
+      ...overrides
+    });
+
+  it('uses the runner configuration when no instance default is persisted', async () => {
+    const { store, service, principal } = resolutionFixture('resolution-runner-default');
+    const opened = await openWithoutProfile(service, principal, 'resolution-runner-default-1');
+    expect(store.byId((opened.data as { workspaceId: string }).workspaceId)?.networkProfile).toBe('network-none');
+  });
+
+  it('prefers the persisted instance default over the runner configuration', async () => {
+    const { store, service, principal } = resolutionFixture('resolution-instance-setting');
+    store.setWorkspaceDefaultNetworkProfile('dependency-access');
+    // Attestation is covered by its own suite; this test isolates which default was chosen.
+    service.networkProfileManager.ensureProfileReady = async () => undefined;
+    service.networkProfileManager.dockerLaunchArgs = () => ['--network', 'none'];
+    const opened = await openWithoutProfile(service, principal, 'resolution-instance-setting-1');
+    expect(store.byId((opened.data as { workspaceId: string }).workspaceId)?.networkProfile).toBe('dependency-access');
+  });
+
+  it('fails closed instead of downgrading when the egress default is not attested', async () => {
+    const { store, service, principal } = resolutionFixture('resolution-unattested-egress');
+    store.setWorkspaceDefaultNetworkProfile('dependency-access');
+    await expect(openWithoutProfile(service, principal, 'resolution-unattested-egress-1')).rejects.toMatchObject({
+      code: 'DEPENDENCY_EGRESS_UNAVAILABLE'
+    });
+    expect(store.list(store.resolvePrincipal(principal)).every((record) => record.status === 'FAILED')).toBe(true);
+  });
+
+  it('lets an explicit request override the persisted instance default', async () => {
+    const { store, service, principal } = resolutionFixture('resolution-explicit-request');
+    store.setWorkspaceDefaultNetworkProfile('dependency-access');
+    const opened = await openWithoutProfile(service, principal, 'resolution-explicit-request-1', { networkProfile: 'network-none' });
+    expect(store.byId((opened.data as { workspaceId: string }).workspaceId)?.networkProfile).toBe('network-none');
   });
 });

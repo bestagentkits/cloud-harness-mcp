@@ -30,9 +30,13 @@ const broker = vi.hoisted(() => ({
 }));
 
 vi.mock('../src/docker-engine.js', () => docker);
-vi.mock('../src/github-app-broker.js', () => broker);
+vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubAppBroker>()),
+  ...broker
+}));
 vi.mock('../src/repository-policy.js', () => ({ validateRepositoryUrl: vi.fn(async (value: string) => new URL(value)) }));
 
+import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
@@ -71,6 +75,8 @@ function fixture() {
     installationId: 888,
     accountId: 789,
     accountLogin: 'bestagentkits',
+    issues: null,
+    pullRequests: null,
     status: 'active',
     repositories: []
   }, 1_000);
@@ -108,6 +114,8 @@ describe('git_push grant reconciliation', () => {
         installationId: 888,
         accountId: 789,
         accountLogin: 'bestagentkits',
+        issues: null,
+        pullRequests: null,
         status: 'active',
         repositories: [{ owner: 'bestagentkits', repository: 'githatch', contents: 'write' }]
       }, 2_000, audit);
@@ -186,6 +194,8 @@ describe('git_push grant reconciliation', () => {
         installationId: 888,
         accountId: 789,
         accountLogin: 'bestagentkits',
+        issues: null,
+        pullRequests: null,
         status: 'active',
         repositories: [{ owner: 'bestagentkits', repository: 'githatch', contents: 'read' }]
       }, 2_000, audit);

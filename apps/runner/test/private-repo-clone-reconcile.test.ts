@@ -22,8 +22,12 @@ const broker = vi.hoisted(() => ({
 }));
 
 vi.mock('../src/docker-engine.js', () => docker);
-vi.mock('../src/github-app-broker.js', () => broker);
+vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubAppBroker>()),
+  ...broker
+}));
 
+import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
@@ -55,6 +59,8 @@ function fixture() {
     installationId: 777,
     accountId: 789,
     accountLogin: 'bestagentkits',
+    issues: null,
+    pullRequests: null,
     status: 'active',
     repositories: []
   }, 1_000);
@@ -90,6 +96,8 @@ describe('private repository clone reconciliation', () => {
         installationId: 777,
         accountId: 789,
         accountLogin: 'bestagentkits',
+        issues: null,
+        pullRequests: null,
         status: 'active',
         repositories: [{ owner: 'bestagentkits', repository: 'agentkit', contents: 'read' }]
       }, 2_000, audit);

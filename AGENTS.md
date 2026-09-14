@@ -40,9 +40,18 @@ instead of copying behavior, defaults, command inventories, or configuration.
   `GITHUB_TOKEN`), which is an explicit owner opt-in for authenticating the
   workspace `gh` CLI and is recorded in `docs/security-model.md`.
 - Preserve the executor restrictions and resource bounds owned by
-  `apps/runner/src/workspace-service.ts`. Network mode remains `none` by
-  default; `bridge` is an explicit owner-approved weakening, not an isolation
-  guarantee.
+  `apps/runner/src/workspace-service.ts`. The shipped default executor network
+  profile is `dependency-access`, resolved as explicit `workspace_open` request >
+  persisted instance setting (dashboard Settings) > `WORKSPACE_NETWORK_PROFILE` >
+  built-in default; `network-none` remains the per-workspace and instance opt-out
+  for air-gapped isolation, and no raw `bridge` profile is selectable. The egress
+  profile is attested before every executor start, fails closed with
+  `DEPENDENCY_EGRESS_UNAVAILABLE` when the host firewall is not provisioned, and
+  is never silently downgraded to `network-none`. Because egress makes any
+  credential injected into the executor exfiltratable by repository-controlled
+  code, keep the isolation opt-out and the credential warnings in
+  `docs/security-model.md` intact whenever this default or the attestation path
+  changes.
 - Preserve credential-free HTTPS repository URLs, host/address validation, and
   constrained cloning. Private-clone credentials stay in the trusted broker
   and must never persist in the checkout, remote URL, logs, fixtures, or command

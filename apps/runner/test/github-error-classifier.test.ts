@@ -58,6 +58,9 @@ describe('GitHub Error Classifier', () => {
     );
     expect(error1.code).toBe('GITHUB_PERMISSION_MISSING');
     expect(error1.retryable).toBe(false);
+    // The GitHub response alone names no remedy, so the classified message must.
+    expect(error1.message).toContain('Resource not accessible by integration');
+    expect(error1.message).toContain('GH_TOKEN');
 
     const error2 = classifyGitHubFailure(
       'HTTP 403: Must have push access to repository',
@@ -66,6 +69,15 @@ describe('GitHub Error Classifier', () => {
     );
     expect(error2.code).toBe('GITHUB_PERMISSION_MISSING');
     expect(error2.retryable).toBe(false);
+    expect(error2.message).toContain('GH_TOKEN');
+
+    const rateLimited = classifyGitHubFailure(
+      'gh: API rate limit exceeded for installation ID 888. (HTTP 403)',
+      '',
+      'pr_create'
+    );
+    expect(rateLimited.code).toBe('GITHUB_RATE_LIMITED');
+    expect(rateLimited.message).not.toContain('GH_TOKEN');
   });
 
   it('classifies invalid PR base branch as INVALID_PULL_REQUEST_BASE for PR actions', () => {

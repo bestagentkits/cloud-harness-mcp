@@ -4,12 +4,14 @@ import type {
   GitHubInstallationRecord,
   GitHubInstallationMutationAudit,
   GitHubInstallationStore,
+  GitHubPermissionLevel,
   GitHubRepositoryGrantRecord,
   VerifiedGitHubInstallation
 } from './github-installation-store.js';
 
 type InstallationRow = {
   principal_id: string; app_id: string; installation_id: string; account_id: string; account_login: string;
+  issues: GitHubPermissionLevel | null; pull_requests: GitHubPermissionLevel | null;
   status: GitHubInstallationRecord['status']; generation: number; created_at: number; updated_at: number; checked_at: number;
 };
 type GrantRow = {
@@ -20,7 +22,8 @@ type GrantRow = {
 
 const installation = (row: InstallationRow): GitHubInstallationRecord => ({
   principalId: row.principal_id, appId: row.app_id, installationId: row.installation_id,
-  accountId: row.account_id, accountLogin: row.account_login, status: row.status,
+  accountId: row.account_id, accountLogin: row.account_login,
+  issues: row.issues, pullRequests: row.pull_requests, status: row.status,
   generation: row.generation, createdAt: row.created_at, updatedAt: row.updated_at, checkedAt: row.checked_at
 });
 const grant = (row: GrantRow): GitHubRepositoryGrantRecord => ({
@@ -46,6 +49,8 @@ export function migrateGitHubInstallationSchema(database: DatabaseSync): void {
           CREATE TABLE IF NOT EXISTS github_installations_v2 (
             principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
             app_id TEXT NOT NULL, installation_id TEXT NOT NULL, account_id TEXT NOT NULL, account_login TEXT NOT NULL,
+            issues TEXT CHECK(issues IN ('none','read','write')),
+            pull_requests TEXT CHECK(pull_requests IN ('none','read','write')),
             status TEXT NOT NULL CHECK(status IN ('active','suspended','uninstalled')),
             generation INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, checked_at INTEGER NOT NULL,
             PRIMARY KEY(principal_id, installation_id)
@@ -63,11 +68,23 @@ export function migrateGitHubInstallationSchema(database: DatabaseSync): void {
         CREATE TABLE IF NOT EXISTS github_installations (
           principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
           app_id TEXT NOT NULL, installation_id TEXT NOT NULL, account_id TEXT NOT NULL, account_login TEXT NOT NULL,
+          issues TEXT CHECK(issues IN ('none','read','write')),
+          pull_requests TEXT CHECK(pull_requests IN ('none','read','write')),
           status TEXT NOT NULL CHECK(status IN ('active','suspended','uninstalled')),
           generation INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, checked_at INTEGER NOT NULL,
           PRIMARY KEY(principal_id, installation_id)
         );
       `);
+    }
+
+    // Databases created before the permission levels existed gain the columns in place;
+    // ALTER TABLE adds no default, so their existing rows read back as "not yet verified".
+    const permissionColumns = database.prepare("PRAGMA table_info(github_installations)").all() as Array<{ name: string }>;
+    if (!permissionColumns.some((column) => column.name === 'issues')) {
+      database.exec('ALTER TABLE github_installations ADD COLUMN issues TEXT');
+    }
+    if (!permissionColumns.some((column) => column.name === 'pull_requests')) {
+      database.exec('ALTER TABLE github_installations ADD COLUMN pull_requests TEXT');
     }
 
     database.exec(`
@@ -129,15 +146,18 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
       const record: GitHubInstallationRecord = {
         principalId, appId: String(verified.appId), installationId,
         accountId, accountLogin: verified.accountLogin, status: verified.status,
+        issues: verified.issues, pullRequests: verified.pullRequests,
         generation: (prior?.generation ?? 0) + 1, createdAt: prior?.createdAt ?? checkedAt,
         updatedAt: checkedAt, checkedAt
       };
       this.database.prepare(`INSERT INTO github_installations
-        (principal_id,app_id,installation_id,account_id,account_login,status,generation,created_at,updated_at,checked_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(principal_id, installation_id) DO UPDATE SET
+        (principal_id,app_id,installation_id,account_id,account_login,issues,pull_requests,status,generation,created_at,updated_at,checked_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(principal_id, installation_id) DO UPDATE SET
         app_id=excluded.app_id,account_id=excluded.account_id,account_login=excluded.account_login,
+        issues=excluded.issues,pull_requests=excluded.pull_requests,
         status=excluded.status,generation=excluded.generation,updated_at=excluded.updated_at,checked_at=excluded.checked_at`)
-        .run(principalId, record.appId, record.installationId, record.accountId, record.accountLogin, record.status,
+        .run(principalId, record.appId, record.installationId, record.accountId, record.accountLogin,
+          record.issues, record.pullRequests, record.status,
           record.generation, record.createdAt, record.updatedAt, record.checkedAt);
 
       const current = new Set<string>();
@@ -184,6 +204,8 @@ export class SqliteGitHubInstallationStore implements GitHubInstallationStore {
       installationId: current.installationId,
       accountId: current.accountId,
       accountLogin: current.accountLogin,
+      issues: current.issues,
+      pullRequests: current.pullRequests,
       status: 'uninstalled',
       repositories: []
     }, checkedAt, audit);

@@ -70,7 +70,8 @@ export const WorkspaceCapabilitiesSchema = z.object({
   sessions: z.boolean(),
   deployments: z.boolean(),
   privileged: z.boolean().default(false),
-  networkProfile: WorkspaceNetworkExposureSchema
+  networkProfile: WorkspaceNetworkExposureSchema,
+  defaultNetworkProfile: WorkspaceNetworkExposureSchema.describe('Profile applied when workspace_open omits networkProfile').optional()
 }).passthrough();
 
 export const RepositoryPermissionsSchema = z.object({

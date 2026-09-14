@@ -2,12 +2,12 @@ import { createAppAuth } from '@octokit/auth-app';
 import { request as octokitRequest } from '@octokit/request';
 import { HarnessError, type RunnerConfig } from '@cloud-harness/contracts';
 import type { GitHubInstallationVerifier } from './github-binding-service.js';
-import type { VerifiedGitHubInstallation } from './github-installation-store.js';
+import type { GitHubPermissionLevel, VerifiedGitHubInstallation } from './github-installation-store.js';
 
 type InstallationPayload = {
   id?: number; app_id?: number; suspended_at?: string | null;
   account?: { id?: number; login?: string };
-  permissions?: { contents?: string; [key: string]: string | undefined };
+  permissions?: { contents?: string; issues?: string; pull_requests?: string; [key: string]: string | undefined };
 };
 type RepositoriesPayload = {
   total_count?: number;
@@ -87,6 +87,8 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
       installationId: installation.id,
       accountId: installation.account.id,
       accountLogin: installation.account.login,
+      issues: permissionLevel(installation.permissions?.issues),
+      pullRequests: permissionLevel(installation.permissions?.pull_requests),
       status: installation.suspended_at ? 'suspended' : 'active',
       repositories: repositories.map((repository) => {
         const permissions = repository.permissions;
@@ -179,6 +181,10 @@ export class GitHubApiInstallationVerifier implements GitHubInstallationVerifier
       if (timer) clearTimeout(timer);
     }
   }
+}
+
+function permissionLevel(granted: string | undefined): GitHubPermissionLevel {
+  return granted === 'write' || granted === 'read' ? granted : 'none';
 }
 
 function positiveLimit(value: number | undefined, fallback: number, name: string): number {

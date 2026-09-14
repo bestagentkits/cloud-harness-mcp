@@ -432,6 +432,12 @@ describe('contracts', () => {
       idempotencyKey: 'idempotency-123',
       networkMode: 'none'
     })).toThrow(/networkMode was replaced by networkProfile/);
+
+    const openSchema = z.toJSONSchema(TOOL_SCHEMA_BY_NAME.workspace_open, { io: 'input' }) as {
+      properties?: Record<string, { deprecated?: boolean; description?: string }>;
+    };
+    expect(openSchema.properties?.networkMode?.deprecated).toBe(true);
+    expect(openSchema.properties?.networkMode?.description).toMatch(/replaced by networkProfile/);
   });
 
   it('validates provenance, context manifest, scoped memories, and hooks schemas', () => {

@@ -118,6 +118,29 @@ describe('dashboard static UI contract', () => {
     for (const forbidden of ['sessionStorage', 'document.cookie', 'secret.value', 'secretValue', 'privateKey', 'accessToken']) expect(script).not.toContain(forbidden);
   });
 
+  it('exposes the settings page through the shell navigation, the loader dispatch, and the palette', () => {
+    expect(html).toContain('href="/dashboard/settings"');
+    expect(html).toContain('data-section="settings"');
+    expect(html).toContain('>Settings</a>');
+    expect(script).toContain("location.pathname === '/dashboard/settings'");
+    expect(script).toContain('loadSettings()');
+    expect(script).toContain("id: 'page:settings'");
+    expect(script).toContain("href: '/dashboard/settings'");
+    for (const contract of ["api('/settings')", "api('/settings/network-check'", 'id="settings-network-profile"', 'id="settings-status"']) expect(script).toContain(contract);
+  });
+
+  it('offers only the contract network profiles and drops the retired networkMode markup', () => {
+    expect(html).toContain('<label for="open-network-profile">Network profile (optional)</label>');
+    expect(html).toContain('<select id="open-network-profile" name="networkProfile">');
+    expect(html).toContain('<option value="dependency-access" selected>');
+    expect(html).toContain('<option value="network-none">');
+    expect(html).not.toContain('networkMode');
+    expect(html).not.toContain('open-network-mode');
+    // The retired field must not survive anywhere the browser can send or render it.
+    expect(asset('dashboard-render.js')).not.toContain('networkMode');
+    expect(asset('dashboard-render.js')).toContain('networkLabel(workspace.networkProfile)');
+  });
+
   it('keeps the server version in the persistent sidebar rail', () => {
     expect(html).toContain('class="sidebar-version"');
     expect(html).toContain('__CH_VERSION__');
