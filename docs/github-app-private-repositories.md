@@ -73,8 +73,9 @@ owner approves the change:
 2. Open each installation and approve the updated permissions when GitHub marks
    the installation as needing attention; GitHub shows a banner on the App's
    installations page until this is done.
-3. Run the installation reconciliation from the dashboard GitHub page (or
-   restart the runner) so the runner stores the newly granted levels.
+3. Reconcile the installation from the dashboard GitHub page so the runner
+   records the newly granted levels; the runner reads permissions during that
+   verification, not at startup, so restarting alone does not refresh them.
 
 ## 1. Register the GitHub App
 

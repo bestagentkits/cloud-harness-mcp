@@ -107,8 +107,10 @@ a lost response; do not create a second key until the first result is resolved.
   requesting principal: the runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in
   `owner-bearer` mode, or that principal's global runtime secret in
   `cloudflare-access` mode, where the operator-wide environment token is refused.
-  Either fallback authenticates harness-side operations only; the workspace `gh`
-  CLI needs its own global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN`. A
+  The two boundaries differ: the runner-environment credential is harness-side
+  only and never enters an executor, while the principal's global runtime secret
+  is injected into that principal's workspaces and therefore also authenticates
+  the workspace `gh` CLI. A
   `403` from the helper is never retried, because the operation may already have
   had side effects.
 - Private fetch/pull failure: verify GitHub App installation access and Contents

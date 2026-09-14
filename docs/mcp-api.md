@@ -172,10 +172,10 @@ lease is revoked, its container is removed, and its status transitions to
   `cloudflare-access` mode, where an operator-wide credential must never stand in
   for a different principal) or that principal's own global runtime secret. When
   neither can, it returns `GITHUB_PERMISSION_MISSING` naming the missing scope and
-  both remedies. Neither fallback authenticates `gh` inside a workspace: the
-  environment credential is never placed in an executor, and a global runtime
-  secret authenticates the workspace `gh` only when the operator created one for
-  that principal. The selection is owned by
+  both remedies. The two fallback boundaries differ: the runner-environment
+  credential is harness-side only and is never placed in an executor, while a
+  principal's global runtime secret is injected into that principal's workspaces,
+  so it also authenticates the workspace `gh` CLI. The selection is owned by
   [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
   and
   [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts).
