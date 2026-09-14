@@ -88,13 +88,15 @@ a lost response; do not create a second key until the first result is resolved.
   the dashboard Settings page, then open with a fresh idempotency key: the failed
   open recorded its key with a `FAILED` status, and replaying that key returns the
   failed record without retrying. The open fails closed by design and is never
-  silently downgraded to `network-none`. As an immediate alternative, reset the
-  default in Settings or open with `networkProfile: "network-none"`.
+  silently downgraded to `network-none`. To keep working without egress in the
+  meantime, select `network-none` and Save on the Settings page, or open with
+  `networkProfile: "network-none"`; the Reset action only clears the instance
+  setting, so it returns a host with the egress default to `dependency-access`.
 - A dependency download, arbitrary network command, or networked deployment
   fails with a network error: the workspace is on `network-none`. Open a new
-  workspace on `dependency-access` — or clear the `network-none` instance
-  default in Settings — if public egress is necessary, and accept the weaker
-  boundary (public DNS and TCP 80/443 only). Remote Git fetch/pull/push use
+  workspace on `dependency-access` — or select `dependency-access` and Save as the
+  instance default in Settings — if public egress is necessary, and accept the
+  weaker boundary (public DNS and TCP 80/443 only). Remote Git fetch/pull/push use
   runner-owned helpers and do not require executor egress.
 - `github_action` returns `GITHUB_PERMISSION_MISSING` following GitHub's `403
   Resource not accessible by integration`: no configured credential can perform

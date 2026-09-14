@@ -44,4 +44,4 @@ A deployment whose `.env` still pins `WORKSPACE_NETWORK_PROFILE` keeps that valu
 2. Confirm **Egress readiness** on this page reports `Ready`.
 3. Save `dependency-access` here, or edit the variable and restart the runner.
 
-Enabling egress on a host without the firewall makes every dependency-access open fail with `DEPENDENCY_EGRESS_UNAVAILABLE` rather than silently downgrading. Provision the firewall or reset the default to `network-none`.
+Enabling egress on a host without the firewall makes every dependency-access open fail with `DEPENDENCY_EGRESS_UNAVAILABLE` rather than silently downgrading. Provision the firewall, or select `network-none` and **Save** to keep opening workspaces without egress. **Reset to runner default** is not an opt-out: it clears the instance setting, so a host whose runner default is `dependency-access` goes back to requiring egress.
