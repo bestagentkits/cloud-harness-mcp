@@ -106,4 +106,26 @@ describe('GitHub API installation verifier', () => {
     ]);
   });
 
+  it('records the granted issue and pull-request levels reported by the installation', async () => {
+    const permissionedInstallation = {
+      id: 456, app_id: 123, suspended_at: null,
+      account: { id: 789, login: 'acme' },
+      permissions: { contents: 'write', issues: 'read', pull_requests: 'write' }
+    };
+    const request = vi.fn(async (input: URL | RequestInfo) => String(input).includes('/app/installations/')
+      ? Response.json(permissionedInstallation)
+      : Response.json({ total_count: 0, repositories: [] })) as typeof fetch;
+
+    const verified = await new GitHubApiInstallationVerifier(githubApp, request).verifyInstallation('456');
+    expect(verified).toMatchObject({ issues: 'read', pullRequests: 'write' });
+  });
+
+  it('maps an absent installation permission to none rather than read', async () => {
+    const request = vi.fn(async (input: URL | RequestInfo) => String(input).includes('/app/installations/')
+      ? Response.json(installation)
+      : Response.json({ total_count: 1, repositories: [repository(0)] })) as typeof fetch;
+
+    const verified = await new GitHubApiInstallationVerifier(githubApp, request).verifyInstallation('456');
+    expect(verified).toMatchObject({ issues: 'none', pullRequests: 'none' });
+  });
 });

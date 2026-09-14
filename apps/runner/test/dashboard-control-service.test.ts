@@ -183,7 +183,7 @@ describe('dashboard control service', () => {
   it('returns multiple GitHub installations and handles disconnect with audit logging', async () => {
     const { principals, metadata, artifacts, workspaces } = setup();
     const store = new InMemoryGitHubInstallationStore();
-    const verifier = { verifyInstallation: async (id: string) => ({ appId: '1', installationId: id, accountId: id, accountLogin: `org-${id}`, status: 'active' as const, repositories: [] }) };
+    const verifier = { verifyInstallation: async (id: string) => ({ appId: '1', installationId: id, accountId: id, accountLogin: `org-${id}`, issues: null, pullRequests: null, status: 'active' as const, repositories: [] }) };
     const binding = new GitHubBindingService(new GitHubSetupStateStore(principals.database), store, verifier);
     const githubControls = new DashboardControlService(
       { artifactRetentionSeconds: 60, githubApp: { appSlug: 'test-app', appId: 1 } } as RunnerConfig,
@@ -192,11 +192,11 @@ describe('dashboard control service', () => {
 
     const principalId = principals.resolvePrincipal(principal);
     store.replaceVerified(principalId, {
-      appId: 1, installationId: 101, accountId: 201, accountLogin: 'org-one', status: 'active',
+      appId: 1, installationId: 101, accountId: 201, accountLogin: 'org-one', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'org-one', repository: 'repo1', contents: 'write' }]
     }, 100);
     store.replaceVerified(principalId, {
-      appId: 1, installationId: 102, accountId: 202, accountLogin: 'org-two', status: 'active',
+      appId: 1, installationId: 102, accountId: 202, accountLogin: 'org-two', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'org-two', repository: 'repo2', contents: 'read' }]
     }, 110);
 

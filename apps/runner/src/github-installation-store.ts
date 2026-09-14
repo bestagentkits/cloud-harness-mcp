@@ -2,6 +2,7 @@ import { HarnessError } from '@cloud-harness/contracts';
 
 export type GitHubInstallationStatus = 'active' | 'suspended' | 'uninstalled';
 export type GitHubContentsPermission = 'read' | 'write';
+export type GitHubPermissionLevel = 'none' | 'read' | 'write';
 export type GitHubRepositoryGrantStatus = 'granted' | 'removed';
 
 export type GitHubInstallationRecord = {
@@ -10,6 +11,8 @@ export type GitHubInstallationRecord = {
   installationId: string;
   accountId: string;
   accountLogin: string;
+  issues: GitHubPermissionLevel | null;
+  pullRequests: GitHubPermissionLevel | null;
   status: GitHubInstallationStatus;
   generation: number;
   createdAt: number;
@@ -35,6 +38,8 @@ export type VerifiedGitHubInstallation = {
   installationId: string | number;
   accountId: string | number;
   accountLogin: string;
+  issues: GitHubPermissionLevel | null;
+  pullRequests: GitHubPermissionLevel | null;
   status: GitHubInstallationStatus;
   repositories: readonly {
     owner: string;
@@ -113,6 +118,8 @@ export class InMemoryGitHubInstallationStore implements GitHubInstallationStore 
       installationId: current.installationId,
       accountId: current.accountId,
       accountLogin: current.accountLogin,
+      issues: current.issues,
+      pullRequests: current.pullRequests,
       status: 'uninstalled',
       repositories: []
     }, checkedAt, audit);
@@ -179,6 +186,8 @@ export class InMemoryGitHubInstallationStore implements GitHubInstallationStore 
       installationId,
       accountId,
       accountLogin: verified.accountLogin,
+      issues: verified.issues,
+      pullRequests: verified.pullRequests,
       status: verified.status,
       generation: (previous?.generation ?? 0) + 1,
       createdAt: previous?.createdAt ?? checkedAt,

@@ -17,10 +17,10 @@ describe('SQLite GitHub installation store', () => {
     const principalA = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'a' });
     const principalB = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'b' });
     const store = new SqliteGitHubInstallationStore(state.database);
-    store.replaceVerified(principalA, { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', status: 'active', repositories: [{ owner: 'Acme', repository: 'App', contents: 'write' }] }, 100);
+    store.replaceVerified(principalA, { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active', repositories: [{ owner: 'Acme', repository: 'App', contents: 'write' }] }, 100);
     expect(store.getRepositoryGrant(principalA, 'acme', 'app')).toMatchObject({ status: 'granted', contents: 'write' });
     expect(store.getRepositoryGrant(principalB, 'acme', 'app')).toBeUndefined();
-    store.replaceVerified(principalA, { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', status: 'active', repositories: [] }, 200);
+    store.replaceVerified(principalA, { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active', repositories: [] }, 200);
     expect(store.getRepositoryGrant(principalA, 'acme', 'app')).toMatchObject({ status: 'removed', generation: 2 });
     state.close();
   });
@@ -31,7 +31,7 @@ describe('SQLite GitHub installation store', () => {
     const principalA = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'a' });
     const principalB = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'b' });
     const store = new SqliteGitHubInstallationStore(state.database);
-    const verified = { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', status: 'active' as const, repositories: [] };
+    const verified = { appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active' as const, repositories: [] };
     store.replaceVerified(principalA, verified, 100);
     expect(() => store.replaceVerified(principalB, verified, 200)).toThrow('already bound');
     expect(store.getInstallation(principalB)).toBeUndefined();
@@ -45,7 +45,7 @@ describe('SQLite GitHub installation store', () => {
     const principal = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'owner' });
     let store = new SqliteGitHubInstallationStore(state.database);
     store.replaceVerified(principal, {
-      appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', status: 'active',
+      appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'Acme', repository: 'App', contents: 'write' }]
     }, 100);
     state.database.exec('CREATE TABLE github_test_audit (generation INTEGER NOT NULL)');
@@ -71,7 +71,7 @@ describe('SQLite GitHub installation store', () => {
     const principal = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'owner' });
     const store = new SqliteGitHubInstallationStore(state.database);
     expect(() => store.replaceVerified(principal, {
-      appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', status: 'active',
+      appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'Acme', repository: 'App', contents: 'write' }]
     }, 100, () => { throw new Error('audit unavailable'); })).toThrow('audit unavailable');
     expect(store.getInstallation(principal)).toBeUndefined();
@@ -123,13 +123,13 @@ describe('SQLite GitHub installation store', () => {
 
     // Bind first installation: personal account
     store.replaceVerified(principal, {
-      appId: 1, installationId: 101, accountId: 201, accountLogin: 'mrgoonie', status: 'active',
+      appId: 1, installationId: 101, accountId: 201, accountLogin: 'mrgoonie', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'mrgoonie', repository: 'personal-repo', contents: 'write' }]
     }, 100);
 
     // Bind second installation: organization
     store.replaceVerified(principal, {
-      appId: 1, installationId: 102, accountId: 202, accountLogin: 'bestagentkits', status: 'active',
+      appId: 1, installationId: 102, accountId: 202, accountLogin: 'bestagentkits', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'bestagentkits', repository: 'agentkit', contents: 'read' }]
     }, 110);
 
@@ -149,7 +149,7 @@ describe('SQLite GitHub installation store', () => {
 
     // Reconciling installation 102 removes its removed repo but DOES NOT touch 101's repos
     store.replaceVerified(principal, {
-      appId: 1, installationId: 102, accountId: 202, accountLogin: 'bestagentkits', status: 'active',
+      appId: 1, installationId: 102, accountId: 202, accountLogin: 'bestagentkits', issues: null, pullRequests: null, status: 'active',
       repositories: []
     }, 120);
     expect(store.getRepositoryGrant(principal, 'mrgoonie', 'personal-repo')).toMatchObject({ status: 'granted', installationId: '101' });
@@ -165,11 +165,11 @@ describe('SQLite GitHub installation store', () => {
     const store = new SqliteGitHubInstallationStore(state.database);
 
     store.replaceVerified(principal, {
-      appId: 1, installationId: 101, accountId: 201, accountLogin: 'mrgoonie', status: 'active',
+      appId: 1, installationId: 101, accountId: 201, accountLogin: 'mrgoonie', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'mrgoonie', repository: 'repo1', contents: 'write' }]
     }, 100);
     store.replaceVerified(principal, {
-      appId: 1, installationId: 102, accountId: 202, accountLogin: 'bestagentkits', status: 'active',
+      appId: 1, installationId: 102, accountId: 202, accountLogin: 'bestagentkits', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'bestagentkits', repository: 'repo2', contents: 'read' }]
     }, 110);
 
@@ -222,13 +222,63 @@ describe('SQLite GitHub installation store', () => {
 
     // Now can add second installation without error
     store.replaceVerified(principal, {
-      appId: 1, installationId: 1000, accountId: 889, accountLogin: 'new-org', status: 'active',
+      appId: 1, installationId: 1000, accountId: 889, accountLogin: 'new-org', issues: null, pullRequests: null, status: 'active',
       repositories: [{ owner: 'new-org', repository: 'new-repo', contents: 'read' }]
     }, 200);
 
     expect(store.listInstallations(principal)).toHaveLength(2);
     expect(store.getRepositoryGrant(principal, 'legacy-org', 'legacy-repo')).toMatchObject({ status: 'granted' });
     expect(store.getRepositoryGrant(principal, 'new-org', 'new-repo')).toMatchObject({ status: 'granted' });
+
+    state.close();
+  });
+
+  it('persists the granted issue and pull-request levels and converges them on reconciliation', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-levels-')); roots.push(root);
+    const state = new StateStore(join(root, 'state.db'));
+    const principal = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'level-owner' });
+    const store = new SqliteGitHubInstallationStore(state.database);
+
+    store.replaceVerified(principal, {
+      appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', status: 'active',
+      issues: 'read', pullRequests: 'write', repositories: []
+    }, 100);
+    expect(store.getInstallation(principal, 2)).toMatchObject({ issues: 'read', pullRequests: 'write' });
+
+    store.replaceVerified(principal, {
+      appId: 1, installationId: 2, accountId: 3, accountLogin: 'acme', status: 'active',
+      issues: 'write', pullRequests: 'none', repositories: []
+    }, 200);
+    expect(store.getInstallation(principal, 2)).toMatchObject({ issues: 'write', pullRequests: 'none', generation: 2 });
+
+    state.close();
+  });
+
+  it('reports a database created before the permission columns as not yet verified', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-github-upgrade-')); roots.push(root);
+    const state = new StateStore(join(root, 'state.db'));
+    const principal = state.resolveExternalPrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'upgrade-owner' });
+
+    state.database.exec(`
+      DROP TABLE IF EXISTS github_installations;
+      CREATE TABLE github_installations (
+        principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+        app_id TEXT NOT NULL, installation_id TEXT NOT NULL, account_id TEXT NOT NULL, account_login TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('active','suspended','uninstalled')),
+        generation INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, checked_at INTEGER NOT NULL,
+        PRIMARY KEY(principal_id, installation_id)
+      );
+      INSERT INTO github_installations VALUES ('${principal}', '1', '999', '888', 'legacy-org', 'active', 1, 100, 100, 100);
+    `);
+
+    const store = new SqliteGitHubInstallationStore(state.database);
+    expect(store.getInstallation(principal, 999)).toMatchObject({ issues: null, pullRequests: null });
+
+    store.replaceVerified(principal, {
+      appId: 1, installationId: 999, accountId: 888, accountLogin: 'legacy-org', status: 'active',
+      issues: 'read', pullRequests: 'none', repositories: []
+    }, 200);
+    expect(store.getInstallation(principal, 999)).toMatchObject({ issues: 'read', pullRequests: 'none', generation: 2 });
 
     state.close();
   });

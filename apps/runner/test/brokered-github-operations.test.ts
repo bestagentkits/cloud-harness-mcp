@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError } from '@cloud-harness/contracts';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
+import type * as GitHubAppBroker from '../src/github-app-broker.js';
 
 const docker = vi.hoisted(() => ({
   ghResult: {
@@ -32,13 +34,19 @@ const broker = vi.hoisted(() => ({
 }));
 
 vi.mock('../src/docker-engine.js', () => docker);
-vi.mock('../src/github-app-broker.js', () => broker);
+vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubAppBroker>()),
+  mintRepositoryToken: broker.mintRepositoryToken,
+  mintPrincipalRepositoryToken: broker.mintPrincipalRepositoryToken,
+  mintPrincipalRepositoryScopedToken: broker.mintPrincipalRepositoryScopedToken
+}));
 vi.mock('../src/repository-policy.js', () => ({ validateRepositoryUrl: vi.fn(async (value: string) => new URL(value)) }));
 
 import { WorkspaceService } from '../src/workspace-service.js';
 const temporaryDirectories: string[] = [];
 const openStores: StateStore[] = [];
 const openMetadataStores: MetadataStore[] = [];
+const mintedToken = (token: string, permissions: Record<string, string>) => ({ token, permissions });
 afterEach(() => {
   docker.ghResult = {
     stdout: '{"ok":true,"output":"result"}',
@@ -122,7 +130,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       exitCode: 0,
       truncated: false
     };
-    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce('pr-scoped-write-token');
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-scoped-write-token', { pull_requests: 'write' }));
 
     const result = await service.execute(principalSelector, 'github_action', {
       workspaceId,
@@ -169,7 +177,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     const { config, store, installations, workspaceId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, undefined, installations);
 
-    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce('pr-scoped-write-token');
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-scoped-write-token', { pull_requests: 'write' }));
 
     const result = await service.execute(principalSelector, 'github_action', {
       workspaceId,
@@ -200,7 +208,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
   it('executes pr_comment with idempotency key caching and records single audit', async () => {
     const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, metadata, installations);
-    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce('pr-scoped-write-token');
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-scoped-write-token', { pull_requests: 'write' }));
 
     const result1 = await service.execute(principalSelector, 'github_action', {
       workspaceId,
@@ -250,7 +258,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     const { config, store, installations, workspaceId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, undefined, installations);
 
-    broker.mintPrincipalRepositoryScopedToken.mockResolvedValue('pr-scoped-read-token');
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('pr-scoped-read-token', { pull_requests: 'read' }));
 
     const listRes = await service.execute(principalSelector, 'github_action', {
       workspaceId,
@@ -276,7 +284,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     const { config, store, installations, workspaceId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, undefined, installations);
 
-    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce('issue-scoped-write-token');
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issue-scoped-write-token', { issues: 'write' }));
 
     const result = await service.execute(principalSelector, 'github_action', {
       workspaceId,
@@ -306,7 +314,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     const { config, store, installations, workspaceId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, undefined, installations);
 
-    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce('issue-scoped-write-token');
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issue-scoped-write-token', { issues: 'write' }));
 
     const result = await service.execute(principalSelector, 'github_action', {
       workspaceId,
@@ -372,7 +380,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, metadata, installations);
 
-    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce('pr-scoped-write-token');
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-scoped-write-token', { pull_requests: 'write' }));
     docker.ghResult = {
       stdout: '',
       stderr: 'gh: API rate limit exceeded for installation ID 888. (HTTP 403)',
@@ -408,7 +416,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     const { config, store, metadata, installations, workspaceId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, metadata, installations);
 
-    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce('pr-scoped-write-token');
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-scoped-write-token', { pull_requests: 'write' }));
     docker.ghResult = {
       stdout: '',
       stderr: 'GraphQL: No commits between main and feat/branch (createPullRequest)',
@@ -453,5 +461,102 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       success: false,
       errorCode: 'REPOSITORY_OPERATION_NOT_AUTHORIZED'
     });
+  });
+
+  it('uses the operator credential when the minted App token is short of the required permission', async () => {
+    const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+    const fallbackToken = `ghp_${'a'.repeat(36)}`;
+    config.authMode = 'owner-bearer';
+    config.githubToken = fallbackToken;
+    const service = new WorkspaceService(config, store, metadata, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('app-token-without-issue-write', { issues: 'read' }));
+
+    const result = await service.execute(principalSelector, 'github_action', {
+      workspaceId,
+      action: 'issue_create',
+      title: 'Bug: fix needed'
+    });
+
+    expect(result.ok).toBe(true);
+    const dockerCall = docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'));
+    const [, opts] = dockerCall!;
+    expect(opts?.stdin).toBe(`${fallbackToken}\n`);
+    const audit = metadata.listAudit(principalId).find((a) => a.action === 'github_action.issue_create');
+    expect(audit!.details).toMatchObject({ success: true, credentialSource: 'operator-fallback' });
+    expect(JSON.stringify(audit)).not.toContain(fallbackToken);
+  });
+
+  it('names the missing permission when no credential can satisfy the action', async () => {
+    const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, metadata, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('app-token-without-issue-write', { issues: 'read' }));
+
+    const failure = await service.execute(principalSelector, 'github_action', {
+      workspaceId,
+      action: 'issue_create',
+      title: 'Bug: fix needed'
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(HarnessError);
+    expect(failure).toMatchObject({
+      code: 'GITHUB_PERMISSION_MISSING',
+      status: 403,
+      retryable: false,
+      operation: 'github_action.issue_create',
+      requiredCapability: 'repository.issuesWrite'
+    });
+    expect((failure as Error).message).toContain('issues:write');
+    expect((failure as Error).message).toContain('GH_TOKEN');
+    expect(JSON.stringify(failure)).not.toContain('app-token-without-issue-write');
+    const audit = metadata.listAudit(principalId).find((a) => a.action === 'github_action.issue_create');
+    expect(audit!.details).toMatchObject({ success: false, errorCode: 'GITHUB_PERMISSION_MISSING' });
+  });
+
+  it('falls back after a grant-denied mint and reports the missing permission without one', async () => {
+    const granted = fixture();
+    const grantedFallback = `ghp_${'b'.repeat(36)}`;
+    granted.config.authMode = 'owner-bearer';
+    granted.config.githubToken = grantedFallback;
+    const grantedService = new WorkspaceService(granted.config, granted.store, undefined, granted.installations);
+    broker.mintPrincipalRepositoryScopedToken.mockRejectedValueOnce(
+      new HarnessError('FORBIDDEN', 'GitHub App installation cannot grant the requested permissions', 403, false, { reason: 'permission_not_granted' })
+    );
+    const allowed = await grantedService.execute(granted.principalSelector, 'github_action', {
+      workspaceId: granted.workspaceId,
+      action: 'label_create',
+      name: 'triage',
+      color: '0E8A16'
+    });
+    expect(allowed.ok).toBe(true);
+    const dockerCall = docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'));
+    expect(dockerCall![1]?.stdin).toBe(`${grantedFallback}\n`);
+
+    broker.mintPrincipalRepositoryScopedToken.mockRejectedValueOnce(
+      new HarnessError('FORBIDDEN', 'GitHub App installation cannot grant the requested permissions', 403, false, { reason: 'permission_not_granted' })
+    );
+    const denied = fixture();
+    const deniedService = new WorkspaceService(denied.config, denied.store, undefined, denied.installations);
+    await expect(deniedService.execute(denied.principalSelector, 'github_action', {
+      workspaceId: denied.workspaceId,
+      action: 'label_create',
+      name: 'triage'
+    })).rejects.toMatchObject({ code: 'GITHUB_PERMISSION_MISSING', status: 403 });
+  });
+
+  it('never falls back on a non-permission mint failure', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    config.authMode = 'owner-bearer';
+    config.githubToken = `ghp_${'c'.repeat(36)}`;
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockRejectedValueOnce(
+      new HarnessError('UNAVAILABLE', 'GitHub App could not mint an installation token with issues permission', 502, true)
+    );
+
+    await expect(service.execute(principalSelector, 'github_action', {
+      workspaceId,
+      action: 'issue_create',
+      title: 'Bug: fix needed'
+    })).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    expect(docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'))).toBeUndefined();
   });
 });

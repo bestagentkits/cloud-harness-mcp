@@ -12,6 +12,8 @@ const activeInstallation = (overrides: Partial<VerifiedGitHubInstallation> = {})
   installationId: '456',
   accountId: '789',
   accountLogin: 'example',
+  issues: null,
+  pullRequests: null,
   status: 'active',
   repositories: [{ owner: 'Example', repository: 'Private-Repo', contents: 'write' }],
   ...overrides
@@ -112,6 +114,20 @@ describe('GitHub installation binding', () => {
     now += 100;
     verifyInstallation.mockResolvedValueOnce(activeInstallation({ status: 'uninstalled', repositories: [] }));
     await expect(service.reconcile('principal-a')).resolves.toMatchObject({ status: 'uninstalled', generation: 4 });
+  });
+
+  it('records the granted permission levels and converges them on reconciliation', async () => {
+    verifyInstallation.mockResolvedValueOnce(activeInstallation({ issues: 'read', pullRequests: 'none' }));
+    const setup = service.beginSetup({ principalId: 'principal-a', expectedAppId: '123' });
+    await service.completeSetup({
+      principalId: 'principal-a', state: setup.state, appId: '123', accountId: '789', installationId: '456'
+    });
+    expect(store.getInstallation('principal-a')).toMatchObject({ issues: 'read', pullRequests: 'none' });
+
+    now += 100;
+    verifyInstallation.mockResolvedValueOnce(activeInstallation({ issues: 'write', pullRequests: 'write' }));
+    await service.reconcile('principal-a');
+    expect(store.getInstallation('principal-a')).toMatchObject({ issues: 'write', pullRequests: 'write', generation: 2 });
   });
 
   it('turns a provider 404 into an uninstall and removes every repository grant', async () => {
