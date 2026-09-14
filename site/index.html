@@ -8,7 +8,40 @@
       content="Cloud Harness MCP — The Cyber-Engineering Private Remote Coding Harness for Autonomous AI Agents."
     />
     <title>Cloud Harness MCP // Cyber-Engineering HUD Edition</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
+
+    <!-- SEO / canonical -->
+    <link rel="canonical" href="https://harness.agentkit.best/" />
+    <meta name="theme-color" content="#05070a" />
+    <meta name="robots" content="index, follow" />
+    <meta name="application-name" content="Cloud Harness MCP" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Cloud Harness MCP" />
+    <meta property="og:url" content="https://harness.agentkit.best/" />
+    <meta property="og:title" content="Cloud Harness MCP // Cyber-Engineering HUD Edition" />
+    <meta
+      property="og:description"
+      content="Cloud Harness MCP — The Cyber-Engineering Private Remote Coding Harness for Autonomous AI Agents."
+    />
+    <meta property="og:image" content="https://harness.agentkit.best/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Cloud Harness MCP — private remote coding harness for autonomous AI agents." />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Cloud Harness MCP // Cyber-Engineering HUD Edition" />
+    <meta
+      name="twitter:description"
+      content="Cloud Harness MCP — The Cyber-Engineering Private Remote Coding Harness for Autonomous AI Agents."
+    />
+    <meta name="twitter:image" content="https://harness.agentkit.best/og-image.png" />
+
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;0,800;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
@@ -87,12 +120,23 @@
         font-size: 0.75rem;
         padding: 0.45rem 1.5rem;
         display: flex;
-        justify-content: space-between;
         align-items: center;
         overflow-x: auto;
         white-space: nowrap;
-        -webkit-overflow-scrolling: touch;
       }
+
+      /* Marquee track: one centered set on desktop; a duplicated set loops on small screens */
+      .telemetry-marquee {
+        display: flex;
+        flex: 0 0 auto;
+        margin: 0 auto;
+        align-items: center;
+        gap: 1.75rem;
+      }
+      .telemetry-marquee .is-clone {
+        display: none;
+      }
+
       .telemetry-group {
         display: flex;
         gap: 1.75rem;
@@ -962,28 +1006,85 @@
         .tools-cards-grid { grid-template-columns: 1fr; }
         .telemetry-bar { font-size: 0.7rem; padding: 0.4rem 1rem; }
       }
+
+      /* Loop slide animation for the telemetry strip on mobile/tablet */
+      @media (max-width: 1024px) {
+        .telemetry-bar {
+          justify-content: flex-start;
+          overflow: hidden;
+          -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+        }
+        .telemetry-marquee {
+          gap: 0;
+          margin-left: 0;
+          margin-right: 0;
+          animation: telemetry-scroll 22s linear infinite;
+          will-change: transform;
+        }
+        .telemetry-marquee .is-clone { display: flex; }
+        .telemetry-group {
+          flex: 0 0 auto;
+          padding-right: 1.75rem;
+        }
+        @keyframes telemetry-scroll {
+          from { transform: translateX(0); }
+          to { transform: translateX(-50%); }
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .telemetry-marquee { animation: none; }
+        .telemetry-marquee .is-clone { display: none; }
+        .telemetry-bar {
+          justify-content: flex-start;
+          overflow-x: auto;
+          -webkit-mask-image: none;
+          mask-image: none;
+        }
+      }
     </style>
   </head>
   <body id="top">
     <header class="site-header-hud">
       <!-- Top Telemetry HUD -->
       <aside class="telemetry-bar" aria-label="System telemetry">
-        <div class="telemetry-group">
-          <div class="telemetry-item">
-            <span class="pulse-dot"></span>
-            <span>CONTROL PLANE: OPERATIONAL</span>
+        <div class="telemetry-marquee">
+          <div class="telemetry-group">
+            <div class="telemetry-item">
+              <span class="pulse-dot"></span>
+              <span>CONTROL PLANE: OPERATIONAL</span>
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--cyan-glow)">PROTOCOL:</span> STREAMABLE HTTP MCP
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--text-dim)">INGRESS LATENCY:</span> 8ms
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--green-neon)">SECURITY:</span> DOCKER NON-ROOT + STDIO GITHUB BROKER
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--amber-warn)">RESIDUAL STATE:</span> 0 BYTES
+            </div>
           </div>
-          <div class="telemetry-item">
-            <span style="color: var(--cyan-glow)">PROTOCOL:</span> STREAMABLE HTTP MCP
-          </div>
-          <div class="telemetry-item">
-            <span style="color: var(--text-dim)">INGRESS LATENCY:</span> 8ms
-          </div>
-          <div class="telemetry-item">
-            <span style="color: var(--green-neon)">SECURITY:</span> DOCKER NON-ROOT + STDIO GITHUB BROKER
-          </div>
-          <div class="telemetry-item">
-            <span style="color: var(--amber-warn)">RESIDUAL STATE:</span> 0 BYTES
+          <div class="telemetry-group is-clone" aria-hidden="true">
+            <div class="telemetry-item">
+              <span class="pulse-dot"></span>
+              <span>CONTROL PLANE: OPERATIONAL</span>
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--cyan-glow)">PROTOCOL:</span> STREAMABLE HTTP MCP
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--text-dim)">INGRESS LATENCY:</span> 8ms
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--green-neon)">SECURITY:</span> DOCKER NON-ROOT + STDIO GITHUB BROKER
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--amber-warn)">RESIDUAL STATE:</span> 0 BYTES
+            </div>
           </div>
         </div>
       </aside>
