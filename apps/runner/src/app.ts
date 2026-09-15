@@ -81,7 +81,8 @@ function sendRunnerError(response: Response, error: unknown): void {
     return;
   }
   if (error instanceof ZodError) {
-    response.status(400).json({ ok: false, message: 'invalid request', error: { code: 'INVALID_INPUT', message: 'invalid request', retryable: false }, truncated: false });
+    const firstIssue = error.issues[0]?.message ?? 'invalid request';
+    response.status(400).json({ ok: false, message: firstIssue, error: { code: 'INVALID_INPUT', message: firstIssue, retryable: false }, truncated: false });
     return;
   }
   const internalMessage = error instanceof Error ? error.message : 'unknown error';

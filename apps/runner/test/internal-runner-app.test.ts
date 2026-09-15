@@ -71,4 +71,23 @@ describe('internal runner HTTP boundary', () => {
     expect(publicResponse.status).toBe(400);
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it('exposes the first Zod validation issue on the internal endpoint', async () => {
+    const controls = { execute: vi.fn() };
+    const { url, token } = await start({ execute: vi.fn(), executeInternal: vi.fn() }, controls);
+    const body = {
+      version: 2,
+      principal: { kind: 'external', issuer: 'https://access.example.com', subject: 'owner' },
+      operation: 'global_secret_create',
+      input: { name: 'GH_TOKEN', value: 'abcd', expectedGeneration: 0 }
+    };
+    const response = await fetch(`${url}/v1/internal/dashboard-operations`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body)
+    });
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.error.code).toBe('INVALID_INPUT');
+    expect(json.message).toContain('reserved');
+    expect(json.error.message).toContain('reserved');
+  });
 });
