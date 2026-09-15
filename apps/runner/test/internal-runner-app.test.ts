@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ZodError } from 'zod';
 import type { RunnerConfig } from '@cloud-harness/contracts';
 import { createRunnerApp } from '../src/app.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
@@ -73,7 +74,11 @@ describe('internal runner HTTP boundary', () => {
   });
 
   it('exposes the first Zod validation issue on the internal endpoint', async () => {
-    const controls = { execute: vi.fn() };
+    const controls = {
+      execute: vi.fn(() => {
+        throw new ZodError([{ code: 'custom', message: 'secret name GH_TOKEN is reserved for the control plane or system toolchains', path: ['input', 'name'] }]);
+      })
+    };
     const { url, token } = await start({ execute: vi.fn(), executeInternal: vi.fn() }, controls);
     const body = {
       version: 2,
