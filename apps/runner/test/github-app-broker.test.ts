@@ -164,7 +164,7 @@ describe('GitHub App broker', () => {
     expect(authMocks.installationAuth).toHaveBeenLastCalledWith({
       type: 'installation',
       repositoryNames: ['hello-world'],
-      permissions: { pull_requests: 'read' }
+      permissions: { pull_requests: 'read', contents: 'read' }
     });
 
     // 2. Issues write (cloudflare-access)
@@ -178,7 +178,7 @@ describe('GitHub App broker', () => {
     expect(authMocks.installationAuth).toHaveBeenLastCalledWith({
       type: 'installation',
       repositoryNames: ['hello-world'],
-      permissions: { issues: 'write' }
+      permissions: { issues: 'write', contents: 'read' }
     });
 
     // 3. Cross-principal / ungranted write denied in cloudflare-access
@@ -244,7 +244,27 @@ describe('GitHub App broker', () => {
     expect(authMocks.installationAuth).toHaveBeenLastCalledWith({
       type: 'installation',
       repositoryNames: ['hello-world'],
-      permissions: { pull_requests: 'write' }
+      permissions: { pull_requests: 'write', contents: 'read' }
+    });
+  });
+
+  it('carries contents read so GraphQL repository lookups survive a narrowed token', async () => {
+    authMocks.installationAuth.mockClear();
+    const installations = new InMemoryGitHubInstallationStore();
+    installations.replaceVerified('principal-a', activeInstallation({ issues: 'write', pullRequests: 'write' }), 1_000);
+
+    await mintPrincipalRepositoryScopedToken({
+      config: { ...config, authMode: 'cloudflare-access' as const }, principalId: 'principal-a',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'contents',
+      requiredPermission: 'write'
+    });
+    // A contents-scoped token already asks for the level the action needs.
+    expect(authMocks.installationAuth).toHaveBeenLastCalledWith({
+      type: 'installation',
+      repositoryNames: ['hello-world'],
+      permissions: { contents: 'write' }
     });
   });
 
