@@ -47,20 +47,44 @@ function toolData(result, name) {
   return result.structuredContent.data;
 }
 
+function isDependencyEgressUnavailable(error) {
+  return JSON.stringify(error?.message ?? error ?? '').includes('DEPENDENCY_EGRESS_UNAVAILABLE');
+}
+
+async function openCanaryWorkspace(suffix, networkProfile) {
+  const call = await rpc('tools/call', {
+    name: 'workspace_open',
+    arguments: {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: `deploy-canary-${suffix}`,
+      ...(networkProfile ? { networkProfile } : {})
+    }
+  });
+  return toolData(call, 'workspace_open');
+}
+
 try {
   const discovered = await rpc('server/discover');
   if (!discovered.supportedVersions?.includes(protocolVersion)) throw new Error('canary modern protocol unavailable');
   const tools = await rpc('tools/list');
   if (!tools.tools?.some((tool) => tool.name === 'workspace_open')) throw new Error('canary tool surface incomplete');
   const suffix = randomUUID();
-  const opened = toolData(await rpc('tools/call', {
-    name: 'workspace_open',
-    arguments: {
-      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
-      idempotencyKey: `deploy-canary-${suffix}`,
-      networkProfile: 'network-none'
-    }
-  }), 'workspace_open');
+  // Exercise the shipped instance default first: omit networkProfile so the
+  // open resolves through the persisted instance setting and the runner
+  // configuration. Only an explicit DEPENDENCY_EGRESS_UNAVAILABLE falls back
+  // to network-none so the deploy still gates on control-plane health when
+  // the host firewall is not provisioned; any other failure keeps failing.
+  let opened;
+  let exercisedDefault = true;
+  try {
+    opened = await openCanaryWorkspace(suffix);
+  } catch (error) {
+    if (!isDependencyEgressUnavailable(error)) throw error;
+    exercisedDefault = false;
+    console.log('deploy-canary-posture=unattested-dependency-egress (retrying with network-none)');
+    opened = await openCanaryWorkspace(suffix, 'network-none');
+  }
+  console.log(`deploy-canary-network-profile=${exercisedDefault ? 'instance-default' : 'network-none-fallback'}`);
   workspaceId = opened.workspaceId;
   toolData(await rpc('tools/call', {
     name: 'files_write',
