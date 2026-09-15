@@ -1,3 +1,15 @@
+# [0.47.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.46.1...v0.47.0) (2026-09-15)
+
+
+### Bug Fixes
+
+* expose Zod validation messages for dashboard secret errors ([#201](https://github.com/bestagentkits/cloud-harness-mcp/issues/201)) ([d70c2bc](https://github.com/bestagentkits/cloud-harness-mcp/commit/d70c2bc510ec7a139fb9ee1460898edfa3b49ca6))
+
+
+### Features
+
+* **deploy:** exercise the egress default in the canary with a safe fallback ([#200](https://github.com/bestagentkits/cloud-harness-mcp/issues/200)) ([c3ca60b](https://github.com/bestagentkits/cloud-harness-mcp/commit/c3ca60bbab5db76b5dccbf078a3d2fd5d9cc9571)), closes [#199](https://github.com/bestagentkits/cloud-harness-mcp/issues/199)
+
 ## [0.46.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.46.0...v0.46.1) (2026-09-14)
 
 
