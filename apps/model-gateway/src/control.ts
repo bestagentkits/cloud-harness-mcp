@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import type { GatewayConfig, GatewayProfile, LeaseIssueInput, ProfileLimits } from './types.js';
 import type { LeaseRegistry } from './lease-registry.js';
-import { isUnsafeAddress, assertProductionHostname } from './config.js';
+import { assertProductionHostname } from './config.js';
 
 const MAX_CONTROL_RECORD_BYTES = 1_048_576;
 
@@ -113,9 +113,8 @@ export async function startControlServer(options: {
 
               const upstreamUrl = new URL(revData.upstreamUrl ?? 'https://api.openai.com/v1/chat/completions');
               if (config.mode !== 'test') {
-                if (isUnsafeAddress(upstreamUrl.hostname)) {
-                  throw new Error(`unsafe upstream address ${upstreamUrl.hostname}`);
-                }
+                // assertProductionHostname rejects an unsafe address literal, and the resolved
+                // upstream address is validated again and pinned at request time (upstream.ts).
                 assertProductionHostname(upstreamUrl.hostname);
               }
 
