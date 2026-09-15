@@ -7,6 +7,7 @@ import { createDashboardRouter } from '../src/dashboard-router.js';
 import { mapDashboardData, type DashboardResponseOperation } from '../src/dashboard-response.js';
 import type { AuthInfo } from '@modelcontextprotocol/server';
 import type { DashboardRequest, DashboardRunnerClient } from '../src/dashboard-types.js';
+import { renderSettings } from '../dashboard/dashboard-render.js';
 
 const workspaceId = `ws_${'a'.repeat(24)}`;
 const principal: RunnerPrincipalSelector = { kind: 'external', issuer: 'https://team.cloudflareaccess.com', subject: 'operator' };
@@ -424,6 +425,47 @@ describe('dashboard BFF', () => {
       expect(rejected.status, body).toBe(400);
     }
     expect(calls.some((call) => call.operation === 'settings_update')).toBe(false);
+  });
+
+  it('round-trips the settings page through the BFF and the shipped renderer', async () => {
+    // DOM+BFF wiring for /dashboard/settings: the BFF responses below are the
+    // exact shapes the shipped dashboard.js handlers consume, and renderSettings
+    // is the shipped renderer those handlers call. A drift in field names,
+    // select values, or button ids breaks this test instead of shipping a dead
+    // control that unit tests on either side alone would miss.
+    const read = await send('/api/v1/settings');
+    expect(read.status).toBe(200);
+    const initial = renderSettings(read.json.data);
+    expect(initial).toContain('id="settings-network-profile"');
+    expect(initial).toContain('id="save-settings-network-profile"');
+    expect(initial).toContain('id="reset-settings-network-profile"');
+    expect(initial).toContain('id="check-settings-network"');
+    expect(initial).toContain('id="settings-status"');
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    // Save: what dashboard.js posts on #save-settings-network-profile click.
+    const saved = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ defaultNetworkProfile: 'network-none' }) });
+    expect(saved.status).toBe(200);
+    const savedHtml = renderSettings(saved.json.data);
+    expect(savedHtml).toMatch(/<option value="network-none" selected>/);
+    expect(savedHtml).toContain('Set in this dashboard');
+
+    // Reset: what dashboard.js posts on #reset-settings-network-profile click.
+    const reset = await send('/api/v1/settings', { method: 'POST', headers, body: JSON.stringify({ defaultNetworkProfile: null }) });
+    expect(reset.status).toBe(200);
+    const resetHtml = renderSettings(reset.json.data);
+    expect(resetHtml).toMatch(/<option value="" selected>/);
+    expect(resetHtml).toContain('Runner default (WORKSPACE_NETWORK_PROFILE or built-in)');
+
+    // Readiness check: what dashboard.js posts on #check-settings-network click.
+    const checked = await send('/api/v1/settings/network-check', { method: 'POST', headers, body: JSON.stringify({}) });
+    expect(checked.status).toBe(200);
+    const checkedHtml = renderSettings(reset.json.data, checked.json.data);
+    expect(checkedHtml).toContain('Egress readiness');
+    expect(checkedHtml).toContain('Ready');
   });
 });
 
