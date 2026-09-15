@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertProductionHostname, readExactSecret } from '../src/config.js';
+import { assertProductionHostname, loadGatewayConfig, readExactSecret } from '../src/config.js';
 import { LeaseRegistry } from '../src/lease-registry.js';
 import { createGatewayRuntime, type GatewayRuntime } from '../src/gateway.js';
 import { reserveBudget } from '../src/budget.js';
@@ -79,14 +79,16 @@ async function fakeProvider(handler: RequestListener): Promise<{ server: TlsServ
 async function gateway(
   gatewayProfile: GatewayProfile,
   hooks?: Parameters<typeof createGatewayRuntime>[1],
-  logger: GatewayLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+  logger: GatewayLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  extraConfig: Partial<GatewayConfig> = {}
 ): Promise<{ runtime: GatewayRuntime; baseUrl: string }> {
   const controlSocket = process.platform === 'win32'
     ? `\\\\.\\pipe\\model-gateway-${randomBytes(8).toString('hex')}`
     : join(tmpdir(), `model-gateway-${randomBytes(8).toString('hex')}.sock`);
   const config: GatewayConfig = {
     mode: 'test', host: '127.0.0.1', port: 0, controlSocket,
-    profiles: new Map([[gatewayProfile.id, gatewayProfile]])
+    profiles: new Map([[gatewayProfile.id, gatewayProfile]]),
+    ...extraConfig
   };
   const runtime = createGatewayRuntime(config, hooks, logger);
   await runtime.listen();
@@ -204,6 +206,47 @@ describe('model gateway security boundary', () => {
     });
     expect(callerUpstream.status).toBe(400);
     expect(providerRequests).toBe(0);
+  });
+
+  it('forwards the configured provider session header with the calling agent id', async () => {
+    let receivedSession = '';
+    let receivedUserAgent = '';
+    const provider = await fakeProvider((_request, response) => {
+      receivedSession = String(_request.headers['x-opencode-session'] ?? '');
+      receivedUserAgent = String(_request.headers['user-agent'] ?? '');
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}');
+    });
+    const running = await gateway(profile(provider.upstream), { reserve: vi.fn(), reconcile: vi.fn() }, undefined, {
+      sessionHeader: 'x-opencode-session'
+    });
+    const grant = activate(running.runtime, issue());
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(grant), body: '{"messages":[],"max_tokens":20}'
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(receivedSession).toBe('agent_0123456789abcdefghij');
+    expect(receivedUserAgent).toContain('cloud-harness-model-gateway');
+
+    let unconfiguredSession: string | undefined;
+    const plainProvider = await fakeProvider((_request, response) => {
+      unconfiguredSession = _request.headers['x-opencode-session'] as string | undefined;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}');
+    });
+    const plain = await gateway(profile(plainProvider.upstream), { reserve: vi.fn(), reconcile: vi.fn() });
+    await fetch(`${plain.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(activate(plain.runtime, issue())), body: '{"messages":[],"max_tokens":20}'
+    }).then((plainResponse) => plainResponse.text());
+    expect(unconfiguredSession).toBeUndefined();
+  });
+
+  it('rejects a session header that collides with a header the gateway sets itself', async () => {
+    await expect(loadGatewayConfig({ MODEL_GATEWAY_MODE: 'test', MODEL_GATEWAY_SESSION_HEADER: 'authorization' }))
+      .rejects.toThrow('MODEL_GATEWAY_SESSION_HEADER must not be authorization');
+    await expect(loadGatewayConfig({ MODEL_GATEWAY_MODE: 'test', MODEL_GATEWAY_SESSION_HEADER: 'X-Opencode-Session' }))
+      .rejects.toThrow('MODEL_GATEWAY_SESSION_HEADER must be a lowercase header name');
   });
 
   it('streams bounded output, reconciles usage, and never discloses provider credentials or headers', async () => {
