@@ -1,3 +1,10 @@
+## [0.47.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.47.2...v0.47.3) (2026-09-16)
+
+
+### Bug Fixes
+
+* **model-gateway:** accept hostname upstreams when applying profile snapshots ([#212](https://github.com/bestagentkits/cloud-harness-mcp/issues/212)) ([1080bfe](https://github.com/bestagentkits/cloud-harness-mcp/commit/1080bfec69182600a8369e327982d2fe4de15104))
+
 ## [0.47.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.47.1...v0.47.2) (2026-09-16)
 
 
