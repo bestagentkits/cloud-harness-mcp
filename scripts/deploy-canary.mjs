@@ -51,6 +51,18 @@ function isDependencyEgressUnavailable(error) {
   return JSON.stringify(error?.message ?? error ?? '').includes('DEPENDENCY_EGRESS_UNAVAILABLE');
 }
 
+/**
+ * The opened workspace reports both the profile it actually resolved and the
+ * effective instance default. Logging them is what makes the live posture
+ * visible: a host whose runtime configuration still pins `network-none`
+ * outranks the built-in default, so a bare "open succeeded" cannot tell the
+ * two apart without host access.
+ */
+function posture(opened) {
+  const workspace = opened?.capabilities?.workspace ?? {};
+  return `profile:${workspace.networkProfile ?? 'unknown'} default:${workspace.defaultNetworkProfile ?? 'unknown'}`;
+}
+
 async function openCanaryWorkspace(suffix, networkProfile) {
   const call = await rpc('tools/call', {
     name: 'workspace_open',
@@ -81,10 +93,11 @@ try {
   } catch (error) {
     if (!isDependencyEgressUnavailable(error)) throw error;
     exercisedDefault = false;
-    console.log('deploy-canary-posture=unattested-dependency-egress (retrying with network-none)');
+    console.log('deploy-canary-fallback=unattested-dependency-egress (retrying with network-none)');
     opened = await openCanaryWorkspace(suffix, 'network-none');
   }
   console.log(`deploy-canary-network-profile=${exercisedDefault ? 'instance-default' : 'network-none-fallback'}`);
+  console.log(`deploy-canary-posture=${posture(opened)}`);
   workspaceId = opened.workspaceId;
   toolData(await rpc('tools/call', {
     name: 'files_write',
