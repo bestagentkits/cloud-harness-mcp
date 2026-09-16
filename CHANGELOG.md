@@ -1,3 +1,10 @@
+# [0.48.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.47.3...v0.48.0) (2026-09-16)
+
+
+### Features
+
+* **deploy:** log the effective network posture in the canary ([#203](https://github.com/bestagentkits/cloud-harness-mcp/issues/203)) ([435a5ce](https://github.com/bestagentkits/cloud-harness-mcp/commit/435a5ce71106b76f51bf13458f525d3e2ad11e5c))
+
 ## [0.47.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.47.2...v0.47.3) (2026-09-16)
 
 
