@@ -1,3 +1,10 @@
+## [0.47.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.47.1...v0.47.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* **model-gateway:** identify the client and send a provider session header ([#213](https://github.com/bestagentkits/cloud-harness-mcp/issues/213)) ([b9bca39](https://github.com/bestagentkits/cloud-harness-mcp/commit/b9bca3953bf2fa278e1f71cfbedbd35fa97e9f96))
+
 ## [0.47.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.47.0...v0.47.1) (2026-09-16)
 
 
