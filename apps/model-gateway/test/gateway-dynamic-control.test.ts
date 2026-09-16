@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createGatewayRuntime } from '../src/gateway.js';
 import { loadGatewayConfig } from '../src/config.js';
-import { connect } from 'node:net';
+import type { GatewayConfig } from '../src/types.js';
 
 const tempSocketPath = () =>
   process.platform === 'win32'
@@ -110,5 +110,64 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     expect(updatedDigest.ok).toBe(true);
     const digestData = updatedDigest.digest as { activeLeaseCount: number };
     expect(digestData.activeLeaseCount).toBe(1);
+  });
+
+  const productionSnapshot = (upstreamUrl: string, revisionId: string): Record<string, unknown> => ({
+    operation: 'apply_snapshot',
+    sequence: 1,
+    generation: 1,
+    credentials: {
+      cred_production_1: { provider: 'openai', authMode: 'bearer', secret: 'sk-production-test-key' }
+    },
+    profiles: {
+      [revisionId]: {
+        id: revisionId,
+        profileId: 'coding-fast',
+        credentialId: 'cred_production_1',
+        model: 'gpt-5.2-codex',
+        apiMode: 'chat-completions',
+        downstreamPath: '/v1/chat/completions',
+        upstreamUrl,
+        pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+        limits: { maxInputTokens: 50_000, maxOutputTokens: 2_000, maxCostMicros: 100_000 }
+      }
+    }
+  });
+
+  it('accepts a hostname upstream for a dynamic profile in production mode', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const gateway = createGatewayRuntime(config);
+    runtimes.push(gateway);
+    await gateway.listen();
+
+    const applied = await sendControl(socketPath, productionSnapshot(
+      'https://api.openai.com/v1/chat/completions', 'rev_production_hostname'
+    ));
+
+    expect(applied.ok).toBe(true);
+    const ack = applied.ack as { activeProfileCount: number };
+    expect(ack.activeProfileCount).toBe(1);
+  });
+
+  it('refuses an address-literal upstream for a dynamic profile in production mode', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const gateway = createGatewayRuntime(config);
+    runtimes.push(gateway);
+    await gateway.listen();
+
+    const refused = await sendControl(socketPath, productionSnapshot(
+      'https://127.0.0.1:3443/v1/chat/completions', 'rev_production_literal'
+    ));
+
+    expect(refused.ok).toBe(false);
+    expect(String(refused.error)).toContain('private or reserved');
+    const digest = await sendControl(socketPath, { operation: 'digest' });
+    expect((digest.digest as { activeProfileCount: number }).activeProfileCount).toBe(0);
   });
 });
