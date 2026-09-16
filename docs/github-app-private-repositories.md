@@ -48,12 +48,15 @@ choose the narrowest permission level:
 | Clone, fetch, and pull | **Contents: Read-only** |
 | Push ordinary repository changes | **Contents: Read and write** |
 | Push changes under `.github/workflows/` | **Contents: Read and write** and **Workflows: Read and write** |
-| Read issues and pull requests through `github_action` | **Issues: Read-only** and **Pull requests: Read-only** |
-| Create, comment on, label, or close issues; comment on or update pull requests; create pull requests | **Issues: Read and write** and **Pull requests: Read and write** |
+| Read issues and pull requests through `github_action` | **Issues: Read-only**, **Pull requests: Read-only**, and **Contents: Read-only** |
+| Create, comment on, label, or close issues; comment on or update pull requests; create pull requests | **Issues: Read and write**, **Pull requests: Read and write**, and **Contents: Read-only** |
 
 Every other repository, organization, and account permission can stay at **No
-access**. `Contents` is the permission for HTTP Git access, and `Workflows` is
-needed only when the App must access or edit GitHub Actions workflow files. The
+access**. `Contents` is the permission for HTTP Git access and is also required
+for every brokered `github_action`, because the action-scoped token always
+carries `contents: read` so that `gh` can resolve repository metadata over the
+GraphQL API. `Workflows` is needed only when the App must access or edit GitHub
+Actions workflow files. The
 issue and pull-request permissions are required only for the brokered
 `github_action` operations: without them, `gh` is authenticated and the clone and
 push paths still work, but a write returns `GITHUB_PERMISSION_MISSING` (GitHub's
@@ -238,7 +241,7 @@ successful private clone proves read access only; it does not prove push access.
 | Token minting returns `UNAVAILABLE` | Recheck App ID versus Client ID, installation ID, PEM/App pairing, key revocation, and runner DNS/egress to `api.github.com`; Git transport also needs `github.com`. |
 | Clone works but push returns `403` | Change `Contents` to **Read and write**, approve the changed installation permission, and check branch/ruleset restrictions. |
 | A push touching `.github/workflows/` fails | Add **Workflows: Read and write** only if modifying workflow files is intended, then approve the updated installation permission. |
-| `github_action` returns `GITHUB_PERMISSION_MISSING` / `403 Resource not accessible by integration` | Add **Issues: Read and write** (issue, comment, and label actions) or **Pull requests: Read and write** (pull-request actions) to the App, approve the changed installation permission, then reconcile the installation. `workspace_capabilities` reports the granted level per scope. |
+| `github_action` returns `GITHUB_PERMISSION_MISSING` / `403 Resource not accessible by integration` | Confirm **Contents: Read-only** first: an action-scoped token always carries `contents: read`, and an installation without it fails the mint before `gh` runs. Otherwise add **Issues: Read and write** (issue, comment, and label actions) or **Pull requests: Read and write** (pull-request actions) to the App, approve the changed installation permission, then reconcile the installation. `workspace_capabilities` reports the granted level per scope. |
 | A write fails while clone and push still work | Expected when only `Contents` is granted: Git access and `gh` authentication do not imply issue or pull-request permissions. Configure an operator `GH_TOKEN`/`GITHUB_TOKEN` (owner-bearer) or a per-principal global runtime secret (Access mode) only as the documented fallback, not instead of the App grant. |
 | `gh` inside a workspace reports no authentication | The runner-environment fallback credential never enters an executor; create a global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN` for the workspace's principal and open a workspace with egress. |
 

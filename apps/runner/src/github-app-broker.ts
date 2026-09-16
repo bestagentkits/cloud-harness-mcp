@@ -163,7 +163,15 @@ async function mintForInstallationScoped(
     const authentication = await auth({
       type: 'installation',
       repositoryNames: [repositoryName],
-      permissions: { [permissionScope]: requiredPermission }
+      // The action scope alone is not enough: `gh` resolves repository metadata (for
+      // example `defaultBranchRef`) through the GraphQL API, and a token narrowed to a
+      // single scope is refused with `Resource not accessible by integration`, which
+      // breaks pr_view, pr_list, issue_view and pr_create. Always carry contents: read
+      // beside the action scope; a contents-scoped token already asks for the level the
+      // action needs.
+      permissions: permissionScope === 'contents'
+        ? { contents: requiredPermission }
+        : { [permissionScope]: requiredPermission, contents: 'read' }
     });
     return { token: authentication.token, permissions: authentication.permissions };
   } catch (error) {
