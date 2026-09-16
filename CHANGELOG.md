@@ -1,3 +1,10 @@
+## [0.47.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.47.0...v0.47.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **runner:** carry contents: read on brokered GitHub tokens ([#214](https://github.com/bestagentkits/cloud-harness-mcp/issues/214)) ([b1de215](https://github.com/bestagentkits/cloud-harness-mcp/commit/b1de215f9420c68904f076b04dd8f24a385bcf25))
+
 # [0.47.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.46.1...v0.47.0) (2026-09-15)
 
 
