@@ -45,6 +45,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `MCP_GATEWAY_MAX_CONNECTIONS` | `32` | Optional | Optional configuration. |
 | `MCP_GATEWAY_ALLOW_PRIVATE_ENDPOINTS` | `false` | Optional | Localhost, loopback, link-local, metadata, and private MCP endpoints are rejected unless the private-endpoint opt-in is enabled. Cleartext http endpoints additionally require both the insecure-http and private-endpoint opt-ins. Both opt-ins are refused in cloudflare-access mode; use https public endpoints there. |
 | `MCP_GATEWAY_ALLOW_INSECURE_HTTP` | `false` | Optional | Optional configuration. |
+| `MODEL_GATEWAY_SESSION_HEADER` | `x-opencode-session` | Optional | Model gateway provider override. When set, the gateway sends this one upstream header, filled with the calling agent id, to OpenAI-compatible providers that require a conversation identifier (for example x-opencode-session for OpenCode Go). Unset sends no such header. The value must be a lowercase header name the gateway does not set itself. |
 | `JOBS_ROOT` | `/var/lib/cloud-harness/jobs` | **Required** | Required configuration. |
 | `STATE_DB` | `/var/lib/cloud-harness/state/cloud-harness.db` | **Required** | Required configuration. |
 | `ARTIFACT_ROOT` | `/var/lib/cloud-harness/artifacts` | **Required** | Required configuration. |

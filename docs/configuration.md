@@ -226,6 +226,20 @@ permitted endpoints there are public https URLs. The endpoint policy itself is
 owned by [`apps/api/src/mcp-gateway/url-policy.ts`](../apps/api/src/mcp-gateway/url-policy.ts),
 and the gateway boundary is described in the [MCP gateway](mcp-gateway.md).
 
+## Model gateway provider overrides
+
+`MODEL_GATEWAY_SESSION_HEADER` names one optional upstream header that the model
+gateway fills with the calling agent id, for OpenAI-compatible providers that
+reject a request without a conversation identifier (for example
+`x-opencode-session`, which OpenCode Go requires). It is unset by default, so no
+header is invented for other providers. The gateway always identifies itself
+through `user-agent: cloud-harness-model-gateway`. The accepted shape and the
+reserved names the override may not collide with are owned by
+[`apps/model-gateway/src/config.ts`](../apps/model-gateway/src/config.ts), and
+production Compose forwards the setting into the gateway container. A profile
+cannot carry extra upstream headers of its own, so this override is the only way
+to serve such a provider.
+
 ## Optional GitHub App repository access
 
 The same GitHub App settings also govern authenticated fetch, pull, and push.
