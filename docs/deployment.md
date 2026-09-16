@@ -62,7 +62,10 @@ before the first workspace open, or set that variable to `network-none` for an
 air-gapped host; an unattested egress profile fails the open closed rather than
 downgrading it. An existing runtime file is never rewritten: an upgraded host
 keeps the value it already has and changes it from the dashboard Settings page or
-by editing that variable.
+by editing that variable. The release canary reports the profile it actually
+resolved together with the effective instance default, so a pinned override that
+outranks the built-in default is visible in the deploy output without host
+access.
 
 For an existing TLS-enabled installation, the Access-mode release deploy runs
 the dedicated application-route upgrade before its public canary. It can also be
