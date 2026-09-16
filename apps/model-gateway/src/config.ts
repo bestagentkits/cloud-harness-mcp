@@ -194,6 +194,27 @@ async function parseProfile(raw: unknown, mode: GatewayMode, index: number): Pro
   };
 }
 
+const RESERVED_UPSTREAM_HEADERS: Record<string, true> = {
+  accept: true, 'content-type': true, 'content-length': true, host: true,
+  'user-agent': true, authorization: true, 'x-api-key': true
+};
+
+/**
+ * `MODEL_GATEWAY_SESSION_HEADER` names the optional provider session header the
+ * gateway fills with the calling agent id. It must be a plain lowercase header
+ * name and must not collide with a header the gateway sets itself.
+ */
+function parseSessionHeader(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/u.test(value)) {
+    throw new Error('MODEL_GATEWAY_SESSION_HEADER must be a lowercase header name');
+  }
+  if (RESERVED_UPSTREAM_HEADERS[value] === true) {
+    throw new Error(`MODEL_GATEWAY_SESSION_HEADER must not be ${value}`);
+  }
+  return value;
+}
+
 export async function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): Promise<GatewayConfig> {
   const mode = env.MODEL_GATEWAY_MODE;
   if (mode !== 'production' && mode !== 'test') throw new Error('MODEL_GATEWAY_MODE must be production or test');
@@ -229,12 +250,14 @@ export async function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): P
   }
 
   const controlSocket = env.MODEL_GATEWAY_CONTROL_SOCKET ?? '/tmp/model-gateway-control.sock';
+  const sessionHeader = parseSessionHeader(env.MODEL_GATEWAY_SESSION_HEADER);
   return {
     mode,
     host: env.MODEL_GATEWAY_HOST ?? '0.0.0.0',
     port: integer(Number(env.MODEL_GATEWAY_PORT ?? '3210'), 'MODEL_GATEWAY_PORT', 1, 65_535),
     controlSocket,
     profiles,
-    tlsCaFile: mode === 'test' ? env.MODEL_GATEWAY_TEST_TLS_CA_FILE : undefined
+    tlsCaFile: mode === 'test' ? env.MODEL_GATEWAY_TEST_TLS_CA_FILE : undefined,
+    ...(sessionHeader === undefined ? {} : { sessionHeader })
   };
 }

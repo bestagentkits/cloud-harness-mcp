@@ -46,7 +46,8 @@ requireBoundary(sameNames(environmentNames(gateway), [
   'MODEL_GATEWAY_HOST',
   'MODEL_GATEWAY_MODE',
   'MODEL_GATEWAY_PORT',
-  'MODEL_GATEWAY_PROFILES_FILE'
+  'MODEL_GATEWAY_PROFILES_FILE',
+  'MODEL_GATEWAY_SESSION_HEADER'
 ]), 'model gateway environment allowlist changed');
 requireBoundary(gateway.environment.MODEL_GATEWAY_MODE === 'production', 'production gateway must force production profile validation');
 

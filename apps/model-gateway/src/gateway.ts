@@ -222,7 +222,8 @@ export function createGatewayRuntime(
           body: outboundBody,
           downstream: response,
           requestId,
-          maxOutputTokens: reservation.outputTokens
+          maxOutputTokens: reservation.outputTokens,
+          ...(config.sessionHeader === undefined ? {} : { sessionHeader: config.sessionHeader, sessionId: agentId })
         });
         current.markReady();
         if (current.cancelled) await current.handle.abort(current.cancelled);
