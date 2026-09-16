@@ -74,10 +74,16 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **Clone, fetch, and pull private repos** | **Contents: Read-only** |
 | **Push ordinary code & branch commits** | **Contents: Read and write** |
 | **Push CI/CD workflows (`.github/workflows/`)** | **Contents: Read and write** + **Workflows: Read and write** |
+| **Read issues and pull requests through `github_action`** | **Issues: Read-only** + **Pull requests: Read-only** + **Contents: Read-only** |
+| **Create or update issues and pull requests through `github_action`** | **Issues: Read and write** + **Pull requests: Read and write** + **Contents: Read-only** |
 
 ::: tip Principle of Least Privilege
 Leave every other repository, organization, and user permission set to **No access**.
 :::
+
+`github_action` always carries **Contents: Read-only** on its token, because `gh`
+resolves repository metadata over the GraphQL API; an App that grants only the
+issue and pull-request permissions cannot mint an action-scoped token.
 
 ---
 

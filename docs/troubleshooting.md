@@ -107,6 +107,10 @@ a lost response; do not create a second key until the first result is resolved.
   requesting principal: the runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in
   `owner-bearer` mode, or that principal's global runtime secret in
   `cloudflare-access` mode, where the operator-wide environment token is refused.
+  An action-scoped token also carries `contents: read`, so **Contents:
+  Read-only** is required for `github_action` even when the App grants the named
+  action scope; when the installation lacks Contents read the mint fails before
+  `gh` runs and the reported scope cannot distinguish the two causes.
   The two boundaries differ: the runner-environment credential is harness-side
   only and never enters an executor, while the principal's global runtime secret
   is injected into that principal's workspaces and therefore also authenticates
