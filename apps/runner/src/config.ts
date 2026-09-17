@@ -134,6 +134,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     toolkitCacheRoot: process.env.TOOLKIT_CACHE_ROOT,
     toolkitNetworkPolicy: process.env.TOOLKIT_NETWORK_POLICY,
     toolkitEgressProxy: process.env.TOOLKIT_EGRESS_PROXY,
+    builtinSkillsRoot: process.env.BUILTIN_SKILLS_ROOT,
     agentkitRegistryUrl: process.env.AGENTKIT_REGISTRY_URL,
     agentkitRegistryCredentialSecret: process.env.AGENTKIT_REGISTRY_CREDENTIAL_SECRET,
     agentkitRegistryKeyId: process.env.AGENTKIT_REGISTRY_KEY_ID,

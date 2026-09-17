@@ -167,6 +167,28 @@ while keeping writable checkouts strictly isolated.
 image.
 `TOOLKIT_CACHE_ROOT` configures the runner's content-addressed storage volume for pre-cached agent toolkits (`/var/lib/cloud-harness/cache/toolkits`), and `TOOLKIT_NETWORK_POLICY` (`cache-only` vs `runner-fetch`) controls whether uncached toolkits can be fetched dynamically at workspace open.
 
+## Operator-provided skills (`built-in` tier)
+
+`BUILTIN_SKILLS_ROOT` names an absolute **host** directory that is mounted
+read-only into every executor at `/opt/cloud-harness/skills`, the worker's
+highest-precedence skills tier. It is the operator's own channel for skill
+content that should be available to every workspace on the instance without a
+toolkit selection — including licensed vendor content an operator hosts on their
+own machine instead of consuming a signed registry package.
+
+- Lay content out as `/opt/cloud-harness/skills/<skill-name>/SKILL.md` (plus any
+  `references/` or `scripts/`). `skills_list` reports each one as `built-in`
+  with trust `trusted-control-plane`.
+- The harness never writes to this directory, and the mount is read-only in the
+  executor, so the runner rebuilds nothing and the content is not copied into
+  the toolkit cache.
+- Leave it unset to keep the tier empty (the default). The runner mounts nothing
+  in that case, so an unconfigured instance cannot expose an unowned path.
+- Compose passes the runner environment file through unchanged, so setting the
+  variable in `/etc/cloud-harness-mcp/runtime.env` (or `.env`) is enough; no
+  Compose change is required. `deploy/scripts/bootstrap-vps.sh` creates
+  `/var/lib/cloud-harness/skills` on first install.
+
 ## Licensed AgentKit kits
 
 The `agentkit` toolkit kind mounts licensed AgentKit kit skills (for example

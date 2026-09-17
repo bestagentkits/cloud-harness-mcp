@@ -127,3 +127,11 @@ A `403` from the helper is never retried, because the operation may already have
 5. `package digest did not match the signed manifest`, `must contain exactly one <kitId> root directory`, or `outside the <kitId> root` — the downloaded artifact is not the published package. Retry once; if it persists, treat it as an upstream publish problem instead of mounting the content.
 6. `no published release for kit <kitId>` — that kit has no signed release on the requested channel yet. Try `channel: "beta"`, or pin a version that exists.
 
+### 13. Uploaded operator skills do not appear in `skills_list`
+**Cause:** The `built-in` tier is populated only when the runner is pointed at an operator-owned host directory, and only reads a strict layout.
+**Fix:**
+1. Set `BUILTIN_SKILLS_ROOT` to an absolute host directory in the runner environment (`/etc/cloud-harness-mcp/runtime.env` or `.env`) and restart the stack; with the variable unset the executor mounts nothing and the tier stays empty by design.
+2. Upload skills as `<root>/<skill-name>/SKILL.md`; a directory without `SKILL.md` is ignored.
+3. Confirm the host path is readable by the runner and that the directory exists (`deploy/scripts/bootstrap-vps.sh` creates `/var/lib/cloud-harness/skills` on first install).
+4. Remember the tier outranks project skills: a same-named `.agents/skills` or `.cloud-harness/skills` entry appears under `shadowed`, not as the selected skill.
+5. Only changes to already-open workspaces need a reopen; a new workspace sees an updated upload immediately.

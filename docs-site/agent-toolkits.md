@@ -131,6 +131,36 @@ that signed manifest before projecting any skill, and refuses to unpack a
 package that is not a single kit root. Skills then appear through `skills_list`,
 `skills_read`, and `skills_run` exactly like any other toolkit.
 
+## Operator-Provided Skills (`built-in` tier)
+
+An operator can make skills available to **every** workspace on an instance
+without any toolkit selection, registry account, or entitlement. Point
+`BUILTIN_SKILLS_ROOT` at a host directory and upload skills into it:
+
+```bash
+# On the VPS, as root
+sudo install -d -m 0755 /var/lib/cloud-harness/skills
+sudo rsync -a --delete skills/ /var/lib/cloud-harness/skills/
+find /var/lib/cloud-harness/skills -name SKILL.md | wc -l
+```
+
+Then set `BUILTIN_SKILLS_ROOT=/var/lib/cloud-harness/skills` in the runner
+environment (`/etc/cloud-harness-mcp/runtime.env`) and restart the stack.
+
+- The directory is mounted **read-only** into every executor at
+  `/opt/cloud-harness/skills`, the highest-precedence tier, so it outranks
+  owner, workspace, and repository skills of the same name.
+- `skills_list` reports these as `built-in` with trust `trusted-control-plane`.
+- The harness never writes to the directory, and it is not copied into the
+  toolkit cache, so updating skills is a plain file upload.
+- Skill scripts remain runnable through `skills_run`, which still requires the
+  caller to pin the digest returned by `skills_list`.
+
+Use this for your own or licensed content that lives on your host. Use
+`{ "kind": "agentkit" }` instead when the content must come from a signed
+AgentKit registry release, and a `git` toolkit when it comes from a public
+repository.
+
 ---
 
 ## Installation Scopes: `owner` vs `workspace`
