@@ -79,6 +79,60 @@ You can load skills from any public HTTPS Git repository belonging to `ALLOWED_G
 
 ---
 
+## Licensed AgentKit Kits
+
+Operator instances that hold an AgentKit licence can mount licensed kit skills
+(such as the `engineer` kit) directly, without publishing them as a public Git
+repository:
+
+```json
+{
+  "repositoryUrl": "https://github.com/my-org/my-project.git",
+  "idempotencyKey": "unique-session-key-004",
+  "toolkits": [
+    {
+      "kind": "agentkit",
+      "kitId": "engineer",
+      "channel": "stable"
+    }
+  ]
+}
+```
+
+### AgentKit Kit Options
+
+- **`kitId` (required):** Licensed kit to mount. Supported: `engineer`, `marketing`.
+- **`channel` (optional):** Release channel — `stable` (default), `beta`, or `dev`.
+- **`version` (optional):** Exact semantic version to pin, for example `2.17.0-beta.10`. Omit to take the newest release on the channel.
+- **`instanceId` (optional):** Caller-assigned instance name, when you mount the same kit on two channels.
+- **`scope`:** Always `owner`. Licensed content is mounted read-only and is never written into your repository.
+- **`skills.include` / `skills.exclude` (optional):** Filter specific skill names to include or omit.
+
+Prerequisites are operator-owned: the instance must pin the registry signing key
+(`AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY`), and each caller
+needs an AgentKit licence token stored as a global secret (default name
+`AGENTKIT_REGISTRY_TOKEN`, overridable with
+`AGENTKIT_REGISTRY_CREDENTIAL_SECRET`). Without them, `workspace_open` fails
+closed and names the missing setting. A `beta`/`dev` mount also reports a
+warning in the toolkit lock so pre-release content is visible in the result.
+
+### Discoverability
+
+`GET /api/v1/toolkits` (the dashboard's `toolkits_list` operation) returns the
+curated presets under `toolkits` and the licensed kits under `licensedKits`.
+Each licensed entry carries the exact selection to send, its default channel,
+`available` (instance key material configured) and `credentialReady` (this
+principal has the licence secret) plus `requiresCredentialSecret`, so a client
+can show why a kit is not usable yet without ever seeing a credential value.
+The remaining agent entry point is `workspace_open` itself.
+
+The runner verifies the Ed25519 manifest signature and the package SHA-256 from
+that signed manifest before projecting any skill, and refuses to unpack a
+package that is not a single kit root. Skills then appear through `skills_list`,
+`skills_read`, and `skills_run` exactly like any other toolkit.
+
+---
+
 ## Installation Scopes: `owner` vs `workspace`
 
 Cloud Harness supports two installation scopes depending on your workflow needs:

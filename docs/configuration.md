@@ -167,6 +167,35 @@ while keeping writable checkouts strictly isolated.
 image.
 `TOOLKIT_CACHE_ROOT` configures the runner's content-addressed storage volume for pre-cached agent toolkits (`/var/lib/cloud-harness/cache/toolkits`), and `TOOLKIT_NETWORK_POLICY` (`cache-only` vs `runner-fetch`) controls whether uncached toolkits can be fetched dynamically at workspace open.
 
+## Licensed AgentKit kits
+
+The `agentkit` toolkit kind mounts licensed AgentKit kit skills (for example
+`engineer`) into a workspace. It is the only toolkit kind that reads a paid,
+registry-published artifact, so it needs three settings before it is available:
+
+- `AGENTKIT_REGISTRY_URL` — registry origin, `https://agentkit.best` by default.
+- `AGENTKIT_REGISTRY_CREDENTIAL_SECRET` — name of the principal's global secret
+  holding the licence token (`AGENTKIT_REGISTRY_TOKEN` by default). The token is
+  the operator's `ak_dev_`/`ak_cli_` registry credential; the runner never
+  accepts one from a tool argument. A caller without that secret gets a
+  fail-closed `INVALID_INPUT` naming the secret.
+- `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` — the pinned
+  Ed25519 signing key (PEM or base64 SPKI DER). Both are required: the runner
+  refuses a manifest whose `keyId` or signature does not match, so a
+  misconfigured or downgraded instance cannot mount unverified vendor content.
+
+Resolution and verification are owned by
+[`apps/runner/src/agentkit-registry.ts`](../apps/runner/src/agentkit-registry.ts)
+and [`apps/runner/src/adapters/agentkit-adapter.ts`](../apps/runner/src/adapters/agentkit-adapter.ts):
+the runner resolves `GET /api/agentkit/kits/{kitId}/resolve?runtime=cloud-harness`
+with the stored credential, verifies the Ed25519 manifest signature, downloads
+the pre-signed artifact, verifies its SHA-256 against the signed manifest, and
+extracts it inside a network-disabled helper container. The runner contacts the
+registry directly (like its GitHub API calls); helper containers used for
+inspection and extraction run with `--network none`. Only the small signed
+manifest is fetched through the network on a cache hit — the package itself is
+served from the toolkit CAS identified by its artifact digest.
+
 ## Dashboard secrets
 
 Dashboard secret values are write-only. The browser receives reference

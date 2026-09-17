@@ -5,7 +5,8 @@ import {
   TOOL_SCHEMA_BY_NAME,
   ToolkitOriginSchema,
   ToolkitSelectionSchema,
-  InternalRunnerRequestSchema
+  InternalRunnerRequestSchema,
+  toolkitSelectionIdentity
 } from '../src/index.js';
 
 describe('ToolkitSelectionSchema', () => {
@@ -37,11 +38,60 @@ describe('ToolkitSelectionSchema', () => {
     }
   });
 
-  it('rejects unverified bestagentkits/agentkit preset until vendor clearance', () => {
+  it('rejects an unverified bestagentkits/agentkit preset id', () => {
     expect(() => ToolkitSelectionSchema.parse({
       kind: 'preset',
       id: 'bestagentkits/agentkit'
     })).toThrow();
+  });
+
+  it('accepts a licensed AgentKit kit selection with registry defaults', () => {
+    const parsed = ToolkitSelectionSchema.parse({
+      kind: 'agentkit',
+      kitId: 'engineer'
+    });
+    expect(parsed.kind).toBe('agentkit');
+    if (parsed.kind === 'agentkit') {
+      expect(parsed.channel).toBe('stable');
+      expect(parsed.scope).toBe('owner');
+      expect(parsed.activation).toBe('skills-only');
+      expect(parsed.version).toBeUndefined();
+    }
+  });
+
+  it('accepts a pinned AgentKit kit version and skill filter', () => {
+    const parsed = ToolkitSelectionSchema.parse({
+      kind: 'agentkit',
+      kitId: 'marketing',
+      channel: 'beta',
+      version: '2.17.0-beta.10',
+      skills: { include: ['ak-deploy'] }
+    });
+    expect(parsed.kind).toBe('agentkit');
+    if (parsed.kind === 'agentkit') {
+      expect(parsed.version).toBe('2.17.0-beta.10');
+      expect(parsed.channel).toBe('beta');
+      expect(parsed.skills?.include).toEqual(['ak-deploy']);
+    }
+  });
+
+  it('rejects licensed AgentKit selections outside the contract', () => {
+    expect(() => ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'core' })).toThrow();
+    expect(() => ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'engineer', channel: 'nightly' })).toThrow();
+    expect(() => ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'engineer', version: 'latest' })).toThrow();
+    expect(() => ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'engineer', scope: 'workspace' })).toThrow();
+    expect(() => ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'engineer', credential: 'ak_dev_x' })).toThrow();
+  });
+
+  it('derives distinct identities for licensed AgentKit selections', () => {
+    const engineerStable = ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'engineer' });
+    const engineerBeta = ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'engineer', channel: 'beta' });
+    const marketingStable = ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'marketing' });
+    const named = ToolkitSelectionSchema.parse({ kind: 'agentkit', kitId: 'engineer', instanceId: 'kits' });
+    expect(toolkitSelectionIdentity(engineerStable)).toBe('agentkit:engineer:stable');
+    expect(toolkitSelectionIdentity(engineerBeta)).toBe('agentkit:engineer:beta');
+    expect(toolkitSelectionIdentity(marketingStable)).toBe('agentkit:marketing:stable');
+    expect(toolkitSelectionIdentity(named)).toBe('kits');
   });
 
   it('accepts valid custom Git with 40-char SHA-1 and 64-char SHA-256 object IDs', () => {
@@ -155,6 +205,23 @@ describe('WorkspaceOpenSchema with Toolkits', () => {
         { kind: 'git', instanceId: 'same-id', url: 'https://github.com/c/d.git' }
       ]
     })).toThrow('duplicate toolkit instance or id');
+
+    expect(() => TOOL_SCHEMA_BY_NAME.workspace_open.parse({
+      ...baseOpen,
+      toolkits: [
+        { kind: 'agentkit', kitId: 'engineer' },
+        { kind: 'agentkit', kitId: 'engineer' }
+      ]
+    })).toThrow('duplicate toolkit instance or id');
+
+    // The same kit id on another channel is a different instance.
+    expect(TOOL_SCHEMA_BY_NAME.workspace_open.parse({
+      ...baseOpen,
+      toolkits: [
+        { kind: 'agentkit', kitId: 'engineer' },
+        { kind: 'agentkit', kitId: 'engineer', channel: 'beta' }
+      ]
+    }).toolkits.length).toBe(2);
   });
 });
 

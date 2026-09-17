@@ -63,10 +63,60 @@ export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
       recursive: z.boolean().default(true)
     }).strict().default({ skillRoots: ['skills'], recursive: true }),
     activation: z.literal('skills-only').default('skills-only')
+  }).strict(),
+  // Licensed AgentKit kits. The runner resolves the signed package through the
+  // first-party registry with an operator-provisioned credential, verifies the
+  // manifest signature and package digest, and mounts skills read-only.
+  z.object({
+    kind: z.literal('agentkit'),
+    instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).optional(),
+    kitId: z.enum(['engineer', 'marketing']),
+    channel: z.enum(['dev', 'beta', 'stable']).default('stable'),
+    version: z.string().max(80).regex(
+      /^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/,
+      'expected a semantic version'
+    ).optional(),
+    // Licensed content stays owner-scoped: it is mounted read-only and never
+    // materialized into a repository that may later be published.
+    scope: z.literal('owner').default('owner'),
+    skills: SkillFilterSchema.optional(),
+    activation: z.literal('skills-only').default('skills-only')
   }).strict()
 ]);
 
 export type ToolkitSelection = z.infer<typeof ToolkitSelectionSchema>;
+
+/**
+ * Canonical identity for one selection, used for request fingerprints and
+ * duplicate detection. Caller-supplied instance ids win; curated presets and
+ * licensed kits derive theirs from their own coordinates.
+ */
+export function toolkitSelectionIdentity(selection: ToolkitSelection): string {
+  if (selection.kind === 'preset') return selection.instanceId ?? selection.id;
+  if (selection.kind === 'git') return selection.instanceId;
+  return selection.instanceId ?? `agentkit:${selection.kitId}:${selection.channel}`;
+}
+
+/**
+ * One licensed AgentKit kit as advertised by `toolkits_list`. `available` is the
+ * instance-level gate (pinned registry key material); `credentialReady` is the
+ * per-principal gate (a stored licence token). Neither value is a credential.
+ */
+export const LicensedKitCatalogEntrySchema = z.object({
+  kind: z.literal('agentkit'),
+  kitId: z.enum(['engineer', 'marketing']),
+  name: z.string().min(1).max(120),
+  description: z.string().min(1).max(512),
+  defaultChannel: z.enum(['dev', 'beta', 'stable']),
+  available: z.boolean(),
+  credentialReady: z.boolean(),
+  requiresCredentialSecret: z.string().min(1).max(120),
+  supportedScopes: z.array(z.literal('owner')).length(1),
+  activation: z.literal('skills-only'),
+  verification: z.literal('registry-signed')
+}).strict();
+
+export type LicensedKitCatalogEntry = z.infer<typeof LicensedKitCatalogEntrySchema>;
 
 const githubActionUnion = z.discriminatedUnion('action', [
   z.object({
@@ -301,7 +351,7 @@ const schemas = {
     }
     const instanceIds = new Set<string>();
     for (const t of input.toolkits) {
-      const key = t.kind === 'git' ? t.instanceId : (t.instanceId || t.id);
+      const key = toolkitSelectionIdentity(t);
       if (instanceIds.has(key)) {
         context.addIssue({ code: 'custom', path: ['toolkits'], message: `duplicate toolkit instance or id: ${key}` });
       }

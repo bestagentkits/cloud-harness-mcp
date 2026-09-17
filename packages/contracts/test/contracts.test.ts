@@ -132,6 +132,28 @@ describe('contracts', () => {
     expect(RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', githubApp: { ...app, appSlug: 'cloud-harness' } }).githubApp?.appSlug).toBe('cloud-harness');
   });
 
+  it('validates the AgentKit registry configuration, including the credential secret name', () => {
+    const runner = {
+      serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
+      executorImage: 'executor:latest', allowedGitHosts: ['github.com']
+    };
+    const defaults = RunnerConfigSchema.parse(runner);
+    expect(defaults.agentkitRegistryUrl).toBe('https://agentkit.best');
+    expect(defaults.agentkitRegistryCredentialSecret).toBe('AGENTKIT_REGISTRY_TOKEN');
+    expect(defaults.agentkitRegistryKeyId).toBeUndefined();
+    expect(defaults.agentkitRegistryPublicKey).toBeUndefined();
+
+    // A secret name that cannot exist in the secret store is rejected at startup,
+    // not when a workspace first asks for a licensed kit.
+    expect(() => RunnerConfigSchema.parse({ ...runner, agentkitRegistryCredentialSecret: 'agentkit-registry-token' })).toThrow();
+    // Reserved control-plane names must stay unusable as the registry credential.
+    expect(() => RunnerConfigSchema.parse({ ...runner, agentkitRegistryCredentialSecret: 'RUNNER_TOKEN' })).toThrow();
+    expect(() => RunnerConfigSchema.parse({ ...runner, agentkitRegistryCredentialSecret: 'CH_REGISTRY_TOKEN' })).toThrow();
+    expect(() => RunnerConfigSchema.parse({ ...runner, agentkitRegistryUrl: 'http://agentkit.best' })).toThrow();
+    expect(RunnerConfigSchema.parse({ ...runner, agentkitRegistryCredentialSecret: 'LICENCE_TOKEN' }).agentkitRegistryCredentialSecret)
+      .toBe('LICENCE_TOKEN');
+  });
+
   it('rejects option-shaped Git arguments and incomplete branch mutations', () => {
     const workspaceId = `ws_${'a'.repeat(24)}`;
     expect(() => TOOL_SCHEMA_BY_NAME.git_checkout.parse({ workspaceId, ref: '--help', create: false })).toThrow();

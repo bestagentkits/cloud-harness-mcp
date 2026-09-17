@@ -121,7 +121,7 @@ export const ProvenanceSourceSchema = z.enum(['built-in', 'owner', 'workspace', 
 export const TrustClassSchema = z.enum(['trusted-control-plane', 'owner-controlled', 'untrusted-executor']);
 export const MutabilitySchema = z.enum(['release', 'owner', 'workspace-process', 'repository-commit']);
 
-export const ToolkitVerificationSchema = z.enum(['built-in', 'catalog-pinned', 'custom-unverified']);
+export const ToolkitVerificationSchema = z.enum(['built-in', 'catalog-pinned', 'custom-unverified', 'registry-signed']);
 export const ToolkitOriginSchema = z.object({
   kind: z.literal('toolkit'),
   instanceId: z.string().max(80),

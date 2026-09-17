@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HarnessError } from '@cloud-harness/contracts';
+import { HarnessError, LicensedKitCatalogEntrySchema } from '@cloud-harness/contracts';
 import { StateStore } from '../src/state-store.js';
 import { resolveOwnerPrincipal } from '../src/principal-store.js';
+import { MetadataStore } from '../src/metadata-store.js';
+import { SecretKeyring } from '../src/secret-keyring.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import { ToolkitService } from '../src/toolkit-service.js';
 import { computeWorkspaceOpenFingerprint } from '../src/workspace-service.js';
@@ -156,5 +158,93 @@ describe('Toolkit Mount Injection, Projection & Idempotency Fingerprint', () => 
     await expect(cacheOnlyService.resolveToolkits(ownerId, [
       { kind: 'preset', id: 'mattpocock/skills' }
     ])).rejects.toThrow(/is not cached and toolkitNetworkPolicy is cache-only/);
+  });
+
+  it('fails closed when licensed AgentKit kits are not configured on the instance', async () => {
+    await expect(toolkitService.resolveToolkits(ownerId, [
+      { kind: 'agentkit', kitId: 'engineer', channel: 'stable', scope: 'owner', activation: 'skills-only' }
+    ])).rejects.toThrow('AgentKit kits are not configured on this instance');
+
+    expect(computeWorkspaceOpenFingerprint({
+      repositoryUrl: 'https://github.com/org/repo.git',
+      toolkits: [{ kind: 'agentkit', kitId: 'engineer', channel: 'stable', scope: 'owner', activation: 'skills-only' }]
+    })).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('names the missing registry secret for a licensed AgentKit selection', async () => {
+    const configured = new ToolkitService({
+      cacheManager,
+      repoCacheManager: {} as any,
+      store,
+      executorImage: 'cloud-harness-executor:local',
+      provisioningNetwork: 'test-net',
+      allowedGitHosts: ['github.com'],
+      instanceId: 'test-inst',
+      agentkitRegistry: {
+        registryUrl: 'https://agentkit.best',
+        credentialSecretName: 'AGENTKIT_REGISTRY_TOKEN',
+        keyId: 'agentkit-registry-2026',
+        publicKey: generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64')
+      }
+    });
+
+    await expect(configured.resolveToolkits(ownerId, [
+      { kind: 'agentkit', kitId: 'engineer', channel: 'stable', scope: 'owner', activation: 'skills-only' }
+    ])).rejects.toThrow('AGENTKIT_REGISTRY_TOKEN');
+  });
+
+  it('advertises licensed kits with separate instance and per-principal readiness gates', () => {
+    const unconfigured = toolkitService.listLicensedKitCatalog(ownerId);
+    expect(unconfigured.map((entry) => entry.kitId).sort()).toEqual(['engineer', 'marketing']);
+    for (const entry of unconfigured) {
+      // The catalog entry is a contract: parse it rather than trusting the shape.
+      expect(LicensedKitCatalogEntrySchema.parse(entry)).toEqual(entry);
+      expect(entry.available).toBe(false);
+      expect(entry.credentialReady).toBe(false);
+      expect(entry.requiresCredentialSecret).toBe('AGENTKIT_REGISTRY_TOKEN');
+      expect(entry.supportedScopes).toEqual(['owner']);
+      expect(entry.defaultChannel).toBe('stable');
+      expect(entry.verification).toBe('registry-signed');
+    }
+
+    const keyring = new SecretKeyring(1, [{ version: 1, key: Buffer.alloc(32, 1) }]);
+    const metadata = new MetadataStore(join(tmpDir, 'state.sqlite3'), keyring);
+    try {
+      const configured = new ToolkitService({
+        cacheManager,
+        repoCacheManager: {} as any,
+        metadata,
+        store,
+        executorImage: 'cloud-harness-executor:local',
+        provisioningNetwork: 'test-net',
+        allowedGitHosts: ['github.com'],
+        instanceId: 'test-inst',
+        agentkitRegistry: {
+          registryUrl: 'https://agentkit.best',
+          credentialSecretName: 'LICENCE_TOKEN',
+          keyId: 'agentkit-registry-2026',
+          publicKey: generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64')
+        }
+      });
+
+      expect(configured.listLicensedKitCatalog(ownerId)[0]).toMatchObject({
+        available: true,
+        credentialReady: false,
+        requiresCredentialSecret: 'LICENCE_TOKEN'
+      });
+
+      metadata.secrets.globalBulkApply(ownerId, [
+        { name: 'LICENCE_TOKEN', value: 'ak_dev_test_credential', action: 'create', expectedGeneration: 0 }
+      ]);
+
+      const ready = configured.listLicensedKitCatalog(ownerId);
+      expect(ready).toHaveLength(2);
+      expect(ready.every((entry) => entry.available && entry.credentialReady)).toBe(true);
+      // Readiness is reported, never the credential itself.
+      expect(JSON.stringify(ready)).not.toContain('ak_dev_test_credential');
+    } finally {
+      metadata.close();
+      keyring.close();
+    }
   });
 });

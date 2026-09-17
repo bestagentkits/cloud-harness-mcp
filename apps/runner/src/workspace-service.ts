@@ -10,6 +10,7 @@ import {
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
   sanitizeAndAttributeProvenance,
+  toolkitSelectionIdentity,
   type AgentProxyOperation,
   type RunnerConfig,
   type InternalRunnerOperation,
@@ -56,11 +57,8 @@ export function computeWorkspaceOpenFingerprint(input: {
   toolkits?: ToolkitSelection[] | undefined;
   allowToolkitWorkspaceChanges?: boolean | undefined;
 }): string {
-  const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) => {
-    const idA = a.kind === 'git' ? a.instanceId : a.id;
-    const idB = b.kind === 'git' ? b.instanceId : b.id;
-    return idA.localeCompare(idB);
-  });
+  const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) =>
+    toolkitSelectionIdentity(a).localeCompare(toolkitSelectionIdentity(b)));
   const payload = {
     repositoryUrl: String(input.repositoryUrl),
     ref: input.ref ?? null,
@@ -203,6 +201,7 @@ export class WorkspaceService {
     this.toolkitService = new ToolkitService({
       cacheManager: this.toolkitCacheManager,
       repoCacheManager: this.repoCacheManager,
+      metadata: this.metadata,
       store: this.store,
       executorImage: this.config.executorImage,
       provisioningNetwork: provNet,
@@ -210,6 +209,12 @@ export class WorkspaceService {
       instanceId: this.instanceId,
       enableToolkitCache: this.config.enableToolkitCache,
       toolkitNetworkPolicy: this.config.toolkitNetworkPolicy,
+      agentkitRegistry: {
+        registryUrl: this.config.agentkitRegistryUrl,
+        credentialSecretName: this.config.agentkitRegistryCredentialSecret,
+        keyId: this.config.agentkitRegistryKeyId,
+        publicKey: this.config.agentkitRegistryPublicKey
+      },
       ...proxyOpts
     });
     this.operations.onTaskStart = (wsId, timeoutMs) => {
@@ -3703,7 +3708,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const ownerId = this.store.resolvePrincipal(parsed.principal);
     if (parsed.operation === 'toolkits_list') {
       const presets = this.toolkitService.listCatalogPresets();
-      return { ok: true, message: 'Catalog toolkits list', data: { toolkits: presets }, truncated: false };
+      return {
+        ok: true,
+        message: 'Catalog toolkits list',
+        data: {
+          toolkits: presets,
+          licensedKits: this.toolkitService.listLicensedKitCatalog(ownerId)
+        },
+        truncated: false
+      };
     }
     if (parsed.operation === 'toolkits_preview') {
       const fingerprint = this.toolkitService.computeRequestFingerprint(parsed.input.toolkits);

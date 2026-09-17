@@ -65,6 +65,11 @@ servers, and HTTP redirects are unsupported.
    and never echo that value.
    To mount agent skills or toolkits (such as `mattpocock/skills`, `obra/superpowers`,
    or custom Git repos), pass `toolkits: [{ kind: 'preset', id: '...' }]` during `workspace_open`.
+   Licensed AgentKit kits such as the engineering kit use
+   `toolkits: [{ kind: 'agentkit', kitId: 'engineer', channel: 'stable' }]`; they
+   require operator-pinned registry key material and a stored licence token, are
+   always `owner`-scoped, and fail closed with an actionable error when either is
+   missing. Never pass a credential in a tool argument.
 2. **Open and set active context.** Call `workspace_open` with a fresh
    idempotency key. Preserve the returned opaque `workspaceId` exactly. Call
    `workspace_set_active` to establish default workspace context.
