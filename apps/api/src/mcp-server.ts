@@ -39,7 +39,8 @@ export class RunnerOperationBackend implements OperationBackend {
   }
 }
 
-const DEFAULT_INSTRUCTIONS = 'Open an owner-bound workspace first, pass its opaque workspaceId to later tools, and close it when finished.';
+const DEFAULT_INSTRUCTIONS = 'Open an owner-bound workspace first, pass its opaque workspaceId to later tools, and close it when finished. '
+  + 'Before planning work, call skills_list and read the matching skill with skills_read; skills that ship a script are run through skills_run with the digest that skills_list returned.';
 
 export function createCloudHarnessServer(
   backendOrClient: OperationBackend | RunnerClient,
