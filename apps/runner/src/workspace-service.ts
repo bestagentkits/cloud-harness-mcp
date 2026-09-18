@@ -10,6 +10,7 @@ import {
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
   sanitizeAndAttributeProvenance,
+  toolkitSelectionIdentity,
   type AgentProxyOperation,
   type RunnerConfig,
   type InternalRunnerOperation,
@@ -48,6 +49,18 @@ const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', '
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
+/**
+ * Operator-provided skills mounted read-only at the worker's highest-precedence
+ * `built-in` tier. The source is a host path (the runner mounts through the
+ * Docker socket) and the target is fixed so the worker's default discovery root
+ * stays authoritative. Unconfigured instances mount nothing, so the tier stays
+ * empty rather than exposing an unowned path.
+ */
+export function builtinSkillsMountArgs(builtinSkillsRoot: string | undefined): string[] {
+  if (!builtinSkillsRoot) return [];
+  return ['--volume', `${builtinSkillsRoot}:/opt/cloud-harness/skills:ro`];
+}
+
 export function computeWorkspaceOpenFingerprint(input: {
   repositoryUrl: string | URL;
   ref?: string | undefined;
@@ -56,11 +69,8 @@ export function computeWorkspaceOpenFingerprint(input: {
   toolkits?: ToolkitSelection[] | undefined;
   allowToolkitWorkspaceChanges?: boolean | undefined;
 }): string {
-  const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) => {
-    const idA = a.kind === 'git' ? a.instanceId : a.id;
-    const idB = b.kind === 'git' ? b.instanceId : b.id;
-    return idA.localeCompare(idB);
-  });
+  const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) =>
+    toolkitSelectionIdentity(a).localeCompare(toolkitSelectionIdentity(b)));
   const payload = {
     repositoryUrl: String(input.repositoryUrl),
     ref: input.ref ?? null,
@@ -203,6 +213,7 @@ export class WorkspaceService {
     this.toolkitService = new ToolkitService({
       cacheManager: this.toolkitCacheManager,
       repoCacheManager: this.repoCacheManager,
+      metadata: this.metadata,
       store: this.store,
       executorImage: this.config.executorImage,
       provisioningNetwork: provNet,
@@ -210,6 +221,12 @@ export class WorkspaceService {
       instanceId: this.instanceId,
       enableToolkitCache: this.config.enableToolkitCache,
       toolkitNetworkPolicy: this.config.toolkitNetworkPolicy,
+      agentkitRegistry: {
+        registryUrl: this.config.agentkitRegistryUrl,
+        credentialSecretName: this.config.agentkitRegistryCredentialSecret,
+        keyId: this.config.agentkitRegistryKeyId,
+        publicKey: this.config.agentkitRegistryPublicKey
+      },
       ...proxyOpts
     });
     this.operations.onTaskStart = (wsId, timeoutMs) => {
@@ -656,6 +673,7 @@ export class WorkspaceService {
         '--volume', `${toolsPath}:/opt/user-tools:rw`,
         '--volume', `${cachePath}:/var/cache/harness:rw`,
         '--volume', `${ownerSkillsPath}:/opt/cloud-harness/owner-skills:ro`,
+        ...builtinSkillsMountArgs(this.config.builtinSkillsRoot),
         '--env', 'HOME=/tmp/cloud-harness-home',
         '--env', 'GIT_CONFIG_NOSYSTEM=1',
         '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
@@ -3703,7 +3721,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const ownerId = this.store.resolvePrincipal(parsed.principal);
     if (parsed.operation === 'toolkits_list') {
       const presets = this.toolkitService.listCatalogPresets();
-      return { ok: true, message: 'Catalog toolkits list', data: { toolkits: presets }, truncated: false };
+      return {
+        ok: true,
+        message: 'Catalog toolkits list',
+        data: {
+          toolkits: presets,
+          licensedKits: this.toolkitService.listLicensedKitCatalog(ownerId)
+        },
+        truncated: false
+      };
     }
     if (parsed.operation === 'toolkits_preview') {
       const fingerprint = this.toolkitService.computeRequestFingerprint(parsed.input.toolkits);

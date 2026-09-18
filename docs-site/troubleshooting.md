@@ -116,3 +116,22 @@ To work without egress meanwhile, reset the default to `network-none` on the Set
 1. The error names the missing scope. Add that permission to the GitHub App and approve the pending installation change on GitHub, then retry. The [GitHub App setup](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/github-app-private-repositories.md) guide lists which operations need which permission. An action-scoped token also carries **Contents: Read-only** so that `gh` can resolve repository metadata, so that permission is required for `github_action` even when the named action scope is already granted.
 2. Alternatively, configure the fallback credential for that principal: the runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in `owner-bearer` mode, or that principal's global runtime secret in Access mode. The runner-environment credential is harness-side only and never enters an executor; a principal's global runtime secret is injected into that principal's workspaces, so it also authenticates the workspace `gh` CLI.
 A `403` from the helper is never retried, because the operation may already have had side effects; inspect the issue or pull request before retrying.
+
+### 12. `agentkit` toolkit fails during `workspace_open`
+**Cause:** The licensed AgentKit kit kind fails closed by design, and each message names the missing prerequisite.
+**Fix:**
+1. `AgentKit kits are not configured on this instance` — the operator must set both `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` (the pinned Ed25519 registry signing key) and restart the runner.
+2. `needs the <name> secret stored for this principal` — store the AgentKit licence token (an `ak_dev_`/`ak_cli_` credential) as a global secret with that name (`AGENTKIT_REGISTRY_TOKEN` unless `AGENTKIT_REGISTRY_CREDENTIAL_SECRET` changes it). Credentials are never accepted as tool arguments.
+3. `registry rejected the credential ... (not_licensed | not_authenticated | license_inactive)` — the token has no entitlement for that `kitId`, or is not a registry bearer. Re-issue it from the AgentKit account that owns the licence.
+4. `manifest signature did not verify` / `signed by key ...; pinned key is ...` — the registry signing key rotated or the pinned key is stale. Update `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` together; do not disable verification.
+5. `package digest did not match the signed manifest`, `must contain exactly one <kitId> root directory`, or `outside the <kitId> root` — the downloaded artifact is not the published package. Retry once; if it persists, treat it as an upstream publish problem instead of mounting the content.
+6. `no published release for kit <kitId>` — that kit has no signed release on the requested channel yet. Try `channel: "beta"`, or pin a version that exists.
+
+### 13. Uploaded operator skills do not appear in `skills_list`
+**Cause:** The `built-in` tier is populated only when the runner is pointed at an operator-owned host directory, and only reads a strict layout.
+**Fix:**
+1. Set `BUILTIN_SKILLS_ROOT` to an absolute host directory in the runner environment (`/etc/cloud-harness-mcp/runtime.env` or `.env`) and restart the stack; with the variable unset the executor mounts nothing and the tier stays empty by design.
+2. Upload skills as `<root>/<skill-name>/SKILL.md`; a directory without `SKILL.md` is ignored.
+3. Confirm the host path is readable by the runner and that the directory exists (`deploy/scripts/bootstrap-vps.sh` creates `/var/lib/cloud-harness/skills` on first install).
+4. Remember the tier outranks project skills: a same-named `.agents/skills` or `.cloud-harness/skills` entry appears under `shadowed`, not as the selected skill.
+5. Only changes to already-open workspaces need a reopen; a new workspace sees an updated upload immediately.

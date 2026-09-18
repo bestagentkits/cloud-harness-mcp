@@ -57,6 +57,11 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `TOOLKIT_CACHE_ROOT` | `/var/lib/cloud-harness/cache/toolkits` | **Required** | Required configuration. |
 | `ENABLE_TOOLKIT_CACHE` | `true` | Optional | Optional configuration. |
 | `TOOLKIT_NETWORK_POLICY` | `cache-only` | Optional | Optional configuration. |
+| `BUILTIN_SKILLS_ROOT` | `/var/lib/cloud-harness/skills` | Optional | Operator-provided agent skills. Set to a host directory (absolute) and it is mounted read-only into every executor at /opt/cloud-harness/skills, the worker's highest-precedence `built-in` skills tier. Content is operator-owned: the harness never writes to it and records its provenance as built-in. Leave unset to keep the tier empty. |
+| `AGENTKIT_REGISTRY_URL` | `https://agentkit.best` | Optional | Licensed AgentKit kits (toolkits: [{ kind: "agentkit", kitId: "engineer" }]). |
+| `AGENTKIT_REGISTRY_CREDENTIAL_SECRET` | `AGENTKIT_REGISTRY_TOKEN` | Optional | The secret name that holds this principal's AgentKit licence token. The token must start with ak_dev_ or ak_cli_ and is resolved from the dashboard secret store; without it the agentkit toolkit kind fails closed. |
+| `AGENTKIT_REGISTRY_KEY_ID` | `agentkit-registry-2026` | Optional | Ed25519 registry signing key id. Required before the agentkit toolkit kind is available. |
+| `AGENTKIT_REGISTRY_PUBLIC_KEY` | `<PEM or base64 SPKI DER>` | Optional | Ed25519 registry signing public key (PEM or base64 SPKI DER). Required before the agentkit toolkit kind is available; an unverified manifest is refused. |
 | `EXECUTOR_IMAGE` | `cloud-harness-executor:local` | **Required** | Required configuration. |
 | `NETWORK_GUARD_IMAGE` | `cloud-harness-network-guard:local` | **Required** | Required configuration. |
 | `ALLOWED_GIT_HOSTS` | `github.com` | **Required** | Required configuration. |
