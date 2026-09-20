@@ -843,8 +843,43 @@ export class DashboardControlService {
           });
         }
         case 'toolkit_registry_list':
+          // The four fields this tab exists to show come from the records that actually hold them: cache state
+          // and pinned commit from the cache entry, skill count from the lock item a workspace resolved, and
+          // lock state from whether any live workspace still pins those bytes. Reading the catalogue table
+          // instead, which holds none of the four, is what made every row a placeholder.
           return ok('Registry catalog listed', {
-            entries: this.principals.listSkillCatalogEntries(principalId, parsed.input.provider),
+            entries: this.principals.listToolkitCacheEntries(principalId)
+              .filter((entry) => parsed.input.provider === undefined || entry.sourceIdentity.includes(`:${parsed.input.provider}:`))
+              .map((entry) => {
+                const pins = this.principals.listOwnerToolkitPins(principalId)
+                  .filter((pin) => pin.bundleSha256 === entry.bundleSha256);
+                let skillCount = 0;
+                for (const pin of pins) {
+                  try {
+                    const resolved = JSON.parse(pin.resolvedJson) as { skillsCount?: unknown };
+                    if (typeof resolved.skillsCount === 'number') {
+                      skillCount = resolved.skillsCount;
+                      break;
+                    }
+                  } catch {
+                    // A lock row that cannot be read contributes no count rather than failing the listing.
+                  }
+                }
+                const [, provider = 'toolkit', ...rest] = entry.sourceIdentity.split(':');
+                const slug = rest.join(':') || entry.sourceIdentity;
+                return {
+                  id: entry.cacheKey,
+                  provider,
+                  slug,
+                  displayName: slug,
+                  description: '',
+                  fetchedAt: entry.lastUsedAt,
+                  cacheState: entry.status,
+                  pinnedCommit: entry.resolvedRevision,
+                  skillCount,
+                  lockState: pins.length > 0 ? 'locked' : 'unlocked'
+                };
+              }),
             // A preset is offered as something a launch could install, not as something the workspace can
             // already resolve. Listing it beside cached entries without that distinction would let a row
             // read as an available skill, which is the reading this field exists to prevent.

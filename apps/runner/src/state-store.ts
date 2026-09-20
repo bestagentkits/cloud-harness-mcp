@@ -2244,6 +2244,19 @@ export class StateStore {
     };
   }
 
+  /**
+   * Every toolkit pin an owner's live workspaces hold. This is what makes a cached toolkit locked: the bytes
+   * are not merely present, something is still resolving against them.
+   */
+  listOwnerToolkitPins(ownerId: string): Array<{ toolkitId: string; workspaceId: string; bundleSha256: string; resolvedJson: string }> {
+    return this.database.prepare(
+      `SELECT wt.toolkit_id AS toolkitId, wt.workspace_id AS workspaceId, wt.bundle_sha256 AS bundleSha256, wt.resolved_json AS resolvedJson
+       FROM workspace_toolkits wt
+       JOIN workspaces w ON w.id = wt.workspace_id
+       WHERE wt.owner_id = ? AND w.status IN (SELECT value FROM json_each(?))`
+    ).all(ownerId, JSON.stringify(ACTIVE_WORKSPACE_STATUS_LIST)) as Array<{ toolkitId: string; workspaceId: string; bundleSha256: string; resolvedJson: string }>;
+  }
+
   listToolkitCacheEntries(ownerId: string): ToolkitCacheEntryRecord[] {
     const rows = this.database.prepare('SELECT * FROM toolkit_cache_entries WHERE owner_id = ? ORDER BY last_used_at DESC').all(ownerId) as ToolkitCacheEntryRow[];
     return rows.map(row => ({

@@ -191,7 +191,7 @@ If M1 or M2 overruns, stop and report before starting M3: the honest split point
 **Corrections and gaps found while wiring, recorded rather than worked around:**
 - The open workspace dialog's controls existed in the shell but no script referenced them, so the open button, the form, and the launch button had no behaviour at all. Wiring them is work this phase has to do rather than a feature it reuses.
 - **No operation edits the instructions of an existing skill.** `skill_update` takes metadata only and content lives in revisions, so the editor creates skills and does not pretend to change content. Editing content would need a revision-creating operation the contract does not have.
-- `skill_import_start` has no runner handler, so the wizard's submit is deliberately left unwired. Its validation, review, and guidance pieces exist and are tested; the phase 5 blocker records why.
+- `skill_import_start` now has a runner handler, and the wizard's submit is wired to it and polls the job it is handed. Its validation, review, and guidance pieces are tested alongside the durable job contract.
 - `toolkit_registry_update` has no runner handler either, so the Registry tab shows cache state, pinned commit, skill count, and lock state without offering enable, disable, or pin.
 - `skill_bulk` carries one generation for the whole batch, so the client groups the selected rows by generation. Without that, every row but one would report a conflict and read as a locking problem when it is a batching one.
 
