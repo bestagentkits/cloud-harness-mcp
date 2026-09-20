@@ -70,7 +70,9 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
   'skill_revision_list', 'skill_revision_get', 'skill_revision_diff',
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
-  'toolkit_registry_list'
+  'toolkit_registry_list',
+  'skill_suggest', 'typesafe_status',
+  'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ] as const;
 
 /**
@@ -105,6 +107,8 @@ const skillImportJobKeys = ['id', 'sourceKind', 'sourceRef', 'state', 'progress'
 const skillResolvedKeys = ['name', 'tier', 'skillSourceId', 'revisionId', 'contentSha256', 'pinned'] as const;
 const skillExcludedKeys = ['name', 'tier', 'reason'] as const;
 const skillCatalogKeys = ['id', 'provider', 'slug', 'displayName', 'description', 'fetchedAt'] as const;
+/** Credential metadata. No value field, so no projection can produce one. */
+const integrationCredentialKeys = ['id', 'integration', 'label', 'status', 'activeVersion', 'generation', 'createdAt', 'updatedAt'] as const;
 
 /**
  * A revision diff is prose the UI renders, so it is passed through only when the runner actually
@@ -261,6 +265,19 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     };
   }
   if (operation === 'toolkit_registry_list') return list(data, 'entries', skillCatalogKeys);
+  if (operation === 'skill_suggest') {
+    return {
+      ...pick(data, ['reason', 'cached', 'latencyMs', 'outboundCalls', 'redactionCount']),
+      // A suggestion is a roster-validated name and its numbers; model prose has nowhere to sit here.
+      suggested: data.suggested && typeof data.suggested === 'object'
+        ? pick(data.suggested, ['name', 'gate', 'fit', 'confidence'])
+        : null
+    };
+  }
+  if (operation === 'typesafe_status') return pick(data, ['configured', 'enabled', 'endpoint', 'model']);
+  if (operation === 'integration_credential_list') return list(data, 'credentials', integrationCredentialKeys);
+  if (operation === 'integration_credential_delete') return pick(data, ['id', 'deleted']);
+  if (operation === 'integration_credential_create' || operation === 'integration_credential_rotate') return pick(data, integrationCredentialKeys);
   return data;
 }
 const descriptiveOperations = new Set<string>([
@@ -276,7 +293,9 @@ const descriptiveOperations = new Set<string>([
   'mcp_server_list', 'mcp_server_get', 'mcp_gateway_trace_list',
   'skill_create_custom', 'skill_update', 'skill_archive', 'skill_restore', 'skill_bulk',
   'skill_import_start', 'skill_import_cancel',
-  'skill_set_create', 'skill_set_update', 'skill_set_delete'
+  'skill_set_create', 'skill_set_update', 'skill_set_delete',
+  'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete',
+  'skill_suggest'
 ]);
 
 /** Gateway operations need gateway wording; the shared table is workspace-oriented. */
