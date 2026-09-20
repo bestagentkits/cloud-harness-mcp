@@ -1,3 +1,10 @@
+# [0.52.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.51.1...v0.52.0) (2026-09-20)
+
+
+### Features
+
+* **dashboard:** read the registry fields from the records that hold them ([4697da8](https://github.com/bestagentkits/cloud-harness-mcp/commit/4697da86251794cea83a3a9ea79a17a439130750))
+
 ## [0.51.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.51.0...v0.51.1) (2026-09-20)
 
 
