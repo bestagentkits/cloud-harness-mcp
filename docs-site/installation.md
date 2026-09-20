@@ -10,7 +10,7 @@ description: System requirements and setup instructions for Cloud Harness MCP se
 - **Linux OS:** Ubuntu 24.04 LTS (recommended) or Debian 12
 - **Docker Engine:** 26.0+ with Docker Compose v2
 - **Node.js:** 24.x LTS (for local CLI/development)
-- **RAM:** Minimum 4GB (8GB recommended for concurrent workspaces)
+- **RAM:** Minimum 4GB (8GB recommended for concurrent workspaces). Each counted workspace can use up to 1 GiB of container memory, one CPU, and 256 pids, so size host memory for `MAX_ACTIVE_WORKSPACES_PER_OWNER` (default 3) multiplied by the expected number of simultaneous builds.
 - **Disk:** Minimum 40GB SSD for container images, jobs, and build caches
 
 ## 1-Click Automated Server Installer (Recommended)

@@ -66,8 +66,15 @@ servers, and HTTP redirects are unsupported.
    To mount agent skills or toolkits (such as `mattpocock/skills`, `obra/superpowers`,
    or custom Git repos), pass `toolkits: [{ kind: 'preset', id: '...' }]` during `workspace_open`.
 2. **Open and set active context.** Call `workspace_open` with a fresh
-   idempotency key. Preserve the returned opaque `workspaceId` exactly. Call
-   `workspace_set_active` to establish default workspace context.
+   idempotency key. Preserve the returned opaque `workspaceId` exactly. A
+   principal may hold several concurrent workspaces, bounded by the instance's
+   `MAX_ACTIVE_WORKSPACES_PER_OWNER` limit, so once more than one is counted pass
+   that exact id on every operation except `workspace_list`. An implicit target is
+   resolved only when it is unambiguous: the sole active workspace, a sole
+   recoverable record, or the `workspace_set_active` preference among recoverable
+   records. Anything else returns `CONFLICT` naming the candidates.
+   `workspace_open` never moves that preference, so repin deliberately when you
+   switch repositories.
 3. **Inspect capabilities early.** Run `workspace_capabilities` before planning
    write actions (e.g. `git_push`, `github_action` for issues/PRs). This prevents
    wasting execution effort on operations that current GitHub App grants, or an

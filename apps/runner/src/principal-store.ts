@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
+  DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   RunnerPrincipalSelectorSchema,
   type ExternalPrincipal,
   type RunnerPrincipalSelector
@@ -67,6 +68,72 @@ function transaction<T>(database: DatabaseSync, action: () => T): T {
   } catch (error) {
     database.exec('ROLLBACK');
     throw error;
+  }
+}
+
+/**
+ * Workspace statuses that occupy a counted active-workspace slot for their owner.
+ * `REAPING` is deliberately absent: it marks in-flight teardown, so a record on its
+ * way to `CLOSED` must not consume a slot or inflate the quota reported to callers.
+ * Declared here because this module owned the retired partial unique index that
+ * previously enumerated them, and `state-store.ts` already imports from here, so
+ * this stays the single source of truth without an import cycle.
+ */
+export const COUNTED_WORKSPACE_STATUSES = ['CREATING', 'ACTIVE', 'NETWORK_QUARANTINED'] as const;
+
+/** Bound-parameter list for the counted statuses, shared with the state store. */
+export const COUNTED_WORKSPACE_STATUS_PARAMS = COUNTED_WORKSPACE_STATUSES.map(() => '?').join(',');
+
+/**
+ * Statuses that sweeps and startup reconciliation enumerate: the counted slots plus
+ * in-flight teardown, so a workspace stuck in `REAPING` is still reconciled.
+ */
+export const ENUMERATED_WORKSPACE_STATUSES = [...COUNTED_WORKSPACE_STATUSES, 'REAPING'] as const;
+
+/** Bound-parameter list for the enumerated statuses. */
+export const ENUMERATED_WORKSPACE_STATUS_PARAMS = ENUMERATED_WORKSPACE_STATUSES.map(() => '?').join(',');
+
+/** Counts the counted workspaces held by one owner id. */
+const COUNT_OWNER_WORKSPACES_SQL = `SELECT count(*) AS count FROM workspaces WHERE owner_id = ? AND status IN (${COUNTED_WORKSPACE_STATUS_PARAMS})`;
+
+/** Counts one owner's counted workspaces. */
+export function countOwnerCountedWorkspaces(database: DatabaseSync, ownerId: string): number {
+  const row = database.prepare(COUNT_OWNER_WORKSPACES_SQL)
+    .get(ownerId, ...COUNTED_WORKSPACE_STATUSES) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+/** Raised when a write would take an owner past `maxActiveWorkspacesPerOwner`. */
+export class ActiveWorkspaceLimitReachedError extends Error {
+  constructor(readonly active: number, readonly limit: number) {
+    super(`active workspace limit reached (${active} of ${limit})`);
+    this.name = 'ActiveWorkspaceLimitReachedError';
+  }
+}
+
+/**
+ * Guards legacy ownership migration against the capacity invariant the retired
+ * `one_active_workspace_per_owner` index enforced. That index failed the
+ * `UPDATE workspaces SET owner_id` statement once the destination held two counted
+ * workspaces, because one was then the maximum; under a configurable limit the
+ * equivalent rule is that the destination must not end up above that limit. Only
+ * the legacy owner's rows change owner, so a legacy owner holding no counted
+ * workspace is a no-op merge and is never refused.
+ */
+export function assertActiveWorkspaceMergeAllowed(
+  database: DatabaseSync,
+  destinationOwnerId: string,
+  legacyOwnerId: string,
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
+): void {
+  if (destinationOwnerId === legacyOwnerId) return;
+  const legacyCount = countOwnerCountedWorkspaces(database, legacyOwnerId);
+  if (legacyCount === 0) return;
+  const destinationCount = countOwnerCountedWorkspaces(database, destinationOwnerId);
+  if (destinationCount + legacyCount > activeLimit) {
+    throw new Error(
+      `legacy ownership merge would leave one principal with ${destinationCount + legacyCount} counted workspaces, above the active workspace limit of ${activeLimit}`
+    );
   }
 }
 
@@ -313,9 +380,6 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
           DROP TABLE workspaces;
           ALTER TABLE workspaces_v6 RENAME TO workspaces;
 
-          CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner
-            ON workspaces(owner_id)
-            WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED');
           CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id
             ON workspaces(owner_id, id);
 
@@ -1100,7 +1164,11 @@ export function principalByLegacyOwnerId(database: DatabaseSync, legacyOwnerId: 
   return row ? fromRow(row) : undefined;
 }
 
-export function resolveOwnerPrincipal(database: DatabaseSync, ownerId: string): string {
+export function resolveOwnerPrincipal(
+  database: DatabaseSync,
+  ownerId: string,
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
+): string {
   if (!ownerId || ownerId.length > 100) throw new Error('invalid owner identity');
   return transaction(database, () => {
     if (database.prepare('SELECT 1 FROM principals WHERE id = ?').get(ownerId)) return ownerId;
@@ -1114,6 +1182,7 @@ export function resolveOwnerPrincipal(database: DatabaseSync, ownerId: string): 
       VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)`).run(
       principalId, ownerBearerIssuer, ownerId, ownerId, now, now
     );
+    assertActiveWorkspaceMergeAllowed(database, principalId, ownerId, activeLimit);
     database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, ownerId);
     return principalId;
   });
@@ -1122,19 +1191,21 @@ export function resolveOwnerPrincipal(database: DatabaseSync, ownerId: string): 
 export function resolveExternalPrincipal(
   database: DatabaseSync,
   selector: ExternalPrincipalSelector,
-  options: { legacyOwnerId?: string } = {}
+  options: { legacyOwnerId?: string } = {},
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
 ): string {
   const parsed = RunnerPrincipalSelectorSchema.parse(selector) as ExternalPrincipalSelector;
   const legacyOwnerId = options.legacyOwnerId;
   if (legacyOwnerId !== undefined && (!legacyOwnerId || legacyOwnerId.length > 100)) throw new Error('invalid legacy owner mapping');
 
-  return transaction(database, () => resolveExternalPrincipalInTransaction(database, parsed, legacyOwnerId));
+  return transaction(database, () => resolveExternalPrincipalInTransaction(database, parsed, legacyOwnerId, activeLimit));
 }
 
 function resolveExternalPrincipalInTransaction(
   database: DatabaseSync,
   selector: ExternalPrincipalSelector,
-  legacyOwnerId?: string
+  legacyOwnerId?: string,
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
 ): string {
   const existing = principalByExternalIdentity(database, selector);
   if (legacyOwnerId !== undefined && existing?.legacyOwnerId && existing.legacyOwnerId !== legacyOwnerId) {
@@ -1148,6 +1219,7 @@ function resolveExternalPrincipalInTransaction(
     if (legacyOwnerId && !existing.legacyOwnerId) {
       database.prepare('UPDATE principals SET legacy_owner_id = ?, updated_at = ? WHERE id = ?')
         .run(legacyOwnerId, now, existing.id);
+      assertActiveWorkspaceMergeAllowed(database, existing.id, legacyOwnerId, activeLimit);
       database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(existing.id, legacyOwnerId);
     }
     return existing.id;
@@ -1176,6 +1248,7 @@ function resolveExternalPrincipalInTransaction(
     legacyOwnerId ?? null, now, now
   );
   if (legacyOwnerId) {
+    assertActiveWorkspaceMergeAllowed(database, principalId, legacyOwnerId, activeLimit);
     database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
     try {
       database.prepare('UPDATE finalize_idempotency SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
@@ -1198,14 +1271,15 @@ function resolveExternalPrincipalInTransaction(
 
 export function applyLegacyPrincipalMapping(
   database: DatabaseSync,
-  mapping: { legacyOwnerId: string; issuer: string; subject: string }
+  mapping: { legacyOwnerId: string; issuer: string; subject: string },
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
 ): string {
   const selector = RunnerPrincipalSelectorSchema.parse({
     kind: 'external', issuer: mapping.issuer, subject: mapping.subject
   }) as ExternalPrincipalSelector;
   if (!mapping.legacyOwnerId || mapping.legacyOwnerId.length > 100) throw new Error('invalid legacy owner mapping');
   return transaction(database, () => {
-    const principalId = resolveExternalPrincipalInTransaction(database, selector, mapping.legacyOwnerId);
+    const principalId = resolveExternalPrincipalInTransaction(database, selector, mapping.legacyOwnerId, activeLimit);
     const unmapped = database.prepare(`SELECT 1
       FROM workspaces
       LEFT JOIN principals ON principals.id = workspaces.owner_id

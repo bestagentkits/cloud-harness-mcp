@@ -2,11 +2,16 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { RunnerPrincipalSelectorSchema, type ExecutorNetworkProfile } from '@cloud-harness/contracts';
+import { DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER, RunnerPrincipalSelectorSchema, type ExecutorNetworkProfile } from '@cloud-harness/contracts';
 import type { EncryptedSecret } from './secret-keyring.js';
 import {
+  ActiveWorkspaceLimitReachedError,
+  COUNTED_WORKSPACE_STATUSES,
+  ENUMERATED_WORKSPACE_STATUSES,
+  ENUMERATED_WORKSPACE_STATUS_PARAMS,
   applyLegacyPrincipalMapping,
   applyPrincipalRelinks,
+  countOwnerCountedWorkspaces as countOwnerCountedWorkspacesInDb,
   migratePrincipalSchema,
   principalByExternalIdentity,
   resolveExternalPrincipal,
@@ -37,6 +42,8 @@ export type {
   PrincipalSelector
 } from './principal-store.js';
 export {
+  ActiveWorkspaceLimitReachedError,
+  COUNTED_WORKSPACE_STATUSES,
   downgradeStateSchemaToV3,
   downgradeStateSchemaToV4,
   downgradeStateSchemaToV5,
@@ -270,10 +277,20 @@ const fromRow = (row: Row): WorkspaceRecord => ({
   requestFingerprint: row.request_fingerprint ?? null
 });
 
+/**
+ * Selects every workspace a sweep or startup reconciliation must visit: the counted
+ * slots plus in-flight teardown, so a record stuck in `REAPING` is still reconciled.
+ * Capacity is counted from the counted statuses alone, never from this set.
+ */
+const SELECT_ENUMERATED_WORKSPACES_SQL = `SELECT * FROM workspaces WHERE status IN (${ENUMERATED_WORKSPACE_STATUS_PARAMS})`;
+
 export class StateStore {
   readonly database: DatabaseSync;
   readonly knowledge: KnowledgeStore;
-  constructor(path: string) {
+  /** Per-principal active-workspace limit, applied to legacy ownership merges. */
+  readonly maxActiveWorkspacesPerOwner: number;
+  constructor(path: string, options: { maxActiveWorkspacesPerOwner?: number } = {}) {
+    this.maxActiveWorkspacesPerOwner = options.maxActiveWorkspacesPerOwner ?? DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER;
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.database = new DatabaseSync(path);
     try {
@@ -289,9 +306,6 @@ export class StateStore {
         last_activity_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, generation INTEGER NOT NULL DEFAULT 1,
         error TEXT, UNIQUE(owner_id, idempotency_key)
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner
-        ON workspaces(owner_id)
-        WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED');
       CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id
         ON workspaces(owner_id, id);
       CREATE TABLE IF NOT EXISTS privilege_grants (
@@ -367,6 +381,11 @@ export class StateStore {
       this.database.exec('ALTER TABLE comment_idempotency ADD COLUMN fingerprint TEXT;');
     }
     migratePrincipalSchema(this.database);
+    // One-way migration. A database written by an earlier release may still carry
+    // the retired single-active index, including via the former v5->v6 upgrade
+    // path, and it cannot be re-created once an owner legally holds two counted
+    // workspaces. The boot path never re-creates it.
+    this.database.exec('DROP INDEX IF EXISTS one_active_workspace_per_owner;');
       this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
         .run('runner_instance_id', randomBytes(18).toString('hex'));
       this.knowledge = new KnowledgeStore(this.database);
@@ -408,6 +427,64 @@ export class StateStore {
         record.error ?? null,
         record.requestFingerprint ?? null
       );
+  }
+
+  /**
+   * Atomically admits a new active workspace while the owner is below
+   * `activeLimit`. The count and the insert share one transaction, which makes this
+   * the admission authority: `WorkspaceService.ensureCapacity` awaits container and
+   * disk work before calling it, so no pre-check can be trusted on its own.
+   */
+  admit(record: WorkspaceRecord, activeLimit: number): void {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const active = this.countOwnerCountedWorkspaces(record.ownerId);
+      if (active >= activeLimit) throw new ActiveWorkspaceLimitReachedError(active, activeLimit);
+      this.create(record);
+      this.database.exec('COMMIT;');
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
+      throw error;
+    }
+  }
+
+  /**
+   * Fenced activation that charges a slot only when the record is not already
+   * counted, so every promotion out of `EXPIRED_RECOVERABLE` is bounded by the
+   * limit while re-activating an already-counted record (startup reconciliation)
+   * is never blocked by a lowered limit.
+   */
+  activateWithLimit(
+    id: string,
+    expectedGeneration: number,
+    expectedStatuses: WorkspaceRecord['status'][],
+    changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'generation' | 'error'>>,
+    activeLimit: number
+  ): WorkspaceRecord | undefined {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const current = this.byId(id);
+      if (!current || current.generation !== expectedGeneration || !expectedStatuses.includes(current.status)) {
+        this.database.exec('ROLLBACK;');
+        return undefined;
+      }
+      const countedStatuses: readonly string[] = COUNTED_WORKSPACE_STATUSES;
+      if (!countedStatuses.includes(current.status)) {
+        const active = this.countOwnerCountedWorkspaces(current.ownerId);
+        if (active >= activeLimit) throw new ActiveWorkspaceLimitReachedError(active, activeLimit);
+      }
+      const updated = this.updateFenced(id, expectedGeneration, expectedStatuses, changes);
+      this.database.exec('COMMIT;');
+      return updated;
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
+      throw error;
+    }
+  }
+
+  /** Counts the workspaces currently occupying one owner's active slots. */
+  countOwnerCountedWorkspaces(ownerId: string): number {
+    return countOwnerCountedWorkspacesInDb(this.database, ownerId);
   }
 
   saveSecretSnapshot(
@@ -558,13 +635,13 @@ export class StateStore {
   resolvePrincipal(selector: PrincipalSelector): string {
     const parsed = RunnerPrincipalSelectorSchema.parse(selector);
     if (parsed.kind === 'owner') {
-      return resolveOwnerPrincipal(this.database, parsed.ownerId);
+      return resolveOwnerPrincipal(this.database, parsed.ownerId, this.maxActiveWorkspacesPerOwner);
     }
     return this.resolveExternalPrincipal(parsed);
   }
 
   resolveExternalPrincipal(selector: ExternalPrincipalSelector, options: { legacyOwnerId?: string } = {}): string {
-    return resolveExternalPrincipal(this.database, selector, options);
+    return resolveExternalPrincipal(this.database, selector, options, this.maxActiveWorkspacesPerOwner);
   }
 
   principalByExternalIdentity(selector: Pick<ExternalPrincipalSelector, 'issuer' | 'subject'>): PrincipalRecord | undefined {
@@ -580,7 +657,7 @@ export class StateStore {
   }
 
   applyLegacyPrincipalMapping(mapping: { legacyOwnerId: string; issuer: string; subject: string }): string {
-    return applyLegacyPrincipalMapping(this.database, mapping);
+    return applyLegacyPrincipalMapping(this.database, mapping, this.maxActiveWorkspacesPerOwner);
   }
 
   applyPrincipalRelinks(
@@ -600,7 +677,8 @@ export class StateStore {
   }
 
   active(): WorkspaceRecord[] {
-    return (this.database.prepare("SELECT * FROM workspaces WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED')").all() as Row[]).map(fromRow);
+    return (this.database.prepare(SELECT_ENUMERATED_WORKSPACES_SQL)
+      .all(...ENUMERATED_WORKSPACE_STATUSES) as Row[]).map(fromRow);
   }
   update(id: string, changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'hardExpiresAt' | 'gitAuthorName' | 'gitAuthorEmail' | 'mutationLockedUntil' | 'generation' | 'error'>>): WorkspaceRecord {
     const current = this.byId(id);
@@ -821,31 +899,27 @@ export class StateStore {
       return record;
     }
     const activeWorkspaces = this.list(ownerId).filter((w) => w.status === 'ACTIVE' || w.status === 'CREATING');
+    // More than one active workspace makes an implicit target ambiguous. The
+    // destructive tools (`workspace_close`, `workspace_finalize`, `files_write`,
+    // `git_commit`) accept an optional `workspaceId`, so honouring the stored
+    // preference here would silently act on a workspace the caller may not mean.
+    // Refuse and name the candidates instead of guessing.
+    if (activeWorkspaces.length > 1) throw new Error('AMBIGUOUS_ACTIVE_WORKSPACES');
+    const firstActive = activeWorkspaces[0];
+    if (firstActive) return firstActive;
+    const recoverable = this.list(ownerId).filter((w) => w.status === 'EXPIRED_RECOVERABLE' || w.status === 'NETWORK_QUARANTINED');
+    if (recoverable.length === 0) throw new Error('NO_ACTIVE_WORKSPACE');
+    // With nothing active the preference selects among recoverable records, which is
+    // the only remaining case where it is unambiguous.
     const preferred = this.getPreferredWorkspace(ownerId);
     if (preferred) {
       const record = this.byOwnerAndId(ownerId, preferred);
-      if (record && (record.status === 'ACTIVE' || record.status === 'CREATING')) {
+      if (record && (record.status === 'EXPIRED_RECOVERABLE' || record.status === 'NETWORK_QUARANTINED')) {
         return record;
       }
     }
-    const firstActive = activeWorkspaces[0];
-    if (activeWorkspaces.length === 1 && firstActive) {
-      return firstActive;
-    }
-    if (activeWorkspaces.length === 0) {
-      if (preferred) {
-        const record = this.byOwnerAndId(ownerId, preferred);
-        if (record && (record.status === 'EXPIRED_RECOVERABLE' || record.status === 'NETWORK_QUARANTINED')) {
-          return record;
-        }
-      }
-      const recoverable = this.list(ownerId).filter((w) => w.status === 'EXPIRED_RECOVERABLE' || w.status === 'NETWORK_QUARANTINED');
-      const firstRecoverable = recoverable[0];
-      if (recoverable.length === 1 && firstRecoverable) {
-        return firstRecoverable;
-      }
-      throw new Error('NO_ACTIVE_WORKSPACE');
-    }
+    const firstRecoverable = recoverable[0];
+    if (recoverable.length === 1 && firstRecoverable) return firstRecoverable;
     throw new Error('AMBIGUOUS_ACTIVE_WORKSPACES');
   }
 

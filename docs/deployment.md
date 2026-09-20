@@ -341,6 +341,17 @@ set, so its deployment is ordered:
    keep a coherent recovery backup and restore it instead of retrying a downgrade
    that does not complete.
 
+Before rolling back the runner to a release that predates multi-workspace
+admission, reduce every principal to one counted workspace (`CREATING`, `ACTIVE`,
+`REAPING`, `NETWORK_QUARANTINED`). Those releases re-create the retired
+`one_active_workspace_per_owner` unique index while constructing the state store,
+which fails against a database holding two or more counted workspaces for one
+principal and prevents that runner from starting. The retirement, its boot-time
+drop, and the constraint are owned by
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts),
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts), and
+[configuration](configuration.md).
+
 Owner-bearer canary uses the private bearer path. Access canary requires an
 owner-provisioned Access service-token client ID/secret and the public HTTPS
 endpoint, so the request traverses the Access edge; there is no local bearer

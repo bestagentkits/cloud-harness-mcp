@@ -123,6 +123,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     maxOutputBytes: process.env.MAX_OUTPUT_BYTES,
     minFreeBytes: process.env.MIN_FREE_BYTES,
     maxWorkspaceBytes: process.env.MAX_WORKSPACE_BYTES,
+    maxActiveWorkspacesPerOwner: process.env.MAX_ACTIVE_WORKSPACES_PER_OWNER,
     reaperIntervalSeconds: process.env.REAPER_INTERVAL_SECONDS,
     artifactRoot: process.env.ARTIFACT_ROOT,
     maxArtifactBytes: process.env.MAX_ARTIFACT_BYTES,

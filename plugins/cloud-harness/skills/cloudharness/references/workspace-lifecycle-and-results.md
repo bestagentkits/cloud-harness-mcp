@@ -1,8 +1,11 @@
 # Workspace lifecycle, results, and recovery
 
 Every operation outside workspace listing/opening requires the exact opaque
-`workspaceId` returned by Cloud Harness. A workspace is owner-bound, limited to
-one active workspace in the current service, and removed by close or TTL expiry.
+`workspaceId` returned by Cloud Harness. A workspace is owner-bound, and a
+principal may hold several concurrent counted workspaces up to the instance's
+configured `MAX_ACTIVE_WORKSPACES_PER_OWNER` limit; each is removed by close or TTL
+expiry. Pass `workspaceId` on every operation whenever more than one workspace is
+counted: an implicit target is refused with `CONFLICT` when it would be ambiguous.
 
 ## Result envelope
 
@@ -38,7 +41,7 @@ On failure `error` may also carry actionable detail fields: `resumeAction`
 | `NOT_FOUND` | Re-list or re-read; do not guess an ID/name/path. |
 | `CONFLICT` | Re-read current state and rebuild the intended mutation. |
 | `EXPIRED` | The workspace/resource is gone; open a new workspace if authorized. |
-| `LIMIT_EXCEEDED` | Close/reduce resources or wait when explicitly retryable. |
+| `LIMIT_EXCEEDED` | The owner's counted-workspace quota is full, or another capacity bound was hit. Counted statuses are `CREATING`, `ACTIVE`, and `NETWORK_QUARANTINED`; a record in `REAPING` is in flight to teardown and holds no slot. List workspaces, close one, or retry when explicitly retryable. |
 | `TIMEOUT` | Inspect current state before rerunning; work may have partially changed state. |
 | `CANCELLED` | Inspect current files/Git/process state before deciding next action. |
 | `UNAVAILABLE` | Retry only when marked retryable and after checking external prerequisites. |

@@ -352,9 +352,13 @@ the ceiling triggers cleanup. If the host UID cannot remove executor-owned
 files, cleanup uses a separate fixed no-network, capability-free helper;
 startup reaps interrupted ephemeral helpers.
 
-The current storage ceiling is not a hard quota. One-workspace admission, a
-host free-space floor, operation-boundary checks, and periodic reaping reduce
-risk, but a process can still fill the shared filesystem between checks.
+The current storage ceiling is not a hard quota. Per-principal workspace
+admission, a host free-space floor, operation-boundary checks, and periodic
+reaping reduce risk, but a process can still fill the shared filesystem between
+checks. The shipped `MAX_ACTIVE_WORKSPACES_PER_OWNER` default already permits three
+counted workspaces per principal, and raising it multiplies the per-workspace
+container bounds rather than replacing them: every counted workspace keeps its own
+memory, CPU, pid, and byte limits, and only their number grows.
 Monitor the host and use a dedicated quota-backed filesystem before accepting
 untrusted workloads.
 

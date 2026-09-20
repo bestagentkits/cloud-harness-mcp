@@ -116,3 +116,15 @@ To work without egress meanwhile, reset the default to `network-none` on the Set
 1. The error names the missing scope. Add that permission to the GitHub App and approve the pending installation change on GitHub, then retry. The [GitHub App setup](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/github-app-private-repositories.md) guide lists which operations need which permission. An action-scoped token also carries **Contents: Read-only** so that `gh` can resolve repository metadata, so that permission is required for `github_action` even when the named action scope is already granted.
 2. Alternatively, configure the fallback credential for that principal: the runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in `owner-bearer` mode, or that principal's global runtime secret in Access mode. The runner-environment credential is harness-side only and never enters an executor; a principal's global runtime secret is injected into that principal's workspaces, so it also authenticates the workspace `gh` CLI.
 A `403` from the helper is never retried, because the operation may already have had side effects; inspect the issue or pull request before retrying.
+
+### 12. `LIMIT_EXCEEDED: active workspace limit reached` on `workspace_open`
+**Cause:** The principal already holds `MAX_ACTIVE_WORKSPACES_PER_OWNER` counted workspaces (`CREATING`, `ACTIVE`, `NETWORK_QUARANTINED`). A record in `REAPING` is in flight to teardown and holds no slot. Multiple concurrent workspaces are supported by design, so this is a quota rather than a harness limitation.
+**Fix:**
+1. Call `workspace_list` to see the counted workspaces, then `workspace_close` one you no longer need. Closing removes that workspace's files, so finalize or push unpushed work first.
+2. An `ACTIVE` workspace also frees its slot when its idle or wall TTL expires. A `NETWORK_QUARANTINED` record does not expire, so close it explicitly.
+3. Raise `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner (default `3`, maximum `64`) after sizing host memory for the new limit, because each counted workspace may use up to 1 GiB of container memory, one CPU, and 256 pids.
+Lowering the limit never reaps an existing workspace; it only blocks new admission and recovery until the counted total drops.
+
+### 13. A workspace is stuck in `REAPING`
+**Cause:** A teardown that failed before its final `CLOSED` write leaves the record in `REAPING`. A `REAPING` record holds no capacity slot, so it never blocks `workspace_open`; the visible symptom is a workspace that will not disappear from the dashboard.
+**Fix:** Call `workspace_close` again on that workspace. The close path skips the claim for a record already in `REAPING` and retries container and path removal, so a repeat close is the supported remedy. Only the fenced dashboard close refuses a `REAPING` record with `409 CONFLICT`. If removal keeps failing, fix the underlying Docker or filesystem fault rather than running broad Docker or database cleanup.

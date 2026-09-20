@@ -67,6 +67,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `DEPENDENCY_NETWORK_NAME` | `cloud-harness-dependency-access` | Optional | Optional configuration. |
 | `WORKSPACE_WALL_TTL_SECONDS` | `900` | **Required** | Required configuration. |
 | `WORKSPACE_IDLE_TTL_SECONDS` | `300` | **Required** | Required configuration. |
+| `MAX_ACTIVE_WORKSPACES_PER_OWNER` | `3` | **Required** | Concurrent active workspaces allowed per principal. Defaults to 3 when unset; set 1 to restore single-workspace behaviour. Each counted workspace can use up to 1 GiB of container memory, one CPU, and 256 pids, so size host memory for this limit times the expected simultaneous builds. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |

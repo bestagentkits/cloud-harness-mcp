@@ -7,6 +7,7 @@ import {
   ApiConfigSchema,
   ContextManifestItemSchema,
   ContextManifestSchema,
+  DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   ErrorCodeSchema,
   ExecutorNetworkProfileSchema,
   HarnessError,
@@ -100,6 +101,20 @@ describe('contracts', () => {
     expect(RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', legacyPrincipalMapping: mapping }).legacyPrincipalMapping).toEqual(mapping);
     expect(() => RunnerConfigSchema.parse({ ...runner, legacyPrincipalMapping: mapping })).toThrow();
     expect(() => RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', legacyPrincipalMapping: { ...mapping, issuer: 'http://team.cloudflareaccess.com' } })).toThrow();
+  });
+
+  it('bounds the per-owner concurrent workspace limit and ships the shared default', () => {
+    const runner = {
+      serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
+      executorImage: 'executor:latest', allowedGitHosts: ['github.com']
+    };
+
+    expect(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER).toBe(3);
+    expect(RunnerConfigSchema.parse(runner).maxActiveWorkspacesPerOwner).toBe(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER);
+    expect(RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: '1' }).maxActiveWorkspacesPerOwner).toBe(1);
+    expect(RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: 64 }).maxActiveWorkspacesPerOwner).toBe(64);
+    expect(() => RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: '0' })).toThrow();
+    expect(() => RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: 65 })).toThrow();
   });
 
   it('accepts only complete, unique Access principal relinks', () => {

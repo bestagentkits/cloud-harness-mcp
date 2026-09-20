@@ -19,7 +19,7 @@ The trusted central daemon (`apps/runner`) responsible for Docker container life
 The authenticated identity invoking MCP tools.
 - In **Managed OAuth** mode, the principal is identified by Cloudflare Access claims (`sub`, `email`).
 - In **Static API Key** mode, the principal is identified by the API key record created in the dashboard.
-Workspaces are strictly isolated between different principals.
+Workspaces are strictly isolated between different principals. A single principal may hold several concurrent workspaces at once, up to the instance's configured `MAX_ACTIVE_WORKSPACES_PER_OWNER` limit (default 3, `1` restores single-workspace behaviour). Each is addressed by its own opaque `workspaceId`, and once more than one workspace is counted every operation except `workspace_list` must carry that id (or a `workspace_set_active` preference) to avoid a `CONFLICT` ambiguity error.
 
 ### Idempotency Key
 A unique client-generated string (8–128 characters) passed to mutating lifecycle operations such as `workspace_open`. If network connectivity drops, sending the same idempotency key recovers the existing workspace without repeating the clone operation.

@@ -4,6 +4,7 @@ import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs,
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
+  DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   HarnessError,
   InternalRunnerRequestSchema,
   RunnerOperationSchema,
@@ -27,7 +28,14 @@ import type { GitHubInstallationRecord, GitHubInstallationStore } from './github
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
-import type { GitOperationStatus, PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
+import {
+  ActiveWorkspaceLimitReachedError,
+  COUNTED_WORKSPACE_STATUSES,
+  type GitOperationStatus,
+  type PrincipalSelector,
+  type StateStore,
+  type WorkspaceRecord
+} from './state-store.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
@@ -45,6 +53,13 @@ import {
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
+/**
+ * Statuses that occupy a counted capacity slot. `REAPING` is excluded because it
+ * marks in-flight teardown, so a record being destroyed must not consume a slot or
+ * inflate the count reported in a quota error. Capacity decisions use this set;
+ * `activeStatus` remains the enumeration superset for sweeps and container cleanup.
+ */
+const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATUSES);
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
@@ -417,6 +432,30 @@ export class WorkspaceService {
     }
   }
 
+  /**
+   * Concurrent counted workspaces this owner may hold. The `??` fallback mirrors
+   * the existing `dependencyNetworkName` pattern and exists because several tests
+   * build partial `RunnerConfig` literals; production values always come from the
+   * validated schema.
+   */
+  private activeWorkspaceLimit(): number {
+    return this.config.maxActiveWorkspacesPerOwner ?? DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER;
+  }
+
+  /**
+   * The remedy deliberately omits "wait for one to expire":
+   * `NETWORK_QUARANTINED` and `REAPING` records are counted but no sweep ever
+   * expires them, so `workspace_close` is the only remedy that always works.
+   */
+  private activeWorkspaceLimitError(active: number, limit: number): HarnessError {
+    return new HarnessError(
+      'LIMIT_EXCEEDED',
+      `active workspace limit reached: ${active} active of a maximum ${limit}; close a workspace with workspace_close before opening another`,
+      429,
+      true
+    );
+  }
+
   private async ensureCapacity(ownerId: string): Promise<void> {
     const list = this.store.list(ownerId);
     const active = list.filter((record) => activeStatus.has(record.status));
@@ -436,9 +475,10 @@ export class WorkspaceService {
         }
       }
     }
-    const remainingActive = this.store.list(ownerId).filter((record) => activeStatus.has(record.status));
-    if (remainingActive.length > 0) {
-      throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+    const remainingActive = this.store.list(ownerId).filter((record) => countedStatus.has(record.status));
+    const limit = this.activeWorkspaceLimit();
+    if (remainingActive.length >= limit) {
+      throw this.activeWorkspaceLimitError(remainingActive.length, limit);
     }
     const info = await statfs(this.config.jobsRoot);
     const freeBytes = Number(info.bavail) * Number(info.bsize);
@@ -730,11 +770,22 @@ export class WorkspaceService {
       throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
     }
     const containerName = await this.createExecutor(record, repositoryPath, validatedWorkspaceEnvironment(environment));
-    const updated = this.store.updateFenced(record.id, record.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'], {
-      containerName,
-      status: 'ACTIVE',
-      error: null
-    });
+    let updated: WorkspaceRecord | undefined;
+    try {
+      updated = this.store.activateWithLimit(
+        record.id,
+        record.generation,
+        ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'],
+        { containerName, status: 'ACTIVE', error: null },
+        this.activeWorkspaceLimit()
+      );
+    } catch (error) {
+      await removeContainer(containerName).catch(() => undefined);
+      if (error instanceof ActiveWorkspaceLimitReachedError) {
+        throw this.activeWorkspaceLimitError(error.active, error.limit);
+      }
+      throw error;
+    }
     if (!updated) {
       await removeContainer(containerName).catch(() => undefined);
       throw new HarnessError('CONFLICT', 'workspace lifecycle changed during executor activation', 409, true);
@@ -769,7 +820,7 @@ export class WorkspaceService {
       mutationLockedUntil: null, generation: 1, error: null, requestFingerprint
     };
     try {
-      this.store.create(record);
+      this.store.admit(record, this.activeWorkspaceLimit());
     } catch (error) {
       const replay = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
       if (replay) {
@@ -778,8 +829,8 @@ export class WorkspaceService {
         }
         return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(replay), truncated: false };
       }
-      if (this.store.list(ownerId).some((candidate) => activeStatus.has(candidate.status))) {
-        throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+      if (error instanceof ActiveWorkspaceLimitReachedError) {
+        throw this.activeWorkspaceLimitError(error.active, error.limit);
       }
       throw error;
     }
@@ -1161,7 +1212,7 @@ export class WorkspaceService {
         }
         if (err.message === 'AMBIGUOUS_ACTIVE_WORKSPACES') {
           const list = this.store.list(ownerId).filter((w) => w.status === 'ACTIVE' || w.status === 'CREATING');
-          throw new HarnessError('CONFLICT', `Multiple active workspaces found (${list.map((w) => w.id).join(', ')}). Specify workspaceId or set active workspace.`, 409);
+          throw new HarnessError('CONFLICT', `Multiple active workspaces found (${list.map((w) => w.id).join(', ')}). Specify workspaceId on each call.`, 409);
         }
         if (err.message === 'FORBIDDEN') {
           throw new HarnessError('FORBIDDEN', 'workspace access not authorized', 403);
@@ -2107,6 +2158,21 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       const targetId = validated.workspaceId as string;
       const targetRecord = this.store.byOwnerAndId(ownerId, targetId);
       if (!targetRecord) throw new HarnessError('NOT_FOUND', `workspace ${targetId} not found`);
+      // The stored preference is consulted only when the target is unambiguous, so
+      // reject a target resolution would ignore instead of reporting success for a
+      // preference that never takes effect.
+      const activeWorkspaces = this.store.list(ownerId).filter((w) => w.status === 'ACTIVE' || w.status === 'CREATING');
+      const isActiveTarget = targetRecord.status === 'ACTIVE' || targetRecord.status === 'CREATING';
+      const isRecoverableTarget = targetRecord.status === 'EXPIRED_RECOVERABLE' || targetRecord.status === 'NETWORK_QUARANTINED';
+      if (isActiveTarget && activeWorkspaces.length > 1) {
+        throw new HarnessError('CONFLICT', 'more than one active workspace exists; pass workspaceId on each call instead of setting a default', 409, true);
+      }
+      if (isRecoverableTarget && activeWorkspaces.length > 0) {
+        throw new HarnessError('CONFLICT', 'an active workspace exists, so a recoverable workspace cannot become the default; pass workspaceId explicitly', 409, true);
+      }
+      if (!isActiveTarget && !isRecoverableTarget) {
+        throw new HarnessError('CONFLICT', `workspace is ${targetRecord.status.toLowerCase()} and cannot be set as the active workspace`, 409, true);
+      }
       this.store.setPreferredWorkspace(ownerId, targetId);
       return {
         ok: true,
@@ -2226,9 +2292,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       const isRecoverable = rec.status === 'EXPIRED_RECOVERABLE';
       if (isRecoverable) {
-        const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && activeStatus.has(w.status));
-        if (activeSiblings.length > 0) {
-          throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+        const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && countedStatus.has(w.status));
+        const limit = this.activeWorkspaceLimit();
+        if (activeSiblings.length >= limit) {
+          throw this.activeWorkspaceLimitError(activeSiblings.length, limit);
         }
         const holdExpiry = now + 300_000;
         try {
@@ -2246,16 +2313,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
         let updated: WorkspaceRecord | undefined;
         try {
-          updated = this.store.updateFenced(activeRecord.id, activeRecord.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
-            status: 'ACTIVE',
-            lastActivityAt: now,
-            expiresAt: newExpires
-          });
-        } catch (err) {
-          if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
-            throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+          updated = this.store.activateWithLimit(
+            activeRecord.id,
+            activeRecord.generation,
+            ['ACTIVE', 'EXPIRED_RECOVERABLE'],
+            { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires },
+            this.activeWorkspaceLimit()
+          );
+        } catch (error) {
+          if (error instanceof ActiveWorkspaceLimitReachedError) {
+            throw this.activeWorkspaceLimitError(error.active, error.limit);
           }
-          throw err;
+          throw error;
         }
         if (!updated) {
           throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during renewal', 409);
@@ -2283,9 +2352,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
         const isRecoverable = rec.status === 'EXPIRED_RECOVERABLE';
         if (isRecoverable) {
-          const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && activeStatus.has(w.status));
-          if (activeSiblings.length > 0) {
-            throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+          const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && countedStatus.has(w.status));
+          const limit = this.activeWorkspaceLimit();
+          if (activeSiblings.length >= limit) {
+            throw this.activeWorkspaceLimitError(activeSiblings.length, limit);
           }
           const holdExpiry = now + 300_000;
           try {
@@ -2300,17 +2370,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           const newExpires = Math.min(activeRecord.hardExpiresAt, now + extSec * 1000);
           let updated: WorkspaceRecord | undefined;
           try {
-            updated = this.store.updateFenced(activeRecord.id, activeRecord.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'], {
-              status: 'ACTIVE',
-              lastActivityAt: now,
-              expiresAt: newExpires,
-              error: null
-            });
-          } catch (err) {
-            if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
-              throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+            updated = this.store.activateWithLimit(
+              activeRecord.id,
+              activeRecord.generation,
+              ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'],
+              { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires, error: null },
+              this.activeWorkspaceLimit()
+            );
+          } catch (error) {
+            if (error instanceof ActiveWorkspaceLimitReachedError) {
+              throw this.activeWorkspaceLimitError(error.active, error.limit);
             }
-            throw err;
+            throw error;
           }
           if (!updated) {
             throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during recovery', 409);
