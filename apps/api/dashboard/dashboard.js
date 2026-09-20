@@ -561,6 +561,30 @@ export function groupBulkRequests(skills, skillIds) {
   return [...groups.values()];
 }
 
+/**
+ * Body for creating a skill set. A set stores the exact revision of each member, so the builder
+ * resolves the current revision of every chosen skill rather than storing a name that could later
+ * resolve to different content. A member without a revision is refused here, because the runner would
+ * accept the name and only fail when the set is used.
+ */
+export function buildSkillSetBody({ name, description, skills, selectedIds }) {
+  const trimmed = String(name ?? '').trim();
+  if (trimmed === '') return { ok: false, message: 'A skill set needs a name.' };
+  const ids = Array.isArray(selectedIds) ? selectedIds : [];
+  if (ids.length === 0) return { ok: false, message: 'Select at least one skill.' };
+
+  const items = [];
+  for (const id of ids) {
+    const skill = (Array.isArray(skills) ? skills : []).find((candidate) => candidate.id === id);
+    if (!skill || !skill.currentRevisionId) {
+      return { ok: false, message: 'Every member needs a skill that has a revision.' };
+    }
+    items.push({ skillSourceId: id, revisionId: skill.currentRevisionId, name: skill.slug ?? skill.displayName ?? id });
+  }
+
+  return { ok: true, body: { name: trimmed, description: String(description ?? ''), items, expectedGeneration: 0 } };
+}
+
 export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
   { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },

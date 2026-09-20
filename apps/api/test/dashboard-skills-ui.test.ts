@@ -10,6 +10,7 @@ import {
 } from '../dashboard/dashboard-render.js';
 import {
   buildSkillImportRequest,
+  buildSkillSetBody,
   createImportPollingController,
   createLaunchSkillSetController,
   createSkillEditorController,
@@ -494,6 +495,41 @@ describe('bulk batching', () => {
   it('returns nothing for an empty selection, so no request is sent', () => {
     expect(groupBulkRequests(skills, [])).toEqual([]);
     expect(groupBulkRequests(undefined, undefined)).toEqual([]);
+  });
+});
+
+describe('skill set builder', () => {
+  const skills = [
+    { id: 'sk_a', slug: 'tdd', displayName: 'TDD', currentRevisionId: 'skrev_a' },
+    { id: 'sk_b', slug: 'review', displayName: 'Review', currentRevisionId: 'skrev_b' }
+  ];
+
+  it('pins each member to the revision that is current when the set is built', () => {
+    const result = buildSkillSetBody({ name: 'core', description: 'daily work', skills, selectedIds: ['sk_a', 'sk_b'] });
+
+    expect(result.ok).toBe(true);
+    expect(result.body).toEqual({
+      name: 'core',
+      description: 'daily work',
+      items: [
+        { skillSourceId: 'sk_a', revisionId: 'skrev_a', name: 'tdd' },
+        { skillSourceId: 'sk_b', revisionId: 'skrev_b', name: 'review' }
+      ],
+      expectedGeneration: 0
+    });
+  });
+
+  it('refuses an empty name or an empty selection before calling the server', () => {
+    expect(buildSkillSetBody({ name: '   ', skills, selectedIds: ['sk_a'] })).toMatchObject({ ok: false });
+    expect(buildSkillSetBody({ name: 'core', skills, selectedIds: [] })).toMatchObject({ ok: false });
+  });
+
+  it('refuses a member whose skill has no revision, rather than creating a set that fails later', () => {
+    const revisionless = [{ id: 'sk_c', slug: 'draft', displayName: 'Draft', currentRevisionId: null }];
+    const result = buildSkillSetBody({ name: 'core', skills: revisionless, selectedIds: ['sk_c'] });
+
+    expect(result).toMatchObject({ ok: false });
+    expect(result.message).toMatch(/revision/i);
   });
 });
 
