@@ -764,6 +764,35 @@ export class DashboardControlService {
           });
           return mutation('Skill forked', { ...created, forkedFrom: { skillId: source.id, revisionId: revision.id } });
         }
+        case 'skill_revision_create': {
+          const source = required(
+            this.principals.getSkillSource(principalId, parsed.input.skillId),
+            `Skill ${parsed.input.skillId} was not found`
+          );
+          // The package is published before the revision row is written, for the same reason a created
+          // skill publishes first: a revision that pointed at missing bytes would resolve and then fail.
+          let published: { bundleSha256: string };
+          try {
+            published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, {
+              [`skills/${source.slug}/SKILL.md`]: parsed.input.instructions
+            });
+          } catch (error) {
+            throw new HarnessError('INVALID_INPUT', error instanceof Error ? error.message : 'the skill package could not be published', 400, false);
+          }
+          const revisionId = this.principals.addSkillRevision({
+            ownerId: principalId,
+            skillSourceId: source.id,
+            bundleSha256: published.bundleSha256,
+            // The bundle digest covers the whole tree; this digest is the authored instructions.
+            contentSha256: createHash('sha256').update(parsed.input.instructions).digest('hex'),
+            // Edited instructions carry no scripts, so the new revision reports that it has nothing to
+            // execute rather than inheriting the previous revision's claim about executable assets.
+            hasExecutableAssets: false,
+            origin: 'edit',
+            expectedGeneration: parsed.input.expectedGeneration
+          });
+          return mutation('Skill revision created', { sourceId: source.id, revisionId });
+        }
         case 'integration_credential_list':
           return ok('Integration credentials listed', { credentials: this.integrationCredentials().list(principalId) });
         case 'integration_credential_create': return mutation('Integration credential created', this.integrationCredentials().create({

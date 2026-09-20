@@ -73,6 +73,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'toolkit_registry_list',
   'skill_suggest', 'typesafe_status',
   'skill_revision_fork',
+  'skill_revision_create',
   'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ] as const;
 
@@ -280,6 +281,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'integration_credential_list') return list(data, 'credentials', integrationCredentialKeys);
   if (operation === 'integration_credential_delete') return pick(data, ['id', 'deleted']);
   if (operation === 'integration_credential_create' || operation === 'integration_credential_rotate') return pick(data, integrationCredentialKeys);
+  if (operation === 'skill_revision_create') return pick(data, ['sourceId', 'revisionId']);
   if (operation === 'skill_revision_fork') {
     return {
       ...pick(data, ['sourceId', 'revisionId']),
