@@ -89,6 +89,40 @@ const principal = { kind: 'external' as const, issuer: 'https://access.example.c
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
 
 describe('dashboard control service', () => {
+  it('previews a skill set through the resolver and refuses a set that moved', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const { sourceId, revisionId } = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), hasExecutableAssets: false }
+    });
+    const setId = principals.createSkillSet({
+      ownerId, name: 'core', items: [{ skillSourceId: sourceId, revisionId, name: 'tdd' }]
+    });
+
+    const preview = await controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: setId, expectedGeneration: 1 }]
+    }));
+    const data = preview.data as { resolved: unknown[]; conflicts: unknown[]; generation: number };
+    expect(data.generation).toBe(1);
+    expect(data.conflicts).toEqual([]);
+    expect(data.resolved).toEqual([{ name: 'tdd', tier: 'owner', sourceId, revisionId, contentSha256: revisionId, pinned: false }]);
+
+    // An override pins the revision, so the preview shows what launch would actually resolve.
+    const pinned = await controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: setId, expectedGeneration: 1 }],
+      skillOverrides: { tdd: revisionId }
+    }));
+    expect((pinned.data as { resolved: Array<{ pinned: boolean }> }).resolved[0]?.pinned).toBe(true);
+
+    await expect(controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: setId, expectedGeneration: 99 }]
+    }))).rejects.toMatchObject({ code: 'STALE_GENERATION', status: 409 });
+
+    await expect(controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: `skset_${'z'.repeat(24)}`, expectedGeneration: 1 }]
+    }))).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
   it('reports a bulk state change per item instead of failing the whole batch', async () => {
     const { controls, principals } = setup();
     const ownerId = principals.resolvePrincipal(principal);

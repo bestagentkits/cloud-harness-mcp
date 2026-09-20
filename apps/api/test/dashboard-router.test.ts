@@ -138,6 +138,7 @@ describe('dashboard BFF', () => {
       [`/api/v1/skills/${skillId}/archive`, 'skill_archive', 'POST', { expectedGeneration: 2 }],
       ['/api/v1/skill-sets', 'skill_set_create', 'POST', { name: 'core' }],
       [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_update', 'PATCH', { name: 'core', expectedGeneration: 2 }],
+      ['/api/v1/skill-sets/preview', 'skill_set_preview', 'POST', { skillSets: [{ skillSetId, expectedGeneration: 2 }] }],
       [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_delete', 'DELETE', { expectedGeneration: 2 }]
     ];
 

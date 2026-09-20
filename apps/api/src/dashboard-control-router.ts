@@ -57,6 +57,7 @@ export function registerDashboardControlRoutes(
   router.get('/api/v1/skills/:skillId/revisions/:revisionId', endpoint('skill_revision_get', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), revisionId: internalId('skrev').parse(request.params.revisionId) })));
   router.get('/api/v1/skills/:skillId/usage', endpoint('skill_usage', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
   router.get('/api/v1/skill-sets', endpoint('skill_set_list', () => ({})));
+  router.post('/api/v1/skill-sets/preview', endpoint('skill_set_preview', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.get('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_get', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId) })));
   router.get('/api/v1/skill-imports/:jobId', endpoint('skill_import_status', (request) => ({ jobId: internalId('skjob').parse(request.params.jobId) })));
   router.patch('/api/v1/skills/:skillId', endpoint('skill_update', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));

@@ -8,6 +8,7 @@ import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
+import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import type { AgentGatewayControl } from './agent-gateway-control.js';
@@ -530,6 +531,48 @@ export class DashboardControlService {
             }
           });
           return ok('Skills updated in bulk', { results });
+        }
+        case 'skill_set_preview': {
+          const sources = this.principals.listSkillSources(principalId, { limit: 200 })
+            .filter((skill): skill is NonNullable<ReturnType<StateStore['getSkillSource']>> => skill !== undefined);
+          const byId = new Map(sources.map((skill) => [skill.id, skill]));
+          const candidates: SkillCandidate[] = [];
+          let generation = 0;
+
+          for (const requested of parsed.input.skillSets) {
+            const set = this.principals.getSkillSet(principalId, requested.skillSetId);
+            if (!set) throw new HarnessError('NOT_FOUND', `Skill set ${requested.skillSetId} was not found`, 404, false);
+            // A preview the operator never saw must not be acted on, so a set that moved since the
+            // preview request is refused rather than resolved against the newer contents.
+            if (set.generation !== requested.expectedGeneration) {
+              throw new HarnessError('STALE_GENERATION', `Skill set ${requested.skillSetId} is at generation ${set.generation} but the preview expected ${requested.expectedGeneration}`, 409, false);
+            }
+            generation = Math.max(generation, set.generation);
+            for (const item of set.items) {
+              const source = byId.get(item.skillSourceId);
+              // A registry skill is installed into the owner tier, so its source kind is not its tier.
+              const kind = source?.kind ?? 'owner';
+              const tier: SkillTier = kind === 'registry' ? 'owner' : kind;
+              candidates.push({
+                name: item.name,
+                tier,
+                sourceId: item.skillSourceId,
+                revisionId: item.revisionId,
+                // The revision pins the content, so two items agree exactly when they name the same
+                // revision; a differing revision at the same tier is the collision the resolver reports.
+                contentSha256: item.revisionId,
+                ...(source?.state === undefined ? {} : { state: source.state })
+              });
+            }
+          }
+
+          const resolution = resolveWorkspaceSkills({ candidates, overrides: parsed.input.skillOverrides });
+          return ok('Skill set preview', {
+            generation,
+            resolved: resolution.resolved,
+            excluded: resolution.excluded,
+            conflicts: resolution.conflicts
+          });
         }
         default:
           // Any internal operation that has no runner handler yet fails loudly instead of returning an
