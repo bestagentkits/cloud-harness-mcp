@@ -107,7 +107,9 @@ Full Lifecycle E2E Verification
 - `docs/system-architecture.md`, `docs/design-guidelines.md`, `docs-site/agent-toolkits.md`, and `docs/security-model.md` point at the owners of the behaviour rather than restating it.
 - `npm run docs:check` and `npm run plugin:check` both pass, and `npm run verify` is green.
 
-**Environment limitation, recorded rather than worked around:**
-- `npm run test:e2e` cannot run on this Windows host. `test/e2e/pi-agent.docker.test.ts` brings up the `gateway-test` compose profile, and `fake-provider` exits 1 with `EISDIR: illegal operation on a directory, read` from `apps/model-gateway/dist/fake-provider.js:5`, so its dependency never starts. This branch does not touch `apps/model-gateway`, the fake provider, or that compose profile, and the failure is the same family as the TLS fixture generator that also fails on this host in the Docker lane. `test/e2e/coding-workflow.docker.test.ts` passes, so the lane itself is not broken.
+**Container lanes — resolved, and the cause is worth recording:**
+- Both lanes were failing on this host, and the cause was not the lane. A Docker mount point had replaced the TLS fixture files at `.cloud-harness-test-fixtures/model-gateway/server-cert.pem` and `server-key.pem` with directories, so `existsSync` succeeded on a directory, `ensureTlsFixtures` returned it, and `readFileSync` raised `EISDIR`. Docker recreates those directories whenever the fixtures are absent, so the failure returns until the generator is run.
+- After regenerating them with `node scripts/generate-model-gateway-test-fixtures.mjs`: `npm run test:docker` reports `Test Files 6 passed | 1 skipped (7)` and `Tests 25 passed | 2 skipped (27)`, and `npm run test:e2e` reports `Test Files 2 passed (2)` and `Tests 3 passed (3)`. Both new suites in this phase pass inside the image.
+- The branch does not touch `apps/model-gateway`, the fake provider, or the `gateway-test` profile.
 
 **Still open from this phase:** the agent-skill documents under `.agents/skills/cloudharness/` describe the tool surface, and the tool this plan adds there (`skill_suggest`) is phase 9 work, so those updates land with it and `npm run plugin:sync` runs afterwards.
