@@ -103,3 +103,17 @@ Workspace Open Request (skillSets[], toolkits[], skillOverrides{})
 ## Risk Assessment
 - **Risk:** Stale `expectedGeneration` on Skill Sets when multiple owners or tabs edit sets concurrently.
 - **Mitigation:** Enforce generation validation in `SkillResolver`. If any selected Skill Set has a generation mismatch, reject launch with `409 STALE_GENERATION` and prompt client to refresh preview. `STALE_GENERATION` does not exist in `ErrorCodeSchema` (`packages/contracts/src/mcp-results.ts:3-25`, which currently ends its list at `STALE_HEAD`), so this phase must add the code there and cover it in the contract test, or reuse an existing code instead of inventing one that `HarnessError` rejects at the type level.
+
+## Implementation Status (2026-09-20)
+**Done and verified:**
+- `apps/runner/src/skill-resolver.ts` implements `resolveWorkspaceSkills` with the 4-tier precedence, the repository sub-rank as an explicit comparator key, same-tier collision reporting for differing digests, `skillOverrides` pinning that also resolves a collision, disabled/archived exclusion with reasons, and `assertSkillSetGenerations` raising a typed stale-generation error.
+- Determinism is enforced for the whole result, not just the resolved list: the excluded list is sorted, so candidate arrival order cannot change the output.
+- `apps/runner/test/skill-resolver.test.ts`: 11 tests green; `npm run typecheck` and eslint clean on both files.
+
+**Naming correction:** the phase named a `SkillResolver` class. It is implemented as the pure `resolveWorkspaceSkills` function plus a typed generation guard, because a class wrapping only that function would add a layer with no behaviour. Later phases import the function.
+
+**Still open before this phase can be called complete:**
+- Projection must be extended rather than duplicated: `composeOwnerToolkitProjection` (`apps/runner/src/workspace-service.ts:873-903`) and `applyWorkspaceToolkitPatches` (`:909`) already exist, and this phase has not yet routed the new resolver through them.
+- `WorkspaceService.open` preflight does not yet call resolution, and the resolved lock is not yet persisted: `workspace_skill_assignments` is schema-only with no writer today.
+- Mount projection itself is unbuilt: only projected skill directories may bind, never the owner CAS root.
+- The stale-generation guard raises a code that is not yet a member of `ErrorCodeSchema`, so the HTTP mapping still needs that value added or an existing code reused.
