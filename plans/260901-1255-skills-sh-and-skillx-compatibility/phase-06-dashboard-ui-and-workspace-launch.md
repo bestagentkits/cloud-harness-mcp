@@ -176,5 +176,25 @@ If M1 or M2 overruns, stop and report before starting M3: the honest split point
 - **Mitigation:** Keep renderers pure and exported from `dashboard-render.js`, keep all fetching in `dashboard-api.js`, and hold per-feature state in `skillsState`, so `dashboard.js` only wires events.
 - **Risk:** Executable content becoming reachable through a UI affordance the operator did not intend.
 - **Mitigation:** The editor stores content and never executes it; the Files view shows `has_executable_assets`; `skills_run` stays behind the phase 4 digest-verified snapshot path so the dashboard cannot bypass it.
+
+## Implementation Status (2026-09-20)
+
+**Done and verified:**
+- The `/skills` shell route, its navigation entry, the client dispatch, and the palette entry are in place. The three route registries (the shell allowlist, the mount route list, and the client dispatch) and the nav list all agree, which is what the phase's contract asks for.
+- `renderSkillsSkeleton()` carries every selector the UI contract names, asserted by a contract test, and the four tab panels stay in the document so switching tabs never rebuilds markup the operator is reading.
+- The open workspace dialog was reduced to skill-set selection: `#toolkits-selection-grid` and its stylesheet rule are gone, and a contract assertion covers both directions.
+- Pure renderers for library rows, registry rows, conflicts, skill-set chips, options and picker, plus a revision diff that marks lines and carries a text alternative.
+- Controllers for tabs (each entered once), the library (debounced search, selection, per-item bulk results), the editor (create with validation), launch skill sets (preview-gated submit), import polling (terminal state and attempt budget), and generation-grouped bulk batching.
+- The library tab runs end to end, the editor creates through the create operation, and the skill-set builder saves pinned to current revisions.
+- `apps/api/test/dashboard-skills-ui.test.ts` covers all of it at 42 tests; the contract, behaviour, and mount suites are green and the API suite stands at 472 tests.
+
+**Corrections and gaps found while wiring, recorded rather than worked around:**
+- The open workspace dialog's controls existed in the shell but no script referenced them, so the open button, the form, and the launch button had no behaviour at all. Wiring them is work this phase has to do rather than a feature it reuses.
+- **No operation edits the instructions of an existing skill.** `skill_update` takes metadata only and content lives in revisions, so the editor creates skills and does not pretend to change content. Editing content would need a revision-creating operation the contract does not have.
+- `skill_import_start` has no runner handler, so the wizard's submit is deliberately left unwired. Its validation, review, and guidance pieces exist and are tested; the phase 5 blocker records why.
+- `toolkit_registry_update` has no runner handler either, so the Registry tab shows cache state, pinned commit, skill count, and lock state without offering enable, disable, or pin.
+- `skill_bulk` carries one generation for the whole batch, so the client groups the selected rows by generation. Without that, every row but one would report a conflict and read as a locking problem when it is a batching one.
+
+**Not yet done:** the registry actions, the revision list and restore views, the import wizard's submit, and the 375-pixel and two-theme check the phase requires before it can be called complete.
 - **Risk:** A four-tab management surface overrunning a single 20h gate, which delays the launch integration that delivers the original user value.
 - **Mitigation:** Ship the four milestones in order and treat M1-M2 as the split point; M3 and M4 are the first candidates to move into their own phase if M1 or M2 overruns.

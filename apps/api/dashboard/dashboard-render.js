@@ -297,6 +297,13 @@ export function renderSkillSetOptions(sets) {
   return list.map((set) => `<option value="${escape(set.id)}">${escape(set.name)}</option>`).join('');
 }
 
+/** Pickable skills for the set builder. Names come from the inventory, so every one is escaped. */
+export function renderSkillSetPicker(skills) {
+  const list = Array.isArray(skills) ? skills : [];
+  if (list.length === 0) return '<p>No skills to add yet.</p>';
+  return list.map((skill) => `<label><input type="checkbox" data-set-member="${escape(skill.id)}"> ${escape(skill.displayName)}</label>`).join('');
+}
+
 /**
  * Guidance for an import job. A failed job is only actionable if it says which failure it was, and a
  * cache miss in particular has an exact remedy, so it gets its own sentence rather than a generic

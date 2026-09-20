@@ -39,7 +39,7 @@ import {
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryRows, renderSkillsRegistryRows,
   renderSkillConflicts,
-  renderSkillSetChips, renderSkillSetOptions,
+  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker,
   renderSkillsSkeleton
 } from './dashboard-render.js';
 
@@ -1009,6 +1009,10 @@ export function initializeDashboard() {
         if (name === 'library') {
           rows = (await api('/skills')).data.skills ?? [];
           paintLibrary();
+        } else if (name === 'sets') {
+          if (rows.length === 0) rows = (await api('/skills')).data.skills ?? [];
+          const picker = document.querySelector('#skill-set-picker');
+          if (picker) picker.innerHTML = renderSkillSetPicker(rows);
         } else if (name === 'registry') {
           const body = document.querySelector('#skills-registry-table tbody');
           if (body) body.innerHTML = renderSkillsRegistryRows((await api('/toolkit-registry')).data.entries);
@@ -1028,6 +1032,25 @@ export function initializeDashboard() {
     document.querySelector('#skills-bulk-archive')?.addEventListener('click', () => { void runBulk('archive').catch(showError); });
     document.querySelector('#skills-bulk-disable')?.addEventListener('click', () => { void runBulk('disable').catch(showError); });
     document.querySelector('#skills-library-search')?.addEventListener('input', (event) => library.search(event.target.value));
+
+    document.querySelector('#skill-set-save')?.addEventListener('click', () => {
+      const nameField = document.querySelector('#skill-set-name');
+      const status = document.querySelector('#skill-set-status');
+      const selectedIds = [...document.querySelectorAll('#skill-set-picker [data-set-member]:checked')]
+        .map((box) => box.getAttribute('data-set-member'));
+      const built = buildSkillSetBody({ name: nameField ? nameField.value : '', skills: rows, selectedIds });
+      if (!built.ok) {
+        if (status) status.textContent = built.message;
+        return;
+      }
+      void api('/skill-sets', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(built.body)
+      })
+        .then(() => { if (status) status.textContent = 'Skill set created.'; })
+        .catch((error) => { if (status) status.textContent = error instanceof Error ? error.message : 'The set could not be created.'; });
+    });
 
     const editor = createSkillEditorController({
       slug: document.querySelector('#skill-editor-slug'),
