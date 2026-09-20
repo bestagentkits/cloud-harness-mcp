@@ -517,6 +517,20 @@ export class DashboardControlService {
         case 'skill_set_delete':
           this.principals.deleteSkillSet(principalId, parsed.input.skillSetId, parsed.input.expectedGeneration);
           return ok('Skill set deleted', { skillSetId: parsed.input.skillSetId, deleted: true });
+        case 'skill_bulk': {
+          const state = parsed.input.action === 'enable' ? 'enabled' : parsed.input.action === 'disable' ? 'disabled' : 'archived';
+          // Each skill is applied on its own so one stale or locked item reports a per-item failure
+          // instead of discarding the work already done for the rest of the batch.
+          const results = parsed.input.skillIds.map((skillId) => {
+            try {
+              this.principals.setSkillState(principalId, skillId, state, parsed.input.expectedGeneration);
+              return { skillId, ok: true };
+            } catch (error) {
+              return { skillId, ok: false, error: error instanceof SkillRegistryError ? error.code : 'INTERNAL_ERROR' };
+            }
+          });
+          return ok('Skills updated in bulk', { results });
+        }
         default:
           // Any internal operation that has no runner handler yet fails loudly instead of returning an
           // empty success, so a control-plane route can never look implemented while doing nothing.

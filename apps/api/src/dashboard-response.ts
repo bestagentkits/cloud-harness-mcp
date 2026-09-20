@@ -229,7 +229,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       results: results.map((entry) => {
         const item = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
         return {
-          name: item.name,
+          ...pick(item, ['skillId', 'name']),
           ok: item.ok === true,
           ...(typeof item.error === 'string' ? { error: item.error } : {}),
           ...(item.skill && typeof item.skill === 'object' ? { skill: pick(item.skill, skillKeys) } : {})
