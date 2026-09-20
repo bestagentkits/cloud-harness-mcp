@@ -55,6 +55,11 @@ export function registerDashboardControlRoutes(
   router.get('/api/v1/skills/:skillId', endpoint('skill_get', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
   router.get('/api/v1/skills/:skillId/revisions', endpoint('skill_revision_list', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
   router.get('/api/v1/skills/:skillId/revisions/:revisionId', endpoint('skill_revision_get', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), revisionId: internalId('skrev').parse(request.params.revisionId) })));
+  router.get('/api/v1/skills/:skillId/diff', endpoint('skill_revision_diff', (request) => ({
+    skillId: internalId('sk').parse(request.params.skillId),
+    fromRevisionId: internalId('skrev').parse(request.query.from),
+    toRevisionId: internalId('skrev').parse(request.query.to)
+  })));
   router.get('/api/v1/skills/:skillId/usage', endpoint('skill_usage', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
   router.get('/api/v1/skill-sets', endpoint('skill_set_list', () => ({})));
   router.post('/api/v1/skill-sets/preview', endpoint('skill_set_preview', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));

@@ -26,6 +26,8 @@ export const RunnerOperationSchema = z.enum([
 ]);
 
 export const ExternalPrincipalSchema = z.object({
+  // SAFETY: `.url()` has already parsed the value, so `new URL` cannot throw here; the refine only
+  // narrows the scheme.
   issuer: z.url().refine((value) => new URL(value).protocol === 'https:', 'HTTPS issuer required'),
   subject: z.string().min(1).max(512),
   email: z.email().max(320).optional(),

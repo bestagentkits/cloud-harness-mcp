@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   HarnessError, MetadataRunnerRequestSchema, qualifiedToolName,
   type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse
@@ -13,6 +15,10 @@ import { IntegrationCredentialRepository } from './integration-credential-reposi
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
+import { diffRevisionText, formatRevisionDiff } from './revision-diff.js';
+
+/** A revision's content is prose, so the read is bounded rather than trusting the file size. */
+const MAX_REVISION_BYTES = 262_144;
 import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
@@ -60,6 +66,28 @@ export class DashboardControlService {
       }
     }
     return values;
+  }
+
+  /**
+   * The content a revision pinned, read from the bundle it names in the cache.
+   *
+   * A bundle holds its skills under `skills/<name>`, so the known layouts are tried in order. The check
+   * is `isFile()` rather than existence on purpose: a Docker mount point can leave a directory where a
+   * file is expected, and reading it would raise rather than fall through to the next layout.
+   */
+  private readRevisionText(ownerId: string, bundleSha256: string, slug: string | undefined): string | undefined {
+    const bundlePath = this.workspaces.toolkitCacheManager.bundlePath(ownerId, bundleSha256);
+    const candidates = [
+      ...(slug ? [join(bundlePath, 'skills', slug, 'SKILL.md'), join(bundlePath, slug, 'SKILL.md')] : []),
+      join(bundlePath, 'SKILL.md')
+    ];
+    for (const candidate of candidates) {
+      try {
+        const stats = statSync(candidate);
+        if (stats.isFile() && stats.size <= MAX_REVISION_BYTES) return readFileSync(candidate, 'utf8');
+      } catch { /* try the next known layout */ }
+    }
+    return undefined;
   }
 
   private integrationCredentialRepository?: IntegrationCredentialRepository;
@@ -672,6 +700,34 @@ export class DashboardControlService {
           });
           return mutation('Skill restored', { skillId: parsed.input.skillId, revisionId });
         }
+        case 'skill_revision_fork': {
+          const revision = required(
+            this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.revisionId),
+            `Revision ${parsed.input.revisionId} was not found for this skill`
+          );
+          const source = required(
+            this.principals.getSkillSource(principalId, parsed.input.skillId),
+            `Skill ${parsed.input.skillId} was not found`
+          );
+          // A fork is a new source that starts from the bytes the chosen revision pinned, so the two can
+          // then diverge without either one rewriting the other's history.
+          const created = this.principals.createSkillSource({
+            ownerId: principalId,
+            slug: parsed.input.slug,
+            displayName: parsed.input.displayName,
+            kind: 'owner',
+            provider: 'custom',
+            description: source.description,
+            tags: source.tags,
+            revision: {
+              bundleSha256: revision.bundleSha256,
+              contentSha256: revision.contentSha256,
+              hasExecutableAssets: revision.hasExecutableAssets,
+              origin: 'fork'
+            }
+          });
+          return mutation('Skill forked', { ...created, forkedFrom: { skillId: source.id, revisionId: revision.id } });
+        }
         case 'integration_credential_list':
           return ok('Integration credentials listed', { credentials: this.integrationCredentials().list(principalId) });
         case 'integration_credential_create': return mutation('Integration credential created', this.integrationCredentials().create({
@@ -743,6 +799,34 @@ export class DashboardControlService {
             }
           );
           return ok(outcome.suggested ? `Suggested ${outcome.suggested.name}` : 'No suggestion', outcome);
+        }
+        case 'skill_revision_diff': {
+          const from = required(
+            this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.fromRevisionId),
+            `Revision ${parsed.input.fromRevisionId} was not found for this skill`
+          );
+          const to = required(
+            this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.toRevisionId),
+            `Revision ${parsed.input.toRevisionId} was not found for this skill`
+          );
+          const slug = this.principals.getSkillSource(principalId, parsed.input.skillId)?.slug;
+          const before = this.readRevisionText(principalId, from.bundleSha256, slug);
+          const after = this.readRevisionText(principalId, to.bundleSha256, slug);
+          // A revision whose bundle is gone cannot be compared. Reporting that is better than an empty
+          // diff, which a reader would take to mean nothing changed.
+          if (before === undefined || after === undefined) {
+            throw new HarnessError('NOT_FOUND', 'one of these revisions has no readable content in the cache', 404, false);
+          }
+          const diff = diffRevisionText(before, after);
+          return ok('Revision diff', {
+            diff: formatRevisionDiff(diff),
+            changed: diff.added > 0 || diff.removed > 0,
+            added: diff.added,
+            removed: diff.removed,
+            truncated: diff.truncated,
+            fromRevisionId: from.id,
+            toRevisionId: to.id
+          });
         }
         default:
           // Any internal operation that has no runner handler yet fails loudly instead of returning an

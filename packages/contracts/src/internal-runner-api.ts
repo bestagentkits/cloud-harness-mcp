@@ -138,7 +138,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'mcp_server_list', 'mcp_server_get', 'mcp_server_create', 'mcp_server_update', 'mcp_server_delete',
   'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools', 'mcp_server_connection_result',
   'mcp_server_get_credentials', 'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list',
-  'skill_list', 'skill_get', 'skill_revision_list', 'skill_revision_get', 'skill_revision_diff', 'skill_restore',
+  'skill_list', 'skill_get', 'skill_revision_list', 'skill_revision_get', 'skill_revision_diff', 'skill_restore', 'skill_revision_fork',
   'skill_create_custom', 'skill_update', 'skill_archive', 'skill_bulk', 'skill_usage', 'skill_search',
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
@@ -382,6 +382,13 @@ const metadataInputs = {
   skill_revision_get: z.object({ skillId: SkillSourceIdSchema, revisionId: SkillRevisionIdSchema }).strict(),
   skill_revision_diff: z.object({ skillId: SkillSourceIdSchema, fromRevisionId: SkillRevisionIdSchema, toRevisionId: SkillRevisionIdSchema }).strict(),
   skill_restore: z.object({ skillId: SkillSourceIdSchema, revisionId: SkillRevisionIdSchema, expectedGeneration: generation }).strict(),
+  skill_revision_fork: z.object({
+    skillId: SkillSourceIdSchema,
+    revisionId: SkillRevisionIdSchema,
+    slug: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    displayName: name,
+    expectedGeneration: z.literal(0)
+  }).strict(),
   skill_create_custom: z.object({
     slug: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
     displayName: name,
@@ -477,6 +484,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('skill_create_custom'), metadataRequest('skill_update'), metadataRequest('skill_archive'),
   metadataRequest('skill_bulk'), metadataRequest('skill_usage'), metadataRequest('skill_search'),
   metadataRequest('skill_import_start'), metadataRequest('skill_import_status'), metadataRequest('skill_import_cancel'),
+  metadataRequest('skill_revision_fork'),
   metadataRequest('skill_set_list'), metadataRequest('skill_set_get'), metadataRequest('skill_set_create'),
   metadataRequest('skill_set_update'), metadataRequest('skill_set_delete'), metadataRequest('skill_set_preview'),
   metadataRequest('toolkit_registry_list'), metadataRequest('toolkit_registry_update'), metadataRequest('toolkit_registry_refresh'),

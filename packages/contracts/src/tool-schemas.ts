@@ -662,6 +662,8 @@ const schemas = {
     artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
     expectedGeneration: z.number().int().positive().default(1)
   }),
+  // SAFETY: `pipe` takes the output of the left schema as the input of the right one, and the union's
+  // own input type is already narrowed by `githubActionInput`, which TypeScript cannot express here.
   github_action: githubActionInput.pipe(githubActionUnion as unknown as z.ZodType<unknown, z.output<typeof githubActionInput>>),
   secrets_list: z.object({
     ...workspace,

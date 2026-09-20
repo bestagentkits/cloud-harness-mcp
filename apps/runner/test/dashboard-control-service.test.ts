@@ -91,6 +91,65 @@ function setup(withKeyring = true) {
   return { controls, principals, metadata, artifacts, keyring, workspaces };
 }
 
+describe('skill revisions', () => {
+  it('diffs two revisions of one skill and forks one into a new source', async () => {
+    const { controls, principals, workspaces } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+
+    // Two bundles with different content, so the diff has something real to compare.
+    const first = await workspaces.toolkitCacheManager.publishLocalBundle(ownerId, {
+      'skills/tdd/SKILL.md': '# TDD\n\nWrite the test first.\n'
+    });
+    const second = await workspaces.toolkitCacheManager.publishLocalBundle(ownerId, {
+      'skills/tdd/SKILL.md': '# TDD\n\nWrite the test first, then the code.\n'
+    });
+    const created = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: first.bundleSha256, contentSha256: first.bundleSha256, hasExecutableAssets: false }
+    });
+    const secondRevision = principals.addSkillRevision({
+      ownerId, skillSourceId: created.sourceId, bundleSha256: second.bundleSha256,
+      contentSha256: second.bundleSha256, hasExecutableAssets: false, origin: 'edit', parentRevisionId: created.revisionId
+    });
+
+    const diff = await controls.execute(request('skill_revision_diff', {
+      skillId: created.sourceId, fromRevisionId: created.revisionId, toRevisionId: secondRevision
+    }));
+    const data = diff.data as { changed: boolean; added: number; removed: number; diff: string };
+    expect(data.changed).toBe(true);
+    expect(data.added).toBe(1);
+    expect(data.removed).toBe(1);
+    expect(data.diff).toContain('-Write the test first.');
+    expect(data.diff).toContain('+Write the test first, then the code.');
+
+    // A fork starts from the bytes the chosen revision pinned, in a source of its own.
+    const forked = await controls.execute(request('skill_revision_fork', {
+      skillId: created.sourceId, revisionId: created.revisionId, slug: 'tdd-fork', displayName: 'TDD fork', expectedGeneration: 0
+    }));
+    const forkedSourceId = (forked.data as { sourceId: string }).sourceId;
+    expect(forkedSourceId).not.toBe(created.sourceId);
+    const forkedRevision = principals.getSkillRevision(ownerId, forkedSourceId, (forked.data as { revisionId: string }).revisionId);
+    expect(forkedRevision?.origin).toBe('fork');
+    expect(forkedRevision?.bundleSha256).toBe(first.bundleSha256);
+
+    // The source it came from is untouched: a fork is a copy, not a move.
+    expect(principals.getSkillSource(ownerId, created.sourceId)?.currentRevisionId).toBe(secondRevision);
+  });
+
+  it('reports a revision whose content is missing rather than an empty diff', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const created = principals.createSkillSource({
+      ownerId, slug: 'ghost', displayName: 'Ghost', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: 'f'.repeat(64), contentSha256: 'f'.repeat(64), hasExecutableAssets: false }
+    });
+
+    await expect(controls.execute(request('skill_revision_diff', {
+      skillId: created.sourceId, fromRevisionId: created.revisionId, toRevisionId: created.revisionId
+    }))).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+});
+
 describe('integration credentials and typesafe', () => {
   it('stores a credential write-only and reports configured without ever carrying the key', async () => {
     const { controls } = setup();
