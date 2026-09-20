@@ -337,4 +337,17 @@ Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.s
 6. **Is inert-but-merged code acceptable on `main`?** The operator chose the whole-plan path, so this question is moot for the increment plan but would return if the work is ever split.
 7. **External CLIs in the container.** Phase 7's lifecycle test runs `skills add` and `skillx use` inside an executor that has `npx` but no network. Nothing in this tree provides those CLIs, so their versions and an offline mirror must be pinned before that half of the test can be written.
 
+## External Assumptions Pending Verification
+
+None of the four assumptions below has external evidence in this repository, and each one is load-bearing for at least one phase. Treat them as unverified until the check beside them is run and its output is recorded.
+
+1. **SkillX API shape.** `normalizeSkillXPayload` in `apps/runner/src/adapters/skillx-adapter.ts` expects an `instructions` field and treats a payload without one as an invalid response rather than as an empty skill. No live SkillX response has been captured, so the endpoint path, the field names, and the error envelope are inferred from the documented behaviour of `npx skillx-sh use "<query>" --search`. Verify by capturing one real response and committing it as a fixture.
+2. **`skills` and `skillx` CLI versions and an offline mirror.** Phase 7 runs both inside an executor that has `npx` and no network. Nothing in this tree pins a version or provides a mirror, so that half of the lifecycle test cannot be written yet. Verify by choosing the versions, publishing a mirror the executor can reach, and recording both in the Phase 7 test.
+3. **skills.sh and SkillX hostnames in the egress allowlist.** `compose.yaml` now allows `skillx.sh` alongside the GitHub hosts that skills.sh references resolve to. The SkillX hostname comes from the CLI's public surface, not from an observed request. Verify by capturing the request a real `skillx` invocation makes.
+4. **Live TypeSafe behaviour.** The Phase 8 engine is written against the documented `POST https://api.typesafe.ai/v1/systemone` contract with a bearer key, and Phase 9 verifies it live. No live call has been made from this work. Verify by running the Phase 9 check against the operator's own key and recording the response shape.
+
+## Open Blocker: Skill-Level Package Materialisation
+
+Phase 5's `skill_create_custom`, `skill_import_start`, `skill_import_cancel`, `skill_revision_diff`, and the three `toolkit_registry_*` operations all need a single skill's content materialised into the cache root and digested before a source row can honestly claim that content exists. The toolkit path has that acquisition pipeline (`ToolkitCacheManager` plus the Phase 2 adapters); the single-skill path does not, and the launch-side skill projection that would consume those packages is Phase 4 and Phase 6 work. Until it exists, these operations keep failing loudly rather than creating rows whose content is absent. Recorded here and in issue #218 as the blocker rule requires, and work continues on the phases that do not depend on it.
+
 <!-- slug: skills-sh-and-skillx-compatibility -->
