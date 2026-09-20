@@ -129,7 +129,7 @@ describe('resolveWorkspaceSkills determinism', () => {
     ];
     const forward = resolveWorkspaceSkills({ candidates });
     const reversed = resolveWorkspaceSkills({ candidates: [...candidates].reverse() });
-    const shuffled = resolveWorkspaceSkills({ candidates: [candidates[2]!, candidates[5]!, candidates[0]!, candidates[3]!, candidates[1]!, candidates[4]!] });
+    const shuffled = resolveWorkspaceSkills({ candidates: [candidates[4]!, candidates[0]!, candidates[6]!, candidates[2]!, candidates[5]!, candidates[1]!, candidates[3]!] });
 
     expect(reversed).toEqual(forward);
     expect(shuffled).toEqual(forward);
