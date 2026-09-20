@@ -882,7 +882,7 @@ export class WorkspaceService {
       const ownerBundles = bundlePaths.filter(b => b.scope === 'owner');
       const workspaceBundles = bundlePaths.filter(b => b.scope === 'workspace');
 
-      await this.composeOwnerToolkitProjection(record, ownerBundles);
+      await this.composeOwnerToolkitProjection(record, ownerBundles, parsed.skillOverrides);
 
       const repositoryPath = await this.clone(record, url, parsed.ref);
       if (workspaceBundles.length > 0) {
