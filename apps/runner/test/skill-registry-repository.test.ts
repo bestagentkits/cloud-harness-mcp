@@ -41,6 +41,38 @@ function createSource(store: StateStore, slug = 'tdd') {
 }
 
 describe('skill registry repository', () => {
+  it('refuses to delete a skill set that a workspace still references', () => {
+    const store = openStore();
+    try {
+      const { sourceId, revisionId } = createSource(store);
+      const setId = store.createSkillSet({
+        ownerId: OWNER,
+        name: 'core',
+        items: [{ skillSourceId: sourceId, revisionId, name: 'tdd' }]
+      });
+      const workspaceId = `ws_${'a'.repeat(24)}`;
+      addWorkspace(store, OWNER, workspaceId, 'ACTIVE');
+      store.recordWorkspaceSkillSelection({
+        ownerId: OWNER,
+        workspaceId,
+        sets: [{ skillSetId: setId, skillSetGeneration: 1, snapshotSha256: hash('e') }],
+        assignments: [{ name: 'tdd', skillSourceId: sourceId, revisionId, tier: 'owner', pinned: false }]
+      });
+
+      // The refusal carries the code the control plane maps to 409, and the set survives it.
+      expect(() => store.deleteSkillSet(OWNER, setId, 1)).toThrow();
+      try {
+        store.deleteSkillSet(OWNER, setId, 1);
+        throw new Error('deleting a referenced skill set should have been refused');
+      } catch (error) {
+        expect((error as { code?: string }).code).toBe('CONFLICT');
+      }
+      expect(store.getSkillSet(OWNER, setId)?.name).toBe('core');
+    } finally {
+      store.close();
+    }
+  });
+
   it('keeps one owner from reading or writing another owner\u2019s skills and sets', () => {
     const store = openStore();
     try {

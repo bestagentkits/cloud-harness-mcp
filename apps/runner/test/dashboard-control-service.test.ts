@@ -89,6 +89,25 @@ const principal = { kind: 'external' as const, issuer: 'https://access.example.c
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
 
 describe('dashboard control service', () => {
+  it('reports a bulk state change per item instead of failing the whole batch', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const { sourceId } = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), hasExecutableAssets: false }
+    });
+    const missing = `sk_${'c'.repeat(24)}`;
+
+    // One stale item must not discard the work already applied to the rest of the batch.
+    const result = await controls.execute(request('skill_bulk', {
+      action: 'archive', skillIds: [sourceId, missing], expectedGeneration: 1
+    }));
+    expect((result.data as { results: unknown[] }).results).toEqual([
+      { skillId: sourceId, ok: true },
+      { skillId: missing, ok: false, error: 'NOT_FOUND' }
+    ]);
+    expect(principals.getSkillSource(ownerId, sourceId)?.state).toBe('archived');
+  });
   it('answers a stale skill set generation with a conflict instead of an unhandled error', async () => {
     const { controls } = setup();
     const created = await controls.execute(request('skill_set_create', { name: 'core', expectedGeneration: 0 }));
