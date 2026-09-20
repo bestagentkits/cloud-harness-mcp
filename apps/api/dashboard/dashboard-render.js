@@ -172,6 +172,64 @@ export function renderOverviewSkeleton() {
   return `<div class="overview"><ul class="metric-grid">${tile.repeat(4)}</ul><div class="overview-columns">${block}${block}</div></div>`;
 }
 
+/**
+ * The Skills page skeleton. Every identifier here is named by the phase's UI contract, so the page
+ * structure is asserted rather than assumed, and the four tabs keep their panels in the document so a
+ * tab switch never has to rebuild markup the operators are reading.
+ */
+export function renderSkillsSkeleton() {
+  const tab = (name, label, selected) =>
+    `<button type="button" role="tab" id="skills-tab-${name}" aria-controls="skills-panel-${name}" aria-selected="${selected ? 'true' : 'false'}" tabindex="${selected ? '0' : '-1'}">${label}</button>`;
+  const panel = (name, body, selected) =>
+    `<div class="skills-panel" role="tabpanel" id="skills-panel-${name}" aria-labelledby="skills-tab-${name}"${selected ? '' : ' hidden'}>${body}</div>`;
+
+  const library = `<form class="skills-toolbar" role="search" aria-label="Filter skills">
+        <label for="skills-library-search">Search</label><input id="skills-library-search" name="q" placeholder="Filter by name or provider">
+      </form>
+      <div id="skills-bulk-bar" class="skills-bulk-bar" hidden><span id="skills-bulk-count"></span><button type="button" id="skills-bulk-archive">Archive</button><button type="button" id="skills-bulk-disable">Disable</button></div>
+      <table id="skills-library-table" class="data-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
+      <aside id="skill-detail" class="drawer" hidden>
+        <div id="skill-detail-instructions"></div>
+        <div id="skill-detail-files"></div>
+        <div id="skill-detail-revisions"></div>
+        <div id="skill-detail-usage"></div>
+      </aside>
+      <form id="skill-editor">
+        <label for="skill-editor-instructions">Instructions</label><textarea id="skill-editor-instructions" name="instructions"></textarea>
+        <button type="submit" id="skill-editor-save">Save skill</button><span id="skill-editor-status" role="status"></span>
+      </form>`;
+
+  const discover = `<div class="skills-search"><label for="skills-search-input">Search providers</label><input id="skills-search-input" name="q"><button type="button" id="skills-search-run">Search</button></div>
+      <div id="skills-search-results"></div>
+      <dialog id="skill-import-dialog" aria-labelledby="skill-import-heading">
+        <h2 id="skill-import-heading">Import skill</h2>
+        <label for="skill-import-source">Source</label><input id="skill-import-source" name="source" placeholder="owner/repository">
+        <label for="skill-import-ref">Ref</label><input id="skill-import-ref" name="ref" placeholder="Branch, tag, or commit">
+        <label for="skill-import-scope">Scope</label><select id="skill-import-scope" name="scope"><option value="owner">Owner</option><option value="workspace">Workspace</option></select>
+        <div id="skill-import-review"></div>
+        <div id="skill-import-job" role="status"></div>
+        <button type="button" id="skill-import-retry">Retry</button>
+        <button type="button" id="skill-import-cancel">Cancel</button>
+      </dialog>
+      <pre id="skill-revision-diff" class="skills-diff" tabindex="0" aria-label="Revision diff"></pre>`;
+
+  const sets = `<div id="skill-set-builder">
+        <label for="skill-set-name">Name</label><input id="skill-set-name" name="name">
+        <div id="skill-set-picker" role="group" aria-label="Available skills"></div>
+        <ol id="skill-set-members"></ol>
+        <button type="button" id="skill-set-save">Save set</button><span id="skill-set-status" role="status"></span>
+      </div>`;
+
+  const registry = `<table id="skills-registry-table" class="data-table"><caption class="sr-only">Registry and toolkit inventory</caption><thead><tr><th scope="col">Name</th><th scope="col">Cache state</th><th scope="col">Pinned commit</th><th scope="col">Skills</th><th scope="col">Lock</th></tr></thead><tbody></tbody></table>
+      <p id="skills-registry-status" role="status" aria-live="polite"></p>`;
+
+  return `<section id="skills-section" aria-labelledby="skills-heading">
+      <h2 id="skills-heading" class="sr-only">Skills</h2>
+      <div class="skills-tabs" role="tablist" aria-label="Skills views">${tab('library', 'Library', true)}${tab('discover', 'Discover', false)}${tab('sets', 'Skill Sets', false)}${tab('registry', 'Registry', false)}</div>
+      ${panel('library', library, true)}${panel('discover', discover, false)}${panel('sets', sets, false)}${panel('registry', registry, false)}
+    </section>`;
+}
+
 function renderServerPanel(server) {
   if (!server) return '';
   const oauth = server.managedOAuthUrl

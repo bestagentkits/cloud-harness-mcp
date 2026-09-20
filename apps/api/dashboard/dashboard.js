@@ -35,7 +35,8 @@ import {
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
-  renderMcpServersIndex, renderMcpServerDetail
+  renderMcpServersIndex, renderMcpServerDetail,
+  renderSkillsSkeleton
 } from './dashboard-render.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -315,6 +316,7 @@ export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:github', group: 'Pages', label: 'GitHub', hint: 'Page', href: '/dashboard/github' },
   { id: 'page:knowledge', group: 'Pages', label: 'Knowledge', hint: 'Search memories and journals here', href: '/dashboard/knowledge' },
   { id: 'page:mcp-servers', group: 'Pages', label: 'MCP Servers', hint: 'Manage downstream MCP integrations', href: '/dashboard/mcp-servers' },
+  { id: 'page:skills', group: 'Pages', label: 'Skills', hint: 'Manage skills, revisions, imports, and sets', href: '/dashboard/skills' },
   { id: 'page:settings', group: 'Pages', label: 'Settings', hint: 'Instance defaults for workspaces and network egress', href: '/dashboard/settings' },
   { id: 'page:artifacts', group: 'Pages', label: 'Artifacts', hint: 'Page', href: '/dashboard/artifacts' },
   { id: 'page:audit', group: 'Pages', label: 'Audit', hint: 'Page', href: '/dashboard/audit' },
@@ -671,6 +673,7 @@ export function initializeDashboard() {
       else if (location.pathname === '/dashboard/knowledge') await loadKnowledge();
       else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
       else if (location.pathname === '/dashboard/mcp-servers') await loadMcpServers();
+      else if (location.pathname === '/dashboard/skills') await loadSkills();
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
       else if (location.pathname === '/dashboard/settings') await loadSettings();
       else if (location.pathname === '/dashboard/profile') await loadProfile();
@@ -680,6 +683,12 @@ export function initializeDashboard() {
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
       setBusy(false); main.focus({ preventScroll: true });
     } catch (error) { showError(error); }
+  }
+  async function loadSkills() {
+    selectNavigation('skills');
+    setTitle('Skills', 'Browse the library, inspect revisions, import from a provider, and manage skill sets.');
+    document.querySelector('#command-surface').hidden = true;
+    content.innerHTML = renderSkillsSkeleton();
   }
   async function loadOverview() {
     selectNavigation('overview');
