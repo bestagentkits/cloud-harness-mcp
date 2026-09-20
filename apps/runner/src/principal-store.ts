@@ -987,6 +987,37 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
         BEGIN
           SELECT RAISE(ABORT, 'terminal skill import jobs are immutable');
         END;
+
+        -- A dedicated integration credential rather than a model provider: a TypeSafe key is not a
+        -- gateway provider, and extending that closed enum would route it through gateway snapshots.
+        CREATE TABLE IF NOT EXISTS integration_credentials (
+          id TEXT PRIMARY KEY,
+          principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          integration TEXT NOT NULL CHECK(integration IN ('typesafe')),
+          label TEXT NOT NULL,
+          active_version INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'DISABLED', 'REVOKED')),
+          generation INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS integration_credentials_principal_idx
+          ON integration_credentials(principal_id, integration);
+
+        -- The envelope columns mirror model_provider_credential_versions. The value is written once per
+        -- version and read only by the decrypting path, so no read operation can return it.
+        CREATE TABLE IF NOT EXISTS integration_credential_versions (
+          principal_id TEXT NOT NULL,
+          credential_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          key_version INTEGER NOT NULL,
+          nonce TEXT NOT NULL,
+          ciphertext TEXT NOT NULL,
+          auth_tag TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(principal_id, credential_id, version),
+          FOREIGN KEY(credential_id) REFERENCES integration_credentials(id) ON DELETE CASCADE
+        );
       `);
 
       database.exec('UPDATE schema_meta SET version = 11;');
