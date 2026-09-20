@@ -31,40 +31,47 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
   return clean;
 }
 
-export type DashboardResponseOperation =
-  | 'workspace_open'
-  | 'workspace_list'
-  | 'workspace_status'
-  | 'workspace_detail'
-  | 'workspace_close'
-  | 'toolkits_list'
-  | 'toolkits_preview'
-  | 'settings_get' | 'settings_update' | 'settings_network_check'
-  | 'files_list'
-  | 'files_read'
-  | 'files_write'
-  | 'files_apply_patch'
-  | 'files_delete'
-  | 'files_move'
-  | 'files_mkdir'
-  | 'tasks_list'
-  | 'sessions_list'
-  | 'project_list' | 'project_create' | 'project_update' | 'project_delete'
-  | 'environment_list' | 'environment_create' | 'environment_update' | 'environment_delete'
-  | 'secret_list' | 'secret_create' | 'secret_rotate' | 'secret_update' | 'secret_delete' | 'secret_bulk_apply'
-  | 'global_secret_list' | 'global_secret_create' | 'global_secret_rotate' | 'global_secret_update' | 'global_secret_delete' | 'global_secret_bulk_apply'
-  | 'audit_list'
-  | 'artifact_list' | 'artifact_snapshot' | 'artifact_read' | 'artifact_restore' | 'artifact_delete'
-  | 'github_status' | 'github_setup_begin' | 'github_setup_complete' | 'github_reconcile' | 'github_disconnect'
-  | 'privilege_grant_list' | 'privilege_grant_approve' | 'privilege_grant_reject'
-  | 'model_credential_list' | 'model_credential_create' | 'model_credential_rotate' | 'model_credential_delete'
-  | 'model_profile_list' | 'model_profile_create' | 'model_profile_update' | 'model_profile_activate' | 'model_profile_disable' | 'model_profile_delete'
-  | 'model_config_status'
-  | 'knowledge_dashboard_list' | 'knowledge_dashboard_get' | 'knowledge_dashboard_create' | 'knowledge_dashboard_update' | 'knowledge_dashboard_delete' | 'knowledge_dashboard_search' | 'knowledge_dashboard_graph' | 'knowledge_dashboard_link_create' | 'knowledge_dashboard_link_delete'
-  | 'mcp_server_list' | 'mcp_server_get' | 'mcp_server_create' | 'mcp_server_update' | 'mcp_server_delete'
-  | 'mcp_server_set_enabled' | 'mcp_server_set_permissions' | 'mcp_server_replace_tools'
-  | 'mcp_server_connection_result' | 'mcp_server_get_credentials'
-  | 'mcp_gateway_catalog' | 'mcp_gateway_trace_append' | 'mcp_gateway_trace_list';
+export const DASHBOARD_RESPONSE_OPERATIONS = [
+  'workspace_open',
+  'workspace_list',
+  'workspace_status',
+  'workspace_detail',
+  'workspace_close',
+  'toolkits_list',
+  'toolkits_preview',
+  'settings_get', 'settings_update', 'settings_network_check',
+  'files_list',
+  'files_read',
+  'files_write',
+  'files_apply_patch',
+  'files_delete',
+  'files_move',
+  'files_mkdir',
+  'tasks_list',
+  'sessions_list',
+  'project_list', 'project_create', 'project_update', 'project_delete',
+  'environment_list', 'environment_create', 'environment_update', 'environment_delete',
+  'secret_list', 'secret_create', 'secret_rotate', 'secret_update', 'secret_delete', 'secret_bulk_apply',
+  'global_secret_list', 'global_secret_create', 'global_secret_rotate', 'global_secret_update', 'global_secret_delete', 'global_secret_bulk_apply',
+  'audit_list',
+  'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
+  'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
+  'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
+  'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
+  'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
+  'model_config_status',
+  'knowledge_dashboard_list', 'knowledge_dashboard_get', 'knowledge_dashboard_create', 'knowledge_dashboard_update', 'knowledge_dashboard_delete', 'knowledge_dashboard_search', 'knowledge_dashboard_graph', 'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
+  'mcp_server_list', 'mcp_server_get', 'mcp_server_create', 'mcp_server_update', 'mcp_server_delete',
+  'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools',
+  'mcp_server_connection_result', 'mcp_server_get_credentials',
+  'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list'
+] as const;
+
+/**
+ * The runtime list is the single source of truth for both the type and the totality test, so an
+ * operation can no longer be added to the mapper's type without being enumerable at runtime.
+ */
+export type DashboardResponseOperation = typeof DASHBOARD_RESPONSE_OPERATIONS[number];
 function pick(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return Object.fromEntries(keys.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
