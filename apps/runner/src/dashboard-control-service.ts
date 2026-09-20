@@ -454,6 +454,10 @@ export class DashboardControlService {
           });
           return ok('MCP traces listed', { traces: page.traces }, page.cursor);
         }
+        default:
+          // Any internal operation that has no runner handler yet fails loudly instead of returning an
+          // empty success, so a control-plane route can never look implemented while doing nothing.
+          throw new HarnessError('NOT_FOUND', `operation ${parsed.operation} has no runner handler yet`, 404, false);
       }
     } catch (error) {
       if (error instanceof HarnessError) throw error;
