@@ -248,7 +248,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'skill_search') {
     return {
       local: listOf(data.local, skillKeys),
-      providers: listOf(data.providers, ['provider', 'status', 'warning', 'count'])
+      providers: listOf(data.providers, ['provider', 'status', 'warning', 'count']),
+      results: listOf(data.results, ['provider', 'reference', 'name', 'description', 'installs'])
     };
   }
   if (operation === 'skill_import_start' || operation === 'skill_import_status' || operation === 'skill_import_cancel') return pick(data, skillImportJobKeys);

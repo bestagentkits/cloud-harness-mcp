@@ -6,6 +6,33 @@ import { HarnessError } from '@cloud-harness/contracts';
 import { runDocker } from '../docker-engine.js';
 import type { RepositoryCacheManager } from '../repository-cache-manager.js';
 import { computeFullTreeDigest, validateStagingDir, type ToolkitAdapterResult } from './mattpocock-adapter.js';
+import { fetchRegistrySearch, type RegistrySearchHit } from './registry-search.js';
+
+/**
+ * `id` is the full owner/repo/skill path, which is exactly what an import reference needs: `skillId`
+ * alone would lose the repository and `source` alone would lose the skill inside it.
+ */
+export function parseSkillsShSearchResults(payload: unknown, limit: number): RegistrySearchHit[] {
+  const skills = (payload as { skills?: unknown } | null)?.skills;
+  if (!Array.isArray(skills)) {
+    throw new HarnessError('UNAVAILABLE', 'skills.sh search returned an unrecognized payload', 503, true);
+  }
+  return skills.flatMap((entry): RegistrySearchHit[] => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    const reference = typeof record.id === 'string' ? record.id : undefined;
+    if (!reference) return [];
+    const installs = typeof record.installs === 'number' ? record.installs : undefined;
+    return [{
+      provider: 'skills-sh',
+      reference,
+      name: typeof record.name === 'string' ? record.name : reference,
+      ...(installs === undefined ? {} : { installs })
+    }];
+    // The bound applies to the hits that are returned, not to the entries that were read: slicing first
+    // would let an unimportable entry consume one of the caller's slots and quietly shorten the list.
+  }).slice(0, limit);
+}
 
 const COMMIT_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -84,6 +111,8 @@ export class SkillsShAdapter {
   private readonly provisioningNetwork: string;
   private readonly toolkitEgressProxy?: string | undefined;
   private readonly allowedGitHosts: string[];
+  private readonly searchBaseUrl: string;
+  private readonly fetcher: typeof fetch;
 
   constructor(options: {
     repoCacheManager: RepositoryCacheManager;
@@ -91,12 +120,25 @@ export class SkillsShAdapter {
     provisioningNetwork: string;
     allowedGitHosts: string[];
     toolkitEgressProxy?: string | undefined;
+    searchBaseUrl?: string | undefined;
+    fetcher?: typeof fetch | undefined;
   }) {
     this.repoCacheManager = options.repoCacheManager;
     this.executorImage = options.executorImage;
     this.provisioningNetwork = options.provisioningNetwork;
     this.allowedGitHosts = options.allowedGitHosts;
     this.toolkitEgressProxy = options.toolkitEgressProxy;
+    this.searchBaseUrl = (options.searchBaseUrl ?? 'https://skills.sh').replace(/\/+$/, '');
+    this.fetcher = options.fetcher ?? globalThis.fetch;
+  }
+
+  /**
+   * Search reads the public catalogue, which is a different capability from acquisition: it does not
+   * clone anything and does not touch the provisioning path, so it takes only a URL and a fetcher.
+   */
+  async search(query: string, limit: number, options: { signal?: AbortSignal | undefined } = {}): Promise<RegistrySearchHit[]> {
+    const payload = await fetchRegistrySearch(`${this.searchBaseUrl}/api/search?q=${encodeURIComponent(query)}`, this.fetcher, options);
+    return parseSkillsShSearchResults(payload, limit);
   }
 
   async acquireAndNormalize(

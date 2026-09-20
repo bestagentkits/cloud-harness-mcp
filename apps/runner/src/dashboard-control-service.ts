@@ -16,6 +16,9 @@ import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
 import { diffRevisionText, formatRevisionDiff } from './revision-diff.js';
+import { fetchRegistrySearch } from './adapters/registry-search.js';
+import { parseSkillsShSearchResults } from './adapters/skills-sh-adapter.js';
+import { parseSkillXSearchResults } from './adapters/skillx-adapter.js';
 
 /** A revision's content is prose, so the read is bounded rather than trusting the file size. */
 const MAX_REVISION_BYTES = 262_144;
@@ -41,7 +44,36 @@ export class DashboardControlService {
   ) {}
 
   /**
-   * Both value sources are named here, because they are not the same source: the workspace secrets come
+   * A provider that fails is reported as a warning rather than as zero results, because an empty list is
+   * a claim about a catalogue while a failure is a claim about the request. Each lookup is isolated so
+   * that one unreachable provider cannot hide the local results or the other provider's hits.
+   */
+  private async searchRemoteRegistries(
+    requested: Array<'local' | 'skills-sh' | 'skillx'>,
+    query: string,
+    limit: number
+  ): Promise<Array<{ provider: string; status: string; warning?: string; count: number; results: unknown[] }>> {
+    return await Promise.all(requested.filter((provider) => provider !== 'local').map(async (provider) => {
+      const base = provider === 'skills-sh' ? 'https://skills.sh' : 'https://skillx.sh';
+      try {
+        const payload = await fetchRegistrySearch(`${base}/api/search?q=${encodeURIComponent(query)}`, globalThis.fetch);
+        const results = provider === 'skills-sh'
+          ? parseSkillsShSearchResults(payload, limit)
+          : parseSkillXSearchResults(payload, limit);
+        return { provider, status: 'ok', count: results.length, results };
+      } catch (error) {
+        return {
+          provider,
+          status: 'unavailable',
+          warning: error instanceof Error ? error.message : String(error),
+          count: 0,
+          results: []
+        };
+      }
+    }));
+  }
+
+  /**
    * from the secret snapshot, while a provider credential lives in the model credential tables and would
    * otherwise never be redacted. The enumeration is deliberately not wrapped in a catch: if it cannot be
    * read, redaction cannot be complete, and the engine must fail closed rather than send.
@@ -540,19 +572,23 @@ export class DashboardControlService {
         ));
         case 'skill_usage': return ok('Skill usage listed', this.principals.listSkillUsage(principalId, parsed.input.skillId));
         case 'skill_search': {
-          // Only the local registry is searched. Fanning out to skills.sh and SkillX belongs to the
-          // adapter layer, and reporting a provider as returning zero results would be a claim this
-          // code cannot back, so an unasked provider is reported as unavailable rather than empty.
           const needle = parsed.input.query.toLowerCase();
           const local = this.principals.listSkillSources(principalId, { limit: 200 })
             .filter((skill): skill is NonNullable<ReturnType<StateStore['getSkillSource']>> => skill !== undefined
               && (skill.slug.toLowerCase().includes(needle) || skill.displayName.toLowerCase().includes(needle)))
             .slice(0, parsed.input.limit);
+          const providers = await this.searchRemoteRegistries(parsed.input.providers, parsed.input.query, parsed.input.limit);
           return ok('Skills searched', {
             local,
-            providers: parsed.input.providers
-              .filter((provider) => provider !== 'local')
-              .map((provider) => ({ provider, status: 'unavailable', count: 0 }))
+            // The per-provider summary deliberately carries no hits of its own, so the dashboard reads the
+            // counts here and the hits from the flat list below without having to join the two.
+            providers: providers.map((entry) => ({
+              provider: entry.provider,
+              status: entry.status,
+              count: entry.count,
+              ...(entry.warning ? { warning: entry.warning } : {})
+            })),
+            results: providers.flatMap((entry) => entry.results)
           });
         }
         case 'skill_set_list': return ok('Skill sets listed', { sets: this.principals.listSkillSets(principalId) });

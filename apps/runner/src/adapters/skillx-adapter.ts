@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HarnessError } from '@cloud-harness/contracts';
 import { computeFullTreeDigest, validateStagingDir, type ToolkitAdapterResult } from './mattpocock-adapter.js';
+import { fetchRegistrySearch, type RegistrySearchHit } from './registry-search.js';
 
 /**
  * SkillX import is documented as an assumption rather than a verified contract: the public API shape
@@ -44,11 +45,36 @@ export function normalizeSkillXPayload(slug: string, payload: unknown): Normaliz
   };
 }
 
+/**
+ * The payload carries a full `content` field per hit; it is dropped because a search result only has to
+ * name what could be imported, and the import fetches the skill in full.
+ */
+export function parseSkillXSearchResults(payload: unknown, limit: number): RegistrySearchHit[] {
+  const results = (payload as { results?: unknown } | null)?.results;
+  if (!Array.isArray(results)) {
+    throw new HarnessError('UNAVAILABLE', 'SkillX search returned an unrecognized payload', 503, true);
+  }
+  return results.flatMap((entry): RegistrySearchHit[] => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    const reference = typeof record.slug === 'string' ? record.slug : undefined;
+    if (!reference) return [];
+    const description = typeof record.description === 'string' ? record.description : undefined;
+    return [{
+      provider: 'skillx',
+      reference,
+      name: typeof record.name === 'string' ? record.name : reference,
+      ...(description ? { description } : {})
+    }];
+    // The bound applies to the hits that are returned, not to the entries that were read, so an entry
+    // without a slug cannot consume one of the caller's slots.
+  }).slice(0, limit);
+}
+
 /** SkillX skills are instructions only, so the produced tree holds no executable asset. */
 export type SkillXAdapterResult = ToolkitAdapterResult & {
   manifest: ToolkitAdapterResult['manifest'] & { hasExecutableAssets: false };
 };
-
 export class SkillXAdapter {
   static readonly PROVIDER = 'skillx' as const;
   static readonly ADAPTER_VERSION = 1;
@@ -59,6 +85,11 @@ export class SkillXAdapter {
   constructor(options: { baseUrl?: string | undefined; fetcher?: typeof fetch | undefined } = {}) {
     this.baseUrl = (options.baseUrl ?? 'https://skillx.sh').replace(/\/+$/, '');
     this.fetcher = options.fetcher ?? globalThis.fetch;
+  }
+
+  async search(query: string, limit: number, options: { signal?: AbortSignal | undefined } = {}): Promise<RegistrySearchHit[]> {
+    const payload = await fetchRegistrySearch(`${this.baseUrl}/api/search?q=${encodeURIComponent(query)}`, this.fetcher, options);
+    return parseSkillXSearchResults(payload, limit);
   }
 
   async acquireAndNormalize(
