@@ -1,3 +1,11 @@
+## [0.51.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.51.0...v0.51.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **dashboard:** make the skills page reachable, and make the plan say what is true ([dd93aee](https://github.com/bestagentkits/cloud-harness-mcp/commit/dd93aee090bfe83288bf859bf268c067fc47c086))
+* **runner:** stop interpolating a status allowlist into a statement ([4451602](https://github.com/bestagentkits/cloud-harness-mcp/commit/4451602cb4333c24ddee8e692a54d85230f6aa18))
+
 # [0.51.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.50.0...v0.51.0) (2026-09-20)
 
 
