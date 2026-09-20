@@ -46,7 +46,7 @@ COPY --chown=root:root worker/task-runner.sh /opt/harness/task-runner.sh
 COPY --chown=root:root worker/shell-runner.sh /opt/harness/shell-runner.sh
 COPY --chown=root:root worker/worker-runner.sh /opt/harness/worker-runner.sh
 COPY --chown=root:root worker/gh-helper.sh /opt/harness/gh-helper.sh
-COPY --chown=root:root worker/bin/npx-dispatcher /opt/harness/bin/npx-dispatcher
+COPY --chown=root:root worker/bin/npx-dispatcher /opt/harness/bin/npx
 COPY --chown=root:root worker/bin/skills /opt/harness/bin/skills
 COPY --chown=root:root worker/bin/skillx /opt/harness/bin/skillx
 # /opt/harness is outside the repository, so nothing there would declare the extensionless launchers as
