@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TypesafeSkillSuggester, redactPrompt, type RosterEntry } from '../src/typesafe-skill-suggester.js';
+import { TypesafeSkillSuggester, parseAnswer, redactPrompt, type RosterEntry } from '../src/typesafe-skill-suggester.js';
 import { GATE_THRESHOLD, MAX_EGRESS_BYTES } from '../src/typesafe-questions.js';
 
 /** A provider key in the shape model-profile-state-repository would decrypt for the redactor. */
@@ -18,9 +18,30 @@ function roster(...names: string[]): RosterEntry[] {
   }));
 }
 
-function answerResponse(choice: string, answers: Record<string, number>) {
-  return { ok: true, status: 200, json: async () => ({ answer: { choice, answers } }) };
+function answerResponse(choice: string, nouls: Record<string, number>) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      model: 'jev-1.13.0',
+      answers: {
+        skill: { type: 'choice', choice, confidence: 0.8, probabilities: {} },
+        ...Object.fromEntries(Object.entries(nouls).map(([name, value]) => [name, { type: 'noul', noul: value }]))
+      },
+      usage: { input_tokens: 100, output_tokens: 20 }
+    })
+  };
 }
+
+/** The exact response the live endpoint returned during verification, used to pin the parser. */
+const LIVE_RESPONSE = {
+  model: 'jev-1.13.0',
+  answers: {
+    pick: { type: 'choice', choice: 'alpha', confidence: 0.82, probabilities: { alpha: 0.91, beta: 0.09 } },
+    clear: { type: 'noul', noul: 0.4 }
+  },
+  usage: { input_tokens: 329, output_tokens: 48 }
+};
 
 const HEALTHY_GATE = { acts_on_user_system: 1, would_follow_documented_procedure: 1, prose_suffices: 0 };
 
@@ -38,6 +59,27 @@ function suggesterWith(handler: (body: any, call: number) => unknown, overrides:
   });
   return { suggester, fetchImpl, calls: () => call };
 }
+
+describe('answer parsing', () => {
+  it('reads the shape the live endpoint actually returns', () => {
+    const parsed = parseAnswer(LIVE_RESPONSE);
+
+    expect(parsed?.choice).toBe('alpha');
+    expect(parsed?.nouls.clear).toBe(0.4);
+    expect(parsed?.usage).toEqual({ inputTokens: 329, outputTokens: 48 });
+  });
+
+  it('reports an unexpected shape rather than guessing at one', () => {
+    expect(parseAnswer({ answer: { choice: 'alpha' } })).toBeUndefined();
+    expect(parseAnswer(undefined)).toBeUndefined();
+    expect(parseAnswer({ answers: 'not a map' })).toBeUndefined();
+  });
+
+  it('defaults usage to zero when the endpoint omits it', () => {
+    const parsed = parseAnswer({ answers: { clear: { type: 'noul', noul: 0.5 } } });
+    expect(parsed?.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+  });
+});
 
 describe('prompt redaction', () => {
   it('replaces a known secret value and a recognisable key shape', () => {
@@ -193,6 +235,9 @@ describe('gate and fit thresholds', () => {
 
     expect(result.suggested).toEqual({ name: 'tdd', gate: 1, fit: 0.8, confidence: 0.8 });
     expect(result.reason).toBeUndefined();
+    // Usage travels with the result, because the audit row records it and the phase requires it.
+    expect(result.inputTokens).toBeGreaterThan(0);
+    expect(result.outputTokens).toBeGreaterThan(0);
   });
 
   it('discards a choice the roster does not contain', async () => {

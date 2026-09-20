@@ -42,13 +42,25 @@ export type RosterEntry = {
   bodyExcerpt: string;
 };
 
-/** The wire shape this engine sends. Named so a builder cannot quietly return something else. */
+/**
+ * The wire shape, verified against the live endpoint rather than inferred.
+ *
+ * A call carries three top-level fields, `model`, `state`, and `questions`, and every question is a
+ * tagged union whose `criteria` is a map. A choice's criteria map is keyed by option, and a noul's is
+ * keyed by the two polar answers.
+ */
+export type TypesafeQuestion =
+  | { type: 'choice'; question: string; criteria: Record<string, string> }
+  | { type: 'noul'; question: string; criteria: Record<string, string> }
+  | { type: 'score'; question: string; criteria: Record<string, string> };
+
 export type TypesafeRequest = {
   model: string;
-  choice: { question: string; options: Array<{ label: string; criteria: string }> };
-  noul: Array<{ name: string; question: string }>;
-  input: string;
+  state: string;
+  questions: Record<string, TypesafeQuestion>;
 };
+
+export type TypesafeUsage = { inputTokens: number; outputTokens: number };
 
 export type RedactionOutcome = {
   text: string;
@@ -128,9 +140,47 @@ export type SuggestionOutcome = {
   latencyMs: number;
   outboundCalls: number;
   redactionCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  truncated: boolean;
 };
 
 type CacheEntry = { expiresAt: number; outcome: SuggestionOutcome };
+
+type ParsedAnswer = {
+  /** The chosen option of the `skill` question, when the model returned a string. */
+  choice: string | undefined;
+  /** Noul probabilities keyed by question name. */
+  nouls: Record<string, number>;
+  usage: TypesafeUsage;
+};
+
+/**
+ * The response is a map of answers keyed by the question names this engine chose, plus usage. An
+ * unexpected shape is reported rather than guessed at, because a guess here becomes a suggestion.
+ */
+export function parseAnswer(json: unknown): ParsedAnswer | undefined {
+  if (!json || typeof json !== 'object') return undefined;
+  const answers = (json as { answers?: unknown }).answers;
+  if (!answers || typeof answers !== 'object') return undefined;
+
+  let choice: string | undefined;
+  const nouls: Record<string, number> = {};
+  for (const [name, value] of Object.entries(answers as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const answer = value as { type?: unknown; choice?: unknown; noul?: unknown };
+    if (answer.type === 'choice' && typeof answer.choice === 'string') choice = answer.choice;
+    if (answer.type === 'noul' && typeof answer.noul === 'number') nouls[name] = answer.noul;
+  }
+
+  const usage = (json as { usage?: unknown }).usage;
+  const inputTokens = usage && typeof usage === 'object' && typeof (usage as { input_tokens?: unknown }).input_tokens === 'number'
+    ? (usage as { input_tokens: number }).input_tokens : 0;
+  const outputTokens = usage && typeof usage === 'object' && typeof (usage as { output_tokens?: unknown }).output_tokens === 'number'
+    ? (usage as { output_tokens: number }).output_tokens : 0;
+
+  return { choice, nouls, usage: { inputTokens, outputTokens } };
+}
 
 /**
  * The TypeSafe skill suggester.
@@ -167,14 +217,12 @@ export class TypesafeSkillSuggester {
     }
   }
 
-  private permitCall(ownerId: string, now: number): boolean {
+  private permitCall(now: number): boolean {
     const recent = this.callTimestamps.filter((stamp) => now - stamp < 60_000);
     this.callTimestamps.length = 0;
     this.callTimestamps.push(...recent);
     if (recent.length >= RATE_LIMIT_PER_MINUTE) return false;
     this.callTimestamps.push(now);
-    // The owner is part of the key so one operator cannot spend another's budget.
-    void ownerId;
     return true;
   }
 
@@ -200,7 +248,7 @@ export class TypesafeSkillSuggester {
     }
   }
 
-  private async post(body: unknown, signal: AbortSignal): Promise<{ ok: true; json: unknown } | { ok: false; status?: number; failure: 'timeout' | 'connection_error' }> {
+  private async post(body: TypesafeRequest, signal: AbortSignal): Promise<{ ok: true; json: unknown } | { ok: false; status?: number; failure: 'timeout' | 'connection_error' }> {
     const endpoint = this.endpoint();
     const apiKey = this.config.apiKey();
     if (!endpoint || !apiKey) return { ok: false, failure: 'connection_error' };
@@ -228,7 +276,10 @@ export class TypesafeSkillSuggester {
   }): Promise<SuggestionOutcome> {
     const now = this.config.now ?? (() => Date.now());
     const startedAt = now();
-    const base: SuggestionOutcome = { suggested: null, cached: false, latencyMs: 0, outboundCalls: 0, redactionCount: 0 };
+    const base: SuggestionOutcome = {
+      suggested: null, cached: false, latencyMs: 0, outboundCalls: 0, redactionCount: 0,
+      inputTokens: 0, outputTokens: 0, truncated: false
+    };
 
     const blocked = shortCircuitReason({
       enabled: this.config.enabled ? this.config.enabled() : true,
@@ -252,85 +303,89 @@ export class TypesafeSkillSuggester {
     const cached = this.readCache(cacheKey, now());
     if (cached) return { ...cached, latencyMs: now() - startedAt, redactionCount: redaction.outcome.count };
 
-    if (!this.permitCall(input.ownerId, now())) return { ...base, reason: 'rate_limited' };
+    if (!this.permitCall(now())) return { ...base, reason: 'rate_limited' };
 
     const deadline = startedAt + TOTAL_BUDGET_MS;
+    const spent = (partial: Partial<SuggestionOutcome>): SuggestionOutcome => ({
+      ...base,
+      redactionCount: redaction.outcome.count,
+      truncated: redaction.outcome.truncated,
+      latencyMs: now() - startedAt,
+      ...partial
+    });
+
+    let first: ParsedAnswer | undefined;
     let outboundCalls = 0;
-    let answer: { choice: string; answers: Record<string, number> } | undefined;
+    let inputTokens = 0;
+    let outputTokens = 0;
 
     // Call 1 ranks every roster name and asks the three gate questions in the same request.
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (now() >= deadline) break;
+      if (now() >= deadline) return spent({ reason: 'budget_exceeded', outboundCalls });
       outboundCalls += 1;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), Math.min(CALL_TIMEOUT_MS, Math.max(1, deadline - now())));
-      let result: Awaited<ReturnType<TypesafeSkillSuggester['post']>>;
-      try {
-        result = await this.post(this.rankBody(input.roster, redaction.outcome.text), controller.signal);
-      } finally {
-        clearTimeout(timer);
+      const settled = await this.timedPost(this.rankBody(input.roster, redaction.outcome.text), deadline, now);
+      if (settled.kind === 'threw') {
+        const reason = settled.failure === 'timeout' ? 'timeout' : 'connection_error';
+        return spent({ reason, outboundCalls });
       }
-
-      const settled = { ...base, outboundCalls, redactionCount: redaction.outcome.count, latencyMs: now() - startedAt };
-      if (result.ok) {
-        const parsed = parseAnswer(result.json);
-        if (!parsed) return { ...settled, reason: 'unexpected_response' };
-        answer = parsed;
-        break;
+      if (settled.kind === 'http-error') {
+        if (settled.status === 401) return spent({ reason: 'unauthorized', outboundCalls });
+        if (settled.status === 422) return spent({ reason: 'unprocessable', outboundCalls });
+        if ((settled.status === 429 || settled.status === 529) && attempt === 0) continue;
+        if (settled.status === 429) return spent({ reason: 'rate_limited', outboundCalls });
+        if (settled.status === 529) return spent({ reason: 'upstream_unavailable', outboundCalls });
+        return spent({ reason: 'connection_error', outboundCalls });
       }
-      if (result.failure === 'timeout') return { ...settled, reason: 'timeout' };
-      if (result.status === 401) return { ...settled, reason: 'unauthorized' };
-      if (result.status === 422) return { ...settled, reason: 'unprocessable' };
-      // Only the two throttling statuses are worth a second attempt; the others will not change.
-      if ((result.status === 429 || result.status === 529) && attempt === 0) continue;
-      if (result.status === 429) return { ...settled, reason: 'rate_limited' };
-      if (result.status === 529) return { ...settled, reason: 'upstream_unavailable' };
-      return { ...settled, reason: 'connection_error' };
+      const parsed = parseAnswer(settled.json);
+      if (!parsed) return spent({ reason: 'unexpected_response', outboundCalls });
+      first = parsed;
+      inputTokens += parsed.usage.inputTokens;
+      outputTokens += parsed.usage.outputTokens;
+      break;
     }
+    if (!first) return spent({ reason: 'budget_exceeded', outboundCalls, inputTokens, outputTokens });
 
-    if (!answer) {
-      return { ...base, outboundCalls, redactionCount: redaction.outcome.count, reason: 'budget_exceeded', latencyMs: now() - startedAt };
-    }
-
-    const gate = gateValue(answer.answers as Partial<Record<typeof GATE_QUESTIONS[number]['key'], number>>);
+    const gate = gateValue(first.nouls);
     if (gate < GATE_THRESHOLD) {
-      const outcome = { ...base, outboundCalls, redactionCount: redaction.outcome.count, reason: 'below_gate' as const, latencyMs: now() - startedAt };
+      const outcome = spent({ reason: 'below_gate', outboundCalls, inputTokens, outputTokens });
       this.writeCache(cacheKey, outcome, now());
       return outcome;
     }
 
     const shortlist = input.roster.slice(0, SHORTLIST);
-    if (!shortlist.some((entry) => entry.name === answer?.choice)) return { ...base, outboundCalls, redactionCount: redaction.outcome.count, reason: 'invalid_choice', latencyMs: now() - startedAt };
+    // A choice the roster does not contain is discarded and reported rather than quietly ignored: the
+    // name came from the model, and using the fit ranking to paper over it would hide that the model
+    // answered something outside the roster.
+    if (first.choice !== undefined && !input.roster.some((entry) => entry.name === first.choice)) {
+      return spent({ reason: 'invalid_choice', outboundCalls, inputTokens, outputTokens });
+    }
+    const ranked = first.choice !== undefined
+      ? [shortlist.find((entry) => entry.name === first.choice)!, ...shortlist.filter((entry) => entry.name !== first.choice)]
+      : shortlist;
 
-    // Call 2 reranks the shortlist using the fuller text and asks one fit question per candidate.
-    if (now() >= deadline) return { ...base, outboundCalls, redactionCount: redaction.outcome.count, reason: 'budget_exceeded', latencyMs: now() - startedAt };
+    if (now() >= deadline) return spent({ reason: 'budget_exceeded', outboundCalls, inputTokens, outputTokens });
     outboundCalls += 1;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.min(CALL_TIMEOUT_MS, Math.max(1, deadline - now())));
-    let rerank: Awaited<ReturnType<TypesafeSkillSuggester['post']>>;
-    try {
-      rerank = await this.post(this.rerankBody(shortlist, redaction.outcome.text), controller.signal);
-    } finally {
-      clearTimeout(timer);
+    const settled = await this.timedPost(this.rerankBody(ranked, redaction.outcome.text), deadline, now);
+    if (settled.kind !== 'ok') {
+      return spent({ reason: 'upstream_unavailable', outboundCalls, inputTokens, outputTokens });
     }
-    if (!rerank.ok) {
-      return { ...base, outboundCalls, redactionCount: redaction.outcome.count, reason: 'upstream_unavailable', latencyMs: now() - startedAt };
-    }
-    const ranked = parseAnswer(rerank.json);
-    if (!ranked) return { ...base, outboundCalls, redactionCount: redaction.outcome.count, reason: 'unexpected_response', latencyMs: now() - startedAt };
+    const second = parseAnswer(settled.json);
+    if (!second) return spent({ reason: 'unexpected_response', outboundCalls, inputTokens, outputTokens });
+    inputTokens += second.usage.inputTokens;
+    outputTokens += second.usage.outputTokens;
 
-    const best = shortlist
-      .map((entry) => ({ name: entry.name, fit: numberOr(ranked.answers[`fits::${entry.name}`], 0) }))
+    const best = ranked
+      .map((entry) => ({ name: entry.name, fit: numberOr(second.nouls[`fits::${entry.name}`], 0) }))
       .sort((a, b) => b.fit - a.fit)[0]!;
     if (best.fit < FITS_THRESHOLD) {
-      return { ...base, outboundCalls, redactionCount: redaction.outcome.count, reason: 'below_fit', latencyMs: now() - startedAt };
+      return spent({ reason: 'below_fit', outboundCalls, inputTokens, outputTokens });
     }
 
     // The winning name is validated against the roster by exact match, so model prose cannot reach the
     // caller: an answer the roster does not contain is discarded rather than reported.
-    const chosenName = shortlist.some((entry) => entry.name === ranked.choice) ? ranked.choice : best.name;
+    const chosenName = best.name;
     if (!input.roster.some((entry) => entry.name === chosenName)) {
-      return { ...base, outboundCalls, redactionCount: redaction.outcome.count, reason: 'invalid_choice', latencyMs: now() - startedAt };
+      return spent({ reason: 'invalid_choice', outboundCalls, inputTokens, outputTokens });
     }
 
     const outcome: SuggestionOutcome = {
@@ -338,47 +393,58 @@ export class TypesafeSkillSuggester {
       cached: false,
       outboundCalls,
       redactionCount: redaction.outcome.count,
-      latencyMs: now() - startedAt
+      truncated: redaction.outcome.truncated,
+      latencyMs: now() - startedAt,
+      inputTokens,
+      outputTokens
     };
     this.writeCache(cacheKey, outcome, now());
     return outcome;
   }
 
+  private async timedPost(body: TypesafeRequest, deadline: number, now: () => number):
+  Promise<{ kind: 'ok'; json: unknown } | { kind: 'http-error'; status: number } | { kind: 'threw'; failure: 'timeout' | 'connection_error' }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(CALL_TIMEOUT_MS, Math.max(1, deadline - now())));
+    try {
+      const result = await this.post(body, controller.signal);
+      if (result.ok) return { kind: 'ok', json: result.json };
+      if (result.failure === 'timeout') return { kind: 'threw', failure: 'timeout' };
+      return { kind: 'http-error', status: result.status ?? 0 };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private rankBody(roster: RosterEntry[], prompt: string): TypesafeRequest {
-    return {
-      model: this.config.model ?? TYPESAFE_DEFAULT_MODEL,
-      choice: { question: 'Which skill, if any, should be used for this request?', options: roster.map((entry) => ({ label: entry.name, criteria: entry.indexDescription })) },
-      noul: GATE_QUESTIONS.map((question) => ({ name: question.key, question: question.text })),
-      input: prompt
+    const questions: Record<string, TypesafeQuestion> = {
+      skill: {
+        type: 'choice',
+        question: 'Which skill, if any, should be used for this request?',
+        criteria: Object.fromEntries(roster.map((entry) => [entry.name, entry.indexDescription]))
+      }
     };
+    for (const question of GATE_QUESTIONS) {
+      questions[question.key] = { type: 'noul', question: question.text, criteria: { true: 'yes', false: 'no' } };
+    }
+    return { model: this.config.model ?? TYPESAFE_DEFAULT_MODEL, state: prompt, questions };
   }
 
   private rerankBody(shortlist: RosterEntry[], prompt: string): TypesafeRequest {
-    return {
-      model: this.config.model ?? TYPESAFE_DEFAULT_MODEL,
-      choice: { question: 'Which of these skills fits the request best?', options: shortlist.map((entry) => ({ label: entry.name, criteria: `${entry.descriptionFull}\n${entry.bodyExcerpt}` })) },
-      noul: shortlist.map((entry) => ({ name: `fits::${entry.name}`, question: `Does the skill ${entry.name} fit this request?` })),
-      input: prompt
+    const questions: Record<string, TypesafeQuestion> = {
+      skill: {
+        type: 'choice',
+        question: 'Which of these skills fits the request best?',
+        criteria: Object.fromEntries(shortlist.map((entry) => [entry.name, `${entry.descriptionFull}\n${entry.bodyExcerpt}`]))
+      }
     };
+    for (const entry of shortlist) {
+      questions[`fits::${entry.name}`] = { type: 'noul', question: `Does the skill ${entry.name} fit this request?`, criteria: { true: 'fits', false: 'does not fit' } };
+    }
+    return { model: this.config.model ?? TYPESAFE_DEFAULT_MODEL, state: prompt, questions };
   }
 }
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-/** An unexpected shape is reported rather than guessed at, because a guess here becomes a suggestion. */
-function parseAnswer(json: unknown): { choice: string; answers: Record<string, number> } | undefined {
-  if (!json || typeof json !== 'object') return undefined;
-  const answer = (json as { answer?: unknown }).answer;
-  if (!answer || typeof answer !== 'object') return undefined;
-  const { choice, answers } = answer as { choice?: unknown; answers?: unknown };
-  if (typeof choice !== 'string') return undefined;
-  const normalized: Record<string, number> = {};
-  if (answers && typeof answers === 'object') {
-    for (const [key, value] of Object.entries(answers as Record<string, unknown>)) {
-      if (typeof value === 'number') normalized[key] = value;
-    }
-  }
-  return { choice, answers: normalized };
 }
