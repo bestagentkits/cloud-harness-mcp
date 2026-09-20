@@ -41,6 +41,52 @@ function createSource(store: StateStore, slug = 'tdd') {
 }
 
 describe('skill registry repository', () => {
+  it('keeps one owner from reading or writing another owner\u2019s skills and sets', () => {
+    const store = openStore();
+    try {
+      const { sourceId, revisionId } = createSource(store);
+      const setId = store.createSkillSet({
+        ownerId: OWNER,
+        name: 'core',
+        items: [{ skillSourceId: sourceId, revisionId, name: 'tdd' }]
+      });
+
+      // Reads. The assertion is on visibility rather than on the mechanism, so it holds whether a
+      // cross-owner read throws or returns nothing.
+      expect(store.listSkillSources(OWNER).filter((skill) => skill?.id === sourceId)).toHaveLength(1);
+      expect(store.listSkillSources(OTHER_OWNER).filter((skill) => skill?.id === sourceId)).toEqual([]);
+      expect(store.listSkillSets(OTHER_OWNER).filter((set) => set.id === setId)).toEqual([]);
+
+      const crossOwnerSkill = (() => {
+        try { return store.getSkillSource(OTHER_OWNER, sourceId); } catch { return undefined; }
+      })();
+      expect(crossOwnerSkill).toBeUndefined();
+
+      const crossOwnerSet = (() => {
+        try { return store.getSkillSet(OTHER_OWNER, setId); } catch { return undefined; }
+      })();
+      expect(crossOwnerSet).toBeUndefined();
+
+      // Writes. A mutation addressed with the wrong owner must leave the real row untouched, whether
+      // the guard refuses it or the scoped UPDATE simply matches nothing.
+      try {
+        store.updateSkillMetadata({ ownerId: OTHER_OWNER, id: sourceId, displayName: 'Hijacked', expectedGeneration: 1 });
+      } catch { /* refusing is the expected path */ }
+      try {
+        store.setSkillState(OTHER_OWNER, sourceId, 'archived', 1);
+      } catch { /* refusing is the expected path */ }
+      try {
+        store.deleteSkillSet(OTHER_OWNER, setId, 1);
+      } catch { /* refusing is the expected path */ }
+
+      const afterAttack = store.getSkillSource(OWNER, sourceId);
+      expect(afterAttack?.displayName).toBe('TDD');
+      expect(afterAttack?.state).toBe('enabled');
+      expect(store.getSkillSet(OWNER, setId)?.name).toBe('core');
+    } finally {
+      store.close();
+    }
+  });
   it('creates a source with its first immutable revision and points the source at it', () => {
     const store = openStore();
     try {
