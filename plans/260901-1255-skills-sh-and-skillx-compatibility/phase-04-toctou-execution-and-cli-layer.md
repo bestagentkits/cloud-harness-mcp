@@ -10,7 +10,7 @@ dependencies: [2, 3]
 # Phase 4: TOCTOU-Safe Helper Execution & Executor CLI Compatibility Layer (TDD)
 
 ## Overview
-Harden `skills_run` against Time-of-Check to Time-of-Use (TOCTOU) race conditions by executing scripts from an immutable, root-owned snapshot in a dedicated helper container. Implement and package the offline CLI compatibility layer (`skills`, `skillx`, and the narrow `npx` dispatcher) inside the executor image to support native commands in air-gapped (`networkMode: 'none'`) workspaces.
+Harden `skills_run` against Time-of-Check to Time-of-Use (TOCTOU) race conditions by executing scripts from an immutable, root-owned snapshot in a dedicated helper container. Implement and package the offline CLI compatibility layer (`skills`, `skillx`, and the narrow `npx` dispatcher) inside the executor image to support native commands in air-gapped (`networkProfile: 'network-none'`) workspaces.
 
 ## Requirements
 - **Functional:**
@@ -34,7 +34,7 @@ Harden `skills_run` against Time-of-Check to Time-of-Use (TOCTOU) race condition
       - Transparently delegates all other invocations (e.g. `npx tsc`, `npx prettier`) to the real `npx` at `/usr/local/bin/npx`.
       - Assert the resolved paths in `cli-compatibility-airgap.docker.test.ts`: `command -v npx` resolves to `/opt/harness/bin/npx` and `npx --version` returns npm's version through delegation.
 - **Non-functional / Security:**
-  - When running in `networkMode: 'none'`, all CLI commands execute 100% offline from the local projection without attempting network connections.
+  - When running in `networkProfile: 'network-none'`, all CLI commands execute 100% offline from the local projection without attempting network connections.
   - A cache miss for an unmirrored skill fails closed with exit code 1 and error code `CACHE_MISS`, outputting exact import instructions.
   - Ensure zero credentials, tokens, or control-plane sockets are accessible to the CLI or execution container.
 
@@ -87,7 +87,7 @@ Spawn Disposable Helper Container
      - Test that `skills add unmirrored/repo` exits 1 with `CACHE_MISS` and prints import instructions.
      - Test that the dispatcher resolves `skills` and `skillx` locally and passes every other argument vector through unchanged, using a stubbed real-`npx` path.
    - Write container tests in `apps/runner/test/cli-compatibility-airgap.docker.test.ts` (Docker lane, `npm run test:docker`):
-     - Test running `skills add owner/repo --skill foo -y` in a `networkMode: 'none'` workspace installs to `.cloud-harness/skills/` with no DNS or outbound attempt.
+     - Test running `skills add owner/repo --skill foo -y` in a `networkProfile: 'network-none'` workspace installs to `.cloud-harness/skills/` with no DNS or outbound attempt.
      - Test running `npx skills add` produces identical output to the direct binary.
      - Test running `skillx use slug --raw` outputs the instructions snapshot.
      - Test running an unrelated `npx` command reaches the real npm through delegation and prints the npm version.
@@ -106,7 +106,7 @@ Spawn Disposable Helper Container
 
 ## Success Criteria
 - [x] Symlink swapping or file tampering during `skills_run` cannot alter executed bytes.
-- [x] `skills add` and `skillx use` execute completely offline inside `networkMode: 'none'` containers.
+- [x] `skills add` and `skillx use` execute completely offline inside `networkProfile: 'network-none'` containers.
 - [x] `npx skills ...` and `npx skillx-sh ...` work seamlessly without requiring npm registry connections.
 - [x] Unrelated `npx` commands continue to work normally through delegation.
 - [x] Uncached skill requests fail closed with structured `CACHE_MISS` errors.

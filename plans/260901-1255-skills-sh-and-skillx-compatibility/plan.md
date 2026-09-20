@@ -13,7 +13,7 @@ created: 2026-09-01
 
 ## Overview
 
-Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.sh/ in CloudHarness MCP. This enables owners to discover, author, import, version, and organize skills into Skill Sets on the Dashboard, launch workspaces with multi-set combinations, and execute familiar `skills` and `skillx` CLI commands inside air-gapped (`networkMode: 'none'`) executors without violating single-owner isolation, 4-tier precedence, or digest pinning guarantees. Phases 8 and 9 add a TypeSafe/Jev suggestion that names at most one relevant skill per user prompt.
+Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.sh/ in CloudHarness MCP. This enables owners to discover, author, import, version, and organize skills into Skill Sets on the Dashboard, launch workspaces with multi-set combinations, and execute familiar `skills` and `skillx` CLI commands inside air-gapped (`networkProfile: 'network-none'`) executors without violating single-owner isolation, 4-tier precedence, or digest pinning guarantees. Phases 8 and 9 add a TypeSafe/Jev suggestion that names at most one relevant skill per user prompt.
 
 **Effort unit:** the hours below are execution time for an AI coding agent working with this repository's tooling, not human man-hours. A human developer would need substantially longer, so do not read them as staffing estimates. After phase 1 completes, re-estimate the remaining phases against the real time phase 1 took.
 
@@ -47,7 +47,7 @@ Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.s
 ## Success Criteria
 
 - [x] All database migrations pass with strict foreign keys enabled (`PRAGMA foreign_keys = ON;`), preventing cross-owner and same-owner cross-source revision references.
-- [x] In `networkMode: 'none'` workspaces, `skills add`, `npx skills add`, `skillx use`, and `npx skillx-sh use` execute 100% offline from local projection without DNS or network attempts.
+- [x] In `networkProfile: 'network-none'` workspaces, `skills add`, `npx skills add`, `skillx use`, and `npx skillx-sh use` execute 100% offline from local projection without DNS or network attempts.
 - [x] Uncached CLI invocations in air-gapped workspaces fail closed with `CACHE_MISS` and explicit import guidance instead of opening background network channels.
 - [x] 4-tier precedence (`built-in > owner > workspace > repository`) resolves deterministically; same-tier collisions block launch unless explicitly resolved by `skillOverrides[name]`.
 - [x] `skills_run` executes verified scripts from an immutable root-owned snapshot in a helper container as UID 10001, eliminating TOCTOU script swapping.
@@ -138,7 +138,7 @@ Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.s
   - Phase 5's iterable enum is at `internal-runner-api.ts:117-125` (not `:66-77`), and `internal-runner-api.test.ts:78-84` forbids a name appearing as both a metadata operation and a public tool.
   - There are **three** exhaustive dashboard route registries, not one: the shell allowlist (`dashboard-assets.ts:42-62`), the mount test path list (`dashboard-app-mount.test.ts:44`), and the client dispatch (`dashboard.js:661-676`), plus a nav list pinned by `dashboard-ui-contract.test.ts:100-115`. An intermediate correction in this session wrongly asserted the allowlist did not exist; that text was itself corrected after the re-verification contradicted it.
   - The preferences schema is `{ theme?, displayName? }` at `dashboard-router.ts:19-22`, not `{ theme }` at `:96-107`.
-  - Phase 7's `networkMode: 'none'` is rejected by the contract (`tool-schemas.ts:309-325`); the real field is `networkProfile: 'network-none'`. `docs-site/reference/tools.md` is generated and CI-diffed, and `npm run docs:links` only warns about external links in a pre-built `dist`, so it cannot be the documentation gate.
+  - Phase 7's `networkProfile: 'network-none'` is rejected by the contract (`tool-schemas.ts:309-325`); the real field is `networkProfile: 'network-none'`. `docs-site/reference/tools.md` is generated and CI-diffed, and `npm run docs:links` only warns about external links in a pre-built `dist`, so it cannot be the documentation gate.
   - `integration_credentials` belongs beside the other credential tables in `principal-store.ts` (`:549`, `:563`), not in `state-store.ts`, and audit rows are flat with no action filter.
   - `dashboard-skills-router.ts` and `packages/contracts/test/tool-schemas.test.ts` must be created, not modified; `mcp-server.ts` has no per-tool handler, so `skill_suggest` needs an explicit special case; `plugins/cloud-harness/hooks/` and `.mcp.json` are genuinely new.
 - Also confirmed: the worker's `skillEntries()` (`worker/harness-worker.mjs:206`) parses no description at all, so phase 8's frontmatter parsing is new work; `preferred_workspaces` is at `state-store.ts:355` with `getPreferredWorkspace` at `:745-748`; `getRedactor` is at `workspace-service.ts:225-255`; provider credential envelopes are decrypted through `getExportSnapshot` in `model-profile-state-repository.ts:631-753`.
@@ -324,7 +324,7 @@ Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.s
 - Accepted: reduce the egress payload instead of only cleaning it. The payload is now bounded to 4096 bytes by default (never above 8192) as an exposure control, with the truncation quality trade-off recorded, and the engine short-circuits locally with zero calls for the kill switch, an empty roster, a too-short prompt, or a bare slash command.
 - Accepted: separate the two failure policies. Redaction now fails **closed** (no egress, `reason: 'redaction_failed'`) while the suggestion path still fails open, because a suggestion outage should not break a turn but an unredacted payload must not leave.
 - Accepted: make always-on egress visible and reversible. Phase 9 adds `TYPESAFE_EGRESS=off` as a hard switch independent of key presence, a one-time acknowledgement when egress is first enabled, and a per-session count of suggestions and outbound calls.
-- Accepted: name the trust-boundary expansion honestly in both security-model documents rather than presenting redaction as a barrier, and name the asymmetry with the executor's default `networkMode: none`.
+- Accepted: name the trust-boundary expansion honestly in both security-model documents rather than presenting redaction as a barrier, and name the asymmetry with the executor's default `networkProfile: 'network-none'`.
 - Accepted: the bundled plugin MCP entry must be a thin client to the existing control-plane endpoint with no second credential path, and the `skill_suggest` classification must be confirmed against the existing classification test because the tool writes audit rows and causes egress.
 - Noted, not accepted as a change: the advisor repeated that the plan directory should be committed. That remains the operator's call and is an open question below.
 

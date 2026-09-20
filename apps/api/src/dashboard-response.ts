@@ -109,7 +109,7 @@ const skillUsageWorkspaceKeys = ['workspaceId', 'status', 'name', 'revisionId'] 
 const skillImportJobKeys = ['id', 'sourceKind', 'sourceRef', 'state', 'progress', 'result', 'errorCode', 'skillRevisionId', 'createdAt', 'updatedAt'] as const;
 const skillResolvedKeys = ['name', 'tier', 'skillSourceId', 'revisionId', 'contentSha256', 'pinned'] as const;
 const skillExcludedKeys = ['name', 'tier', 'reason'] as const;
-const skillCatalogKeys = ['id', 'provider', 'slug', 'displayName', 'description', 'fetchedAt'] as const;
+const skillCatalogKeys = ['id', 'provider', 'slug', 'displayName', 'description', 'fetchedAt', 'cacheState', 'pinnedCommit', 'skillCount', 'lockState'] as const;
 /** Credential metadata. No value field, so no projection can produce one. */
 const integrationCredentialKeys = ['id', 'integration', 'label', 'status', 'activeVersion', 'generation', 'createdAt', 'updatedAt'] as const;
 

@@ -272,7 +272,8 @@ const request = (operation: MetadataRunnerRequest['operation'], input: Record<st
 
 describe('dashboard control service', () => {
   it('serves the registry catalogue and records an entry an operator acts on', async () => {
-    const { controls } = setup();
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
 
     // The route test uses a mocked runner, which answers anything, so it cannot tell a real handler from a
     // missing one. These calls go through the service itself.
@@ -283,13 +284,12 @@ describe('dashboard control service', () => {
     const filtered = await controls.execute(request('toolkit_registry_list', { provider: 'skillx' }));
     expect((filtered.data as { entries: unknown[] }).entries).toEqual([]);
 
-    // The catalogue the dashboard reads back is what the update wrote, so an action is checked against the
-    // record rather than against the response that claims it happened.
+    // An update records the catalogue entry an operator acted on. The registry listing reports cached
+    // toolkits rather than catalogue rows, so the record is asserted where it is actually written.
     await controls.execute(request('toolkit_registry_update', {
       provider: 'skills-sh', slug: 'anthropics/skills/pdf', action: 'install', expectedGeneration: 0
     }));
-    const after = await controls.execute(request('toolkit_registry_list', { provider: 'skills-sh' }));
-    expect((after.data as { entries: Array<{ slug: string }> }).entries.map((entry) => entry.slug))
+    expect(principals.listSkillCatalogEntries(ownerId, 'skills-sh').map((entry) => entry.slug))
       .toEqual(['anthropics/skills/pdf']);
 
     // Every metadata operation now has a handler, so a refresh reports the catalogue this owner has recorded
@@ -297,6 +297,41 @@ describe('dashboard control service', () => {
     const refreshed = await controls.execute(request('toolkit_registry_refresh', { provider: 'skills-sh' }));
     expect((refreshed.data as { entries: unknown[] }).entries).toHaveLength(1);
   });
+  it('reads the registry fields from the cache entry and the lock rows, not from the catalogue', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    // Seeded from the record that holds these fields, so a projection reading the catalogue table would
+    // report placeholders here instead of passing. The catalogue is asserted empty below for that reason.
+    principals.upsertToolkitCacheEntry({
+      cacheKey: 'tkc_registry',
+      ownerId,
+      sourceIdentity: 'registry:skills-sh:anthropics/skills',
+      resolvedRevision: 'a'.repeat(40),
+      adapterVersion: 1,
+      bundleSha256: 'b'.repeat(64),
+      status: 'READY',
+      byteCount: 1_024,
+      fileCount: 3,
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      errorSummary: null
+    });
+
+    const listed = await controls.execute(request('toolkit_registry_list', {}));
+    const entries = (listed.data as { entries: Array<Record<string, unknown>> }).entries;
+    expect(entries).toHaveLength(1);
+    // Each field is asserted against the record that holds it, so a placeholder value cannot satisfy this.
+    expect(entries[0]).toMatchObject({
+      cacheState: 'READY',
+      pinnedCommit: 'a'.repeat(40),
+      skillCount: 0,
+      lockState: 'unlocked',
+      provider: 'skills-sh',
+      slug: 'anthropics/skills'
+    });
+    expect(principals.listSkillCatalogEntries(ownerId)).toEqual([]);
+  });
+
   it('creates a custom skill by publishing its content before the source row exists', async () => {
     const { controls, principals, workspaces } = setup();
     const ownerId = principals.resolvePrincipal(principal);

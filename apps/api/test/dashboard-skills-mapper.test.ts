@@ -58,6 +58,27 @@ describe('skills dashboard mapping', () => {
     expect(mapped.internalPath).toBeUndefined();
   });
 
+  it('carries the registry fields a row is read for instead of dropping them at the API boundary', () => {
+    const mapped = mapDashboardData('toolkit_registry_list', {
+      entries: [{
+        id: 'tkc_registry', provider: 'skills-sh', slug: 'anthropics/skills', displayName: 'anthropics/skills',
+        description: '', fetchedAt: 1, cacheState: 'READY', pinnedCommit: 'a'.repeat(40), skillCount: 3,
+        lockState: 'locked', ownerId: 'own_secret'
+      }],
+      presets: []
+    }) as { entries: Array<Record<string, unknown>> };
+
+    // The allowlist is what the browser can see, so a field missing here is a field the tab cannot render
+    // even when the runner sends it, which is how the four registry fields were lost before.
+    expect(mapped.entries[0]).toMatchObject({
+      cacheState: 'READY',
+      pinnedCommit: 'a'.repeat(40),
+      skillCount: 3,
+      lockState: 'locked'
+    });
+    expect(mapped.entries[0].ownerId).toBeUndefined();
+  });
+
   it('carries both places a skill is in use instead of reading a key the reader never sends', () => {
     const mapped = mapDashboardData('skill_usage', {
       sets: [{ skillSetId: 'skset_1', name: 'Backend', ownerId: 'own_secret' }],
