@@ -33,7 +33,7 @@ RUN useradd --uid 10001 --create-home --shell /bin/bash harness \
   && echo "harness ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/harness \
   && chmod 0440 /etc/sudoers.d/harness
 
-RUN echo 'export PATH="/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:$PATH"' > /etc/profile.d/harness.sh \
+RUN echo 'export PATH="/opt/harness/bin:/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:$PATH"' > /etc/profile.d/harness.sh \
   && chmod 0644 /etc/profile.d/harness.sh
 
 RUN mkdir -p /workspace /opt/user-tools /var/cache/harness /tmp/cloud-harness-home \
@@ -46,7 +46,17 @@ COPY --chown=root:root worker/task-runner.sh /opt/harness/task-runner.sh
 COPY --chown=root:root worker/shell-runner.sh /opt/harness/shell-runner.sh
 COPY --chown=root:root worker/worker-runner.sh /opt/harness/worker-runner.sh
 COPY --chown=root:root worker/gh-helper.sh /opt/harness/gh-helper.sh
-RUN chmod 0555 /opt/harness/*.sh /opt/harness/*.mjs
+COPY --chown=root:root worker/bin/npx-dispatcher /opt/harness/bin/npx-dispatcher
+COPY --chown=root:root worker/bin/skills /opt/harness/bin/skills
+COPY --chown=root:root worker/bin/skillx /opt/harness/bin/skillx
+# /opt/harness is outside the repository, so nothing there would declare the extensionless launchers as
+# ES modules. The dispatcher is installed as `npx` while the real npm entry point stays at
+# /usr/local/bin/npx, which is why delegation cannot resolve back to this file. The launchers stay
+# read-only to the unprivileged user that runs the workspace.
+RUN chmod 0555 /opt/harness/*.sh /opt/harness/*.mjs \
+  && printf '%s\n' '{"type":"module"}' > /opt/harness/package.json \
+  && chmod 0644 /opt/harness/package.json \
+  && chmod 0555 /opt/harness/bin/*
 
 USER 10001:10001
 WORKDIR /workspace

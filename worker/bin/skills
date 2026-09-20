@@ -1,0 +1,150 @@
+#!/usr/bin/env node
+/**
+ * Offline `skills` compatibility CLI.
+ *
+ * It reads only the local catalog index and the local owner projection, so it makes no network calls
+ * and therefore runs unchanged inside a `networkMode: 'none'` workspace. Anything the workspace does
+ * not already have fails closed with `CACHE_MISS` and the exact instruction that would fix it,
+ * because a CLI that silently reached the network would break the isolation guarantee it runs under.
+ */
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
+
+const CATALOG_PATH = process.env.CLOUD_HARNESS_CATALOG ?? '/opt/cloud-harness/skill-catalog.json';
+const DEFAULT_INSTALL_DIR = join('.cloud-harness', 'skills');
+
+const installDir = () => resolve(process.env.CLOUD_HARNESS_SKILLS_TARGET ?? join(process.cwd(), DEFAULT_INSTALL_DIR));
+
+function readCatalog() {
+  if (!existsSync(CATALOG_PATH)) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(CATALOG_PATH, 'utf8'));
+  } catch (error) {
+    process.stderr.write(`the local skill catalog is unreadable: ${error instanceof Error ? error.message : 'invalid JSON'}\n`);
+    process.exit(1);
+  }
+  const base = dirname(CATALOG_PATH);
+  const entries = Array.isArray(parsed?.skills) ? parsed.skills : [];
+  return entries.map((entry) => ({
+    name: String(entry.name),
+    repository: String(entry.repository ?? ''),
+    description: String(entry.description ?? ''),
+    references: Array.isArray(entry.references) ? entry.references.map(String) : [],
+    path: resolve(base, String(entry.path ?? join('owner-skills', String(entry.name))))
+  }));
+}
+
+function cacheMiss(subject) {
+  process.stderr.write(`CACHE_MISS: ${subject} is not mirrored in this workspace.\n`);
+  process.stderr.write('Import it from the dashboard Skills page while the runner has network access, then run this command again.\n');
+  return 1;
+}
+
+function usage() {
+  process.stdout.write('usage: skills add <owner/repo> [--skill <name>] [-y] [--agent [name]] | skills list | skills remove <name>\n');
+  return 2;
+}
+
+/** `--agent [name]` retargets the copy at an agent directory; without a value it means claude. */
+function resolveAgentDir(argv) {
+  const index = argv.indexOf('--agent');
+  if (index === -1) return installDir();
+  const candidate = argv[index + 1];
+  const agent = candidate === undefined || candidate.startsWith('-') ? 'claude' : candidate;
+  // Rooted at the workspace rather than at the default install target, otherwise retargeting nests
+  // one install directory inside another.
+  return resolve(process.env.CLOUD_HARNESS_AGENT_ROOT ?? process.cwd(), `.${agent}`, 'skills');
+}
+
+function copyEntry(entry, destination) {
+  if (!existsSync(join(entry.path, 'SKILL.md'))) return false;
+  mkdirSync(destination, { recursive: true });
+  cpSync(entry.path, join(destination, entry.name), { recursive: true });
+  return true;
+}
+
+function add(argv) {
+  const repository = argv.find((value) => !value.startsWith('-'));
+  const skillFlag = argv.indexOf('--skill');
+  const skill = skillFlag === -1 ? undefined : argv[skillFlag + 1];
+  const catalog = readCatalog();
+
+  if (repository === undefined) {
+    if (catalog.length === 0) return cacheMiss('the skill catalog');
+    if (!process.stdin.isTTY) return usage();
+    return selectInteractively(catalog, argv);
+  }
+
+  const matches = catalog.filter((entry) => entry.repository === repository && (skill === undefined || entry.name === skill));
+  if (matches.length === 0) return cacheMiss(skill === undefined ? repository : `${repository} (${skill})`);
+
+  const destination = resolveAgentDir(argv);
+  let installed = 0;
+  for (const entry of matches) {
+    if (!copyEntry(entry, destination)) return cacheMiss(`${repository} (${entry.name})`);
+    installed += 1;
+    process.stdout.write(`installed ${entry.name} -> ${join(destination, entry.name)}\n`);
+  }
+  return installed > 0 ? 0 : 1;
+}
+
+function selectInteractively(catalog, argv) {
+  catalog.forEach((entry, index) => {
+    process.stdout.write(`${index + 1}. ${entry.name} (${entry.repository}) ${entry.description}\n`);
+  });
+  const reader = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((done) => {
+    reader.question('select a skill: ', (answer) => {
+      reader.close();
+      const chosen = catalog[Number.parseInt(answer, 10) - 1];
+      if (chosen === undefined) {
+        process.stderr.write('no such selection\n');
+        done(1);
+        return;
+      }
+      const destination = resolveAgentDir(argv);
+      if (!copyEntry(chosen, destination)) {
+        done(cacheMiss(chosen.repository));
+        return;
+      }
+      process.stdout.write(`installed ${chosen.name} -> ${join(destination, chosen.name)}\n`);
+      done(0);
+    });
+  });
+}
+
+function list() {
+  const destination = installDir();
+  if (!existsSync(destination)) return 0;
+  for (const entry of readdirSync(destination, { withFileTypes: true })) {
+    if (entry.isDirectory()) process.stdout.write(`${entry.name}\n`);
+  }
+  return 0;
+}
+
+function remove(argv) {
+  const name = argv.find((value) => !value.startsWith('-'));
+  if (name === undefined) return usage();
+  const target = join(installDir(), name);
+  if (!existsSync(target)) {
+    process.stderr.write(`${name} is not installed in this workspace\n`);
+    return 1;
+  }
+  rmSync(target, { recursive: true, force: true });
+  process.stdout.write(`removed ${name}\n`);
+  return 0;
+}
+
+const [command, ...rest] = process.argv.slice(2);
+const run = command === 'add' ? add
+  : command === 'list' ? list
+    : command === 'remove' ? remove
+      : undefined;
+
+if (run === undefined) {
+  process.exit(usage());
+}
+const outcome = run(rest);
+process.exit(outcome instanceof Promise ? await outcome : outcome);

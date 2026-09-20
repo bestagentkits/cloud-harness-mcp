@@ -1,0 +1,33 @@
+#!/usr/bin/env node
+/**
+ * Narrow `npx` dispatcher, installed at /opt/harness/bin/npx with the real npm entry point left at
+ * /usr/local/bin/npx. Only `skills` and `skillx`/`skillx-sh` are intercepted; every other argument
+ * vector is forwarded to the real npx unchanged, which is why the delegation target is a separate
+ * absolute path rather than a PATH lookup that could resolve back to this file.
+ */
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const LOCAL_TOOLS = new Map([
+  ['skills', 'skills'],
+  ['skillx', 'skillx'],
+  ['skillx-sh', 'skillx']
+]);
+
+const REAL_NPX = process.env.CLOUD_HARNESS_REAL_NPX ?? '/usr/local/bin/npx';
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+const argv = process.argv.slice(2);
+const tool = argv[0];
+const local = tool === undefined ? undefined : LOCAL_TOOLS.get(tool);
+
+const result = local === undefined
+  ? spawnSync(REAL_NPX, argv, { stdio: 'inherit' })
+  : spawnSync(process.execPath, [join(HERE, local), ...argv.slice(1)], { stdio: 'inherit' });
+
+if (result.error) {
+  process.stderr.write(`npx: ${result.error.message}\n`);
+  process.exit(127);
+}
+process.exit(result.status ?? 1);
