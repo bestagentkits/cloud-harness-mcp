@@ -36,6 +36,7 @@ import {
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
+  renderSkillsLibraryRows, renderSkillsRegistryRows,
   renderSkillsSkeleton
 } from './dashboard-render.js';
 
@@ -399,6 +400,29 @@ export function createImportPollingController({ fetchJob, onState, isTerminal, i
     stop() { stopped = true; if (timer) globalThis.clearTimeout(timer); timer = undefined; },
     attempts() { return attempts; },
     running() { return !stopped; }
+  };
+}
+
+/**
+ * Tab controller for the skills page. It keeps `aria-selected` and `tabindex` in step with the visible
+ * panel, and enters each tab once so switching back and forth does not re-request what is already on
+ * screen.
+ */
+export function createSkillsTabsController({ tabs, panels, onEnter }) {
+  const entered = new Set();
+  return {
+    select(name) {
+      for (const tab of tabs) {
+        tab.element.setAttribute('aria-selected', tab.name === name ? 'true' : 'false');
+        tab.element.setAttribute('tabindex', tab.name === name ? '0' : '-1');
+      }
+      for (const panel of panels) panel.element.hidden = panel.name !== name;
+      if (!entered.has(name)) {
+        entered.add(name);
+        if (onEnter) onEnter(name);
+      }
+    },
+    enteredTabs() { return [...entered]; }
   };
 }
 
@@ -785,6 +809,34 @@ export function initializeDashboard() {
     setTitle('Skills', 'Browse the library, inspect revisions, import from a provider, and manage skill sets.');
     document.querySelector('#command-surface').hidden = true;
     content.innerHTML = renderSkillsSkeleton();
+
+    const names = ['library', 'discover', 'sets', 'registry'];
+    const panels = names.map((name) => ({ name, element: document.querySelector(`#skills-panel-${name}`) }));
+    const tabs = names.map((name) => ({ name, element: document.querySelector(`#skills-tab-${name}`) }));
+    const tabController = createSkillsTabsController({
+      tabs,
+      panels,
+      onEnter: (name) => { void enterSkillsTab(name); }
+    });
+    for (const tab of tabs) tab.element?.addEventListener('click', () => tabController.select(tab.name));
+    tabController.select('library');
+  }
+
+  /** Loads a tab's data the first time it is entered, which is what the tab controller guarantees. */
+  async function enterSkillsTab(name) {
+    try {
+      if (name === 'library') {
+        const result = await api('/skills');
+        const body = document.querySelector('#skills-library-table tbody');
+        if (body) body.innerHTML = renderSkillsLibraryRows(result.data.skills);
+      } else if (name === 'registry') {
+        const result = await api('/toolkit-registry');
+        const body = document.querySelector('#skills-registry-table tbody');
+        if (body) body.innerHTML = renderSkillsRegistryRows(result.data.entries);
+      }
+    } catch (error) {
+      showError(error);
+    }
   }
   async function loadOverview() {
     selectNavigation('overview');

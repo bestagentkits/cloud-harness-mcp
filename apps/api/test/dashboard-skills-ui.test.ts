@@ -6,7 +6,12 @@ import {
   renderSkillsLibraryRows,
   renderSkillsRegistryRows
 } from '../dashboard/dashboard-render.js';
-import { createImportPollingController, createSkillsLibraryController, validateSkillInstructions } from '../dashboard/dashboard.js';
+import {
+  createImportPollingController,
+  createSkillsLibraryController,
+  createSkillsTabsController,
+  validateSkillInstructions
+} from '../dashboard/dashboard.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
 describe('skills library rendering', () => {
@@ -243,6 +248,39 @@ describe('import job polling', () => {
     controller.stop();
     expect(controller.running()).toBe(false);
     expect(fetchJob).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('skills tab controller', () => {
+  it('keeps aria-selected and the visible panel in step and enters each tab once', () => {
+    const library = new FakeElement();
+    const registry = new FakeElement();
+    const libraryPanel = new FakeElement();
+    const registryPanel = new FakeElement();
+    const onEnter = vi.fn();
+    const controller = createSkillsTabsController({
+      tabs: [{ name: 'library', element: library }, { name: 'registry', element: registry }],
+      panels: [{ name: 'library', element: libraryPanel }, { name: 'registry', element: registryPanel }],
+      onEnter
+    });
+
+    controller.select('library');
+    expect(library.getAttribute('aria-selected')).toBe('true');
+    expect(registry.getAttribute('aria-selected')).toBe('false');
+    expect(library.getAttribute('tabindex')).toBe('0');
+    expect(registry.getAttribute('tabindex')).toBe('-1');
+    expect(libraryPanel.hidden).toBe(false);
+    expect(registryPanel.hidden).toBe(true);
+    expect(onEnter).toHaveBeenCalledTimes(1);
+    expect(onEnter).toHaveBeenCalledWith('library');
+
+    controller.select('registry');
+    expect(onEnter).toHaveBeenCalledTimes(2);
+
+    // Returning to a tab that was already entered must not re-request its data.
+    controller.select('library');
+    expect(onEnter).toHaveBeenCalledTimes(2);
+    expect(controller.enteredTabs()).toEqual(['library', 'registry']);
   });
 });
 
