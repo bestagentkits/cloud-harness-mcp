@@ -118,6 +118,32 @@ describe('dashboard BFF', () => {
     expect(calls.findLast((call) => call.operation === 'skill_revision_list')?.input).toEqual({ skillId });
   });
 
+  it('dispatches the skills mutation endpoints to their operations', async () => {
+    const skillId = `sk_${'e'.repeat(24)}`;
+    const skillSetId = `skset_${'f'.repeat(24)}`;
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const cases: Array<[string, string, string, Record<string, unknown>]> = [
+      [`/api/v1/skills/${skillId}`, 'skill_update', 'PATCH', { displayName: 'Renamed', expectedGeneration: 2 }],
+      [`/api/v1/skills/${skillId}/archive`, 'skill_archive', 'POST', { expectedGeneration: 2 }],
+      ['/api/v1/skill-sets', 'skill_set_create', 'POST', { name: 'core' }],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_update', 'PATCH', { name: 'core', expectedGeneration: 2 }],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_delete', 'DELETE', { expectedGeneration: 2 }]
+    ];
+
+    for (const [path, operation, method, payload] of cases) {
+      const body = JSON.stringify(payload);
+      const response = await send(path, { method, headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, body });
+      expect(response.status, `${method} ${path}`).toBe(200);
+      expect(calls.at(-1)?.operation, `${method} ${path}`).toBe(operation);
+    }
+
+    // The route forwards the identifier it owns together with the validated generation, so a stale
+    // edit reaches the store as a generation conflict rather than an unguarded write.
+    expect(calls.findLast((call) => call.operation === 'skill_set_delete')?.input).toEqual({ skillSetId, expectedGeneration: 2 });
+  });
+
   it('rejects a skills identifier that does not match the contract shape', async () => {
     const response = await send('/api/v1/skills/not-a-skill-id');
     expect(response.status).toBe(400);

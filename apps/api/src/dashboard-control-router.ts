@@ -52,6 +52,11 @@ export function registerDashboardControlRoutes(
   router.get('/api/v1/skill-sets', endpoint('skill_set_list', () => ({})));
   router.get('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_get', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId) })));
   router.get('/api/v1/skill-imports/:jobId', endpoint('skill_import_status', (request) => ({ jobId: internalId('skjob').parse(request.params.jobId) })));
+  router.patch('/api/v1/skills/:skillId', endpoint('skill_update', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.post('/api/v1/skills/:skillId/archive', endpoint('skill_archive', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.post('/api/v1/skill-sets', endpoint('skill_set_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.patch('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_update', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.delete('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_delete', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...generation.parse(request.body) })));
   router.post('/api/v1/agent-model-profiles', endpoint('model_profile_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.patch('/api/v1/agent-model-profiles/:id', endpoint('model_profile_update', (request) => ({ profileId: request.params.id, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.post('/api/v1/agent-model-profiles/:id/activate', endpoint('model_profile_activate', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));

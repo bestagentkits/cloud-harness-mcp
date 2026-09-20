@@ -461,6 +461,40 @@ export class DashboardControlService {
         case 'skill_set_list': return ok('Skill sets listed', { sets: this.principals.listSkillSets(principalId) });
         case 'skill_set_get': return ok('Skill set read', this.principals.getSkillSet(principalId, parsed.input.skillSetId));
         case 'skill_import_status': return ok('Import job read', this.principals.getSkillImportJob(principalId, parsed.input.jobId));
+        case 'skill_update': return mutation('Skill updated', this.principals.updateSkillMetadata({
+          ownerId: principalId,
+          id: parsed.input.skillId,
+          expectedGeneration: parsed.input.expectedGeneration,
+          ...(parsed.input.displayName === undefined ? {} : { displayName: parsed.input.displayName }),
+          ...(parsed.input.description === undefined ? {} : { description: parsed.input.description }),
+          ...(parsed.input.tags === undefined ? {} : { tags: parsed.input.tags })
+        }));
+        case 'skill_archive': return mutation('Skill archived', {
+          skillId: parsed.input.skillId,
+          ...this.principals.setSkillState(principalId, parsed.input.skillId, 'archived', parsed.input.expectedGeneration)
+        });
+        case 'skill_set_create': return mutation('Skill set created', {
+          skillSetId: this.principals.createSkillSet({
+            ownerId: principalId,
+            name: parsed.input.name,
+            description: parsed.input.description,
+            items: parsed.input.items
+          })
+        });
+        case 'skill_set_update': return mutation('Skill set updated', {
+          skillSetId: parsed.input.skillSetId,
+          ...this.principals.updateSkillSet({
+            ownerId: principalId,
+            id: parsed.input.skillSetId,
+            expectedGeneration: parsed.input.expectedGeneration,
+            ...(parsed.input.name === undefined ? {} : { name: parsed.input.name }),
+            ...(parsed.input.description === undefined ? {} : { description: parsed.input.description }),
+            ...(parsed.input.items === undefined ? {} : { items: parsed.input.items })
+          })
+        });
+        case 'skill_set_delete':
+          this.principals.deleteSkillSet(principalId, parsed.input.skillSetId, parsed.input.expectedGeneration);
+          return ok('Skill set deleted', { skillSetId: parsed.input.skillSetId, deleted: true });
         default:
           // Any internal operation that has no runner handler yet fails loudly instead of returning an
           // empty success, so a control-plane route can never look implemented while doing nothing.
