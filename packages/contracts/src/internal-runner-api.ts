@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { ExecutorNetworkProfileSchema, ModelCredentialIdSchema, ModelProfileIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { ExecutorNetworkProfileSchema, IntegrationCredentialIdSchema, ModelCredentialIdSchema, ModelProfileIdSchema, SkillImportJobIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, SkillSourceIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { IntegrationCredentialCreateInputSchema, IntegrationCredentialRotateInputSchema, SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { ToolResultSchema } from './mcp-results.js';
 import {
   AgentModelProfileInputSchema,
@@ -113,6 +114,11 @@ const internalId = (prefix: string) => z.string()
   .regex(new RegExp(`^${prefix}_[A-Za-z0-9_-]{20,80}$`), `invalid ${prefix} identifier`);
 const generation = z.number().int().positive();
 const name = z.string().trim().min(1).max(100);
+const skillName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/, 'invalid skill name');
+const registryPath = z.string().min(1).max(1_024).refine((value) => {
+  const normalized = value.replaceAll('\\', '/');
+  return !normalized.startsWith('/') && !/^[A-Za-z]:/.test(normalized) && !normalized.split('/').includes('..') && !normalized.includes('\0');
+}, 'path must stay repository-relative');
 
 export const MetadataRunnerOperationSchema = z.enum([
   'project_list', 'project_create', 'project_update', 'project_delete',
@@ -131,10 +137,23 @@ export const MetadataRunnerOperationSchema = z.enum([
   'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
   'mcp_server_list', 'mcp_server_get', 'mcp_server_create', 'mcp_server_update', 'mcp_server_delete',
   'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools', 'mcp_server_connection_result',
-  'mcp_server_get_credentials', 'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list'
+  'mcp_server_get_credentials', 'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list',
+  'skill_list', 'skill_get', 'skill_revision_list', 'skill_revision_get', 'skill_revision_diff', 'skill_restore', 'skill_revision_fork',
+  'skill_create_custom', 'skill_update', 'skill_archive', 'skill_bulk', 'skill_usage', 'skill_search',
+  'skill_import_start', 'skill_import_status', 'skill_import_cancel',
+  'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
+  'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
+  'skill_suggest', 'typesafe_status',
+  'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ]);
 
 const metadataInputs = {
+  skill_suggest: SkillSuggestInputSchema,
+  typesafe_status: z.object({}).strict(),
+  integration_credential_list: z.object({}).strict(),
+  integration_credential_create: IntegrationCredentialCreateInputSchema,
+  integration_credential_rotate: IntegrationCredentialRotateInputSchema,
+  integration_credential_delete: z.object({ credentialId: IntegrationCredentialIdSchema, expectedGeneration: generation }).strict(),
   project_list: z.object({}).strict(),
   project_create: z.object({ name, expectedGeneration: z.literal(0) }).strict(),
   project_update: z.object({ projectId: internalId('prj'), name, expectedGeneration: generation }).strict(),
@@ -351,7 +370,87 @@ const metadataInputs = {
     serverId: internalId('mcps').optional(),
     limit: z.number().int().min(1).max(100).default(50),
     cursor: z.string().max(256).optional()
-  }).strict()
+  }).strict(),
+  skill_list: z.object({
+    state: z.enum(['enabled', 'disabled', 'archived']).optional(),
+    kind: z.enum(['built-in', 'owner', 'workspace', 'repository', 'registry']).optional(),
+    provider: z.enum(['skills-sh', 'skillx', 'git', 'custom']).optional(),
+    limit: z.number().int().min(1).max(200).default(50)
+  }).strict(),
+  skill_get: z.object({ skillId: SkillSourceIdSchema }).strict(),
+  skill_revision_list: z.object({ skillId: SkillSourceIdSchema, limit: z.number().int().min(1).max(200).default(50) }).strict(),
+  skill_revision_get: z.object({ skillId: SkillSourceIdSchema, revisionId: SkillRevisionIdSchema }).strict(),
+  skill_revision_diff: z.object({ skillId: SkillSourceIdSchema, fromRevisionId: SkillRevisionIdSchema, toRevisionId: SkillRevisionIdSchema }).strict(),
+  skill_restore: z.object({ skillId: SkillSourceIdSchema, revisionId: SkillRevisionIdSchema, expectedGeneration: generation }).strict(),
+  skill_revision_fork: z.object({
+    skillId: SkillSourceIdSchema,
+    revisionId: SkillRevisionIdSchema,
+    slug: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    displayName: name,
+    expectedGeneration: z.literal(0)
+  }).strict(),
+  skill_create_custom: z.object({
+    slug: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    displayName: name,
+    description: z.string().max(2_000).default(''),
+    tags: z.array(z.string().trim().min(1).max(32)).max(16).default([]),
+    instructions: z.string().min(1).max(65_536).refine((value) => !value.includes('\0'), 'instructions cannot contain null bytes'),
+    hasExecutableAssets: z.boolean().default(false),
+    expectedGeneration: z.literal(0)
+  }).strict(),
+  skill_update: z.object({
+    skillId: SkillSourceIdSchema, displayName: name.optional(), description: z.string().max(2_000).optional(),
+    tags: z.array(z.string().trim().min(1).max(32)).max(16).optional(), expectedGeneration: generation
+  }).strict(),
+  skill_archive: z.object({ skillId: SkillSourceIdSchema, expectedGeneration: generation }).strict(),
+  skill_bulk: z.object({
+    action: z.enum(['enable', 'disable', 'archive']),
+    skillIds: z.array(SkillSourceIdSchema).min(1).max(100),
+    expectedGeneration: generation
+  }).strict(),
+  skill_usage: z.object({ skillId: SkillSourceIdSchema }).strict(),
+  skill_search: z.object({
+    query: z.string().min(1).max(200),
+    providers: z.array(z.enum(['local', 'skills-sh', 'skillx'])).min(1).max(3).default(['local']),
+    limit: z.number().int().min(1).max(50).default(20)
+  }).strict(),
+  skill_import_start: z.object({
+    sourceKind: z.enum(['skills-sh', 'skillx', 'git']),
+    sourceRef: z.string().min(1).max(300).refine((value) => !value.includes('\0'), 'source reference cannot contain null bytes'),
+    ref: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/).optional(),
+    subdirectory: registryPath.optional(),
+    expectedGeneration: z.literal(0)
+  }).strict(),
+  skill_import_status: z.object({ jobId: SkillImportJobIdSchema }).strict(),
+  skill_import_cancel: z.object({ jobId: SkillImportJobIdSchema, expectedGeneration: generation }).strict(),
+  skill_set_list: z.object({ limit: z.number().int().min(1).max(200).default(50) }).strict(),
+  skill_set_get: z.object({ skillSetId: SkillSetIdSchema }).strict(),
+  skill_set_create: z.object({
+    name,
+    description: z.string().max(2_000).default(''),
+    items: z.array(z.object({ skillSourceId: SkillSourceIdSchema, revisionId: SkillRevisionIdSchema, name: skillName })).max(128).default([]),
+    expectedGeneration: z.literal(0)
+  }).strict(),
+  skill_set_update: z.object({
+    skillSetId: SkillSetIdSchema, name: name.optional(), description: z.string().max(2_000).optional(),
+    items: z.array(z.object({ skillSourceId: SkillSourceIdSchema, revisionId: SkillRevisionIdSchema, name: skillName })).max(128).optional(),
+    expectedGeneration: generation
+  }).strict(),
+  skill_set_delete: z.object({ skillSetId: SkillSetIdSchema, expectedGeneration: generation }).strict(),
+  skill_set_preview: z.object({
+    skillSets: z.array(z.object({ skillSetId: SkillSetIdSchema, expectedGeneration: generation })).max(16),
+    skillOverrides: z.record(z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), SkillRevisionIdSchema)
+      .refine((value) => Object.keys(value).length <= 128, 'at most 128 skill overrides').default({})
+  }).strict(),
+  toolkit_registry_list: z.object({ provider: z.enum(['skills-sh', 'skillx']).optional() }).strict(),
+  toolkit_registry_update: z.object({
+    provider: z.enum(['skills-sh', 'skillx']),
+    slug: z.string().min(1).max(300),
+    action: z.enum(['install', 'pin', 'enable', 'disable']),
+    revisionId: SkillRevisionIdSchema.optional(),
+    expectedGeneration: z.number().int().min(0)
+  }).strict(),
+  toolkit_registry_refresh: z.object({ provider: z.enum(['skills-sh', 'skillx']).optional() }).strict()
 } as const;
 
 const metadataRequest = <Operation extends keyof typeof metadataInputs>(operation: Operation) => z.object({
@@ -379,7 +478,19 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('mcp_server_list'), metadataRequest('mcp_server_get'), metadataRequest('mcp_server_create'), metadataRequest('mcp_server_update'),
   metadataRequest('mcp_server_delete'), metadataRequest('mcp_server_set_enabled'), metadataRequest('mcp_server_set_permissions'),
   metadataRequest('mcp_server_replace_tools'), metadataRequest('mcp_server_connection_result'), metadataRequest('mcp_server_get_credentials'),
-  metadataRequest('mcp_gateway_catalog'), metadataRequest('mcp_gateway_trace_append'), metadataRequest('mcp_gateway_trace_list')
+  metadataRequest('mcp_gateway_catalog'), metadataRequest('mcp_gateway_trace_append'), metadataRequest('mcp_gateway_trace_list'),
+  metadataRequest('skill_list'), metadataRequest('skill_get'), metadataRequest('skill_revision_list'),
+  metadataRequest('skill_revision_get'), metadataRequest('skill_revision_diff'), metadataRequest('skill_restore'),
+  metadataRequest('skill_create_custom'), metadataRequest('skill_update'), metadataRequest('skill_archive'),
+  metadataRequest('skill_bulk'), metadataRequest('skill_usage'), metadataRequest('skill_search'),
+  metadataRequest('skill_import_start'), metadataRequest('skill_import_status'), metadataRequest('skill_import_cancel'),
+  metadataRequest('skill_revision_fork'),
+  metadataRequest('skill_set_list'), metadataRequest('skill_set_get'), metadataRequest('skill_set_create'),
+  metadataRequest('skill_set_update'), metadataRequest('skill_set_delete'), metadataRequest('skill_set_preview'),
+  metadataRequest('toolkit_registry_list'), metadataRequest('toolkit_registry_update'), metadataRequest('toolkit_registry_refresh'),
+  metadataRequest('skill_suggest'), metadataRequest('typesafe_status'),
+  metadataRequest('integration_credential_list'), metadataRequest('integration_credential_create'),
+  metadataRequest('integration_credential_rotate'), metadataRequest('integration_credential_delete')
 ]);
 
 export type InternalRunnerOperation = z.infer<typeof InternalRunnerOperationSchema>;

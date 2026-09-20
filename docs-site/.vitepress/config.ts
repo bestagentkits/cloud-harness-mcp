@@ -89,6 +89,7 @@ export default defineConfig({
           { text: 'API Keys', link: '/dashboard/api-keys' },
           { text: 'GitHub Bindings', link: '/dashboard/github' },
           { text: 'Artifacts', link: '/dashboard/artifacts' },
+          { text: 'Skills & Skill Sets', link: '/dashboard/skills' },
           { text: 'Audit Logs', link: '/dashboard/audit' },
           { text: 'Settings', link: '/dashboard/settings' },
           { text: 'Profile & Themes', link: '/dashboard/profile' }

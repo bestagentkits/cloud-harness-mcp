@@ -40,6 +40,7 @@ import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
+import { resolveWorkspaceSkills, type SkillCandidate } from './skill-resolver.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
@@ -72,8 +73,8 @@ export function computeWorkspaceOpenFingerprint(input: {
   allowToolkitWorkspaceChanges?: boolean | undefined;
 }): string {
   const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) => {
-    const idA = a.kind === 'git' ? a.instanceId : a.id;
-    const idB = b.kind === 'git' ? b.instanceId : b.id;
+    const idA = a.kind === 'preset' ? (a.instanceId || a.id) : a.instanceId;
+    const idB = b.kind === 'preset' ? (b.instanceId || b.id) : b.instanceId;
     return idA.localeCompare(idB);
   });
   const payload = {
@@ -237,17 +238,16 @@ export class WorkspaceService {
     };
   }
 
-  private getRedactor(workspaceId: string): SecretSnapshotRedactor {
-    const cached = this.redactorCache.get(workspaceId);
-    if (cached) return cached;
+  /**
+   * The workspace and owner secret values. It is named separately from the redactor because the
+   * suggestion engine has to name both value sources explicitly: these are the workspace secrets, and a
+   * provider credential does not travel through this path.
+   */
+  redactionSecrets(workspaceId: string): Record<string, string> {
     const record = this.store.byId(workspaceId);
-    if (!record) {
-      const empty = new SecretSnapshotRedactor({});
-      this.redactorCache.set(workspaceId, empty);
-      return empty;
-    }
-    const snapshotResult = this.store.getSecretSnapshot(workspaceId);
+    if (!record) return {};
     const values: Record<string, string> = {};
+    const snapshotResult = this.store.getSecretSnapshot(workspaceId);
     if (snapshotResult.initialized) {
       for (const item of snapshotResult.secrets) {
         values[item.name] = this.metadata?.decryptEnvelope(record.ownerId, item.environmentId, item.name, item.version, item.envelope) ?? '';
@@ -264,7 +264,13 @@ export class WorkspaceService {
       metadata: this.metadata
     });
     if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
-    const redactor = new SecretSnapshotRedactor(values);
+    return values;
+  }
+
+  private getRedactor(workspaceId: string): SecretSnapshotRedactor {
+    const cached = this.redactorCache.get(workspaceId);
+    if (cached) return cached;
+    const redactor = new SecretSnapshotRedactor(this.redactionSecrets(workspaceId));
     this.redactorCache.set(workspaceId, redactor);
     return redactor;
   }
@@ -881,7 +887,7 @@ export class WorkspaceService {
       const ownerBundles = bundlePaths.filter(b => b.scope === 'owner');
       const workspaceBundles = bundlePaths.filter(b => b.scope === 'workspace');
 
-      await this.composeOwnerToolkitProjection(record, ownerBundles);
+      await this.composeOwnerToolkitProjection(record, ownerBundles, parsed.skillOverrides);
 
       const repositoryPath = await this.clone(record, url, parsed.ref);
       if (workspaceBundles.length > 0) {
@@ -923,12 +929,16 @@ export class WorkspaceService {
 
   private async composeOwnerToolkitProjection(
     record: WorkspaceRecord,
-    ownerBundlePaths: Array<{ instanceId: string; path: string }>
+    ownerBundlePaths: Array<{ instanceId: string; path: string }>,
+    overrides?: Record<string, string>
   ): Promise<void> {
     const ownerSkillsPath = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
     await mkdir(ownerSkillsPath, { recursive: true, mode: 0o755 });
 
-    const seenSkills = new Map<string, { bundlePath: string; contentHash: string }>();
+    // The same-tier collision rule has one owner, the resolver, so the launch path and the preview
+    // path cannot drift on what counts as a conflict or on how an override settles one.
+    const candidates: SkillCandidate[] = [];
+    const sources = new Map<string, string>();
 
     for (const item of ownerBundlePaths) {
       const skillsDir = join(item.path, 'skills');
@@ -942,17 +952,30 @@ export class WorkspaceService {
         if (!existsSync(skillMd)) continue;
 
         const digest = computeFullTreeDigest(srcSkill).bundleSha256;
+        candidates.push({
+          name: entry.name,
+          tier: 'owner',
+          sourceId: item.instanceId,
+          revisionId: digest,
+          contentSha256: digest,
+          rootPath: item.path
+        });
+        sources.set(`${entry.name}:${digest}`, srcSkill);
+      }
+    }
 
-        const prior = seenSkills.get(entry.name);
-        if (prior && prior.contentHash !== digest) {
-          throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${entry.name} is defined with conflicting content in multiple toolkits`, 409, false);
-        }
+    const resolution = resolveWorkspaceSkills({ candidates, overrides });
+    const conflict = resolution.conflicts[0];
+    if (conflict) {
+      throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${conflict.name} is defined with conflicting content in multiple toolkits`, 409, false);
+    }
 
-        const destSkill = join(ownerSkillsPath, entry.name);
-        if (!existsSync(destSkill)) {
-          await cp(srcSkill, destSkill, { recursive: true });
-        }
-        seenSkills.set(entry.name, { bundlePath: item.path, contentHash: digest });
+    for (const skill of resolution.resolved) {
+      const srcSkill = sources.get(`${skill.name}:${skill.contentSha256}`);
+      if (!srcSkill) continue;
+      const destSkill = join(ownerSkillsPath, skill.name);
+      if (!existsSync(destSkill)) {
+        await cp(srcSkill, destSkill, { recursive: true });
       }
     }
   }
@@ -1201,6 +1224,24 @@ export class WorkspaceService {
     };
   }
 
+  /**
+   * The roster the suggestion engine ranks against. It runs in the workspace's own executor, which is
+   * where the skills are, so the control plane reads the inventory instead of guessing at it.
+   */
+  async skillRoster(
+    principal: PrincipalSelector,
+    workspaceId: string
+  ): Promise<{ entries: Array<Record<string, unknown>>; rosterDigest: string }> {
+    const ownerId = this.store.resolvePrincipal(principal);
+    const record = this.requireWorkspace(ownerId, workspaceId);
+    const response = await this.runWorker(record, 'skills_roster', {});
+    if (!response.ok) {
+      throw new HarnessError('UNAVAILABLE', response.message || 'the workspace could not list its skills', 503, true);
+    }
+    const data = (response.data ?? {}) as { entries?: Array<Record<string, unknown>>; rosterDigest?: string };
+    return { entries: data.entries ?? [], rosterDigest: data.rosterDigest ?? '' };
+  }
+
   private requireWorkspace(ownerId: string, workspaceId?: string, active = true, allowRecoverable = false): WorkspaceRecord {
     let record: WorkspaceRecord;
     try {
@@ -1279,7 +1320,16 @@ export class WorkspaceService {
     }
   }
 
-  private async runWorker(record: WorkspaceRecord, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  private async runWorker(
+    record: WorkspaceRecord,
+    /**
+     * `skills_roster` is executed by the worker but is not a public operation: it feeds the suggestion
+     * engine rather than a caller, so it stays out of the shared operation enum and is named here.
+     */
+    operation: RunnerOperation | 'skills_roster',
+    input: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     const containerName = record.containerName;
     const timeout = typeof input.timeoutMs === 'number' ? input.timeoutMs + 5_000 : 65_000;

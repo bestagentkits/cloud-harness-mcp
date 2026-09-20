@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
+import { SkillSuggestInputSchema } from './typesafe-schemas.js';
 import {
   JournalTypeSchema,
   KnowledgeItemIdSchema,
@@ -40,6 +41,35 @@ const SkillFilterSchema = z.object({
   }
 });
 
+const RegistryToolkitReferenceSchema = z.string().min(1).max(300).refine((value) => !value.includes('\0'), 'reference cannot contain null bytes');
+
+export const ToolkitRegistrySelectionSchema = z.object({
+  kind: z.literal('registry'),
+  provider: z.enum(['skills-sh', 'skillx']),
+  instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
+  reference: RegistryToolkitReferenceSchema,
+  ref: gitObjectId.optional(),
+  subdirectory: relativePath.optional(),
+  scope: z.enum(['owner', 'workspace']).default('owner'),
+  skills: SkillFilterSchema.optional(),
+  activation: z.literal('skills-only').default('skills-only')
+}).strict();
+
+export type ToolkitRegistrySelection = z.infer<typeof ToolkitRegistrySelectionSchema>;
+
+export const SkillSetSelectionSchema = z.object({
+  skillSetId: SkillSetIdSchema,
+  expectedGeneration: z.number().int().positive()
+}).strict();
+
+export const SkillOverrideMapSchema = z.record(
+  z.string().regex(/^[A-Za-z0-9._-]{1,80}$/, 'invalid skill name'),
+  SkillRevisionIdSchema
+).refine((value) => Object.keys(value).length <= 128, 'at most 128 skill overrides per launch');
+
+export type SkillSetSelection = z.infer<typeof SkillSetSelectionSchema>;
+export type SkillOverrideMap = z.infer<typeof SkillOverrideMapSchema>;
+
 export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('preset'),
@@ -63,7 +93,8 @@ export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
       recursive: z.boolean().default(true)
     }).strict().default({ skillRoots: ['skills'], recursive: true }),
     activation: z.literal('skills-only').default('skills-only')
-  }).strict()
+  }).strict(),
+  ToolkitRegistrySelectionSchema
 ]);
 
 export type ToolkitSelection = z.infer<typeof ToolkitSelectionSchema>;
@@ -283,6 +314,8 @@ const schemas = {
     environmentId: EnvironmentIdSchema.optional(),
     confirmEnvironmentInjection: z.literal(true).optional(),
     toolkits: z.array(ToolkitSelectionSchema).max(8).default([]),
+    skillSets: z.array(SkillSetSelectionSchema).max(16).default([]),
+    skillOverrides: SkillOverrideMapSchema.default({}),
     allowToolkitWorkspaceChanges: z.literal(true).optional()
   }).superRefine((input, context) => {
     if (input.networkMode !== undefined) {
@@ -301,11 +334,26 @@ const schemas = {
     }
     const instanceIds = new Set<string>();
     for (const t of input.toolkits) {
-      const key = t.kind === 'git' ? t.instanceId : (t.instanceId || t.id);
+      const key = t.kind === 'preset' ? (t.instanceId || t.id) : t.instanceId;
       if (instanceIds.has(key)) {
         context.addIssue({ code: 'custom', path: ['toolkits'], message: `duplicate toolkit instance or id: ${key}` });
       }
       instanceIds.add(key);
+    }
+    const skillSetIds = new Set<string>();
+    for (const set of input.skillSets) {
+      if (skillSetIds.has(set.skillSetId)) {
+        context.addIssue({ code: 'custom', path: ['skillSets'], message: `duplicate skill set: ${set.skillSetId}` });
+      }
+      skillSetIds.add(set.skillSetId);
+    }
+    const overrideNames = Object.keys(input.skillOverrides);
+    if (overrideNames.length > 0 && input.skillSets.length === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['skillOverrides'],
+        message: 'skill overrides require at least one skill set selection'
+      });
     }
   }),
   workspace_list: z.object(pagination),
@@ -441,6 +489,8 @@ const schemas = {
       context.addIssue({ code: 'custom', path: ['expectedSha256'], message: 'expectedSha256 or expectedContentSha256 is required to prevent TOCTOU execution of modified scripts' });
     }
   }),
+  // The prompt bound is measured in bytes, because the bound exists to limit what leaves the process.
+  skill_suggest: SkillSuggestInputSchema,
   hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
   hooks_run: z.object({
     ...workspace,
@@ -612,6 +662,8 @@ const schemas = {
     artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
     expectedGeneration: z.number().int().positive().default(1)
   }),
+  // SAFETY: `pipe` takes the output of the left schema as the input of the right one, and the union's
+  // own input type is already narrowed by `githubActionInput`, which TypeScript cannot express here.
   github_action: githubActionInput.pipe(githubActionUnion as unknown as z.ZodType<unknown, z.output<typeof githubActionInput>>),
   secrets_list: z.object({
     ...workspace,
@@ -680,7 +732,7 @@ const titles: Record<RunnerOperation, string> = {
   git_status: 'Git status', git_diff: 'Git diff', git_log: 'Git log', git_branch: 'Manage Git branches', git_checkout: 'Checkout Git ref', git_add: 'Stage Git changes', git_commit: 'Create Git commit', git_fetch: 'Fetch Git refs', git_pull: 'Pull Git changes', git_push: 'Push Git changes', git_merge: 'Merge Git ref', git_rebase: 'Manage Git rebase',
   git_identity_status: 'Read Git author identity', git_identity_set: 'Set Git author identity',
   worktrees_list: 'List worktrees', worktrees_create: 'Create worktree', worktrees_remove: 'Remove worktree',
-  skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script',
+  skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', skill_suggest: 'Suggest a skill',
   hooks_list: 'List hooks', hooks_run: 'Run hook', hooks_activate: 'Activate lifecycle hooks', hooks_deactivate: 'Deactivate lifecycle hooks',
   memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory', memories_search: 'Search memories', memories_delete: 'Delete memory note',
   knowledge_create: 'Create knowledge note or journal', knowledge_read: 'Read knowledge item', knowledge_update: 'Update knowledge item', knowledge_delete: 'Delete knowledge item', knowledge_list: 'List knowledge items', knowledge_search: 'Hybrid search knowledge items', knowledge_link: 'Link knowledge items', knowledge_unlink: 'Unlink knowledge items', knowledge_graph: 'Query knowledge neighborhood graph',
@@ -754,6 +806,7 @@ const descriptions: Record<RunnerOperation, string> = {
   skills_list: 'List repository-provided agent skills discovered in the workspace.',
   skills_read: 'Read bounded instructions for one repository-provided agent skill.',
   skills_run: 'Execute one reviewed script packaged by a repository-provided skill.',
+  skill_suggest: 'Suggest at most one skill from the workspace roster for a prompt. When an integration key is configured, the redacted prompt is sent to the configured TypeSafe endpoint; the answer is a skill name, never model prose.',
   hooks_list: 'List repository-defined Cloud Harness automation hooks without running them.',
   hooks_run: 'Execute one named repository-defined hook as a bounded shell command.',
   hooks_activate: 'Explicitly activate reviewed lifecycle hooks for a workspace by exact manifest digest.',
@@ -826,7 +879,7 @@ const idempotent = new Set<RunnerOperation>([
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',
-  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'hooks_run', 'deployments_run', 'github_action',
+  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action',
   'agent_spawn', 'agent_message'
 ]);
 

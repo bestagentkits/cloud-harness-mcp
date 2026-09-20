@@ -128,6 +128,7 @@ Rank 1 (Lowest):   repository  (/workspace/.agents/skills or .claude/skills)
 - Higher-rank skills take precedence over lower-rank skills of the same name.
 - `skills_list` reports shadowed candidates under `shadowed` metadata.
 - Same-tier collisions (e.g. two owner toolkits declaring conflicting `deploy` skills) fail deterministically with `CONFLICT` (409).
+- The dashboard's [Skills & Skill Sets](/dashboard/skills) page manages the library, imports, sets, and the registry, and settles a launch conflict with an operator override instead of guessing.
 
 ---
 

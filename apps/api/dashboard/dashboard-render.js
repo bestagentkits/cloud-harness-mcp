@@ -134,7 +134,7 @@ export function renderSettings(data, readiness) {
   const readinessFact = readiness
     ? `<dt>Egress readiness</dt><dd>${readiness.ready === true ? 'Ready' : `Not ready: ${escape(readiness.reason ?? 'the readiness probe reported no reason')}`}</dd>`
     : '';
-  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>`;
+  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${renderTypesafeSkeleton()}`;
 }
 
 export function renderRuntime(data) {
@@ -170,6 +170,249 @@ export function renderOverviewSkeleton() {
   const tile = '<li class="skeleton tile" aria-hidden="true"></li>';
   const block = '<div class="skeleton tile" aria-hidden="true"></div>';
   return `<div class="overview"><ul class="metric-grid">${tile.repeat(4)}</ul><div class="overview-columns">${block}${block}</div></div>`;
+}
+
+/**
+ * The Skills page skeleton. Every identifier here is named by the phase's UI contract, so the page
+ * structure is asserted rather than assumed, and the four tabs keep their panels in the document so a
+ * tab switch never has to rebuild markup the operators are reading.
+ */
+export function renderSkillsSkeleton() {
+  const tab = (name, label, selected) =>
+    `<button type="button" role="tab" id="skills-tab-${name}" aria-controls="skills-panel-${name}" aria-selected="${selected ? 'true' : 'false'}" tabindex="${selected ? '0' : '-1'}">${label}</button>`;
+  const panel = (name, body, selected) =>
+    `<div class="skills-panel" role="tabpanel" id="skills-panel-${name}" aria-labelledby="skills-tab-${name}"${selected ? '' : ' hidden'}>${body}</div>`;
+
+  const library = `<form class="skills-toolbar" role="search" aria-label="Filter skills">
+        <label for="skills-library-search">Search</label><input id="skills-library-search" name="q" placeholder="Filter by name or provider">
+      </form>
+      <div id="skills-bulk-bar" class="skills-bulk-bar" hidden><span id="skills-bulk-count"></span><button type="button" id="skills-bulk-archive">Archive</button><button type="button" id="skills-bulk-disable">Disable</button></div>
+      <table id="skills-library-table" class="data-table desktop-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
+      <ul id="skills-library-cards" class="card-grid"></ul>
+      <aside id="skill-detail" class="drawer" hidden>
+        <div id="skill-detail-instructions"></div>
+        <div id="skill-detail-files"></div>
+        <div id="skill-detail-revisions"></div>
+        <div id="skill-detail-usage"></div>
+      </aside>
+      <form id="skill-editor">
+        <h3>Create a custom skill</h3>
+        <label for="skill-editor-slug">Slug</label><input id="skill-editor-slug" name="slug" placeholder="my-skill">
+        <label for="skill-editor-name">Display name</label><input id="skill-editor-name" name="displayName">
+        <label for="skill-editor-instructions">Instructions</label><textarea id="skill-editor-instructions" name="instructions"></textarea>
+        <button type="submit" id="skill-editor-save">Save skill</button><span id="skill-editor-status" role="status"></span>
+      </form>`;
+
+  const discover = `<div class="skills-search"><label for="skills-search-input">Search providers</label><input id="skills-search-input" name="q"><button type="button" id="skills-search-run">Search</button></div>
+      <div id="skills-search-results"></div>
+      <dialog id="skill-import-dialog" aria-labelledby="skill-import-heading">
+        <h2 id="skill-import-heading">Import skill</h2>
+        <label for="skill-import-source">Source</label><input id="skill-import-source" name="source" placeholder="owner/repository">
+        <label for="skill-import-ref">Ref</label><input id="skill-import-ref" name="ref" placeholder="Full commit id (optional)">
+        <!-- The UI contract pins this id; the operation it feeds takes a source kind, not an install
+             scope, because an imported skill always lands in the owner tier. The label says what the
+             value actually is so the operator is not offered a choice the runner cannot honour. -->
+        <label for="skill-import-scope">Source kind</label><select id="skill-import-scope" name="sourceKind"><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="git">Git</option></select>
+        <div id="skill-import-review"></div>
+        <div id="skill-import-job" role="status"></div>
+        <button type="button" id="skill-import-retry">Retry</button>
+        <button type="button" id="skill-import-cancel">Cancel</button>
+      </dialog>
+      <pre id="skill-revision-diff" class="skills-diff" tabindex="0" aria-label="Revision diff"></pre>`;
+
+  const sets = `<div id="skill-set-builder">
+        <label for="skill-set-name">Name</label><input id="skill-set-name" name="name">
+        <div id="skill-set-picker" role="group" aria-label="Available skills"></div>
+        <ol id="skill-set-members"></ol>
+        <button type="button" id="skill-set-save">Save set</button><span id="skill-set-status" role="status"></span>
+      </div>`;
+
+  const registry = `<table id="skills-registry-table" class="data-table"><caption class="sr-only">Registry and toolkit inventory</caption><thead><tr><th scope="col">Name</th><th scope="col">Cache state</th><th scope="col">Pinned commit</th><th scope="col">Skills</th><th scope="col">Lock</th></tr></thead><tbody></tbody></table>
+      <p id="skills-registry-status" role="status" aria-live="polite"></p>`;
+
+  return `<section id="skills-section" aria-labelledby="skills-heading">
+      <h2 id="skills-heading" class="sr-only">Skills</h2>
+      <div class="skills-tabs" role="tablist" aria-label="Skills views">${tab('library', 'Library', true)}${tab('discover', 'Discover', false)}${tab('sets', 'Skill Sets', false)}${tab('registry', 'Registry', false)}</div>
+      ${panel('library', library, true)}${panel('discover', discover, false)}${panel('sets', sets, false)}${panel('registry', registry, false)}
+    </section>`;
+}
+
+/**
+ * Rows for the library table, injected into the skeleton's tbody once data arrives. Every value goes
+ * through `escape`, because a skill's display name and slug are operator-supplied and a skill imported
+ * from a provider carries a name this dashboard never authored.
+ */
+export function renderSkillsLibraryRows(skills) {
+  const rows = Array.isArray(skills) ? skills : [];
+  if (rows.length === 0) return '<tr><td colspan="5">No skills yet. Import one from Discover, or create a custom skill.</td></tr>';
+  return rows.map((skill) => `<tr data-skill-id="${escape(skill.id)}">
+      <th scope="row"><button type="button" class="link-btn" data-skill-detail="${escape(skill.id)}">${escape(skill.displayName)}</button><small class="mono">${escape(skill.slug)}</small></th>
+      <td>${escape(skill.provider)}</td>
+      <td>${escape(skill.kind)}</td>
+      <td><span class="status ${escape(String(skill.state))}">${escape(skill.state)}</span></td>
+      <td><input type="checkbox" data-skill-select="${escape(skill.id)}" aria-label="Select ${escape(skill.displayName)}"></td>
+    </tr>`).join('');
+}
+
+/** Rows for the registry table: cache state, pinned commit, skill count, and lock state per entry. */
+export function renderSkillsRegistryRows(entries) {
+  const rows = Array.isArray(entries) ? entries : [];
+  if (rows.length === 0) return '<tr><td colspan="5">No registry entries yet.</td></tr>';
+  return rows.map((entry) => `<tr>
+      <th scope="row">${escape(entry.displayName ?? entry.slug)}</th>
+      <td><span class="status">${escape(entry.cacheState ?? 'unknown')}</span></td>
+      <td class="mono">${escape(entry.pinnedCommit ?? '—')}</td>
+      <td>${escape(entry.skillCount ?? 0)}</td>
+      <td>${escape(entry.lockState ?? 'unlocked')}</td>
+    </tr>`).join('');
+}
+
+/**
+ * Conflict radios for the launch dialog. A name is unresolved until an override names one of its
+ * candidates, which is the same rule the resolver applies, so the dialog cannot offer a choice the
+ * launch path would then refuse.
+ */
+export function renderSkillConflicts(conflicts, overrides = {}) {
+  const list = Array.isArray(conflicts) ? conflicts : [];
+  return list.map((conflict) => {
+    const choices = (Array.isArray(conflict.candidates) ? conflict.candidates : []).map((candidate) =>
+      `<label><input type="radio" name="conflict-${escape(conflict.name)}" value="${escape(candidate.revisionId)}"${overrides[conflict.name] === candidate.revisionId ? ' checked' : ''}> ${escape(candidate.tier)} · ${escape(candidate.revisionId)}</label>`).join('');
+    return `<fieldset data-conflict-name="${escape(conflict.name)}"><legend>${escape(conflict.name)}</legend>${choices}</fieldset>`;
+  }).join('');
+}
+
+/** True while any conflict still lacks an override, which is what keeps launch disabled. */
+export function launchBlockedByConflicts(conflicts, overrides = {}) {
+  return (Array.isArray(conflicts) ? conflicts : []).some((conflict) => overrides[conflict.name] === undefined);
+}
+
+/**
+ * The TypeSafe panel. The key field is a password input that is never rendered back, the kill switch is
+ * an ordinary checkbox, and the usage list shows scores rather than prompts, because prompt text never
+ * belongs on this page.
+ */
+export function renderTypesafeSkeleton() {
+  return `<section id="typesafe-panel" aria-labelledby="typesafe-heading">
+      <h2 id="typesafe-heading">TypeSafe skill suggestions</h2>
+      <p id="typesafe-egress" role="status" aria-live="polite"></p>
+      <form class="stack-form" id="typesafe-form">
+        <label for="typesafe-key">API key (write-only, never shown again)</label>
+        <input id="typesafe-key" name="value" type="password" autocomplete="new-password">
+        <label for="typesafe-model">Model</label>
+        <input id="typesafe-model" name="model" value="jev-latest">
+        <label for="typesafe-gate-threshold">Gate threshold</label>
+        <input id="typesafe-gate-threshold" name="gateThreshold" type="number" min="0" max="1" step="0.05">
+        <label for="typesafe-fit-threshold">Fit threshold</label>
+        <input id="typesafe-fit-threshold" name="fitThreshold" type="number" min="0" max="1" step="0.05">
+        <label for="typesafe-max-egress-bytes">Maximum egress bytes</label>
+        <input id="typesafe-max-egress-bytes" name="maxEgressBytes" type="number" min="256" max="8192">
+        <label for="typesafe-cache-ttl">Cache lifetime (minutes)</label>
+        <input id="typesafe-cache-ttl" name="cacheTtlMinutes" type="number" min="1" max="1440">
+        <label for="typesafe-enabled"><input id="typesafe-enabled" name="enabled" type="checkbox"> Send suggestions</label>
+        <button type="button" id="typesafe-test">Test connection</button>
+        <button type="submit" id="typesafe-save">Save</button>
+        <span id="typesafe-status" role="status" aria-live="polite"></span>
+      </form>
+      <table id="typesafe-usage" class="data-table desktop-table"><caption class="sr-only">Recent suggestions</caption><thead><tr><th scope="col">Skill</th><th scope="col">Gate</th><th scope="col">Fit</th><th scope="col">Latency</th><th scope="col">Redactions</th><th scope="col">Cached</th></tr></thead><tbody></tbody></table>
+    </section>`;
+}
+
+/** Chips for the selected skill sets, so the launch dialog names what is about to be bound. */
+export function renderSkillSetChips(names) {
+  const list = Array.isArray(names) ? names : [];
+  return list.map((name) => `<li>${escape(name)}</li>`).join('');
+}
+
+/**
+ * The same rows as cards, for narrow screens. A five-column table cannot fit a phone, and the shell
+ * already hides `.desktop-table` under its mobile breakpoint, so the two renderings share one source.
+ */
+export function renderSkillsLibraryCards(skills) {
+  const list = Array.isArray(skills) ? skills : [];
+  if (list.length === 0) return '<li class="panel">No skills yet. Import one from Discover, or create a custom skill.</li>';
+  return list.map((skill) => `<li class="panel">
+      <h3><button type="button" class="link-btn" data-skill-detail="${escape(skill.id)}">${escape(skill.displayName)}</button></h3>
+      <p class="mono">${escape(skill.slug)}</p>
+      <p><span class="status ${escape(String(skill.state))}">${escape(skill.state)}</span> ${escape(skill.provider)}</p>
+      <label><input type="checkbox" data-skill-select="${escape(skill.id)}" aria-label="Select ${escape(skill.displayName)}"> Select</label>
+    </li>`).join('');
+}
+
+/** Options for the launch dialog's skill-set selector. */
+export function renderSkillSetOptions(sets) {
+  const list = Array.isArray(sets) ? sets : [];
+  return list.map((set) => `<option value="${escape(set.id)}">${escape(set.name)}</option>`).join('');
+}
+
+/** Pickable skills for the set builder. Names come from the inventory, so every one is escaped. */
+export function renderSkillSetPicker(skills) {
+  const list = Array.isArray(skills) ? skills : [];
+  if (list.length === 0) return '<p>No skills to add yet.</p>';
+  return list.map((skill) => `<label><input type="checkbox" data-set-member="${escape(skill.id)}"> ${escape(skill.displayName)}</label>`).join('');
+}
+
+/**
+ * Revision rows for the detail drawer. The current revision is labelled rather than offering a restore
+ * to itself, so the only restore a reader can press is one that would actually change something.
+ */
+export function renderSkillRevisions(revisions, currentRevisionId) {
+  const list = Array.isArray(revisions) ? revisions : [];
+  if (list.length === 0) return '<p>No revisions yet.</p>';
+  return `<ul class="skills-revisions">${list.map((revision) => `<li>
+      <span class="mono">${escape(revision.id)}</span>
+      <span>${escape(revision.origin)}</span>
+      ${time(revision.createdAt)}
+      ${revision.id === currentRevisionId
+        ? '<span class="status">current</span>'
+        : `<button type="button" data-skill-restore="${escape(revision.id)}">Restore</button>`}
+    </li>`).join('')}</ul>`;
+}
+
+/**
+ * Guidance for an import job. A failed job is only actionable if it says which failure it was, and a
+ * cache miss in particular has an exact remedy, so it gets its own sentence rather than a generic
+ * failure line that leaves the operator guessing.
+ */
+export function renderImportJobGuidance(job) {
+  const state = job ? job.state : undefined;
+  if (state === 'failed') {
+    const code = job.errorCode ?? 'unknown';
+    if (code === 'CACHE_MISS') {
+      return 'CACHE_MISS: this skill is not mirrored in the runner cache. Import it while the runner has network access, then retry.';
+    }
+    return `The import failed (${code}). Retry, or check the runner logs for the provider response.`;
+  }
+  if (state === 'succeeded') return 'Import finished. The skill is now in the library.';
+  if (state === 'cancelled') return 'Import cancelled.';
+  const percent = job && job.progress && typeof job.progress.percent === 'number' ? job.progress.percent : undefined;
+  return `Import ${state ?? 'queued'}${percent === undefined ? '' : ` (${percent}%)`}.`;
+}
+
+/** True when a job has reached a state the operator can act on, which is when polling should stop. */
+export function isTerminalImportState(job) {
+  const state = job ? job.state : undefined;
+  return state === 'succeeded' || state === 'failed' || state === 'cancelled';
+}
+
+/**
+ * A unified diff with its lines marked, plus a text alternative. A diff conveyed only through colour
+ * is unreadable to a screen reader and to anyone who cannot distinguish the two shades, so the counts
+ * travel with the markup and the line classes carry the meaning.
+ */
+export function renderRevisionDiff(diff) {
+  const lines = String(diff ?? '').split('\n');
+  const body = lines.map((line) => {
+    if (line.startsWith('+++') || line.startsWith('---')) return `<span class="diff-line diff-meta">${escape(line)}</span>`;
+    if (line.startsWith('+')) return `<span class="diff-line diff-add">${escape(line)}</span>`;
+    if (line.startsWith('-')) return `<span class="diff-line diff-remove">${escape(line)}</span>`;
+    return `<span class="diff-line">${escape(line)}</span>`;
+  }).join('\n');
+  const added = lines.filter((line) => line.startsWith('+') && !line.startsWith('+++')).length;
+  const removed = lines.filter((line) => line.startsWith('-') && !line.startsWith('---')).length;
+  return {
+    html: `<code>${body}</code>`,
+    text: `${added} line${added === 1 ? '' : 's'} added, ${removed} line${removed === 1 ? '' : 's'} removed`
+  };
 }
 
 function renderServerPanel(server) {

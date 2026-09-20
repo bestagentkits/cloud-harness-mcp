@@ -16,5 +16,14 @@
     "remote-coding",
     "developer-tools"
   ],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "userConfig": {
+    "mcpUrl": {
+      "type": "string",
+      "title": "Cloud Harness MCP URL",
+      "description": "The operator's existing Cloud Harness MCP endpoint. The plugin reuses its authentication and stores no credential of its own."
+    }
+  },
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json"
 }

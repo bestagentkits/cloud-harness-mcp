@@ -94,6 +94,73 @@ function send(path: string, options: { method?: string; headers?: Record<string,
 }
 
 describe('dashboard BFF', () => {
+  it('dispatches every read-only skills endpoint to its operation', async () => {
+    const skillId = `sk_${'b'.repeat(24)}`;
+    const skillSetId = `skset_${'c'.repeat(24)}`;
+    const jobId = `skjob_${'d'.repeat(24)}`;
+    const revisionId = `skrev_${'g'.repeat(24)}`;
+    const expectations: Array<[string, string]> = [
+      ['/api/v1/skills', 'skill_list'],
+      [`/api/v1/skills/${skillId}`, 'skill_get'],
+      [`/api/v1/skills/${skillId}/revisions`, 'skill_revision_list'],
+      [`/api/v1/skills/${skillId}/revisions/${revisionId}`, 'skill_revision_get'],
+      [`/api/v1/skills/${skillId}/usage`, 'skill_usage'],
+      ['/api/v1/skill-sets', 'skill_set_list'],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_get'],
+      [`/api/v1/skill-imports/${jobId}`, 'skill_import_status'],
+      ['/api/v1/toolkit-registry', 'toolkit_registry_list']
+    ];
+
+    for (const [path, operation] of expectations) {
+      const response = await send(path);
+      expect(response.status, path).toBe(200);
+      expect(calls.at(-1)?.operation, path).toBe(operation);
+    }
+    // The route forwards only the identifier it parsed; the operation schema applies `limit` and the
+    // list filters when the runner parses the request, so the route cannot disagree with the contract.
+    expect(calls.findLast((call) => call.operation === 'skill_revision_list')?.input).toEqual({ skillId });
+  });
+
+  it('reaches the skills search route instead of treating search as an identifier', async () => {
+    const response = await send('/api/v1/skills/search?query=tdd&providers=local');
+    expect(response.status).toBe(200);
+    expect(calls.at(-1)?.operation).toBe('skill_search');
+    expect(calls.at(-1)?.input).toMatchObject({ query: 'tdd' });
+  });
+
+  it('dispatches the skills mutation endpoints to their operations', async () => {
+    const skillId = `sk_${'e'.repeat(24)}`;
+    const skillSetId = `skset_${'f'.repeat(24)}`;
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const cases: Array<[string, string, string, Record<string, unknown>]> = [
+      [`/api/v1/skills/${skillId}`, 'skill_update', 'PATCH', { displayName: 'Renamed', expectedGeneration: 2 }],
+      [`/api/v1/skills/${skillId}/archive`, 'skill_archive', 'POST', { expectedGeneration: 2 }],
+      ['/api/v1/skill-sets', 'skill_set_create', 'POST', { name: 'core' }],
+      ['/api/v1/skills', 'skill_create_custom', 'POST', { slug: 'custom', displayName: 'Custom' }],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_update', 'PATCH', { name: 'core', expectedGeneration: 2 }],
+      ['/api/v1/skill-sets/preview', 'skill_set_preview', 'POST', { skillSets: [{ skillSetId, expectedGeneration: 2 }] }],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_delete', 'DELETE', { expectedGeneration: 2 }]
+    ];
+
+    for (const [path, operation, method, payload] of cases) {
+      const body = JSON.stringify(payload);
+      const response = await send(path, { method, headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, body });
+      expect(response.status, `${method} ${path}`).toBe(200);
+      expect(calls.at(-1)?.operation, `${method} ${path}`).toBe(operation);
+    }
+
+    // The route forwards the identifier it owns together with the validated generation, so a stale
+    // edit reaches the store as a generation conflict rather than an unguarded write.
+    expect(calls.findLast((call) => call.operation === 'skill_set_delete')?.input).toEqual({ skillSetId, expectedGeneration: 2 });
+  });
+
+  it('rejects a skills identifier that does not match the contract shape', async () => {
+    const response = await send('/api/v1/skills/not-a-skill-id');
+    expect(response.status).toBe(400);
+    expect(calls.some((call) => call.operation === 'skill_get')).toBe(false);
+  });
   it('allowlists successful response fields for every dashboard operation', () => {
     const hostile = { ownerId: 'future-owner', token: 'future-token', workspacePath: '/future/private', futureSecret: 'do-not-forward' };
     const fixtures: Record<DashboardResponseOperation, unknown> = {

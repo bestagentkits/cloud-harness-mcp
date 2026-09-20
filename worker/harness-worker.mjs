@@ -290,6 +290,85 @@ async function skillEntries() {
   return resolvedSkills.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const ROSTER_INDEX_MAX = 60;
+const ROSTER_DESCRIPTION_MAX = 400;
+const ROSTER_BODY_MAX = 700;
+const ROSTER_FILE_MAX_BYTES = 262_144;
+
+/**
+ * Drops C0/C1 controls and DEL while keeping tab, newline, and carriage return. Written as an explicit
+ * filter rather than a character class, because the range is exactly the thing that is easy to get
+ * wrong and the code should say which characters survive.
+ */
+function stripControlCharacters(text) {
+  return [...String(text)]
+    .filter((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127);
+    })
+    .join('');
+}
+
+function boundRosterText(text, max) {
+  const cleaned = stripControlCharacters(text).trim();
+  return cleaned.length <= max ? cleaned : `${cleaned.slice(0, Math.max(0, max - 1))}\u2026`;
+}
+
+/**
+ * Roster text is attacker-influenceable whenever a repository ships skills, so frontmatter is parsed as
+ * bounded text: it is never followed, never interpreted as instructions, and never read past the cap.
+ */
+function parseSkillDocument(content) {
+  const text = stripControlCharacters(content);
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  const frontmatter = match ? match[1] : '';
+  const body = match ? text.slice(match[0].length) : text;
+  const description = /^\s*description\s*:\s*(.+)$/m.exec(frontmatter);
+  return {
+    description: description ? description[1].replace(/^["']|["']$/g, '').trim() : '',
+    body
+  };
+}
+
+function firstProseLine(body) {
+  for (const line of String(body).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('```') || trimmed.startsWith('---')) continue;
+    return trimmed;
+  }
+  return '';
+}
+
+/**
+ * The roster the suggestion engine ranks against. The digest covers only the fields a suggestion
+ * depends on, so an unrelated file changing does not invalidate a cached suggestion.
+ */
+async function skillRosterEntries() {
+  const entries = [];
+  for (const skill of await skillEntries()) {
+    let content = '';
+    try {
+      if ((await stat(skill.file)).size <= ROSTER_FILE_MAX_BYTES) content = await readFile(skill.file, 'utf8');
+    } catch { /* an unreadable skill still appears in the roster by name */ }
+    const { description, body } = parseSkillDocument(content);
+    // Falling back to the first prose line and then to the name keeps every entry presentable.
+    const fallback = firstProseLine(body) || skill.name;
+    entries.push({
+      name: skill.name,
+      source: skill.source,
+      contentSha256: skill.contentSha256,
+      indexDescription: boundRosterText(description || fallback, ROSTER_INDEX_MAX),
+      descriptionFull: boundRosterText(description || fallback, ROSTER_DESCRIPTION_MAX),
+      bodyExcerpt: boundRosterText(body, ROSTER_BODY_MAX)
+    });
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  const digest = sha256(entries
+    .map((entry) => [entry.name, entry.source, entry.contentSha256, entry.indexDescription].join('\u0000'))
+    .join('\n'));
+  return { entries, rosterDigest: digest };
+}
+
 
 async function deploymentEntries() {
   let content;
@@ -1206,6 +1285,10 @@ const handlers = {
       }
     }, { truncated: offset + sliced.length < content.length });
   },
+  async skills_roster() {
+    const { entries, rosterDigest } = await skillRosterEntries();
+    return ok(`Roster of ${entries.length} skills`, { entries, rosterDigest });
+  },
   async skills_run(input) {
     const skills = await skillEntries();
     const entry = skills.find((candidate) => candidate.name === input.name);
@@ -1241,6 +1324,11 @@ const handlers = {
           const snapScriptContent = await readFile(altScriptPath);
           actualScriptSha = sha256(snapScriptContent);
         } catch {
+          // A revision that ships instructions but no scripts has nothing to run, which is a different
+          // fact from a named script being absent, so it gets its own code instead of a generic miss.
+          if (!existsSync(join(snapDir, 'scripts'))) {
+            return fail('NO_EXECUTABLE_ASSETS', 'this skill revision carries instructions but no scripts to run');
+          }
           return fail('NOT_FOUND', `skill script ${input.script} not found in snapshot`);
         }
       }
@@ -1270,16 +1358,21 @@ const handlers = {
 
       const targetExecPath = existsSync(snapScriptPath) ? snapScriptPath : join(snapDir, input.script);
       const result = await command(targetExecPath, input.args ?? [], { timeoutMs: input.timeoutMs });
+      // The script runs as a local child process of this worker, under the same unprivileged UID and
+      // from the verified read-only snapshot. The disposable-helper-container path is gated on an owner
+      // privilege grant, so without one the run stays local, and reporting the mode keeps the caller
+      // from reading an isolation guarantee into a run that does not have it.
+      const executionMode = 'local';
       if (result.exitCode !== 0) {
         return {
           ok: false,
           message: `Skill script exited with ${result.exitCode}`,
-          data: result,
+          data: { ...result, executionMode },
           error: { code: 'EXECUTION_FAILED', message: `Skill script exited with ${result.exitCode}`, retryable: false },
           truncated: result.truncated
         };
       }
-      return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
+      return ok(`Skill script exited with ${result.exitCode}`, { ...result, executionMode }, { truncated: result.truncated });
     } finally {
       await chmod(snapDir, 0o700).catch(() => undefined);
       await rm(snapDir, { recursive: true, force: true }).catch(() => undefined);

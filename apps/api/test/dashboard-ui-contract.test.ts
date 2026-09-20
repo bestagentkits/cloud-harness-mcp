@@ -7,6 +7,8 @@ import {
   validateSecretClient
 } from '../dashboard/dashboard.js';
 
+import { renderSkillsSkeleton, renderTypesafeSkeleton } from '../dashboard/dashboard-render.js';
+
 const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
 
 // The stylesheet is authored as compact single-line rules, but a formatter may
@@ -97,12 +99,58 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain('No named sessions.');
   });
 
+  it('renders the typename panel with a write-only key and no prompt surface', () => {
+    const skeleton = renderTypesafeSkeleton();
+    for (const selector of [
+      'id="typesafe-panel"', 'id="typesafe-key"', 'id="typesafe-model"', 'id="typesafe-gate-threshold"',
+      'id="typesafe-fit-threshold"', 'id="typesafe-max-egress-bytes"', 'id="typesafe-cache-ttl"',
+      'id="typesafe-enabled"', 'id="typesafe-egress"', 'id="typesafe-test"', 'id="typesafe-status"', 'id="typesafe-usage"'
+    ]) expect(skeleton, selector).toContain(selector);
+
+    // The key field never renders a stored value back, and the usage surface has no prompt column.
+    expect(skeleton).toMatch(/id="typesafe-key"[^>]*type="password"/);
+    expect(skeleton).not.toMatch(/prompt/i);
+    expect(skeleton).toContain('aria-live="polite"');
+  });
+
+  it('renders every skills selector the UI contract names', () => {
+    const skeleton = renderSkillsSkeleton();
+    for (const selector of [
+      'id="skills-section"',
+      'id="skills-tab-library"', 'id="skills-tab-discover"', 'id="skills-tab-sets"', 'id="skills-tab-registry"',
+      'id="skills-library-search"', 'id="skills-library-table"', 'id="skills-bulk-bar"',
+      'id="skill-detail"', 'id="skill-detail-instructions"', 'id="skill-detail-files"', 'id="skill-detail-revisions"', 'id="skill-detail-usage"',
+      'id="skill-editor"', 'id="skill-editor-save"', 'id="skill-editor-status"',
+      'id="skill-revision-diff"',
+      'id="skill-import-dialog"', 'id="skill-import-source"', 'id="skill-import-ref"', 'id="skill-import-scope"',
+      'id="skill-import-review"', 'id="skill-import-job"', 'id="skill-import-retry"',
+      'id="skill-set-builder"', 'id="skill-set-picker"', 'id="skill-set-members"', 'id="skill-set-save"', 'id="skill-set-status"',
+      'id="skills-registry-table"', 'id="skills-registry-status"'
+    ]) expect(skeleton, selector).toContain(selector);
+    // The registry live region has to announce changes, or a cache-state update stays silent.
+    expect(skeleton).toMatch(/id="skills-registry-status"[^>]*aria-live="polite"/);
+  });
+
+  it('reduces the open workspace dialog to skill-set selection and drops the dead toolkit grid', () => {
+    for (const selector of [
+      'id="open-skill-sets-select"', 'id="open-skill-sets-chips"', 'id="open-skill-conflicts"',
+      'id="open-workspace-preview"', 'id="skills-manage-link"'
+    ]) expect(html, selector).toContain(selector);
+
+    // The placeholder grid was never populated by any code path, so leaving it would show operators an
+    // empty box that looks like a loading failure.
+    expect(html).not.toContain('toolkits-selection-grid');
+    expect(script).not.toContain('toolkits-selection-grid');
+    expect(script).not.toContain('toolkits-grid');
+  });
+
   it('exposes accessible metadata navigation and only existing dashboard BFF controls', () => {
     for (const [path, label] of [
       ['/dashboard/overview', 'Overview'], ['/dashboard', 'Workspaces'], ['/dashboard/projects', 'Projects'],
       ['/dashboard/secrets', 'Secrets'], ['/dashboard/models', 'Models'], ['/dashboard/artifacts', 'Artifacts'],
       ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub'],
       ['/dashboard/mcp-servers', 'MCP Servers'],
+      ['/dashboard/skills', 'Skills'],
       ['/dashboard/profile', 'Profile']
     ]) {
       expect(html).toContain(`href="${path}"`);

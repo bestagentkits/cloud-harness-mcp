@@ -78,7 +78,12 @@ describe('internal runner API contract', () => {
   it('defines strict principal-scoped metadata mutations without publishing them as MCP tools', () => {
     expect(MetadataRunnerOperationSchema.options).toContain('secret_rotate');
     expect(MetadataRunnerOperationSchema.options).toContain('audit_list');
+    // `skill_suggest` is deliberately both. It is a metadata operation because it reads
+    // principal-scoped state and writes an audit row, and it is a public tool because a caller submits a
+    // prompt rather than administering the instance. Every other metadata operation stays internal.
+    const deliberatelyPublic = new Set(['skill_suggest']);
     for (const operation of MetadataRunnerOperationSchema.options) {
+      if (deliberatelyPublic.has(operation)) continue;
       expect(RunnerOperationSchema.options).not.toContain(operation);
       expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain(operation);
     }

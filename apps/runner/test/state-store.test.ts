@@ -238,7 +238,7 @@ describe('StateStore', () => {
     legacy.close();
 
     const store = new StateStore(path);
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(11);
     expect(store.byOwnerAndId('owner', workspace.id)?.id).toBe(workspace.id);
     expect(store.byOwnerAndId('owner', workspace.id)?.networkProfile).toBe('network-none');
     expect(store.byOwnerAndId('other-owner', workspace.id)).toBeUndefined();
@@ -308,7 +308,7 @@ describe('StateStore', () => {
 
     // Open with StateStore which triggers v4 -> v5 migration
     const store = new StateStore(path);
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(11);
     const ws1 = store.byId(ws1Id);
     expect(ws1?.networkProfile).toBe('network-none');
     const ws2 = store.byId(ws2Id);

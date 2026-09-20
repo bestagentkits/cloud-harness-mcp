@@ -19,6 +19,7 @@ The Workspaces panel lists all currently active and recently closed workspace en
 Click **Open Workspace** in the Dashboard to launch a new workspace:
 - **Repository & Ref:** Enter an approved HTTPS Git repository and optional branch/tag.
 - **Network Profile (optional):** Override the instance default from [Settings](/dashboard/settings) for this workspace. Choose **No network (air-gapped isolation)** when the workspace must have no egress; otherwise dependency access permits only public DNS and TCP 80/443.
+- **Skill Sets (optional):** Select the sets the workspace should resolve. Because the same skill name can exist at several tiers, a launch can produce a conflict; resolve each one with a radio choice, since launch stays disabled until every conflict has an override. See [Skills & Skill Sets](/dashboard/skills).
 ::: danger Data Purge on Close
 Closing a workspace unmounts the Docker filesystem and recursively deletes the job directory. Ensure any necessary changes have been committed and pushed to origin before closing.
 :::

@@ -35,6 +35,7 @@
         <a href="/dashboard/api-keys" data-section="api-keys"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 8-8"/><path d="m15.5 5.5 2 2"/><path d="m18.5 2.5 2.5 2.5"/></svg>API keys</a>
         <a href="/dashboard/github" data-section="github"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="17.5" cy="8" r="2.5"/><path d="M6 8.5v7"/><path d="M17.5 10.5a6 6 0 0 1-6 6H8.5"/></svg>GitHub</a>
         <a href="/dashboard/mcp-servers" data-section="mcp-servers"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V3"/><path d="M15 7V3"/><path d="M7 7h10v4a5 5 0 0 1-10 0z"/><path d="M12 16v5"/></svg>MCP Servers</a>
+        <a href="/dashboard/skills" data-section="skills"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M2 14l10 5 10-5"/></svg>Skills</a>
         <a href="/dashboard/settings" data-section="settings"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></svg>Settings</a>
         <p class="nav-group">Observability</p>
         <a href="/dashboard/knowledge" data-section="knowledge"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6 6h10"/><path d="M6 10h10"/><path d="M6 14h6"/></svg>Knowledge</a>
@@ -109,7 +110,11 @@
         <option value="dependency-access" selected>Dependency access (public DNS, TCP 80/443)</option>
       </select>
       <div class="form-section-title">Agent Toolkits & Skills (Optional)</div>
-      <div id="toolkits-selection-grid" class="toolkits-grid" role="group" aria-label="Available Toolkits"></div>
+      <label for="open-skill-sets-select">Skill sets</label>
+      <select id="open-skill-sets-select" name="skillSets" multiple size="4"></select>
+      <ul id="open-skill-sets-chips" class="skills-chips" aria-label="Selected skill sets"></ul>
+      <div id="open-skill-conflicts" class="skills-conflicts" role="group" aria-label="Skill conflicts"></div>
+      <p><a id="skills-manage-link" href="/dashboard/skills">Manage skills</a></p>
       <div id="open-workspace-preview" class="preflight-box" aria-live="polite"></div>
       <p id="open-workspace-status" class="status-message" aria-live="polite"></p>
       <div class="dialog-actions">

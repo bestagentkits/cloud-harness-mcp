@@ -32,10 +32,15 @@ import {
   listGlobalSecrets
 } from './dashboard-api.js';
 import {
+  launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
-  renderMcpServersIndex, renderMcpServerDetail
+  renderMcpServersIndex, renderMcpServerDetail,
+  renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
+  renderSkillConflicts,
+  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
+  renderSkillsSkeleton
 } from './dashboard-render.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -305,6 +310,281 @@ export const PALETTE_SOURCE_REQUESTS = [
   { key: 'artifacts', path: '/artifacts?limit=100', rows: 'artifacts', group: 'Artifacts' }
 ];
 
+/**
+ * Library tab controller: debounced search, selection that drives the bulk bar, and a bulk call whose
+ * per-item results decide what stays selected. The server is authoritative, so a row it could not
+ * apply keeps its selection and reports its blocker instead of being dropped from the batch, which
+ * would silently turn a partial failure into an apparent success.
+ */
+export function createSkillsLibraryController({ bulkBar, bulkCount, onSearch, onBulk, debounceMs = 300 }) {
+  let timer;
+  const selected = new Map();
+
+  function renderBulkBar() {
+    if (bulkBar) bulkBar.hidden = selected.size === 0;
+    if (bulkCount) bulkCount.textContent = `${selected.size} selected`;
+  }
+
+  function applyResults(results) {
+    for (const result of Array.isArray(results) ? results : []) {
+      if (result.ok === true) selected.delete(result.skillId);
+      else selected.set(result.skillId, result.error ?? 'unknown');
+    }
+    renderBulkBar();
+    return blockers();
+  }
+
+  function blockers() {
+    return [...selected.entries()]
+      .filter(([, blocker]) => blocker !== undefined)
+      .map(([skillId, blocker]) => ({ skillId, blocker }));
+  }
+
+  return {
+    search(value) {
+      if (timer) globalThis.clearTimeout(timer);
+      timer = globalThis.setTimeout(() => { timer = undefined; onSearch(value); }, debounceMs);
+    },
+    pendingSearch() { return timer !== undefined; },
+    toggle(skillId, isSelected) {
+      if (isSelected) selected.set(skillId, undefined);
+      else selected.delete(skillId);
+      renderBulkBar();
+    },
+    selectedIds() { return [...selected.keys()]; },
+    blockers,
+    applyResults,
+    async runBulk(action) {
+      const skillIds = [...selected.keys()];
+      if (skillIds.length === 0) return [];
+      return applyResults(await onBulk(action, skillIds));
+    }
+  };
+}
+
+/**
+ * The editor stores instructions and never executes them, so this validation is not a safety control:
+ * it rejects input the runner would refuse anyway. A null byte cannot survive the contract, and
+ * frontmatter that opens and never closes would produce a skill that resolves but never loads.
+ */
+export function validateSkillInstructions(text) {
+  const value = String(text ?? '');
+  if (value.trim() === '') return 'Instructions cannot be empty.';
+  if (value.includes('\0')) return 'Instructions cannot contain null bytes.';
+  if (/^\s*---\s*\n/.test(value) && value.indexOf('\n---', 3) === -1) return 'Frontmatter opens with --- but never closes.';
+  return null;
+}
+
+/**
+ * Import polling with a bounded attempt count. It stops on a terminal job state and on exhausting the
+ * budget, so a job whose runner died leaves the operator with a stopped poller instead of a spinner
+ * that never ends.
+ */
+export function createImportPollingController({ fetchJob, onState, isTerminal, intervalMs = 1_500, maxAttempts = 40 }) {
+  let attempts = 0;
+  let stopped = false;
+  let timer;
+
+  async function tick() {
+    if (stopped) return;
+    attempts += 1;
+    const job = await fetchJob();
+    onState(job);
+    if (stopped) return;
+    if (isTerminal(job) || attempts >= maxAttempts) {
+      stopped = true;
+      return;
+    }
+    timer = globalThis.setTimeout(() => { void tick(); }, intervalMs);
+  }
+
+  return {
+    start() { stopped = false; attempts = 0; return tick(); },
+    stop() { stopped = true; if (timer) globalThis.clearTimeout(timer); timer = undefined; },
+    attempts() { return attempts; },
+    running() { return !stopped; }
+  };
+}
+
+/**
+ * Tab controller for the skills page. It keeps `aria-selected` and `tabindex` in step with the visible
+ * panel, and enters each tab once so switching back and forth does not re-request what is already on
+ * screen.
+ */
+export function createSkillsTabsController({ tabs, panels, onEnter }) {
+  const entered = new Set();
+  return {
+    select(name) {
+      for (const tab of tabs) {
+        tab.element.setAttribute('aria-selected', tab.name === name ? 'true' : 'false');
+        tab.element.setAttribute('tabindex', tab.name === name ? '0' : '-1');
+      }
+      for (const panel of panels) panel.element.hidden = panel.name !== name;
+      if (!entered.has(name)) {
+        entered.add(name);
+        if (onEnter) onEnter(name);
+      }
+    },
+    enteredTabs() { return [...entered]; }
+  };
+}
+
+/**
+ * Editor submit. Nothing is executed here, so the failure modes that matter are an input the runner
+ * would refuse and a generation conflict. In both cases the draft is kept: discarding an operator's
+ * typing because the server moved on would lose work that is still valid against the newer revision.
+ *
+ * The editor creates a skill. Changing the instructions of an existing one would need a revision the
+ * runner does not offer an operation for, so the form does not pretend to do it: metadata edits go
+ * through the update operation, and content edits are a new skill until such an operation exists.
+ */
+export function createSkillEditorController({ slug, displayName, instructions, save }) {
+  return {
+    async submit() {
+      const value = instructions ? instructions.value : '';
+      const slugValue = slug ? String(slug.value).trim() : '';
+      const nameValue = displayName ? String(displayName.value).trim() : '';
+      if (slug && !/^[A-Za-z0-9._-]{1,120}$/.test(slugValue)) {
+        return { ok: false, reason: 'invalid', message: 'A slug may contain letters, digits, dot, dash, and underscore.', keepDraft: true };
+      }
+      const problem = validateSkillInstructions(value);
+      if (problem) return { ok: false, reason: 'invalid', message: problem, keepDraft: true };
+      try {
+        const body = { slug: slugValue, displayName: nameValue, instructions: value, expectedGeneration: 0 };
+        return { ok: true, result: await save(body), keepDraft: false };
+      } catch (error) {
+        const status = error && typeof error === 'object' ? error.status : undefined;
+        const message = error instanceof Error ? error.message : 'Save failed.';
+        return {
+          ok: false,
+          reason: status === 409 ? 'conflict' : 'error',
+          message: status === 409 ? 'A skill with this slug already exists. Choose another slug.' : message,
+          keepDraft: true
+        };
+      }
+    }
+  };
+}
+
+/**
+ * Builds the import request the runner accepts. The source is checked here because the wizard's review
+ * step has to show the operator something concrete before anything is fetched, and a mistyped source
+ * discovered after a provider round trip costs more than a message beside the field.
+ */
+export function buildSkillImportRequest({ sourceKind, sourceRef, ref }) {
+  const kind = ['skills-sh', 'skillx', 'git'].includes(sourceKind) ? sourceKind : 'skills-sh';
+  const value = String(sourceRef ?? '').trim();
+  if (value === '') return { ok: false, message: 'Enter the skill source to import.' };
+  if (kind !== 'skillx' && !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value)) {
+    return { ok: false, message: 'Enter the source as owner/repository.' };
+  }
+
+  const pinned = String(ref ?? '').trim();
+  // The operation takes a full object id, not a branch or tag, so a branch name would be refused by
+  // the runner after the wizard claimed to accept it.
+  if (pinned !== '' && !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(pinned)) {
+    return { ok: false, message: 'A ref has to be a full 40 or 64 character hexadecimal commit id.' };
+  }
+
+  return {
+    ok: true,
+    body: {
+      sourceKind: kind,
+      sourceRef: value,
+      ...(pinned === '' ? {} : { ref: pinned }),
+      expectedGeneration: 0
+    }
+  };
+}
+
+/**
+ * Launch skill-set selection. Submit stays disabled while a conflict has no override, because the
+ * resolver would refuse the launch anyway, and a control that looks available but fails is worse than
+ * one that says why it cannot be used yet. The preview is what makes that decision honest: the dialog
+ * gates on what launch would actually resolve rather than on a local guess.
+ */
+export function createLaunchSkillSetController({ submit, loadSets, preview }) {
+  let sets = [];
+  let chosen = [];
+  let overrides = {};
+  let conflicts = [];
+
+  function request() {
+    return chosen.map((id) => {
+      const match = sets.find((set) => set.id === id);
+      return { skillSetId: id, expectedGeneration: match ? match.generation : 0 };
+    });
+  }
+
+  const controller = {
+    async load() { sets = (await loadSets()) ?? []; return sets; },
+    sets() { return sets; },
+    choose(ids) { chosen = [...ids]; return chosen; },
+    chosen() { return chosen; },
+    conflictList() { return conflicts; },
+    overrides() { return overrides; },
+    blocked() { return launchBlockedByConflicts(conflicts, overrides); },
+    body() { return { skillSets: request(), skillOverrides: overrides }; },
+    async resolve(name, revisionId) {
+      overrides = { ...overrides, [name]: revisionId };
+      return controller.refresh();
+    },
+    async refresh() {
+      const payload = request();
+      // Nothing selected means nothing to resolve, so the preview is not asked to describe an empty
+      // launch and submit is left available for a workspace with no skill sets.
+      const result = payload.length === 0 ? { resolved: [], excluded: [], conflicts: [] } : await preview(payload, overrides);
+      conflicts = result.conflicts ?? [];
+      const blocked = launchBlockedByConflicts(conflicts, overrides);
+      if (submit) submit.disabled = blocked;
+      return { ...result, blocked };
+    }
+  };
+  return controller;
+}
+
+/**
+ * The bulk operation carries one generation for the whole batch, so a caller that selects rows from
+ * different generations has to group them. Sending one batch with a single generation would report
+ * every other row as a conflict, which looks like a locking problem when it is really a batching one.
+ */
+export function groupBulkRequests(skills, skillIds) {
+  const groups = new Map();
+  for (const skillId of Array.isArray(skillIds) ? skillIds : []) {
+    const skill = (Array.isArray(skills) ? skills : []).find((candidate) => candidate.id === skillId);
+    const generation = skill ? skill.generation : undefined;
+    const key = String(generation ?? 'unknown');
+    const group = groups.get(key) ?? { generation, skillIds: [] };
+    group.skillIds.push(skillId);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * Body for creating a skill set. A set stores the exact revision of each member, so the builder
+ * resolves the current revision of every chosen skill rather than storing a name that could later
+ * resolve to different content. A member without a revision is refused here, because the runner would
+ * accept the name and only fail when the set is used.
+ */
+export function buildSkillSetBody({ name, description, skills, selectedIds }) {
+  const trimmed = String(name ?? '').trim();
+  if (trimmed === '') return { ok: false, message: 'A skill set needs a name.' };
+  const ids = Array.isArray(selectedIds) ? selectedIds : [];
+  if (ids.length === 0) return { ok: false, message: 'Select at least one skill.' };
+
+  const items = [];
+  for (const id of ids) {
+    const skill = (Array.isArray(skills) ? skills : []).find((candidate) => candidate.id === id);
+    if (!skill || !skill.currentRevisionId) {
+      return { ok: false, message: 'Every member needs a skill that has a revision.' };
+    }
+    items.push({ skillSourceId: id, revisionId: skill.currentRevisionId, name: skill.slug ?? skill.displayName ?? id });
+  }
+
+  return { ok: true, body: { name: trimmed, description: String(description ?? ''), items, expectedGeneration: 0 } };
+}
+
 export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
   { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },
@@ -315,6 +595,7 @@ export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:github', group: 'Pages', label: 'GitHub', hint: 'Page', href: '/dashboard/github' },
   { id: 'page:knowledge', group: 'Pages', label: 'Knowledge', hint: 'Search memories and journals here', href: '/dashboard/knowledge' },
   { id: 'page:mcp-servers', group: 'Pages', label: 'MCP Servers', hint: 'Manage downstream MCP integrations', href: '/dashboard/mcp-servers' },
+  { id: 'page:skills', group: 'Pages', label: 'Skills', hint: 'Manage skills, revisions, imports, and sets', href: '/dashboard/skills' },
   { id: 'page:settings', group: 'Pages', label: 'Settings', hint: 'Instance defaults for workspaces and network egress', href: '/dashboard/settings' },
   { id: 'page:artifacts', group: 'Pages', label: 'Artifacts', hint: 'Page', href: '/dashboard/artifacts' },
   { id: 'page:audit', group: 'Pages', label: 'Audit', hint: 'Page', href: '/dashboard/audit' },
@@ -671,6 +952,7 @@ export function initializeDashboard() {
       else if (location.pathname === '/dashboard/knowledge') await loadKnowledge();
       else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
       else if (location.pathname === '/dashboard/mcp-servers') await loadMcpServers();
+      else if (location.pathname === '/dashboard/skills') await loadSkills();
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
       else if (location.pathname === '/dashboard/settings') await loadSettings();
       else if (location.pathname === '/dashboard/profile') await loadProfile();
@@ -680,6 +962,164 @@ export function initializeDashboard() {
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
       setBusy(false); main.focus({ preventScroll: true });
     } catch (error) { showError(error); }
+  }
+  async function loadSkills() {
+    selectNavigation('skills');
+    setTitle('Skills', 'Browse the library, inspect revisions, import from a provider, and manage skill sets.');
+    document.querySelector('#command-surface').hidden = true;
+    content.innerHTML = renderSkillsSkeleton();
+
+    let rows = [];
+    let query = '';
+
+    const library = createSkillsLibraryController({
+      bulkBar: document.querySelector('#skills-bulk-bar'),
+      bulkCount: document.querySelector('#skills-bulk-count'),
+      onSearch: (value) => { query = value; paintLibrary(); },
+      onBulk: async (action, skillIds) => {
+        const merged = [];
+        for (const group of groupBulkRequests(rows, skillIds)) {
+          const result = await api('/skills/bulk', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action, skillIds: group.skillIds, expectedGeneration: group.generation ?? 0 })
+          });
+          merged.push(...(result.data.results ?? []));
+        }
+        return merged;
+      }
+    });
+
+    function paintLibrary() {
+      const body = document.querySelector('#skills-library-table tbody');
+      if (!body) return;
+      const needle = query.trim().toLowerCase();
+      const visible = needle === ''
+        ? rows
+        : rows.filter((skill) => `${skill.displayName} ${skill.slug} ${skill.provider}`.toLowerCase().includes(needle));
+      body.innerHTML = renderSkillsLibraryRows(visible);
+      const cards = document.querySelector('#skills-library-cards');
+      if (cards) cards.innerHTML = renderSkillsLibraryCards(visible);
+      // Both renderings carry the same controls, so both are wired rather than only the visible one.
+      for (const scope of [body, cards]) {
+        if (!scope) continue;
+        for (const box of scope.querySelectorAll('[data-skill-select]')) {
+          box.addEventListener('change', () => library.toggle(box.getAttribute('data-skill-select'), box.checked));
+        }
+        for (const button of scope.querySelectorAll('[data-skill-detail]')) {
+          button.addEventListener('click', () => { void openSkillDetail(button.getAttribute('data-skill-detail')).catch(showError); });
+        }
+      }
+    }
+
+    /** Loads a tab's data the first time it is entered, which is what the tab controller guarantees. */
+    /** The drawer reads revisions from the server, and a restore republishes rather than rewrites. */
+    async function openSkillDetail(skillId) {
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      const drawer = document.querySelector('#skill-detail');
+      if (!drawer) return;
+      drawer.hidden = false;
+
+      const revisions = (await api(`/skills/${encodeURIComponent(skillId)}/revisions`)).data.revisions ?? [];
+      const box = document.querySelector('#skill-detail-revisions');
+      if (!box) return;
+      box.innerHTML = renderSkillRevisions(revisions, skill ? skill.currentRevisionId : undefined);
+      for (const button of box.querySelectorAll('[data-skill-restore]')) {
+        button.addEventListener('click', () => { void restoreRevision(skillId, button.getAttribute('data-skill-restore')).catch(showError); });
+      }
+    }
+
+    async function restoreRevision(skillId, revisionId) {
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      await api(`/skills/${encodeURIComponent(skillId)}/restore`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ revisionId, expectedGeneration: skill ? skill.generation : 0 })
+      });
+      rows = (await api('/skills')).data.skills ?? [];
+      paintLibrary();
+      await openSkillDetail(skillId);
+    }
+
+    async function enterSkillsTab(name) {
+      try {
+        if (name === 'library') {
+          rows = (await api('/skills')).data.skills ?? [];
+          paintLibrary();
+        } else if (name === 'sets') {
+          if (rows.length === 0) rows = (await api('/skills')).data.skills ?? [];
+          const picker = document.querySelector('#skill-set-picker');
+          if (picker) picker.innerHTML = renderSkillSetPicker(rows);
+        } else if (name === 'registry') {
+          const body = document.querySelector('#skills-registry-table tbody');
+          if (body) body.innerHTML = renderSkillsRegistryRows((await api('/toolkit-registry')).data.entries);
+        }
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    /** Server state is authoritative after a bulk change, so the table is reloaded rather than patched. */
+    async function runBulk(action) {
+      await library.runBulk(action);
+      rows = (await api('/skills')).data.skills ?? [];
+      paintLibrary();
+    }
+
+    document.querySelector('#skills-bulk-archive')?.addEventListener('click', () => { void runBulk('archive').catch(showError); });
+    document.querySelector('#skills-bulk-disable')?.addEventListener('click', () => { void runBulk('disable').catch(showError); });
+    document.querySelector('#skills-library-search')?.addEventListener('input', (event) => library.search(event.target.value));
+
+    document.querySelector('#skill-set-save')?.addEventListener('click', () => {
+      const nameField = document.querySelector('#skill-set-name');
+      const status = document.querySelector('#skill-set-status');
+      const selectedIds = [...document.querySelectorAll('#skill-set-picker [data-set-member]:checked')]
+        .map((box) => box.getAttribute('data-set-member'));
+      const built = buildSkillSetBody({ name: nameField ? nameField.value : '', skills: rows, selectedIds });
+      if (!built.ok) {
+        if (status) status.textContent = built.message;
+        return;
+      }
+      void api('/skill-sets', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(built.body)
+      })
+        .then(() => { if (status) status.textContent = 'Skill set created.'; })
+        .catch((error) => { if (status) status.textContent = error instanceof Error ? error.message : 'The set could not be created.'; });
+    });
+
+    const editor = createSkillEditorController({
+      slug: document.querySelector('#skill-editor-slug'),
+      displayName: document.querySelector('#skill-editor-name'),
+      instructions: document.querySelector('#skill-editor-instructions'),
+      save: async (body) => (await api('/skills', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      })).data
+    });
+    document.querySelector('#skill-editor')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const status = document.querySelector('#skill-editor-status');
+      void editor.submit().then(async (result) => {
+        if (status) status.textContent = result.ok ? 'Skill created.' : result.message;
+        // The new skill is only visible once the server agrees it exists, so the library reloads from
+        // the server rather than assuming the row it just sent.
+        if (result.ok) await enterSkillsTab('library');
+      }).catch(showError);
+    });
+
+    const names = ['library', 'discover', 'sets', 'registry'];
+    const panels = names.map((name) => ({ name, element: document.querySelector(`#skills-panel-${name}`) }));
+    const tabs = names.map((name) => ({ name, element: document.querySelector(`#skills-tab-${name}`) }));
+    const tabController = createSkillsTabsController({
+      tabs,
+      panels,
+      onEnter: (name) => { void enterSkillsTab(name); }
+    });
+    for (const tab of tabs) tab.element?.addEventListener('click', () => tabController.select(tab.name));
+    tabController.select('library');
   }
   async function loadOverview() {
     selectNavigation('overview');
@@ -2154,7 +2594,61 @@ export function initializeDashboard() {
     void globalThis.navigator.clipboard.writeText(trigger.dataset.copy).then(() => announce('Copied to clipboard.')).catch(() => announce('Copy failed. Select and copy the value manually.'));
   });
   addEventListener('pagehide', () => { apiKeyReveal.clear(); paletteLoader.invalidate(); });
-  addEventListener('popstate', () => location.reload()); void load();
+  /**
+   * The launch dialog shows what the preview would resolve, so a conflict is visible before launch
+   * rather than discovered when the resolver refuses. The sets load once: reopening the dialog is not
+   * a reason to re-request what has not changed.
+   */
+  function wireOpenWorkspaceSkillSets() {
+    const dialog = document.querySelector('#open-workspace-dialog');
+    const openButton = document.querySelector('#open-workspace-btn');
+    const select = document.querySelector('#open-skill-sets-select');
+    const chips = document.querySelector('#open-skill-sets-chips');
+    const conflictBox = document.querySelector('#open-skill-conflicts');
+    const previewBox = document.querySelector('#open-workspace-preview');
+    const submit = document.querySelector('#submit-open-workspace');
+    if (!dialog || !openButton || !select) return;
+
+    const controller = createLaunchSkillSetController({
+      submit,
+      loadSets: async () => (await api('/skill-sets')).data.sets ?? [],
+      preview: async (skillSets, skillOverrides) => (await api('/skill-sets/preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ skillSets, skillOverrides })
+      })).data
+    });
+
+    function paint(result) {
+      const chosen = controller.chosen();
+      if (chips) chips.innerHTML = renderSkillSetChips(controller.sets().filter((set) => chosen.includes(set.id)).map((set) => set.name));
+      if (conflictBox) conflictBox.innerHTML = renderSkillConflicts(controller.conflictList(), controller.overrides());
+      if (previewBox) previewBox.textContent = `${(result.resolved ?? []).length} skill(s) resolved.`;
+    }
+
+    openButton.addEventListener('click', () => {
+      dialog.showModal();
+      void controller.load()
+        .then(() => { select.innerHTML = renderSkillSetOptions(controller.sets()); })
+        .catch(showError);
+    });
+
+    select.addEventListener('change', () => {
+      controller.choose([...select.selectedOptions].map((option) => option.value));
+      void controller.refresh().then(paint).catch(showError);
+    });
+
+    // A conflict radio is the operator's override, and it is what releases the launch button.
+    conflictBox?.addEventListener('change', (event) => {
+      const name = event.target?.closest?.('fieldset')?.dataset?.conflictName;
+      if (!name || !event.target?.value) return;
+      void controller.resolve(name, event.target.value).then(paint).catch(showError);
+    });
+  }
+
+  addEventListener('popstate', () => location.reload());
+  wireOpenWorkspaceSkillSets();
+  void load();
 }
 
 if (typeof document !== 'undefined') initializeDashboard();

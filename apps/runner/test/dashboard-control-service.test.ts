@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import { InMemoryGitHubInstallationStore } from '../src/github-installation-stor
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
+import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
 const roots: string[] = [];
 const cleanups: (() => void)[] = [];
@@ -34,6 +35,7 @@ function setup(withKeyring = true) {
   });
   const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
   const workspaces = {
+    toolkitCacheManager: new ToolkitCacheManager(join(root, 'toolkits'), principals),
     readArtifactSource: async (p: PrincipalSelector) => ({ ownerId: principals.resolvePrincipal(p), content: Buffer.from('snapshot') }),
     snapshotArtifact: async (p: PrincipalSelector, input: { workspaceId?: string; path: string; logicalName: string; retentionSeconds?: number; projectId?: string; environmentId?: string }) => {
       const ownerId = principals.resolvePrincipal(p);
@@ -81,14 +83,288 @@ function setup(withKeyring = true) {
       };
     }
   } as unknown as WorkspaceService;
-  const controls = new DashboardControlService({ artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, workspaces);
+  const controls = new DashboardControlService(
+    { artifactRetentionSeconds: 60 } as RunnerConfig,
+    principals, metadata, artifacts, workspaces,
+    undefined, undefined, undefined, undefined, keyring
+  );
   return { controls, principals, metadata, artifacts, keyring, workspaces };
 }
+
+describe('skill revisions', () => {
+  it('diffs two revisions of one skill and forks one into a new source', async () => {
+    const { controls, principals, workspaces } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+
+    // Two bundles with different content, so the diff has something real to compare.
+    const first = await workspaces.toolkitCacheManager.publishLocalBundle(ownerId, {
+      'skills/tdd/SKILL.md': '# TDD\n\nWrite the test first.\n'
+    });
+    const second = await workspaces.toolkitCacheManager.publishLocalBundle(ownerId, {
+      'skills/tdd/SKILL.md': '# TDD\n\nWrite the test first, then the code.\n'
+    });
+    const created = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: first.bundleSha256, contentSha256: first.bundleSha256, hasExecutableAssets: false }
+    });
+    const secondRevision = principals.addSkillRevision({
+      ownerId, skillSourceId: created.sourceId, bundleSha256: second.bundleSha256,
+      contentSha256: second.bundleSha256, hasExecutableAssets: false, origin: 'edit', parentRevisionId: created.revisionId
+    });
+
+    const diff = await controls.execute(request('skill_revision_diff', {
+      skillId: created.sourceId, fromRevisionId: created.revisionId, toRevisionId: secondRevision
+    }));
+    const data = diff.data as { changed: boolean; added: number; removed: number; diff: string };
+    expect(data.changed).toBe(true);
+    expect(data.added).toBe(1);
+    expect(data.removed).toBe(1);
+    expect(data.diff).toContain('-Write the test first.');
+    expect(data.diff).toContain('+Write the test first, then the code.');
+
+    // A fork starts from the bytes the chosen revision pinned, in a source of its own.
+    const forked = await controls.execute(request('skill_revision_fork', {
+      skillId: created.sourceId, revisionId: created.revisionId, slug: 'tdd-fork', displayName: 'TDD fork', expectedGeneration: 0
+    }));
+    const forkedSourceId = (forked.data as { sourceId: string }).sourceId;
+    expect(forkedSourceId).not.toBe(created.sourceId);
+    const forkedRevision = principals.getSkillRevision(ownerId, forkedSourceId, (forked.data as { revisionId: string }).revisionId);
+    expect(forkedRevision?.origin).toBe('fork');
+    expect(forkedRevision?.bundleSha256).toBe(first.bundleSha256);
+
+    // The source it came from is untouched: a fork is a copy, not a move.
+    expect(principals.getSkillSource(ownerId, created.sourceId)?.currentRevisionId).toBe(secondRevision);
+  });
+
+  it('reports a revision whose content is missing rather than an empty diff', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const created = principals.createSkillSource({
+      ownerId, slug: 'ghost', displayName: 'Ghost', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: 'f'.repeat(64), contentSha256: 'f'.repeat(64), hasExecutableAssets: false }
+    });
+
+    await expect(controls.execute(request('skill_revision_diff', {
+      skillId: created.sourceId, fromRevisionId: created.revisionId, toRevisionId: created.revisionId
+    }))).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+});
+
+describe('integration credentials and typesafe', () => {
+  it('stores a credential write-only and reports configured without ever carrying the key', async () => {
+    const { controls } = setup();
+    const secret = 'ts_live_do_not_log_this_value';
+
+    const before = await controls.execute(request('typesafe_status', {}));
+    expect(before.data).toMatchObject({ configured: false, enabled: true });
+
+    const created = await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: secret, expectedGeneration: 0
+    }));
+    expect(JSON.stringify(created)).not.toContain(secret);
+    const credentialId = (created.data as { id: string }).id;
+
+    // Status and list are the two read paths a caller can reach, and neither returns a value.
+    const after = await controls.execute(request('typesafe_status', {}));
+    expect(after.data).toMatchObject({ configured: true });
+    expect(JSON.stringify(after)).not.toContain(secret);
+
+    const listed = await controls.execute(request('integration_credential_list', {}));
+    expect((listed.data as { credentials: unknown[] }).credentials).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain(secret);
+
+    const rotated = await controls.execute(request('integration_credential_rotate', {
+      credentialId, value: 'ts_live_rotated', expectedGeneration: 1
+    }));
+    expect((rotated.data as { generation: number }).generation).toBe(2);
+    expect(JSON.stringify(rotated)).not.toContain('ts_live_rotated');
+
+    const deleted = await controls.execute(request('integration_credential_delete', { credentialId, expectedGeneration: 2 }));
+    expect(deleted.data).toMatchObject({ deleted: true });
+  });
+
+  it('reports an empty roster rather than calling out when a key exists but no workspace was named', async () => {
+    const { controls } = setup();
+    await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_key', expectedGeneration: 0
+    }));
+
+    const result = await controls.execute(request('skill_suggest', { prompt: 'Please refactor the authentication middleware.' }));
+
+    expect(result.data).toMatchObject({ suggested: null, reason: 'empty_roster', outboundCalls: 0 });
+  });
+
+  it('answers not_configured with zero outbound work when the owner has no key', async () => {
+    const { controls } = setup();
+
+    const result = await controls.execute(request('skill_suggest', { prompt: 'Please refactor the authentication middleware.' }));
+
+    expect(result.data).toMatchObject({ suggested: null, reason: 'not_configured', outboundCalls: 0 });
+  });
+
+  it('refuses a credential write when the runner has no keyring', async () => {
+    const { controls } = setup(false);
+
+    await expect(controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_key', expectedGeneration: 0
+    }))).rejects.toMatchObject({ code: 'UNAVAILABLE', status: 503 });
+  });
+});
 
 const principal = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-a' };
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
 
 describe('dashboard control service', () => {
+  it('serves the registry catalogue and still fails loudly for an operation with no handler', async () => {
+    const { controls } = setup();
+
+    // The route test uses a mocked runner, which answers anything, so it cannot tell a real handler
+    // from a missing one. This call goes through the service itself and would throw before the case
+    // existed.
+    const listed = await controls.execute(request('toolkit_registry_list', {}));
+    expect(Array.isArray((listed.data as { entries: unknown[] }).entries)).toBe(true);
+    expect((listed.data as { entries: unknown[] }).entries).toEqual([]);
+
+    const filtered = await controls.execute(request('toolkit_registry_list', { provider: 'skillx' }));
+    expect((filtered.data as { entries: unknown[] }).entries).toEqual([]);
+
+    await expect(controls.execute(request('toolkit_registry_refresh', { provider: 'skills-sh' })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+  it('creates a custom skill by publishing its content before the source row exists', async () => {
+    const { controls, principals, workspaces } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const instructions = '# Custom skill\n\nDo the thing.';
+
+    const created = await controls.execute(request('skill_create_custom', {
+      slug: 'custom-skill', displayName: 'Custom Skill', description: 'authored here', tags: ['custom'],
+      instructions, hasExecutableAssets: false, expectedGeneration: 0
+    }));
+    const { sourceId, revisionId, bundleSha256 } = created.data as { sourceId: string; revisionId: string; bundleSha256: string };
+
+    // The recorded digests and the published bytes have to agree. If they did not, the skill would
+    // resolve in the inventory and then fail at launch, which is what publishing first prevents.
+    const revision = principals.getSkillRevision(ownerId, sourceId, revisionId);
+    expect(revision?.bundleSha256).toBe(bundleSha256);
+    expect(revision?.contentSha256).toBe(createHash('sha256').update(instructions).digest('hex'));
+    expect(readFileSync(join(workspaces.toolkitCacheManager.bundlePath(ownerId, bundleSha256), 'skills/custom-skill/SKILL.md'), 'utf8')).toBe(instructions);
+
+    expect(principals.getSkillSource(ownerId, sourceId)).toMatchObject({
+      slug: 'custom-skill', kind: 'owner', provider: 'custom', currentRevisionId: revisionId, state: 'enabled'
+    });
+  });
+  it('restores a previous revision by publishing a new one instead of rewriting history', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const { sourceId, revisionId } = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), hasExecutableAssets: false }
+    });
+    const second = principals.addSkillRevision({
+      ownerId, skillSourceId: sourceId, bundleSha256: 'c'.repeat(64), contentSha256: 'd'.repeat(64),
+      hasExecutableAssets: false, origin: 'edit', parentRevisionId: revisionId
+    });
+    const originalBefore = principals.listSkillRevisions(ownerId, sourceId, 50).find((entry) => entry?.id === revisionId);
+    const generation = principals.getSkillSource(ownerId, sourceId)?.generation ?? 1;
+
+    const restored = await controls.execute(request('skill_restore', { skillId: sourceId, revisionId, expectedGeneration: generation }));
+    const restoredId = (restored.data as { revisionId: string }).revisionId;
+    expect(restoredId).not.toBe(revisionId);
+    expect(restoredId).not.toBe(second);
+
+    const revisions = principals.listSkillRevisions(ownerId, sourceId, 50);
+    const created = revisions.find((entry) => entry?.id === restoredId);
+    expect(created?.origin).toBe('restore');
+    expect(created?.parentRevisionId).toBe(revisionId);
+    expect(created?.contentSha256).toBe('b'.repeat(64));
+    expect(principals.getSkillSource(ownerId, sourceId)?.currentRevisionId).toBe(restoredId);
+
+    // History stays append-only: the revision that was restored is byte-for-byte what it was.
+    expect(revisions.find((entry) => entry?.id === revisionId)).toEqual(originalBefore);
+  });
+  it('previews a skill set through the resolver and refuses a set that moved', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const { sourceId, revisionId } = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), hasExecutableAssets: false }
+    });
+    const setId = principals.createSkillSet({
+      ownerId, name: 'core', items: [{ skillSourceId: sourceId, revisionId, name: 'tdd' }]
+    });
+
+    const preview = await controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: setId, expectedGeneration: 1 }]
+    }));
+    const data = preview.data as { resolved: unknown[]; conflicts: unknown[]; generation: number };
+    expect(data.generation).toBe(1);
+    expect(data.conflicts).toEqual([]);
+    expect(data.resolved).toEqual([{ name: 'tdd', tier: 'owner', sourceId, revisionId, contentSha256: revisionId, pinned: false }]);
+
+    // An override pins the revision, so the preview shows what launch would actually resolve.
+    const pinned = await controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: setId, expectedGeneration: 1 }],
+      skillOverrides: { tdd: revisionId }
+    }));
+    expect((pinned.data as { resolved: Array<{ pinned: boolean }> }).resolved[0]?.pinned).toBe(true);
+
+    await expect(controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: setId, expectedGeneration: 99 }]
+    }))).rejects.toMatchObject({ code: 'STALE_GENERATION', status: 409 });
+
+    await expect(controls.execute(request('skill_set_preview', {
+      skillSets: [{ skillSetId: `skset_${'z'.repeat(24)}`, expectedGeneration: 1 }]
+    }))).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+  it('reports a bulk state change per item instead of failing the whole batch', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const { sourceId } = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), hasExecutableAssets: false }
+    });
+    const missing = `sk_${'c'.repeat(24)}`;
+
+    // One stale item must not discard the work already applied to the rest of the batch.
+    const result = await controls.execute(request('skill_bulk', {
+      action: 'archive', skillIds: [sourceId, missing], expectedGeneration: 1
+    }));
+    expect((result.data as { results: unknown[] }).results).toEqual([
+      { skillId: sourceId, ok: true },
+      { skillId: missing, ok: false, error: 'NOT_FOUND' }
+    ]);
+    expect(principals.getSkillSource(ownerId, sourceId)?.state).toBe('archived');
+  });
+  it('answers a stale skill set generation with a conflict instead of an unhandled error', async () => {
+    const { controls } = setup();
+    const created = await controls.execute(request('skill_set_create', { name: 'core', expectedGeneration: 0 }));
+    const skillSetId = (created.data as { skillSetId: string }).skillSetId;
+
+    // The store raises SkillRegistryError on purpose to stay free of HTTP concerns. This assertion
+    // only holds because the service translates it, which is why a stale write is a conflict the
+    // control plane can map rather than an error that escapes unhandled.
+    await expect(controls.execute(request('skill_set_update', { skillSetId, name: 'renamed', expectedGeneration: 99 })))
+      .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await expect(controls.execute(request('skill_set_delete', { skillSetId, expectedGeneration: 99 })))
+      .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+
+    // The same requests at the current generation succeed, so the guard rejects stale writes only.
+    const updated = await controls.execute(request('skill_set_update', { skillSetId, name: 'renamed', expectedGeneration: 1 }));
+    expect(updated.ok).toBe(true);
+    const read = await controls.execute(request('skill_set_get', { skillSetId }));
+    expect((read.data as { name: string }).name).toBe('renamed');
+
+    await expect(controls.execute(request('skill_set_delete', { skillSetId, expectedGeneration: 2 })))
+      .resolves.toMatchObject({ ok: true });
+  });
+
+  it('reports a missing skill as not found rather than as an internal error', async () => {
+    const { controls } = setup();
+    await expect(controls.execute(request('skill_get', { skillId: `sk_${'a'.repeat(24)}` })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+    await expect(controls.execute(request('skill_import_status', { jobId: `skjob_${'a'.repeat(24)}` })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
   it('keeps secret values write-only and records redacted audit events', async () => {
     const { controls, metadata } = setup();
     const project = await controls.execute(request('project_create', { name: 'Control plane', expectedGeneration: 0 }));

@@ -50,7 +50,8 @@ export {
   downgradeStateSchemaToV6,
   downgradeStateSchemaToV7,
   downgradeStateSchemaToV8,
-  downgradeStateSchemaToV9
+  downgradeStateSchemaToV9,
+  downgradeStateSchemaToV10
 } from './principal-store.js';
 
 export type MemoryRecord = {
@@ -283,6 +284,49 @@ const fromRow = (row: Row): WorkspaceRecord => ({
  * Capacity is counted from the counted statuses alone, never from this set.
  */
 const SELECT_ENUMERATED_WORKSPACES_SQL = `SELECT * FROM workspaces WHERE status IN (${ENUMERATED_WORKSPACE_STATUS_PARAMS})`;
+
+export type SkillSourceState = 'enabled' | 'disabled' | 'archived';
+export type SkillSourceKind = 'built-in' | 'owner' | 'workspace' | 'repository' | 'registry';
+export type SkillProvider = 'skills-sh' | 'skillx' | 'git' | 'custom';
+export type SkillRevisionOrigin = 'import' | 'refresh' | 'edit' | 'restore' | 'fork';
+export type SkillImportJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type SkillImportSourceKind = 'skills-sh' | 'skillx' | 'git';
+export type SkillTier = 'built-in' | 'owner' | 'workspace' | 'repository';
+
+/** Store-level failure with a stable code so the control plane can map it to a status without the store importing HTTP types. */
+export class SkillRegistryError extends Error {
+  constructor(readonly code: 'NOT_FOUND' | 'CONFLICT' | 'INVALID_INPUT', message: string) {
+    super(message);
+    this.name = 'SkillRegistryError';
+  }
+}
+
+const MAX_SKILL_TAGS = 16;
+const MAX_SKILL_TAG_LENGTH = 32;
+const ACTIVE_WORKSPACE_STATUSES = `('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED')`;
+
+function parseSkillTags(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeSkillTags(tags: string[]): string {
+  if (tags.length > MAX_SKILL_TAGS) {
+    throw new SkillRegistryError('INVALID_INPUT', `a skill source accepts at most ${MAX_SKILL_TAGS} tags`);
+  }
+  const normalized = tags.map((tag) => tag.trim());
+  for (const tag of normalized) {
+    if (tag.length === 0 || tag.length > MAX_SKILL_TAG_LENGTH) {
+      throw new SkillRegistryError('INVALID_INPUT', `each skill tag must be 1 to ${MAX_SKILL_TAG_LENGTH} characters`);
+    }
+    if (tag.includes('\0')) throw new SkillRegistryError('INVALID_INPUT', 'a skill tag cannot contain a null byte');
+  }
+  return JSON.stringify([...new Set(normalized)]);
+}
 
 export class StateStore {
   readonly database: DatabaseSync;
@@ -2250,6 +2294,416 @@ export class StateStore {
     `).all() as { bundle_sha256: string }[];
     return new Set(rows.map(r => r.bundle_sha256));
   }
+  // -------------------------------------------------------------------------
+  // Skill registry
+  // -------------------------------------------------------------------------
+
+  private requireSkillGeneration(table: 'skill_sources' | 'skill_sets', ownerId: string, id: string, expectedGeneration: number): void {
+    const statement = table === 'skill_sources'
+      ? 'SELECT generation FROM skill_sources WHERE owner_id = ? AND id = ?'
+      : 'SELECT generation FROM skill_sets WHERE owner_id = ? AND id = ?';
+    const row = this.database.prepare(statement).get(ownerId, id) as { generation: number } | undefined;
+    if (!row) throw new SkillRegistryError('NOT_FOUND', `${table} entry ${id} was not found for this owner`);
+    if (row.generation !== expectedGeneration) {
+      throw new SkillRegistryError('CONFLICT', `${table} entry ${id} is at generation ${row.generation}, expected ${expectedGeneration}`);
+    }
+  }
+
+  createSkillSource(input: {
+    ownerId: string;
+    slug: string;
+    displayName: string;
+    kind: SkillSourceKind;
+    description?: string;
+    provider?: SkillProvider;
+    sourceRef?: string;
+    tags?: string[];
+    revision: { bundleSha256: string; contentSha256: string; hasExecutableAssets: boolean; origin?: SkillRevisionOrigin };
+  }): { sourceId: string; revisionId: string } {
+    const now = Date.now();
+    const sourceId = `sk_${randomBytes(16).toString('hex')}`;
+    const revisionId = `skrev_${randomBytes(16).toString('hex')}`;
+    const tags = normalizeSkillTags(input.tags ?? []);
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare(`INSERT INTO skill_sources
+        (owner_id, id, slug, display_name, description, kind, provider, source_ref, current_revision_id, state, tags, generation, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'enabled', ?, 1, ?, ?)`)
+        .run(input.ownerId, sourceId, input.slug, input.displayName, input.description ?? '', input.kind,
+          input.provider ?? null, input.sourceRef ?? null, tags, now, now);
+      this.database.prepare(`INSERT INTO skill_revisions
+        (owner_id, skill_source_id, id, parent_revision_id, origin, bundle_sha256, content_sha256, has_executable_assets, created_at)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`)
+        .run(input.ownerId, sourceId, revisionId, input.revision.origin ?? 'import', input.revision.bundleSha256,
+          input.revision.contentSha256, input.revision.hasExecutableAssets ? 1 : 0, now);
+      this.database.prepare('UPDATE skill_sources SET current_revision_id = ? WHERE owner_id = ? AND id = ?')
+        .run(revisionId, input.ownerId, sourceId);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+    return { sourceId, revisionId };
+  }
+
+  addSkillRevision(input: {
+    ownerId: string;
+    skillSourceId: string;
+    bundleSha256: string;
+    contentSha256: string;
+    hasExecutableAssets: boolean;
+    origin: SkillRevisionOrigin;
+    parentRevisionId?: string;
+    expectedGeneration?: number;
+  }): string {
+    const now = Date.now();
+    const revisionId = `skrev_${randomBytes(16).toString('hex')}`;
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      if (input.expectedGeneration !== undefined) {
+        this.requireSkillGeneration('skill_sources', input.ownerId, input.skillSourceId, input.expectedGeneration);
+      }
+      this.database.prepare(`INSERT INTO skill_revisions
+        (owner_id, skill_source_id, id, parent_revision_id, origin, bundle_sha256, content_sha256, has_executable_assets, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.ownerId, input.skillSourceId, revisionId, input.parentRevisionId ?? null, input.origin,
+          input.bundleSha256, input.contentSha256, input.hasExecutableAssets ? 1 : 0, now);
+      this.database.prepare(`UPDATE skill_sources
+        SET current_revision_id = ?, generation = generation + 1, updated_at = ?
+        WHERE owner_id = ? AND id = ?`)
+        .run(revisionId, now, input.ownerId, input.skillSourceId);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+    return revisionId;
+  }
+
+  getSkillSource(ownerId: string, id: string): {
+    id: string; slug: string; displayName: string; description: string; kind: SkillSourceKind;
+    provider: SkillProvider | null; sourceRef: string | null; currentRevisionId: string | null;
+    state: SkillSourceState; tags: string[]; generation: number; updatedAt: number;
+  } | undefined {
+    const row = this.database.prepare(`SELECT id, slug, display_name, description, kind, provider, source_ref,
+      current_revision_id, state, tags, generation, updated_at FROM skill_sources WHERE owner_id = ? AND id = ?`)
+      .get(ownerId, id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return {
+      id: String(row.id), slug: String(row.slug), displayName: String(row.display_name),
+      description: String(row.description), kind: row.kind as SkillSourceKind,
+      provider: (row.provider as SkillProvider | null) ?? null,
+      sourceRef: (row.source_ref as string | null) ?? null,
+      currentRevisionId: (row.current_revision_id as string | null) ?? null,
+      state: row.state as SkillSourceState, tags: parseSkillTags(String(row.tags)),
+      generation: Number(row.generation), updatedAt: Number(row.updated_at)
+    };
+  }
+
+  listSkillSources(ownerId: string, options: { state?: SkillSourceState; kind?: SkillSourceKind; provider?: SkillProvider; limit?: number } = {}): ReturnType<StateStore['getSkillSource']>[] {
+    const rows = this.database.prepare(`SELECT id FROM skill_sources
+      WHERE owner_id = ?
+        AND (? IS NULL OR state = ?)
+        AND (? IS NULL OR kind = ?)
+        AND (? IS NULL OR provider = ?)
+      ORDER BY updated_at DESC LIMIT ?`)
+      .all(ownerId,
+        options.state ?? null, options.state ?? null,
+        options.kind ?? null, options.kind ?? null,
+        options.provider ?? null, options.provider ?? null,
+        Math.min(options.limit ?? 100, 500)) as { id: string }[];
+    return rows.map((row) => this.getSkillSource(ownerId, row.id)!).filter(Boolean);
+  }
+
+  listSkillRevisions(ownerId: string, skillSourceId: string, limit = 100): {
+    id: string; origin: SkillRevisionOrigin; parentRevisionId: string | null; contentSha256: string;
+    hasExecutableAssets: boolean; createdAt: number;
+  }[] {
+    const rows = this.database.prepare(`SELECT id, origin, parent_revision_id, content_sha256, has_executable_assets, created_at
+      FROM skill_revisions WHERE owner_id = ? AND skill_source_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`)
+      .all(ownerId, skillSourceId, Math.min(limit, 500)) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      id: String(row.id), origin: row.origin as SkillRevisionOrigin,
+      parentRevisionId: (row.parent_revision_id as string | null) ?? null,
+      contentSha256: String(row.content_sha256),
+      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at)
+    }));
+  }
+
+  /**
+   * The full row for one revision. `listSkillRevisions` projects only what the UI renders, so a
+   * caller that has to republish these bytes (restore) needs the bundle digest that projection omits.
+   */
+  getSkillRevision(ownerId: string, skillSourceId: string, id: string): {
+    id: string; skillSourceId: string; origin: SkillRevisionOrigin; parentRevisionId: string | null;
+    bundleSha256: string; contentSha256: string; hasExecutableAssets: boolean; createdAt: number;
+  } | undefined {
+    const row = this.database.prepare(`SELECT id, skill_source_id, origin, parent_revision_id, bundle_sha256, content_sha256, has_executable_assets, created_at
+      FROM skill_revisions WHERE owner_id = ? AND skill_source_id = ? AND id = ?`)
+      .get(ownerId, skillSourceId, id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return {
+      id: String(row.id), skillSourceId: String(row.skill_source_id), origin: row.origin as SkillRevisionOrigin,
+      parentRevisionId: (row.parent_revision_id as string | null) ?? null,
+      bundleSha256: String(row.bundle_sha256), contentSha256: String(row.content_sha256),
+      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at)
+    };
+  }
+
+  setSkillState(ownerId: string, id: string, state: SkillSourceState, expectedGeneration: number): { state: SkillSourceState; generation: number } {
+    this.requireSkillGeneration('skill_sources', ownerId, id, expectedGeneration);
+    const current = this.getSkillSource(ownerId, id)!;
+    const allowed: Record<SkillSourceState, SkillSourceState[]> = {
+      enabled: ['enabled', 'disabled', 'archived'],
+      disabled: ['disabled', 'enabled', 'archived'],
+      archived: ['archived']
+    };
+    if (!allowed[current.state].includes(state)) {
+      throw new SkillRegistryError('INVALID_INPUT', `cannot move skill ${id} from ${current.state} to ${state}`);
+    }
+    const now = Date.now();
+    this.database.prepare('UPDATE skill_sources SET state = ?, generation = generation + 1, updated_at = ? WHERE owner_id = ? AND id = ?')
+      .run(state, now, ownerId, id);
+    return { state, generation: current.generation + 1 };
+  }
+
+  updateSkillMetadata(input: {
+    ownerId: string; id: string; expectedGeneration: number;
+    displayName?: string; description?: string; tags?: string[];
+  }): { generation: number } {
+    this.requireSkillGeneration('skill_sources', input.ownerId, input.id, input.expectedGeneration);
+    const tags = input.tags === undefined ? undefined : normalizeSkillTags(input.tags);
+    const now = Date.now();
+    this.database.prepare(`UPDATE skill_sources SET
+        display_name = COALESCE(?, display_name),
+        description = COALESCE(?, description),
+        tags = COALESCE(?, tags),
+        generation = generation + 1,
+        updated_at = ?
+      WHERE owner_id = ? AND id = ?`)
+      .run(input.displayName ?? null, input.description ?? null, tags ?? null, now, input.ownerId, input.id);
+    return { generation: input.expectedGeneration + 1 };
+  }
+
+  listSkillUsage(ownerId: string, skillSourceId: string): {
+    sets: { skillSetId: string; name: string }[];
+    liveWorkspaces: { workspaceId: string; status: string; name: string; revisionId: string }[];
+  } {
+    const sets = this.database.prepare(`SELECT DISTINCT i.skill_set_id AS skillSetId, s.name AS name
+      FROM skill_set_items i JOIN skill_sets s ON s.owner_id = i.owner_id AND s.id = i.skill_set_id
+      WHERE i.owner_id = ? AND i.skill_source_id = ? ORDER BY s.name`)
+      .all(ownerId, skillSourceId) as { skillSetId: string; name: string }[];
+    const liveWorkspaces = this.database.prepare(`SELECT DISTINCT a.workspace_id AS workspaceId, w.status AS status,
+        a.name AS name, a.revision_id AS revisionId
+      FROM workspace_skill_assignments a
+      JOIN workspaces w ON w.owner_id = a.owner_id AND w.id = a.workspace_id
+      WHERE a.owner_id = ? AND a.skill_source_id = ? AND w.status IN ${ACTIVE_WORKSPACE_STATUSES}
+      ORDER BY a.workspace_id`)
+      .all(ownerId, skillSourceId) as { workspaceId: string; status: string; name: string; revisionId: string }[];
+    return { sets, liveWorkspaces };
+  }
+
+  createSkillSet(input: {
+    ownerId: string; name: string; description?: string;
+    items: { skillSourceId: string; revisionId: string; name: string }[];
+  }): string {
+    const now = Date.now();
+    const id = `skset_${randomBytes(16).toString('hex')}`;
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare(`INSERT INTO skill_sets (owner_id, id, name, description, generation, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 1, ?, ?)`)
+        .run(input.ownerId, id, input.name, input.description ?? '', now, now);
+      this.replaceSkillSetItems(input.ownerId, id, input.items);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+    return id;
+  }
+
+  private replaceSkillSetItems(ownerId: string, skillSetId: string, items: { skillSourceId: string; revisionId: string; name: string }[]): void {
+    this.database.prepare('DELETE FROM skill_set_items WHERE owner_id = ? AND skill_set_id = ?').run(ownerId, skillSetId);
+    items.forEach((item, ordinal) => {
+      this.database.prepare(`INSERT INTO skill_set_items (owner_id, skill_set_id, ordinal, skill_source_id, revision_id, name)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(ownerId, skillSetId, ordinal, item.skillSourceId, item.revisionId, item.name);
+    });
+  }
+
+  getSkillSet(ownerId: string, id: string): {
+    id: string; name: string; description: string; generation: number;
+    items: { ordinal: number; skillSourceId: string; revisionId: string; name: string }[];
+  } | undefined {
+    const row = this.database.prepare('SELECT id, name, description, generation FROM skill_sets WHERE owner_id = ? AND id = ?')
+      .get(ownerId, id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const items = this.database.prepare(`SELECT ordinal, skill_source_id, revision_id, name FROM skill_set_items
+      WHERE owner_id = ? AND skill_set_id = ? ORDER BY ordinal`)
+      .all(ownerId, id) as Record<string, unknown>[];
+    return {
+      id: String(row.id), name: String(row.name), description: String(row.description),
+      generation: Number(row.generation),
+      items: items.map((item) => ({
+        ordinal: Number(item.ordinal), skillSourceId: String(item.skill_source_id),
+        revisionId: String(item.revision_id), name: String(item.name)
+      }))
+    };
+  }
+
+  listSkillSets(ownerId: string, limit = 100): NonNullable<ReturnType<StateStore['getSkillSet']>>[] {
+    const rows = this.database.prepare('SELECT id FROM skill_sets WHERE owner_id = ? ORDER BY updated_at DESC LIMIT ?')
+      .all(ownerId, Math.min(limit, 500)) as { id: string }[];
+    return rows.map((row) => this.getSkillSet(ownerId, row.id)!).filter(Boolean);
+  }
+
+  updateSkillSet(input: {
+    ownerId: string; id: string; expectedGeneration: number;
+    name?: string; description?: string;
+    items?: { skillSourceId: string; revisionId: string; name: string }[];
+  }): { generation: number } {
+    this.requireSkillGeneration('skill_sets', input.ownerId, input.id, input.expectedGeneration);
+    const now = Date.now();
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare(`UPDATE skill_sets SET
+          name = COALESCE(?, name),
+          description = COALESCE(?, description),
+          generation = generation + 1,
+          updated_at = ?
+        WHERE owner_id = ? AND id = ?`)
+        .run(input.name ?? null, input.description ?? null, now, input.ownerId, input.id);
+      if (input.items) this.replaceSkillSetItems(input.ownerId, input.id, input.items);
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+    return { generation: input.expectedGeneration + 1 };
+  }
+
+  deleteSkillSet(ownerId: string, id: string, expectedGeneration: number): void {
+    this.requireSkillGeneration('skill_sets', ownerId, id, expectedGeneration);
+    const holders = this.database.prepare('SELECT count(*) as count FROM workspace_skill_set_snapshots WHERE owner_id = ? AND skill_set_id = ?')
+      .get(ownerId, id) as { count: number };
+    if (holders.count > 0) {
+      throw new SkillRegistryError('CONFLICT', `skill set ${id} is referenced by ${holders.count} workspace snapshot(s)`);
+    }
+    this.database.prepare('DELETE FROM skill_sets WHERE owner_id = ? AND id = ?').run(ownerId, id);
+  }
+
+  recordWorkspaceSkillSelection(input: {
+    ownerId: string; workspaceId: string;
+    sets: { skillSetId: string; skillSetGeneration: number; snapshotSha256: string }[];
+    assignments: { name: string; skillSourceId: string; revisionId: string; tier: SkillTier; pinned: boolean }[];
+  }): void {
+    const now = Date.now();
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      this.database.prepare('DELETE FROM workspace_skill_set_snapshots WHERE owner_id = ? AND workspace_id = ?').run(input.ownerId, input.workspaceId);
+      this.database.prepare('DELETE FROM workspace_skill_assignments WHERE owner_id = ? AND workspace_id = ?').run(input.ownerId, input.workspaceId);
+      input.sets.forEach((set, ordinal) => {
+        this.database.prepare(`INSERT INTO workspace_skill_set_snapshots
+          (owner_id, workspace_id, ordinal, skill_set_id, skill_set_generation, snapshot_sha256, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(input.ownerId, input.workspaceId, ordinal, set.skillSetId, set.skillSetGeneration, set.snapshotSha256, now);
+      });
+      input.assignments.forEach((assignment, ordinal) => {
+        this.database.prepare(`INSERT INTO workspace_skill_assignments
+          (owner_id, workspace_id, ordinal, name, skill_source_id, revision_id, tier, pinned)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(input.ownerId, input.workspaceId, ordinal, assignment.name, assignment.skillSourceId,
+            assignment.revisionId, assignment.tier, assignment.pinned ? 1 : 0);
+      });
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  createSkillImportJob(input: { ownerId: string; sourceKind: SkillImportSourceKind; sourceRef: string }): string {
+    const now = Date.now();
+    const id = `skjob_${randomBytes(16).toString('hex')}`;
+    this.database.prepare(`INSERT INTO skill_import_jobs
+      (owner_id, id, source_kind, source_ref, state, progress_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'queued', '{}', ?, ?)`)
+      .run(input.ownerId, id, input.sourceKind, input.sourceRef, now, now);
+    return id;
+  }
+
+  advanceSkillImportJob(input: {
+    ownerId: string; id: string; state: SkillImportJobState;
+    progressJson?: string; resultJson?: string | null; errorCode?: string | null; skillRevisionId?: string | null;
+  }): void {
+    const now = Date.now();
+    this.database.prepare(`UPDATE skill_import_jobs SET
+        state = ?,
+        progress_json = COALESCE(?, progress_json),
+        result_json = COALESCE(?, result_json),
+        error_code = COALESCE(?, error_code),
+        skill_revision_id = COALESCE(?, skill_revision_id),
+        updated_at = ?
+      WHERE owner_id = ? AND id = ?`)
+      .run(input.state, input.progressJson ?? null, input.resultJson ?? null, input.errorCode ?? null,
+        input.skillRevisionId ?? null, now, input.ownerId, input.id);
+  }
+
+  getSkillImportJob(ownerId: string, id: string): {
+    id: string; sourceKind: SkillImportSourceKind; sourceRef: string; state: SkillImportJobState;
+    progressJson: string; resultJson: string | null; errorCode: string | null;
+    skillRevisionId: string | null; updatedAt: number;
+  } | undefined {
+    const row = this.database.prepare(`SELECT id, source_kind, source_ref, state, progress_json, result_json,
+      error_code, skill_revision_id, updated_at FROM skill_import_jobs WHERE owner_id = ? AND id = ?`)
+      .get(ownerId, id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return {
+      id: String(row.id), sourceKind: row.source_kind as SkillImportSourceKind, sourceRef: String(row.source_ref),
+      state: row.state as SkillImportJobState, progressJson: String(row.progress_json),
+      resultJson: (row.result_json as string | null) ?? null, errorCode: (row.error_code as string | null) ?? null,
+      skillRevisionId: (row.skill_revision_id as string | null) ?? null, updatedAt: Number(row.updated_at)
+    };
+  }
+
+  listSkillImportJobs(ownerId: string, limit = 50): NonNullable<ReturnType<StateStore['getSkillImportJob']>>[] {
+    const rows = this.database.prepare('SELECT id FROM skill_import_jobs WHERE owner_id = ? ORDER BY updated_at DESC LIMIT ?')
+      .all(ownerId, Math.min(limit, 200)) as { id: string }[];
+    return rows.map((row) => this.getSkillImportJob(ownerId, row.id)!).filter(Boolean);
+  }
+
+  upsertSkillCatalogEntry(input: {
+    ownerId: string; provider: 'skills-sh' | 'skillx'; slug: string;
+    displayName: string; description?: string; metadataJson?: string;
+  }): void {
+    const now = Date.now();
+    this.database.prepare(`INSERT INTO skill_catalog_entries
+        (owner_id, id, provider, slug, display_name, description, metadata_json, fetched_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(owner_id, provider, slug) DO UPDATE SET
+        display_name = excluded.display_name,
+        description = excluded.description,
+        metadata_json = excluded.metadata_json,
+        fetched_at = excluded.fetched_at`)
+      .run(input.ownerId, `skc_${randomBytes(16).toString('hex')}`, input.provider, input.slug,
+        input.displayName, input.description ?? '', input.metadataJson ?? '{}', now);
+  }
+
+  listSkillCatalogEntries(ownerId: string, provider?: 'skills-sh' | 'skillx'): {
+    id: string; provider: string; slug: string; displayName: string; description: string; fetchedAt: number;
+  }[] {
+    const rows = (provider
+      ? this.database.prepare('SELECT id, provider, slug, display_name, description, fetched_at FROM skill_catalog_entries WHERE owner_id = ? AND provider = ? ORDER BY display_name')
+        .all(ownerId, provider)
+      : this.database.prepare('SELECT id, provider, slug, display_name, description, fetched_at FROM skill_catalog_entries WHERE owner_id = ? ORDER BY display_name')
+        .all(ownerId)) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      id: String(row.id), provider: String(row.provider), slug: String(row.slug),
+      displayName: String(row.display_name), description: String(row.description), fetchedAt: Number(row.fetched_at)
+    }));
+  }
+
   close(): void {
     this.database.close();
   }

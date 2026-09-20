@@ -1,0 +1,14 @@
+{
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "mcp_tool",
+          "server": "plugin:cloud-harness:cloud-harness",
+          "tool": "skill_suggest",
+          "timeout": 4
+        }
+      ]
+    }
+  ]
+}
