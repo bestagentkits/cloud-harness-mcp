@@ -455,7 +455,7 @@ export class DashboardControlService {
           return ok('MCP traces listed', { traces: page.traces }, page.cursor);
         }
         case 'skill_list': return ok('Skills listed', { skills: this.principals.listSkillSources(principalId) });
-        case 'skill_get': return ok('Skill read', this.principals.getSkillSource(principalId, parsed.input.skillId));
+        case 'skill_get': return ok('Skill read', required(this.principals.getSkillSource(principalId, parsed.input.skillId), `Skill ${parsed.input.skillId} was not found`));
         case 'skill_revision_list': return ok('Skill revisions listed', { revisions: this.principals.listSkillRevisions(principalId, parsed.input.skillId, parsed.input.limit) });
         case 'skill_revision_get': {
           const revision = this.principals.listSkillRevisions(principalId, parsed.input.skillId, 200)
@@ -481,8 +481,8 @@ export class DashboardControlService {
           });
         }
         case 'skill_set_list': return ok('Skill sets listed', { sets: this.principals.listSkillSets(principalId) });
-        case 'skill_set_get': return ok('Skill set read', this.principals.getSkillSet(principalId, parsed.input.skillSetId));
-        case 'skill_import_status': return ok('Import job read', this.principals.getSkillImportJob(principalId, parsed.input.jobId));
+        case 'skill_set_get': return ok('Skill set read', required(this.principals.getSkillSet(principalId, parsed.input.skillSetId), `Skill set ${parsed.input.skillSetId} was not found`));
+        case 'skill_import_status': return ok('Import job read', required(this.principals.getSkillImportJob(principalId, parsed.input.jobId), `Import job ${parsed.input.jobId} was not found`));
         case 'skill_update': return mutation('Skill updated', this.principals.updateSkillMetadata({
           ownerId: principalId,
           id: parsed.input.skillId,
@@ -640,6 +640,16 @@ export class DashboardControlService {
 }
 
 const ok = (message: string, data: unknown, cursor?: string): RunnerResponse => ({ ok: true, message, data, truncated: false, ...(cursor ? { cursor } : {}) });
+
+/**
+ * A store lookup that finds nothing returns `undefined` rather than throwing, so a handler that
+ * forwards the result blindly answers `ok: true` with no data and the dashboard renders an empty
+ * record instead of a 404. Every single-record read goes through this.
+ */
+function required<T>(value: T | undefined, message: string): T {
+  if (value === undefined) throw new HarnessError('NOT_FOUND', message, 404, false);
+  return value;
+}
 function mutation(message: string, value: unknown): RunnerResponse {
   if (!value) throw new HarnessError('CONFLICT', 'resource generation changed or resource is unavailable', 409, false);
   return ok(message, value);

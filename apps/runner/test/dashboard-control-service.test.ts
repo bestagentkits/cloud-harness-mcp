@@ -89,6 +89,36 @@ const principal = { kind: 'external' as const, issuer: 'https://access.example.c
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
 
 describe('dashboard control service', () => {
+  it('answers a stale skill set generation with a conflict instead of an unhandled error', async () => {
+    const { controls } = setup();
+    const created = await controls.execute(request('skill_set_create', { name: 'core', expectedGeneration: 0 }));
+    const skillSetId = (created.data as { skillSetId: string }).skillSetId;
+
+    // The store raises SkillRegistryError on purpose to stay free of HTTP concerns. This assertion
+    // only holds because the service translates it, which is why a stale write is a conflict the
+    // control plane can map rather than an error that escapes unhandled.
+    await expect(controls.execute(request('skill_set_update', { skillSetId, name: 'renamed', expectedGeneration: 99 })))
+      .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await expect(controls.execute(request('skill_set_delete', { skillSetId, expectedGeneration: 99 })))
+      .rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+
+    // The same requests at the current generation succeed, so the guard rejects stale writes only.
+    const updated = await controls.execute(request('skill_set_update', { skillSetId, name: 'renamed', expectedGeneration: 1 }));
+    expect(updated.ok).toBe(true);
+    const read = await controls.execute(request('skill_set_get', { skillSetId }));
+    expect((read.data as { name: string }).name).toBe('renamed');
+
+    await expect(controls.execute(request('skill_set_delete', { skillSetId, expectedGeneration: 2 })))
+      .resolves.toMatchObject({ ok: true });
+  });
+
+  it('reports a missing skill as not found rather than as an internal error', async () => {
+    const { controls } = setup();
+    await expect(controls.execute(request('skill_get', { skillId: `sk_${'a'.repeat(24)}` })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+    await expect(controls.execute(request('skill_import_status', { jobId: `skjob_${'a'.repeat(24)}` })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
   it('keeps secret values write-only and records redacted audit events', async () => {
     const { controls, metadata } = setup();
     const project = await controls.execute(request('project_create', { name: 'Control plane', expectedGeneration: 0 }));
