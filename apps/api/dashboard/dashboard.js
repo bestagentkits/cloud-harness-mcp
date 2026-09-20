@@ -453,6 +453,37 @@ export function createSkillEditorController({ instructions, save }) {
   };
 }
 
+/**
+ * Builds the import request the runner accepts. The source is checked here because the wizard's review
+ * step has to show the operator something concrete before anything is fetched, and a mistyped source
+ * discovered after a provider round trip costs more than a message beside the field.
+ */
+export function buildSkillImportRequest({ sourceKind, sourceRef, ref }) {
+  const kind = ['skills-sh', 'skillx', 'git'].includes(sourceKind) ? sourceKind : 'skills-sh';
+  const value = String(sourceRef ?? '').trim();
+  if (value === '') return { ok: false, message: 'Enter the skill source to import.' };
+  if (kind !== 'skillx' && !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value)) {
+    return { ok: false, message: 'Enter the source as owner/repository.' };
+  }
+
+  const pinned = String(ref ?? '').trim();
+  // The operation takes a full object id, not a branch or tag, so a branch name would be refused by
+  // the runner after the wizard claimed to accept it.
+  if (pinned !== '' && !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(pinned)) {
+    return { ok: false, message: 'A ref has to be a full 40 or 64 character hexadecimal commit id.' };
+  }
+
+  return {
+    ok: true,
+    body: {
+      sourceKind: kind,
+      sourceRef: value,
+      ...(pinned === '' ? {} : { ref: pinned }),
+      expectedGeneration: 0
+    }
+  };
+}
+
 export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
   { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },

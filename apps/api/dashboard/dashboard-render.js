@@ -204,8 +204,11 @@ export function renderSkillsSkeleton() {
       <dialog id="skill-import-dialog" aria-labelledby="skill-import-heading">
         <h2 id="skill-import-heading">Import skill</h2>
         <label for="skill-import-source">Source</label><input id="skill-import-source" name="source" placeholder="owner/repository">
-        <label for="skill-import-ref">Ref</label><input id="skill-import-ref" name="ref" placeholder="Branch, tag, or commit">
-        <label for="skill-import-scope">Scope</label><select id="skill-import-scope" name="scope"><option value="owner">Owner</option><option value="workspace">Workspace</option></select>
+        <label for="skill-import-ref">Ref</label><input id="skill-import-ref" name="ref" placeholder="Full commit id (optional)">
+        <!-- The UI contract pins this id; the operation it feeds takes a source kind, not an install
+             scope, because an imported skill always lands in the owner tier. The label says what the
+             value actually is so the operator is not offered a choice the runner cannot honour. -->
+        <label for="skill-import-scope">Source kind</label><select id="skill-import-scope" name="sourceKind"><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="git">Git</option></select>
         <div id="skill-import-review"></div>
         <div id="skill-import-job" role="status"></div>
         <button type="button" id="skill-import-retry">Retry</button>
@@ -277,6 +280,32 @@ export function renderSkillConflicts(conflicts, overrides = {}) {
 /** True while any conflict still lacks an override, which is what keeps launch disabled. */
 export function launchBlockedByConflicts(conflicts, overrides = {}) {
   return (Array.isArray(conflicts) ? conflicts : []).some((conflict) => overrides[conflict.name] === undefined);
+}
+
+/**
+ * Guidance for an import job. A failed job is only actionable if it says which failure it was, and a
+ * cache miss in particular has an exact remedy, so it gets its own sentence rather than a generic
+ * failure line that leaves the operator guessing.
+ */
+export function renderImportJobGuidance(job) {
+  const state = job ? job.state : undefined;
+  if (state === 'failed') {
+    const code = job.errorCode ?? 'unknown';
+    if (code === 'CACHE_MISS') {
+      return 'CACHE_MISS: this skill is not mirrored in the runner cache. Import it while the runner has network access, then retry.';
+    }
+    return `The import failed (${code}). Retry, or check the runner logs for the provider response.`;
+  }
+  if (state === 'succeeded') return 'Import finished. The skill is now in the library.';
+  if (state === 'cancelled') return 'Import cancelled.';
+  const percent = job && job.progress && typeof job.progress.percent === 'number' ? job.progress.percent : undefined;
+  return `Import ${state ?? 'queued'}${percent === undefined ? '' : ` (${percent}%)`}.`;
+}
+
+/** True when a job has reached a state the operator can act on, which is when polling should stop. */
+export function isTerminalImportState(job) {
+  const state = job ? job.state : undefined;
+  return state === 'succeeded' || state === 'failed' || state === 'cancelled';
 }
 
 /**

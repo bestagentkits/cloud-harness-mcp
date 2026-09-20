@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  isTerminalImportState,
   launchBlockedByConflicts,
+  renderImportJobGuidance,
   renderRevisionDiff,
   renderSkillConflicts,
   renderSkillsLibraryRows,
   renderSkillsRegistryRows
 } from '../dashboard/dashboard-render.js';
 import {
+  buildSkillImportRequest,
   createImportPollingController,
   createSkillEditorController,
   createSkillsLibraryController,
@@ -336,6 +339,46 @@ describe('skill editor submit', () => {
 
     expect(result).toMatchObject({ ok: true, keepDraft: false });
     expect(save).toHaveBeenCalledWith('# Instructions');
+  });
+});
+
+describe('skill import wizard', () => {
+  it('rejects a source that is empty or not owner/repository', () => {
+    expect(buildSkillImportRequest({ sourceRef: '' })).toMatchObject({ ok: false });
+    expect(buildSkillImportRequest({ sourceRef: 'just-a-name' })).toMatchObject({ ok: false });
+    expect(buildSkillImportRequest({ sourceRef: 'owner/repo' })).toMatchObject({ ok: true });
+  });
+
+  it('accepts a bare slug for skillx, which is not owner/repository shaped', () => {
+    const result = buildSkillImportRequest({ sourceKind: 'skillx', sourceRef: 'test-driven-development' });
+    expect(result.ok).toBe(true);
+    expect(result.body).toMatchObject({ sourceKind: 'skillx', sourceRef: 'test-driven-development', expectedGeneration: 0 });
+  });
+
+  it('refuses a ref the operation would refuse, rather than letting the runner discover it', () => {
+    const branchName = buildSkillImportRequest({ sourceRef: 'owner/repo', ref: 'main' });
+    expect(branchName).toMatchObject({ ok: false });
+    expect(branchName.message).toMatch(/commit id/i);
+
+    const pinned = buildSkillImportRequest({ sourceRef: 'owner/repo', ref: 'a'.repeat(40) });
+    expect(pinned.body).toMatchObject({ ref: 'a'.repeat(40) });
+  });
+
+  it('names the cache miss remedy and treats only terminal states as final', () => {
+    const missing = renderImportJobGuidance({ state: 'failed', errorCode: 'CACHE_MISS' });
+    expect(missing).toContain('CACHE_MISS');
+    expect(missing).toMatch(/retry/i);
+
+    expect(renderImportJobGuidance({ state: 'failed', errorCode: 'UNAVAILABLE' })).toContain('UNAVAILABLE');
+    expect(renderImportJobGuidance({ state: 'running', progress: { percent: 40 } })).toContain('(40%)');
+    expect(renderImportJobGuidance({ state: 'succeeded' })).toMatch(/finished/i);
+    expect(renderImportJobGuidance(undefined)).toMatch(/queued/i);
+
+    expect(isTerminalImportState({ state: 'succeeded' })).toBe(true);
+    expect(isTerminalImportState({ state: 'cancelled' })).toBe(true);
+    expect(isTerminalImportState({ state: 'failed' })).toBe(true);
+    expect(isTerminalImportState({ state: 'running' })).toBe(false);
+    expect(isTerminalImportState(undefined)).toBe(false);
   });
 });
 
