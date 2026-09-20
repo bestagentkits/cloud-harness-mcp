@@ -40,6 +40,7 @@ import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
+import { resolveWorkspaceSkills, type SkillCandidate } from './skill-resolver.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
@@ -923,12 +924,16 @@ export class WorkspaceService {
 
   private async composeOwnerToolkitProjection(
     record: WorkspaceRecord,
-    ownerBundlePaths: Array<{ instanceId: string; path: string }>
+    ownerBundlePaths: Array<{ instanceId: string; path: string }>,
+    overrides?: Record<string, string>
   ): Promise<void> {
     const ownerSkillsPath = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
     await mkdir(ownerSkillsPath, { recursive: true, mode: 0o755 });
 
-    const seenSkills = new Map<string, { bundlePath: string; contentHash: string }>();
+    // The same-tier collision rule has one owner, the resolver, so the launch path and the preview
+    // path cannot drift on what counts as a conflict or on how an override settles one.
+    const candidates: SkillCandidate[] = [];
+    const sources = new Map<string, string>();
 
     for (const item of ownerBundlePaths) {
       const skillsDir = join(item.path, 'skills');
@@ -942,17 +947,30 @@ export class WorkspaceService {
         if (!existsSync(skillMd)) continue;
 
         const digest = computeFullTreeDigest(srcSkill).bundleSha256;
+        candidates.push({
+          name: entry.name,
+          tier: 'owner',
+          sourceId: item.instanceId,
+          revisionId: digest,
+          contentSha256: digest,
+          rootPath: item.path
+        });
+        sources.set(`${entry.name}:${digest}`, srcSkill);
+      }
+    }
 
-        const prior = seenSkills.get(entry.name);
-        if (prior && prior.contentHash !== digest) {
-          throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${entry.name} is defined with conflicting content in multiple toolkits`, 409, false);
-        }
+    const resolution = resolveWorkspaceSkills({ candidates, overrides });
+    const conflict = resolution.conflicts[0];
+    if (conflict) {
+      throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${conflict.name} is defined with conflicting content in multiple toolkits`, 409, false);
+    }
 
-        const destSkill = join(ownerSkillsPath, entry.name);
-        if (!existsSync(destSkill)) {
-          await cp(srcSkill, destSkill, { recursive: true });
-        }
-        seenSkills.set(entry.name, { bundlePath: item.path, contentHash: digest });
+    for (const skill of resolution.resolved) {
+      const srcSkill = sources.get(`${skill.name}:${skill.contentSha256}`);
+      if (!srcSkill) continue;
+      const destSkill = join(ownerSkillsPath, skill.name);
+      if (!existsSync(destSkill)) {
+        await cp(srcSkill, destSkill, { recursive: true });
       }
     }
   }

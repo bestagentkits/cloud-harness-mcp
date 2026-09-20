@@ -108,12 +108,16 @@ Workspace Open Request (skillSets[], toolkits[], skillOverrides{})
 **Done and verified:**
 - `apps/runner/src/skill-resolver.ts` implements `resolveWorkspaceSkills` with the 4-tier precedence, the repository sub-rank as an explicit comparator key, same-tier collision reporting for differing digests, `skillOverrides` pinning that also resolves a collision, disabled/archived exclusion with reasons, and `assertSkillSetGenerations` raising a typed stale-generation error.
 - Determinism is enforced for the whole result, not just the resolved list: the excluded list is sorted, so candidate arrival order cannot change the output.
-- `apps/runner/test/skill-resolver.test.ts`: 11 tests green; `npm run typecheck` and eslint clean on both files.
+- `apps/runner/test/skill-resolver.test.ts`: 11 tests green; `npm run typecheck` and eslint clean on both files. A later change to `ErrorCodeSchema` makes the raised code a real contract error code, asserted in the test.
+- The projection was extended rather than duplicated: `composeOwnerToolkitProjection` (`apps/runner/src/workspace-service.ts`) now builds candidates and delegates the same-tier collision decision to `resolveWorkspaceSkills`, so the launch path and the preview path share one conflict authority and an override settles a launch collision the same way it settles a preview one. It also gained an optional `overrides` parameter, and it now resolves before copying, so a conflicting toolkit set no longer leaves a partial projection behind. The four suites that exercise projection (`context-provenance`, `skills-precedence`, `toolkit-mount-injection`, `workspace-context-manifest`) stay green at 17 tests.
+
+**Correction found while extending:** only `composeOwnerToolkitProjection` duplicated the same-tier rule. `applyWorkspaceToolkitPatches` (`:928`) compares a source digest against an existing target digest, which is a different rule about patching into the repository's own `.cloud-harness/skills`, so it correctly stays as it is.
 
 **Naming correction:** the phase named a `SkillResolver` class. It is implemented as the pure `resolveWorkspaceSkills` function plus a typed generation guard, because a class wrapping only that function would add a layer with no behaviour. Later phases import the function.
 
 **Still open before this phase can be called complete:**
-- Projection must be extended rather than duplicated: `composeOwnerToolkitProjection` (`apps/runner/src/workspace-service.ts:873-903`) and `applyWorkspaceToolkitPatches` (`:909`) already exist, and this phase has not yet routed the new resolver through them.
-- `WorkspaceService.open` preflight does not yet call resolution, and the resolved lock is not yet persisted: `workspace_skill_assignments` is schema-only with no writer today.
+- Overrides are plumbed into the projection helper but no caller passes them yet, and `WorkspaceService.open` preflight still does not call resolution on its own, so the resolved lock is not yet persisted: `workspace_skill_assignments` is schema-only with no writer today.
 - Mount projection itself is unbuilt: only projected skill directories may bind, never the owner CAS root.
-- The stale-generation guard raises a code that is not yet a member of `ErrorCodeSchema`, so the HTTP mapping still needs that value added or an existing code reused.
+- The stale-generation guard raises a code that is now a member of `ErrorCodeSchema`, so what remains is the HTTP 409 mapping in Phase 5.
+
+**Pre-existing finding (reported, not fixed):** `applyWorkspaceToolkitPatches` declares `record: WorkspaceRecord` and never reads it. This predates the work here, is inside a method this phase did not modify, and is left alone under the "do not fix pre-existing findings outside the changed region" rule.
