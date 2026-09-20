@@ -1385,7 +1385,7 @@ export class WorkspaceService {
     // that finally runs the script moves into a container of its own.
     const payload = JSON.stringify({ operation: 'skills_run', input: { ...input, approvalGrantToken: undefined } });
     const command = `printf '%s' ${shellQuote(payload)} | node /opt/harness/harness-worker.mjs`;
-    const result = await this.runPrivilegedEphemeralExec(record, { command, cwd: '.', timeoutMs, maxOutputBytes }, signal);
+    const result = await this.runPrivilegedEphemeralExec(record, { command, cwd: '.', timeoutMs, maxOutputBytes, runAs: 'unprivileged' }, signal);
 
     const raw = (result.data as { stdout?: string } | undefined)?.stdout ?? '';
     let parsed: RunnerResponse;
@@ -1961,7 +1961,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
   private async runPrivilegedEphemeralExec(
     record: WorkspaceRecord,
-    input: { command: string; cwd: string; timeoutMs: number; maxOutputBytes: number },
+    input: {
+      command: string;
+      cwd: string;
+      timeoutMs: number;
+      maxOutputBytes: number;
+      /**
+       * Privileged commands run as root because that is what the owner approved. Skill scripts do not:
+       * they are repository-controlled content, and the security model puts them under UID 10001, so the
+       * skill path asks for the unprivileged variant rather than inheriting root from this helper.
+       */
+      runAs?: 'root' | 'unprivileged' | undefined;
+    },
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
     const privName = `chm-priv-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
@@ -1979,7 +1990,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         '--label', 'cloud-harness.role=priv-exec',
         '--label', 'cloud-harness.ephemeral=true',
         ...this.networkProfileManager.dockerLaunchArgs(record.networkProfile),
-        '--user', '0:0',
+        '--user', input.runAs === 'unprivileged' ? '10001:10001' : '0:0',
+        ...(input.runAs === 'unprivileged' ? ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true'] : []),
         '--workdir', workdir,
         '--pids-limit', '256',
         '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
