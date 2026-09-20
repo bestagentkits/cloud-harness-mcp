@@ -191,8 +191,12 @@ describe('complete coding workflow through MCP', () => {
     const skillDeniedBody = skillDenied.structuredContent as Record<string, any>;
     expect(skillDeniedBody.error.code).toBe('PRIVILEGE_APPROVAL_REQUIRED');
     expect(skillDeniedBody.error.grantRequest.commandSha256).toHaveLength(64);
-    expect(store.approvePrivilegeGrant('owner', skillDeniedBody.error.grantRequest.grantId)).toBe(true);
-    const skillAllowed = await call('skills_run', { ...skillRunInput, approvalGrantToken: skillDeniedBody.error.grantRequest.grantId });
+    // The grant belongs to the workspace owner, which is not the client's own label, so the test reads
+    // the owner off the grant rather than assuming it: approving under the wrong owner must not work.
+    const skillGrant = store.getPrivilegeGrant(skillDeniedBody.error.grantRequest.grantId)!;
+    expect(store.approvePrivilegeGrant('not-the-owner', skillGrant.id)).toBe(false);
+    expect(store.approvePrivilegeGrant(skillGrant.ownerId, skillGrant.id)).toBe(true);
+    const skillAllowed = await call('skills_run', { ...skillRunInput, approvalGrantToken: skillGrant.id });
     expect(JSON.stringify(skillAllowed.data)).toContain('skill-ok');
     expect(skillAllowed.data.executionMode).toBe('helper-container');
     const hooksRes = await call('hooks_list', { workspaceId });
