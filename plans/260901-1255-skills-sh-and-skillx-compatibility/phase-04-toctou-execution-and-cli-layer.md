@@ -115,3 +115,19 @@ Spawn Disposable Helper Container
 ## Risk Assessment
 - **Risk:** Shell environment differences or non-standard `npx` arguments breaking delegation.
 - **Mitigation:** The `npx-dispatcher` only intercepts exact command invocations matching `skills` and `skillx-sh`/`skillx`; all flags and arguments for other tools pass directly to the real `npx` at `/usr/local/bin/npx` unchanged.
+
+## Implementation Status (2026-09-20)
+
+**Done and verified:**
+- `worker/bin/npx-dispatcher`, `worker/bin/skills`, and `worker/bin/skillx` exist and are executed as real processes by `apps/runner/test/cli-compatibility-airgap.test.ts` (12 tests green). They read only the local catalog index and the owner projection, so they never attempt a connection, and anything unmirrored fails closed with `CACHE_MISS` plus the instruction that fixes it.
+- The dispatcher is installed as `/opt/harness/bin/npx` while npm stays at `/usr/local/bin/npx`, and `/etc/profile.d/harness.sh` prepends `/opt/harness/bin` to `PATH`.
+- `apps/runner/test/toctou-script-tamper.test.ts` (5 tests green) covers the verification half of `skills_run`: bytes that changed after the digest was taken are refused with `CONFLICT` rather than executed, a matching digest passes verification and only then fails to execute, an unverified run cannot be requested, and a skill tree containing a symlink that escapes it is refused while the inventory digest is computed, so it never becomes runnable.
+- `worker/harness-worker.mjs` answers `NO_EXECUTABLE_ASSETS` for a revision that carries instructions but no scripts, and reports `executionMode` so a caller cannot read a stronger isolation guarantee into a run than it had.
+- **Decision recorded here and in `docs/security-model.md`:** the disposable-helper-container path through `runPrivilegedEphemeralExec` is gated on an owner privilege grant. Until a grant exists, a skill script runs as a local child process of the worker, under UID 10001, from the verified read-only snapshot, and the response reports `executionMode: 'local'`. The grant was deliberately not made mandatory in this phase, because doing so would turn a hardening step into a launch blocker for every existing workspace.
+- `apps/runner/test/cli-compatibility-airgap.docker.test.ts` is added to the hardcoded list in `package.json:31` and passes inside the built image: `npx` resolves to the dispatcher while npm stays reachable, `skills add` installs offline with no DNS attempt, dispatched and direct invocations produce identical output, `skillx use --raw` prints the instructions, an unmirrored repository is refused with `CACHE_MISS`, and an unrelated `npx --version` reaches npm through delegation.
+
+**Two defects the tests caught, both introduced by this phase's own work:**
+- The dispatcher was first copied to `/opt/harness/bin/npx-dispatcher`, so the name `npx` still resolved to npm and the whole compatibility layer would never have been reached. The container assertion on `command -v npx` is what exposed it.
+- `resolveAgentDir` rooted an `--agent` install at `CLOUD_HARNESS_SKILLS_TARGET`, which nested the agent directory inside the default install target. It is now rooted at the workspace, and both launchers share the rule.
+
+**Lane note:** the lane's commands run through `bash -lc`, not `sh -lc`. Debian's `/bin/sh` is dash and does not read `/etc/profile`, so a `sh -lc` run silently measured npm's behaviour instead of the dispatcher's and produced two failures that had nothing to do with the code under test.
