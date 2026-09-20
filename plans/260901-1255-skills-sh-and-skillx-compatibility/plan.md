@@ -354,8 +354,12 @@ The automated lens reports eight findings in `apps/runner/src/state-store.ts` on
 
 One related finding is in the same position: `applyWorkspaceToolkitPatches` declares `record: WorkspaceRecord` and never reads it.
 
-## Open Blocker: Skill-Level Package Materialisation
+## Resolved Blocker: Skill-Level Package Materialisation
 
-Phase 5's `skill_create_custom`, `skill_import_start`, `skill_import_cancel`, `skill_revision_diff`, and the three `toolkit_registry_*` operations all need a single skill's content materialised into the cache root and digested before a source row can honestly claim that content exists. The toolkit path has that acquisition pipeline (`ToolkitCacheManager` plus the Phase 2 adapters); the single-skill path does not, and the launch-side skill projection that would consume those packages is Phase 4 and Phase 6 work. Until it exists, these operations keep failing loudly rather than creating rows whose content is absent. Recorded here and in issue #218 as the blocker rule requires, and work continues on the phases that do not depend on it.
+Phase 5's `skill_create_custom`, `skill_import_start`, `skill_import_cancel`, `skill_revision_diff`, and the three `toolkit_registry_*` operations all need a single skill's content materialised into the cache root and digested before a source row can honestly claim that content exists. The toolkit path had that acquisition pipeline (`ToolkitCacheManager` plus the Phase 2 adapters) while the single-skill path did not, so those operations failed loudly rather than creating rows whose content was absent.
+
+The single-skill path now exists. `ToolkitService.importSkillPackage` resolves one skill through the same adapters and the same cache a launch uses, so an imported revision records the commit that was actually read rather than the ref that was asked for; it reports whether the acquired tree carries anything executable, because the adapters publish a digest and not that fact; and it refuses an uncached import under `cache-only` for the same reason a launch is refused. `skill_import_start` drives it from a durable job row written before any work starts, so a restart reports the job instead of losing it, a re-import adds a revision rather than replacing the source, and cancelling a job that already finished is a conflict rather than a silent rewrite of a state it never had.
+
+One limitation stands and is worth stating plainly: the acquisition itself is covered through the job contract (queued, cancelling, terminal, unknown id) rather than end to end, because the seam calls the real adapters and a test would reach the network. A fake adapter would close that gap.
 
 <!-- slug: skills-sh-and-skillx-compatibility -->
