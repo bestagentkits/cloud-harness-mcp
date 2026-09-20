@@ -51,6 +51,25 @@ export class DashboardControlService {
    * verified. A failure is recorded rather than thrown: the caller already holds the job id and there is
    * no request left for the error to answer.
    */
+  /**
+   * A job row outlives the process that wrote it, which is the point of the table, but a job left in
+   * `running` when the runner stopped would never reach a terminal state on its own. Startup turns those
+   * into failures, so the dashboard reports an interrupted import instead of a spinner that never ends.
+   */
+  reconcileInterruptedImports(): number {
+    const interrupted = this.principals.listInterruptedSkillImportJobs();
+    for (const job of interrupted) {
+      this.principals.advanceSkillImportJob({
+        ownerId: job.ownerId,
+        id: job.id,
+        state: 'failed',
+        errorCode: 'INTERRUPTED',
+        resultJson: JSON.stringify({ message: 'the runner restarted while this import was in flight' })
+      });
+    }
+    return interrupted.length;
+  }
+
   private async runSkillImport(
     ownerId: string,
     jobId: string,
@@ -840,6 +859,33 @@ export class DashboardControlService {
               installable: true
             }))
           });
+        case 'toolkit_registry_update': {
+          // The catalogue entry is what the dashboard reads back, so an action is recorded on that entry
+          // rather than returned as a claim about a store that was never written.
+          this.principals.upsertSkillCatalogEntry({
+            ownerId: principalId,
+            provider: parsed.input.provider,
+            slug: parsed.input.slug,
+            displayName: parsed.input.slug,
+            metadataJson: JSON.stringify({
+              action: parsed.input.action,
+              ...(parsed.input.revisionId ? { revisionId: parsed.input.revisionId } : {})
+            })
+          });
+          return mutation('Registry entry updated', {
+            provider: parsed.input.provider,
+            slug: parsed.input.slug,
+            action: parsed.input.action,
+            ...(parsed.input.revisionId ? { revisionId: parsed.input.revisionId } : {})
+          });
+        }
+        case 'toolkit_registry_refresh':
+          // The catalogue this owner has recorded is what the dashboard shows, so a refresh reports that
+          // set. Fetching a provider's whole catalogue is the import path's job, and returning entries this
+          // operation did not fetch would be a claim it cannot back.
+          return ok('Registry catalogue read', {
+            entries: this.principals.listSkillCatalogEntries(principalId, parsed.input.provider)
+          });
         case 'skill_restore': {
           const revision = required(
             this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.revisionId),
@@ -1017,9 +1063,11 @@ export class DashboardControlService {
           });
         }
         default:
-          // Any internal operation that has no runner handler yet fails loudly instead of returning an
-          // empty success, so a control-plane route can never look implemented while doing nothing.
-          throw new HarnessError('NOT_FOUND', `operation ${parsed.operation} has no runner handler yet`, 404, false);
+          // The cases above now cover every metadata operation, which is why the narrowing reports this
+          // branch as unreachable. It stays as a guard for a future operation added to the schema without a
+          // handler: an internal operation must fail loudly rather than return an empty success that makes a
+          // control-plane route look implemented while doing nothing.
+          throw new HarnessError('NOT_FOUND', 'this operation has no runner handler yet', 404, false);
       }
     } catch (error) {
       if (error instanceof HarnessError) throw error;

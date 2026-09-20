@@ -266,6 +266,33 @@ type Row = {
   generation: number; error: string | null; request_fingerprint?: string | null;
 };
 
+/**
+ * A provenance column that cannot be parsed is reported as absent rather than thrown, because a reader that
+ * fails on one legacy row would hide every other row on the same page.
+ */function parseProvenance(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string' || value === '') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * SAFETY: `networkMode` only exists on rows written before the profile field replaced it, so the cast is
+ * what lets this reader keep working for those rows. A row carrying neither field falls back to the
+ * strictest profile rather than to an open one, which is the direction that cannot widen access.
+ */
+function legacyNetworkMode(record: WorkspaceRecord | Row): string | undefined {
+  // SAFETY: `networkMode` only exists on rows written before the profile field replaced it, so the cast is
+  // what lets this reader keep working for those rows. A record carrying neither field falls back to the
+  // strictest profile rather than to an open one, which is the direction that cannot widen access.
+  return (record as unknown as { networkMode?: string }).networkMode;
+}
+
 const fromRow = (row: Row): WorkspaceRecord => ({
   id: row.id, ownerId: row.owner_id, idempotencyKey: row.idempotency_key, repositoryUrl: row.repository_url,
   repositoryRef: row.repository_ref, containerName: row.container_name, workspacePath: row.workspace_path,
@@ -459,7 +486,7 @@ export class StateStore {
         record.workspacePath,
         record.environmentId ?? null,
         record.status,
-        record.networkProfile ?? ((record as unknown as { networkMode?: string }).networkMode === 'bridge' ? 'dependency-access' : 'network-none'),
+        record.networkProfile ?? (legacyNetworkMode(record) === 'bridge' ? 'dependency-access' : 'network-none'),
         record.createdAt,
         record.lastActivityAt,
         record.expiresAt,
@@ -1911,7 +1938,7 @@ export class StateStore {
       updatedAt: row.updated_at,
       expiresAt: row.expires_at,
       deletedAt: row.deleted_at,
-      provenance: JSON.parse(row.provenance_json)
+      provenance: parseProvenance(row.provenance_json)
     };
   }
 
@@ -1993,7 +2020,7 @@ export class StateStore {
         updatedAt: row.updated_at,
         expiresAt: row.expires_at,
         deletedAt: row.deleted_at,
-        provenance: JSON.parse(row.provenance_json)
+        provenance: parseProvenance(row.provenance_json)
       };
     });
 
@@ -2088,7 +2115,7 @@ export class StateStore {
         updatedAt: row.updated_at,
         expiresAt: row.expires_at,
         deletedAt: row.deleted_at,
-        provenance: JSON.parse(row.provenance_json)
+        provenance: parseProvenance(row.provenance_json)
       };
     });
 
@@ -2688,6 +2715,17 @@ export class StateStore {
         fetched_at = excluded.fetched_at`)
       .run(input.ownerId, `skc_${randomBytes(16).toString('hex')}`, input.provider, input.slug,
         input.displayName, input.description ?? '', input.metadataJson ?? '{}', now);
+  }
+
+  /**
+   * Startup recovery needs every interrupted job rather than one owner's, because the runner does not know
+   * which owners were mid-import when it stopped, and a job left running would otherwise never reach a
+   * terminal state on its own.
+   */
+  listInterruptedSkillImportJobs(): Array<{ ownerId: string; id: string }> {
+    return this.database.prepare(
+      "SELECT owner_id AS ownerId, id FROM skill_import_jobs WHERE state IN ('queued', 'running')"
+    ).all() as Array<{ ownerId: string; id: string }>;
   }
 
   listSkillCatalogEntries(ownerId: string, provider?: 'skills-sh' | 'skillx'): {

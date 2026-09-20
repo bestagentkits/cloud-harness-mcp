@@ -68,6 +68,13 @@ export function registerDashboardControlRoutes(
   })));
   router.get('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_get', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId) })));
   router.get('/api/v1/skill-imports/:jobId', endpoint('skill_import_status', (request) => ({ jobId: internalId('skjob').parse(request.params.jobId) })));
+  // Without these two the import wizard had nothing to call: the job reader existed while nothing could
+  // create a job or stop one, which is why the dialog's submit had no route to reach.
+  router.post('/api/v1/skill-imports', endpoint('skill_import_start', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.post('/api/v1/skill-imports/:jobId/cancel', endpoint('skill_import_cancel', (request) => ({
+    jobId: internalId('skjob').parse(request.params.jobId),
+    ...(request.body && typeof request.body === 'object' ? request.body : {})
+  })));
   router.patch('/api/v1/skills/:skillId', endpoint('skill_update', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.post('/api/v1/skills/:skillId/archive', endpoint('skill_archive', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.post('/api/v1/skills/:skillId/restore', endpoint('skill_restore', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
@@ -78,6 +85,13 @@ export function registerDashboardControlRoutes(
   // previous revision keeps resolving to the bytes it was verified against.
   router.post('/api/v1/skills/:skillId/revisions', endpoint('skill_revision_create', (request) => ({
     skillId: internalId('sk').parse(request.params.skillId),
+    ...(request.body && typeof request.body === 'object' ? request.body : {})
+  })));
+  // A fork starts a new source from the bytes a revision pinned, so it names both the source and the
+  // revision rather than the source alone.
+  router.post('/api/v1/skills/:skillId/revisions/:revisionId/fork', endpoint('skill_revision_fork', (request) => ({
+    skillId: internalId('sk').parse(request.params.skillId),
+    revisionId: internalId('skrev').parse(request.params.revisionId),
     ...(request.body && typeof request.body === 'object' ? request.body : {})
   })));
   router.patch('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_update', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));

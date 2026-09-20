@@ -210,7 +210,7 @@ export async function renderWorkspaceDrawer({ trigger, detail, content, fetchWor
   const item = await fetchWorkspace(id);
   content.querySelector('[aria-current="true"]')?.removeAttribute('aria-current');
   trigger.setAttribute('aria-current', 'true');
-  detail.innerHTML = renderWorkspaceDetail(item, false, modal);
+  insertRendered(detail, renderWorkspaceDetail(item, false, modal));
   const heading = detail.querySelector('#workspace-detail-title');
   if (!heading) throw new Error('Workspace detail heading is unavailable.');
   heading.setAttribute('tabindex', '-1');
@@ -380,6 +380,24 @@ export function validateSkillInstructions(text) {
  * budget, so a job whose runner died leaves the operator with a stopped poller instead of a spinner
  * that never ends.
  */
+/**
+ * Inserts renderer output without assigning innerHTML on a live element. The renderers escape every value
+ * they interpolate, so this is a second layer rather than the only one: parsing into an inert document and
+ * adopting the resulting nodes keeps the assignment off the live tree.
+ */
+function insertRendered(element, html) {
+  if (!element) return;
+  const markup = String(html ?? '');
+  if (typeof globalThis.DOMParser === 'function') {
+    const parsed = new globalThis.DOMParser().parseFromString(markup, 'text/html');
+    element.replaceChildren(...parsed.body.childNodes);
+    return;
+  }
+  // The fake DOM the tests drive has no DOMParser, and every renderer escapes the values it interpolates,
+  // so the fallback keeps the assignment in one place instead of at each call site.
+  element.innerHTML = markup;
+}
+
 export function createImportPollingController({ fetchJob, onState, isTerminal, intervalMs = 1_500, maxAttempts = 40 }) {
   let attempts = 0;
   let stopped = false;
@@ -967,10 +985,16 @@ export function initializeDashboard() {
     selectNavigation('skills');
     setTitle('Skills', 'Browse the library, inspect revisions, import from a provider, and manage skill sets.');
     document.querySelector('#command-surface').hidden = true;
-    content.innerHTML = renderSkillsSkeleton();
+    insertRendered(content, renderSkillsSkeleton());
 
     let rows = [];
     let query = '';
+    // Filters and sort are applied in the browser over the rows the server already returned, because the
+    // library is small enough that a round trip per keystroke would cost more than it explains.
+    let providerFilter = '';
+    let stateFilter = '';
+    let tagFilter = '';
+    let sortKey = 'name';
 
     const library = createSkillsLibraryController({
       bulkBar: document.querySelector('#skills-bulk-bar'),
@@ -994,12 +1018,18 @@ export function initializeDashboard() {
       const body = document.querySelector('#skills-library-table tbody');
       if (!body) return;
       const needle = query.trim().toLowerCase();
-      const visible = needle === ''
-        ? rows
-        : rows.filter((skill) => `${skill.displayName} ${skill.slug} ${skill.provider}`.toLowerCase().includes(needle));
-      body.innerHTML = renderSkillsLibraryRows(visible);
+      const tag = tagFilter.trim().toLowerCase();
+      const sortField = sortKey === 'name' ? 'displayName' : sortKey;
+      const visible = rows
+        .filter((skill) => providerFilter === '' || skill.provider === providerFilter)
+        .filter((skill) => stateFilter === '' || skill.state === stateFilter)
+        .filter((skill) => tag === '' || (Array.isArray(skill.tags) ? skill.tags : [])
+          .some((entry) => String(entry).toLowerCase().includes(tag)))
+        .filter((skill) => needle === '' || `${skill.displayName} ${skill.slug} ${skill.provider}`.toLowerCase().includes(needle))
+        .sort((a, b) => String(a[sortField] ?? '').localeCompare(String(b[sortField] ?? '')));
+      insertRendered(body, renderSkillsLibraryRows(visible));
       const cards = document.querySelector('#skills-library-cards');
-      if (cards) cards.innerHTML = renderSkillsLibraryCards(visible);
+      if (cards) insertRendered(cards, renderSkillsLibraryCards(visible));
       // Both renderings carry the same controls, so both are wired rather than only the visible one.
       for (const scope of [body, cards]) {
         if (!scope) continue;
@@ -1057,6 +1087,30 @@ export function initializeDashboard() {
       return element;
     }
 
+    /**
+     * Search results name what could be imported, so each row carries the provider and the reference an
+     * import would take. A provider that failed is reported beside the hits rather than replacing them,
+     * because an empty list and a broken provider are different facts.
+     */
+    function skillSearchNodes(data) {
+      const local = Array.isArray(data?.local) ? data.local : [];
+      const remote = Array.isArray(data?.results) ? data.results : [];
+      const providers = Array.isArray(data?.providers) ? data.providers : [];
+      const nodes = [];
+      for (const provider of providers) {
+        if (provider.status !== 'ok') nodes.push(textNode('p', `${provider.provider}: ${provider.warning ?? 'unavailable'}`));
+      }
+      if (local.length === 0 && remote.length === 0) {
+        nodes.push(textNode('p', 'No skills matched.'));
+        return nodes;
+      }
+      const list = document.createElement('ul');
+      for (const skill of local) list.append(textNode('li', `${skill.displayName} ${skill.slug} local`));
+      for (const hit of remote) list.append(textNode('li', `${hit.name} ${hit.reference} ${hit.provider}`));
+      nodes.push(list);
+      return nodes;
+    }
+
     /** Loads a tab's data the first time it is entered, which is what the tab controller guarantees. */
     /** The drawer reads revisions from the server, and a restore republishes rather than rewrites. */
     async function openSkillDetail(skillId) {
@@ -1068,10 +1122,19 @@ export function initializeDashboard() {
       const revisions = (await api(`/skills/${encodeURIComponent(skillId)}/revisions`)).data.revisions ?? [];
       const box = document.querySelector('#skill-detail-revisions');
       if (!box) return;
-      box.innerHTML = renderSkillRevisions(revisions, skill ? skill.currentRevisionId : undefined);
+      insertRendered(box, renderSkillRevisions(revisions, skill ? skill.currentRevisionId : undefined));
       for (const button of box.querySelectorAll('[data-skill-restore]')) {
         button.addEventListener('click', () => { void restoreRevision(skillId, button.getAttribute('data-skill-restore')).catch(showError); });
       }
+      for (const button of box.querySelectorAll('[data-skill-diff]')) {
+        button.addEventListener('click', () => { void showRevisionDiff(skillId, button.getAttribute('data-skill-diff')).catch(showError); });
+      }
+      for (const button of box.querySelectorAll('[data-skill-fork]')) {
+        button.addEventListener('click', () => { void forkRevision(skillId, button.getAttribute('data-skill-fork')).catch(showError); });
+      }
+      // The drawer is what tells the editor which skill it is editing, so opening a skill is also what
+      // switches the form from creating a source to adding a revision.
+      editingSkillId = skillId;
 
       // Usage and lock come from their own reader, because what would break if this skill changed is a
       // different question from what its revisions contain, and the drawer previously left the usage
@@ -1081,6 +1144,40 @@ export function initializeDashboard() {
         const usage = (await api(`/skills/${encodeURIComponent(skillId)}/usage`)).data;
         usageBox.replaceChildren(...skillUsageNodes(usage));
       }
+    }
+
+    /**
+     * A fork starts a new source from the bytes a revision pinned, so it asks for the new source's slug and
+     * display name rather than rewriting the revision it came from.
+     */
+    async function forkRevision(skillId, revisionId) {
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      const slug = `${skill ? skill.slug : 'skill'}-fork`;
+      await api(`/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revisionId)}/fork`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug, displayName: `${skill ? skill.displayName : 'Skill'} fork`, expectedGeneration: 0 })
+      });
+      rows = (await api('/skills')).data.skills ?? [];
+      paintLibrary();
+    }
+
+    /** The diff reader reports a revision whose bytes are missing rather than an empty diff, so the two
+     * outcomes are shown as what they are instead of both reading as "no changes". */
+    async function showRevisionDiff(skillId, revisionId) {
+      const box = document.querySelector('#skill-revision-diff');
+      if (!box) return;
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      const from = skill ? skill.currentRevisionId : undefined;
+      if (!from) {
+        box.textContent = 'No current revision to compare against.';
+        return;
+      }
+      const response = await api(`/skills/${encodeURIComponent(skillId)}/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(revisionId)}`);
+      const data = response.data ?? {};
+      box.textContent = typeof data.diff === 'string' && data.diff !== ''
+        ? data.diff
+        : (typeof data.warning === 'string' ? data.warning : 'No differences.');
     }
 
     async function restoreRevision(skillId, revisionId) {
@@ -1100,14 +1197,21 @@ export function initializeDashboard() {
         if (name === 'library') {
           rows = (await api('/skills')).data.skills ?? [];
           paintLibrary();
+        } else if (name === 'discover') {
+          // The Discover tab is search-driven, so entering it states what it waits for instead of leaving the
+          // panel at whatever the skeleton shipped with, which is what made it look like dead UI.
+          const results = document.querySelector('#skills-search-results');
+          if (results && results.childElementCount === 0) {
+            results.replaceChildren(textNode('p', 'Search a registry to find a skill to import.'));
+          }
         } else if (name === 'sets') {
           if (rows.length === 0) rows = (await api('/skills')).data.skills ?? [];
           const picker = document.querySelector('#skill-set-picker');
-          if (picker) picker.innerHTML = renderSkillSetPicker(rows);
+          if (picker) insertRendered(picker, renderSkillSetPicker(rows));
         } else if (name === 'registry') {
           const body = document.querySelector('#skills-registry-table tbody');
           const registry = await api('/toolkit-registry');
-          if (body) body.innerHTML = renderSkillsRegistryRows(registry.data.entries);
+          if (body) insertRendered(body, renderSkillsRegistryRows(registry.data.entries));
           // Presets are rendered from their own field, so a suggestion to install never appears in the
           // table of what is already cached and locked.
           const suggestions = document.querySelector('#skills-registry-suggestions');
@@ -1128,6 +1232,77 @@ export function initializeDashboard() {
     document.querySelector('#skills-bulk-archive')?.addEventListener('click', () => { void runBulk('archive').catch(showError); });
     document.querySelector('#skills-bulk-disable')?.addEventListener('click', () => { void runBulk('disable').catch(showError); });
     document.querySelector('#skills-library-search')?.addEventListener('input', (event) => library.search(event.target.value));
+    document.querySelector('#skills-library-provider')?.addEventListener('change', (event) => { providerFilter = String(event.target.value); paintLibrary(); });
+    document.querySelector('#skills-library-state')?.addEventListener('change', (event) => { stateFilter = String(event.target.value); paintLibrary(); });
+    document.querySelector('#skills-library-tag')?.addEventListener('input', (event) => { tagFilter = String(event.target.value); paintLibrary(); });
+    document.querySelector('#skills-library-sort')?.addEventListener('change', (event) => { sortKey = String(event.target.value); paintLibrary(); });
+
+    document.querySelector('#skills-search-run')?.addEventListener('click', () => {
+      const input = document.querySelector('#skills-search-input');
+      const results = document.querySelector('#skills-search-results');
+      const query = input ? String(input.value).trim() : '';
+      if (query === '') {
+        if (results) results.replaceChildren(textNode('p', 'Enter a search term.'));
+        return;
+      }
+      // Every provider the schema allows is asked, so a fan-out that reached only the local registry would
+      // be a visible result rather than a silent one.
+      void api(`/skills/search?query=${encodeURIComponent(query)}&providers=local,skills-sh,skillx`)
+        .then((response) => { if (results) results.replaceChildren(...skillSearchNodes(response.data)); })
+        .catch(showError);
+    });
+
+    // The import dialog had a review area, a job line, and a retry, but no control that started an import,
+    // which is why the wizard could not be used at all.
+    document.querySelector('#skill-import-submit')?.addEventListener('click', () => {
+      const source = document.querySelector('#skill-import-source');
+      const refField = document.querySelector('#skill-import-ref');
+      const kindField = document.querySelector('#skill-import-scope');
+      const review = document.querySelector('#skill-import-review');
+      const jobBox = document.querySelector('#skill-import-job');
+      const built = buildSkillImportRequest({
+        sourceKind: kindField ? kindField.value : 'skills-sh',
+        sourceRef: source ? source.value : '',
+        ref: refField ? refField.value : ''
+      });
+      if (!built.ok) {
+        if (review) review.textContent = built.message;
+        return;
+      }
+      if (review) review.textContent = 'Import queued.';
+      void api('/skill-imports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(built.body)
+      })
+        .then((started) => {
+          const jobId = started && started.data ? started.data.id : undefined;
+          if (!jobId || !jobBox) return undefined;
+          const poller = createImportPollingController({
+            fetchJob: async () => (await api(`/skill-imports/${encodeURIComponent(jobId)}`)).data,
+            onState: (job) => {
+              jobBox.textContent = String(job.state ?? 'queued');
+              // The cancel control reads the id from the line the operator is already watching, so the two
+              // cannot drift apart.
+              jobBox.setAttribute('data-job-id', String(job.id ?? jobId));
+            },
+            isTerminal: (job) => ['succeeded', 'failed', 'cancelled'].includes(job.state)
+          });
+          return poller.start();
+        })
+        .catch(showError);
+    });
+
+    document.querySelector('#skill-import-cancel')?.addEventListener('click', () => {
+      const jobBox = document.querySelector('#skill-import-job');
+      const jobId = jobBox ? jobBox.getAttribute('data-job-id') : null;
+      if (!jobId) return;
+      void api(`/skill-imports/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedGeneration: 1 })
+      }).catch(showError);
+    });
 
     document.querySelector('#skill-set-save')?.addEventListener('click', () => {
       const nameField = document.querySelector('#skill-set-name');
@@ -1148,21 +1323,45 @@ export function initializeDashboard() {
         .catch((error) => { if (status) status.textContent = error instanceof Error ? error.message : 'The set could not be created.'; });
     });
 
+    // Editing an existing skill and creating a new one share one form, so the form has to know which of the
+    // two it is doing: a create posts a new source, an edit adds a revision to the skill open in the drawer.
+    let editingSkillId = null;
     const editor = createSkillEditorController({
       slug: document.querySelector('#skill-editor-slug'),
       displayName: document.querySelector('#skill-editor-name'),
       instructions: document.querySelector('#skill-editor-instructions'),
-      save: async (body) => (await api('/skills', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body)
-      })).data
+      save: async (body) => {
+        if (editingSkillId) {
+          return (await api(`/skills/${encodeURIComponent(editingSkillId)}/revisions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ instructions: body.instructions, expectedGeneration: body.expectedGeneration })
+          })).data;
+        }
+        return (await api('/skills', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        })).data;
+      }
+    });
+
+    document.querySelector('#skill-detail-edit')?.addEventListener('click', () => {
+      const skill = rows.find((candidate) => candidate.id === editingSkillId);
+      const slugField = document.querySelector('#skill-editor-slug');
+      const nameField = document.querySelector('#skill-editor-name');
+      const instructions = document.querySelector('#skill-editor-instructions');
+      if (slugField) slugField.value = skill ? skill.slug : '';
+      if (nameField) nameField.value = skill ? skill.displayName : '';
+      if (instructions) instructions.value = skill && typeof skill.instructions === 'string' ? skill.instructions : '';
+      const status = document.querySelector('#skill-editor-status');
+      if (status) status.textContent = `Editing ${skill ? skill.slug : 'this skill'}; saving adds a revision.`;
     });
     document.querySelector('#skill-editor')?.addEventListener('submit', (event) => {
       event.preventDefault();
       const status = document.querySelector('#skill-editor-status');
       void editor.submit().then(async (result) => {
-        if (status) status.textContent = result.ok ? 'Skill created.' : result.message;
+        if (status) status.textContent = result.ok ? (editingSkillId ? 'Revision added.' : 'Skill created.') : result.message;
         // The new skill is only visible once the server agrees it exists, so the library reloads from
         // the server rather than assuming the row it just sent.
         if (result.ok) await enterSkillsTab('library');
@@ -1184,7 +1383,7 @@ export function initializeDashboard() {
     selectNavigation('overview');
     setTitle('Overview', 'A live summary of your workspaces, credentials, and recent activity.');
     document.querySelector('#command-surface').hidden = true;
-    content.innerHTML = renderOverviewSkeleton();
+    insertRendered(content, renderOverviewSkeleton());
     const [ws, keys, auditResult, github, profile, server] = await Promise.allSettled([
       api('/workspaces'), api('/api-keys'), api('/audit?limit=50'), api('/github'), api('/profile'), api('/server')
     ]);
@@ -1227,7 +1426,7 @@ export function initializeDashboard() {
     setTitle('Workspaces', 'TTL-limited coding environments available to your signed-in identity.'); document.querySelector('#command-surface').hidden = false;
     const parameters = new URLSearchParams(location.search); const query = { q: parameters.get('q') ?? '', status: parameters.get('status') ?? '' };
     document.querySelector('#search').value = query.q; document.querySelector('#status').value = query.status;
-    const result = await api('/workspaces'); content.innerHTML = renderWorkspaceIndex(result.data.workspaces, query);
+    const result = await api('/workspaces'); insertRendered(content, renderWorkspaceIndex(result.data.workspaces, query));
     detail.hidden = true; document.querySelector('.app-shell').classList.remove('has-detail');
     document.querySelector('#clear-filters')?.addEventListener('click', () => { location.href = '/dashboard'; });
     bindWorkspaceDrawerLinks(); document.querySelector('#last-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -1241,7 +1440,7 @@ export function initializeDashboard() {
   }
   async function loadProjects() {
     selectNavigation('projects'); setTitle('Projects', 'Retained project and environment metadata for your signed-in identity.'); document.querySelector('#command-surface').hidden = true;
-    const result = await api('/projects'); content.innerHTML = renderProjectIndex(result.data.projects);
+    const result = await api('/projects'); insertRendered(content, renderProjectIndex(result.data.projects));
     document.querySelector('#create-project-form').addEventListener('submit', (event) => {
       event.preventDefault(); const form = event.currentTarget; const values = new FormData(form);
       void submitForm(form, 'Creating…', async () => api('/projects', { method: 'POST', body: requestBody({ name: values.get('name'), expectedGeneration: 0 }) }), async () => { announce('Project created.'); await loadProjects(); });
@@ -1256,7 +1455,7 @@ export function initializeDashboard() {
       const result = await api(`/environments/${encodeURIComponent(environment.id)}/secrets`);
       return { ...environment, secrets: result.data.secrets, readiness: result.data.readiness };
     }));
-    setTitle(project.name, 'Retained environments and write-only secret references.'); content.innerHTML = renderProjectDetail(project, environments);
+    setTitle(project.name, 'Retained environments and write-only secret references.'); insertRendered(content, renderProjectDetail(project, environments));
     bindProjectControls(project, environments);
   }
   function bindProjectControls(project, environments = []) {
@@ -1316,7 +1515,7 @@ export function initializeDashboard() {
     const result = await api('/secrets');
     const secrets = result.data?.secrets ?? [];
     const readiness = result.data?.readiness;
-    content.innerHTML = renderGlobalSecrets(secrets, readiness);
+    insertRendered(content, renderGlobalSecrets(secrets, readiness));
     bindGlobalSecretControls(secrets);
   }
   function bindGlobalSecretControls(secrets = []) {
@@ -1410,7 +1609,7 @@ export function initializeDashboard() {
     const credentials = credsRes.data?.credentials ?? [];
     const status = statusRes.data?.status ?? null;
 
-    content.innerHTML = renderModelsPage(profiles, credentials, status);
+    insertRendered(content, renderModelsPage(profiles, credentials, status));
     bindModelsControls(credentials);
   }
 
@@ -1663,7 +1862,7 @@ export function initializeDashboard() {
   async function loadArtifacts() {
     selectNavigation('artifacts'); setTitle('Artifacts', 'Bounded retained snapshots created from workspace files.'); document.querySelector('#command-surface').hidden = true;
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
-    const result = await api(`/artifacts?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); content.innerHTML = renderArtifactIndex(result.data.artifacts, result.cursor);
+    const result = await api(`/artifacts?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); insertRendered(content, renderArtifactIndex(result.data.artifacts, result.cursor));
     const form = document.querySelector('#snapshot-form'); form.addEventListener('submit', (event) => {
       event.preventDefault(); const values = new FormData(form); const retention = String(values.get('retentionSeconds') ?? '').trim();
       const body = { workspaceId: values.get('workspaceId'), path: values.get('path'), logicalName: values.get('logicalName'), ...(retention ? { retentionSeconds: Number(retention) } : {}), expectedGeneration: 0 };
@@ -1675,13 +1874,13 @@ export function initializeDashboard() {
   async function loadAudit() {
     selectNavigation('audit'); setTitle('Audit', 'Retained redacted control-plane events.'); document.querySelector('#command-surface').hidden = true;
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
-    const result = await api(`/audit?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); content.innerHTML = renderAuditIndex(result.data.events, result.cursor);
+    const result = await api(`/audit?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); insertRendered(content, renderAuditIndex(result.data.events, result.cursor));
     document.querySelector('#load-more-audit')?.addEventListener('click', (event) => { location.href = `/dashboard/audit?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`; });
   }
   async function loadApiKeys() {
     selectNavigation('api-keys'); setTitle('API keys', 'Expiring credentials for static MCP clients that cannot complete browser OAuth.');
     document.querySelector('#command-surface').hidden = true;
-    const result = await api('/api-keys'); apiKeyPageData = result.data; content.innerHTML = renderApiKeyIndex(apiKeyPageData); bindApiKeyControls();
+    const result = await api('/api-keys'); apiKeyPageData = result.data; insertRendered(content, renderApiKeyIndex(apiKeyPageData)); bindApiKeyControls();
   }
   function bindApiKeyControls() {
     const form = document.querySelector('#create-api-key-form');
@@ -1695,7 +1894,7 @@ export function initializeDashboard() {
         created = undefined;
         const previousKeys = Array.isArray(apiKeyPageData?.keys) ? apiKeyPageData.keys : [];
         current.reset(); apiKeyPageData = { ...apiKeyPageData, keys: [metadata, ...previousKeys.filter((key) => key.id !== metadata.id)] };
-        content.innerHTML = renderApiKeyIndex(apiKeyPageData); bindApiKeyControls();
+        insertRendered(content, renderApiKeyIndex(apiKeyPageData)); bindApiKeyControls();
         apiKeyReveal.open(apiKey, document.querySelector('#create-api-key-submit') ?? invoker);
         announce('API key created. Copy it now; it will not be shown again.');
       });
@@ -1713,7 +1912,7 @@ export function initializeDashboard() {
     selectNavigation('github'); setTitle('GitHub', 'GitHub App installation and repository authorization status.'); document.querySelector('#command-surface').hidden = true;
     const callback = githubCallbackParameters(location.search);
     if (callback) {
-      content.innerHTML = renderGitHub({ configured: true, installation: null, repositories: [] }, true);
+      insertRendered(content, renderGitHub({ configured: true, installation: null, repositories: [] }, true));
       try {
         await api('/github/complete', { method: 'POST', body: requestBody(callback) });
         announce('GitHub App connection completed.');
@@ -1723,7 +1922,7 @@ export function initializeDashboard() {
         history.replaceState({}, '', '/dashboard/github');
       }
     }
-    const result = await api('/github'); content.innerHTML = renderGitHub(result.data); bindGitHubControls();
+    const result = await api('/github'); insertRendered(content, renderGitHub(result.data)); bindGitHubControls();
   }
   function bindGitHubControls() {
     const form = document.querySelector('#github-setup-form');
@@ -1775,7 +1974,7 @@ export function initializeDashboard() {
   }
   async function loadProfile() {
     selectNavigation('profile'); setTitle('Profile', 'Your signed-in identity, display name, and session details.'); document.querySelector('#command-surface').hidden = true;
-    const result = await api('/profile'); content.innerHTML = renderProfile(result.data); bindProfileControls();
+    const result = await api('/profile'); insertRendered(content, renderProfile(result.data)); bindProfileControls();
   }
   function saveDisplayName(value) {
     return api('/preferences', { method: 'PUT', body: requestBody({ displayName: value }) });
@@ -1804,7 +2003,7 @@ export function initializeDashboard() {
     renderSettingsView();
   }
   function renderSettingsView() {
-    content.innerHTML = renderSettings(settingsPageData, settingsReadiness);
+    insertRendered(content, renderSettings(settingsPageData, settingsReadiness));
     bindSettingsControls();
   }
   function settingsStatus(message) {
@@ -1881,7 +2080,7 @@ export function initializeDashboard() {
       data = listRes.data ?? { items: [] };
     }
 
-    content.innerHTML = renderKnowledgeIndex(data, { q: query, kind, scope, projectId }, activeTab);
+    insertRendered(content, renderKnowledgeIndex(data, { q: query, kind, scope, projectId }, activeTab));
     bindKnowledgeIndexControls(activeTab);
 
     if (activeTab === 'graph') {
@@ -1893,7 +2092,7 @@ export function initializeDashboard() {
             depth: 2,
             maxNodes: 50
           });
-          graphMount.innerHTML = renderKnowledgeGraph(graphRes.data);
+          insertRendered(graphMount, renderKnowledgeGraph(graphRes.data));
           bindKnowledgeGraphControls();
         } catch (err) {
           graphMount.innerHTML = `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`;
@@ -1996,7 +2195,7 @@ export function initializeDashboard() {
     const item = res.data;
     currentKnowledgeItem = item;
     setTitle(item.title, 'Knowledge item detail, Markdown editor, and relationship graph.');
-    content.innerHTML = renderKnowledgeDetail(item);
+    insertRendered(content, renderKnowledgeDetail(item));
     bindKnowledgeDetailControls(item);
   }
 
@@ -2029,7 +2228,7 @@ export function initializeDashboard() {
         const textarea = document.querySelector('#knowledge-editor-input');
         if (textarea) textarea.value = conflictData.currentContent ?? '';
         const preview = document.querySelector('#knowledge-preview-output');
-        if (preview) preview.innerHTML = renderMarkdown(conflictData.currentContent ?? '');
+        if (preview) insertRendered(preview, renderMarkdown(conflictData.currentContent ?? ''));
         const genEl = document.querySelector('#kn-current-generation');
         if (genEl) genEl.textContent = String(conflictData.currentGeneration ?? '');
         currentKnowledgeItem = { ...currentKnowledgeItem, generation: conflictData.currentGeneration, content: conflictData.currentContent };
@@ -2060,7 +2259,7 @@ export function initializeDashboard() {
       if (editStatus) editStatus.textContent = 'Unsaved changes';
       globalThis.clearTimeout(debounceTimer);
       debounceTimer = globalThis.setTimeout(() => {
-        if (preview && textarea) preview.innerHTML = renderMarkdown(textarea.value);
+        if (preview && textarea) insertRendered(preview, renderMarkdown(textarea.value));
       }, 200);
     });
 
@@ -2187,7 +2386,7 @@ export function initializeDashboard() {
       const [serversResult, gatewayResult] = await Promise.all([listMcpServers(), getMcpGatewayEndpoint()]);
       currentMcpServers = Array.isArray(serversResult.data?.servers) ? serversResult.data.servers : [];
       currentMcpGateway = gatewayResult.data;
-      content.innerHTML = renderMcpServersIndex({ servers: currentMcpServers, gateway: currentMcpGateway });
+      insertRendered(content, renderMcpServersIndex({ servers: currentMcpServers, gateway: currentMcpGateway }));
       bindMcpServersControls();
     } finally { setBusy(false); }
   }
@@ -2208,7 +2407,7 @@ export function initializeDashboard() {
       if (currentMcpServer?.name) setTitle(currentMcpServer.name, 'MCP server detail, tools, permissions, and gateway logs.');
       currentMcpTraces = Array.isArray(logsResult?.data?.traces) ? logsResult.data.traces : [];
       currentMcpLogCursor = logsResult?.cursor;
-      content.innerHTML = renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, tab, currentMcpLogCursor, currentMcpGateway);
+      insertRendered(content, renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, tab, currentMcpLogCursor, currentMcpGateway));
       bindMcpServersControls();
     } finally { setBusy(false); }
   }
@@ -2461,29 +2660,29 @@ export function initializeDashboard() {
       if (!serverId) return;
       const result = await listMcpServerLogs(serverId, event.currentTarget.dataset.cursor);
       currentMcpTraces = [...currentMcpTraces, ...(result.data?.traces ?? [])];
-      content.innerHTML = renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, 'logs', result.cursor, currentMcpGateway);
+      insertRendered(content, renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, 'logs', result.cursor, currentMcpGateway));
       bindMcpServersControls();
     });
   }
   async function workspace(id) { return (await api(`/workspaces/${encodeURIComponent(id)}`)).data; }
   async function loadWorkspace(id) {
     const item = await workspace(id); setTitle(repositoryName(item.repositoryUrl), 'Workspace lifecycle and bounded operations.');
-    content.innerHTML = renderWorkspaceDetail(item, false); detail.hidden = true; document.querySelector('#command-surface').hidden = true; bindClose(item);
+    insertRendered(content, renderWorkspaceDetail(item, false)); detail.hidden = true; document.querySelector('#command-surface').hidden = true; bindClose(item);
   }
   async function loadFiles(id) {
     const item = await workspace(id); setTitle('Files', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'files');
     const parameters = new URLSearchParams(location.search); const path = parameters.get('path') ?? '.';
     if (parameters.get('file') === '1') {
       const result = await api(`/workspaces/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path)}`);
-      content.innerHTML = renderFile(id, result.data); bindFileEditor(id, result.data);
+      insertRendered(content, renderFile(id, result.data)); bindFileEditor(id, result.data);
     } else {
       const result = await api(`/workspaces/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`);
-      content.innerHTML = renderFileList(id, result.data); bindFileOperations(id);
+      insertRendered(content, renderFileList(id, result.data)); bindFileOperations(id);
     }
   }
   async function loadRuntime(id) {
     const item = await workspace(id); setTitle('Runtime', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'runtime');
-    content.innerHTML = renderRuntime((await api(`/workspaces/${encodeURIComponent(id)}/runtime`)).data);
+    insertRendered(content, renderRuntime((await api(`/workspaces/${encodeURIComponent(id)}/runtime`)).data));
   }
   function contextLinks(id, current) {
     document.querySelector('#context-nav').innerHTML = `<a href="/dashboard/workspaces/${encodeURIComponent(id)}/files" ${current === 'files' ? 'aria-current="page"' : ''}>Files</a><a href="/dashboard/workspaces/${encodeURIComponent(id)}/runtime" ${current === 'runtime' ? 'aria-current="page"' : ''}>Runtime</a>`;
@@ -2574,7 +2773,7 @@ export function initializeDashboard() {
     if (paletteActive >= entries.length) paletteActive = entries.length - 1;
     if (paletteActive < 0 && entries.length) paletteActive = 0;
     if (!entries.length) paletteActive = -1;
-    paletteResults.innerHTML = renderPaletteResults(entries, paletteActive);
+    insertRendered(paletteResults, renderPaletteResults(entries, paletteActive));
     paletteInput.setAttribute('aria-expanded', String(entries.length > 0));
     if (paletteActive >= 0) paletteInput.setAttribute('aria-activedescendant', `palette-opt-${paletteActive}`);
     else paletteInput.removeAttribute('aria-activedescendant');
@@ -2680,15 +2879,15 @@ export function initializeDashboard() {
 
     function paint(result) {
       const chosen = controller.chosen();
-      if (chips) chips.innerHTML = renderSkillSetChips(controller.sets().filter((set) => chosen.includes(set.id)).map((set) => set.name));
-      if (conflictBox) conflictBox.innerHTML = renderSkillConflicts(controller.conflictList(), controller.overrides());
+      if (chips) insertRendered(chips, renderSkillSetChips(controller.sets().filter((set) => chosen.includes(set.id)).map((set) => set.name)));
+      if (conflictBox) insertRendered(conflictBox, renderSkillConflicts(controller.conflictList(), controller.overrides()));
       if (previewBox) previewBox.textContent = `${(result.resolved ?? []).length} skill(s) resolved.`;
     }
 
     openButton.addEventListener('click', () => {
       dialog.showModal();
       void controller.load()
-        .then(() => { select.innerHTML = renderSkillSetOptions(controller.sets()); })
+        .then(() => { insertRendered(select, renderSkillSetOptions(controller.sets())); })
         .catch(showError);
     });
 

@@ -70,7 +70,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
   'skill_revision_list', 'skill_revision_get', 'skill_revision_diff',
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
-  'toolkit_registry_list',
+  'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
   'skill_suggest', 'typesafe_status',
   'skill_revision_fork',
   'skill_revision_create',
@@ -278,6 +278,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   }
   // Presets travel separately from entries because they are suggestions a launch could install rather
   // than skills the workspace can already resolve, and merging the two lists would erase that difference.
+  if (operation === 'toolkit_registry_update') return pick(data, ['provider', 'slug', 'action', 'revisionId']);
+  if (operation === 'toolkit_registry_refresh') return { entries: listOf(data.entries, skillCatalogKeys) };
   if (operation === 'toolkit_registry_list') {
     return {
       entries: listOf(data.entries, skillCatalogKeys),

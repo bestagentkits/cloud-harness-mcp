@@ -271,12 +271,11 @@ const principal = { kind: 'external' as const, issuer: 'https://access.example.c
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
 
 describe('dashboard control service', () => {
-  it('serves the registry catalogue and still fails loudly for an operation with no handler', async () => {
+  it('serves the registry catalogue and records an entry an operator acts on', async () => {
     const { controls } = setup();
 
-    // The route test uses a mocked runner, which answers anything, so it cannot tell a real handler
-    // from a missing one. This call goes through the service itself and would throw before the case
-    // existed.
+    // The route test uses a mocked runner, which answers anything, so it cannot tell a real handler from a
+    // missing one. These calls go through the service itself.
     const listed = await controls.execute(request('toolkit_registry_list', {}));
     expect(Array.isArray((listed.data as { entries: unknown[] }).entries)).toBe(true);
     expect((listed.data as { entries: unknown[] }).entries).toEqual([]);
@@ -284,8 +283,19 @@ describe('dashboard control service', () => {
     const filtered = await controls.execute(request('toolkit_registry_list', { provider: 'skillx' }));
     expect((filtered.data as { entries: unknown[] }).entries).toEqual([]);
 
-    await expect(controls.execute(request('toolkit_registry_refresh', { provider: 'skills-sh' })))
-      .rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+    // The catalogue the dashboard reads back is what the update wrote, so an action is checked against the
+    // record rather than against the response that claims it happened.
+    await controls.execute(request('toolkit_registry_update', {
+      provider: 'skills-sh', slug: 'anthropics/skills/pdf', action: 'install', expectedGeneration: 0
+    }));
+    const after = await controls.execute(request('toolkit_registry_list', { provider: 'skills-sh' }));
+    expect((after.data as { entries: Array<{ slug: string }> }).entries.map((entry) => entry.slug))
+      .toEqual(['anthropics/skills/pdf']);
+
+    // Every metadata operation now has a handler, so a refresh reports the catalogue this owner has recorded
+    // instead of claiming a fetch it did not perform.
+    const refreshed = await controls.execute(request('toolkit_registry_refresh', { provider: 'skills-sh' }));
+    expect((refreshed.data as { entries: unknown[] }).entries).toHaveLength(1);
   });
   it('creates a custom skill by publishing its content before the source row exists', async () => {
     const { controls, principals, workspaces } = setup();

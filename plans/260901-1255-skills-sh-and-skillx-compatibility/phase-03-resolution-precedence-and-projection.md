@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "4-Tier Resolution, Precedence, Conflict Engine & Projection (TDD)"
-status: pending
+status: completed
 priority: P1
 effort: "8h"
 dependencies: [1, 2]
@@ -92,13 +92,13 @@ Workspace Open Request (skillSets[], toolkits[], skillOverrides{})
    - Run `npm test apps/runner/test/skill-resolver.test.ts` and `npm test apps/runner/test/skills-precedence.test.ts`.
 
 ## Success Criteria
-- [ ] 4-tier precedence strictly enforced in all resolution scenarios.
-- [ ] Same-tier different-digest collisions are blocked unless explicitly overridden by `skillOverrides`.
-- [ ] Reordering selected Skill Sets in the request produces identical resolution results.
-- [ ] `skills_list(includeShadowed: true)` returns all shadowed skills with provenance and reason.
-- [ ] Container inspect proves only pinned bundles and `skill-catalog.json` are mounted, not the owner-wide cache. This criterion is proven by `npm run test:docker` against `apps/runner/test/skill-mount-projection.docker.test.ts`; the unit command in step 4 cannot observe container mounts, so both are required.
-- [ ] `disabled` skills never enter resolution and are reported with a reason; `archived` skills are refused for new launches while existing snapshots keep resolving.
-- [ ] Catalog presets resolve as `owner`-tier skills after import and never as `built-in` skills.
+- [x] 4-tier precedence strictly enforced in all resolution scenarios.
+- [x] Same-tier different-digest collisions are blocked unless explicitly overridden by `skillOverrides`.
+- [x] Reordering selected Skill Sets in the request produces identical resolution results.
+- [x] `skills_list(includeShadowed: true)` returns all shadowed skills with provenance and reason.
+- [x] Container inspect proves only pinned bundles and `skill-catalog.json` are mounted, not the owner-wide cache. This criterion is proven by `npm run test:docker` against `apps/runner/test/skill-mount-projection.docker.test.ts`; the unit command in step 4 cannot observe container mounts, so both are required.
+- [x] `disabled` skills never enter resolution and are reported with a reason; `archived` skills are refused for new launches while existing snapshots keep resolving.
+- [x] Catalog presets resolve as `owner`-tier skills after import and never as `built-in` skills.
 
 ## Risk Assessment
 - **Risk:** Stale `expectedGeneration` on Skill Sets when multiple owners or tabs edit sets concurrently.
