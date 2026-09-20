@@ -238,17 +238,16 @@ export class WorkspaceService {
     };
   }
 
-  private getRedactor(workspaceId: string): SecretSnapshotRedactor {
-    const cached = this.redactorCache.get(workspaceId);
-    if (cached) return cached;
+  /**
+   * The workspace and owner secret values. It is named separately from the redactor because the
+   * suggestion engine has to name both value sources explicitly: these are the workspace secrets, and a
+   * provider credential does not travel through this path.
+   */
+  redactionSecrets(workspaceId: string): Record<string, string> {
     const record = this.store.byId(workspaceId);
-    if (!record) {
-      const empty = new SecretSnapshotRedactor({});
-      this.redactorCache.set(workspaceId, empty);
-      return empty;
-    }
-    const snapshotResult = this.store.getSecretSnapshot(workspaceId);
+    if (!record) return {};
     const values: Record<string, string> = {};
+    const snapshotResult = this.store.getSecretSnapshot(workspaceId);
     if (snapshotResult.initialized) {
       for (const item of snapshotResult.secrets) {
         values[item.name] = this.metadata?.decryptEnvelope(record.ownerId, item.environmentId, item.name, item.version, item.envelope) ?? '';
@@ -265,7 +264,13 @@ export class WorkspaceService {
       metadata: this.metadata
     });
     if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
-    const redactor = new SecretSnapshotRedactor(values);
+    return values;
+  }
+
+  private getRedactor(workspaceId: string): SecretSnapshotRedactor {
+    const cached = this.redactorCache.get(workspaceId);
+    if (cached) return cached;
+    const redactor = new SecretSnapshotRedactor(this.redactionSecrets(workspaceId));
     this.redactorCache.set(workspaceId, redactor);
     return redactor;
   }

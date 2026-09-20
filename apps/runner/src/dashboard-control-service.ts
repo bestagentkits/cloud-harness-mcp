@@ -12,6 +12,7 @@ import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from '
 import { IntegrationCredentialRepository } from './integration-credential-repository.js';
 import type { SecretKeyring } from './secret-keyring.js';
 import { TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
+import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
 import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
@@ -32,6 +33,34 @@ export class DashboardControlService {
     private readonly gatewayControl?: AgentGatewayControl,
     private readonly keyring?: SecretKeyring
   ) {}
+
+  /**
+   * Both value sources are named here, because they are not the same source: the workspace secrets come
+   * from the secret snapshot, while a provider credential lives in the model credential tables and would
+   * otherwise never be redacted. The enumeration is deliberately not wrapped in a catch: if it cannot be
+   * read, redaction cannot be complete, and the engine must fail closed rather than send.
+   */
+  private suggester(ownerId: string, workspaceId: string, apiKey: string): TypesafeSkillSuggester {
+    return new TypesafeSkillSuggester({
+      apiKey: () => apiKey,
+      secrets: () => ({
+        ...this.workspaces.redactionSecrets(workspaceId),
+        ...this.providerCredentialSecrets(ownerId)
+      })
+    });
+  }
+
+  private providerCredentialSecrets(ownerId: string): Record<string, string> {
+    const snapshot = this.modelProfiles?.getExportSnapshot(ownerId);
+    if (!snapshot) return {};
+    const values: Record<string, string> = {};
+    for (const [id, credential] of Object.entries(snapshot.credentials)) {
+      if (typeof credential === 'object' && credential !== null && typeof (credential as { secret?: unknown }).secret === 'string') {
+        values[`MODEL_PROVIDER_${id}`] = (credential as { secret: string }).secret;
+      }
+    }
+    return values;
+  }
 
   private integrationCredentialRepository?: IntegrationCredentialRepository;
 
@@ -674,10 +703,23 @@ export class DashboardControlService {
           // A missing key is not an error and costs nothing: the engine is never constructed and no
           // request is made, which is the behaviour the phase requires of an unconfigured owner.
           const apiKey = this.keyring ? this.integrationCredentials().decryptValue(principalId, 'typesafe') : undefined;
-          if (!apiKey) {
-            return ok('No suggestion', { suggested: null, reason: 'not_configured', cached: false, latencyMs: 0, outboundCalls: 0, redactionCount: 0 });
+          const workspaceId = parsed.input.workspaceId;
+          if (!apiKey || !workspaceId) {
+            return ok('No suggestion', {
+              suggested: null,
+              reason: apiKey ? 'empty_roster' : 'not_configured',
+              cached: false, latencyMs: 0, outboundCalls: 0, redactionCount: 0
+            });
           }
-          return ok('No suggestion', { suggested: null, reason: 'empty_roster', cached: false, latencyMs: 0, outboundCalls: 0, redactionCount: 0 });
+          const roster = await this.workspaces.skillRoster(parsed.principal, workspaceId);
+          const outcome = await this.suggester(principalId, workspaceId, apiKey).suggest({
+            ownerId: principalId,
+            workspaceId,
+            prompt: parsed.input.prompt,
+            roster: roster.entries as RosterEntry[],
+            rosterDigest: roster.rosterDigest
+          });
+          return ok(outcome.suggested ? `Suggested ${outcome.suggested.name}` : 'No suggestion', outcome);
         }
         default:
           // Any internal operation that has no runner handler yet fails loudly instead of returning an

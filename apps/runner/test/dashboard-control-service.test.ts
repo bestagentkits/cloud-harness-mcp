@@ -124,6 +124,17 @@ describe('integration credentials and typesafe', () => {
     expect(deleted.data).toMatchObject({ deleted: true });
   });
 
+  it('reports an empty roster rather than calling out when a key exists but no workspace was named', async () => {
+    const { controls } = setup();
+    await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_key', expectedGeneration: 0
+    }));
+
+    const result = await controls.execute(request('skill_suggest', { prompt: 'Please refactor the authentication middleware.' }));
+
+    expect(result.data).toMatchObject({ suggested: null, reason: 'empty_roster', outboundCalls: 0 });
+  });
+
   it('answers not_configured with zero outbound work when the owner has no key', async () => {
     const { controls } = setup();
 
