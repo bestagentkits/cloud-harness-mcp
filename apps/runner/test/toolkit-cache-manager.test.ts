@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveOwnerPrincipal } from '../src/principal-store.js';
 import { StateStore } from '../src/state-store.js';
+import { computeFullTreeDigest } from '../src/adapters/mattpocock-adapter.js';
 import { ToolkitCacheManager, type ToolkitAcquisitionSpec } from '../src/toolkit-cache-manager.js';
 describe('ToolkitCacheManager', () => {
   let tmpDir: string;
@@ -173,5 +174,44 @@ describe('ToolkitCacheManager', () => {
     const entries = store.listToolkitCacheEntries(ownerId);
     expect(entries.length).toBe(1);
     expect(entries[0]!.bundleSha256).toBe(sha2);
+  });
+
+  it('quarantines a published bundle whose bytes no longer match the recorded digest', async () => {
+    const spec: ToolkitAcquisitionSpec = { sourceIdentity: 'skills-sh:mattpocock/skills', resolvedRevision: 'abc', adapterVersion: 1, configDigest: 'd' };
+    const published = await cacheManager.getOrAcquire(ownerId, spec, async (dir) => {
+      writeFileSync(join(dir, 'manifest.json'), '{"id":"test"}');
+      writeFileSync(join(dir, 'SKILL.md'), '# Skill');
+      const digest = computeFullTreeDigest(dir);
+      return { bundleSha256: digest.bundleSha256, byteCount: digest.byteCount, fileCount: digest.fileCount };
+    });
+
+    // An intact bundle is left alone.
+    await expect(cacheManager.quarantineIfCorrupt(ownerId, spec)).resolves.toEqual({ quarantined: false });
+
+    // Tamper with the published bytes without touching the recorded digest.
+    writeFileSync(join(published.bundlePath, 'SKILL.md'), '# Tampered');
+
+    const result = await cacheManager.quarantineIfCorrupt(ownerId, spec);
+    expect(result.quarantined).toBe(true);
+    expect(result.reason).toMatch(/does not match published/);
+
+    // The bytes left the cache root and the row is gone, so the next lookup is a miss and the
+    // next acquisition re-fetches rather than serving unverified content.
+    expect(existsSync(published.bundlePath)).toBe(false);
+    expect(cacheManager.getExisting(ownerId, spec)).toBeUndefined();
+  });
+
+  it('quarantines a cache row whose bundle directory disappeared', async () => {
+    const spec: ToolkitAcquisitionSpec = { sourceIdentity: 'skillx:gone', resolvedRevision: 'x', adapterVersion: 1, configDigest: 'e' };
+    const published = await cacheManager.getOrAcquire(ownerId, spec, async (dir) => {
+      writeFileSync(join(dir, 'SKILL.md'), '# Skill');
+      const digest = computeFullTreeDigest(dir);
+      return { bundleSha256: digest.bundleSha256, byteCount: digest.byteCount, fileCount: digest.fileCount };
+    });
+    rmSync(published.bundlePath, { recursive: true, force: true });
+
+    await expect(cacheManager.quarantineIfCorrupt(ownerId, spec))
+      .resolves.toEqual({ quarantined: true, reason: 'bundle directory is missing' });
+    expect(cacheManager.getExisting(ownerId, spec)).toBeUndefined();
   });
 });

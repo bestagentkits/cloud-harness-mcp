@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, openSync, readdirSync } from 'node:fs';
 import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 import type { StateStore, ToolkitCacheEntryRecord } from './state-store.js';
 
 export type ToolkitAcquisitionSpec = {
@@ -51,6 +52,20 @@ export class ToolkitCacheManager {
       }
     } catch {
       // staging dir absent or inaccessible
+    }
+    // Quarantined bundles are kept for inspection but must not grow without bound.
+    const quarantineRoot = join(this.root, 'quarantine');
+    try {
+      const entries = await readdir(quarantineRoot, { withFileTypes: true });
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      for (const entry of entries) {
+        const stagedAt = Number(entry.name.split('-').pop());
+        if (Number.isFinite(stagedAt) && stagedAt < cutoff) {
+          await rm(join(quarantineRoot, entry.name), { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
+    } catch {
+      // quarantine dir absent
     }
   }
   getExisting(ownerId: string, spec: ToolkitAcquisitionSpec): CachedToolkitBundle | undefined {
@@ -232,6 +247,42 @@ export class ToolkitCacheManager {
     } catch {
       // Ignore walk errors
     }
+  }
+
+  /**
+   * Recomputes a published bundle's full-tree digest and quarantines the bundle when the bytes no
+   * longer match the digest the cache row was published with. Quarantine moves the directory under
+   * `<root>/quarantine` and drops the cache row, so the next acquisition re-fetches instead of
+   * serving bytes that failed verification. No cache status is invented, so no schema change is
+   * needed; the dropped row is what makes the cache miss on the next lookup.
+   */
+  async quarantineIfCorrupt(ownerId: string, spec: ToolkitAcquisitionSpec): Promise<{ quarantined: boolean; reason?: string }> {
+    const cacheKey = this.computeCacheKey(ownerId, spec);
+    const entry = this.store.getToolkitCacheEntry(cacheKey);
+    if (!entry || entry.status !== 'READY') return { quarantined: false };
+
+    const targetPath = this.bundlePath(ownerId, entry.bundleSha256);
+    if (!existsSync(targetPath)) {
+      this.store.deleteToolkitCacheEntry(cacheKey);
+      return { quarantined: true, reason: 'bundle directory is missing' };
+    }
+
+    let actualDigest: string;
+    try {
+      actualDigest = computeFullTreeDigest(targetPath).bundleSha256;
+    } catch (error) {
+      actualDigest = `unreadable:${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (actualDigest === entry.bundleSha256) return { quarantined: false };
+
+    const quarantineRoot = join(this.root, 'quarantine');
+    await mkdir(quarantineRoot, { recursive: true, mode: 0o700 });
+    await rename(targetPath, join(quarantineRoot, `${entry.bundleSha256}-${Date.now()}`)).catch(() => undefined);
+    this.store.deleteToolkitCacheEntry(cacheKey);
+    return {
+      quarantined: true,
+      reason: `bundle digest ${actualDigest} does not match published ${entry.bundleSha256}`
+    };
   }
 
   async garbageCollect(ownerId: string, maxBytesQuota: number): Promise<{ purgedCount: number; purgedBytes: number }> {
