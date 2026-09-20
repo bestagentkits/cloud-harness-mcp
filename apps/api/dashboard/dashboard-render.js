@@ -230,6 +230,55 @@ export function renderSkillsSkeleton() {
     </section>`;
 }
 
+/**
+ * Rows for the library table, injected into the skeleton's tbody once data arrives. Every value goes
+ * through `escape`, because a skill's display name and slug are operator-supplied and a skill imported
+ * from a provider carries a name this dashboard never authored.
+ */
+export function renderSkillsLibraryRows(skills) {
+  const rows = Array.isArray(skills) ? skills : [];
+  if (rows.length === 0) return '<tr><td colspan="5">No skills yet. Import one from Discover, or create a custom skill.</td></tr>';
+  return rows.map((skill) => `<tr data-skill-id="${escape(skill.id)}">
+      <th scope="row"><button type="button" class="link-btn" data-skill-detail="${escape(skill.id)}">${escape(skill.displayName)}</button><small class="mono">${escape(skill.slug)}</small></th>
+      <td>${escape(skill.provider)}</td>
+      <td>${escape(skill.kind)}</td>
+      <td><span class="status ${escape(String(skill.state))}">${escape(skill.state)}</span></td>
+      <td><input type="checkbox" data-skill-select="${escape(skill.id)}" aria-label="Select ${escape(skill.displayName)}"></td>
+    </tr>`).join('');
+}
+
+/** Rows for the registry table: cache state, pinned commit, skill count, and lock state per entry. */
+export function renderSkillsRegistryRows(entries) {
+  const rows = Array.isArray(entries) ? entries : [];
+  if (rows.length === 0) return '<tr><td colspan="5">No registry entries yet.</td></tr>';
+  return rows.map((entry) => `<tr>
+      <th scope="row">${escape(entry.displayName ?? entry.slug)}</th>
+      <td><span class="status">${escape(entry.cacheState ?? 'unknown')}</span></td>
+      <td class="mono">${escape(entry.pinnedCommit ?? '—')}</td>
+      <td>${escape(entry.skillCount ?? 0)}</td>
+      <td>${escape(entry.lockState ?? 'unlocked')}</td>
+    </tr>`).join('');
+}
+
+/**
+ * Conflict radios for the launch dialog. A name is unresolved until an override names one of its
+ * candidates, which is the same rule the resolver applies, so the dialog cannot offer a choice the
+ * launch path would then refuse.
+ */
+export function renderSkillConflicts(conflicts, overrides = {}) {
+  const list = Array.isArray(conflicts) ? conflicts : [];
+  return list.map((conflict) => {
+    const choices = (Array.isArray(conflict.candidates) ? conflict.candidates : []).map((candidate) =>
+      `<label><input type="radio" name="conflict-${escape(conflict.name)}" value="${escape(candidate.revisionId)}"${overrides[conflict.name] === candidate.revisionId ? ' checked' : ''}> ${escape(candidate.tier)} · ${escape(candidate.revisionId)}</label>`).join('');
+    return `<fieldset data-conflict-name="${escape(conflict.name)}"><legend>${escape(conflict.name)}</legend>${choices}</fieldset>`;
+  }).join('');
+}
+
+/** True while any conflict still lacks an override, which is what keeps launch disabled. */
+export function launchBlockedByConflicts(conflicts, overrides = {}) {
+  return (Array.isArray(conflicts) ? conflicts : []).some((conflict) => overrides[conflict.name] === undefined);
+}
+
 function renderServerPanel(server) {
   if (!server) return '';
   const oauth = server.managedOAuthUrl
