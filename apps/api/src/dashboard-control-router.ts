@@ -201,7 +201,12 @@ export function registerDashboardControlRoutes(
     return true;
   }
 
-  function endpoint(operation: MetadataRunnerOperation, input: (request: DashboardRequest) => Record<string, unknown>, options?: { evict?: boolean; validateEndpoint?: boolean }) {
+  // A dashboard route may only expose an operation that has BOTH an internal input schema and a
+  // dashboard response mapping, so a new internal operation cannot reach the browser through an
+  // unmapped response and be dropped by the mapper's key allowlist.
+  type DashboardRoutableOperation = Extract<MetadataRunnerOperation, Parameters<typeof sendRunnerResponse>[1]>;
+
+  function endpoint(operation: DashboardRoutableOperation, input: (request: DashboardRequest) => Record<string, unknown>, options?: { evict?: boolean; validateEndpoint?: boolean }) {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
       try {
         const selected = principal(request, response);
