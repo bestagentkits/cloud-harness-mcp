@@ -7,7 +7,7 @@ import {
   validateSecretClient
 } from '../dashboard/dashboard.js';
 
-import { renderSkillsSkeleton } from '../dashboard/dashboard-render.js';
+import { renderSkillsSkeleton, renderTypesafeSkeleton } from '../dashboard/dashboard-render.js';
 
 const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
 
@@ -97,6 +97,20 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain('This item changed after you opened it.');
     expect(script).toContain('No current tasks.');
     expect(script).toContain('No named sessions.');
+  });
+
+  it('renders the typename panel with a write-only key and no prompt surface', () => {
+    const skeleton = renderTypesafeSkeleton();
+    for (const selector of [
+      'id="typesafe-panel"', 'id="typesafe-key"', 'id="typesafe-model"', 'id="typesafe-gate-threshold"',
+      'id="typesafe-fit-threshold"', 'id="typesafe-max-egress-bytes"', 'id="typesafe-cache-ttl"',
+      'id="typesafe-enabled"', 'id="typesafe-egress"', 'id="typesafe-test"', 'id="typesafe-status"', 'id="typesafe-usage"'
+    ]) expect(skeleton, selector).toContain(selector);
+
+    // The key field never renders a stored value back, and the usage surface has no prompt column.
+    expect(skeleton).toMatch(/id="typesafe-key"[^>]*type="password"/);
+    expect(skeleton).not.toMatch(/prompt/i);
+    expect(skeleton).toContain('aria-live="polite"');
   });
 
   it('renders every skills selector the UI contract names', () => {

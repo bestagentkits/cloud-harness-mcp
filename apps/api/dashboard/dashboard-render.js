@@ -134,7 +134,7 @@ export function renderSettings(data, readiness) {
   const readinessFact = readiness
     ? `<dt>Egress readiness</dt><dd>${readiness.ready === true ? 'Ready' : `Not ready: ${escape(readiness.reason ?? 'the readiness probe reported no reason')}`}</dd>`
     : '';
-  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>`;
+  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${renderTypesafeSkeleton()}`;
 }
 
 export function renderRuntime(data) {
@@ -284,6 +284,37 @@ export function renderSkillConflicts(conflicts, overrides = {}) {
 /** True while any conflict still lacks an override, which is what keeps launch disabled. */
 export function launchBlockedByConflicts(conflicts, overrides = {}) {
   return (Array.isArray(conflicts) ? conflicts : []).some((conflict) => overrides[conflict.name] === undefined);
+}
+
+/**
+ * The TypeSafe panel. The key field is a password input that is never rendered back, the kill switch is
+ * an ordinary checkbox, and the usage list shows scores rather than prompts, because prompt text never
+ * belongs on this page.
+ */
+export function renderTypesafeSkeleton() {
+  return `<section id="typesafe-panel" aria-labelledby="typesafe-heading">
+      <h2 id="typesafe-heading">TypeSafe skill suggestions</h2>
+      <p id="typesafe-egress" role="status" aria-live="polite"></p>
+      <form class="stack-form" id="typesafe-form">
+        <label for="typesafe-key">API key (write-only, never shown again)</label>
+        <input id="typesafe-key" name="value" type="password" autocomplete="new-password">
+        <label for="typesafe-model">Model</label>
+        <input id="typesafe-model" name="model" value="jev-latest">
+        <label for="typesafe-gate-threshold">Gate threshold</label>
+        <input id="typesafe-gate-threshold" name="gateThreshold" type="number" min="0" max="1" step="0.05">
+        <label for="typesafe-fit-threshold">Fit threshold</label>
+        <input id="typesafe-fit-threshold" name="fitThreshold" type="number" min="0" max="1" step="0.05">
+        <label for="typesafe-max-egress-bytes">Maximum egress bytes</label>
+        <input id="typesafe-max-egress-bytes" name="maxEgressBytes" type="number" min="256" max="8192">
+        <label for="typesafe-cache-ttl">Cache lifetime (minutes)</label>
+        <input id="typesafe-cache-ttl" name="cacheTtlMinutes" type="number" min="1" max="1440">
+        <label for="typesafe-enabled"><input id="typesafe-enabled" name="enabled" type="checkbox"> Send suggestions</label>
+        <button type="button" id="typesafe-test">Test connection</button>
+        <button type="submit" id="typesafe-save">Save</button>
+        <span id="typesafe-status" role="status" aria-live="polite"></span>
+      </form>
+      <table id="typesafe-usage" class="data-table desktop-table"><caption class="sr-only">Recent suggestions</caption><thead><tr><th scope="col">Skill</th><th scope="col">Gate</th><th scope="col">Fit</th><th scope="col">Latency</th><th scope="col">Redactions</th><th scope="col">Cached</th></tr></thead><tbody></tbody></table>
+    </section>`;
 }
 
 /** Chips for the selected skill sets, so the launch dialog names what is about to be bound. */

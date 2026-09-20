@@ -760,6 +760,23 @@ describe('contracts', () => {
     }
   });
 
+  it('classifies the suggestion tool as egress without claiming it is side-effect free', () => {
+    const spec = TOOL_SPECS.find(({ name }) => name === 'skill_suggest');
+
+    expect(spec).toBeDefined();
+    // readOnly is false on purpose: the tool writes an audit row and causes egress, so a "pure read"
+    // classification would be inaccurate and could let a caller cache it as side-effect free.
+    expect(spec).toMatchObject({
+      title: 'Suggest a skill',
+      readOnly: false,
+      destructive: false,
+      idempotent: false,
+      openWorld: true
+    });
+    // The description is what a client shows a user before the call sends prompt content anywhere.
+    expect(spec!.description).toMatch(/redacted prompt/i);
+  });
+
   it('validates bounded agent status result data without public identity', () => {
     const workspaceId = `ws_${'a'.repeat(24)}`;
     const agentId = `agent_${'b'.repeat(24)}`;
