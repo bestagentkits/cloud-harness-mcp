@@ -458,12 +458,10 @@ export class DashboardControlService {
         case 'skill_list': return ok('Skills listed', { skills: this.principals.listSkillSources(principalId) });
         case 'skill_get': return ok('Skill read', required(this.principals.getSkillSource(principalId, parsed.input.skillId), `Skill ${parsed.input.skillId} was not found`));
         case 'skill_revision_list': return ok('Skill revisions listed', { revisions: this.principals.listSkillRevisions(principalId, parsed.input.skillId, parsed.input.limit) });
-        case 'skill_revision_get': {
-          const revision = this.principals.listSkillRevisions(principalId, parsed.input.skillId, 200)
-            .find((entry) => entry?.id === parsed.input.revisionId);
-          if (!revision) throw new HarnessError('NOT_FOUND', `Revision ${parsed.input.revisionId} was not found for this skill`, 404, false);
-          return ok('Skill revision read', revision);
-        }
+        case 'skill_revision_get': return ok('Skill revision read', required(
+          this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.revisionId),
+          `Revision ${parsed.input.revisionId} was not found for this skill`
+        ));
         case 'skill_usage': return ok('Skill usage listed', this.principals.listSkillUsage(principalId, parsed.input.skillId));
         case 'skill_search': {
           // Only the local registry is searched. Fanning out to skills.sh and SkillX belongs to the
@@ -573,6 +571,25 @@ export class DashboardControlService {
             excluded: resolution.excluded,
             conflicts: resolution.conflicts
           });
+        }
+        case 'skill_restore': {
+          const revision = required(
+            this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.revisionId),
+            `Revision ${parsed.input.revisionId} was not found for this skill`
+          );
+          // The bytes that revision pinned already exist, so a restore publishes a new immutable row
+          // that points back at them instead of rewriting the revision it came from.
+          const revisionId = this.principals.addSkillRevision({
+            ownerId: principalId,
+            skillSourceId: parsed.input.skillId,
+            bundleSha256: revision.bundleSha256,
+            contentSha256: revision.contentSha256,
+            hasExecutableAssets: revision.hasExecutableAssets,
+            origin: 'restore',
+            parentRevisionId: revision.id,
+            expectedGeneration: parsed.input.expectedGeneration
+          });
+          return mutation('Skill restored', { skillId: parsed.input.skillId, revisionId });
         }
         default:
           // Any internal operation that has no runner handler yet fails loudly instead of returning an

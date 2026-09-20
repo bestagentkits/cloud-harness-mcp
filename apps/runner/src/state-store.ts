@@ -2430,6 +2430,26 @@ export class StateStore {
     }));
   }
 
+  /**
+   * The full row for one revision. `listSkillRevisions` projects only what the UI renders, so a
+   * caller that has to republish these bytes (restore) needs the bundle digest that projection omits.
+   */
+  getSkillRevision(ownerId: string, skillSourceId: string, id: string): {
+    id: string; skillSourceId: string; origin: SkillRevisionOrigin; parentRevisionId: string | null;
+    bundleSha256: string; contentSha256: string; hasExecutableAssets: boolean; createdAt: number;
+  } | undefined {
+    const row = this.database.prepare(`SELECT id, skill_source_id, origin, parent_revision_id, bundle_sha256, content_sha256, has_executable_assets, created_at
+      FROM skill_revisions WHERE owner_id = ? AND skill_source_id = ? AND id = ?`)
+      .get(ownerId, skillSourceId, id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return {
+      id: String(row.id), skillSourceId: String(row.skill_source_id), origin: row.origin as SkillRevisionOrigin,
+      parentRevisionId: (row.parent_revision_id as string | null) ?? null,
+      bundleSha256: String(row.bundle_sha256), contentSha256: String(row.content_sha256),
+      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at)
+    };
+  }
+
   setSkillState(ownerId: string, id: string, state: SkillSourceState, expectedGeneration: number): { state: SkillSourceState; generation: number } {
     this.requireSkillGeneration('skill_sources', ownerId, id, expectedGeneration);
     const current = this.getSkillSource(ownerId, id)!;

@@ -130,6 +130,23 @@ StateStore (SQLite) + ToolkitCacheManager (CAS)
 - **Risk:** A new internal operation typechecks correctly but reaches the browser as an empty object because `mapDashboardData` uses an explicit key allowlist.
 - **Mitigation:** Add the operations enum entry, the mapping branch, and a mapper test in the same change, and fail the phase if any skills operation lacks a mapper test.
 
+## Status Update (2026-09-20, second session)
+
+**Done and verified since the status above:**
+- Handlers and routes for `skill_update`, `skill_archive`, `skill_set_create`, `skill_set_update`, `skill_set_delete`, `skill_bulk`, `skill_search`, `skill_revision_get`, `skill_restore`, and `skill_set_preview`. Every mutation carries `expectedGeneration`, so a stale edit is a conflict rather than an unguarded write.
+- `skill_bulk` applies per item, so one stale entry reports a per-item failure instead of discarding the batch.
+- `skill_restore` republishes the bytes a previous revision pinned as a new revision with `origin: 'restore'` and `parent_revision_id` set, leaving the earlier row byte-for-byte unchanged. This also required `StateStore.getSkillRevision`, because the list projection deliberately omits the bundle digest that a restore needs.
+- `skill_set_preview` resolves the selected sets through the same resolver the launch path uses, refuses a set whose generation moved with `STALE_GENERATION`, resolves each inventory entry at its source kind's tier with registry skills landing on the owner tier, and reports an override as pinned.
+- `skill_search` filters the owner's own sources and reports a provider it did not query as unavailable rather than as returning no results. Its route is registered before `/api/v1/skills/:skillId` so the literal segment is not captured as an identifier.
+- A behavioural fix: the store returns `undefined` for a lookup that finds nothing rather than throwing, so `skill_get`, `skill_set_get`, and `skill_import_status` were answering `ok: true` with no data, and the dashboard rendered an empty record where a 404 belonged. Single-record reads now go through one helper that raises `NOT_FOUND`.
+- Tests for owner isolation across the registry, the referenced-set delete conflict, per-item bulk results, the stale-generation conflict, and restore being append-only.
+
+**Not done, and the dependency that explains why:**
+- `skill_create_custom`, `skill_import_start`, and `skill_import_cancel` need a skill-level package: content has to be materialised into the cache root and digested before a source row can honestly claim it exists. The toolkit path has that acquisition pipeline, the single-skill path does not. Serving these now would create rows whose content does not exist, which is worse than failing loudly, so they keep failing loudly.
+- `skill_search` does not fan out to the external providers yet. The Phase 2 adapters can fetch and normalise, but the time-boxed fan-out with provider warnings is not wired to this operation.
+- `skill_revision_diff` needs the same materialisation, because real content is what a textual diff compares. The restore half of that criterion is done.
+- The three `toolkit_registry_*` operations stay in the totality test's pending list because they manage provider catalogue installs, which is the same materialisation work.
+
 ## Implementation Status (2026-09-20)
 **Done and verified:**
 - `DashboardResponseOperation` is now derived from a runtime `DASHBOARD_RESPONSE_OPERATIONS` array (`apps/api/src/dashboard-response.ts`), which is the single source of truth for both the type and the totality check. Before this, the union was type-only and nothing could assert at runtime that an operation had a mapper branch.

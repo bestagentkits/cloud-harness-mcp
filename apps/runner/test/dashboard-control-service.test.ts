@@ -89,6 +89,35 @@ const principal = { kind: 'external' as const, issuer: 'https://access.example.c
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
 
 describe('dashboard control service', () => {
+  it('restores a previous revision by publishing a new one instead of rewriting history', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const { sourceId, revisionId } = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), hasExecutableAssets: false }
+    });
+    const second = principals.addSkillRevision({
+      ownerId, skillSourceId: sourceId, bundleSha256: 'c'.repeat(64), contentSha256: 'd'.repeat(64),
+      hasExecutableAssets: false, origin: 'edit', parentRevisionId: revisionId
+    });
+    const originalBefore = principals.listSkillRevisions(ownerId, sourceId, 50).find((entry) => entry?.id === revisionId);
+    const generation = principals.getSkillSource(ownerId, sourceId)?.generation ?? 1;
+
+    const restored = await controls.execute(request('skill_restore', { skillId: sourceId, revisionId, expectedGeneration: generation }));
+    const restoredId = (restored.data as { revisionId: string }).revisionId;
+    expect(restoredId).not.toBe(revisionId);
+    expect(restoredId).not.toBe(second);
+
+    const revisions = principals.listSkillRevisions(ownerId, sourceId, 50);
+    const created = revisions.find((entry) => entry?.id === restoredId);
+    expect(created?.origin).toBe('restore');
+    expect(created?.parentRevisionId).toBe(revisionId);
+    expect(created?.contentSha256).toBe('b'.repeat(64));
+    expect(principals.getSkillSource(ownerId, sourceId)?.currentRevisionId).toBe(restoredId);
+
+    // History stays append-only: the revision that was restored is byte-for-byte what it was.
+    expect(revisions.find((entry) => entry?.id === revisionId)).toEqual(originalBefore);
+  });
   it('previews a skill set through the resolver and refuses a set that moved', async () => {
     const { controls, principals } = setup();
     const ownerId = principals.resolvePrincipal(principal);
