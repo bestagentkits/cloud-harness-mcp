@@ -81,9 +81,9 @@ describe('air-gap skill lifecycle', () => {
     const run = await sh(workerRequest('skills_run', { name: 'tdd', script: 'hello.sh', expectedContentSha256: SCRIPT_SHA }));
 
     expect(run.exitCode).toBe(0);
-    const parsed = JSON.parse(run.stdout) as { ok: boolean; data: { stdout?: string; executionMode?: string } };
+    const parsed = JSON.parse(run.stdout) as { ok: boolean; data: { output?: string; executionMode?: string } };
     expect(parsed.ok).toBe(true);
-    expect(parsed.data.stdout).toContain('from-snapshot');
+    expect(parsed.data.output).toContain('from-snapshot');
     // The response names the mode, so a caller cannot read a stronger guarantee into the run.
     expect(parsed.data.executionMode).toBe('local');
   }, 120_000);
