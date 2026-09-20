@@ -83,9 +83,63 @@ function setup(withKeyring = true) {
       };
     }
   } as unknown as WorkspaceService;
-  const controls = new DashboardControlService({ artifactRetentionSeconds: 60 } as RunnerConfig, principals, metadata, artifacts, workspaces);
+  const controls = new DashboardControlService(
+    { artifactRetentionSeconds: 60 } as RunnerConfig,
+    principals, metadata, artifacts, workspaces,
+    undefined, undefined, undefined, undefined, keyring
+  );
   return { controls, principals, metadata, artifacts, keyring, workspaces };
 }
+
+describe('integration credentials and typesafe', () => {
+  it('stores a credential write-only and reports configured without ever carrying the key', async () => {
+    const { controls } = setup();
+    const secret = 'ts_live_do_not_log_this_value';
+
+    const before = await controls.execute(request('typesafe_status', {}));
+    expect(before.data).toMatchObject({ configured: false, enabled: true });
+
+    const created = await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: secret, expectedGeneration: 0
+    }));
+    expect(JSON.stringify(created)).not.toContain(secret);
+    const credentialId = (created.data as { id: string }).id;
+
+    // Status and list are the two read paths a caller can reach, and neither returns a value.
+    const after = await controls.execute(request('typesafe_status', {}));
+    expect(after.data).toMatchObject({ configured: true });
+    expect(JSON.stringify(after)).not.toContain(secret);
+
+    const listed = await controls.execute(request('integration_credential_list', {}));
+    expect((listed.data as { credentials: unknown[] }).credentials).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain(secret);
+
+    const rotated = await controls.execute(request('integration_credential_rotate', {
+      credentialId, value: 'ts_live_rotated', expectedGeneration: 1
+    }));
+    expect((rotated.data as { generation: number }).generation).toBe(2);
+    expect(JSON.stringify(rotated)).not.toContain('ts_live_rotated');
+
+    const deleted = await controls.execute(request('integration_credential_delete', { credentialId, expectedGeneration: 2 }));
+    expect(deleted.data).toMatchObject({ deleted: true });
+  });
+
+  it('answers not_configured with zero outbound work when the owner has no key', async () => {
+    const { controls } = setup();
+
+    const result = await controls.execute(request('skill_suggest', { prompt: 'Please refactor the authentication middleware.' }));
+
+    expect(result.data).toMatchObject({ suggested: null, reason: 'not_configured', outboundCalls: 0 });
+  });
+
+  it('refuses a credential write when the runner has no keyring', async () => {
+    const { controls } = setup(false);
+
+    await expect(controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_key', expectedGeneration: 0
+    }))).rejects.toMatchObject({ code: 'UNAVAILABLE', status: 503 });
+  });
+});
 
 const principal = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'operator-a' };
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
