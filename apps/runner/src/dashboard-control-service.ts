@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   HarnessError, MetadataRunnerRequestSchema, qualifiedToolName,
   type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse
@@ -529,6 +530,37 @@ export class DashboardControlService {
             }
           });
           return ok('Skills updated in bulk', { results });
+        }
+        case 'skill_create_custom': {
+          // The package is published before the source row is written, so a created skill always has
+          // content behind it. A row pointing at missing bytes would resolve and then fail at launch,
+          // which is the failure this ordering exists to prevent.
+          let published: { bundleSha256: string; byteCount: number; fileCount: number; bundlePath: string };
+          try {
+            published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, {
+              [`skills/${parsed.input.slug}/SKILL.md`]: parsed.input.instructions
+            });
+          } catch (error) {
+            throw new HarnessError('INVALID_INPUT', error instanceof Error ? error.message : 'the skill package could not be published', 400, false);
+          }
+
+          const created = this.principals.createSkillSource({
+            ownerId: principalId,
+            slug: parsed.input.slug,
+            displayName: parsed.input.displayName,
+            kind: 'owner',
+            provider: 'custom',
+            description: parsed.input.description,
+            tags: parsed.input.tags,
+            revision: {
+              bundleSha256: published.bundleSha256,
+              // The bundle digest covers the whole tree; this digest is the authored instructions.
+              contentSha256: createHash('sha256').update(parsed.input.instructions).digest('hex'),
+              hasExecutableAssets: parsed.input.hasExecutableAssets,
+              origin: 'edit'
+            }
+          });
+          return mutation('Custom skill created', { ...created, bundleSha256: published.bundleSha256 });
         }
         case 'skill_set_preview': {
           const sources = this.principals.listSkillSources(principalId, { limit: 200 })
