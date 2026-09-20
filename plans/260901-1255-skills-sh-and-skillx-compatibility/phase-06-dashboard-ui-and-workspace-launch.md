@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "Dashboard Skills Management UI & Workspace Launch Integration (TDD/E2E)"
-status: pending
+status: completed
 priority: P1
 effort: "30h"
 dependencies: [5]
@@ -162,12 +162,12 @@ If M1 or M2 overruns, stop and report before starting M3: the honest split point
    - Re-check both themes and 375px width in a browser before declaring the phase done, as `docs/design-guidelines.md` requires.
 
 ## Success Criteria
-- [ ] A single Skills page under Configuration covers the full lifecycle: browse and filter the library, edit custom instructions, import with visible job progress, inspect and restore revisions, and see usage and locks before archiving.
-- [ ] Bulk archive or disable returns per-item results: locked rows stay selected with their blockers while successful rows apply.
-- [ ] The Registry tab shows cache state, pinned commit, skill count, and lock state for every toolkit, and clearly separates suggestions from installed skills.
-- [ ] Users select multiple Skill Sets when launching, resolve conflicts through radio choices, and cannot launch while a conflict is unresolved.
-- [ ] The dead `#toolkits-selection-grid` placeholder is gone and no dashboard code path references it.
-- [ ] The UI is responsive, keyboard navigable, screen-reader announced, and passes every contract, behavior, mapper, and mount assertion.
+- [x] A single Skills page under Configuration covers the full lifecycle: browse and filter the library, edit custom instructions, import with visible job progress, inspect and restore revisions, and see usage and locks before archiving.
+- [x] Bulk archive or disable returns per-item results: locked rows stay selected with their blockers while successful rows apply.
+- [x] The Registry tab shows cache state, pinned commit, skill count, and lock state for every toolkit, and clearly separates suggestions from installed skills.
+- [x] Users select multiple Skill Sets when launching, resolve conflicts through radio choices, and cannot launch while a conflict is unresolved.
+- [x] The dead `#toolkits-selection-grid` placeholder is gone and no dashboard code path references it.
+- [x] The UI is responsive, keyboard navigable, screen-reader announced, and passes every contract, behavior, mapper, and mount assertion.
 
 ## Risk Assessment
 - **Risk:** Front-end state drifting from concurrent database changes.
@@ -195,7 +195,7 @@ If M1 or M2 overruns, stop and report before starting M3: the honest split point
 - `toolkit_registry_update` has no runner handler either, so the Registry tab shows cache state, pinned commit, skill count, and lock state without offering enable, disable, or pin.
 - `skill_bulk` carries one generation for the whole batch, so the client groups the selected rows by generation. Without that, every row but one would report a conflict and read as a locking problem when it is a batching one.
 
-**Not yet done:** the registry actions, the revision list and restore views, the import wizard's submit, and the 375-pixel and two-theme check the phase requires before it can be called complete.
+**Resolved:** the registry actions now have runner handlers and a route, the revision views carry restore, diff, and fork, the import wizard's submit is wired to `POST /api/v1/skill-imports` and polls the job it is handed, and the 375-pixel and two-theme check was measured rather than eyeballed. The library toolbar also gained provider, state, and tag filters with a sort control, which this phase asked for and which the first cut left out.
 
 ## Visual Check (measured, 2026-09-20)
 

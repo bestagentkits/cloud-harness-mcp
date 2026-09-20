@@ -34,29 +34,29 @@ Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.s
 
 | # | Phase | Status | Priority | Effort | Dependencies |
 |---|-------|--------|----------|--------|--------------|
-| 1 | [Contracts, Schemas & SQLite Database Migrations (TDD)](./phase-01-contracts-and-sqlite-schema.md) | Pending | P1 | 9h | [] |
-| 2 | [Runner Adapters, Normalization & Content-Addressed Storage (TDD)](./phase-02-runner-adapters-and-cas-normalization.md) | Pending | P1 | 14h | [1] |
-| 3 | [4-Tier Resolution, Precedence, Conflict Engine & Projection (TDD)](./phase-03-resolution-precedence-and-projection.md) | Pending | P1 | 8h | [1, 2] |
-| 4 | [TOCTOU-Safe Helper Execution & Executor CLI Compatibility Layer (TDD)](./phase-04-toctou-execution-and-cli-layer.md) | Pending | P1 | 16h | [2, 3] |
-| 5 | [Control-Plane REST API & Internal Runner Operations (TDD)](./phase-05-control-plane-rest-api.md) | Pending | P1 | 16h | [1, 3] |
-| 6 | [Dashboard Skills Management UI & Workspace Launch Integration (TDD/E2E)](./phase-06-dashboard-ui-and-workspace-launch.md) | Pending | P1 | 30h | [5] |
-| 7 | [End-to-End Verification, Security Adversarial Suite & Docs Sync](./phase-07-e2e-verification-and-docs-sync.md) | Pending | P1 | 10h | [4, 6] |
-| 8 | [TypeSafe/Jev Skill Suggestion Engine (TDD)](./phase-08-typesafe-skill-suggestion-engine.md) | Pending | P1 | 14h | [5] |
-| 9 | [Prompt-Submit Surfaces, Dashboard Configuration & Live Verification (TDD/E2E)](./phase-09-prompt-submit-surfaces-and-verification.md) | Pending | P1 | 18h | [6, 8] |
+| 1 | [Contracts, Schemas & SQLite Database Migrations (TDD)](./phase-01-contracts-and-sqlite-schema.md) | Completed | P1 | 9h | [] |
+| 2 | [Runner Adapters, Normalization & Content-Addressed Storage (TDD)](./phase-02-runner-adapters-and-cas-normalization.md) | Completed | P1 | 14h | [1] |
+| 3 | [4-Tier Resolution, Precedence, Conflict Engine & Projection (TDD)](./phase-03-resolution-precedence-and-projection.md) | Completed | P1 | 8h | [1, 2] |
+| 4 | [TOCTOU-Safe Helper Execution & Executor CLI Compatibility Layer (TDD)](./phase-04-toctou-execution-and-cli-layer.md) | Completed | P1 | 16h | [2, 3] |
+| 5 | [Control-Plane REST API & Internal Runner Operations (TDD)](./phase-05-control-plane-rest-api.md) | Completed | P1 | 16h | [1, 3] |
+| 6 | [Dashboard Skills Management UI & Workspace Launch Integration (TDD/E2E)](./phase-06-dashboard-ui-and-workspace-launch.md) | Completed | P1 | 30h | [5] |
+| 7 | [End-to-End Verification, Security Adversarial Suite & Docs Sync](./phase-07-e2e-verification-and-docs-sync.md) | Completed | P1 | 10h | [4, 6] |
+| 8 | [TypeSafe/Jev Skill Suggestion Engine (TDD)](./phase-08-typesafe-skill-suggestion-engine.md) | Completed | P1 | 14h | [5] |
+| 9 | [Prompt-Submit Surfaces, Dashboard Configuration & Live Verification (TDD/E2E)](./phase-09-prompt-submit-surfaces-and-verification.md) | Completed | P1 | 18h | [6, 8] |
 
 ## Success Criteria
 
-- [ ] All database migrations pass with strict foreign keys enabled (`PRAGMA foreign_keys = ON;`), preventing cross-owner and same-owner cross-source revision references.
-- [ ] In `networkMode: 'none'` workspaces, `skills add`, `npx skills add`, `skillx use`, and `npx skillx-sh use` execute 100% offline from local projection without DNS or network attempts.
-- [ ] Uncached CLI invocations in air-gapped workspaces fail closed with `CACHE_MISS` and explicit import guidance instead of opening background network channels.
-- [ ] 4-tier precedence (`built-in > owner > workspace > repository`) resolves deterministically; same-tier collisions block launch unless explicitly resolved by `skillOverrides[name]`.
-- [ ] `skills_run` executes verified scripts from an immutable root-owned snapshot in a helper container as UID 10001, eliminating TOCTOU script swapping.
-- [ ] Dashboard exposes one unified Skills page that covers the full lifecycle: library browse and filters, custom-instruction editing that creates new revisions, import with durable job progress, revision diff/restore/fork, usage and lock visibility, and per-item bulk results for locked skills.
-- [ ] The Registry tab shows cache state, pinned commit, skill count, and lock state for every toolkit, and renders presets and remote catalogue entries as installable suggestions rather than as already-available skills.
-- [ ] Dashboard supports federated search across Local + skills.sh + SkillX, Skill Set grouping with generation CAS, and multi-set selection at workspace launch.
-- [ ] Submitting a prompt injects a `<skill_relevance>` block naming at most one skill from the workspace's resolved roster, or the explicit no-match sentence, and never blocks the turn when TypeSafe is unavailable.
-- [ ] The TypeSafe key is configured only from the dashboard, stays encrypted at rest and control-plane only, and prompt content is redacted and bounded before it leaves to `api.typesafe.ai`.
-- [ ] All unit, integration, contract, and e2e suites pass (`npm run verify`).
+- [x] All database migrations pass with strict foreign keys enabled (`PRAGMA foreign_keys = ON;`), preventing cross-owner and same-owner cross-source revision references.
+- [x] In `networkMode: 'none'` workspaces, `skills add`, `npx skills add`, `skillx use`, and `npx skillx-sh use` execute 100% offline from local projection without DNS or network attempts.
+- [x] Uncached CLI invocations in air-gapped workspaces fail closed with `CACHE_MISS` and explicit import guidance instead of opening background network channels.
+- [x] 4-tier precedence (`built-in > owner > workspace > repository`) resolves deterministically; same-tier collisions block launch unless explicitly resolved by `skillOverrides[name]`.
+- [x] `skills_run` executes verified scripts from an immutable root-owned snapshot in a helper container as UID 10001, eliminating TOCTOU script swapping.
+- [x] Dashboard exposes one unified Skills page that covers the full lifecycle: library browse and filters, custom-instruction editing that creates new revisions, import with durable job progress, revision diff/restore/fork, usage and lock visibility, and per-item bulk results for locked skills.
+- [x] The Registry tab shows cache state, pinned commit, skill count, and lock state for every toolkit, and renders presets and remote catalogue entries as installable suggestions rather than as already-available skills.
+- [x] Dashboard supports federated search across Local + skills.sh + SkillX, Skill Set grouping with generation CAS, and multi-set selection at workspace launch.
+- [x] Submitting a prompt injects a `<skill_relevance>` block naming at most one skill from the workspace's resolved roster, or the explicit no-match sentence, and never blocks the turn when TypeSafe is unavailable.
+- [x] The TypeSafe key is configured only from the dashboard, stays encrypted at rest and control-plane only, and prompt content is redacted and bounded before it leaves to `api.typesafe.ai`.
+- [x] All unit, integration, contract, and e2e suites pass (`npm run verify`).
 
 ## Validation Log
 

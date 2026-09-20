@@ -1,7 +1,7 @@
 ---
 phase: 8
 title: "TypeSafe/Jev Skill Suggestion Engine (TDD)"
-status: pending
+status: completed
 priority: P1
 effort: "14h"
 dependencies: [5]
@@ -132,15 +132,15 @@ Audit event (no prompt, no answer text) + usage counters
    - Run `npm run typecheck` and `npm test`.
 
 ## Success Criteria
-- [ ] A prompt with a clear match returns at most one roster skill name plus the `<skill_relevance>` block, and a prompt with no match returns no suggestion at the documented thresholds.
-- [ ] The gate and fit thresholds are the only decision inputs, they live in one module, and tests pin both.
-- [ ] No secret value, prompt text, or model answer text appears in any log, audit payload, error message, or cache entry, proven by fixture tests.
-- [ ] Every TypeSafe failure mode (401, 422, 429, 529, timeout, connection error) degrades to no suggestion inside the time budget and never fails a caller.
-- [ ] The TypeSafe key is encrypted at rest, write-only through every read path, and absent from executor environments and workspace mounts.
-- [ ] A missing key returns `not_configured` with zero outbound calls.
-- [ ] A redaction failure produces zero outbound calls and `reason: 'redaction_failed'`, proving redaction fails closed while the suggestion path fails open.
-- [ ] The outbound payload never exceeds the configured egress bound, and the short-circuit list produces zero outbound calls for the listed cases.
-- [ ] The suggestion result contains only a roster-validated skill name plus gate, fit, confidence, latency, and cache metadata, so the phase 9 injection surface cannot carry model prose.
+- [x] A prompt with a clear match returns at most one roster skill name plus the `<skill_relevance>` block, and a prompt with no match returns no suggestion at the documented thresholds.
+- [x] The gate and fit thresholds are the only decision inputs, they live in one module, and tests pin both.
+- [x] No secret value, prompt text, or model answer text appears in any log, audit payload, error message, or cache entry, proven by fixture tests.
+- [x] Every TypeSafe failure mode (401, 422, 429, 529, timeout, connection error) degrades to no suggestion inside the time budget and never fails a caller.
+- [x] The TypeSafe key is encrypted at rest, write-only through every read path, and absent from executor environments and workspace mounts.
+- [x] A missing key returns `not_configured` with zero outbound calls.
+- [x] A redaction failure produces zero outbound calls and `reason: 'redaction_failed'`, proving redaction fails closed while the suggestion path fails open.
+- [x] The outbound payload never exceeds the configured egress bound, and the short-circuit list produces zero outbound calls for the listed cases.
+- [x] The suggestion result contains only a roster-validated skill name plus gate, fit, confidence, latency, and cache metadata, so the phase 9 injection surface cannot carry model prose.
 
 ## Implementation Status (2026-09-20)
 

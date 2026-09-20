@@ -17,7 +17,7 @@ export type RegistrySearchHit = {
  * import: a slow provider must degrade into a reported warning rather than hold the caller's request
  * open, because the local results are still useful on their own.
  */
-export const REGISTRY_SEARCH_TIMEOUT_MS = 8_000;
+export const REGISTRY_SEARCH_TIMEOUT_MS = 3_000;
 
 /** The two providers return different envelopes, so only transport and failure mapping live here. */
 export async function fetchRegistrySearch(

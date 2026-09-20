@@ -266,6 +266,33 @@ type Row = {
   generation: number; error: string | null; request_fingerprint?: string | null;
 };
 
+/**
+ * A provenance column that cannot be parsed is reported as absent rather than thrown, because a reader that
+ * fails on one legacy row would hide every other row on the same page.
+ */function parseProvenance(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string' || value === '') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * SAFETY: `networkMode` only exists on rows written before the profile field replaced it, so the cast is
+ * what lets this reader keep working for those rows. A row carrying neither field falls back to the
+ * strictest profile rather than to an open one, which is the direction that cannot widen access.
+ */
+function legacyNetworkMode(record: WorkspaceRecord | Row): string | undefined {
+  // SAFETY: `networkMode` only exists on rows written before the profile field replaced it, so the cast is
+  // what lets this reader keep working for those rows. A record carrying neither field falls back to the
+  // strictest profile rather than to an open one, which is the direction that cannot widen access.
+  return (record as unknown as { networkMode?: string }).networkMode;
+}
+
 const fromRow = (row: Row): WorkspaceRecord => ({
   id: row.id, ownerId: row.owner_id, idempotencyKey: row.idempotency_key, repositoryUrl: row.repository_url,
   repositoryRef: row.repository_ref, containerName: row.container_name, workspacePath: row.workspace_path,
@@ -303,7 +330,9 @@ export class SkillRegistryError extends Error {
 
 const MAX_SKILL_TAGS = 16;
 const MAX_SKILL_TAG_LENGTH = 32;
-const ACTIVE_WORKSPACE_STATUSES = `('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED')`;
+// The same allowlist as an array, for the readers that pass it as a parameter instead of interpolating it,
+// so the statement text stays constant whatever the list contains.
+const ACTIVE_WORKSPACE_STATUS_LIST = ['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED'];
 
 function parseSkillTags(raw: string): string[] {
   try {
@@ -459,7 +488,7 @@ export class StateStore {
         record.workspacePath,
         record.environmentId ?? null,
         record.status,
-        record.networkProfile ?? ((record as unknown as { networkMode?: string }).networkMode === 'bridge' ? 'dependency-access' : 'network-none'),
+        record.networkProfile ?? (legacyNetworkMode(record) === 'bridge' ? 'dependency-access' : 'network-none'),
         record.createdAt,
         record.lastActivityAt,
         record.expiresAt,
@@ -976,10 +1005,11 @@ export class StateStore {
     const current = this.byId(id);
     if (!current || current.generation !== expectedGeneration || !expectedStatuses.includes(current.status)) return undefined;
     const next = { ...current, ...changes };
-    const placeholders = expectedStatuses.map(() => '?').join(',');
+    // The status allowlist travels as one parameter and is expanded by SQLite, so the statement text is
+    // constant no matter how many statuses are passed and nothing is ever interpolated into it.
     const result = this.database.prepare(`UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, generation=?, error=?
-      WHERE id=? AND generation=? AND status IN (${placeholders})`)
-      .run(next.containerName, next.status, next.lastActivityAt, next.expiresAt, next.generation, next.error, id, expectedGeneration, ...expectedStatuses);
+      WHERE id=? AND generation=? AND status IN (SELECT value FROM json_each(?))`)
+      .run(next.containerName, next.status, next.lastActivityAt, next.expiresAt, next.generation, next.error, id, expectedGeneration, JSON.stringify(expectedStatuses));
     return result.changes === 1 ? next : undefined;
   }
 
@@ -1911,7 +1941,7 @@ export class StateStore {
       updatedAt: row.updated_at,
       expiresAt: row.expires_at,
       deletedAt: row.deleted_at,
-      provenance: JSON.parse(row.provenance_json)
+      provenance: parseProvenance(row.provenance_json)
     };
   }
 
@@ -1993,7 +2023,7 @@ export class StateStore {
         updatedAt: row.updated_at,
         expiresAt: row.expires_at,
         deletedAt: row.deleted_at,
-        provenance: JSON.parse(row.provenance_json)
+        provenance: parseProvenance(row.provenance_json)
       };
     });
 
@@ -2088,7 +2118,7 @@ export class StateStore {
         updatedAt: row.updated_at,
         expiresAt: row.expires_at,
         deletedAt: row.deleted_at,
-        provenance: JSON.parse(row.provenance_json)
+        provenance: parseProvenance(row.provenance_json)
       };
     });
 
@@ -2489,17 +2519,17 @@ export class StateStore {
     sets: { skillSetId: string; name: string }[];
     liveWorkspaces: { workspaceId: string; status: string; name: string; revisionId: string }[];
   } {
-    const sets = this.database.prepare(`SELECT DISTINCT i.skill_set_id AS skillSetId, s.name AS name
-      FROM skill_set_items i JOIN skill_sets s ON s.owner_id = i.owner_id AND s.id = i.skill_set_id
-      WHERE i.owner_id = ? AND i.skill_source_id = ? ORDER BY s.name`)
+    const sets = this.database.prepare('SELECT DISTINCT i.skill_set_id AS skillSetId, s.name AS name FROM skill_set_items i JOIN skill_sets s ON s.owner_id = i.owner_id AND s.id = i.skill_set_id WHERE i.owner_id = ? AND i.skill_source_id = ? ORDER BY s.name')
       .all(ownerId, skillSourceId) as { skillSetId: string; name: string }[];
+    // The status allowlist travels as one parameter and is expanded by SQLite, so the statement text is
+    // constant and nothing is interpolated into it.
     const liveWorkspaces = this.database.prepare(`SELECT DISTINCT a.workspace_id AS workspaceId, w.status AS status,
         a.name AS name, a.revision_id AS revisionId
       FROM workspace_skill_assignments a
       JOIN workspaces w ON w.owner_id = a.owner_id AND w.id = a.workspace_id
-      WHERE a.owner_id = ? AND a.skill_source_id = ? AND w.status IN ${ACTIVE_WORKSPACE_STATUSES}
+      WHERE a.owner_id = ? AND a.skill_source_id = ? AND w.status IN (SELECT value FROM json_each(?))
       ORDER BY a.workspace_id`)
-      .all(ownerId, skillSourceId) as { workspaceId: string; status: string; name: string; revisionId: string }[];
+      .all(ownerId, skillSourceId, JSON.stringify(ACTIVE_WORKSPACE_STATUS_LIST)) as { workspaceId: string; status: string; name: string; revisionId: string }[];
     return { sets, liveWorkspaces };
   }
 
@@ -2688,6 +2718,17 @@ export class StateStore {
         fetched_at = excluded.fetched_at`)
       .run(input.ownerId, `skc_${randomBytes(16).toString('hex')}`, input.provider, input.slug,
         input.displayName, input.description ?? '', input.metadataJson ?? '{}', now);
+  }
+
+  /**
+   * Startup recovery needs every interrupted job rather than one owner's, because the runner does not know
+   * which owners were mid-import when it stopped, and a job left running would otherwise never reach a
+   * terminal state on its own.
+   */
+  listInterruptedSkillImportJobs(): Array<{ ownerId: string; id: string }> {
+    return this.database.prepare(
+      "SELECT owner_id AS ownerId, id FROM skill_import_jobs WHERE state IN ('queued', 'running')"
+    ).all() as Array<{ ownerId: string; id: string }>;
   }
 
   listSkillCatalogEntries(ownerId: string, provider?: 'skills-sh' | 'skillx'): {

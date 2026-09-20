@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "End-to-End Verification, Security Adversarial Suite & Docs Sync"
-status: pending
+status: completed
 priority: P1
 effort: "10h"
 dependencies: [4, 6]
@@ -87,12 +87,12 @@ Full Lifecycle E2E Verification
    - Create `docs-site/dashboard/skills.md`, register it in `docs-site/.vitepress/config.ts`, and cross-link it from `docs-site/dashboard/index.md` and `docs-site/dashboard/workspaces.md`; update `docs-site/agent-toolkits.md` to present presets as installable suggestions and to document the Registry tab; update `docs-site/security-model.md` to match the internal threat-model wording; then run `npm run docs:reference`.
 
 ## Success Criteria
-- [ ] E2E integration tests pass covering the full import -> set -> workspace -> CLI -> run lifecycle and the operator management lifecycle (custom create, edit, diff, restore, fork, per-item bulk conflict, import progress).
-- [ ] Adversarial checks confirm 0 secrets leaked, 0 air-gap bypasses, and 100% TOCTOU protection, including custom skill scripts.
-- [ ] `npm run plugin:sync` passes with zero drift between `.agents/skills/` and `plugins/`.
-- [ ] `npm test packages/contracts/test/cloudharness-skill-contract.test.ts` passes.
-- [ ] `docs-site/dashboard/skills.md` exists, is registered in `docs-site/.vitepress/config.ts`, and is cross-linked from the dashboard index and workspaces pages. Success is asserted by the registration itself, not by `npm run docs:links`, which only warns about external https links in a pre-built `dist` and does not run in CI.
-- [ ] All repository quality gates pass for the phases 1-6 scope (`npm run verify`), and phase 9 re-runs that same gate after the TypeSafe work lands.
+- [x] E2E integration tests pass covering the full import -> set -> workspace -> CLI -> run lifecycle and the operator management lifecycle (custom create, edit, diff, restore, fork, per-item bulk conflict, import progress).
+- [x] Adversarial checks confirm 0 secrets leaked, 0 air-gap bypasses, and 100% TOCTOU protection, including custom skill scripts.
+- [x] `npm run plugin:sync` passes with zero drift between `.agents/skills/` and `plugins/`.
+- [x] `npm test packages/contracts/test/cloudharness-skill-contract.test.ts` passes.
+- [x] `docs-site/dashboard/skills.md` exists, is registered in `docs-site/.vitepress/config.ts`, and is cross-linked from the dashboard index and workspaces pages. Success is asserted by the registration itself, not by `npm run docs:links`, which only warns about external https links in a pre-built `dist` and does not run in CI.
+- [x] All repository quality gates pass for the phases 1-6 scope (`npm run verify`), and phase 9 re-runs that same gate after the TypeSafe work lands.
 
 ## Risk Assessment
 - **Risk:** Documentation drift between internal docs and public docs site.

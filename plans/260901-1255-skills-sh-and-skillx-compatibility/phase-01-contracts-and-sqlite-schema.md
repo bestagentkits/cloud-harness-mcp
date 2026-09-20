@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Contracts, Schemas & SQLite Database Migrations (TDD)"
-status: pending
+status: completed
 priority: P1
 effort: "9h"
 dependencies: []
@@ -82,16 +82,16 @@ skill_sets (owner_id, id) ◄──────────────┴──
    - Run `npm test packages/contracts/test/registry-toolkit-schemas.test.ts` and `npm test apps/runner/test/state-schema-skills.test.ts`.
 
 ## Success Criteria
-- [ ] `ToolkitSelectionSchema` successfully validates `kind: 'registry'` for both `skills-sh` and `skillx` providers.
-- [ ] `workspace_open` validates up to 16 `skillSets` and up to 128 `skillOverrides`.
-- [ ] SQLite migrations execute cleanly with `foreign_keys = ON` on new and existing databases.
-- [ ] Cross-owner insertion tests fail with `FOREIGN KEY constraint failed`.
-- [ ] Same-owner cross-source revision assignment fails with `FOREIGN KEY constraint failed`.
-- [ ] Deletion of revisions locked by active workspaces is blocked by `RESTRICT`.
-- [ ] `skill_sources.state` moves only through allowed transitions, and an `archived` skill is excluded from resolution input while its revisions stay referenced by live workspace snapshots.
-- [ ] Every content change is a new `skill_revisions` row with `parent_revision_id` and `origin` set; no existing revision row is updated in place.
-- [ ] An import job survives a store reopen and reports terminal state exactly once.
-- [ ] The new tables land as schema version 11, with the DDL owned by the `if (version === 10)` ladder step in `apps/runner/src/principal-store.ts` rather than the `StateStore` bootstrap block, a paired `downgradeStateSchemaToV10` exists with data-loss guards, and the composite foreign keys use the pre-existing `workspaces_owner_id_id` index rather than a duplicate.
+- [x] `ToolkitSelectionSchema` successfully validates `kind: 'registry'` for both `skills-sh` and `skillx` providers.
+- [x] `workspace_open` validates up to 16 `skillSets` and up to 128 `skillOverrides`.
+- [x] SQLite migrations execute cleanly with `foreign_keys = ON` on new and existing databases.
+- [x] Cross-owner insertion tests fail with `FOREIGN KEY constraint failed`.
+- [x] Same-owner cross-source revision assignment fails with `FOREIGN KEY constraint failed`.
+- [x] Deletion of revisions locked by active workspaces is blocked by `RESTRICT`.
+- [x] `skill_sources.state` moves only through allowed transitions, and an `archived` skill is excluded from resolution input while its revisions stay referenced by live workspace snapshots.
+- [x] Every content change is a new `skill_revisions` row with `parent_revision_id` and `origin` set; no existing revision row is updated in place.
+- [x] An import job survives a store reopen and reports terminal state exactly once.
+- [x] The new tables land as schema version 11, with the DDL owned by the `if (version === 10)` ladder step in `apps/runner/src/principal-store.ts` rather than the `StateStore` bootstrap block, a paired `downgradeStateSchemaToV10` exists with data-loss guards, and the composite foreign keys use the pre-existing `workspaces_owner_id_id` index rather than a duplicate.
 
 ## Risk Assessment
 - **Risk:** Adding mutable `state`, `tags`, and `generation` columns to `skill_sources` while content stays immutable invites in-place content edits.

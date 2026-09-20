@@ -7,10 +7,9 @@ import { DASHBOARD_RESPONSE_OPERATIONS } from '../src/dashboard-response.js';
  * dashboard yet. The list must only ever shrink: Phase 5 empties it by adding the skills and skill
  * set routes, their mapper branches, and their tests together.
  */
-const PENDING_DASHBOARD_MAPPING: readonly string[] = [
-  'toolkit_registry_update',
-  'toolkit_registry_refresh'
-];
+// Every metadata operation now has a mapping branch, so this list is empty on purpose: the totality test
+// below fails if a future operation is added without one, which is the failure mode it exists to close.
+const PENDING_DASHBOARD_MAPPING: readonly string[] = [];
 
 describe('dashboard response totality', () => {
   it('accounts for every metadata operation, either mapped or explicitly pending', () => {

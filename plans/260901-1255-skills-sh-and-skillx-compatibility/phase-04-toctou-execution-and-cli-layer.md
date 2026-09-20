@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "TOCTOU-Safe Helper Execution & Executor CLI Compatibility Layer (TDD)"
-status: pending
+status: completed
 priority: P1
 effort: "16h"
 dependencies: [2, 3]
@@ -105,12 +105,12 @@ Spawn Disposable Helper Container
    - Run `npm run test:docker` for the new CLI suite, and confirm the image builds with `docker compose --profile images build executor-image`. That script is a hardcoded five-file list of `test/integration/*.docker.test.ts` (`package.json:31`) and neither `npm test` nor `npm run test:integration` collects `*.docker.test.ts`, so the new file must be added to that list or placed under `test/integration/`; otherwise the assertion above never executes in CI.
 
 ## Success Criteria
-- [ ] Symlink swapping or file tampering during `skills_run` cannot alter executed bytes.
-- [ ] `skills add` and `skillx use` execute completely offline inside `networkMode: 'none'` containers.
-- [ ] `npx skills ...` and `npx skillx-sh ...` work seamlessly without requiring npm registry connections.
-- [ ] Unrelated `npx` commands continue to work normally through delegation.
-- [ ] Uncached skill requests fail closed with structured `CACHE_MISS` errors.
-- [ ] The executor image is built from `docker/executor.Dockerfile`, contains the launchers, and resolves `npx` to `/opt/harness/bin/npx` while delegation still reaches the real npm.
+- [x] Symlink swapping or file tampering during `skills_run` cannot alter executed bytes.
+- [x] `skills add` and `skillx use` execute completely offline inside `networkMode: 'none'` containers.
+- [x] `npx skills ...` and `npx skillx-sh ...` work seamlessly without requiring npm registry connections.
+- [x] Unrelated `npx` commands continue to work normally through delegation.
+- [x] Uncached skill requests fail closed with structured `CACHE_MISS` errors.
+- [x] The executor image is built from `docker/executor.Dockerfile`, contains the launchers, and resolves `npx` to `/opt/harness/bin/npx` while delegation still reaches the real npm.
 
 ## Risk Assessment
 - **Risk:** Shell environment differences or non-standard `npx` arguments breaking delegation.

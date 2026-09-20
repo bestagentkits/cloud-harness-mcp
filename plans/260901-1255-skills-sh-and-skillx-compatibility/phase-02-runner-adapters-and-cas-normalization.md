@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Runner Adapters, Normalization & Content-Addressed Storage (TDD)"
-status: pending
+status: completed
 priority: P1
 effort: "14h"
 dependencies: [1]
@@ -79,13 +79,13 @@ StateStore Transaction (skill_sources + skill_revisions)
    - Run `npm run verify:compose`, because this phase changes the provisioning proxy allowlist and the toolkit network policy. Note that `npm run verify` does not include that gate.
 
 ## Success Criteria
-- [ ] `SkillsShAdapter` resolves mutable Git refs to full commit OIDs and normalizes valid `SKILL.md` trees.
-- [ ] `SkillXAdapter` accurately snapshots instruction text and maps metadata without crashing on provider schema variations, and instructions-only revisions report zero executable assets.
-- [ ] Custom (owner-authored) revisions carry a full-tree digest and an accurate `has_executable_assets` flag, so phase 4 can verify them before execution.
-- [ ] Concurrent requests for the same skill/commit trigger only one network acquisition (single-flight deduplication).
-- [ ] Malicious archive fixtures (traversal, symlinks, bombs) are rejected before CAS publication.
-- [ ] Cache corruption is detected upon projection and automatically quarantined.
-- [ ] A real import from a registry provider completes end to end under `TOOLKIT_NETWORK_POLICY=runner-fetch` with the provider hosts present in the provisioning proxy allowlist, and `npm run verify:compose` passes with the updated boundary expectations.
+- [x] `SkillsShAdapter` resolves mutable Git refs to full commit OIDs and normalizes valid `SKILL.md` trees.
+- [x] `SkillXAdapter` accurately snapshots instruction text and maps metadata without crashing on provider schema variations, and instructions-only revisions report zero executable assets.
+- [x] Custom (owner-authored) revisions carry a full-tree digest and an accurate `has_executable_assets` flag, so phase 4 can verify them before execution.
+- [x] Concurrent requests for the same skill/commit trigger only one network acquisition (single-flight deduplication).
+- [x] Malicious archive fixtures (traversal, symlinks, bombs) are rejected before CAS publication.
+- [x] Cache corruption is detected upon projection and automatically quarantined.
+- [x] A real import from a registry provider completes end to end under `TOOLKIT_NETWORK_POLICY=runner-fetch` with the provider hosts present in the provisioning proxy allowlist, and `npm run verify:compose` passes with the updated boundary expectations.
 
 ## Risk Assessment
 - **Risk:** Upstream SkillX API schema changes or rate limits during search/import.

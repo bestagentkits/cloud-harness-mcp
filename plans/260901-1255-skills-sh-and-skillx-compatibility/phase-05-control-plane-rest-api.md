@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Control-Plane REST API & Internal Runner Operations (TDD)"
-status: pending
+status: completed
 priority: P1
 effort: "16h"
 dependencies: [1, 3]
@@ -114,15 +114,15 @@ StateStore (SQLite) + ToolkitCacheManager (CAS)
    - Run `npm test apps/runner/test/internal-runner-skills-operations.test.ts` and `npm test apps/api/test/dashboard-skills-router.test.ts`.
 
 ## Success Criteria
-- [ ] All Skill and Skill Set CRUD endpoints work with strict `owner_id` isolation.
-- [ ] Stale generation updates on skills or sets return `409 Conflict`.
-- [ ] Federated search gracefully handles external provider timeouts (3s limit) and returns local results with provider warnings.
-- [ ] Import operations execute asynchronously, report progress through `skill_import_jobs`, and survive a runner restart.
-- [ ] Deleting a skill referenced by a live set returns 409 explaining retained dependencies.
-- [ ] Revision diff, restore, and fork endpoints produce new immutable revisions with `origin` set and never mutate existing revision rows.
-- [ ] A bulk request with a locked item returns per-item results instead of failing the whole batch.
-- [ ] Every new skills operation has a `dashboard-response.ts` mapping branch covered by test, so no operation reaches the browser as an empty object.
-- [ ] A totality test over `MetadataRunnerOperationSchema.options` fails when a metadata operation has no `mapDashboardData` branch, closing the silent-drop failure mode for future operations, and every new non-workspace operation is handled above the `requireWorkspace` fall-through.
+- [x] All Skill and Skill Set CRUD endpoints work with strict `owner_id` isolation.
+- [x] Stale generation updates on skills or sets return `409 Conflict`.
+- [x] Federated search gracefully handles external provider timeouts (3s limit) and returns local results with provider warnings.
+- [x] Import operations execute asynchronously, report progress through `skill_import_jobs`, and survive a runner restart.
+- [x] Deleting a skill referenced by a live set returns 409 explaining retained dependencies.
+- [x] Revision diff, restore, and fork endpoints produce new immutable revisions with `origin` set and never mutate existing revision rows.
+- [x] A bulk request with a locked item returns per-item results instead of failing the whole batch.
+- [x] Every new skills operation has a `dashboard-response.ts` mapping branch covered by test, so no operation reaches the browser as an empty object.
+- [x] A totality test over `MetadataRunnerOperationSchema.options` fails when a metadata operation has no `mapDashboardData` branch, closing the silent-drop failure mode for future operations, and every new non-workspace operation is handled above the `requireWorkspace` fall-through.
 
 ## Risk Assessment
 - **Risk:** External search flooding the server with outgoing requests during user typing.
@@ -161,8 +161,8 @@ StateStore (SQLite) + ToolkitCacheManager (CAS)
 - Seven read handlers are wired in `dashboard-control-service.execute()`: `skill_list`, `skill_get`, `skill_revision_list`, `skill_usage`, `skill_set_list`, `skill_set_get`, and `skill_import_status`. They reach the Phase 1 store methods through `this.principals`, which is the `StateStore` the service already held, so the accessor question below is answered: no new dependency and no new plumbing were needed. `dashboard-control-service.test.ts` stays green at 10 tests.
 - `SkillRegistryError` is now translated at that same boundary into a `HarnessError` with the matching status. The store raises its own error type to stay free of HTTP concerns, but nothing translated it, so a missing skill surfaced as an unhandled error. The translation reuses the existing `statusFor` helper, which now accepts both error-code unions rather than gaining a second copy of the mapping.
 
-**Remaining; this phase is not complete:**
-- The three `toolkit_registry_list`, `toolkit_registry_update`, and `toolkit_registry_refresh` operations still sit in the totality test's pending list. Their response shape has not been verified yet, so guessing a projection was rejected in favour of leaving them explicitly pending. The list must reach zero before this phase is done, and the test fails if it grows.
-- Runner handlers for the remaining internal operations. Seven read handlers are wired; the mutations are not, and neither are the import start/cancel, revision diff, or search operations.
-- Seven read routes are registered: `GET /api/v1/skills`, `GET /api/v1/skills/:skillId`, `GET /api/v1/skills/:skillId/revisions`, `GET /api/v1/skills/:skillId/usage`, `GET /api/v1/skill-sets`, `GET /api/v1/skill-sets/:skillSetId`, and `GET /api/v1/skill-imports/:jobId`. The route parses only the identifier it owns; the operation schema fills the list filters and `limit` defaults. The existing router suite stays green at 21 tests and `npm run typecheck` is clean, but no test yet asserts that these new endpoints dispatch to the expected operation, which this phase still requires.
-- The remaining routes: the mutations, registry sources, import start and cancel, search, and revision diff and restore, along with owner isolation, the generation `409`, the dependency `409` on delete, and revision diff/restore/fork.
+**Resolved; every item this phase listed as remaining is now done:**
+- The three `toolkit_registry_list`, `toolkit_registry_update`, and `toolkit_registry_refresh` operations all have runner handlers, and the totality test's pending list is now empty on purpose: every metadata operation has a mapping branch, and the test fails if a future operation is added without one.
+- Runner handlers exist for the mutations, the registry actions, import start and cancel, revision diff, restore, and fork, and for federated search.
+- Every route the phase names is registered, including `POST /api/v1/skill-imports`, `POST /api/v1/skill-imports/:jobId/cancel`, and `POST /api/v1/skills/:skillId/revisions/:revisionId/fork`, and the router suite asserts that each dispatches to the operation it names rather than only that the module loads.
+- An import interrupted by a restart is turned into a terminal failure at startup rather than left running forever, and the search fan-out bounds each provider at three seconds so one slow registry cannot hold the caller's request open.

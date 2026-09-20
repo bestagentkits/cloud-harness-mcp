@@ -1,7 +1,7 @@
 ---
 phase: 9
 title: "Prompt-Submit Surfaces, Dashboard Configuration & Live Verification (TDD/E2E)"
-status: pending
+status: completed
 priority: P1
 effort: "18h"
 dependencies: [6, 8]
@@ -134,17 +134,17 @@ Claude Code                        Other MCP clients
    - Run `TYPESAFE_LIVE=1 npm test test/integration/typesafe-live.test.ts` locally with the key loaded, and confirm the stubbed suites pass without any key present.
 
 ## Success Criteria
-- [ ] Submitting a prompt in Claude Code with the plugin enabled injects a `<skill_relevance>` block naming at most one skill, or the explicit no-match sentence, without blocking the turn.
-- [ ] `skill_suggest` works from any MCP client and resolves the workspace from `preferred_workspaces` when `workspaceId` is omitted.
-- [ ] The dashboard configures the key, model, thresholds, egress payload bound, cache TTL, and kill switch, and its "Test connection" action reports status and latency without exposing the key.
-- [ ] The tool is classified read-only, idempotent, and external-egress, and a profile without external-egress tools cannot call it.
-- [ ] Internal and public docs describe the prompt egress, its redaction controls, the kill switch, and the overrides; `npm run docs:links` and `npm run plugin:sync` pass.
-- [ ] The live harness runs against the real endpoint with the key loaded from the external file, prints no secret value, and is skipped unless `TYPESAFE_LIVE=1`.
-- [ ] No prompt text, answer text, or key value appears in any dashboard response, audit record, plugin output, or committed fixture.
-- [ ] The injected block contains only roster-validated identifiers, never model prose, and an unvalidated suggestion produces no block at all.
-- [ ] Egress can be disabled by configuration or environment regardless of key presence, and the dashboard shows egress state, a per-session count, and a one-time acknowledgement.
-- [ ] The bundled MCP entry reuses the existing control-plane endpoint and authentication and adds no second credential path.
-- [ ] No `TYPESAFE_API_KEY` appears in `.env.example`, `docs/configuration.md`, or any compose service environment, and `npm run verify:compose` passes.
+- [x] Submitting a prompt in Claude Code with the plugin enabled injects a `<skill_relevance>` block naming at most one skill, or the explicit no-match sentence, without blocking the turn.
+- [x] `skill_suggest` works from any MCP client and resolves the workspace from `preferred_workspaces` when `workspaceId` is omitted.
+- [x] The dashboard configures the key, model, thresholds, egress payload bound, cache TTL, and kill switch, and its "Test connection" action reports status and latency without exposing the key.
+- [x] The tool is classified read-only, idempotent, and external-egress, and a profile without external-egress tools cannot call it.
+- [x] Internal and public docs describe the prompt egress, its redaction controls, the kill switch, and the overrides; `npm run docs:links` and `npm run plugin:sync` pass.
+- [x] The live harness runs against the real endpoint with the key loaded from the external file, prints no secret value, and is skipped unless `TYPESAFE_LIVE=1`.
+- [x] No prompt text, answer text, or key value appears in any dashboard response, audit record, plugin output, or committed fixture.
+- [x] The injected block contains only roster-validated identifiers, never model prose, and an unvalidated suggestion produces no block at all.
+- [x] Egress can be disabled by configuration or environment regardless of key presence, and the dashboard shows egress state, a per-session count, and a one-time acknowledgement.
+- [x] The bundled MCP entry reuses the existing control-plane endpoint and authentication and adds no second credential path.
+- [x] No `TYPESAFE_API_KEY` appears in `.env.example`, `docs/configuration.md`, or any compose service environment, and `npm run verify:compose` passes.
 
 ## Risk Assessment
 - **Risk:** The hook adds latency to every prompt, and `UserPromptSubmit` runs before the model sees the turn. This is a product trade-off rather than a defect: the operator chose always-on suggestions, so the 2.5 s engine budget and the shorter hook timeout are the deliberate ceiling on that cost.

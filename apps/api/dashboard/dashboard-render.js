@@ -185,6 +185,10 @@ export function renderSkillsSkeleton() {
 
   const library = `<form class="skills-toolbar" role="search" aria-label="Filter skills">
         <label for="skills-library-search">Search</label><input id="skills-library-search" name="q" placeholder="Filter by name or provider">
+        <label for="skills-library-provider">Provider</label><select id="skills-library-provider" name="provider"><option value="">Any</option><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="custom">Custom</option><option value="git">Git</option></select>
+        <label for="skills-library-state">State</label><select id="skills-library-state" name="state"><option value="">Any</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="archived">Archived</option></select>
+        <label for="skills-library-tag">Tag</label><input id="skills-library-tag" name="tag" placeholder="Filter by tag">
+        <label for="skills-library-sort">Sort</label><select id="skills-library-sort" name="sort"><option value="name">Name</option><option value="provider">Provider</option><option value="state">State</option></select>
       </form>
       <div id="skills-bulk-bar" class="skills-bulk-bar" hidden><span id="skills-bulk-count"></span><button type="button" id="skills-bulk-archive">Archive</button><button type="button" id="skills-bulk-disable">Disable</button></div>
       <table id="skills-library-table" class="data-table desktop-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
@@ -194,6 +198,7 @@ export function renderSkillsSkeleton() {
         <div id="skill-detail-files"></div>
         <div id="skill-detail-revisions"></div>
         <div id="skill-detail-usage"></div>
+        <button type="button" id="skill-detail-edit">Edit instructions</button>
       </aside>
       <form id="skill-editor">
         <h3>Create a custom skill</h3>
@@ -215,6 +220,7 @@ export function renderSkillsSkeleton() {
         <label for="skill-import-scope">Source kind</label><select id="skill-import-scope" name="sourceKind"><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="git">Git</option></select>
         <div id="skill-import-review"></div>
         <div id="skill-import-job" role="status"></div>
+        <button type="button" id="skill-import-submit">Import</button>
         <button type="button" id="skill-import-retry">Retry</button>
         <button type="button" id="skill-import-cancel">Cancel</button>
       </dialog>
@@ -367,6 +373,8 @@ export function renderSkillRevisions(revisions, currentRevisionId) {
       ${revision.id === currentRevisionId
         ? '<span class="status">current</span>'
         : `<button type="button" data-skill-restore="${escape(revision.id)}">Restore</button>`}
+      <button type="button" data-skill-diff="${escape(revision.id)}">Diff</button>
+      <button type="button" data-skill-fork="${escape(revision.id)}">Fork</button>
     </li>`).join('')}</ul>`;
 }
 
