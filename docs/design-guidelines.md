@@ -161,6 +161,12 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
 
 ## Components
 
+- **Data tables:** a dense table is paired with a card list of the same rows, and
+the table carries `desktop-table`, which the mobile breakpoint hides. The Skills
+library follows this rule: its five columns cannot fit 375px, and a table that
+overflows the viewport is worse than a list that does not. Both renderings carry
+the same controls and both are wired, so the visible one is never the only
+working one.
 - **Top bar:** sticky header carrying the wordmark + `MCP Control Plane` tag, a
   search trigger (`aria-keyshortcuts="Meta+K Control+K"`), the theme icon, the
   profile chip, and Sign out. The chip is a link to the Profile page showing the
