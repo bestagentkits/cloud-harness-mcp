@@ -39,7 +39,7 @@ import {
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
   renderSkillConflicts,
-  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
+  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions, renderSkillUsage,
   renderSkillsSkeleton
 } from './dashboard-render.js';
 
@@ -1026,6 +1026,15 @@ export function initializeDashboard() {
       box.innerHTML = renderSkillRevisions(revisions, skill ? skill.currentRevisionId : undefined);
       for (const button of box.querySelectorAll('[data-skill-restore]')) {
         button.addEventListener('click', () => { void restoreRevision(skillId, button.getAttribute('data-skill-restore')).catch(showError); });
+      }
+
+      // Usage and lock come from their own reader, because what would break if this skill changed is a
+      // different question from what its revisions contain, and the drawer previously left the usage
+      // container in the skeleton empty while showing a lock column only for registry entries.
+      const usageBox = document.querySelector('#skill-detail-usage');
+      if (usageBox) {
+        const usage = (await api(`/skills/${encodeURIComponent(skillId)}/usage`)).data;
+        usageBox.innerHTML = renderSkillUsage(usage);
       }
     }
 

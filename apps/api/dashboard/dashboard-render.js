@@ -327,6 +327,27 @@ export function renderSkillSetChips(names) {
  * The same rows as cards, for narrow screens. A five-column table cannot fit a phone, and the shell
  * already hides `.desktop-table` under its mobile breakpoint, so the two renderings share one source.
  */
+/**
+ * Usage answers "what would break if this changed", so it names the two places a skill can be in use
+ * rather than showing a count: a skill inside a set and a skill pinned by a live workspace are different
+ * risks. Lock is the same fact stated as a consequence, because a skill in use cannot be archived
+ * without changing what those workspaces resolve.
+ */
+export function renderSkillUsage(usage) {
+  const sets = Array.isArray(usage?.sets) ? usage.sets : [];
+  const live = Array.isArray(usage?.liveWorkspaces) ? usage.liveWorkspaces : [];
+  const locked = sets.length > 0 || live.length > 0;
+  const setRows = sets.length === 0
+    ? '<li class="muted">Not in any skill set.</li>'
+    : sets.map((set) => `<li>${escape(set.name)} <span class="mono">${escape(set.skillSetId)}</span></li>`).join('');
+  const workspaceRows = live.length === 0
+    ? '<li class="muted">Not pinned by any live workspace.</li>'
+    : live.map((entry) => `<li>${escape(entry.name)} <span class="status ${escape(String(entry.status))}">${escape(entry.status)}</span> <span class="mono">${escape(entry.revisionId)}</span></li>`).join('');
+  return `<p id="skill-usage-lock"><span class="status ${locked ? 'locked' : 'unlocked'}">${locked ? 'locked' : 'unlocked'}</span></p>
+    <h4>Skill sets</h4><ul>${setRows}</ul>
+    <h4>Live workspaces</h4><ul>${workspaceRows}</ul>`;
+}
+
 export function renderSkillsLibraryCards(skills) {
   const list = Array.isArray(skills) ? skills : [];
   if (list.length === 0) return '<li class="panel">No skills yet. Import one from Discover, or create a custom skill.</li>';
