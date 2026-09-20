@@ -821,11 +821,217 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
     });
     version = 10;
   }
-  if (version !== 10) throw new Error(`unsupported state schema version ${version}`);
+  if (version === 10) {
+    transaction(database, () => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS skill_sources (
+          owner_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          slug TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          kind TEXT NOT NULL CHECK (kind IN ('built-in','owner','workspace','repository','registry')),
+          provider TEXT CHECK (provider IN ('skills-sh','skillx','git','custom')),
+          source_ref TEXT,
+          current_revision_id TEXT,
+          state TEXT NOT NULL DEFAULT 'enabled' CHECK (state IN ('enabled','disabled','archived')),
+          tags TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags) AND json_type(tags) = 'array' AND length(tags) <= 4096),
+          generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          UNIQUE (owner_id, slug),
+          FOREIGN KEY (owner_id) REFERENCES principals(id) ON DELETE RESTRICT,
+          FOREIGN KEY (owner_id, id, current_revision_id)
+            REFERENCES skill_revisions(owner_id, skill_source_id, id) DEFERRABLE INITIALLY DEFERRED
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_revisions (
+          owner_id TEXT NOT NULL,
+          skill_source_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          parent_revision_id TEXT,
+          origin TEXT NOT NULL CHECK (origin IN ('import','refresh','edit','restore','fork')),
+          bundle_sha256 TEXT NOT NULL,
+          content_sha256 TEXT NOT NULL,
+          has_executable_assets INTEGER NOT NULL DEFAULT 0 CHECK (has_executable_assets IN (0,1)),
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          UNIQUE (owner_id, skill_source_id, id),
+          FOREIGN KEY (owner_id, skill_source_id) REFERENCES skill_sources(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id, parent_revision_id) REFERENCES skill_revisions(owner_id, id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS skill_revisions_source_idx ON skill_revisions(owner_id, skill_source_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS skill_sets (
+          owner_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          FOREIGN KEY (owner_id) REFERENCES principals(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_set_items (
+          owner_id TEXT NOT NULL,
+          skill_set_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          skill_source_id TEXT NOT NULL,
+          revision_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          PRIMARY KEY (owner_id, skill_set_id, ordinal),
+          UNIQUE (owner_id, skill_set_id, name),
+          FOREIGN KEY (owner_id, skill_set_id) REFERENCES skill_sets(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id, skill_source_id, revision_id) REFERENCES skill_revisions(owner_id, skill_source_id, id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_skill_set_snapshots (
+          owner_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          skill_set_id TEXT NOT NULL,
+          skill_set_generation INTEGER NOT NULL CHECK (skill_set_generation > 0),
+          snapshot_sha256 TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, workspace_id, ordinal),
+          FOREIGN KEY (owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id, skill_set_id) REFERENCES skill_sets(owner_id, id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_skill_assignments (
+          owner_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          skill_source_id TEXT NOT NULL,
+          revision_id TEXT NOT NULL,
+          tier TEXT NOT NULL CHECK (tier IN ('built-in','owner','workspace','repository')),
+          pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0,1)),
+          PRIMARY KEY (owner_id, workspace_id, ordinal),
+          UNIQUE (owner_id, workspace_id, name),
+          FOREIGN KEY (owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id, skill_source_id, revision_id) REFERENCES skill_revisions(owner_id, skill_source_id, id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_catalog_entries (
+          owner_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          provider TEXT NOT NULL CHECK (provider IN ('skills-sh','skillx')),
+          slug TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          fetched_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          UNIQUE (owner_id, provider, slug),
+          FOREIGN KEY (owner_id) REFERENCES principals(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_import_jobs (
+          owner_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('skills-sh','skillx','git')),
+          source_ref TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('queued','running','succeeded','failed','cancelled')),
+          progress_json TEXT NOT NULL DEFAULT '{}',
+          result_json TEXT,
+          error_code TEXT,
+          skill_revision_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          FOREIGN KEY (owner_id, skill_revision_id) REFERENCES skill_revisions(owner_id, id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS skill_import_jobs_state_idx ON skill_import_jobs(owner_id, state, updated_at DESC);
+
+        CREATE TRIGGER IF NOT EXISTS skill_sources_state_transition
+        BEFORE UPDATE OF state ON skill_sources
+        FOR EACH ROW
+        WHEN NOT (
+          (OLD.state = 'enabled' AND NEW.state IN ('enabled','disabled','archived')) OR
+          (OLD.state = 'disabled' AND NEW.state IN ('disabled','enabled','archived'))
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'illegal skill state transition');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS skill_revisions_immutable
+        BEFORE UPDATE ON skill_revisions
+        FOR EACH ROW
+        WHEN (
+          OLD.owner_id IS NOT NEW.owner_id OR
+          OLD.id IS NOT NEW.id OR
+          OLD.skill_source_id IS NOT NEW.skill_source_id OR
+          OLD.parent_revision_id IS NOT NEW.parent_revision_id OR
+          OLD.origin IS NOT NEW.origin OR
+          OLD.bundle_sha256 IS NOT NEW.bundle_sha256 OR
+          OLD.content_sha256 IS NOT NEW.content_sha256 OR
+          OLD.has_executable_assets IS NOT NEW.has_executable_assets
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'skill revisions are immutable; create a new revision');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS skill_import_jobs_terminal_once
+        BEFORE UPDATE ON skill_import_jobs
+        FOR EACH ROW
+        WHEN (
+          OLD.state IN ('succeeded','failed','cancelled') AND
+          (NEW.state IS NOT OLD.state OR NEW.result_json IS NOT OLD.result_json OR NEW.error_code IS NOT OLD.error_code)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'terminal skill import jobs are immutable');
+        END;
+      `);
+
+      database.exec('UPDATE schema_meta SET version = 11;');
+    });
+    version = 11;
+  }
+  if (version !== 11) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV10(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 11) throw new Error(`state schema must be version 11 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const sourceCount = (database.prepare('SELECT count(*) as count FROM skill_sources').get() as { count: number }).count;
+    const revisionCount = (database.prepare('SELECT count(*) as count FROM skill_revisions').get() as { count: number }).count;
+    const setCount = (database.prepare('SELECT count(*) as count FROM skill_sets').get() as { count: number }).count;
+    const jobCount = (database.prepare('SELECT count(*) as count FROM skill_import_jobs').get() as { count: number }).count;
+    if (sourceCount > 0 || revisionCount > 0 || setCount > 0 || jobCount > 0) {
+      throw new Error('cannot downgrade state schema to v10: skill tables contain records (export or discard required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      DROP TRIGGER IF EXISTS skill_import_jobs_terminal_once;
+      DROP TRIGGER IF EXISTS skill_revisions_immutable;
+      DROP TRIGGER IF EXISTS skill_sources_state_transition;
+      DROP TABLE IF EXISTS skill_import_jobs;
+      DROP TABLE IF EXISTS skill_catalog_entries;
+      DROP TABLE IF EXISTS workspace_skill_assignments;
+      DROP TABLE IF EXISTS workspace_skill_set_snapshots;
+      DROP TABLE IF EXISTS skill_set_items;
+      DROP TABLE IF EXISTS skill_sets;
+      DROP TABLE IF EXISTS skill_revisions;
+      DROP TABLE IF EXISTS skill_sources;
+      DROP INDEX IF EXISTS skill_import_jobs_state_idx;
+      DROP INDEX IF EXISTS skill_revisions_source_idx;
+      UPDATE schema_meta SET version = 10;
+    `);
+  });
 }
 
 export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss = false): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 11) {
+    downgradeStateSchemaToV10(database, allowDataLoss);
+    version = 10;
+  }
   if (version !== 10) throw new Error(`state schema must be version 10 before downgrade, got ${version}`);
   if (!allowDataLoss) {
     const knCount = (database.prepare('SELECT count(*) as count FROM knowledge_items').get() as { count: number }).count;
@@ -859,7 +1065,7 @@ export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -887,7 +1093,7 @@ export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -915,7 +1121,7 @@ export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss =
 }
 export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -947,7 +1153,7 @@ export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -1023,7 +1229,7 @@ export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -1068,7 +1274,7 @@ export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, true);
     version = 9;
   }
