@@ -88,6 +88,13 @@ describe('executor CLI compatibility', () => {
     expect(result.stdout).toContain('Write the test first');
   }, 120_000);
 
+  it('reaches the local launcher through the skillx-sh alias', async () => {
+    const result = await sh('npx skillx-sh use tdd --raw');
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Write the test first');
+  }, 120_000);
+
   it('fails closed with CACHE_MISS for a skill that is not mirrored', async () => {
     const result = await sh('skills add unmirrored/repo -y');
 
