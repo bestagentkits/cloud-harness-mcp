@@ -1241,6 +1241,11 @@ const handlers = {
           const snapScriptContent = await readFile(altScriptPath);
           actualScriptSha = sha256(snapScriptContent);
         } catch {
+          // A revision that ships instructions but no scripts has nothing to run, which is a different
+          // fact from a named script being absent, so it gets its own code instead of a generic miss.
+          if (!existsSync(join(snapDir, 'scripts'))) {
+            return fail('NO_EXECUTABLE_ASSETS', 'this skill revision carries instructions but no scripts to run');
+          }
           return fail('NOT_FOUND', `skill script ${input.script} not found in snapshot`);
         }
       }
@@ -1270,16 +1275,21 @@ const handlers = {
 
       const targetExecPath = existsSync(snapScriptPath) ? snapScriptPath : join(snapDir, input.script);
       const result = await command(targetExecPath, input.args ?? [], { timeoutMs: input.timeoutMs });
+      // The script runs as a local child process of this worker, under the same unprivileged UID and
+      // from the verified read-only snapshot. The disposable-helper-container path is gated on an owner
+      // privilege grant, so without one the run stays local, and reporting the mode keeps the caller
+      // from reading an isolation guarantee into a run that does not have it.
+      const executionMode = 'local';
       if (result.exitCode !== 0) {
         return {
           ok: false,
           message: `Skill script exited with ${result.exitCode}`,
-          data: result,
+          data: { ...result, executionMode },
           error: { code: 'EXECUTION_FAILED', message: `Skill script exited with ${result.exitCode}`, retryable: false },
           truncated: result.truncated
         };
       }
-      return ok(`Skill script exited with ${result.exitCode}`, result, { truncated: result.truncated });
+      return ok(`Skill script exited with ${result.exitCode}`, { ...result, executionMode }, { truncated: result.truncated });
     } finally {
       await chmod(snapDir, 0o700).catch(() => undefined);
       await rm(snapDir, { recursive: true, force: true }).catch(() => undefined);
