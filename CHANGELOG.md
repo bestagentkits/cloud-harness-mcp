@@ -1,3 +1,10 @@
+# [0.49.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.48.0...v0.49.0) (2026-09-20)
+
+
+### Features
+
+* **workspace:** support concurrent workspaces per owner ([#216](https://github.com/bestagentkits/cloud-harness-mcp/issues/216)) ([86702e4](https://github.com/bestagentkits/cloud-harness-mcp/commit/86702e4be94ccf5e61e10ab299f7cf7111eb9e41))
+
 # [0.48.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.47.3...v0.48.0) (2026-09-16)
 
 
