@@ -5,8 +5,10 @@ import {
   renderImportJobGuidance,
   renderRevisionDiff,
   renderSkillConflicts,
+  renderSkillsLibraryCards,
   renderSkillsLibraryRows,
-  renderSkillsRegistryRows
+  renderSkillsRegistryRows,
+  renderSkillsSkeleton
 } from '../dashboard/dashboard-render.js';
 import {
   buildSkillImportRequest,
@@ -52,6 +54,24 @@ describe('skills library rendering', () => {
   it('survives a payload that is not an array', () => {
     expect(renderSkillsLibraryRows(undefined)).toContain('No skills yet');
     expect(renderSkillsRegistryRows(undefined)).toContain('No registry entries');
+    expect(renderSkillsLibraryCards(undefined)).toContain('No skills yet');
+  });
+
+  it('renders the same rows as escaped cards for narrow screens', () => {
+    const html = renderSkillsLibraryCards([
+      { id: 'sk_a', slug: 'tdd', displayName: '<b>not markup</b>', state: 'enabled', provider: 'custom' }
+    ]);
+
+    expect(html).toContain('data-skill-select="sk_a"');
+    expect(html).toContain('data-skill-detail="sk_a"');
+    expect(html).not.toContain('<b>');
+    expect(html).toContain('&lt;b&gt;');
+  });
+
+  it('marks the wide table for hiding on a phone and ships the card list beside it', () => {
+    const skeleton = renderSkillsSkeleton();
+    expect(skeleton).toContain('id="skills-library-table" class="data-table desktop-table"');
+    expect(skeleton).toContain('id="skills-library-cards"');
   });
 });
 

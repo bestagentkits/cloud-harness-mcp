@@ -187,7 +187,8 @@ export function renderSkillsSkeleton() {
         <label for="skills-library-search">Search</label><input id="skills-library-search" name="q" placeholder="Filter by name or provider">
       </form>
       <div id="skills-bulk-bar" class="skills-bulk-bar" hidden><span id="skills-bulk-count"></span><button type="button" id="skills-bulk-archive">Archive</button><button type="button" id="skills-bulk-disable">Disable</button></div>
-      <table id="skills-library-table" class="data-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
+      <table id="skills-library-table" class="data-table desktop-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
+      <ul id="skills-library-cards" class="card-grid"></ul>
       <aside id="skill-detail" class="drawer" hidden>
         <div id="skill-detail-instructions"></div>
         <div id="skill-detail-files"></div>
@@ -289,6 +290,21 @@ export function launchBlockedByConflicts(conflicts, overrides = {}) {
 export function renderSkillSetChips(names) {
   const list = Array.isArray(names) ? names : [];
   return list.map((name) => `<li>${escape(name)}</li>`).join('');
+}
+
+/**
+ * The same rows as cards, for narrow screens. A five-column table cannot fit a phone, and the shell
+ * already hides `.desktop-table` under its mobile breakpoint, so the two renderings share one source.
+ */
+export function renderSkillsLibraryCards(skills) {
+  const list = Array.isArray(skills) ? skills : [];
+  if (list.length === 0) return '<li class="panel">No skills yet. Import one from Discover, or create a custom skill.</li>';
+  return list.map((skill) => `<li class="panel">
+      <h3><button type="button" class="link-btn" data-skill-detail="${escape(skill.id)}">${escape(skill.displayName)}</button></h3>
+      <p class="mono">${escape(skill.slug)}</p>
+      <p><span class="status ${escape(String(skill.state))}">${escape(skill.state)}</span> ${escape(skill.provider)}</p>
+      <label><input type="checkbox" data-skill-select="${escape(skill.id)}" aria-label="Select ${escape(skill.displayName)}"> Select</label>
+    </li>`).join('');
 }
 
 /** Options for the launch dialog's skill-set selector. */

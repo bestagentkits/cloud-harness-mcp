@@ -37,7 +37,7 @@ import {
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
-  renderSkillsLibraryRows, renderSkillsRegistryRows,
+  renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
   renderSkillConflicts,
   renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
   renderSkillsSkeleton
@@ -998,11 +998,17 @@ export function initializeDashboard() {
         ? rows
         : rows.filter((skill) => `${skill.displayName} ${skill.slug} ${skill.provider}`.toLowerCase().includes(needle));
       body.innerHTML = renderSkillsLibraryRows(visible);
-      for (const box of body.querySelectorAll('[data-skill-select]')) {
-        box.addEventListener('change', () => library.toggle(box.getAttribute('data-skill-select'), box.checked));
-      }
-      for (const button of body.querySelectorAll('[data-skill-detail]')) {
-        button.addEventListener('click', () => { void openSkillDetail(button.getAttribute('data-skill-detail')).catch(showError); });
+      const cards = document.querySelector('#skills-library-cards');
+      if (cards) cards.innerHTML = renderSkillsLibraryCards(visible);
+      // Both renderings carry the same controls, so both are wired rather than only the visible one.
+      for (const scope of [body, cards]) {
+        if (!scope) continue;
+        for (const box of scope.querySelectorAll('[data-skill-select]')) {
+          box.addEventListener('change', () => library.toggle(box.getAttribute('data-skill-select'), box.checked));
+        }
+        for (const button of scope.querySelectorAll('[data-skill-detail]')) {
+          button.addEventListener('click', () => { void openSkillDetail(button.getAttribute('data-skill-detail')).catch(showError); });
+        }
       }
     }
 

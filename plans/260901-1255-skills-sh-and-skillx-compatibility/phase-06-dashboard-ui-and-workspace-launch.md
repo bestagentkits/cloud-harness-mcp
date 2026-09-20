@@ -196,5 +196,16 @@ If M1 or M2 overruns, stop and report before starting M3: the honest split point
 - `skill_bulk` carries one generation for the whole batch, so the client groups the selected rows by generation. Without that, every row but one would report a conflict and read as a locking problem when it is a batching one.
 
 **Not yet done:** the registry actions, the revision list and restore views, the import wizard's submit, and the 375-pixel and two-theme check the phase requires before it can be called complete.
+
+## Visual Check (measured, 2026-09-20)
+
+The phase asks for a browser check at 375 pixels in both themes, and the design guidelines require the same before shipping. It was done by serving the real shell, stylesheet, and client script through a static harness that injects `data-theme` exactly the way `dashboard-assets.ts` does, with fixtures for the library and the registry, and then measuring the rendered page at a 375x812 viewport instead of eyeballing a screenshot.
+
+- **The first measurement found a real defect.** `document.documentElement.scrollWidth` was 518 against a 375 viewport, and attributing the overflow listed `table#skills-library-table` and its cells as the only offenders. A five-column table does not fit a phone, and the library shipped one without the card rendering the rest of the dashboard uses.
+- **The fix follows the shell's existing rule.** The library now renders cards beside the table and marks the table `desktop-table`, which is the class the mobile breakpoint already hides.
+- **The re-measurement passes in both themes:** `scrollWidth` 360 against a 375 viewport with no offending elements, four tab controls, and two library rows.
+- **The themes genuinely differ**, rather than both rendering the same palette: the light theme resolves `--surface` to `oklch(1.000 0.000 0)` and the dark theme to `oklch(0.127 0.009 253.7)`.
+
+The harness is a throwaway outside the repository; nothing in this phase depends on it at runtime.
 - **Risk:** A four-tab management surface overrunning a single 20h gate, which delays the launch integration that delivers the original user value.
 - **Mitigation:** Ship the four milestones in order and treat M1-M2 as the split point; M3 and M4 are the first candidates to move into their own phase if M1 or M2 overruns.
