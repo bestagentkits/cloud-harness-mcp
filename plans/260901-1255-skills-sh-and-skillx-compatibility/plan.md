@@ -1,7 +1,7 @@
 ---
 title: "skills-sh-and-skillx-compatibility"
 description: "Implementation plan for CloudHarness MCP compatibility with skills.sh and skillx.sh, including offline CLI launchers, 4-tier resolution, CAS caching, and a unified Dashboard Skills management page"
-status: pending
+status: completed
 priority: P1
 effort: "135h"
 branch: mrgoonie/skills-compatiple
