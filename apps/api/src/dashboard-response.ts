@@ -64,7 +64,12 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'mcp_server_list', 'mcp_server_get', 'mcp_server_create', 'mcp_server_update', 'mcp_server_delete',
   'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools',
   'mcp_server_connection_result', 'mcp_server_get_credentials',
-  'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list'
+  'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list',
+  'skill_list', 'skill_get', 'skill_create_custom', 'skill_update', 'skill_archive', 'skill_restore', 'skill_bulk',
+  'skill_usage', 'skill_search',
+  'skill_import_start', 'skill_import_status', 'skill_import_cancel',
+  'skill_revision_list', 'skill_revision_get', 'skill_revision_diff',
+  'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview'
 ] as const;
 
 /**
@@ -88,6 +93,28 @@ const mcpToolKeys = ['id', 'serverId', 'qualifiedName', 'upstreamName', 'descrip
 const mcpTraceKeys = ['id', 'serverId', 'serverName', 'tool', 'operation', 'clientId', 'durationMs', 'status', 'errorCode', 'errorMessage', 'requestBytes', 'responseBytes', 'createdAt'] as const;
 const mcpCredentialKeys = ['allowed', 'reason'] as const;
 const mcpConnectionKeys = ['status', 'toolCount', 'error'] as const;
+
+/** Projected from the `skill_sources` and `skill_revisions` columns Phase 1 created. */
+const skillKeys = ['id', 'slug', 'displayName', 'description', 'kind', 'provider', 'sourceRef', 'currentRevisionId', 'state', 'tags', 'generation', 'createdAt', 'updatedAt'] as const;
+const skillRevisionKeys = ['id', 'skillSourceId', 'parentRevisionId', 'origin', 'hasExecutableAssets', 'createdAt'] as const;
+const skillSetKeys = ['id', 'name', 'description', 'generation', 'createdAt', 'updatedAt'] as const;
+const skillSetItemKeys = ['skillSetId', 'ordinal', 'skillSourceId', 'revisionId', 'name'] as const;
+const skillUsageKeys = ['workspaceId', 'workspaceName', 'name', 'tier', 'pinned', 'createdAt'] as const;
+const skillImportJobKeys = ['id', 'sourceKind', 'sourceRef', 'state', 'progress', 'result', 'errorCode', 'skillRevisionId', 'createdAt', 'updatedAt'] as const;
+const skillResolvedKeys = ['name', 'tier', 'skillSourceId', 'revisionId', 'contentSha256', 'pinned'] as const;
+const skillExcludedKeys = ['name', 'tier', 'reason'] as const;
+
+/**
+ * A revision diff is prose the UI renders, so it is passed through only when the runner actually
+ * sent a string; anything else is dropped rather than stringified into `[object Object]`.
+ */
+function skillRevisionProjection(data: Record<string, unknown>): Record<string, unknown> {
+  return { ...pick(data, skillRevisionKeys), ...(typeof data.diff === 'string' ? { diff: data.diff } : {}) };
+}
+
+function listOf(value: unknown, keys: readonly string[]): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map((entry) => pick(entry, keys)) : [];
+}
 
 /**
  * Project header metadata only. A literal value stays projectable so the dashboard
@@ -130,7 +157,13 @@ function githubStatus(data: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-export function mapDashboardData(operation: DashboardResponseOperation, value: unknown): unknown {
+/**
+ * The dashboard projection boundary. Every branch returns an object built by `pick`, `list`, or a
+ * literal, so the boundary can be named instead of left as `unknown` that every caller must re-check.
+ */
+export type DashboardProjection = Record<string, unknown>;
+
+export function mapDashboardData(operation: DashboardResponseOperation, value: unknown): DashboardProjection {
   const data = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   if (operation === 'workspace_list') {
     const workspaces = Array.isArray(data.workspaces) ? data.workspaces.map(cleanWorkspace) : [];
@@ -188,6 +221,43 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'mcp_server_connection_result') return pick(data, mcpConnectionKeys);
   if (operation === 'mcp_server_get_credentials' || operation === 'mcp_gateway_catalog' || operation === 'mcp_gateway_trace_append') return pick(data, mcpCredentialKeys);
   if (operation === 'mcp_gateway_trace_list') return { traces: Array.isArray(data.traces) ? data.traces.map((trace) => pick(trace, mcpTraceKeys)) : [] };
+  if (operation === 'skill_list') return list(data, 'skills', skillKeys);
+  if (operation === 'skill_get' || operation === 'skill_create_custom' || operation === 'skill_update' || operation === 'skill_archive' || operation === 'skill_restore') return pick(data, skillKeys);
+  if (operation === 'skill_bulk') {
+    const results = Array.isArray(data.results) ? data.results : [];
+    return {
+      results: results.map((entry) => {
+        const item = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+        return {
+          name: item.name,
+          ok: item.ok === true,
+          ...(typeof item.error === 'string' ? { error: item.error } : {}),
+          ...(item.skill && typeof item.skill === 'object' ? { skill: pick(item.skill, skillKeys) } : {})
+        };
+      })
+    };
+  }
+  if (operation === 'skill_usage') return list(data, 'usages', skillUsageKeys);
+  if (operation === 'skill_search') {
+    return {
+      local: listOf(data.local, skillKeys),
+      providers: listOf(data.providers, ['provider', 'status', 'warning', 'count'])
+    };
+  }
+  if (operation === 'skill_import_start' || operation === 'skill_import_status' || operation === 'skill_import_cancel') return pick(data, skillImportJobKeys);
+  if (operation === 'skill_revision_list') return list(data, 'revisions', skillRevisionKeys);
+  if (operation === 'skill_revision_get' || operation === 'skill_revision_diff') return skillRevisionProjection(data);
+  if (operation === 'skill_set_list') return list(data, 'sets', skillSetKeys);
+  if (operation === 'skill_set_get') return { ...pick(data, skillSetKeys), items: listOf(data.items, skillSetItemKeys) };
+  if (operation === 'skill_set_create' || operation === 'skill_set_update' || operation === 'skill_set_delete') return pick(data, skillSetKeys);
+  if (operation === 'skill_set_preview') {
+    return {
+      ...pick(data, ['generation', 'stale']),
+      resolved: listOf(data.resolved, skillResolvedKeys),
+      excluded: listOf(data.excluded, skillExcludedKeys),
+      conflicts: listOf(data.conflicts, ['name', 'candidates', 'candidateCount'])
+    };
+  }
   return data;
 }
 const descriptiveOperations = new Set<string>([
@@ -200,7 +270,10 @@ const descriptiveOperations = new Set<string>([
   'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
   'mcp_server_create', 'mcp_server_update', 'mcp_server_delete', 'mcp_server_set_enabled', 'mcp_server_set_permissions',
   'mcp_server_replace_tools', 'mcp_server_connection_result',
-  'mcp_server_list', 'mcp_server_get', 'mcp_gateway_trace_list'
+  'mcp_server_list', 'mcp_server_get', 'mcp_gateway_trace_list',
+  'skill_create_custom', 'skill_update', 'skill_archive', 'skill_restore', 'skill_bulk',
+  'skill_import_start', 'skill_import_cancel',
+  'skill_set_create', 'skill_set_update', 'skill_set_delete'
 ]);
 
 /** Gateway operations need gateway wording; the shared table is workspace-oriented. */
@@ -214,7 +287,27 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   mcp_server_set_enabled: { CONFLICT: 'This MCP server changed after you opened it.' },
   settings_get: { UNAVAILABLE: 'Instance settings are temporarily unavailable.' },
   settings_update: { UNAVAILABLE: 'Instance settings are temporarily unavailable.', INVALID_INPUT: 'The default network profile must be network-none or dependency-access.' },
-  settings_network_check: { UNAVAILABLE: 'The egress readiness check is temporarily unavailable.' }
+  settings_network_check: { UNAVAILABLE: 'The egress readiness check is temporarily unavailable.' },
+  skill_list: { UNAVAILABLE: 'The skill registry is temporarily unavailable.' },
+  skill_get: { NOT_FOUND: 'Skill not found.' },
+  skill_update: { CONFLICT: 'This skill changed after you opened it.' },
+  skill_archive: { CONFLICT: 'This skill changed after you opened it.' },
+  skill_restore: { CONFLICT: 'This skill changed after you opened it.' },
+  skill_create_custom: { CONFLICT: 'A skill with this name already exists.' },
+  skill_bulk: { UNAVAILABLE: 'The skill registry is temporarily unavailable.' },
+  skill_search: { UNAVAILABLE: 'Skill search is temporarily unavailable.' },
+  skill_import_start: { CONFLICT: 'This import already started.', UNAVAILABLE: 'The provider is temporarily unavailable.' },
+  skill_import_status: { NOT_FOUND: 'Import job not found.' },
+  skill_import_cancel: { NOT_FOUND: 'Import job not found.', CONFLICT: 'This import already finished.' },
+  skill_revision_list: { NOT_FOUND: 'Skill not found.' },
+  skill_revision_get: { NOT_FOUND: 'Revision not found.' },
+  skill_revision_diff: { NOT_FOUND: 'Revision not found.' },
+  skill_set_list: { UNAVAILABLE: 'Skill sets are temporarily unavailable.' },
+  skill_set_get: { NOT_FOUND: 'Skill set not found.' },
+  skill_set_create: { CONFLICT: 'A skill set with this name already exists.' },
+  skill_set_update: { CONFLICT: 'This skill set changed after you opened it.' },
+  skill_set_delete: { CONFLICT: 'This skill set is still used by a workspace.' },
+  skill_set_preview: { CONFLICT: 'This skill set changed after you opened it.', NOT_FOUND: 'Skill set not found.' }
 };
 
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {
