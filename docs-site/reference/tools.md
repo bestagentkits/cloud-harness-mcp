@@ -41,6 +41,8 @@ Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding 
 | `environmentId` | `string` | No | pattern: `^env_[A-Za-z0-9_-]{20,80}$` |
 | `confirmEnvironmentInjection` | `true` | No | — |
 | `toolkits` | any[] | No | default: `[]` |
+| `skillSets` | object[] | No | default: `[]` |
+| `skillOverrides` | `object` | No | default: `{}` |
 | `allowToolkitWorkspaceChanges` | `true` | No | — |
 
 ### `workspace_list`
