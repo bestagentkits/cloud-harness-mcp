@@ -15,7 +15,11 @@ import { IntegrationCredentialRepository } from './integration-credential-reposi
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
+import { TOOLKIT_CATALOG } from './toolkit-service.js';
 import { diffRevisionText, formatRevisionDiff } from './revision-diff.js';
+import { fetchRegistrySearch } from './adapters/registry-search.js';
+import { parseSkillsShSearchResults } from './adapters/skills-sh-adapter.js';
+import { parseSkillXSearchResults } from './adapters/skillx-adapter.js';
 
 /** A revision's content is prose, so the read is bounded rather than trusting the file size. */
 const MAX_REVISION_BYTES = 262_144;
@@ -41,7 +45,112 @@ export class DashboardControlService {
   ) {}
 
   /**
-   * Both value sources are named here, because they are not the same source: the workspace secrets come
+   * Runs one import to completion and records every transition on the job row, because that row is what
+   * survives a restart. An import of a skill that is already present adds a revision rather than
+   * replacing the source, so a launch that pinned the previous revision keeps resolving to the bytes it
+   * verified. A failure is recorded rather than thrown: the caller already holds the job id and there is
+   * no request left for the error to answer.
+   */
+  private async runSkillImport(
+    ownerId: string,
+    jobId: string,
+    input: { sourceKind: 'skills-sh' | 'skillx' | 'git'; sourceRef: string; ref?: string | undefined; subdirectory?: string | undefined }
+  ): Promise<void> {
+    try {
+      this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'running', progressJson: JSON.stringify({ phase: 'acquiring' })
+      });
+      if (input.sourceKind === 'git') {
+        throw new HarnessError('INVALID_INPUT', 'this path acquires from a registry, so a git source is not supported here', 400, false);
+      }
+      const acquired = await this.workspaces.toolkitService.importSkillPackage(ownerId, {
+        sourceKind: input.sourceKind,
+        sourceRef: input.sourceRef,
+        ...(input.ref ? { ref: input.ref } : {}),
+        ...(input.subdirectory ? { subdirectory: input.subdirectory } : {})
+      });
+      const first = acquired.skills[0];
+      if (!first) {
+        throw new HarnessError('NOT_FOUND', `${input.sourceRef} resolved to no skills`, 404, false);
+      }
+      this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'running',
+        progressJson: JSON.stringify({ phase: 'publishing', skills: acquired.skills.length, resolvedRevision: acquired.resolvedRevision })
+      });
+      const slug = first.name.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 120) || 'imported-skill';
+      const existing = this.principals.listSkillSources(ownerId, { limit: 200 })
+        .find((skill) => skill !== undefined && skill.slug === slug);
+      const revisionId = existing
+        ? this.principals.addSkillRevision({
+          ownerId,
+          skillSourceId: existing.id,
+          bundleSha256: acquired.bundleSha256,
+          contentSha256: first.contentSha256,
+          hasExecutableAssets: acquired.hasExecutableAssets,
+          origin: 'import'
+        })
+        : this.principals.createSkillSource({
+          ownerId,
+          slug,
+          displayName: first.name,
+          kind: 'owner',
+          provider: input.sourceKind,
+          description: '',
+          revision: {
+            bundleSha256: acquired.bundleSha256,
+            contentSha256: first.contentSha256,
+            hasExecutableAssets: acquired.hasExecutableAssets,
+            origin: 'import'
+          }
+        }).revisionId;
+      this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'succeeded', skillRevisionId: revisionId,
+        resultJson: JSON.stringify({
+          slug,
+          resolvedRevision: acquired.resolvedRevision,
+          skills: acquired.skills.map((skill) => skill.name)
+        })
+      });
+    } catch (error) {
+      this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'failed',
+        errorCode: error instanceof HarnessError ? error.code : 'INTERNAL_ERROR',
+        resultJson: JSON.stringify({ message: error instanceof Error ? error.message : 'import failed' })
+      });
+    }
+  }
+
+  /**
+   * A provider that fails is reported as a warning rather than as zero results, because an empty list is
+   * a claim about a catalogue while a failure is a claim about the request. Each lookup is isolated so
+   * that one unreachable provider cannot hide the local results or the other provider's hits.
+   */
+  private async searchRemoteRegistries(
+    requested: Array<'local' | 'skills-sh' | 'skillx'>,
+    query: string,
+    limit: number
+  ): Promise<Array<{ provider: string; status: string; warning?: string; count: number; results: unknown[] }>> {
+    return await Promise.all(requested.filter((provider) => provider !== 'local').map(async (provider) => {
+      const base = provider === 'skills-sh' ? 'https://skills.sh' : 'https://skillx.sh';
+      try {
+        const payload = await fetchRegistrySearch(`${base}/api/search?q=${encodeURIComponent(query)}`, globalThis.fetch);
+        const results = provider === 'skills-sh'
+          ? parseSkillsShSearchResults(payload, limit)
+          : parseSkillXSearchResults(payload, limit);
+        return { provider, status: 'ok', count: results.length, results };
+      } catch (error) {
+        return {
+          provider,
+          status: 'unavailable',
+          warning: error instanceof Error ? error.message : String(error),
+          count: 0,
+          results: []
+        };
+      }
+    }));
+  }
+
+  /**
    * from the secret snapshot, while a provider credential lives in the model credential tables and would
    * otherwise never be redacted. The enumeration is deliberately not wrapped in a catch: if it cannot be
    * read, redaction cannot be complete, and the engine must fail closed rather than send.
@@ -540,24 +649,59 @@ export class DashboardControlService {
         ));
         case 'skill_usage': return ok('Skill usage listed', this.principals.listSkillUsage(principalId, parsed.input.skillId));
         case 'skill_search': {
-          // Only the local registry is searched. Fanning out to skills.sh and SkillX belongs to the
-          // adapter layer, and reporting a provider as returning zero results would be a claim this
-          // code cannot back, so an unasked provider is reported as unavailable rather than empty.
           const needle = parsed.input.query.toLowerCase();
           const local = this.principals.listSkillSources(principalId, { limit: 200 })
             .filter((skill): skill is NonNullable<ReturnType<StateStore['getSkillSource']>> => skill !== undefined
               && (skill.slug.toLowerCase().includes(needle) || skill.displayName.toLowerCase().includes(needle)))
             .slice(0, parsed.input.limit);
+          const providers = await this.searchRemoteRegistries(parsed.input.providers, parsed.input.query, parsed.input.limit);
           return ok('Skills searched', {
             local,
-            providers: parsed.input.providers
-              .filter((provider) => provider !== 'local')
-              .map((provider) => ({ provider, status: 'unavailable', count: 0 }))
+            // The per-provider summary deliberately carries no hits of its own, so the dashboard reads the
+            // counts here and the hits from the flat list below without having to join the two.
+            providers: providers.map((entry) => ({
+              provider: entry.provider,
+              status: entry.status,
+              count: entry.count,
+              ...(entry.warning ? { warning: entry.warning } : {})
+            })),
+            results: providers.flatMap((entry) => entry.results)
           });
         }
         case 'skill_set_list': return ok('Skill sets listed', { sets: this.principals.listSkillSets(principalId) });
         case 'skill_set_get': return ok('Skill set read', required(this.principals.getSkillSet(principalId, parsed.input.skillSetId), `Skill set ${parsed.input.skillSetId} was not found`));
         case 'skill_import_status': return ok('Import job read', required(this.principals.getSkillImportJob(principalId, parsed.input.jobId), `Import job ${parsed.input.jobId} was not found`));
+        case 'skill_import_start': {
+          const jobId = this.principals.createSkillImportJob({
+            ownerId: principalId,
+            sourceKind: parsed.input.sourceKind,
+            sourceRef: parsed.input.sourceRef
+          });
+          // The row is written before any work starts, so the caller gets an id it can poll and a restart
+          // reports the job instead of losing it. The acquisition therefore runs detached: there is no
+          // request left to fail, and every outcome is recorded as a state on that row.
+          void this.runSkillImport(principalId, jobId, parsed.input);
+          return mutation('Skill import started', required(
+            this.principals.getSkillImportJob(principalId, jobId),
+            `Import job ${jobId} was not found`
+          ));
+        }
+        case 'skill_import_cancel': {
+          const job = required(
+            this.principals.getSkillImportJob(principalId, parsed.input.jobId),
+            `Import job ${parsed.input.jobId} was not found`
+          );
+          // Only a job that has not reached a terminal state can be cancelled, so a finished import is
+          // reported as a conflict rather than silently rewritten into a state it never had.
+          if (job.state !== 'queued' && job.state !== 'running') {
+            throw new HarnessError('CONFLICT', `Import job ${job.id} is ${job.state} and cannot be cancelled`, 409, false);
+          }
+          this.principals.advanceSkillImportJob({ ownerId: principalId, id: job.id, state: 'cancelled' });
+          return mutation('Import job cancelled', required(
+            this.principals.getSkillImportJob(principalId, job.id),
+            `Import job ${job.id} was not found`
+          ));
+        }
         case 'skill_update': return mutation('Skill updated', this.principals.updateSkillMetadata({
           ownerId: principalId,
           id: parsed.input.skillId,
@@ -680,7 +824,22 @@ export class DashboardControlService {
           });
         }
         case 'toolkit_registry_list':
-          return ok('Registry catalog listed', { entries: this.principals.listSkillCatalogEntries(principalId, parsed.input.provider) });
+          return ok('Registry catalog listed', {
+            entries: this.principals.listSkillCatalogEntries(principalId, parsed.input.provider),
+            // A preset is offered as something a launch could install, not as something the workspace can
+            // already resolve. Listing it beside cached entries without that distinction would let a row
+            // read as an available skill, which is the reading this field exists to prevent.
+            presets: Object.values(TOOLKIT_CATALOG).map((preset) => ({
+              id: preset.id,
+              name: preset.name,
+              description: preset.description,
+              sourceUrl: preset.sourceUrl,
+              license: preset.license,
+              defaultRevision: preset.defaultRevision,
+              supportedScopes: preset.supportedScopes,
+              installable: true
+            }))
+          });
         case 'skill_restore': {
           const revision = required(
             this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.revisionId),
@@ -727,6 +886,35 @@ export class DashboardControlService {
             }
           });
           return mutation('Skill forked', { ...created, forkedFrom: { skillId: source.id, revisionId: revision.id } });
+        }
+        case 'skill_revision_create': {
+          const source = required(
+            this.principals.getSkillSource(principalId, parsed.input.skillId),
+            `Skill ${parsed.input.skillId} was not found`
+          );
+          // The package is published before the revision row is written, for the same reason a created
+          // skill publishes first: a revision that pointed at missing bytes would resolve and then fail.
+          let published: { bundleSha256: string };
+          try {
+            published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, {
+              [`skills/${source.slug}/SKILL.md`]: parsed.input.instructions
+            });
+          } catch (error) {
+            throw new HarnessError('INVALID_INPUT', error instanceof Error ? error.message : 'the skill package could not be published', 400, false);
+          }
+          const revisionId = this.principals.addSkillRevision({
+            ownerId: principalId,
+            skillSourceId: source.id,
+            bundleSha256: published.bundleSha256,
+            // The bundle digest covers the whole tree; this digest is the authored instructions.
+            contentSha256: createHash('sha256').update(parsed.input.instructions).digest('hex'),
+            // Edited instructions carry no scripts, so the new revision reports that it has nothing to
+            // execute rather than inheriting the previous revision's claim about executable assets.
+            hasExecutableAssets: false,
+            origin: 'edit',
+            expectedGeneration: parsed.input.expectedGeneration
+          });
+          return mutation('Skill revision created', { sourceId: source.id, revisionId });
         }
         case 'integration_credential_list':
           return ok('Integration credentials listed', { credentials: this.integrationCredentials().list(principalId) });

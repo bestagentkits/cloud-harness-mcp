@@ -73,6 +73,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'toolkit_registry_list',
   'skill_suggest', 'typesafe_status',
   'skill_revision_fork',
+  'skill_revision_create',
   'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ] as const;
 
@@ -103,7 +104,8 @@ const skillKeys = ['id', 'slug', 'displayName', 'description', 'kind', 'provider
 const skillRevisionKeys = ['id', 'skillSourceId', 'parentRevisionId', 'origin', 'hasExecutableAssets', 'createdAt'] as const;
 const skillSetKeys = ['id', 'name', 'description', 'generation', 'createdAt', 'updatedAt'] as const;
 const skillSetItemKeys = ['skillSetId', 'ordinal', 'skillSourceId', 'revisionId', 'name'] as const;
-const skillUsageKeys = ['workspaceId', 'workspaceName', 'name', 'tier', 'pinned', 'createdAt'] as const;
+const skillUsageSetKeys = ['skillSetId', 'name'] as const;
+const skillUsageWorkspaceKeys = ['workspaceId', 'status', 'name', 'revisionId'] as const;
 const skillImportJobKeys = ['id', 'sourceKind', 'sourceRef', 'state', 'progress', 'result', 'errorCode', 'skillRevisionId', 'createdAt', 'updatedAt'] as const;
 const skillResolvedKeys = ['name', 'tier', 'skillSourceId', 'revisionId', 'contentSha256', 'pinned'] as const;
 const skillExcludedKeys = ['name', 'tier', 'reason'] as const;
@@ -244,11 +246,20 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       })
     };
   }
-  if (operation === 'skill_usage') return list(data, 'usages', skillUsageKeys);
+  // The reader answers with the two places a skill can be in use, so the projection mirrors that shape.
+  // It previously read a `usages` key that the reader never produced, which left the dashboard with an
+  // empty list and made usage look like a skill nobody used rather than a field nobody filled.
+  if (operation === 'skill_usage') {
+    return {
+      sets: listOf(data.sets, skillUsageSetKeys),
+      liveWorkspaces: listOf(data.liveWorkspaces, skillUsageWorkspaceKeys)
+    };
+  }
   if (operation === 'skill_search') {
     return {
       local: listOf(data.local, skillKeys),
-      providers: listOf(data.providers, ['provider', 'status', 'warning', 'count'])
+      providers: listOf(data.providers, ['provider', 'status', 'warning', 'count']),
+      results: listOf(data.results, ['provider', 'reference', 'name', 'description', 'installs'])
     };
   }
   if (operation === 'skill_import_start' || operation === 'skill_import_status' || operation === 'skill_import_cancel') return pick(data, skillImportJobKeys);
@@ -265,7 +276,14 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       conflicts: listOf(data.conflicts, ['name', 'candidates', 'candidateCount'])
     };
   }
-  if (operation === 'toolkit_registry_list') return list(data, 'entries', skillCatalogKeys);
+  // Presets travel separately from entries because they are suggestions a launch could install rather
+  // than skills the workspace can already resolve, and merging the two lists would erase that difference.
+  if (operation === 'toolkit_registry_list') {
+    return {
+      entries: listOf(data.entries, skillCatalogKeys),
+      presets: listOf(data.presets, ['id', 'name', 'description', 'sourceUrl', 'license', 'defaultRevision', 'supportedScopes', 'installable'])
+    };
+  }
   if (operation === 'skill_suggest') {
     return {
       ...pick(data, ['reason', 'cached', 'latencyMs', 'outboundCalls', 'redactionCount']),
@@ -279,6 +297,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'integration_credential_list') return list(data, 'credentials', integrationCredentialKeys);
   if (operation === 'integration_credential_delete') return pick(data, ['id', 'deleted']);
   if (operation === 'integration_credential_create' || operation === 'integration_credential_rotate') return pick(data, integrationCredentialKeys);
+  if (operation === 'skill_revision_create') return pick(data, ['sourceId', 'revisionId']);
   if (operation === 'skill_revision_fork') {
     return {
       ...pick(data, ['sourceId', 'revisionId']),

@@ -136,6 +136,62 @@ describe('skill revisions', () => {
     expect(principals.getSkillSource(ownerId, created.sourceId)?.currentRevisionId).toBe(secondRevision);
   });
 
+  it('turns edited instructions into a new revision and keeps the previous one resolvable', async () => {
+    const { controls, principals, workspaces } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const first = await workspaces.toolkitCacheManager.publishLocalBundle(ownerId, {
+      'skills/tdd/SKILL.md': '# TDD\n\nWrite the test first.\n'
+    });
+    const created = principals.createSkillSource({
+      ownerId, slug: 'tdd', displayName: 'TDD', kind: 'owner', provider: 'custom',
+      revision: { bundleSha256: first.bundleSha256, contentSha256: first.bundleSha256, hasExecutableAssets: false }
+    });
+    const source = principals.getSkillSource(ownerId, created.sourceId)!;
+
+    const edited = await controls.execute(request('skill_revision_create', {
+      skillId: created.sourceId,
+      instructions: '# TDD\n\nWrite the test first, then the code.\n',
+      expectedGeneration: source.generation
+    }));
+    const revisionId = (edited.data as { revisionId: string }).revisionId;
+
+    const revision = principals.getSkillRevision(ownerId, created.sourceId, revisionId);
+    expect(revision?.origin).toBe('edit');
+    // Edited instructions carry no scripts, so the new revision reports that honestly instead of
+    // inheriting the previous revision's claim about executable assets.
+    expect(revision?.hasExecutableAssets).toBe(false);
+    // The revision it replaced is still resolvable, which is what a launch that pinned it depends on.
+    expect(principals.getSkillRevision(ownerId, created.sourceId, created.revisionId)?.bundleSha256).toBe(first.bundleSha256);
+    expect(principals.getSkillSource(ownerId, created.sourceId)?.currentRevisionId).toBe(revisionId);
+  });
+
+  it('cancels a queued import job and refuses to cancel a job that already finished', async () => {
+    const { controls, principals } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const jobId = principals.createSkillImportJob({ ownerId, sourceKind: 'skillx', sourceRef: 'davila7-pdf-processing' });
+
+    const cancelled = await controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 1 }));
+    expect((cancelled.data as { state: string }).state).toBe('cancelled');
+    // The state is on the row rather than only in the response, because the row is what survives a restart.
+    expect(principals.getSkillImportJob(ownerId, jobId)?.state).toBe('cancelled');
+
+    // A job that already reached a terminal state is a conflict, not a silent rewrite of its history.
+    await expect(controls.execute(request('skill_import_cancel', { jobId, expectedGeneration: 1 })))
+      .rejects.toThrow(/cannot be cancelled/);
+  });
+
+  it('reports an unknown import job instead of an empty success', async () => {
+    const { controls } = setup();
+    // A well-formed id that was never issued, so the request reaches the handler rather than failing the
+    // identifier shape first, which is a different fact from the record being absent.
+    const missingJobId = `skjob_${'0'.repeat(32)}`;
+
+    await expect(controls.execute(request('skill_import_cancel', { jobId: missingJobId, expectedGeneration: 1 })))
+      .rejects.toThrow(/was not found/);
+    await expect(controls.execute(request('skill_import_status', { jobId: missingJobId })))
+      .rejects.toThrow(/was not found/);
+  });
+
   it('reports a revision whose content is missing rather than an empty diff', async () => {
     const { controls, principals } = setup();
     const ownerId = principals.resolvePrincipal(principal);

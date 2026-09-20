@@ -555,6 +555,10 @@ describe('contracts', () => {
 
     // skills_run requires expectedSha256
     expect(() => TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh' })).toThrow();
+    // The grant field is accepted but deliberately not required by the schema, so a caller without one
+    // still reaches the runner and receives an approval request that names the grant it needs, rather
+    // than a validation error that hides the way forward.
+    expect(TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh', expectedSha256: 'c'.repeat(64), approvalGrantToken: 'pvg_test' }).approvalGrantToken).toBe('pvg_test');
     expect(TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh', expectedSha256: 'c'.repeat(64) })).toMatchObject({
       name: 'demo',
       expectedSha256: 'c'.repeat(64)

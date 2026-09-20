@@ -1012,6 +1012,51 @@ export function initializeDashboard() {
       }
     }
 
+    /**
+     * Usage and preset rows are built from text nodes rather than from markup, because both lists carry
+     * values the server chose and a list is not worth an injection surface. Usage names the two places a
+     * skill can be in use rather than a count, since a skill inside a set and a skill pinned by a live
+     * workspace are different risks, and lock is that fact stated as its consequence.
+     */
+    function skillUsageNodes(usage) {
+      const sets = Array.isArray(usage?.sets) ? usage.sets : [];
+      const live = Array.isArray(usage?.liveWorkspaces) ? usage.liveWorkspaces : [];
+      const locked = sets.length > 0 || live.length > 0;
+      const nodes = [];
+      const lock = document.createElement('p');
+      lock.id = 'skill-usage-lock';
+      lock.textContent = locked ? 'locked' : 'unlocked';
+      nodes.push(lock);
+      const setsHeading = document.createElement('h4');
+      setsHeading.textContent = 'Skill sets';
+      nodes.push(setsHeading, ...(sets.length === 0
+        ? [textNode('li', 'Not in any skill set.')]
+        : sets.map((set) => textNode('li', `${set.name} ${set.skillSetId}`))));
+      const liveHeading = document.createElement('h4');
+      liveHeading.textContent = 'Live workspaces';
+      nodes.push(liveHeading, ...(live.length === 0
+        ? [textNode('li', 'Not pinned by any live workspace.')]
+        : live.map((entry) => textNode('li', `${entry.name} ${entry.status} ${entry.revisionId}`))));
+      return nodes;
+    }
+
+    /** A preset is a suggestion to install, so its row says installable rather than reading as inventory. */
+    function skillPresetNodes(presets) {
+      const rows = Array.isArray(presets) ? presets : [];
+      if (rows.length === 0) return [textNode('li', 'No presets are available to install.')];
+      return rows.map((preset) => {
+        const item = textNode('li', `${preset.name} ${preset.defaultRevision} ${preset.description} ${preset.installable ? 'installable' : 'unavailable'}`);
+        item.setAttribute('data-preset-id', String(preset.id ?? ''));
+        return item;
+      });
+    }
+
+    function textNode(tag, value) {
+      const element = document.createElement(tag);
+      element.textContent = String(value ?? '');
+      return element;
+    }
+
     /** Loads a tab's data the first time it is entered, which is what the tab controller guarantees. */
     /** The drawer reads revisions from the server, and a restore republishes rather than rewrites. */
     async function openSkillDetail(skillId) {
@@ -1026,6 +1071,15 @@ export function initializeDashboard() {
       box.innerHTML = renderSkillRevisions(revisions, skill ? skill.currentRevisionId : undefined);
       for (const button of box.querySelectorAll('[data-skill-restore]')) {
         button.addEventListener('click', () => { void restoreRevision(skillId, button.getAttribute('data-skill-restore')).catch(showError); });
+      }
+
+      // Usage and lock come from their own reader, because what would break if this skill changed is a
+      // different question from what its revisions contain, and the drawer previously left the usage
+      // container in the skeleton empty while showing a lock column only for registry entries.
+      const usageBox = document.querySelector('#skill-detail-usage');
+      if (usageBox) {
+        const usage = (await api(`/skills/${encodeURIComponent(skillId)}/usage`)).data;
+        usageBox.replaceChildren(...skillUsageNodes(usage));
       }
     }
 
@@ -1052,7 +1106,12 @@ export function initializeDashboard() {
           if (picker) picker.innerHTML = renderSkillSetPicker(rows);
         } else if (name === 'registry') {
           const body = document.querySelector('#skills-registry-table tbody');
-          if (body) body.innerHTML = renderSkillsRegistryRows((await api('/toolkit-registry')).data.entries);
+          const registry = await api('/toolkit-registry');
+          if (body) body.innerHTML = renderSkillsRegistryRows(registry.data.entries);
+          // Presets are rendered from their own field, so a suggestion to install never appears in the
+          // table of what is already cached and locked.
+          const suggestions = document.querySelector('#skills-registry-suggestions');
+          if (suggestions) suggestions.replaceChildren(...skillPresetNodes(registry.data.presets));
         }
       } catch (error) {
         showError(error);

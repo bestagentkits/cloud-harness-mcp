@@ -228,6 +228,8 @@ export function renderSkillsSkeleton() {
       </div>`;
 
   const registry = `<table id="skills-registry-table" class="data-table"><caption class="sr-only">Registry and toolkit inventory</caption><thead><tr><th scope="col">Name</th><th scope="col">Cache state</th><th scope="col">Pinned commit</th><th scope="col">Skills</th><th scope="col">Lock</th></tr></thead><tbody></tbody></table>
+      <h3>Suggested toolkits to install</h3>
+      <ul id="skills-registry-suggestions" class="preset-suggestions"></ul>
       <p id="skills-registry-status" role="status" aria-live="polite"></p>`;
 
   return `<section id="skills-section" aria-labelledby="skills-heading">

@@ -483,7 +483,11 @@ const schemas = {
     args: z.array(z.string().max(2_048)).max(50).default([]),
     timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
     expectedSha256: z.string().length(64).optional(),
-    expectedContentSha256: z.string().length(64).optional()
+    expectedContentSha256: z.string().length(64).optional(),
+    // Skill execution runs in a disposable helper container, and that path is gated on an owner
+    // privilege grant. The field stays optional so a caller without one receives an approval request
+    // that names the grant, instead of a validation error that hides the grant it needs.
+    approvalGrantToken: z.string().min(1).max(128).optional()
   }).superRefine((input, context) => {
     if (!input.expectedSha256 && !input.expectedContentSha256) {
       context.addIssue({ code: 'custom', path: ['expectedSha256'], message: 'expectedSha256 or expectedContentSha256 is required to prevent TOCTOU execution of modified scripts' });

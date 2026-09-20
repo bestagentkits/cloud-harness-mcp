@@ -1320,6 +1320,90 @@ export class WorkspaceService {
     }
   }
 
+  /**
+   * `skills_run` executes the verified script inside a disposable helper container rather than in the
+   * workspace executor, and that path is gated on an owner privilege grant. Without a grant the caller
+   * receives an approval request instead of a run, and there is deliberately no local fallback: a caller
+   * must never be able to read an isolation guarantee into a run that did not have it.
+   */
+  private async runSkillInHelperContainer(
+    record: WorkspaceRecord,
+    input: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
+    const name = input.name as string;
+    const script = input.script as string;
+    const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
+    const timeoutMs = (input.timeoutMs as number) || 60_000;
+    const maxOutputBytes = this.config.maxOutputBytes;
+    // The grant is bound to a descriptor the owner can actually read, rather than to the shell command
+    // that happens to carry it, so approving means "run this skill script at this digest".
+    const grantCommand = `skills_run ${name} script=${script} expected=${expectedSha}`;
+    const commandSha256 = createHash('sha256').update(grantCommand).digest('hex');
+    const approvalGrantToken = input.approvalGrantToken as string | undefined;
+
+    if (!approvalGrantToken) {
+      const grant = this.store.createPrivilegeGrant({
+        ownerId: record.ownerId,
+        workspaceId: record.id,
+        command: grantCommand,
+        cwd: '.',
+        ttlMs: 60_000
+      });
+      return {
+        ok: false,
+        message: 'Skill execution requires explicit operator approval grant',
+        error: {
+          code: 'PRIVILEGE_APPROVAL_REQUIRED',
+          message: `Approval grant required to run skill script ${name}/${script} in a disposable helper container`,
+          grantRequest: {
+            grantId: grant.id,
+            workspaceId: grant.workspaceId,
+            commandSha256: grant.commandSha256,
+            cwd: grant.cwd,
+            expiresAt: new Date(grant.expiresAt).toISOString()
+          },
+          retryable: true
+        },
+        truncated: false
+      };
+    }
+
+    const grantValid = this.store.consumePrivilegeGrant({
+      ownerId: record.ownerId,
+      workspaceId: record.id,
+      grantId: approvalGrantToken,
+      commandSha256,
+      cwd: '.'
+    });
+    if (!grantValid) {
+      throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token', 403, false);
+    }
+
+    // The helper container reuses the worker's one-shot entry point, so the snapshot, the digest check,
+    // and the read-only hardening that the tests cover stay exactly where they were; only the process
+    // that finally runs the script moves into a container of its own.
+    const payload = JSON.stringify({ operation: 'skills_run', input: { ...input, approvalGrantToken: undefined } });
+    const command = `printf '%s' ${shellQuote(payload)} | node /opt/harness/harness-worker.mjs`;
+    const result = await this.runPrivilegedEphemeralExec(record, { command, cwd: '.', timeoutMs, maxOutputBytes, runAs: 'unprivileged' }, signal);
+
+    const raw = (result.data as { stdout?: string } | undefined)?.stdout ?? '';
+    let parsed: RunnerResponse;
+    try {
+      parsed = RunnerResponseSchema.parse(JSON.parse(raw));
+    } catch {
+      throw new HarnessError('INTERNAL_ERROR', 'skill helper container returned an invalid bounded result', 500, true);
+    }
+    const redactor = this.getRedactor(record.id);
+    const sanitized = redactor.sanitizeObject(parsed);
+    return {
+      ...sanitized,
+      data: sanitized.data && typeof sanitized.data === 'object'
+        ? { ...sanitized.data, executionMode: 'helper-container' }
+        : sanitized.data
+    };
+  }
+
   private async runWorker(
     record: WorkspaceRecord,
     /**
@@ -1330,6 +1414,9 @@ export class WorkspaceService {
     input: Record<string, unknown>,
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
+    if (operation === 'skills_run') {
+      return await this.runSkillInHelperContainer(record, input, signal);
+    }
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     const containerName = record.containerName;
     const timeout = typeof input.timeoutMs === 'number' ? input.timeoutMs + 5_000 : 65_000;
@@ -1874,7 +1961,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
   private async runPrivilegedEphemeralExec(
     record: WorkspaceRecord,
-    input: { command: string; cwd: string; timeoutMs: number; maxOutputBytes: number },
+    input: {
+      command: string;
+      cwd: string;
+      timeoutMs: number;
+      maxOutputBytes: number;
+      /**
+       * Privileged commands run as root because that is what the owner approved. Skill scripts do not:
+       * they are repository-controlled content, and the security model puts them under UID 10001, so the
+       * skill path asks for the unprivileged variant rather than inheriting root from this helper.
+       */
+      runAs?: 'root' | 'unprivileged' | undefined;
+    },
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
     const privName = `chm-priv-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
@@ -1892,7 +1990,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         '--label', 'cloud-harness.role=priv-exec',
         '--label', 'cloud-harness.ephemeral=true',
         ...this.networkProfileManager.dockerLaunchArgs(record.networkProfile),
-        '--user', '0:0',
+        '--user', input.runAs === 'unprivileged' ? '10001:10001' : '0:0',
+        ...(input.runAs === 'unprivileged' ? ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true'] : []),
         '--workdir', workdir,
         '--pids-limit', '256',
         '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
@@ -4278,6 +4377,10 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
     return ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
   }
   return false;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function normalizePushRefspec(refspec: string | undefined, defaultBranch: string | undefined): string {
