@@ -1219,6 +1219,24 @@ export class WorkspaceService {
     };
   }
 
+  /**
+   * The roster the suggestion engine ranks against. It runs in the workspace's own executor, which is
+   * where the skills are, so the control plane reads the inventory instead of guessing at it.
+   */
+  async skillRoster(
+    principal: PrincipalSelector,
+    workspaceId: string
+  ): Promise<{ entries: Array<Record<string, unknown>>; rosterDigest: string }> {
+    const ownerId = this.store.resolvePrincipal(principal);
+    const record = this.requireWorkspace(ownerId, workspaceId);
+    const response = await this.runWorker(record, 'skills_roster', {});
+    if (!response.ok) {
+      throw new HarnessError('UNAVAILABLE', response.message || 'the workspace could not list its skills', 503, true);
+    }
+    const data = (response.data ?? {}) as { entries?: Array<Record<string, unknown>>; rosterDigest?: string };
+    return { entries: data.entries ?? [], rosterDigest: data.rosterDigest ?? '' };
+  }
+
   private requireWorkspace(ownerId: string, workspaceId?: string, active = true, allowRecoverable = false): WorkspaceRecord {
     let record: WorkspaceRecord;
     try {
@@ -1297,7 +1315,16 @@ export class WorkspaceService {
     }
   }
 
-  private async runWorker(record: WorkspaceRecord, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  private async runWorker(
+    record: WorkspaceRecord,
+    /**
+     * `skills_roster` is executed by the worker but is not a public operation: it feeds the suggestion
+     * engine rather than a caller, so it stays out of the shared operation enum and is named here.
+     */
+    operation: RunnerOperation | 'skills_roster',
+    input: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     const containerName = record.containerName;
     const timeout = typeof input.timeoutMs === 'number' ? input.timeoutMs + 5_000 : 65_000;
