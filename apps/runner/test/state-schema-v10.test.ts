@@ -92,9 +92,14 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
         INSERT INTO memories
         (id, principal_id, scope, repository_key, workspace_id, name, content, content_sha256, generation, created_at, updated_at, expires_at, deleted_at, provenance_json)
         VALUES
-        ('mem_owner1', 'p_test', 'owner', NULL, NULL, 'owner-doc', 'Owner Content', '1111111111111111111111111111111111111111111111111111111111111111', 1, ${now}, ${now}, ${now + 100000}, NULL, '{"source":"owner","trust":"owner-controlled","mutableBy":"owner"}'),
-        ('mem_repo1', 'p_test', 'repository', 'repo_hash123', NULL, 'repo-doc', 'Repo Content', '2222222222222222222222222222222222222222222222222222222222222222', 1, ${now}, ${now}, ${now + 100000}, NULL, '{"source":"repository","trust":"untrusted-executor","mutableBy":"repository-commit"}')
-      `).run();
+          (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?),
+          (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?)
+      `).run(
+        'mem_owner1', 'p_test', 'owner', null, null, 'owner-doc', 'Owner Content', '1'.repeat(64), now, now, now + 100_000,
+        '{"source":"owner","trust":"owner-controlled","mutableBy":"owner"}',
+        'mem_repo1', 'p_test', 'repository', 'repo_hash123', null, 'repo-doc', 'Repo Content', '2'.repeat(64), now, now, now + 100_000,
+        '{"source":"repository","trust":"untrusted-executor","mutableBy":"repository-commit"}'
+      );
 
       store.database.prepare(`
         INSERT INTO memory_tags (principal_id, memory_id, tag)
