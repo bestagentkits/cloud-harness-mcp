@@ -142,6 +142,21 @@ Audit event (no prompt, no answer text) + usage counters
 - [ ] The outbound payload never exceeds the configured egress bound, and the short-circuit list produces zero outbound calls for the listed cases.
 - [ ] The suggestion result contains only a roster-validated skill name plus gate, fit, confidence, latency, and cache metadata, so the phase 9 injection surface cannot carry model prose.
 
+## Implementation Status (2026-09-20)
+
+**Done and verified:**
+- `apps/runner/src/typesafe-questions.ts` holds every question, threshold, and bound in one module, covered by 13 tests: the gate inverts only `prose_suffices`, counts a missing answer as zero rather than as neutral, bounds an out-of-range answer so it cannot dominate the mean, and the four short-circuit reasons are a reviewed constant with the kill switch reported ahead of the other conditions.
+- The `integration_credentials` and `integration_credential_versions` tables live in `principal-store.ts` beside the provider credential tables, with `integration-credential-repository.ts` over them (8 tests): encrypted with the keyring envelope bound to the record, generation-fenced rotate and delete, and a `list` whose return type has no value field.
+- `apps/runner/src/typesafe-skill-suggester.ts` (21 tests): a gate below the threshold stops after one call, a fit below the threshold after two, an off-roster choice is discarded, `401` and `422` do not retry while `429` and `529` retry once, timeouts and connection errors degrade to no suggestion, a redaction failure sends nothing at all, and a fixture proves a decrypted provider key never reaches the outbound body.
+- `skills_roster` in the worker (6 tests): frontmatter parsed as bounded data, control characters dropped by an explicit filter, fallbacks to the first prose line and then to the name, and a digest that ignores unrelated files.
+- `packages/contracts/src/typesafe-schemas.ts` (10 tests): an HTTPS endpoint, a prompt bound measured in bytes, strict shapes, and no field anywhere for a value or for model prose.
+- Six internal operations are registered with a mapper branch each. The totality test named exactly these six the moment they were registered, which is the failure mode it was built to catch.
+- The control service stores credentials write-only, answers `not_configured` with zero outbound calls when no key exists, reads the roster from the workspace that owns it, names both redaction value sources (the workspace snapshot and the provider credentials that never travel through it), and records one audit row per suggestion containing only scalars.
+
+**Deviations recorded rather than hidden:**
+- The audit row carries no token counts. The TypeSafe response shape is an unverified external assumption and no token field is read from it, so reporting one would be a guess; every other scalar the phase lists is present.
+- `skills_roster` is deliberately not a member of `RunnerOperationSchema`. Registering it there would have made it a documented public operation with a label and a description, and it feeds the suggestion engine rather than a caller.
+
 ## Risk Assessment
 - **Risk:** A prompt-submit suggestion sits on the critical path of every turn, so latency is user-visible.
 - **Mitigation:** 1.5 s per-call timeout with a 2.5 s total budget, a warm roster cache, a result cache, and fail-open degradation to no suggestion.

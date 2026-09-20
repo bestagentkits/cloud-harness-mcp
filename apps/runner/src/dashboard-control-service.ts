@@ -11,7 +11,7 @@ import type { MetadataStore } from './metadata-store.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
 import { IntegrationCredentialRepository } from './integration-credential-repository.js';
 import type { SecretKeyring } from './secret-keyring.js';
-import { TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
+import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
 import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
@@ -719,6 +719,29 @@ export class DashboardControlService {
             roster: roster.entries as RosterEntry[],
             rosterDigest: roster.rosterDigest
           });
+          // One audit row per suggestion, carrying only scalars: the audit surface is flat, and neither
+          // the prompt nor the model's answer text may appear here or anywhere else.
+          this.metadata?.recordAudit(
+            principalId,
+            'skill.suggested',
+            'skill_suggestion',
+            outcome.suggested ? outcome.suggested.name : 'none',
+            0,
+            {
+              rosterDigest: roster.rosterDigest,
+              gateThreshold: GATE_THRESHOLD,
+              fitsThreshold: FITS_THRESHOLD,
+              skill: outcome.suggested ? outcome.suggested.name : '',
+              gate: outcome.suggested ? outcome.suggested.gate : 0,
+              fit: outcome.suggested ? outcome.suggested.fit : 0,
+              confidence: outcome.suggested ? outcome.suggested.confidence : 0,
+              reason: outcome.reason ?? 'suggested',
+              cached: outcome.cached,
+              latencyMs: outcome.latencyMs,
+              outboundCalls: outcome.outboundCalls,
+              redactionCount: outcome.redactionCount
+            }
+          );
           return ok(outcome.suggested ? `Suggested ${outcome.suggested.name}` : 'No suggestion', outcome);
         }
         default:
