@@ -7,7 +7,7 @@ import type { GitHubBindingService } from './github-binding-service.js';
 import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import type { MetadataStore } from './metadata-store.js';
-import type { PrivilegeGrantRecord, StateStore } from './state-store.js';
+import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import type { AgentGatewayControl } from './agent-gateway-control.js';
@@ -454,6 +454,13 @@ export class DashboardControlService {
           });
           return ok('MCP traces listed', { traces: page.traces }, page.cursor);
         }
+        case 'skill_list': return ok('Skills listed', { skills: this.principals.listSkillSources(principalId) });
+        case 'skill_get': return ok('Skill read', this.principals.getSkillSource(principalId, parsed.input.skillId));
+        case 'skill_revision_list': return ok('Skill revisions listed', { revisions: this.principals.listSkillRevisions(principalId, parsed.input.skillId, parsed.input.limit) });
+        case 'skill_usage': return ok('Skill usage listed', this.principals.listSkillUsage(principalId, parsed.input.skillId));
+        case 'skill_set_list': return ok('Skill sets listed', { sets: this.principals.listSkillSets(principalId) });
+        case 'skill_set_get': return ok('Skill set read', this.principals.getSkillSet(principalId, parsed.input.skillSetId));
+        case 'skill_import_status': return ok('Import job read', this.principals.getSkillImportJob(principalId, parsed.input.jobId));
         default:
           // Any internal operation that has no runner handler yet fails loudly instead of returning an
           // empty success, so a control-plane route can never look implemented while doing nothing.
@@ -462,6 +469,9 @@ export class DashboardControlService {
     } catch (error) {
       if (error instanceof HarnessError) throw error;
       if (error instanceof ArtifactStoreError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
+      // The skill registry raises its own error type so the store stays free of HTTP concerns; the
+      // service is where it becomes a status the control plane and the dashboard mapper understand.
+      if (error instanceof SkillRegistryError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
       throw error;
     }
   }
@@ -572,4 +582,4 @@ function storedMcpHeaders(
     ? { name: header.name, value: header.value }
     : { name: header.name, secretRef: header.value.secretRef });
 }
-const statusFor = (code: ArtifactStoreError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;
+const statusFor = (code: ArtifactStoreError['code'] | SkillRegistryError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;
