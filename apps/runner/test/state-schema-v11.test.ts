@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { migratePrincipalSchema } from '../src/principal-store.js';
 import { StateStore, downgradeStateSchemaToV10, downgradeStateSchemaToV9 } from '../src/state-store.js';
