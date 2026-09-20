@@ -132,6 +132,68 @@ export class ToolkitService {
     return Object.values(TOOLKIT_CATALOG);
   }
 
+  /**
+   * Acquires one skill from a registry into the cache and reports the bundle that holds it. A launch
+   * resolves a whole repository; an import resolves a single skill. Both go through the same adapters and
+   * the same cache, so a skill imported here is the same bytes a launch would later resolve, and a
+   * cache-only deployment refuses the import for the same reason it refuses a launch.
+   */
+  async importSkillPackage(
+    ownerId: string,
+    input: { sourceKind: 'skills-sh' | 'skillx'; sourceRef: string; ref?: string | undefined; subdirectory?: string | undefined },
+    signal?: AbortSignal
+  ): Promise<{
+    bundleSha256: string;
+    byteCount: number;
+    fileCount: number;
+    resolvedRevision: string;
+    skills: Array<{ name: string; contentSha256: string }>;
+  }> {
+    const ref = input.ref || 'HEAD';
+    const configDigest = createHash('sha256').update(JSON.stringify({
+      provider: input.sourceKind,
+      reference: input.sourceRef,
+      ref: input.ref ?? null,
+      subdirectory: input.subdirectory ?? null
+    })).digest('hex');
+    const adapterVersion = input.sourceKind === 'skillx' ? SkillXAdapter.ADAPTER_VERSION : SkillsShAdapter.ADAPTER_VERSION;
+    const spec = {
+      sourceIdentity: `registry:${input.sourceKind}:${input.sourceRef}`,
+      resolvedRevision: ref,
+      adapterVersion,
+      configDigest
+    };
+    if (!this.cacheManager.getExisting(ownerId, spec) && this.toolkitNetworkPolicy === 'cache-only') {
+      throw new HarnessError('NOT_FOUND', `Skill ${input.sourceRef} is not cached and toolkitNetworkPolicy is cache-only`, 404, false);
+    }
+
+    // The adapter resolves a mutable ref to a full commit OID, and that resolved value is what the caller
+    // records, so an imported revision names the commit that was actually read rather than the ref asked for.
+    let resolvedRevision = ref;
+    let skills: Array<{ name: string; contentSha256: string }> = [];
+    const bundle = await this.cacheManager.getOrAcquire(ownerId, spec, async (stagingDir) => {
+      const result = input.sourceKind === 'skillx'
+        ? await this.skillXAdapter.acquireAndNormalize(ownerId, stagingDir, { reference: input.sourceRef, signal })
+        : await this.skillsShAdapter.acquireAndNormalize(ownerId, stagingDir, {
+          reference: input.sourceRef,
+          ...(input.ref ? { ref: input.ref } : {}),
+          ...(input.subdirectory ? { subdirectory: input.subdirectory } : {}),
+          ...(signal ? { signal } : {})
+        });
+      resolvedRevision = result.manifest.resolvedRevision;
+      skills = result.manifest.skills;
+      return result;
+    });
+
+    return {
+      bundleSha256: bundle.bundleSha256,
+      byteCount: bundle.byteCount,
+      fileCount: bundle.fileCount,
+      resolvedRevision,
+      skills
+    };
+  }
+
   async resolveToolkits(
     ownerId: string,
     toolkits: ToolkitSelection[],

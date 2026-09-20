@@ -256,20 +256,6 @@ export function renderSkillsLibraryRows(skills) {
     </tr>`).join('');
 }
 
-/**
- * Presets are suggestions rather than inventory: a row here names a repository a launch could install, so
- * the installable column exists to keep it from reading like a skill the workspace already resolves.
- */
-export function renderSkillPresetSuggestions(presets) {
-  const rows = Array.isArray(presets) ? presets : [];
-  if (rows.length === 0) return '<li class="muted">No presets are available to install.</li>';
-  return rows.map((preset) => `<li data-preset-id="${escape(preset.id)}">
-      <strong>${escape(preset.name)}</strong> <span class="mono">${escape(preset.defaultRevision)}</span>
-      <small>${escape(preset.description)}</small>
-      <span class="status">${preset.installable ? 'installable' : 'unavailable'}</span>
-    </li>`).join('');
-}
-
 /** Rows for the registry table: cache state, pinned commit, skill count, and lock state per entry. */
 export function renderSkillsRegistryRows(entries) {
   const rows = Array.isArray(entries) ? entries : [];
@@ -343,27 +329,6 @@ export function renderSkillSetChips(names) {
  * The same rows as cards, for narrow screens. A five-column table cannot fit a phone, and the shell
  * already hides `.desktop-table` under its mobile breakpoint, so the two renderings share one source.
  */
-/**
- * Usage answers "what would break if this changed", so it names the two places a skill can be in use
- * rather than showing a count: a skill inside a set and a skill pinned by a live workspace are different
- * risks. Lock is the same fact stated as a consequence, because a skill in use cannot be archived
- * without changing what those workspaces resolve.
- */
-export function renderSkillUsage(usage) {
-  const sets = Array.isArray(usage?.sets) ? usage.sets : [];
-  const live = Array.isArray(usage?.liveWorkspaces) ? usage.liveWorkspaces : [];
-  const locked = sets.length > 0 || live.length > 0;
-  const setRows = sets.length === 0
-    ? '<li class="muted">Not in any skill set.</li>'
-    : sets.map((set) => `<li>${escape(set.name)} <span class="mono">${escape(set.skillSetId)}</span></li>`).join('');
-  const workspaceRows = live.length === 0
-    ? '<li class="muted">Not pinned by any live workspace.</li>'
-    : live.map((entry) => `<li>${escape(entry.name)} <span class="status ${escape(String(entry.status))}">${escape(entry.status)}</span> <span class="mono">${escape(entry.revisionId)}</span></li>`).join('');
-  return `<p id="skill-usage-lock"><span class="status ${locked ? 'locked' : 'unlocked'}">${locked ? 'locked' : 'unlocked'}</span></p>
-    <h4>Skill sets</h4><ul>${setRows}</ul>
-    <h4>Live workspaces</h4><ul>${workspaceRows}</ul>`;
-}
-
 export function renderSkillsLibraryCards(skills) {
   const list = Array.isArray(skills) ? skills : [];
   if (list.length === 0) return '<li class="panel">No skills yet. Import one from Discover, or create a custom skill.</li>';
