@@ -1005,6 +1005,27 @@ export function initializeDashboard() {
     document.querySelector('#skills-bulk-disable')?.addEventListener('click', () => { void runBulk('disable').catch(showError); });
     document.querySelector('#skills-library-search')?.addEventListener('input', (event) => library.search(event.target.value));
 
+    const editor = createSkillEditorController({
+      slug: document.querySelector('#skill-editor-slug'),
+      displayName: document.querySelector('#skill-editor-name'),
+      instructions: document.querySelector('#skill-editor-instructions'),
+      save: async (body) => (await api('/skills', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      })).data
+    });
+    document.querySelector('#skill-editor')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const status = document.querySelector('#skill-editor-status');
+      void editor.submit().then(async (result) => {
+        if (status) status.textContent = result.ok ? 'Skill created.' : result.message;
+        // The new skill is only visible once the server agrees it exists, so the library reloads from
+        // the server rather than assuming the row it just sent.
+        if (result.ok) await enterSkillsTab('library');
+      }).catch(showError);
+    });
+
     const names = ['library', 'discover', 'sets', 'registry'];
     const panels = names.map((name) => ({ name, element: document.querySelector(`#skills-panel-${name}`) }));
     const tabs = names.map((name) => ({ name, element: document.querySelector(`#skills-tab-${name}`) }));
