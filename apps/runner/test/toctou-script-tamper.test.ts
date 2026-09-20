@@ -80,10 +80,13 @@ describe('skills_run time-of-check to time-of-use', () => {
       name: 'tdd', script: 'run.txt', expectedContentSha256: sha256(content)
     });
 
-    // Verification passed, so the failure that remains is execution rather than integrity.
+    // This case is about verification passing, and it must not depend on whether the host can execute a
+    // file with no shebang: Windows cannot, while a shell that runs the file as a script on Linux can.
+    // So the assertion is that the outcome is not an integrity verdict, and that any failure is an
+    // execution one rather than a digest one.
     expect(result.error?.code).not.toBe('CONFLICT');
     expect(result.error?.code).not.toBe('INVALID_INPUT');
-    expect(result.error?.code).toBe('EXECUTION_FAILED');
+    if (!result.ok) expect(result.error?.code).toBe('EXECUTION_FAILED');
   });
 
   it('requires a digest, so an unverified run cannot be requested at all', async () => {
