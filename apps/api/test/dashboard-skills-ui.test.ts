@@ -15,6 +15,7 @@ import {
   createSkillEditorController,
   createSkillsLibraryController,
   createSkillsTabsController,
+  groupBulkRequests,
   validateSkillInstructions
 } from '../dashboard/dashboard.js';
 import { FakeElement } from './dashboard-test-dom.js';
@@ -439,6 +440,32 @@ describe('launch skill-set selection', () => {
 
     await expect(controller.refresh()).resolves.toMatchObject({ blocked: false });
     expect(controller.conflictList()).toEqual([]);
+  });
+});
+
+describe('bulk batching', () => {
+  const skills = [
+    { id: 'sk_a', generation: 2 },
+    { id: 'sk_b', generation: 2 },
+    { id: 'sk_c', generation: 5 }
+  ];
+
+  it('groups selected rows by generation so one stale row cannot fail its whole batch', () => {
+    const groups = groupBulkRequests(skills, ['sk_a', 'sk_b', 'sk_c']);
+
+    expect(groups).toEqual([
+      { generation: 2, skillIds: ['sk_a', 'sk_b'] },
+      { generation: 5, skillIds: ['sk_c'] }
+    ]);
+  });
+
+  it('keeps a row whose generation is unknown in its own batch instead of guessing one', () => {
+    expect(groupBulkRequests(skills, ['sk_missing'])).toEqual([{ generation: undefined, skillIds: ['sk_missing'] }]);
+  });
+
+  it('returns nothing for an empty selection, so no request is sent', () => {
+    expect(groupBulkRequests(skills, [])).toEqual([]);
+    expect(groupBulkRequests(undefined, undefined)).toEqual([]);
   });
 });
 

@@ -533,6 +533,24 @@ export function createLaunchSkillSetController({ submit, loadSets, preview }) {
   return controller;
 }
 
+/**
+ * The bulk operation carries one generation for the whole batch, so a caller that selects rows from
+ * different generations has to group them. Sending one batch with a single generation would report
+ * every other row as a conflict, which looks like a locking problem when it is really a batching one.
+ */
+export function groupBulkRequests(skills, skillIds) {
+  const groups = new Map();
+  for (const skillId of Array.isArray(skillIds) ? skillIds : []) {
+    const skill = (Array.isArray(skills) ? skills : []).find((candidate) => candidate.id === skillId);
+    const generation = skill ? skill.generation : undefined;
+    const key = String(generation ?? 'unknown');
+    const group = groups.get(key) ?? { generation, skillIds: [] };
+    group.skillIds.push(skillId);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
 export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
   { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },
