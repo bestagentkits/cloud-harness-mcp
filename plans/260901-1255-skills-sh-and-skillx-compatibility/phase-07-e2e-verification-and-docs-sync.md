@@ -97,3 +97,17 @@ Full Lifecycle E2E Verification
 ## Risk Assessment
 - **Risk:** Documentation drift between internal docs and public docs site.
 - **Mitigation:** Run automated contract tests and documentation reference generators (`npm run docs:reference` and `npm run plugin:sync`) as part of the phase completion checklist.
+
+## Implementation Status (2026-09-20)
+
+**Done and verified:**
+- `docs-site/dashboard/skills.md` exists, is registered in `docs-site/.vitepress/config.ts`, and is cross-linked from `docs-site/dashboard/index.md` and `docs-site/dashboard/workspaces.md`. Registration is the assertion the phase asks for, in place of `npm run docs:links`, which only warns about external links over a pre-built `dist`.
+- `test/integration/skills-management-lifecycle.test.ts` drives the operator lifecycle through the service the dashboard calls: create a custom skill, pin a set to the current revision, preview it through the same resolver launch uses, settle a conflict with an override, refuse a stale set generation, restore an earlier revision without rewriting it, and apply a bulk change whose per-item result keeps the row the runner refused. The lane that collects it is `npm run test:integration`.
+- `test/integration/skills-compatibility.docker.test.ts` runs the air-gap lifecycle inside the image with `--network none`, and passes all four cases: install from the local catalog with no DNS attempt, read the roster through the same worker the runner invokes, run a script from the verified snapshot, and refuse bytes that do not match the digest presented. It is in the `package.json` `test:docker` list.
+- `docs/system-architecture.md`, `docs/design-guidelines.md`, `docs-site/agent-toolkits.md`, and `docs/security-model.md` point at the owners of the behaviour rather than restating it.
+- `npm run docs:check` and `npm run plugin:check` both pass, and `npm run verify` is green.
+
+**Environment limitation, recorded rather than worked around:**
+- `npm run test:e2e` cannot run on this Windows host. `test/e2e/pi-agent.docker.test.ts` brings up the `gateway-test` compose profile, and `fake-provider` exits 1 with `EISDIR: illegal operation on a directory, read` from `apps/model-gateway/dist/fake-provider.js:5`, so its dependency never starts. This branch does not touch `apps/model-gateway`, the fake provider, or that compose profile, and the failure is the same family as the TLS fixture generator that also fails on this host in the Docker lane. `test/e2e/coding-workflow.docker.test.ts` passes, so the lane itself is not broken.
+
+**Still open from this phase:** the agent-skill documents under `.agents/skills/cloudharness/` describe the tool surface, and the tool this plan adds there (`skill_suggest`) is phase 9 work, so those updates land with it and `npm run plugin:sync` runs afterwards.
