@@ -3,10 +3,33 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
+import { StateStore, ActiveWorkspaceLimitReachedError, type WorkspaceRecord } from '../src/state-store.js';
 
 const temporaryDirectories: string[] = [];
 afterEach(() => { for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true }); });
+
+function captureError(action: () => unknown): unknown {
+  try {
+    action();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+function testStore(): StateStore {
+  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
+  temporaryDirectories.push(directory);
+  return new StateStore(join(directory, 'state.db'));
+}
+
+function hasRetiredIndex(store: StateStore): boolean {
+  return store.database
+    .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='one_active_workspace_per_owner'")
+    .get() !== undefined;
+}
+
+const RETIRED_INDEX_SQL = "CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner ON workspaces(owner_id) WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED')";
 
 function record(): WorkspaceRecord {
   const now = Date.now();
@@ -51,16 +74,138 @@ describe('StateStore', () => {
     reopened.close();
   });
 
-  it('atomically admits only one active workspace per owner', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
-    temporaryDirectories.push(directory);
-    const store = new StateStore(join(directory, 'state.db'));
+  it('atomically admits up to the configured active workspace limit per owner', () => {
+    const store = testStore();
     const first = record();
     const second = { ...record(), id: `ws_${'b'.repeat(24)}`, idempotencyKey: 'request-5678' };
-    store.create(first);
-    expect(() => store.create(second)).toThrow();
+    const third = { ...record(), id: `ws_${'c'.repeat(24)}`, idempotencyKey: 'request-9012' };
+
+    store.admit(first, 2);
+    store.admit(second, 2);
+    expect(store.list('owner')).toHaveLength(2);
+
+    const limitError = captureError(() => store.admit(third, 2));
+    expect(limitError).toBeInstanceOf(ActiveWorkspaceLimitReachedError);
+    expect(limitError).toMatchObject({ active: 2, limit: 2 });
+    // A refused admission must leave no row and no idempotency record behind.
+    expect(store.list('owner')).toHaveLength(2);
+    expect(store.byIdempotency('owner', 'request-9012')).toBeUndefined();
+
     store.update(first.id, { status: 'CLOSED' });
-    expect(() => store.create(second)).not.toThrow();
+    store.admit(third, 2);
+    expect(store.list('owner').filter((entry) => entry.status !== 'CLOSED')).toHaveLength(2);
+    store.close();
+  });
+
+  it('admits exactly one active workspace per owner when the limit is one', () => {
+    const store = testStore();
+    const first = record();
+    const second = { ...record(), id: `ws_${'b'.repeat(24)}`, idempotencyKey: 'request-5678' };
+
+    store.admit(first, 1);
+    const limitError = captureError(() => store.admit(second, 1));
+    expect(limitError).toBeInstanceOf(ActiveWorkspaceLimitReachedError);
+    expect(limitError).toMatchObject({ active: 1, limit: 1 });
+    expect(store.list('owner')).toHaveLength(1);
+    store.close();
+  });
+
+  it('counts admission separately for each owner', () => {
+    const store = testStore();
+    store.admit(record(), 1);
+    store.admit({ ...record(), ownerId: 'other-owner', id: `ws_${'b'.repeat(24)}`, idempotencyKey: 'other-request' }, 1);
+    expect(store.list('owner')).toHaveLength(1);
+    expect(store.list('other-owner')).toHaveLength(1);
+    store.close();
+  });
+
+  it('never creates the retired single-active workspace index', () => {
+    const store = testStore();
+    expect(hasRetiredIndex(store)).toBe(false);
+    expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='workspaces_owner_id_id'").get()).toBeDefined();
+    store.close();
+  });
+
+  it('drops a pre-existing single-active workspace index when the store opens', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
+    temporaryDirectories.push(directory);
+    const path = join(directory, 'state.db');
+
+    const store = new StateStore(path);
+    store.database.exec(RETIRED_INDEX_SQL);
+    expect(hasRetiredIndex(store)).toBe(true);
+    store.close();
+
+    const reopened = new StateStore(path);
+    expect(hasRetiredIndex(reopened)).toBe(false);
+    reopened.close();
+  });
+
+  it('charges a slot when promoting an expired workspace but not when re-activating a counted one', () => {
+    const store = testStore();
+    const now = Date.now();
+    const active = { ...record(), status: 'ACTIVE' as const };
+    const promotable = { ...record(), id: `ws_${'b'.repeat(24)}`, idempotencyKey: 'request-5678', status: 'EXPIRED_RECOVERABLE' as const };
+    const blocked = { ...record(), id: `ws_${'c'.repeat(24)}`, idempotencyKey: 'request-9012', status: 'EXPIRED_RECOVERABLE' as const };
+    store.create(active);
+    store.create(promotable);
+    store.create(blocked);
+
+    // One workspace is counted, so one promotion still fits under a limit of two.
+    expect(store.activateWithLimit(promotable.id, promotable.generation, ['EXPIRED_RECOVERABLE'], { status: 'ACTIVE' }, 2)?.status).toBe('ACTIVE');
+    // Both workspaces are counted now, so the second promotion is refused.
+    const promotionError = captureError(() =>
+      store.activateWithLimit(blocked.id, blocked.generation, ['EXPIRED_RECOVERABLE'], { status: 'ACTIVE' }, 2)
+    );
+    expect(promotionError).toBeInstanceOf(ActiveWorkspaceLimitReachedError);
+    expect(promotionError).toMatchObject({ active: 2, limit: 2 });
+    expect(store.byId(blocked.id)?.status).toBe('EXPIRED_RECOVERABLE');
+    // Re-activating an already counted workspace is never blocked by the limit.
+    expect(store.activateWithLimit(active.id, active.generation, ['ACTIVE'], { status: 'ACTIVE', lastActivityAt: now }, 2)?.status).toBe('ACTIVE');
+    store.close();
+  });
+
+  it('returns undefined from activateWithLimit when the fence no longer matches', () => {
+    const store = testStore();
+    const expired = { ...record(), status: 'EXPIRED_RECOVERABLE' as const };
+    store.create(expired);
+
+    expect(store.activateWithLimit(expired.id, expired.generation + 1, ['EXPIRED_RECOVERABLE'], { status: 'ACTIVE' }, 3)).toBeUndefined();
+    expect(store.activateWithLimit(expired.id, expired.generation, ['CLOSED'], { status: 'ACTIVE' }, 3)).toBeUndefined();
+    expect(store.byId(expired.id)?.status).toBe('EXPIRED_RECOVERABLE');
+    store.close();
+  });
+
+  it('allows a legacy ownership merge while the combined counted total stays below two', () => {
+    const store = testStore();
+    const selector = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'subject-merge' };
+    const principalId = store.resolveExternalPrincipal(selector);
+    const legacy = { ...record(), id: `ws_${'e'.repeat(24)}`, ownerId: 'legacy-owner', idempotencyKey: 'legacy-merge' };
+    store.create(legacy);
+
+    expect(store.resolveExternalPrincipal(selector, { legacyOwnerId: 'legacy-owner' })).toBe(principalId);
+    expect(store.byOwnerAndId(principalId, legacy.id)?.id).toBe(legacy.id);
+    expect(store.list('legacy-owner')).toHaveLength(0);
+    store.close();
+  });
+
+  it('cannot re-create the retired index once an owner holds two counted workspaces', () => {
+    const store = testStore();
+    store.admit(record(), 2);
+    store.admit({ ...record(), id: `ws_${'b'.repeat(24)}`, idempotencyKey: 'request-5678' }, 2);
+
+    expect(captureError(() => store.database.exec(RETIRED_INDEX_SQL))).toBeInstanceOf(Error);
+    expect(hasRetiredIndex(store)).toBe(false);
+    store.close();
+  });
+
+  it('rejects a duplicate owner and idempotency key through create and admit', () => {
+    const store = testStore();
+    const duplicated = { ...record(), id: `ws_${'d'.repeat(24)}` };
+
+    store.create(record());
+    expect(() => store.create(duplicated)).toThrow();
+    expect(() => store.admit(duplicated, 5)).toThrow();
     store.close();
   });
 
@@ -274,10 +419,10 @@ describe('StateStore', () => {
     store.close();
   });
 
-  it('rolls back a legacy claim that would merge two active workspaces', () => {
+  it('rolls back a legacy claim that would exceed a single-workspace limit', () => {
     const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
     temporaryDirectories.push(directory);
-    const store = new StateStore(join(directory, 'state.db'));
+    const store = new StateStore(join(directory, 'state.db'), { maxActiveWorkspacesPerOwner: 1 });
     const selector = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'subject-123' };
     const principalId = store.resolveExternalPrincipal(selector);
     store.create({ ...record(), ownerId: principalId });
@@ -290,7 +435,38 @@ describe('StateStore', () => {
     expect(store.byOwnerAndId('owner', legacy.id)?.id).toBe(legacy.id);
     store.close();
   });
+  it('allows a legacy claim that stays within the configured limit', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    const selector = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'subject-123' };
+    const principalId = store.resolveExternalPrincipal(selector);
+    store.create({ ...record(), ownerId: principalId });
+    const legacy = { ...record(), id: `ws_${'b'.repeat(24)}`, ownerId: 'owner', idempotencyKey: 'legacy-request' };
+    store.create(legacy);
 
+    // Two counted workspaces for one principal is legal at the default limit of three.
+    expect(store.resolveExternalPrincipal(selector, { legacyOwnerId: 'owner' })).toBe(principalId);
+    expect(store.principalByExternalIdentity(selector)?.legacyOwnerId).toBe('owner');
+    expect(store.byOwnerAndId(principalId, legacy.id)?.id).toBe(legacy.id);
+    expect(store.countOwnerCountedWorkspaces(principalId)).toBe(2);
+    store.close();
+  });
+  it('allows a legacy claim when the legacy owner holds no counted workspace', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
+    temporaryDirectories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    const selector = { kind: 'external' as const, issuer: 'https://access.example.com', subject: 'subject-123' };
+    const principalId = store.resolveExternalPrincipal(selector);
+    store.create({ ...record(), ownerId: principalId });
+    store.create({ ...record(), id: `ws_${'c'.repeat(24)}`, ownerId: principalId, idempotencyKey: 'second-request' });
+
+    // The retired index could not fail a merge that moves no rows, so a legacy id
+    // owning nothing must never refuse the merge and abort runner startup.
+    expect(() => store.resolveExternalPrincipal(selector, { legacyOwnerId: 'owner' })).not.toThrow();
+    expect(store.countOwnerCountedWorkspaces(principalId)).toBe(2);
+    store.close();
+  });
   it('atomically rejects an operator mapping when another legacy owner remains', () => {
     const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-'));
     temporaryDirectories.push(directory);

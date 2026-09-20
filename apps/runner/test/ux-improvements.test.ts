@@ -701,7 +701,8 @@ describe('UX Improvements and Feature Enhancements', () => {
       wallTtlSeconds: 14400,
       maxOutputBytes: 262144,
       maxWorkspaceBytes: 104857600,
-      minFreeBytes: 1048576
+      minFreeBytes: 1048576,
+      maxActiveWorkspacesPerOwner: 1
     } as RunnerConfig;
 
     const store = new StateStore(config.stateDb);
@@ -724,9 +725,9 @@ describe('UX Improvements and Feature Enhancements', () => {
     await reapExpiredFn.call(service);
     expect(store.byId(ws.id)?.status).toBe('ACTIVE');
 
-    // 2. ensureCapacity still protects the single active slot while active
+    // 2. ensureCapacity still protects the single active slot while the limit is one
     const ensureCapacityFn = (service as unknown as { ensureCapacity: (owner: string) => Promise<void> }).ensureCapacity;
-    await expect(ensureCapacityFn.call(service, ownerId)).rejects.toThrow('only one active workspace is allowed');
+    await expect(ensureCapacityFn.call(service, ownerId)).rejects.toThrow('active workspace limit reached');
 
     // Release mutation lock and expire
     store.clearMutationLock(ws.id);

@@ -142,6 +142,34 @@ Runner-owned remote Git helpers do not depend on the executor network profile.
 runner/worker results. `MIN_FREE_BYTES` gates new workspace admission against a
 host reserve.
 
+`MAX_ACTIVE_WORKSPACES_PER_OWNER` bounds the concurrent counted workspaces one
+principal may hold. Counted statuses are `CREATING`, `ACTIVE`, and
+`NETWORK_QUARANTINED`; a record in `REAPING` is in flight to teardown and holds no
+slot, so destroying a workspace never consumes capacity. The shipped default is `3`
+and the accepted range is `1..64`, where `1` restores single-workspace behaviour.
+Admission (`workspace_open`) and promotion out of `EXPIRED_RECOVERABLE` are counted
+atomically, so the limit holds under concurrent callers. Lowering the limit never
+reaps an existing workspace; it only blocks new admission and recovery until the
+counted total drops. An implicit target is resolved only when it is unambiguous, so
+with more than one counted workspace every operation must pass `workspaceId`.
+Each counted workspace retains its own container memory, CPU, and pid bounds, the
+per-workspace `MAX_WORKSPACE_BYTES` ceiling, and its own TTL, so host memory must be
+sized for this limit times the expected simultaneous builds. Admission and
+promotion are owned by [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts)
+and [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts).
+
+**Rollback constraint.** The retired `one_active_workspace_per_owner` unique index
+is dropped at runner startup, and a release that predates its retirement re-creates
+it during `StateStore` construction. Against a database that holds two or more
+counted workspaces for one principal, that statement fails and the older runner
+exits during startup. Before deploying a release that predates this change, reduce
+each principal to one counted workspace. For the same reason,
+`downgradeStateSchemaToV5` is now data-dependent: it reproduces the historical v5
+schema including that index, so it fails on a database holding more than one counted
+workspace per principal. The retirement and its boot-time drop are owned by
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) and
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts).
+
 `MAX_WORKSPACE_BYTES` is a soft ceiling checked after clone, around synchronous
 operations, and by the runner reaper. It is not a filesystem quota and cannot
 stop a fast-running process between checks. Operate with disk monitoring and a

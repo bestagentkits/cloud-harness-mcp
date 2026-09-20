@@ -214,7 +214,11 @@ export function sendRunnerResponse(response: Response, operation: DashboardRespo
   if (!result.ok) {
     const code = result.error?.code ?? 'INTERNAL_ERROR';
     const perOperation = operationMessages[operation]?.[code];
-    const message = perOperation ?? (result.error?.message && descriptiveOperations.has(operation)
+    // `LIMIT_EXCEEDED` is raised only by our own admission, quota, and reserve
+    // checks, and its message carries the active count, the configured limit, and
+    // the remedy. Every other code keeps the shared table so raw runner, Docker, and
+    // Git error text never reaches the browser.
+    const message = perOperation ?? (result.error?.message && (descriptiveOperations.has(operation) || code === 'LIMIT_EXCEEDED')
       ? result.error.message
       : (messages[code] ?? messages.INTERNAL_ERROR));
     response.status(statuses[code] ?? 500).json({ error: code.toLowerCase(), message });

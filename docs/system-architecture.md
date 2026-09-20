@@ -250,9 +250,14 @@ schemas and lifecycle owners are under `apps/runner/src/metadata-*`,
 [`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts), and
 [`apps/runner/src/github-installation-sqlite-store.ts`](../apps/runner/src/github-installation-sqlite-store.ts).
 
-The current admission policy permits one active workspace per principal. Idle
-and wall TTLs converge on the earliest expiry, and the runner is the single
-cleanup authority.
+The admission policy permits up to `MAX_ACTIVE_WORKSPACES_PER_OWNER` concurrent
+counted workspaces per principal (default 3; `1` restores single-workspace
+behaviour). Admission and promotion are counted atomically in
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) and enforced
+by
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts).
+Idle and wall TTLs are per workspace and converge on the earliest expiry, and the
+runner remains the single cleanup authority.
 
 ## Deployment topology
 

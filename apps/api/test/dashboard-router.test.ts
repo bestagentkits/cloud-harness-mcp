@@ -219,6 +219,54 @@ describe('dashboard BFF', () => {
     expect(calls.some((call) => call.operation === 'workspace_close')).toBe(false);
   });
 
+  it('passes the workspace quota message through instead of a generic throttling notice', async () => {
+    const quotaMessage = 'active workspace limit reached: 3 active of a maximum 3; close a workspace with workspace_close before opening another';
+    vi.mocked(runner.call).mockImplementationOnce(async (): Promise<RunnerResponse> => ({
+      ok: false,
+      message: 'Workspace admission refused',
+      truncated: false,
+      error: { code: 'LIMIT_EXCEEDED', message: quotaMessage, retryable: true }
+    }));
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const response = await send('/api/v1/workspaces', {
+      method: 'POST',
+      headers: { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken },
+      body: JSON.stringify({ repositoryUrl: 'https://github.com/example/project.git', idempotencyKey: 'dashboard-quota-1' })
+    });
+
+    expect(response.status).toBe(429);
+    expect(response.json.message).toBe(quotaMessage);
+    expect(response.text).not.toContain('Too many requests');
+  });
+
+  it('replaces a non-quota workspace failure with the generic notice', async () => {
+    vi.mocked(runner.call).mockImplementationOnce(async (): Promise<RunnerResponse> => ({
+      ok: false,
+      message: 'Workspace admission refused',
+      truncated: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'executor creation failed: docker: Error response from daemon: /job/repo mount denied',
+        retryable: false
+      }
+    }));
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const response = await send('/api/v1/workspaces', {
+      method: 'POST',
+      headers: { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken },
+      body: JSON.stringify({ repositoryUrl: 'https://github.com/example/project.git', idempotencyKey: 'dashboard-internal-1' })
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.json.message).toBe('The workspace service could not complete the request.');
+    expect(response.text).not.toContain('docker');
+    expect(response.text).not.toContain('/job/repo');
+  });
+
   it('lists safe key metadata and requires CSRF for one-time create and revoke', async () => {
     const listed = await send('/api/v1/api-keys');
     expect(listed.status).toBe(200);
