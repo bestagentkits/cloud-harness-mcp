@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   launchBlockedByConflicts,
   renderSkillConflicts,
   renderSkillsLibraryRows,
   renderSkillsRegistryRows
 } from '../dashboard/dashboard-render.js';
+import { createSkillsLibraryController } from '../dashboard/dashboard.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
 describe('skills library rendering', () => {
@@ -91,6 +92,69 @@ describe('launch conflict resolution', () => {
     const html = renderSkillConflicts([{ name: '"><script>alert(1)</script>', candidates: [] }], {});
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+describe('skills library controller', () => {
+  it('debounces search to a single request inside the window', () => {
+    vi.useFakeTimers();
+    try {
+      const onSearch = vi.fn();
+      const controller = createSkillsLibraryController({ onSearch, onBulk: vi.fn() });
+      controller.search('t');
+      controller.search('td');
+      controller.search('tdd');
+      expect(onSearch).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(299);
+      expect(onSearch).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onSearch).toHaveBeenCalledTimes(1);
+      expect(onSearch).toHaveBeenCalledWith('tdd');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drives the bulk bar from row selection', () => {
+    const bulkBar = new FakeElement();
+    const bulkCount = new FakeElement();
+    bulkBar.hidden = true;
+    const controller = createSkillsLibraryController({ bulkBar, bulkCount, onSearch: vi.fn(), onBulk: vi.fn() });
+
+    controller.toggle('sk_one', true);
+    expect(bulkBar.hidden).toBe(false);
+    expect(bulkCount.textContent).toBe('1 selected');
+
+    controller.toggle('sk_one', false);
+    expect(bulkBar.hidden).toBe(true);
+    expect(bulkCount.textContent).toBe('0 selected');
+  });
+
+  it('keeps a per-item failure selected with its blocker after a bulk call', async () => {
+    const bulkBar = new FakeElement();
+    const bulkCount = new FakeElement();
+    const onBulk = vi.fn(async () => [
+      { skillId: 'sk_one', ok: true },
+      { skillId: 'sk_two', ok: false, error: 'CONFLICT' }
+    ]);
+    const controller = createSkillsLibraryController({ bulkBar, bulkCount, onSearch: vi.fn(), onBulk });
+    controller.toggle('sk_one', true);
+    controller.toggle('sk_two', true);
+
+    const blockers = await controller.runBulk('archive');
+
+    expect(onBulk).toHaveBeenCalledWith('archive', ['sk_one', 'sk_two']);
+    expect(controller.selectedIds()).toEqual(['sk_two']);
+    expect(blockers).toEqual([{ skillId: 'sk_two', blocker: 'CONFLICT' }]);
+    expect(bulkBar.hidden).toBe(false);
+    expect(bulkCount.textContent).toBe('1 selected');
+  });
+
+  it('does not call the server when nothing is selected', async () => {
+    const onBulk = vi.fn();
+    const controller = createSkillsLibraryController({ onSearch: vi.fn(), onBulk });
+    await expect(controller.runBulk('archive')).resolves.toEqual([]);
+    expect(onBulk).not.toHaveBeenCalled();
   });
 });
 

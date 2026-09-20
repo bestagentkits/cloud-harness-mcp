@@ -306,6 +306,58 @@ export const PALETTE_SOURCE_REQUESTS = [
   { key: 'artifacts', path: '/artifacts?limit=100', rows: 'artifacts', group: 'Artifacts' }
 ];
 
+/**
+ * Library tab controller: debounced search, selection that drives the bulk bar, and a bulk call whose
+ * per-item results decide what stays selected. The server is authoritative, so a row it could not
+ * apply keeps its selection and reports its blocker instead of being dropped from the batch, which
+ * would silently turn a partial failure into an apparent success.
+ */
+export function createSkillsLibraryController({ bulkBar, bulkCount, onSearch, onBulk, debounceMs = 300 }) {
+  let timer;
+  const selected = new Map();
+
+  function renderBulkBar() {
+    if (bulkBar) bulkBar.hidden = selected.size === 0;
+    if (bulkCount) bulkCount.textContent = `${selected.size} selected`;
+  }
+
+  function applyResults(results) {
+    for (const result of Array.isArray(results) ? results : []) {
+      if (result.ok === true) selected.delete(result.skillId);
+      else selected.set(result.skillId, result.error ?? 'unknown');
+    }
+    renderBulkBar();
+    return blockers();
+  }
+
+  function blockers() {
+    return [...selected.entries()]
+      .filter(([, blocker]) => blocker !== undefined)
+      .map(([skillId, blocker]) => ({ skillId, blocker }));
+  }
+
+  return {
+    search(value) {
+      if (timer) globalThis.clearTimeout(timer);
+      timer = globalThis.setTimeout(() => { timer = undefined; onSearch(value); }, debounceMs);
+    },
+    pendingSearch() { return timer !== undefined; },
+    toggle(skillId, isSelected) {
+      if (isSelected) selected.set(skillId, undefined);
+      else selected.delete(skillId);
+      renderBulkBar();
+    },
+    selectedIds() { return [...selected.keys()]; },
+    blockers,
+    applyResults,
+    async runBulk(action) {
+      const skillIds = [...selected.keys()];
+      if (skillIds.length === 0) return [];
+      return applyResults(await onBulk(action, skillIds));
+    }
+  };
+}
+
 export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
   { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },
