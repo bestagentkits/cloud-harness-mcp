@@ -3,6 +3,8 @@ import { HarnessError, type ToolkitLockItem, type ToolkitSelection } from '@clou
 import { MattPocockAdapter } from './adapters/mattpocock-adapter.js';
 import { SuperpowersAdapter } from './adapters/superpowers-adapter.js';
 import { DeclarativeGitAdapter } from './adapters/git-adapter.js';
+import { SkillsShAdapter } from './adapters/skills-sh-adapter.js';
+import { SkillXAdapter } from './adapters/skillx-adapter.js';
 import type { RepositoryCacheManager } from './repository-cache-manager.js';
 import type { SecretMetadataStore } from './secret-metadata-store.js';
 import type { StateStore } from './state-store.js';
@@ -56,6 +58,8 @@ export class ToolkitService {
   private readonly mattPocockAdapter: MattPocockAdapter;
   private readonly superpowersAdapter: SuperpowersAdapter;
   private readonly gitAdapter: DeclarativeGitAdapter;
+  private readonly skillsShAdapter: SkillsShAdapter;
+  private readonly skillXAdapter: SkillXAdapter;
   private readonly enableToolkitCache: boolean;
   private readonly toolkitNetworkPolicy: 'cache-only' | 'runner-fetch';
 
@@ -103,6 +107,16 @@ export class ToolkitService {
       allowedGitHosts: options.allowedGitHosts,
       ...proxyOpts
     });
+    // Registry acquisition reuses the same provisioning path and allowlist as the Git adapter, so a
+    // skills.sh import cannot reach a host the operator has not approved for toolkit egress.
+    this.skillsShAdapter = new SkillsShAdapter({
+      repoCacheManager: options.repoCacheManager,
+      executorImage: options.executorImage,
+      provisioningNetwork: options.provisioningNetwork,
+      allowedGitHosts: options.allowedGitHosts,
+      ...proxyOpts
+    });
+    this.skillXAdapter = new SkillXAdapter();
   }
 
   computeRequestFingerprint(toolkits: ToolkitSelection[]): string {
@@ -265,6 +279,66 @@ export class ToolkitService {
           cache: 'hit',
           activation: item.activation,
           skillsCount: bundle.fileCount,
+          verification: 'custom-unverified'
+        });
+      } else if (item.kind === 'registry') {
+        const ref = item.ref || 'HEAD';
+        const configDigest = createHash('sha256').update(JSON.stringify({
+          provider: item.provider,
+          reference: item.reference,
+          ref: item.ref ?? null,
+          subdirectory: item.subdirectory ?? null,
+          skills: item.skills ?? null
+        })).digest('hex');
+        const adapterVersion = item.provider === 'skillx' ? SkillXAdapter.ADAPTER_VERSION : SkillsShAdapter.ADAPTER_VERSION;
+        const spec = {
+          sourceIdentity: `registry:${item.provider}:${item.reference}`,
+          resolvedRevision: ref,
+          adapterVersion,
+          configDigest
+        };
+        const existing = this.cacheManager.getExisting(ownerId, spec);
+        if (!existing && this.toolkitNetworkPolicy === 'cache-only') {
+          throw new HarnessError('NOT_FOUND', `Toolkit ${item.instanceId} is not cached and toolkitNetworkPolicy is cache-only`, 404, false);
+        }
+
+        // The adapters resolve a mutable ref to a full commit OID. That resolved value is captured here
+        // so the lock records the commit that was actually pinned rather than the ref that was asked for.
+        let resolvedRevision = ref;
+        const bundle = await this.cacheManager.getOrAcquire(ownerId, spec, async (stagingDir) => {
+          const res = item.provider === 'skillx'
+            ? await this.skillXAdapter.acquireAndNormalize(ownerId, stagingDir, { reference: item.reference, signal: options?.signal })
+            : await this.skillsShAdapter.acquireAndNormalize(ownerId, stagingDir, {
+              reference: item.reference,
+              revision: item.ref,
+              skillFilter: item.skills,
+              signal: options?.signal
+            });
+          resolvedRevision = res.manifest.resolvedRevision;
+          return {
+            bundleSha256: res.bundleSha256,
+            byteCount: res.byteCount,
+            fileCount: res.fileCount
+          };
+        });
+
+        bundlePaths.push({ instanceId: item.instanceId, path: bundle.bundlePath, scope: item.scope });
+        lockItems.push({
+          instanceId: item.instanceId,
+          id: `registry:${item.provider}:${item.reference}`,
+          requestedVersion: item.ref ?? null,
+          resolvedVersion: ref,
+          resolvedRevision,
+          bundleSha256: bundle.bundleSha256,
+          adapterVersion,
+          scope: item.scope,
+          status: 'ready',
+          cache: 'hit',
+          activation: item.activation,
+          skillsCount: bundle.fileCount,
+          // Provenance stays 'custom-unverified' because a registry import is a remote, operator-chosen
+          // source that is not in the built-in catalog. The pin is carried by `resolvedRevision`, which
+          // holds the full commit OID the adapter resolved, not the mutable ref that was requested.
           verification: 'custom-unverified'
         });
       }
