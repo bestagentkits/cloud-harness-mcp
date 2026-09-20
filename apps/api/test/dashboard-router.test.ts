@@ -94,6 +94,35 @@ function send(path: string, options: { method?: string; headers?: Record<string,
 }
 
 describe('dashboard BFF', () => {
+  it('dispatches every read-only skills endpoint to its operation', async () => {
+    const skillId = `sk_${'b'.repeat(24)}`;
+    const skillSetId = `skset_${'c'.repeat(24)}`;
+    const jobId = `skjob_${'d'.repeat(24)}`;
+    const expectations: Array<[string, string]> = [
+      ['/api/v1/skills', 'skill_list'],
+      [`/api/v1/skills/${skillId}`, 'skill_get'],
+      [`/api/v1/skills/${skillId}/revisions`, 'skill_revision_list'],
+      [`/api/v1/skills/${skillId}/usage`, 'skill_usage'],
+      ['/api/v1/skill-sets', 'skill_set_list'],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_get'],
+      [`/api/v1/skill-imports/${jobId}`, 'skill_import_status']
+    ];
+
+    for (const [path, operation] of expectations) {
+      const response = await send(path);
+      expect(response.status, path).toBe(200);
+      expect(calls.at(-1)?.operation, path).toBe(operation);
+    }
+    // The route forwards only the identifier it parsed; the operation schema applies `limit` and the
+    // list filters when the runner parses the request, so the route cannot disagree with the contract.
+    expect(calls.findLast((call) => call.operation === 'skill_revision_list')?.input).toEqual({ skillId });
+  });
+
+  it('rejects a skills identifier that does not match the contract shape', async () => {
+    const response = await send('/api/v1/skills/not-a-skill-id');
+    expect(response.status).toBe(400);
+    expect(calls.some((call) => call.operation === 'skill_get')).toBe(false);
+  });
   it('allowlists successful response fields for every dashboard operation', () => {
     const hostile = { ownerId: 'future-owner', token: 'future-token', workspacePath: '/future/private', futureSecret: 'do-not-forward' };
     const fixtures: Record<DashboardResponseOperation, unknown> = {
