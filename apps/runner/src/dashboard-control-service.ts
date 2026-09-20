@@ -458,6 +458,23 @@ export class DashboardControlService {
         case 'skill_get': return ok('Skill read', this.principals.getSkillSource(principalId, parsed.input.skillId));
         case 'skill_revision_list': return ok('Skill revisions listed', { revisions: this.principals.listSkillRevisions(principalId, parsed.input.skillId, parsed.input.limit) });
         case 'skill_usage': return ok('Skill usage listed', this.principals.listSkillUsage(principalId, parsed.input.skillId));
+        case 'skill_search': {
+          // Only the local registry is searched. Fanning out to skills.sh and SkillX belongs to the
+          // adapter layer, and reporting a provider as returning zero results would be a claim this
+          // code cannot back, so an unasked provider is reported as unavailable rather than empty.
+          const needle = parsed.input.query.toLowerCase();
+          const sources = this.principals.listSkillSources(principalId, { limit: 200 })
+            .filter((skill): skill is NonNullable<ReturnType<StateStore['getSkillSource']>> => skill !== undefined);
+          const local = sources
+            .filter((skill) => skill.slug.toLowerCase().includes(needle) || skill.displayName.toLowerCase().includes(needle))
+            .slice(0, parsed.input.limit);
+          return ok('Skills searched', {
+            local,
+            providers: parsed.input.providers
+              .filter((provider) => provider !== 'local')
+              .map((provider) => ({ provider, status: 'unavailable', count: 0 }))
+          });
+        }
         case 'skill_set_list': return ok('Skill sets listed', { sets: this.principals.listSkillSets(principalId) });
         case 'skill_set_get': return ok('Skill set read', this.principals.getSkillSet(principalId, parsed.input.skillSetId));
         case 'skill_import_status': return ok('Import job read', this.principals.getSkillImportJob(principalId, parsed.input.jobId));

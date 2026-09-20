@@ -46,6 +46,12 @@ export function registerDashboardControlRoutes(
   // Skills. `limit` and the list filters default inside the operation schema, so the route only
   // parses the identifier it owns and lets the schema fill the rest.
   router.get('/api/v1/skills', endpoint('skill_list', () => ({})));
+  // Registered before the identifier route: otherwise `search` is captured as a skill id and rejected
+  // as a malformed identifier.
+  router.get('/api/v1/skills/search', endpoint('skill_search', (request) => ({
+    query: request.query.query,
+    ...(request.query.providers ? { providers: String(request.query.providers).split(',') } : {})
+  })));
   router.get('/api/v1/skills/:skillId', endpoint('skill_get', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
   router.get('/api/v1/skills/:skillId/revisions', endpoint('skill_revision_list', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
   router.get('/api/v1/skills/:skillId/usage', endpoint('skill_usage', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));

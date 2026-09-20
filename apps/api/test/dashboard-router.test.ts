@@ -118,6 +118,13 @@ describe('dashboard BFF', () => {
     expect(calls.findLast((call) => call.operation === 'skill_revision_list')?.input).toEqual({ skillId });
   });
 
+  it('reaches the skills search route instead of treating search as an identifier', async () => {
+    const response = await send('/api/v1/skills/search?query=tdd&providers=local');
+    expect(response.status).toBe(200);
+    expect(calls.at(-1)?.operation).toBe('skill_search');
+    expect(calls.at(-1)?.input).toMatchObject({ query: 'tdd' });
+  });
+
   it('dispatches the skills mutation endpoints to their operations', async () => {
     const skillId = `sk_${'e'.repeat(24)}`;
     const skillSetId = `skset_${'f'.repeat(24)}`;
