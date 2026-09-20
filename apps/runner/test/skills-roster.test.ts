@@ -65,7 +65,10 @@ describe('skill roster', () => {
     const { entries } = await roster();
 
     expect(entries[0]!.indexDescription).toBe('cleanhere[31m');
-    expect(entries[0]!.indexDescription).not.toMatch(/[\u0000-\u001F\u007F]/);
+    // Written as a code-point check rather than a control-character class, which the linter refuses for
+    // good reason: the range is exactly the thing that is easy to get wrong.
+    const codes = [...entries[0]!.indexDescription].map((character) => character.codePointAt(0) ?? 0);
+    expect(codes.filter((code) => code < 32 || code === 127)).toEqual([]);
   });
 
   it('falls back to the first prose line and then to the skill name', async () => {
