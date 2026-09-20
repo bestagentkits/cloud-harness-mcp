@@ -17,20 +17,20 @@ Scope note: this phase is the quality gate for phases 1-6, which is the skills r
 ## Requirements
 - **Functional:**
   - End-to-End Test Suite:
-    - Test full execution lifecycle: import a skill from skills.sh/SkillX via API -> create a Skill Set -> launch a `networkMode: 'none'` workspace with the set -> run `skills add` and `skillx use` inside the container -> run `skills_list` and `skills_read` via MCP -> execute a script via `skills_run` -> verify clean workspace teardown.
+    - Test full execution lifecycle: import a skill from skills.sh/SkillX via API -> create a Skill Set -> launch a workspace with `networkProfile: 'network-none'` (the schema rejects the retired `networkMode` field outright at `packages/contracts/src/tool-schemas.ts:309-325`) with the set -> run `skills add` and `skillx use` inside the container -> run `skills_list` and `skills_read` via MCP -> execute a script via `skills_run` -> verify clean workspace teardown. The two CLIs are external (nothing in this tree provides them; only `README.md:255` mentions `npx skills add`), so pin explicit versions and define the offline-mirror story before writing the container half of this test.
     - Test the operator management lifecycle against a real runner store through `dashboard-skills-router.ts`: create a custom skill, edit its instructions into a second revision, diff the two revisions, restore the first, fork it into a second skill, then bulk-archive a batch where one skill is pinned by a live workspace and assert per-item results (`2` successes plus `1` conflict with blockers).
     - Test that a `disabled` skill disappears from a launch preview and that an `archived` skill is refused for a new launch while an already-created workspace snapshot keeps resolving.
     - Test the import-job path end to end: start an import, poll it to a terminal state through the API, and confirm the produced revisions are visible in the Library.
   - Security & Adversarial Suite:
     - Verify zero secret/credential leakage into executor environment, volumes, or CLI output.
-    - Verify executor cannot make outbound connections in `networkMode: 'none'`.
+    - Verify the executor cannot make outbound connections when launched with `networkProfile: 'network-none'`.
     - Verify attempt to execute modified or swapped script in `skills_run` fails immediately with digest mismatch, including for owner-authored custom skills, whose only execution control is this digest verification plus the sandbox.
     - Verify cross-principal data isolation across all database operations, including the new revision, usage, bulk, and import-job endpoints.
   - Documentation & Skill Synchronization:
     - Update `.agents/skills/cloudharness/SKILL.md` and reference files with skills.sh, SkillX, and Skill Set usage instructions.
     - Run `npm run plugin:sync` to ensure `.agents/skills/cloudharness/` and `plugins/cloud-harness/skills/cloudharness/` are byte-identical.
     - Update public documentation in `docs/system-architecture.md`, `docs/mcp-api.md`, `docs/security-model.md`, and `docs-site/` guides.
-    - Create `docs-site/dashboard/skills.md`, register it in the docs site navigation owned by `docs-site/.vitepress/config.ts` (the only configuration file under `docs-site`), and cross-link it from `docs-site/dashboard/index.md` and `docs-site/dashboard/workspaces.md`, because the Open Workspace dialog no longer exposes toolkit checkboxes. `npm run docs:links` verifies links, not navigation registration, so registering the page is a manual step that must not be skipped.
+    - Create `docs-site/dashboard/skills.md`, register it in the docs site navigation owned by `docs-site/.vitepress/config.ts` (the only configuration file under `docs-site`), and cross-link it from `docs-site/dashboard/index.md` and `docs-site/dashboard/workspaces.md`, because the Open Workspace dialog no longer exposes toolkit checkboxes. `npm run docs:links` is **not** a navigation or link gate: `scripts/verify-docs-links.mjs` reads only a pre-built `docs-site/.vitepress/dist` (it exits 1 if that directory is missing), collects only absolute external `https://` hrefs, HEAD-checks those, and merely `console.warn`s failures without failing the build. Registering the page in `docs-site/.vitepress/config.ts` is therefore a manual step that nothing else verifies, and an unregistered page would still pass `docs:links`.
 - **Non-functional:**
   - Maintain 100% pass rate across unit, integration, and contract test suites (`npm run verify`).
 
@@ -60,7 +60,7 @@ Full Lifecycle E2E Verification
 - Modify: `docs-site/dashboard/index.md`
 - Modify: `docs-site/dashboard/workspaces.md`
 - Modify: `docs-site/security-model.md`
-- Modify: `docs-site/reference/tools.md`
+- Modify: `docs-site/reference/tools.md` by regenerating it, not hand-editing: `scripts/build-docs-reference.mjs:223` writes it from `TOOL_SPECS` and `npm run docs:check` (`scripts/verify-docs-reference.mjs`) regenerates and diffs it in CI.
 
 ## Implementation Steps
 1. **Implement E2E Integration Suites:**
@@ -91,7 +91,7 @@ Full Lifecycle E2E Verification
 - [ ] Adversarial checks confirm 0 secrets leaked, 0 air-gap bypasses, and 100% TOCTOU protection, including custom skill scripts.
 - [ ] `npm run plugin:sync` passes with zero drift between `.agents/skills/` and `plugins/`.
 - [ ] `npm test packages/contracts/test/cloudharness-skill-contract.test.ts` passes.
-- [ ] `docs-site/dashboard/skills.md` exists, is reachable from the site navigation, and `npm run docs:links` passes.
+- [ ] `docs-site/dashboard/skills.md` exists, is registered in `docs-site/.vitepress/config.ts`, and is cross-linked from the dashboard index and workspaces pages. Success is asserted by the registration itself, not by `npm run docs:links`, which only warns about external https links in a pre-built `dist` and does not run in CI.
 - [ ] All repository quality gates pass for the phases 1-6 scope (`npm run verify`), and phase 9 re-runs that same gate after the TypeSafe work lands.
 
 ## Risk Assessment

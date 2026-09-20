@@ -17,12 +17,12 @@ Implement dedicated provider adapters for `skills.sh` and `skillx.sh` in `apps/r
   - `SkillsShAdapter`: Parse `owner/repo` shorthand and HTTPS URLs; validate against Git host allowlist; resolve symbolic refs (e.g. `main`, `HEAD`, tags) to full 40-hex commit OIDs; extract repositories via UID 10001 helper containers with `network: none`; normalize multiple skill subdirectories matching `SKILL.md`.
   - `SkillXAdapter`: Fetch metadata and content from SkillX API endpoints (`/api/search`, `/api/skills/:slug`); snapshot instruction payloads as `instructions-only`, which means the revision has zero executable assets rather than an execution policy gate; if a skill references an external Git repository, resolve and normalize the source commit bundle.
   - Executable-asset accounting: every normalized revision records `has_executable_assets` and its full-tree digest. Owner-authored custom skills are executable content and rely on execution-time digest verification in phase 4, not on provenance gating.
-  - `ToolkitService` & `ToolkitCacheManager`: Integrate registry adapters into the toolkit resolution pipeline; compute canonical CAS keys; enforce atomic staging, fsync, and rename to `/opt/cloud-harness/cache/<owner>/<bundleSha256>`.
+  - `ToolkitService` & `ToolkitCacheManager`: Integrate registry adapters into the toolkit resolution pipeline; compute canonical CAS keys; enforce atomic staging, fsync, and rename into the existing toolkit cache root (`TOOLKIT_CACHE_ROOT`, default `/var/lib/cloud-harness/cache/toolkits` at `packages/contracts/src/config.ts:219`), producing `<root>/<ownerId>/<bundleSha256>` exactly as `apps/runner/src/toolkit-cache-manager.ts:39` already does, with the volume mounted at `compose.yaml:88`. The path `/opt/cloud-harness/cache/...` does not exist anywhere in this tree, so do not introduce it.
 - **Non-functional / Security:**
   - Remote acquisition executes only within runner provisioning containers on the internal proxy network, never in executor containers. Two configuration decisions own whether that is even reachable, and both must be made in this phase rather than discovered at the first real import:
-    - `TOOLKIT_NETWORK_POLICY` defaults to `cache-only` (`packages/contracts/src/config.ts:196`), and every acquisition path in `apps/runner/src/toolkit-service.ts` throws `NOT_FOUND` when the policy is `cache-only` and the bundle is not cached. Registry import therefore requires `runner-fetch`, either as an operator setting or as a deliberate default change with the trade-off documented in `docs/configuration.md`.
-    - Remote hosts must be added to the provisioning proxy allowlist: `compose.yaml` sets `ALLOWED_HOSTS: ${ALLOWED_GIT_HOSTS:-github.com},...` for `provisioning-proxy:3128`, and `docs/security-model.md:379-380` makes that proxy the documented egress authority. Add the skills.sh and SkillX hosts there, and keep them in the same allowlist rather than introducing a second egress path.
-  - Reject path traversal, absolute paths, NUL characters, hard links, escaping symlinks, device files, and decompression bombs (limits: 10 MiB download, 25 MiB extracted, 1,000 files).
+    - `toolkitNetworkPolicy` defaults to `cache-only` (`packages/contracts/src/config.ts:220`), and every acquisition path in `apps/runner/src/toolkit-service.ts` throws `NOT_FOUND` when the policy is `cache-only` and the bundle is not cached (`toolkit-service.ts:148-149` and `:190-191`). Registry import therefore requires `runner-fetch`, either as an operator setting or as a deliberate default change with the trade-off documented in `docs/configuration.md`.
+    - Remote hosts must be added to the provisioning proxy allowlist: `compose.yaml:107` currently sets `ALLOWED_HOSTS: ${ALLOWED_GIT_HOSTS:-github.com},agentkit.best,releases.agentkit.best,api.github.com,objects.githubusercontent.com` for the `provisioning-proxy` service (`compose.yaml:100-107`), and `docs/security-model.md:466` makes that proxy the documented egress authority. Append the skills.sh and SkillX hosts to that same value, and keep them in one allowlist rather than introducing a second egress path.
+  - Reject path traversal, absolute paths, NUL characters, hard links, escaping symlinks, device files, and decompression bombs. The existing Git adapter already enforces `maxFiles = 1000` and `maxBytes = 67_108_864` (64 MiB) at `apps/runner/src/adapters/mattpocock-adapter.ts:70`, so this phase must state whether registry adapters reuse those bounds or replace them; the earlier 25 MiB extraction figure contradicted the shipped 64 MiB cap and the 10 MiB download cap has no existing owner in this tree.
   - Re-verify digest on projection; quarantine corrupted cache items rather than serving invalid bytes.
 
 ## Architecture
@@ -46,7 +46,7 @@ StateStore Transaction (skill_sources + skill_revisions)
 ```
 
 ## Related Code Files
-- Create: `apps/runner/src/adapters/skills-sh-adapter.ts`
+- Create: `apps/runner/src/adapters/skills-sh-adapter.ts` (the `apps/runner/src/adapters/` directory already exists; add files to it rather than creating it)
 - Create: `apps/runner/src/adapters/skillx-adapter.ts`
 - Modify: `apps/runner/src/toolkit-service.ts`
 - Modify: `apps/runner/src/toolkit-cache-manager.ts`
@@ -67,7 +67,7 @@ StateStore Transaction (skill_sources + skill_revisions)
      - Test parsing SkillX response payload into normalized `SKILL.md`.
      - Test marking registry-only skills as `instructions-only`, asserting the revision reports zero executable assets and that `skills_run` fails structurally with `NO_EXECUTABLE_ASSETS` rather than by a provenance policy.
      - Test handling provider HTTP errors, rate limits, and timeouts with graceful error mapping.
-   - Write unit tests in `apps/runner/test/toolkit-cache-manager.test.ts` for single-flight deduplication of concurrent acquisitions and corrupt cache quarantine.
+   - Extend `apps/runner/test/toolkit-cache-manager.test.ts` with corrupt-cache quarantine coverage. Single-flight deduplication is already covered there by the `applies and publishes a bundle atomically with single-flight deduplication` case, so add to it rather than duplicating it.
 2. **Implement Adapters:**
    - Implement `SkillsShAdapter` extending the declarative Git acquisition pipeline.
    - Implement `SkillXAdapter` with strict JSON schema parsing and sanitized error mapping.

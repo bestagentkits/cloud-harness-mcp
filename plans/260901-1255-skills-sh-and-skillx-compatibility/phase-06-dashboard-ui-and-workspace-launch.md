@@ -19,7 +19,7 @@ Current state that this phase replaces: `apps/api/dashboard/index.html` ships an
 ### Functional
 - **Navigation and shell:**
   - Add a `Skills` link under the *Configuration* group in `apps/api/dashboard/index.html` (`href="/dashboard/skills"`, `data-section="skills"`).
-  - Add `/skills` to the dashboard shell route allowlist in `apps/api/src/dashboard-assets.ts` and to the route list asserted by `apps/api/test/dashboard-app-mount.test.ts`.
+  - Add `/skills` to every route registry, because there are three and all are exhaustive: the shell allowlist array in `apps/api/src/dashboard-assets.ts:42-62` (19 paths from `/` to `/profile`, which does include `/knowledge` and `/mcp-servers`), the path list iterated by `apps/api/test/dashboard-app-mount.test.ts:44`, and the client-side dispatch on `location.pathname` in `apps/api/dashboard/dashboard.js:661-676`. Also add the page entry to `PALETTE_PAGE_COMMANDS` in that same `dashboard.js` (the `/dashboard/...` entries start around line 309, including `page:knowledge`), and extend the hard-coded nav path/label list in `apps/api/test/dashboard-ui-contract.test.ts:100-115`, which pins all current dashboard hrefs and would otherwise fail as soon as the nav entry is added.
   - `#skills-section` hosts four tabs (Library, Discover, Skill Sets, Registry) as a `role="tablist"` with `aria-selected`, arrow-key navigation, and `aria-controls`/`aria-labelledby` wiring.
 - **Library tab (`#skills-tab-library`)** — the management surface for installed, custom, and imported skills:
   - Toolbar: debounced search (`#skills-library-search`, 300 ms), provider filter, state filter (`enabled`/`disabled`/`archived`), tag filter, sort, and a "New custom skill" action.
@@ -60,7 +60,7 @@ Current state that this phase replaces: `apps/api/dashboard/index.html` ships an
 
 ### Non-functional / Accessibility
 - Follow `docs/design-guidelines.md` and keep `apps/api/dashboard/dashboard.css` the styling owner: OKLCH tokens only, no hex, no `gradient(`, hairline borders, radius and motion tokens, 44px touch targets, 16px inputs, and a `prefers-reduced-motion` off-ramp for every transition.
-- No inline `style=` attributes, no web fonts, and no browser storage. Only the theme persists through `PUT /api/v1/preferences`, whose schema accepts exactly `{ theme }` under `.strict()` (`apps/api/src/dashboard-router.ts:96-107`); filters and the active tab stay in memory for the session, so the phase must not claim they persist. The prohibition on client storage comes from the contract assertions in `apps/api/test/dashboard-ui-contract.test.ts` that forbid `localStorage`, `sessionStorage`, and `document.cookie` in dashboard scripts, not from a CSP storage directive.
+- No inline `style=` attributes, no web fonts, and no browser storage. Only theme and display name persist through `PUT /api/v1/preferences`, whose schema accepts `{ theme?, displayName? }` under `.strict()` plus a `.refine` (`apps/api/src/dashboard-router.ts:19-22`; the route handler is at `:125`, and lines 96-107 are the `/api/v1/profile` handler). Filters and the active tab stay in memory for the session, so the phase must not claim they persist. The prohibition on client storage comes from the contract assertions in `apps/api/test/dashboard-ui-contract.test.ts` that forbid `localStorage`, `sessionStorage`, and `document.cookie` in dashboard scripts, not from a CSP storage directive.
 - Tabs, drawer, wizard, and conflict radios are fully keyboard navigable, trap focus while a modal is open, restore focus to the invoking control on close, and announce progress through `aria-live="polite"`.
 - Render only allowlisted fields: never print runner tokens, owner ids, container names, workspace paths, or CAS root paths. Escape every attacker-influenceable value through the existing `escape` helper in `dashboard-render.js`.
 
@@ -112,7 +112,7 @@ This phase carries a wide surface behind one gate. Four ordered milestones keep 
 
 | Milestone | Scope | Exit criteria |
 |---|---|---|
-| **M1 — Shell, Library & Registry (12h)** | `/skills` route and shell allowlist, four tabs, library table with filters and selection, custom-skill create/archive, detail drawer skeleton, Registry tab read plus enable/disable/pin, and extraction of the `FakeElement` test DOM into `apps/api/test/dashboard-test-dom.ts` so the new interaction patterns can reuse it | `/skills` returns 200 from the shell router; nav, tab, library, and registry contract and behavior assertions pass |
+| **M1 — Shell, Library & Registry (12h)** | `/skills` route and shell allowlist, four tabs, library table with filters and selection, custom-skill create/archive, detail drawer skeleton, Registry tab read plus enable/disable/pin, and extraction of the `FakeElement` test DOM (declared at `apps/api/test/dashboard-ui-behavior.test.ts:11`) into `apps/api/test/dashboard-test-dom.ts` so the new interaction patterns can reuse it; no shared DOM helper exists anywhere today, so this is a genuine extraction and not a move | `/skills` returns 200 from the shell router; nav, tab, library, and registry contract and behavior assertions pass |
 | **M2 — Editor & revision history (9h)** | Instructions editor with validation and 409 recovery, Files view with `has_executable_assets`, revisions list, revision content, unified diff, restore, fork, usage view | Editor and revision tests pass; restore and fork are verified to create new revisions rather than mutating history |
 | **M3 — Import wizard & job progress (5h)** | Three-step wizard, review step, polling with backoff, cancel, retry, `CACHE_MISS` and degraded-provider guidance | Wizard tests pass and job state renders purely from `GET /api/v1/skills/imports/:jobId` |
 | **M4 — Bulk results & launch integration (4h)** | Per-item bulk result rendering with locked rows retained, usage-driven disable/archive guards, Skill Sets multi-select with chips, preflight preview, conflict radios, `#skills-manage-link`, removal of `#toolkits-selection-grid` | Launch tests pass; the contract test asserts the placeholder is gone and launch stays disabled while a conflict is unresolved |
@@ -125,7 +125,9 @@ If M1 or M2 overruns, stop and report before starting M3: the honest split point
 - Modify: `apps/api/dashboard/dashboard-api.js`
 - Modify: `apps/api/dashboard/dashboard-render.js`
 - Modify: `apps/api/dashboard/dashboard.js`
-- Modify: `apps/api/src/dashboard-assets.ts`
+- Modify: `apps/api/dashboard/dashboard.js` (`PALETTE_PAGE_COMMANDS` page list plus the `location.pathname` dispatch at `:661-676`)
+- Modify: `apps/api/src/dashboard-assets.ts` (the shell allowlist array at `:42-62`)
+- Modify: `apps/api/test/dashboard-ui-contract.test.ts` (the hard-coded nav list at `:100-115`)
 - Modify: `apps/api/test/dashboard-ui-contract.test.ts`
 - Modify: `apps/api/test/dashboard-app-mount.test.ts`
 - Modify: `apps/api/test/dashboard-ui-behavior.test.ts`

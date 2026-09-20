@@ -17,7 +17,7 @@ Expose the phase 8 engine so a suggestion is produced automatically on every use
 ### Functional
 - **MCP tool `skill_suggest`:**
   - Input: `{ prompt, workspaceId?, mode? }` where `mode` is `suggest` (default) or `load`. Output: `{ suggestedSkill, relevanceBlock, gate, bestFit, confidence, mode, cached, latencyMs, reason }`.
-  - `workspaceId` is optional. When omitted, resolve the owner's preferred workspace from the existing `preferred_workspaces` table, then check the resolved record's status before using it: `getPreferredWorkspace` (`apps/runner/src/state-store.ts:726-729`) returns the stored id with no status join, so a closed or expired workspace would otherwise be treated as active. Return `reason: 'no_active_workspace'` without an outbound call when no live workspace resolves.
+  - `workspaceId` is optional. When omitted, resolve the owner's preferred workspace from the existing `preferred_workspaces` table (`apps/runner/src/state-store.ts:355`), then check the resolved record's status before using it: `getPreferredWorkspace` (`apps/runner/src/state-store.ts:745-746`) selects only `workspace_id` with no status join, so a closed or expired workspace would otherwise be treated as active. Return `reason: 'no_active_workspace'` without an outbound call when no live workspace resolves.
   - `mode: 'suggest'` returns the `<skill_relevance>` block only, matching the measured TypeSafe design where the block names one skill and explicitly says the agent may ignore it. `mode: 'load'` additionally returns the skill body through the existing `skills_read` path for hosts that cannot act on a pointer; it is opt-in because a wrong suggestion that also loads content is worse than a wrong pointer.
   - Register the tool in `packages/contracts/src/tool-schemas.ts`: schema, display name, description, and classification. It is non-destructive and idempotent, and it belongs to the external-egress (`openWorld`) set. Confirm the exact set names and their semantics against the existing classification test before assigning membership, because this tool does write audit rows and does cause egress, so a "pure read" classification would be inaccurate and could let a caller cache it as side-effect free.
   - The injected text is a fixed template, never free prose. The `<skill_relevance>` body contains only skill identifiers that satisfy two checks: they match `/^[A-Za-z0-9._-]{1,80}$/` and they appear in the current `rosterDigest`. Length is bounded and control characters are stripped, and the identifier is XML-escaped before interpolation because a skill name is a workspace or repository directory name that `skillEntries()` does not constrain to a charset today, so a directory named `a<b>&</skill_relevance>` is a legal name. Model prose, skill descriptions, and any other free text are never interpolated, the block states that it is data the agent may ignore, and a fixture test covers a hostile name. If validation fails, the tool returns no block rather than an unvalidated one. This is the containment boundary for the one channel that reaches every turn's context.
@@ -87,9 +87,9 @@ Claude Code                        Other MCP clients
 - Create: `apps/api/test/dashboard-typesafe-ui.test.ts`
 - Modify: `packages/contracts/src/tool-schemas.ts`
 - Modify: `packages/contracts/src/runner-api.ts`
-- Modify: `packages/contracts/test/tool-schemas.test.ts`
+- Create: `packages/contracts/test/tool-schemas.test.ts` (the file does not exist; either create it or extend `packages/contracts/test/contracts.test.ts`, whose `publishes exact truthful agent annotations` case at `:735` owns the per-tool annotation assertions)
 - Modify: `apps/api/src/mcp-server.ts`
-- Modify: `apps/api/src/dashboard-skills-router.ts`
+- Create: `apps/api/src/dashboard-skills-router.ts` (no skills router exists in `apps/api/src`; phase 5 creates it, so this phase wires a page onto an existing router)
 - Modify: `apps/api/src/dashboard-response.ts`
 - Modify: `apps/api/dashboard/index.html`
 - Modify: `apps/api/dashboard/dashboard.css`
@@ -118,13 +118,13 @@ Claude Code                        Other MCP clients
    - `test/integration/typesafe-live.test.ts`, guarded by `TYPESAFE_LIVE=1`: one `noul` question and one two-call suggestion against the real endpoint, asserting only status, model id shape, and latency.
 2. **Implement the MCP tool:**
    - Add the schema, display name, description, and capability classification in `packages/contracts/src/tool-schemas.ts`.
-   - Wire the handler in `apps/api/src/mcp-server.ts` to the `skill_suggest` internal operation and add the workspace fallback resolution.
+   - Wire `skill_suggest` in `apps/api/src/mcp-server.ts`. That file has no per-tool handler: registration is one generic `for (const spec of TOOL_SPECS)` loop at `:66-88` that forwards every call to `RunnerOperationBackend.call` → `RunnerClient.call`, so a tool that must resolve a workspace or trigger egress needs an explicit special case rather than a schema-only addition. Reconcile the operation name with metadata placement first: `packages/contracts/test/internal-runner-api.test.ts:78-84` asserts that no metadata operation appears in `RunnerOperationSchema.options` or `TOOL_SPECS`, so `skill_suggest` cannot be the same name in both enums.
 3. **Ship the plugin hook:**
    - Add `.mcp.json` with `userConfig` for the MCP URL, add `hooks/hooks.json` with the `mcp_tool` `UserPromptSubmit` handler and a short timeout, and grant the plugin the MCP server declaration it needs.
    - Verify with `npm run plugin:check` that the skills sync is unaffected, since `scripts/sync-cloudharness-plugin-skill.mjs` copies only the cloudharness skill directory.
 4. **Build the dashboard panel:**
    - Add markup, styles, API methods, renderers, and event wiring for the TypeSafe panel, reusing the existing write-only credential field pattern and `expectedGeneration` mutations.
-   - Add `/dashboard/configuration/typesafe` — that exact route, not an equivalent — to the shell route allowlist in `apps/api/src/dashboard-assets.ts` (an exact route array at lines 29-43) and to the matching path list in `apps/api/test/dashboard-app-mount.test.ts:37-41`. Both lists are exhaustive, so the page is unreachable without both edits.
+   - Add `/dashboard/configuration/typesafe` — that exact route — to all three exhaustive route registries: the shell allowlist array in `apps/api/src/dashboard-assets.ts:42-62`, the path list in `apps/api/test/dashboard-app-mount.test.ts:44`, and the client-side `location.pathname` dispatch in `apps/api/dashboard/dashboard.js:661-676`. Adding only the allowlist leaves the page shell-loading with no data. Also add the page entry to `PALETTE_PAGE_COMMANDS` and extend the hard-coded nav list in `apps/api/test/dashboard-ui-contract.test.ts:100-115`.
 5. **Document and verify live:**
    - Update the internal docs, the docs site pages, and the agent skill; add the non-secret overrides to `.env.example`. Run `npm run plugin:sync`, `npm run docs:reference`, and `npm run docs:links`.
    - Run the live harness with the operator's key loaded into the test process from the external file (`--env-file`), reporting only presence, fingerprint prefix, latency, and model id.

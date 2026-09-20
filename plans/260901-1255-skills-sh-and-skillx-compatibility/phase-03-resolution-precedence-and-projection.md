@@ -18,7 +18,8 @@ Implement the centralized `SkillResolver` engine in `apps/runner/src/` that flat
     - Flatten all selected `skillSets` by resolving their pinned `skill_revision_id` records.
     - Merge direct toolkit selections (`owner` and `workspace` scopes), built-in catalog skills, and repository-discovered skills.
     - Resolve name collisions across tiers using the strict order: `built-in (rank 4) > owner (rank 3) > workspace (rank 2) > repository (rank 1)`.
-    - Preserve the repository sub-rank that exists today before applying the conflict engine: `skillEntries()` in `worker/harness-worker.mjs:258-268` silently ranks `.agents/skills` (3) above `.codex/skills` (2) above `.claude/skills` (1). Phase 3 must state whether that sub-rank still resolves first, and it must do so, because same-name repository skills with different digests are otherwise promoted into a `CONFLICT` that operators never saw before. Record the decision in the phase text and cover it in the order-independence test.
+    - Preserve the repository sub-rank that exists today before applying the conflict engine. In `worker/harness-worker.mjs` the function is declared at `:206`, the tier rank map lives at `:249-250`, and the repository sub-rank is an **explicit second comparator key** in the sort at `:261-268` (`.agents/skills` above `.codex/skills` above `.claude/skills`), not an implicit ordering. Phase 3 must state whether that sub-rank still resolves first, and it must do so, because same-name repository skills with different digests are otherwise promoted into a `CONFLICT` that operators never saw before. Record the decision in the phase text and cover it in the order-independence test.
+    - Do not add a fourth rank map. Tier ranking already exists in three places: `worker/harness-worker.mjs:249-290`, `apps/runner/src/workspace-service.ts:2461`, and `apps/runner/src/local-workspace-backend.ts:266`. Projection also already exists as `composeOwnerToolkitProjection` (`apps/runner/src/workspace-service.ts:873-903`, which deduplicates owner-tier digests and raises `CONFLICT` at `:897`) plus workspace-tier `applyWorkspaceToolkitPatches` (`:909`). `SkillResolver` must state which of the three rank maps it supersedes and must extend or replace those projection helpers rather than reimplementing them.
     - Same-tier collision rule: identical tree SHA-256 digests deduplicate and preserve all contributing origin set IDs; different tree SHA-256 digests fail with `CONFLICT` unless resolved by explicit `skillOverrides[name] = revisionId`.
     - Track and report all shadowed candidates for `skills_list(includeShadowed: true)`.
     - Respect skill state: a `disabled` skill is removed from the resolution input and returned in a `disabled` list with its reason, so the launch preview explains why an expected skill is absent. An `archived` skill is excluded from every new launch while remaining valid for `workspace_skill_assignments` that already reference its revision; those rows stay GC roots through `ON DELETE RESTRICT`, so an existing workspace snapshot never breaks.
@@ -27,7 +28,7 @@ Implement the centralized `SkillResolver` engine in `apps/runner/src/` that flat
     - Mount ONLY the workspace's pinned owner-tier skill bundles read-only at `/opt/cloud-harness/owner-skills/<skill-name>`.
     - Mount workspace-tier skill bundles at `.cloud-harness/skills/<skill-name>` when workspace modifications are authorized.
     - Generate an isolated, metadata-only catalog file at `/opt/cloud-harness/skill-catalog.json` containing only the locators, digests, and aliases assigned to this specific workspace.
-    - **Never** mount the entire owner CAS root `/opt/cloud-harness/cache/<owner>/` into the workspace container.
+    - **Never** mount the entire owner CAS root (`/var/lib/cloud-harness/cache/toolkits/<ownerId>/`, see `packages/contracts/src/config.ts:219` and `apps/runner/src/toolkit-cache-manager.ts:39`) into the workspace container. Note that this root is not mounted into workspace containers at all today, so this is a constraint to preserve rather than a mount to remove.
 - **Non-functional / Security:**
   - Selection order of Skill Sets must have zero impact on resolution outcome (order-independent resolution).
   - Built-in skills cannot be overridden by user overrides (fail-closed).
@@ -84,7 +85,7 @@ Workspace Open Request (skillSets[], toolkits[], skillOverrides{})
    - Create `SkillResolver` class in `apps/runner/src/skill-resolver.ts`.
    - Implement `resolveWorkspaceSkills(params: ResolveSkillsParams): Promise<ResolvedSkillsResult>`.
 3. **Integrate with WorkspaceService:**
-   - In `WorkspaceService.openWorkspace`, invoke `SkillResolver` during preflight.
+   - In `WorkspaceService.open` (`apps/runner/src/workspace-service.ts:745`; there is no `openWorkspace` symbol in this tree), invoke `SkillResolver` during preflight.
    - Persist resolution records into `workspace_skill_set_snapshots` and `workspace_skill_assignments`.
    - Construct container volume mounts for `/opt/cloud-harness/owner-skills/` and `/opt/cloud-harness/skill-catalog.json`.
 4. **Verification:**
@@ -101,4 +102,4 @@ Workspace Open Request (skillSets[], toolkits[], skillOverrides{})
 
 ## Risk Assessment
 - **Risk:** Stale `expectedGeneration` on Skill Sets when multiple owners or tabs edit sets concurrently.
-- **Mitigation:** Enforce generation validation in `SkillResolver`. If any selected Skill Set has a generation mismatch, reject launch with `409 STALE_GENERATION` and prompt client to refresh preview.
+- **Mitigation:** Enforce generation validation in `SkillResolver`. If any selected Skill Set has a generation mismatch, reject launch with `409 STALE_GENERATION` and prompt client to refresh preview. `STALE_GENERATION` does not exist in `ErrorCodeSchema` (`packages/contracts/src/mcp-results.ts:3-25`, which currently ends its list at `STALE_HEAD`), so this phase must add the code there and cover it in the contract test, or reuse an existing code instead of inventing one that `HarnessError` rejects at the type level.
