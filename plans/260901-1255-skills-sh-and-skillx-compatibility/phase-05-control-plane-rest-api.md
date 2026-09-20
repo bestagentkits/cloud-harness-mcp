@@ -129,3 +129,16 @@ StateStore (SQLite) + ToolkitCacheManager (CAS)
 - **Mitigation:** Debounce search requests in Dashboard client, cap search concurrency per owner in API, and apply rate limits on provider adapter calls.
 - **Risk:** A new internal operation typechecks correctly but reaches the browser as an empty object because `mapDashboardData` uses an explicit key allowlist.
 - **Mitigation:** Add the operations enum entry, the mapping branch, and a mapper test in the same change, and fail the phase if any skills operation lacks a mapper test.
+
+## Implementation Status (2026-09-20)
+**Done and verified:**
+- `DashboardResponseOperation` is now derived from a runtime `DASHBOARD_RESPONSE_OPERATIONS` array (`apps/api/src/dashboard-response.ts`), which is the single source of truth for both the type and the totality check. Before this, the union was type-only and nothing could assert at runtime that an operation had a mapper branch.
+- `apps/api/test/dashboard-response-totality.test.ts`: 5 tests green. It fails when an operation is neither mapped nor explicitly pending, when a pending entry is already mapped, when a pending entry is not a real runner operation, and on duplicates. The API suite is green at 33 files / 418 tests, and `npm run typecheck` is clean.
+- Writing the test immediately surfaced three operations that Phase 1 had added and nothing had accounted for: `toolkit_registry_list`, `toolkit_registry_update`, `toolkit_registry_refresh`. That is exactly the silent-drop failure mode the criterion names, and the pending list now covers all twenty-four Phase 1 operations.
+
+**Not started; this phase's remaining work:**
+- The `mapDashboardData` branches and `operationMessages` entries for those twenty-four operations. The pending list must shrink to zero before this phase is done, and the test fails if it grows.
+- Runner handlers for the twenty-four internal operations. `dashboard-control-service.execute()` currently throws `NOT_FOUND` for any operation without a handler, so these operations exist in the contract but cannot execute yet.
+- The REST routes themselves: skills, skill sets, registry sources, imports, revisions, and search, along with owner isolation, the generation `409`, the dependency `409` on delete, per-item bulk results, and revision diff/restore/fork.
+
+**Pre-existing finding (reported, not fixed):** `mapDashboardData` returns `unknown`. The signature predates this work and typing it would touch roughly eighty branches, so it is left alone under the "do not fix pre-existing findings outside the changed region" rule.
