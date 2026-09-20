@@ -787,6 +787,8 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
           deleted_at: number | null;
           provenance_json: string;
         }
+        // SAFETY: node:sqlite returns untyped records; the column list in LegacyMemoryRow mirrors the
+        // legacy `memories` schema this migration reads, and every field is re-validated on insert below.
         const legacyRows = database.prepare('SELECT * FROM memories').all() as unknown as LegacyMemoryRow[];
         for (const row of legacyRows) {
           const knId = 'kn_' + (row.id.startsWith('mem_') ? row.id.slice(4) : row.id);
