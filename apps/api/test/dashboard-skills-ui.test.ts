@@ -11,6 +11,7 @@ import {
 import {
   buildSkillImportRequest,
   createImportPollingController,
+  createLaunchSkillSetController,
   createSkillEditorController,
   createSkillsLibraryController,
   createSkillsTabsController,
@@ -379,6 +380,65 @@ describe('skill import wizard', () => {
     expect(isTerminalImportState({ state: 'failed' })).toBe(true);
     expect(isTerminalImportState({ state: 'running' })).toBe(false);
     expect(isTerminalImportState(undefined)).toBe(false);
+  });
+});
+
+describe('launch skill-set selection', () => {
+  const sets = [{ id: 'skset_core', name: 'core', generation: 3 }, { id: 'skset_extra', name: 'extra', generation: 1 }];
+
+  it('leaves submit available when no set is selected, without asking the preview', async () => {
+    const submit = new FakeElement();
+    const preview = vi.fn();
+    const controller = createLaunchSkillSetController({ submit, loadSets: async () => sets, preview });
+    await controller.load();
+
+    const result = await controller.refresh();
+
+    expect(preview).not.toHaveBeenCalled();
+    expect(submit.disabled).toBe(false);
+    expect(result.blocked).toBe(false);
+  });
+
+  it('disables submit while a conflict is unresolved and enables it once every one has an override', async () => {
+    const submit = new FakeElement();
+    const conflict = { name: 'tdd', candidates: [{ tier: 'owner', revisionId: 'skrev_one' }, { tier: 'workspace', revisionId: 'skrev_two' }] };
+    const preview = vi.fn(async () => ({ resolved: [], excluded: [], conflicts: [conflict] }));
+    const controller = createLaunchSkillSetController({ submit, loadSets: async () => sets, preview });
+    await controller.load();
+    controller.choose(['skset_core']);
+
+    const blocked = await controller.refresh();
+    expect(blocked.blocked).toBe(true);
+    expect(submit.disabled).toBe(true);
+
+    const resolved = await controller.resolve('tdd', 'skrev_two');
+    expect(resolved.blocked).toBe(false);
+    expect(submit.disabled).toBe(false);
+    expect(controller.body()).toEqual({
+      skillSets: [{ skillSetId: 'skset_core', expectedGeneration: 3 }],
+      skillOverrides: { tdd: 'skrev_two' }
+    });
+  });
+
+  it('sends the generation the set was loaded at, so a stale selection is refused by the server', async () => {
+    const preview = vi.fn(async () => ({ resolved: [], excluded: [], conflicts: [] }));
+    const controller = createLaunchSkillSetController({ submit: new FakeElement(), loadSets: async () => sets, preview });
+    await controller.load();
+    controller.choose(['skset_extra']);
+
+    await controller.refresh();
+
+    expect(preview).toHaveBeenCalledWith([{ skillSetId: 'skset_extra', expectedGeneration: 1 }], {});
+  });
+
+  it('survives a preview that reports no conflicts field at all', async () => {
+    const preview = vi.fn(async () => ({}));
+    const controller = createLaunchSkillSetController({ submit: new FakeElement(), loadSets: async () => sets, preview });
+    await controller.load();
+    controller.choose(['skset_core']);
+
+    await expect(controller.refresh()).resolves.toMatchObject({ blocked: false });
+    expect(controller.conflictList()).toEqual([]);
   });
 });
 

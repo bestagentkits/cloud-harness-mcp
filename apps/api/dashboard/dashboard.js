@@ -32,6 +32,7 @@ import {
   listGlobalSecrets
 } from './dashboard-api.js';
 import {
+  launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
@@ -482,6 +483,51 @@ export function buildSkillImportRequest({ sourceKind, sourceRef, ref }) {
       expectedGeneration: 0
     }
   };
+}
+
+/**
+ * Launch skill-set selection. Submit stays disabled while a conflict has no override, because the
+ * resolver would refuse the launch anyway, and a control that looks available but fails is worse than
+ * one that says why it cannot be used yet. The preview is what makes that decision honest: the dialog
+ * gates on what launch would actually resolve rather than on a local guess.
+ */
+export function createLaunchSkillSetController({ submit, loadSets, preview }) {
+  let sets = [];
+  let chosen = [];
+  let overrides = {};
+  let conflicts = [];
+
+  function request() {
+    return chosen.map((id) => {
+      const match = sets.find((set) => set.id === id);
+      return { skillSetId: id, expectedGeneration: match ? match.generation : 0 };
+    });
+  }
+
+  const controller = {
+    async load() { sets = (await loadSets()) ?? []; return sets; },
+    sets() { return sets; },
+    choose(ids) { chosen = [...ids]; return chosen; },
+    chosen() { return chosen; },
+    conflictList() { return conflicts; },
+    blocked() { return launchBlockedByConflicts(conflicts, overrides); },
+    body() { return { skillSets: request(), skillOverrides: overrides }; },
+    async resolve(name, revisionId) {
+      overrides = { ...overrides, [name]: revisionId };
+      return controller.refresh();
+    },
+    async refresh() {
+      const payload = request();
+      // Nothing selected means nothing to resolve, so the preview is not asked to describe an empty
+      // launch and submit is left available for a workspace with no skill sets.
+      const result = payload.length === 0 ? { resolved: [], excluded: [], conflicts: [] } : await preview(payload, overrides);
+      conflicts = result.conflicts ?? [];
+      const blocked = launchBlockedByConflicts(conflicts, overrides);
+      if (submit) submit.disabled = blocked;
+      return { ...result, blocked };
+    }
+  };
+  return controller;
 }
 
 export const PALETTE_PAGE_COMMANDS = [
