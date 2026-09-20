@@ -104,7 +104,8 @@ const skillKeys = ['id', 'slug', 'displayName', 'description', 'kind', 'provider
 const skillRevisionKeys = ['id', 'skillSourceId', 'parentRevisionId', 'origin', 'hasExecutableAssets', 'createdAt'] as const;
 const skillSetKeys = ['id', 'name', 'description', 'generation', 'createdAt', 'updatedAt'] as const;
 const skillSetItemKeys = ['skillSetId', 'ordinal', 'skillSourceId', 'revisionId', 'name'] as const;
-const skillUsageKeys = ['workspaceId', 'workspaceName', 'name', 'tier', 'pinned', 'createdAt'] as const;
+const skillUsageSetKeys = ['skillSetId', 'name'] as const;
+const skillUsageWorkspaceKeys = ['workspaceId', 'status', 'name', 'revisionId'] as const;
 const skillImportJobKeys = ['id', 'sourceKind', 'sourceRef', 'state', 'progress', 'result', 'errorCode', 'skillRevisionId', 'createdAt', 'updatedAt'] as const;
 const skillResolvedKeys = ['name', 'tier', 'skillSourceId', 'revisionId', 'contentSha256', 'pinned'] as const;
 const skillExcludedKeys = ['name', 'tier', 'reason'] as const;
@@ -245,7 +246,15 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       })
     };
   }
-  if (operation === 'skill_usage') return list(data, 'usages', skillUsageKeys);
+  // The reader answers with the two places a skill can be in use, so the projection mirrors that shape.
+  // It previously read a `usages` key that the reader never produced, which left the dashboard with an
+  // empty list and made usage look like a skill nobody used rather than a field nobody filled.
+  if (operation === 'skill_usage') {
+    return {
+      sets: listOf(data.sets, skillUsageSetKeys),
+      liveWorkspaces: listOf(data.liveWorkspaces, skillUsageWorkspaceKeys)
+    };
+  }
   if (operation === 'skill_search') {
     return {
       local: listOf(data.local, skillKeys),

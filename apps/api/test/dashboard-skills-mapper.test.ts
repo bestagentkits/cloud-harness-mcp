@@ -58,6 +58,21 @@ describe('skills dashboard mapping', () => {
     expect(mapped.internalPath).toBeUndefined();
   });
 
+  it('carries both places a skill is in use instead of reading a key the reader never sends', () => {
+    const mapped = mapDashboardData('skill_usage', {
+      sets: [{ skillSetId: 'skset_1', name: 'Backend', ownerId: 'own_secret' }],
+      liveWorkspaces: [{ workspaceId: 'ws_1', status: 'ACTIVE', name: 'fix-auth', revisionId: 'skrev_1', ownerId: 'own_secret' }]
+    }) as Record<string, unknown>;
+
+    expect(mapped.sets).toEqual([{ skillSetId: 'skset_1', name: 'Backend' }]);
+    expect(mapped.liveWorkspaces).toEqual([
+      { workspaceId: 'ws_1', status: 'ACTIVE', name: 'fix-auth', revisionId: 'skrev_1' }
+    ]);
+    // The reader answers with these two collections and has never produced a `usages` key, so a
+    // projection that still read one would report every skill as unused.
+    expect(mapped.usages).toBeUndefined();
+  });
+
   it('passes a revision diff through only when the runner sent a string', () => {
     const withString = mapDashboardData('skill_revision_diff', { id: 'skrev_1', diff: 'line' }) as Record<string, unknown>;
     expect(withString.diff).toBe('line');
