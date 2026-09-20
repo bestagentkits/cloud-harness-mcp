@@ -15,6 +15,7 @@ import { IntegrationCredentialRepository } from './integration-credential-reposi
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
+import { TOOLKIT_CATALOG } from './toolkit-service.js';
 import { diffRevisionText, formatRevisionDiff } from './revision-diff.js';
 import { fetchRegistrySearch } from './adapters/registry-search.js';
 import { parseSkillsShSearchResults } from './adapters/skills-sh-adapter.js';
@@ -716,7 +717,22 @@ export class DashboardControlService {
           });
         }
         case 'toolkit_registry_list':
-          return ok('Registry catalog listed', { entries: this.principals.listSkillCatalogEntries(principalId, parsed.input.provider) });
+          return ok('Registry catalog listed', {
+            entries: this.principals.listSkillCatalogEntries(principalId, parsed.input.provider),
+            // A preset is offered as something a launch could install, not as something the workspace can
+            // already resolve. Listing it beside cached entries without that distinction would let a row
+            // read as an available skill, which is the reading this field exists to prevent.
+            presets: Object.values(TOOLKIT_CATALOG).map((preset) => ({
+              id: preset.id,
+              name: preset.name,
+              description: preset.description,
+              sourceUrl: preset.sourceUrl,
+              license: preset.license,
+              defaultRevision: preset.defaultRevision,
+              supportedScopes: preset.supportedScopes,
+              installable: true
+            }))
+          });
         case 'skill_restore': {
           const revision = required(
             this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.revisionId),

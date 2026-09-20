@@ -228,6 +228,8 @@ export function renderSkillsSkeleton() {
       </div>`;
 
   const registry = `<table id="skills-registry-table" class="data-table"><caption class="sr-only">Registry and toolkit inventory</caption><thead><tr><th scope="col">Name</th><th scope="col">Cache state</th><th scope="col">Pinned commit</th><th scope="col">Skills</th><th scope="col">Lock</th></tr></thead><tbody></tbody></table>
+      <h3>Suggested toolkits to install</h3>
+      <ul id="skills-registry-suggestions" class="preset-suggestions"></ul>
       <p id="skills-registry-status" role="status" aria-live="polite"></p>`;
 
   return `<section id="skills-section" aria-labelledby="skills-heading">
@@ -252,6 +254,20 @@ export function renderSkillsLibraryRows(skills) {
       <td><span class="status ${escape(String(skill.state))}">${escape(skill.state)}</span></td>
       <td><input type="checkbox" data-skill-select="${escape(skill.id)}" aria-label="Select ${escape(skill.displayName)}"></td>
     </tr>`).join('');
+}
+
+/**
+ * Presets are suggestions rather than inventory: a row here names a repository a launch could install, so
+ * the installable column exists to keep it from reading like a skill the workspace already resolves.
+ */
+export function renderSkillPresetSuggestions(presets) {
+  const rows = Array.isArray(presets) ? presets : [];
+  if (rows.length === 0) return '<li class="muted">No presets are available to install.</li>';
+  return rows.map((preset) => `<li data-preset-id="${escape(preset.id)}">
+      <strong>${escape(preset.name)}</strong> <span class="mono">${escape(preset.defaultRevision)}</span>
+      <small>${escape(preset.description)}</small>
+      <span class="status">${preset.installable ? 'installable' : 'unavailable'}</span>
+    </li>`).join('');
 }
 
 /** Rows for the registry table: cache state, pinned commit, skill count, and lock state per entry. */

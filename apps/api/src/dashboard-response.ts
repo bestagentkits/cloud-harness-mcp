@@ -276,7 +276,14 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       conflicts: listOf(data.conflicts, ['name', 'candidates', 'candidateCount'])
     };
   }
-  if (operation === 'toolkit_registry_list') return list(data, 'entries', skillCatalogKeys);
+  // Presets travel separately from entries because they are suggestions a launch could install rather
+  // than skills the workspace can already resolve, and merging the two lists would erase that difference.
+  if (operation === 'toolkit_registry_list') {
+    return {
+      entries: listOf(data.entries, skillCatalogKeys),
+      presets: listOf(data.presets, ['id', 'name', 'description', 'sourceUrl', 'license', 'defaultRevision', 'supportedScopes', 'installable'])
+    };
+  }
   if (operation === 'skill_suggest') {
     return {
       ...pick(data, ['reason', 'cached', 'latencyMs', 'outboundCalls', 'redactionCount']),

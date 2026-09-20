@@ -39,7 +39,7 @@ import {
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
   renderSkillConflicts,
-  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions, renderSkillUsage,
+  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions, renderSkillUsage, renderSkillPresetSuggestions,
   renderSkillsSkeleton
 } from './dashboard-render.js';
 
@@ -1061,7 +1061,12 @@ export function initializeDashboard() {
           if (picker) picker.innerHTML = renderSkillSetPicker(rows);
         } else if (name === 'registry') {
           const body = document.querySelector('#skills-registry-table tbody');
-          if (body) body.innerHTML = renderSkillsRegistryRows((await api('/toolkit-registry')).data.entries);
+          const registry = await api('/toolkit-registry');
+          if (body) body.innerHTML = renderSkillsRegistryRows(registry.data.entries);
+          // Presets are rendered from their own field, so a suggestion to install never appears in the
+          // table of what is already cached and locked.
+          const suggestions = document.querySelector('#skills-registry-suggestions');
+          if (suggestions) suggestions.innerHTML = renderSkillPresetSuggestions(registry.data.presets);
         }
       } catch (error) {
         showError(error);
