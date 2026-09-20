@@ -1,3 +1,22 @@
+# [0.51.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.50.0...v0.51.0) (2026-09-20)
+
+
+### Bug Fixes
+
+* **dashboard:** project skill usage from the shape the reader returns ([0dec32b](https://github.com/bestagentkits/cloud-harness-mcp/commit/0dec32b992e1c6f7be92f649d59a64ce99014823))
+* **runner:** run skill scripts as UID 10001 instead of inheriting root ([91b0169](https://github.com/bestagentkits/cloud-harness-mcp/commit/91b0169c8cc0a063b04fd5628f4236d1a26d7a3d))
+
+
+### Features
+
+* **dashboard:** add a revision when skill instructions are edited ([9e7700e](https://github.com/bestagentkits/cloud-harness-mcp/commit/9e7700ede8948d189b65afa7ff3450851c64201d))
+* **dashboard:** drive skill imports from a durable job row ([257e11b](https://github.com/bestagentkits/cloud-harness-mcp/commit/257e11b549a71f4375e4f30e47d4e17210894067))
+* **dashboard:** offer catalogue presets as installable suggestions ([fd0e198](https://github.com/bestagentkits/cloud-harness-mcp/commit/fd0e198abcfcedc9731b8faba40d2422d0d90cd7))
+* **dashboard:** show where a skill is used and whether it is locked ([bba9b59](https://github.com/bestagentkits/cloud-harness-mcp/commit/bba9b59cbaff3af74cdbb1133257ca39a38b5923))
+* **runner:** add the single-skill acquisition seam and build usage rows from text ([a56c241](https://github.com/bestagentkits/cloud-harness-mcp/commit/a56c241a7a7fae9c7df76b23e72ccb5a42c96af5))
+* **runner:** fan out skill search to skills.sh and SkillX ([fafcc59](https://github.com/bestagentkits/cloud-harness-mcp/commit/fafcc59f6f5f39812ab180561539fdf2b6c363d6))
+* **runner:** run skill scripts in a helper container behind an owner grant ([5cb2a05](https://github.com/bestagentkits/cloud-harness-mcp/commit/5cb2a05726fb35464897786a2973b629218ca49e))
+
 # [0.50.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.49.0...v0.50.0) (2026-09-20)
 
 
