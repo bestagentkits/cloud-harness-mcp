@@ -48,7 +48,7 @@ const artifacts = new ArtifactStore(store.database, {
 const gatewayControl = config.agents ? new DockerAgentGatewayControl() : undefined;
 const modelProfiles = keyring ? new ModelProfileStateRepository(store.database, keyring) : undefined;
 const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts, { modelProfiles, ...(gatewayControl !== undefined ? { gateway: gatewayControl } : {}) });
-const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding, modelProfiles, gatewayControl);
+const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding, modelProfiles, gatewayControl, keyring);
 await service.start();
 const server = createServer(createRunnerApp(config, service, controls, apiKeys));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));

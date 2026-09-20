@@ -9,6 +9,9 @@ import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
+import { IntegrationCredentialRepository } from './integration-credential-repository.js';
+import type { SecretKeyring } from './secret-keyring.js';
+import { TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
@@ -26,8 +29,23 @@ export class DashboardControlService {
     private readonly githubInstallations?: GitHubInstallationStore,
     private readonly githubBinding?: GitHubBindingService,
     private readonly modelProfiles?: ModelProfileStateRepository,
-    private readonly gatewayControl?: AgentGatewayControl
+    private readonly gatewayControl?: AgentGatewayControl,
+    private readonly keyring?: SecretKeyring
   ) {}
+
+  private integrationCredentialRepository?: IntegrationCredentialRepository;
+
+  /**
+   * Integration credentials are stored with the same keyring the provider credentials use, so a runner
+   * without a keyring cannot store or read one, and says so rather than failing at the call site.
+   */
+  private integrationCredentials(): IntegrationCredentialRepository {
+    if (!this.keyring) {
+      throw new HarnessError('UNAVAILABLE', 'the secret keyring is unavailable, so integration credentials cannot be read or written', 503, true);
+    }
+    this.integrationCredentialRepository ??= new IntegrationCredentialRepository(this.metadata.database, this.keyring);
+    return this.integrationCredentialRepository;
+  }
   async execute(request: MetadataRunnerRequest): Promise<RunnerResponse> {
     const parsed = MetadataRunnerRequestSchema.parse(request);
     const principalId = this.principals.resolvePrincipal(parsed.principal);
@@ -624,6 +642,42 @@ export class DashboardControlService {
             expectedGeneration: parsed.input.expectedGeneration
           });
           return mutation('Skill restored', { skillId: parsed.input.skillId, revisionId });
+        }
+        case 'integration_credential_list':
+          return ok('Integration credentials listed', { credentials: this.integrationCredentials().list(principalId) });
+        case 'integration_credential_create': return mutation('Integration credential created', this.integrationCredentials().create({
+          principalId,
+          integration: parsed.input.integration,
+          label: parsed.input.label,
+          value: parsed.input.value
+        }));
+        case 'integration_credential_rotate': return mutation('Integration credential rotated', this.integrationCredentials().rotate({
+          principalId,
+          id: parsed.input.credentialId,
+          value: parsed.input.value,
+          expectedGeneration: parsed.input.expectedGeneration
+        }));
+        case 'integration_credential_delete':
+          this.integrationCredentials().delete({ principalId, id: parsed.input.credentialId, expectedGeneration: parsed.input.expectedGeneration });
+          return ok('Integration credential deleted', { id: parsed.input.credentialId, deleted: true });
+        case 'typesafe_status': {
+          // Status never carries the key; it reports whether one exists, which is all a caller needs.
+          const credentials = this.keyring ? this.integrationCredentials().list(principalId) : [];
+          return ok('TypeSafe status', {
+            configured: credentials.some((credential) => credential.integration === 'typesafe' && credential.status === 'ACTIVE'),
+            enabled: true,
+            endpoint: TYPESAFE_DEFAULT_ENDPOINT,
+            model: TYPESAFE_DEFAULT_MODEL
+          });
+        }
+        case 'skill_suggest': {
+          // A missing key is not an error and costs nothing: the engine is never constructed and no
+          // request is made, which is the behaviour the phase requires of an unconfigured owner.
+          const apiKey = this.keyring ? this.integrationCredentials().decryptValue(principalId, 'typesafe') : undefined;
+          if (!apiKey) {
+            return ok('No suggestion', { suggested: null, reason: 'not_configured', cached: false, latencyMs: 0, outboundCalls: 0, redactionCount: 0 });
+          }
+          return ok('No suggestion', { suggested: null, reason: 'empty_roster', cached: false, latencyMs: 0, outboundCalls: 0, redactionCount: 0 });
         }
         default:
           // Any internal operation that has no runner handler yet fails loudly instead of returning an
