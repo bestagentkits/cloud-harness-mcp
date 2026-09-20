@@ -18,6 +18,7 @@ export const SkillSourceIdSchema = opaqueId('sk').brand<'SkillSourceId'>();
 export const SkillRevisionIdSchema = opaqueId('skrev').brand<'SkillRevisionId'>();
 export const SkillSetIdSchema = opaqueId('skset').brand<'SkillSetId'>();
 export const SkillImportJobIdSchema = opaqueId('skjob').brand<'SkillImportJobId'>();
+export const IntegrationCredentialIdSchema = opaqueId('icr').brand<'IntegrationCredentialId'>();
 export const IdempotencyKeySchema = z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
 export type WorkspaceId = z.infer<typeof WorkspaceIdSchema>;
@@ -35,6 +36,7 @@ export type SkillSourceId = z.infer<typeof SkillSourceIdSchema>;
 export type SkillRevisionId = z.infer<typeof SkillRevisionIdSchema>;
 export type SkillSetId = z.infer<typeof SkillSetIdSchema>;
 export type SkillImportJobId = z.infer<typeof SkillImportJobIdSchema>;
+export type IntegrationCredentialId = z.infer<typeof IntegrationCredentialIdSchema>;
 
 export const ExecutorNetworkProfileSchema = z.enum(['network-none', 'dependency-access']);
 export type ExecutorNetworkProfile = z.infer<typeof ExecutorNetworkProfileSchema>;
