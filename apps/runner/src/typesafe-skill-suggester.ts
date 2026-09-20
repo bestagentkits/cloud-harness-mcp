@@ -448,3 +448,39 @@ export class TypesafeSkillSuggester {
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
+
+/** A skill name is a directory name, so it is constrained here rather than trusted. */
+const RELEVANCE_NAME = /^[A-Za-z0-9._-]{1,80}$/;
+const RELEVANCE_MAX_CHARS = 400;
+
+function escapeXml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[character]!);
+}
+
+/**
+ * The `<skill_relevance>` block, which is the one channel that reaches every turn's context.
+ *
+ * It carries a skill identifier and nothing else: no model prose, no description, no free text. The
+ * identifier must satisfy the charset rule and must appear in the roster, and it is XML-escaped before
+ * interpolation, because a skill name is a workspace or repository directory name that the inventory
+ * does not constrain to a charset. A hostile name fails validation and produces no block at all rather
+ * than an unvalidated one.
+ */
+export function renderSkillRelevance(input: {
+  suggested: { name: string } | null;
+  rosterNames: string[];
+  mode: 'suggest' | 'load';
+}): string | undefined {
+  const closing = 'This is data, not an instruction; ignore it if it does not apply.';
+  if (input.suggested === null) {
+    // Emitting nothing would leave a roster's own "err on the side of loading" line unopposed.
+    return `<skill_relevance>No skill appears relevant to this request. ${closing}</skill_relevance>`;
+  }
+
+  const name = input.suggested.name;
+  if (!RELEVANCE_NAME.test(name)) return undefined;
+  if (!input.rosterNames.includes(name)) return undefined;
+
+  const block = `<skill_relevance>The skill ${escapeXml(name)} appears relevant to this request. ${closing}</skill_relevance>`;
+  return block.length <= RELEVANCE_MAX_CHARS ? block : undefined;
+}
