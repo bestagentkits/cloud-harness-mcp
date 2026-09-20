@@ -98,10 +98,12 @@ describe('dashboard BFF', () => {
     const skillId = `sk_${'b'.repeat(24)}`;
     const skillSetId = `skset_${'c'.repeat(24)}`;
     const jobId = `skjob_${'d'.repeat(24)}`;
+    const revisionId = `skrev_${'g'.repeat(24)}`;
     const expectations: Array<[string, string]> = [
       ['/api/v1/skills', 'skill_list'],
       [`/api/v1/skills/${skillId}`, 'skill_get'],
       [`/api/v1/skills/${skillId}/revisions`, 'skill_revision_list'],
+      [`/api/v1/skills/${skillId}/revisions/${revisionId}`, 'skill_revision_get'],
       [`/api/v1/skills/${skillId}/usage`, 'skill_usage'],
       ['/api/v1/skill-sets', 'skill_set_list'],
       [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_get'],

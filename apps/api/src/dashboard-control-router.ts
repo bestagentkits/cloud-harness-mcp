@@ -54,6 +54,7 @@ export function registerDashboardControlRoutes(
   })));
   router.get('/api/v1/skills/:skillId', endpoint('skill_get', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
   router.get('/api/v1/skills/:skillId/revisions', endpoint('skill_revision_list', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
+  router.get('/api/v1/skills/:skillId/revisions/:revisionId', endpoint('skill_revision_get', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), revisionId: internalId('skrev').parse(request.params.revisionId) })));
   router.get('/api/v1/skills/:skillId/usage', endpoint('skill_usage', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
   router.get('/api/v1/skill-sets', endpoint('skill_set_list', () => ({})));
   router.get('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_get', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId) })));

@@ -457,16 +457,21 @@ export class DashboardControlService {
         case 'skill_list': return ok('Skills listed', { skills: this.principals.listSkillSources(principalId) });
         case 'skill_get': return ok('Skill read', this.principals.getSkillSource(principalId, parsed.input.skillId));
         case 'skill_revision_list': return ok('Skill revisions listed', { revisions: this.principals.listSkillRevisions(principalId, parsed.input.skillId, parsed.input.limit) });
+        case 'skill_revision_get': {
+          const revision = this.principals.listSkillRevisions(principalId, parsed.input.skillId, 200)
+            .find((entry) => entry?.id === parsed.input.revisionId);
+          if (!revision) throw new HarnessError('NOT_FOUND', `Revision ${parsed.input.revisionId} was not found for this skill`, 404, false);
+          return ok('Skill revision read', revision);
+        }
         case 'skill_usage': return ok('Skill usage listed', this.principals.listSkillUsage(principalId, parsed.input.skillId));
         case 'skill_search': {
           // Only the local registry is searched. Fanning out to skills.sh and SkillX belongs to the
           // adapter layer, and reporting a provider as returning zero results would be a claim this
           // code cannot back, so an unasked provider is reported as unavailable rather than empty.
           const needle = parsed.input.query.toLowerCase();
-          const sources = this.principals.listSkillSources(principalId, { limit: 200 })
-            .filter((skill): skill is NonNullable<ReturnType<StateStore['getSkillSource']>> => skill !== undefined);
-          const local = sources
-            .filter((skill) => skill.slug.toLowerCase().includes(needle) || skill.displayName.toLowerCase().includes(needle))
+          const local = this.principals.listSkillSources(principalId, { limit: 200 })
+            .filter((skill): skill is NonNullable<ReturnType<StateStore['getSkillSource']>> => skill !== undefined
+              && (skill.slug.toLowerCase().includes(needle) || skill.displayName.toLowerCase().includes(needle)))
             .slice(0, parsed.input.limit);
           return ok('Skills searched', {
             local,
