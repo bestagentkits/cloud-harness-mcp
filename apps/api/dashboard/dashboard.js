@@ -426,6 +426,33 @@ export function createSkillsTabsController({ tabs, panels, onEnter }) {
   };
 }
 
+/**
+ * Editor submit. Nothing is executed here, so the two failure modes that matter are an input the runner
+ * would refuse and a generation conflict. In both cases the draft is kept: discarding an operator's
+ * typing because the server moved on would lose work that is still valid against the newer revision.
+ */
+export function createSkillEditorController({ instructions, save }) {
+  return {
+    async submit() {
+      const value = instructions ? instructions.value : '';
+      const problem = validateSkillInstructions(value);
+      if (problem) return { ok: false, reason: 'invalid', message: problem, keepDraft: true };
+      try {
+        return { ok: true, result: await save(value), keepDraft: false };
+      } catch (error) {
+        const status = error && typeof error === 'object' ? error.status : undefined;
+        const message = error instanceof Error ? error.message : 'Save failed.';
+        return {
+          ok: false,
+          reason: status === 409 ? 'conflict' : 'error',
+          message: status === 409 ? 'This skill changed since it was loaded. Reload to see the newer revision.' : message,
+          keepDraft: true
+        };
+      }
+    }
+  };
+}
+
 export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
   { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },

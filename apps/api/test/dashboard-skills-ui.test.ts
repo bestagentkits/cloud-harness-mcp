@@ -8,6 +8,7 @@ import {
 } from '../dashboard/dashboard-render.js';
 import {
   createImportPollingController,
+  createSkillEditorController,
   createSkillsLibraryController,
   createSkillsTabsController,
   validateSkillInstructions
@@ -281,6 +282,60 @@ describe('skills tab controller', () => {
     controller.select('library');
     expect(onEnter).toHaveBeenCalledTimes(2);
     expect(controller.enteredTabs()).toEqual(['library', 'registry']);
+  });
+});
+
+describe('skill editor submit', () => {
+  it('refuses invalid input without calling the server or clearing the draft', async () => {
+    const instructions = new FakeElement();
+    instructions.value = 'a\0b';
+    const save = vi.fn();
+    const controller = createSkillEditorController({ instructions, save });
+
+    const result = await controller.submit();
+
+    expect(result).toMatchObject({ ok: false, reason: 'invalid', keepDraft: true });
+    expect(save).not.toHaveBeenCalled();
+    expect(instructions.value).toBe('a\0b');
+  });
+
+  it('keeps the draft and names the conflict when the server reports a stale generation', async () => {
+    const instructions = new FakeElement();
+    instructions.value = '# Instructions';
+    const save = vi.fn(async () => { throw Object.assign(new Error('conflict'), { status: 409 }); });
+    const controller = createSkillEditorController({ instructions, save });
+
+    const result = await controller.submit();
+
+    expect(result).toMatchObject({ ok: false, reason: 'conflict', keepDraft: true });
+    expect(result.message).toMatch(/changed since it was loaded/i);
+    expect(instructions.value).toBe('# Instructions');
+  });
+
+  it('reports a non-conflict failure as an error and still keeps the draft', async () => {
+    const instructions = new FakeElement();
+    instructions.value = '# Instructions';
+    const controller = createSkillEditorController({
+      instructions,
+      save: async () => { throw Object.assign(new Error('runner is unavailable'), { status: 503 }); }
+    });
+
+    const result = await controller.submit();
+
+    expect(result).toMatchObject({ ok: false, reason: 'error', keepDraft: true });
+    expect(result.message).toBe('runner is unavailable');
+  });
+
+  it('saves a valid draft and reports success', async () => {
+    const instructions = new FakeElement();
+    instructions.value = '# Instructions';
+    const save = vi.fn(async () => ({ id: 'sk_one' }));
+    const controller = createSkillEditorController({ instructions, save });
+
+    const result = await controller.submit();
+
+    expect(result).toMatchObject({ ok: true, keepDraft: false });
+    expect(save).toHaveBeenCalledWith('# Instructions');
   });
 });
 
