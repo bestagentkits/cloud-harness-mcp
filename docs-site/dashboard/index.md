@@ -17,6 +17,7 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 - **[API Keys](/dashboard/api-keys):** Create and revoke static API keys for IDE and local CLI tools.
 - **[GitHub App](/dashboard/github):** Manage GitHub App installation bindings for private repository cloning and push access.
 - **[Artifacts](/dashboard/artifacts):** Download and inspect workspace output files, build logs, and test results.
+- **[Skills & Skill Sets](/dashboard/skills):** Manage the skill library, provider imports, skill sets, and the toolkit registry.
 - **[Audit Trail](/dashboard/audit):** Review immutable security logs of every tool invocation and authorization event.
 - **[Profile & Preferences](/dashboard/profile):** View signed-in identity details, edit the display name shown in the top-bar chip, and switch the theme with the icon control in the top bar, which cycles System, Light, and Dark and persists server-side.
 
