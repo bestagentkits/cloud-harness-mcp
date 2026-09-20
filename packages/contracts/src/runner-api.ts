@@ -14,7 +14,7 @@ export const RunnerOperationSchema = z.enum([
   'git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_add', 'git_commit', 'git_fetch', 'git_pull', 'git_push', 'git_merge', 'git_rebase',
   'git_identity_status', 'git_identity_set',
   'worktrees_list', 'worktrees_create', 'worktrees_remove',
-  'skills_list', 'skills_read', 'skills_run',
+  'skills_list', 'skills_read', 'skills_run', 'skill_suggest',
   'hooks_list', 'hooks_run', 'hooks_activate', 'hooks_deactivate',
   'memories_list', 'memories_read', 'memories_write', 'memories_search', 'memories_delete',
   'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',

@@ -34,6 +34,20 @@ execute repository-controlled code.
 - Executes a packaged skill script. Arguments are data, not authorization.
   Review code, effects, working directory assumptions, and network needs first.
 
+<!-- cloudharness-tool:skill_suggest -->
+### `skill_suggest`
+
+- Required: `prompt`, bounded in bytes so the outbound payload stays bounded.
+- Optional: `workspaceId`. Without it there is no roster to rank, and the call
+  answers `empty_roster` rather than guessing at one.
+- Suggests at most one skill name from the workspace roster. It is advisory: it
+  never loads a skill and never runs one, and the answer is a roster-validated name
+  with its gate, fit, and confidence, never model prose.
+- When an integration key is configured, the redacted prompt is sent to the
+  configured TypeSafe endpoint, so treat prompt text as leaving the control plane.
+  Redaction failure sends nothing at all, and every upstream failure degrades to no
+  suggestion rather than failing the turn.
+
 ## Hooks
 
 Hooks are named repository automation commands. Their definitions and commands
