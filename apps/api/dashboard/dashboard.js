@@ -935,6 +935,66 @@ export function initializeDashboard() {
     document.querySelector('#command-surface').hidden = true;
     content.innerHTML = renderSkillsSkeleton();
 
+    let rows = [];
+    let query = '';
+
+    const library = createSkillsLibraryController({
+      bulkBar: document.querySelector('#skills-bulk-bar'),
+      bulkCount: document.querySelector('#skills-bulk-count'),
+      onSearch: (value) => { query = value; paintLibrary(); },
+      onBulk: async (action, skillIds) => {
+        const merged = [];
+        for (const group of groupBulkRequests(rows, skillIds)) {
+          const result = await api('/skills/bulk', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action, skillIds: group.skillIds, expectedGeneration: group.generation ?? 0 })
+          });
+          merged.push(...(result.data.results ?? []));
+        }
+        return merged;
+      }
+    });
+
+    function paintLibrary() {
+      const body = document.querySelector('#skills-library-table tbody');
+      if (!body) return;
+      const needle = query.trim().toLowerCase();
+      const visible = needle === ''
+        ? rows
+        : rows.filter((skill) => `${skill.displayName} ${skill.slug} ${skill.provider}`.toLowerCase().includes(needle));
+      body.innerHTML = renderSkillsLibraryRows(visible);
+      for (const box of body.querySelectorAll('[data-skill-select]')) {
+        box.addEventListener('change', () => library.toggle(box.getAttribute('data-skill-select'), box.checked));
+      }
+    }
+
+    /** Loads a tab's data the first time it is entered, which is what the tab controller guarantees. */
+    async function enterSkillsTab(name) {
+      try {
+        if (name === 'library') {
+          rows = (await api('/skills')).data.skills ?? [];
+          paintLibrary();
+        } else if (name === 'registry') {
+          const body = document.querySelector('#skills-registry-table tbody');
+          if (body) body.innerHTML = renderSkillsRegistryRows((await api('/toolkit-registry')).data.entries);
+        }
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    /** Server state is authoritative after a bulk change, so the table is reloaded rather than patched. */
+    async function runBulk(action) {
+      await library.runBulk(action);
+      rows = (await api('/skills')).data.skills ?? [];
+      paintLibrary();
+    }
+
+    document.querySelector('#skills-bulk-archive')?.addEventListener('click', () => { void runBulk('archive').catch(showError); });
+    document.querySelector('#skills-bulk-disable')?.addEventListener('click', () => { void runBulk('disable').catch(showError); });
+    document.querySelector('#skills-library-search')?.addEventListener('input', (event) => library.search(event.target.value));
+
     const names = ['library', 'discover', 'sets', 'registry'];
     const panels = names.map((name) => ({ name, element: document.querySelector(`#skills-panel-${name}`) }));
     const tabs = names.map((name) => ({ name, element: document.querySelector(`#skills-tab-${name}`) }));
@@ -945,23 +1005,6 @@ export function initializeDashboard() {
     });
     for (const tab of tabs) tab.element?.addEventListener('click', () => tabController.select(tab.name));
     tabController.select('library');
-  }
-
-  /** Loads a tab's data the first time it is entered, which is what the tab controller guarantees. */
-  async function enterSkillsTab(name) {
-    try {
-      if (name === 'library') {
-        const result = await api('/skills');
-        const body = document.querySelector('#skills-library-table tbody');
-        if (body) body.innerHTML = renderSkillsLibraryRows(result.data.skills);
-      } else if (name === 'registry') {
-        const result = await api('/toolkit-registry');
-        const body = document.querySelector('#skills-registry-table tbody');
-        if (body) body.innerHTML = renderSkillsRegistryRows(result.data.entries);
-      }
-    } catch (error) {
-      showError(error);
-    }
   }
   async function loadOverview() {
     selectNavigation('overview');
