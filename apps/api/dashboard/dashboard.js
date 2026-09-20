@@ -38,6 +38,8 @@ import {
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryRows, renderSkillsRegistryRows,
+  renderSkillConflicts,
+  renderSkillSetChips, renderSkillSetOptions,
   renderSkillsSkeleton
 } from './dashboard-render.js';
 
@@ -510,6 +512,7 @@ export function createLaunchSkillSetController({ submit, loadSets, preview }) {
     choose(ids) { chosen = [...ids]; return chosen; },
     chosen() { return chosen; },
     conflictList() { return conflicts; },
+    overrides() { return overrides; },
     blocked() { return launchBlockedByConflicts(conflicts, overrides); },
     body() { return { skillSets: request(), skillOverrides: overrides }; },
     async resolve(name, revisionId) {
@@ -2415,7 +2418,61 @@ export function initializeDashboard() {
     void globalThis.navigator.clipboard.writeText(trigger.dataset.copy).then(() => announce('Copied to clipboard.')).catch(() => announce('Copy failed. Select and copy the value manually.'));
   });
   addEventListener('pagehide', () => { apiKeyReveal.clear(); paletteLoader.invalidate(); });
-  addEventListener('popstate', () => location.reload()); void load();
+  /**
+   * The launch dialog shows what the preview would resolve, so a conflict is visible before launch
+   * rather than discovered when the resolver refuses. The sets load once: reopening the dialog is not
+   * a reason to re-request what has not changed.
+   */
+  function wireOpenWorkspaceSkillSets() {
+    const dialog = document.querySelector('#open-workspace-dialog');
+    const openButton = document.querySelector('#open-workspace-btn');
+    const select = document.querySelector('#open-skill-sets-select');
+    const chips = document.querySelector('#open-skill-sets-chips');
+    const conflictBox = document.querySelector('#open-skill-conflicts');
+    const previewBox = document.querySelector('#open-workspace-preview');
+    const submit = document.querySelector('#submit-open-workspace');
+    if (!dialog || !openButton || !select) return;
+
+    const controller = createLaunchSkillSetController({
+      submit,
+      loadSets: async () => (await api('/skill-sets')).data.sets ?? [],
+      preview: async (skillSets, skillOverrides) => (await api('/skill-sets/preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ skillSets, skillOverrides })
+      })).data
+    });
+
+    function paint(result) {
+      const chosen = controller.chosen();
+      if (chips) chips.innerHTML = renderSkillSetChips(controller.sets().filter((set) => chosen.includes(set.id)).map((set) => set.name));
+      if (conflictBox) conflictBox.innerHTML = renderSkillConflicts(controller.conflictList(), controller.overrides());
+      if (previewBox) previewBox.textContent = `${(result.resolved ?? []).length} skill(s) resolved.`;
+    }
+
+    openButton.addEventListener('click', () => {
+      dialog.showModal();
+      void controller.load()
+        .then(() => { select.innerHTML = renderSkillSetOptions(controller.sets()); })
+        .catch(showError);
+    });
+
+    select.addEventListener('change', () => {
+      controller.choose([...select.selectedOptions].map((option) => option.value));
+      void controller.refresh().then(paint).catch(showError);
+    });
+
+    // A conflict radio is the operator's override, and it is what releases the launch button.
+    conflictBox?.addEventListener('change', (event) => {
+      const name = event.target?.closest?.('fieldset')?.dataset?.conflictName;
+      if (!name || !event.target?.value) return;
+      void controller.resolve(name, event.target.value).then(paint).catch(showError);
+    });
+  }
+
+  addEventListener('popstate', () => location.reload());
+  wireOpenWorkspaceSkillSets();
+  void load();
 }
 
 if (typeof document !== 'undefined') initializeDashboard();

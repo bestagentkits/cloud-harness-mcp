@@ -282,6 +282,18 @@ export function launchBlockedByConflicts(conflicts, overrides = {}) {
   return (Array.isArray(conflicts) ? conflicts : []).some((conflict) => overrides[conflict.name] === undefined);
 }
 
+/** Chips for the selected skill sets, so the launch dialog names what is about to be bound. */
+export function renderSkillSetChips(names) {
+  const list = Array.isArray(names) ? names : [];
+  return list.map((name) => `<li>${escape(name)}</li>`).join('');
+}
+
+/** Options for the launch dialog's skill-set selector. */
+export function renderSkillSetOptions(sets) {
+  const list = Array.isArray(sets) ? sets : [];
+  return list.map((set) => `<option value="${escape(set.id)}">${escape(set.name)}</option>`).join('');
+}
+
 /**
  * Guidance for an import job. A failed job is only actionable if it says which failure it was, and a
  * cache miss in particular has an exact remedy, so it gets its own sentence rather than a generic
