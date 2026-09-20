@@ -430,25 +430,35 @@ export function createSkillsTabsController({ tabs, panels, onEnter }) {
 }
 
 /**
- * Editor submit. Nothing is executed here, so the two failure modes that matter are an input the runner
+ * Editor submit. Nothing is executed here, so the failure modes that matter are an input the runner
  * would refuse and a generation conflict. In both cases the draft is kept: discarding an operator's
  * typing because the server moved on would lose work that is still valid against the newer revision.
+ *
+ * The editor creates a skill. Changing the instructions of an existing one would need a revision the
+ * runner does not offer an operation for, so the form does not pretend to do it: metadata edits go
+ * through the update operation, and content edits are a new skill until such an operation exists.
  */
-export function createSkillEditorController({ instructions, save }) {
+export function createSkillEditorController({ slug, displayName, instructions, save }) {
   return {
     async submit() {
       const value = instructions ? instructions.value : '';
+      const slugValue = slug ? String(slug.value).trim() : '';
+      const nameValue = displayName ? String(displayName.value).trim() : '';
+      if (slug && !/^[A-Za-z0-9._-]{1,120}$/.test(slugValue)) {
+        return { ok: false, reason: 'invalid', message: 'A slug may contain letters, digits, dot, dash, and underscore.', keepDraft: true };
+      }
       const problem = validateSkillInstructions(value);
       if (problem) return { ok: false, reason: 'invalid', message: problem, keepDraft: true };
       try {
-        return { ok: true, result: await save(value), keepDraft: false };
+        const body = { slug: slugValue, displayName: nameValue, instructions: value, expectedGeneration: 0 };
+        return { ok: true, result: await save(body), keepDraft: false };
       } catch (error) {
         const status = error && typeof error === 'object' ? error.status : undefined;
         const message = error instanceof Error ? error.message : 'Save failed.';
         return {
           ok: false,
           reason: status === 409 ? 'conflict' : 'error',
-          message: status === 409 ? 'This skill changed since it was loaded. Reload to see the newer revision.' : message,
+          message: status === 409 ? 'A skill with this slug already exists. Choose another slug.' : message,
           keepDraft: true
         };
       }

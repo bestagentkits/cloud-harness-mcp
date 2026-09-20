@@ -304,7 +304,7 @@ describe('skill editor submit', () => {
     expect(instructions.value).toBe('a\0b');
   });
 
-  it('keeps the draft and names the conflict when the server reports a stale generation', async () => {
+  it('keeps the draft and explains the conflict when the slug is already taken', async () => {
     const instructions = new FakeElement();
     instructions.value = '# Instructions';
     const save = vi.fn(async () => { throw Object.assign(new Error('conflict'), { status: 409 }); });
@@ -313,7 +313,7 @@ describe('skill editor submit', () => {
     const result = await controller.submit();
 
     expect(result).toMatchObject({ ok: false, reason: 'conflict', keepDraft: true });
-    expect(result.message).toMatch(/changed since it was loaded/i);
+    expect(result.message).toMatch(/slug already exists/i);
     expect(instructions.value).toBe('# Instructions');
   });
 
@@ -340,7 +340,35 @@ describe('skill editor submit', () => {
     const result = await controller.submit();
 
     expect(result).toMatchObject({ ok: true, keepDraft: false });
-    expect(save).toHaveBeenCalledWith('# Instructions');
+    expect(save).toHaveBeenCalledWith({ slug: '', displayName: '', instructions: '# Instructions', expectedGeneration: 0 });
+  });
+
+  it('builds the create body from the slug and display name fields', async () => {
+    const slug = new FakeElement();
+    const displayName = new FakeElement();
+    const instructions = new FakeElement();
+    slug.value = 'my-skill';
+    displayName.value = 'My Skill';
+    instructions.value = '# Instructions';
+    const save = vi.fn(async () => ({ sourceId: 'sk_one' }));
+
+    const result = await createSkillEditorController({ slug, displayName, instructions, save }).submit();
+
+    expect(result.ok).toBe(true);
+    expect(save).toHaveBeenCalledWith({ slug: 'my-skill', displayName: 'My Skill', instructions: '# Instructions', expectedGeneration: 0 });
+  });
+
+  it('refuses a slug the contract would reject before calling the server', async () => {
+    const slug = new FakeElement();
+    const instructions = new FakeElement();
+    slug.value = 'not a slug';
+    instructions.value = '# Instructions';
+    const save = vi.fn();
+
+    const result = await createSkillEditorController({ slug, instructions, save }).submit();
+
+    expect(result).toMatchObject({ ok: false, reason: 'invalid', keepDraft: true });
+    expect(save).not.toHaveBeenCalled();
   });
 });
 

@@ -195,6 +195,9 @@ export function renderSkillsSkeleton() {
         <div id="skill-detail-usage"></div>
       </aside>
       <form id="skill-editor">
+        <h3>Create a custom skill</h3>
+        <label for="skill-editor-slug">Slug</label><input id="skill-editor-slug" name="slug" placeholder="my-skill">
+        <label for="skill-editor-name">Display name</label><input id="skill-editor-name" name="displayName">
         <label for="skill-editor-instructions">Instructions</label><textarea id="skill-editor-instructions" name="instructions"></textarea>
         <button type="submit" id="skill-editor-save">Save skill</button><span id="skill-editor-status" role="status"></span>
       </form>`;
