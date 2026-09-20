@@ -72,6 +72,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
   'toolkit_registry_list',
   'skill_suggest', 'typesafe_status',
+  'skill_revision_fork',
   'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ] as const;
 
@@ -278,6 +279,13 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'integration_credential_list') return list(data, 'credentials', integrationCredentialKeys);
   if (operation === 'integration_credential_delete') return pick(data, ['id', 'deleted']);
   if (operation === 'integration_credential_create' || operation === 'integration_credential_rotate') return pick(data, integrationCredentialKeys);
+  if (operation === 'skill_revision_fork') {
+    return {
+      ...pick(data, ['sourceId', 'revisionId']),
+      // The provenance of a fork is the pair it started from, which is what the UI shows.
+      forkedFrom: pick(data.forkedFrom, ['skillId', 'revisionId'])
+    };
+  }
   return data;
 }
 const descriptiveOperations = new Set<string>([
