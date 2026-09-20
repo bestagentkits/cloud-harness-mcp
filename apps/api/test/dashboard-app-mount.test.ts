@@ -41,7 +41,7 @@ describe('dashboard application mount', () => {
     await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server failed');
-    for (const path of ['/overview', '/projects', '/projects/prj_abcdefghijklmnopqrst', '/models', '/artifacts', '/audit', '/github', '/api-keys', '/profile', '/mcp-servers', '/mcp-servers/:serverId']) {
+    for (const path of ['/overview', '/projects', '/projects/prj_abcdefghijklmnopqrst', '/models', '/artifacts', '/audit', '/github', '/api-keys', '/profile', '/mcp-servers', '/mcp-servers/:serverId', '/skills']) {
       const response = await fetch(`http://127.0.0.1:${address.port}/dashboard${path}`);
       expect(response.status, path).toBe(200);
       expect(await response.text(), path).toContain('<title>Workspaces | Cloud Harness</title>');

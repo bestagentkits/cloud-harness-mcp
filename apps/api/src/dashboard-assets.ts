@@ -57,6 +57,7 @@ export function createDashboardAssetsRouter(): Router {
     '/knowledge/:id',
     '/mcp-servers',
     '/mcp-servers/:serverId',
+    '/skills',
     '/settings',
     '/profile',
   ], (request, response) => {
