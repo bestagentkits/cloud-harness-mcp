@@ -1,98 +1,128 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { cp } from 'node:fs/promises';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateStagingDir } from '../src/adapters/mattpocock-adapter.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { executeWorkerRequest, sha256 } from '../../../worker/harness-worker.mjs';
 
-describe('TOCTOU Script Tamper & Execution Snapshot Defense', () => {
-  let tmpDir: string;
+/**
+ * The worker stages a skill into a snapshot, verifies the digest of that snapshot, and then executes
+ * from it. These tests pin the verification half, which is where a time-of-check to time-of-use gap
+ * would show up: the expectation is checked against the bytes that are about to run, so a source that
+ * changed since the caller computed the digest is refused rather than executed.
+ *
+ * Executing from the snapshot inside a container is covered by the Docker lane; a `.txt` script is
+ * used here precisely so that execution is expected to fail on every platform, which makes "did
+ * verification pass?" observable without depending on a shell.
+ */
+const temporaryDirectories: string[] = [];
+let symlinksSupported = true;
 
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'ch-toctou-test-'));
+afterEach(() => {
+  delete process.env.CH_WORKSPACE_ROOT;
+  for (const path of temporaryDirectories.splice(0)) {
+    try { rmSync(path, { recursive: true, force: true }); } catch { /* ignore cleanup error */ }
+  }
+});
+
+function setupSkill(files: Record<string, string>) {
+  const root = mkdtempSync(join(tmpdir(), 'cloud-harness-toctou-'));
+  temporaryDirectories.push(root);
+  process.env.CH_WORKSPACE_ROOT = root;
+  const skillDir = join(root, '.cloud-harness', 'skills', 'tdd');
+  mkdirSync(join(skillDir, 'scripts'), { recursive: true });
+  writeFileSync(join(skillDir, 'SKILL.md'), '# TDD\n');
+  for (const [relative, content] of Object.entries(files)) {
+    const target = join(skillDir, relative);
+    mkdirSync(join(target, '..'), { recursive: true });
+    writeFileSync(target, content);
+  }
+  return { root, skillDir };
+}
+
+function probeSymlinkSupport() {
+  const probeRoot = mkdtempSync(join(tmpdir(), 'cloud-harness-symlink-probe-'));
+  try {
+    symlinkSync(join(probeRoot, 'target'), join(probeRoot, 'link'));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { rmSync(probeRoot, { recursive: true, force: true }); } catch { /* ignore cleanup error */ }
+  }
+}
+
+symlinksSupported = probeSymlinkSupport();
+
+describe('skills_run time-of-check to time-of-use', () => {
+  it('refuses to run bytes that changed after the caller computed the digest', async () => {
+    const original = '#!/bin/sh\necho original\n';
+    const { skillDir } = setupSkill({ 'scripts/run.txt': original });
+    const expected = sha256(original);
+
+    // The source changes after the digest was taken, which is exactly the window a swap would use.
+    writeFileSync(join(skillDir, 'scripts', 'run.txt'), '#!/bin/sh\necho tampered\n');
+
+    const result = await executeWorkerRequest('skills_run', {
+      name: 'tdd', script: 'run.txt', expectedContentSha256: expected
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('CONFLICT');
+    expect(result.error?.message).toContain('digest mismatch');
+    expect(JSON.stringify(result)).not.toContain('tampered');
   });
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+  it('runs the verified bytes once the digest matches', async () => {
+    const content = '# not an executable on any platform\n';
+    setupSkill({ 'scripts/run.txt': content });
+
+    const result = await executeWorkerRequest('skills_run', {
+      name: 'tdd', script: 'run.txt', expectedContentSha256: sha256(content)
+    });
+
+    // Verification passed, so the failure that remains is execution rather than integrity.
+    expect(result.error?.code).not.toBe('CONFLICT');
+    expect(result.error?.code).not.toBe('INVALID_INPUT');
+    expect(result.error?.code).toBe('EXECUTION_FAILED');
   });
 
-  it('ensures snapshot-first isolation protects execution against source race tampering', () => {
-    const skillDir = join(tmpDir, 'skills', 'deploy');
-    mkdirSync(join(skillDir, 'scripts'), { recursive: true });
+  it('requires a digest, so an unverified run cannot be requested at all', async () => {
+    const content = '# whatever\n';
+    setupSkill({ 'scripts/run.txt': content });
 
-    const skillMd = join(skillDir, 'SKILL.md');
-    const scriptPath = join(skillDir, 'scripts', 'run.sh');
+    const result = await executeWorkerRequest('skills_run', { name: 'tdd', script: 'run.txt' });
 
-    writeFileSync(skillMd, '# Deploy Skill');
-    writeFileSync(scriptPath, '#!/bin/bash\necho "original"');
-
-    // Snapshot first into private execution directory
-    const snapDir = join(tmpDir, 'snap-exec');
-    mkdirSync(join(snapDir, 'scripts'), { recursive: true });
-    writeFileSync(join(snapDir, 'SKILL.md'), readFileSync(skillMd));
-    writeFileSync(join(snapDir, 'scripts', 'run.sh'), readFileSync(scriptPath));
-
-    const expectedScriptSha = createHash('sha256').update(readFileSync(scriptPath)).digest('hex');
-
-    // Attacker modifies the mutable source directory while execution begins
-    writeFileSync(scriptPath, '#!/bin/bash\necho "malicious"');
-
-    // Snapshot execution directory remains unpolluted and matches expected digest
-    const snapContent = readFileSync(join(snapDir, 'scripts', 'run.sh'));
-    const snapSha = createHash('sha256').update(snapContent).digest('hex');
-
-    expect(snapSha).toBe(expectedScriptSha);
-    expect(snapContent.toString()).toContain('original');
-    expect(snapContent.toString()).not.toContain('malicious');
-  });
-  it('preserves internal symlinks and rejects escaping symlinks in snapshot', async () => {
-    const outsideDir = mkdtempSync(join(tmpdir(), 'ch-ext-target-'));
-    try {
-      const externalScript = join(outsideDir, 'external.sh');
-      writeFileSync(externalScript, '#!/bin/bash\necho "external-original"');
-
-      const skillDir = join(tmpDir, 'skills', 'symlink-skill');
-      mkdirSync(join(skillDir, 'scripts'), { recursive: true });
-      writeFileSync(join(skillDir, 'SKILL.md'), '# Symlink Skill');
-      writeFileSync(join(skillDir, 'scripts', 'helper.sh'), 'echo helper');
-
-      try {
-        // 1. Internal relative symlink (allowed)
-        symlinkSync('helper.sh', join(skillDir, 'scripts', 'helper-link.sh'), 'file');
-
-        const snapDir = join(tmpDir, 'snap-verbatim');
-        await cp(skillDir, snapDir, { recursive: true, verbatimSymlinks: true });
-
-        const snapLinkSt = lstatSync(join(snapDir, 'scripts', 'helper-link.sh'));
-        expect(snapLinkSt.isSymbolicLink()).toBe(true);
-
-        // 2. External symlink escaping root
-        symlinkSync(externalScript, join(skillDir, 'scripts', 'evil.sh'), 'file');
-        const snapEvilDir = join(tmpDir, 'snap-evil');
-        await cp(skillDir, snapEvilDir, { recursive: true, verbatimSymlinks: true });
-
-        // Verify the external symlink is detected as escaping root and rejected
-        const linkTarget = lstatSync(join(snapEvilDir, 'scripts', 'evil.sh'));
-        expect(linkTarget.isSymbolicLink()).toBe(true);
-        expect(() => validateStagingDir(snapEvilDir)).toThrow('escapes staging directory root');
-      } catch (e: any) {
-        if (e?.code !== 'EPERM') throw e;
-      }
-    } finally {
-      rmSync(outsideDir, { recursive: true, force: true });
-    }
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('INVALID_INPUT');
   });
 
-  it('refuses execution when snapshot digest does not match expected sha', () => {
-    const snapDir = join(tmpDir, 'snap-exec-tampered');
-    mkdirSync(join(snapDir, 'scripts'), { recursive: true });
-    writeFileSync(join(snapDir, 'SKILL.md'), '# Tampered');
-    writeFileSync(join(snapDir, 'scripts', 'run.sh'), '#!/bin/bash\necho "tampered"');
+  it.skipIf(!symlinksSupported)('refuses a skill whose tree contains a symlink escaping it', async () => {
+    const { root, skillDir } = setupSkill({ 'scripts/run.txt': '# placeholder\n' });
+    const outside = join(root, 'host-secret.txt');
+    writeFileSync(outside, 'host secret');
+    rmSync(join(skillDir, 'scripts', 'run.txt'));
+    symlinkSync(outside, join(skillDir, 'scripts', 'run.txt'));
 
-    const actualSnapSha = createHash('sha256').update(readFileSync(join(snapDir, 'scripts', 'run.sh'))).digest('hex');
-    const expectedSha = createHash('sha256').update('#!/bin/bash\necho "legitimate"').digest('hex');
+    const result = await executeWorkerRequest('skills_run', {
+      name: 'tdd', script: 'run.txt', expectedContentSha256: sha256('# placeholder\n')
+    });
 
-    expect(actualSnapSha).not.toBe(expectedSha);
+    // The tree is refused while the inventory digest is computed, so the skill never becomes runnable
+    // and the file it points at is never read. The assertion is on that property rather than on the
+    // code, because refusing earlier than the staging step is the stronger outcome, not a different one.
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('host secret');
+  });
+
+  it.skipIf(!symlinksSupported)('refuses a skill whose tree contains a broken symlink', async () => {
+    const { skillDir } = setupSkill({ 'scripts/run.txt': '# placeholder\n' });
+    rmSync(join(skillDir, 'scripts', 'run.txt'));
+    symlinkSync(join(skillDir, 'scripts', 'missing.sh'), join(skillDir, 'scripts', 'run.txt'));
+
+    const result = await executeWorkerRequest('skills_run', {
+      name: 'tdd', script: 'run.txt', expectedContentSha256: sha256('# placeholder\n')
+    });
+
+    expect(result.ok).toBe(false);
   });
 });
