@@ -305,6 +305,23 @@ export function renderSkillSetPicker(skills) {
 }
 
 /**
+ * Revision rows for the detail drawer. The current revision is labelled rather than offering a restore
+ * to itself, so the only restore a reader can press is one that would actually change something.
+ */
+export function renderSkillRevisions(revisions, currentRevisionId) {
+  const list = Array.isArray(revisions) ? revisions : [];
+  if (list.length === 0) return '<p>No revisions yet.</p>';
+  return `<ul class="skills-revisions">${list.map((revision) => `<li>
+      <span class="mono">${escape(revision.id)}</span>
+      <span>${escape(revision.origin)}</span>
+      ${time(revision.createdAt)}
+      ${revision.id === currentRevisionId
+        ? '<span class="status">current</span>'
+        : `<button type="button" data-skill-restore="${escape(revision.id)}">Restore</button>`}
+    </li>`).join('')}</ul>`;
+}
+
+/**
  * Guidance for an import job. A failed job is only actionable if it says which failure it was, and a
  * cache miss in particular has an exact remedy, so it gets its own sentence rather than a generic
  * failure line that leaves the operator guessing.

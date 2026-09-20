@@ -39,7 +39,7 @@ import {
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryRows, renderSkillsRegistryRows,
   renderSkillConflicts,
-  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker,
+  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
   renderSkillsSkeleton
 } from './dashboard-render.js';
 
@@ -1001,9 +1001,40 @@ export function initializeDashboard() {
       for (const box of body.querySelectorAll('[data-skill-select]')) {
         box.addEventListener('change', () => library.toggle(box.getAttribute('data-skill-select'), box.checked));
       }
+      for (const button of body.querySelectorAll('[data-skill-detail]')) {
+        button.addEventListener('click', () => { void openSkillDetail(button.getAttribute('data-skill-detail')).catch(showError); });
+      }
     }
 
     /** Loads a tab's data the first time it is entered, which is what the tab controller guarantees. */
+    /** The drawer reads revisions from the server, and a restore republishes rather than rewrites. */
+    async function openSkillDetail(skillId) {
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      const drawer = document.querySelector('#skill-detail');
+      if (!drawer) return;
+      drawer.hidden = false;
+
+      const revisions = (await api(`/skills/${encodeURIComponent(skillId)}/revisions`)).data.revisions ?? [];
+      const box = document.querySelector('#skill-detail-revisions');
+      if (!box) return;
+      box.innerHTML = renderSkillRevisions(revisions, skill ? skill.currentRevisionId : undefined);
+      for (const button of box.querySelectorAll('[data-skill-restore]')) {
+        button.addEventListener('click', () => { void restoreRevision(skillId, button.getAttribute('data-skill-restore')).catch(showError); });
+      }
+    }
+
+    async function restoreRevision(skillId, revisionId) {
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      await api(`/skills/${encodeURIComponent(skillId)}/restore`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ revisionId, expectedGeneration: skill ? skill.generation : 0 })
+      });
+      rows = (await api('/skills')).data.skills ?? [];
+      paintLibrary();
+      await openSkillDetail(skillId);
+    }
+
     async function enterSkillsTab(name) {
       try {
         if (name === 'library') {
