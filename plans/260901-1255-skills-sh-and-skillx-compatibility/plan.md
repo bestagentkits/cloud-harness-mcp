@@ -339,12 +339,20 @@ Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.s
 
 ## External Assumptions Pending Verification
 
-None of the four assumptions below has external evidence in this repository, and each one is load-bearing for at least one phase. Treat them as unverified until the check beside them is run and its output is recorded.
+Three of the four assumptions below still have no external evidence in this repository, and each one is load-bearing for at least one phase. Treat them as unverified until the check beside them is run and its output is recorded. The fourth has now been verified against the live service, and what it produced replaces what this plan had assumed.
 
 1. **SkillX API shape.** `normalizeSkillXPayload` in `apps/runner/src/adapters/skillx-adapter.ts` expects an `instructions` field and treats a payload without one as an invalid response rather than as an empty skill. No live SkillX response has been captured, so the endpoint path, the field names, and the error envelope are inferred from the documented behaviour of `npx skillx-sh use "<query>" --search`. Verify by capturing one real response and committing it as a fixture.
 2. **`skills` and `skillx` CLI versions and an offline mirror.** Phase 7 runs both inside an executor that has `npx` and no network. Nothing in this tree pins a version or provides a mirror, so that half of the lifecycle test cannot be written yet. Verify by choosing the versions, publishing a mirror the executor can reach, and recording both in the Phase 7 test.
 3. **skills.sh and SkillX hostnames in the egress allowlist.** `compose.yaml` now allows `skillx.sh` alongside the GitHub hosts that skills.sh references resolve to. The SkillX hostname comes from the CLI's public surface, not from an observed request. Verify by capturing the request a real `skillx` invocation makes.
-4. **Live TypeSafe behaviour.** The Phase 8 engine is written against the documented `POST https://api.typesafe.ai/v1/systemone` contract with a bearer key, and Phase 9 verifies it live. No live call has been made from this work. Verify by running the Phase 9 check against the operator's own key and recording the response shape.
+4. **Live TypeSafe behaviour — VERIFIED.** `npm run verify:typesafe` (with `TYPESAFE_API_KEY_FILE` pointing at a file outside the repository) reached `https://api.typesafe.ai/v1/systemone` and returned `status 200` in 922 ms. The verification printed only a key fingerprint, never the key, and the response shape it recorded is: a request carries `model`, `state`, and `questions`, where each question is a tagged union and `criteria` is a map keyed by option for a choice and by the polar answers for a noul; the response carries `answers` keyed by the names the caller chose plus `usage.input_tokens` and `usage.output_tokens`. The engine was rewritten to that shape and its parser is pinned to the exact response the live endpoint returned.
+
+   Every shape this plan had assumed was rejected first: the endpoint answered `400 Invalid request` for a top-level `choice`/`noul`/`input` body, `422 union_tag_not_found` without a `type` discriminator, `422` for a string `criteria`, and finally `200` once `criteria` was a map. That progression is the reason the assumption is recorded as verified rather than as a plausible guess: a plausible guess produced four rejected requests, and a call that returns 200 does not.
+
+## Known Pre-Existing Findings (Deliberately Not Fixed)
+
+The automated lens reports eight findings in `apps/runner/src/state-store.ts` on every run: one `as unknown as` cast on the legacy `networkMode` field, and three `JSON.parse(row.provenance_json)` calls in the legacy provenance readers. They predate this work, sit outside every region this branch changes, and the objective places fixing pre-existing findings outside the changed region out of scope. They are recorded here and belong in the pull request description so a reviewer sees them rather than discovering them.
+
+One related finding is in the same position: `applyWorkspaceToolkitPatches` declares `record: WorkspaceRecord` and never reads it.
 
 ## Open Blocker: Skill-Level Package Materialisation
 
