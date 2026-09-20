@@ -26,9 +26,15 @@ export const RunnerOperationSchema = z.enum([
 ]);
 
 export const ExternalPrincipalSchema = z.object({
-  // SAFETY: `.url()` has already parsed the value, so `new URL` cannot throw here; the refine only
-  // narrows the scheme.
-  issuer: z.url().refine((value) => new URL(value).protocol === 'https:', 'HTTPS issuer required'),
+  // The refine is total: a malformed value is rejected rather than thrown, so a caller sees a validation
+  // error and not a TypeError.
+  issuer: z.url().refine((value) => {
+    try {
+      return new URL(value).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, 'HTTPS issuer required'),
   subject: z.string().min(1).max(512),
   email: z.email().max(320).optional(),
   name: z.string().min(1).max(200).optional()
