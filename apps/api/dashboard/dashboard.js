@@ -827,14 +827,14 @@ export function initializeDashboard() {
     currentBulkProject = project;
     if (bulkEnvIdField) bulkEnvIdField.value = environment.id;
     if (bulkInput) bulkInput.value = '';
-    if (bulkPreview) bulkPreview.innerHTML = '';
+    if (bulkPreview) insertRendered(bulkPreview, '');
     if (bulkStatus) bulkStatus.textContent = '';
     if (bulkDialog) bulkDialog.showModal();
     if (bulkInput) bulkInput.focus();
   }
   function closeBulkImport() {
     if (bulkInput) bulkInput.value = '';
-    if (bulkPreview) bulkPreview.innerHTML = '';
+    if (bulkPreview) insertRendered(bulkPreview, '');
     if (bulkStatus) bulkStatus.textContent = '';
     if (bulkDialog && bulkDialog.open) bulkDialog.close();
   }
@@ -844,7 +844,7 @@ export function initializeDashboard() {
   bulkInput?.addEventListener('input', () => {
     const parsed = parseDotEnv(bulkInput.value);
     if (!parsed.length) {
-      bulkPreview.innerHTML = '<span class="diff-skip">No variable assignments found.</span>';
+      insertRendered(bulkPreview, '<span class="diff-skip">No variable assignments found.</span>');
       return;
     }
     const existing = new Map((currentBulkEnvironment.secrets ?? []).map((s) => [s.name, s]));
@@ -868,7 +868,7 @@ export function initializeDashboard() {
         }
       }
     }
-    bulkPreview.innerHTML = lines.join('');
+    insertRendered(bulkPreview, lines.join(''));
   });
   document.querySelector('#bulk-import-form')?.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -952,7 +952,7 @@ export function initializeDashboard() {
       if (link.dataset.section === section) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     }
-    document.querySelector('#context-nav').innerHTML = '';
+    insertRendered(document.querySelector('#context-nav'), '');
   }
   async function load() {
     alertBox.hidden = true; setBusy(true);
@@ -1747,7 +1747,7 @@ export function initializeDashboard() {
         document.querySelector('#model-profile-display-name').value = profile.displayName;
         document.querySelector('#model-profile-title').textContent = `Edit profile (${profile.displayName})`;
 
-        credentialSelect.innerHTML = credentials.map((c) => `<option value="${escape(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escape(c.label)} (${escape(c.provider)})</option>`).join('');
+        insertRendered(credentialSelect, credentials.map((c) => `<option value="${escape(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escape(c.label)} (${escape(c.provider)})</option>`).join(''));
 
         if (profile.activeRevision) {
           document.querySelector('#model-profile-model').value = profile.activeRevision.model;
@@ -1996,7 +1996,7 @@ export function initializeDashboard() {
     selectNavigation('settings');
     setTitle('Settings', 'Instance-wide defaults applied to new workspaces.');
     document.querySelector('#command-surface').hidden = true;
-    content.innerHTML = '<div class="skeleton tile" aria-hidden="true"></div>';
+    insertRendered(content, '<div class="skeleton tile" aria-hidden="true"></div>');
     const { data } = await api('/settings');
     settingsPageData = data;
     settingsReadiness = undefined;
@@ -2095,7 +2095,7 @@ export function initializeDashboard() {
           insertRendered(graphMount, renderKnowledgeGraph(graphRes.data));
           bindKnowledgeGraphControls();
         } catch (err) {
-          graphMount.innerHTML = `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`;
+          insertRendered(graphMount, `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`);
         }
       }
     }
@@ -2685,7 +2685,7 @@ export function initializeDashboard() {
     insertRendered(content, renderRuntime((await api(`/workspaces/${encodeURIComponent(id)}/runtime`)).data));
   }
   function contextLinks(id, current) {
-    document.querySelector('#context-nav').innerHTML = `<a href="/dashboard/workspaces/${encodeURIComponent(id)}/files" ${current === 'files' ? 'aria-current="page"' : ''}>Files</a><a href="/dashboard/workspaces/${encodeURIComponent(id)}/runtime" ${current === 'runtime' ? 'aria-current="page"' : ''}>Runtime</a>`;
+    insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/workspaces/${encodeURIComponent(id)}/files" ${current === 'files' ? 'aria-current="page"' : ''}>Files</a><a href="/dashboard/workspaces/${encodeURIComponent(id)}/runtime" ${current === 'runtime' ? 'aria-current="page"' : ''}>Runtime</a>`);
   }
   function openFileConflict(id, localContent, invoker) {
     const conflictDialog = document.querySelector('#file-conflict-dialog'); const copyStatus = document.querySelector('#file-conflict-status');

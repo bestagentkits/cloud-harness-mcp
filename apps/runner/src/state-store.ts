@@ -330,7 +330,9 @@ export class SkillRegistryError extends Error {
 
 const MAX_SKILL_TAGS = 16;
 const MAX_SKILL_TAG_LENGTH = 32;
-const ACTIVE_WORKSPACE_STATUSES = `('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED')`;
+// The same allowlist as an array, for the readers that pass it as a parameter instead of interpolating it,
+// so the statement text stays constant whatever the list contains.
+const ACTIVE_WORKSPACE_STATUS_LIST = ['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED'];
 
 function parseSkillTags(raw: string): string[] {
   try {
@@ -1003,10 +1005,11 @@ export class StateStore {
     const current = this.byId(id);
     if (!current || current.generation !== expectedGeneration || !expectedStatuses.includes(current.status)) return undefined;
     const next = { ...current, ...changes };
-    const placeholders = expectedStatuses.map(() => '?').join(',');
+    // The status allowlist travels as one parameter and is expanded by SQLite, so the statement text is
+    // constant no matter how many statuses are passed and nothing is ever interpolated into it.
     const result = this.database.prepare(`UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, generation=?, error=?
-      WHERE id=? AND generation=? AND status IN (${placeholders})`)
-      .run(next.containerName, next.status, next.lastActivityAt, next.expiresAt, next.generation, next.error, id, expectedGeneration, ...expectedStatuses);
+      WHERE id=? AND generation=? AND status IN (SELECT value FROM json_each(?))`)
+      .run(next.containerName, next.status, next.lastActivityAt, next.expiresAt, next.generation, next.error, id, expectedGeneration, JSON.stringify(expectedStatuses));
     return result.changes === 1 ? next : undefined;
   }
 
@@ -2516,17 +2519,17 @@ export class StateStore {
     sets: { skillSetId: string; name: string }[];
     liveWorkspaces: { workspaceId: string; status: string; name: string; revisionId: string }[];
   } {
-    const sets = this.database.prepare(`SELECT DISTINCT i.skill_set_id AS skillSetId, s.name AS name
-      FROM skill_set_items i JOIN skill_sets s ON s.owner_id = i.owner_id AND s.id = i.skill_set_id
-      WHERE i.owner_id = ? AND i.skill_source_id = ? ORDER BY s.name`)
+    const sets = this.database.prepare('SELECT DISTINCT i.skill_set_id AS skillSetId, s.name AS name FROM skill_set_items i JOIN skill_sets s ON s.owner_id = i.owner_id AND s.id = i.skill_set_id WHERE i.owner_id = ? AND i.skill_source_id = ? ORDER BY s.name')
       .all(ownerId, skillSourceId) as { skillSetId: string; name: string }[];
+    // The status allowlist travels as one parameter and is expanded by SQLite, so the statement text is
+    // constant and nothing is interpolated into it.
     const liveWorkspaces = this.database.prepare(`SELECT DISTINCT a.workspace_id AS workspaceId, w.status AS status,
         a.name AS name, a.revision_id AS revisionId
       FROM workspace_skill_assignments a
       JOIN workspaces w ON w.owner_id = a.owner_id AND w.id = a.workspace_id
-      WHERE a.owner_id = ? AND a.skill_source_id = ? AND w.status IN ${ACTIVE_WORKSPACE_STATUSES}
+      WHERE a.owner_id = ? AND a.skill_source_id = ? AND w.status IN (SELECT value FROM json_each(?))
       ORDER BY a.workspace_id`)
-      .all(ownerId, skillSourceId) as { workspaceId: string; status: string; name: string; revisionId: string }[];
+      .all(ownerId, skillSourceId, JSON.stringify(ACTIVE_WORKSPACE_STATUS_LIST)) as { workspaceId: string; status: string; name: string; revisionId: string }[];
     return { sets, liveWorkspaces };
   }
 

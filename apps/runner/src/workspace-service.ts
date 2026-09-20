@@ -1761,7 +1761,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         throw new HarnessError('CONFLICT', 'Git push operation with this idempotency key is already in progress', 409, true);
       }
       if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
-        const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+        const parsed = parseCachedResponse(claim.existing.resultJson);
         return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
       }
       if (claim.action === 'RECONCILE_REQUIRED' && claim.existing) {
@@ -3087,7 +3087,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (idempotencyKey) {
         const cached = this.store.getBatchWriteIdempotency(ownerId, record.id, idempotencyKey);
         if (cached) {
-          return JSON.parse(cached) as RunnerResponse;
+          return parseCachedResponse(cached);
         }
       }
       const result = await this.runWorker(record, 'files_write_batch', validated, signal);
@@ -3125,7 +3125,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           throw new HarnessError('CONFLICT', 'Finalize operation with this idempotency key is already in progress', 409, true);
         }
         if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
-          const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+          const parsed = parseCachedResponse(claim.existing.resultJson);
           return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
         }
         if (claim.action === 'RECONCILE_REQUIRED' && claim.existing) {
@@ -3407,7 +3407,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           throw new HarnessError('CONFLICT', 'idempotency key reused with different request payload', 409);
         }
         if (cached?.resultJson) {
-          return JSON.parse(cached.resultJson) as RunnerResponse;
+          return parseCachedResponse(cached.resultJson);
         }
       }
       let args: string[] = [];
@@ -3628,7 +3628,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             throw new HarnessError('CONFLICT', 'Idempotency key reused with different commit parameters', 409, false);
           }
           if (existing.status === 'SUCCEEDED' && existing.resultJson) {
-            const parsed = JSON.parse(existing.resultJson) as RunnerResponse;
+            const parsed = parseCachedResponse(existing.resultJson);
             return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
           }
           if (existing.status === 'PENDING') {
@@ -3666,7 +3666,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           throw new HarnessError('CONFLICT', 'Git commit operation with this idempotency key is already in progress', 409, true);
         }
         if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
-          const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+          const parsed = parseCachedResponse(claim.existing.resultJson);
           return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
         }
       }
@@ -4377,6 +4377,18 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
     return ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
   }
   return false;
+}
+
+/**
+ * A cached response that cannot be read is reported as an internal error rather than thrown raw, because a
+ * corrupt row should surface as a named failure instead of an unhandled parse error.
+ */
+function parseCachedResponse(value: unknown): RunnerResponse {
+  try {
+    return JSON.parse(String(value ?? '')) as RunnerResponse;
+  } catch {
+    throw new HarnessError('INTERNAL_ERROR', 'a cached operation result could not be read', 500, true);
+  }
 }
 
 function shellQuote(value: string): string {
