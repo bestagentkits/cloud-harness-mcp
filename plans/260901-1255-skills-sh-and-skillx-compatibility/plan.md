@@ -109,6 +109,23 @@ Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.s
   - Correction to the review: the reviewer described the boundary gate as directly asserting `SECRET_KEYRING`; the mechanism is a fixed name list plus manual zeroing. The substance of the finding holds and the implication is stronger, so the phase text now states the mechanism precisely.
 - Reviewer items treated as unverifiable inside this repository and left marked as such: the TypeSafe API contract and cookbook measurements, whether `jev-latest` resolves to a specific build, Claude Code `UserPromptSubmit` semantics and hook schema, the skills.sh and SkillX CLI surfaces, and whether `docs:links` enforces navigation registration.
 
+### Verification Results (post-rebase re-verification) — 2026-09-20
+- **Trigger:** the `--advice` checkpoint subagent found the branch was built on a 77-commit-stale base. The controller verified this directly with git and then rebased, because a subagent's claim is not evidence.
+- Confirmed by git against `origin/main`: `HEAD` was `2506618` (v0.38.1, 2026-08-31) while `origin/main` is `cbb18d1` (v0.48.0, 2026-09-16) — 77 commits behind, 247 files changed, `+27,805 -800`. `origin/dev` heads 2026-08-18 and is 228 commits behind `HEAD`, so the ship target is `main`.
+- Confirmed, and the decisive finding: `apps/runner/src/principal-store.ts` on `origin/main` already sets `UPDATE schema_meta SET version = 10` at line 756, guards `if (version !== 10)` at line 760, exposes `downgradeStateSchemaToV9` at line 763, and `apps/runner/test/state-schema-v10.test.ts` already exists. The knowledge plane took version 10, so phase 1's target is **version 11 with a paired `downgradeStateSchemaToV10`**, not version 10.
+- Confirmed on the rebased tree: `WorkspaceOpenParamsSchema` is still absent and `schemas.workspace_open` is still the real owner; `ToolkitSelectionSchema` still gains a third arm; `scripts/verify-compose-boundaries.mjs:80` still checks only the fixed name list, so the phase 9 secret-boundary finding still holds with shifted line numbers; `.env.example` and `compose.yaml` contain no `TYPESAFE` reference, so the dashboard-only key decision is intact.
+- Changed on main and therefore needing per-phase re-verification before those phases start: `internal-runner-api.ts` gained `settings_get` and `settings_update` (MCP gateway work), `apps/api/dashboard/` gained the `/dashboard/knowledge` surface, `workspace-service.ts` grew by 409 lines, `tool-schemas.ts` by 134, and roughly 31 of the plan's named paths moved.
+- Rebase outcome: both commits (`2da5a0e` plan, `b43372c` contracts) replayed onto `cbb18d1` with **no conflicts**. `packages/contracts` tests pass 109/109 and `npm run typecheck` is green across every workspace after the replay.
+
+### Session 4 — 2026-09-20 (implementation start)
+**Trigger:** operator invoked the vibe pipeline with `--ship` plus advisory supervision to implement the plan.
+
+- Gate substitution: `ak plan red-team` does not exist in `ak` 2.17.0-beta.6 (confirmed from `ak plan --help`), so the gate is satisfied by the independent review round plus this post-rebase re-verification, and the substitution is recorded rather than silently skipped.
+- Advisory outcome: the checkpoint returned **no-go on the single 135h run** and recommended dependency-ordered increments with one reviewed PR each, cut so that phase 1 ships alone because the plan itself schedules a re-estimate after phase 1 and phase 1 owns the only expensive-to-change decision (the migration plus composite foreign keys).
+- Work completed and verified: the phase 1 contract layer is implemented and green (registry toolkit arm, bounded `skillSets`/`skillOverrides` on `workspace_open`, skill identifiers, duplicate-set guard; 16 new tests). This is the only code written, and it was re-verified after the rebase rather than carried forward unexamined.
+- Corrections found during implementation: three in phase 1 (`WorkspaceOpenParamsSchema` absent, the third union arm, and the DDL belonging to the ladder), plus the version 11 supersession above.
+- Not yet done: the remaining phase 1 work (skill table DDL at version 11, the paired downgrade, the seeded migration test, the `StateStore` CRUD helpers, and the internal-runner-api operations), and the per-phase re-verification delta for phases 2-9.
+
 ### Session 1 — 2026-09-20
 **Trigger:** Operator asked to supplement the existing plan with a skills management UI in the dashboard.
 **Questions asked:** 7 (3 scope, 4 design)
@@ -293,9 +310,11 @@ Deliver comprehensive compatibility with https://skills.sh/ and https://skillx.s
 - Noted, not accepted as a change: the advisor repeated that the plan directory should be committed. That remains the operator's call and is an open question below.
 
 ### Open Questions
-1. The plan directory is untracked on `mrgoonie/skills-compatiple`: `git log` has no commit for it while every sibling plan directory is tracked. The advisor review and the independent reviewer both flagged this. It should be committed before any `git clean` or worktree reset can discard it. Committing is outside a plan-only update, so it is left to the operator.
+1. ~~The plan directory is untracked.~~ Resolved: the plan and its journals are committed in `2da5a0e` and pushed to `origin/mrgoonie/skills-compatiple`.
 2. Should phase 6 become two phases if the first milestone overruns? Both the advisor and the independent reviewer named phase 6 as the most likely to overrun; the current choice is one phase with M1-M2 as an internal split point. Revisit after M1.
 3. Should the one-time egress acknowledgement be blocking (suggestions stay off until the operator acknowledges in the dashboard) or informational? The plan currently makes it informational with a visible counter, because the operator chose always-on egress.
-4. The reviewer's per-phase hours were calibrated for human developers while the plan's unit is AI-agent execution time, so the adopted 135h is deliberately the conservative lower bound. Re-estimate the remaining phases after phase 1 finishes rather than trusting the total.
+4. Re-estimate the remaining phases after phase 1 finishes rather than trusting the 135h total; the total is the reviewer's conservative lower bound and its unit is AI-agent execution time.
+5. **Delivery shape (operator decision).** The advisory checkpoint recommended shipping in dependency-ordered increments with one reviewed PR each, because a single 135h run cannot honour the plan's own re-estimate-after-phase-1 checkpoint or the phase 6 M1 stop point, and because one large merge to `main` leaves no bisect granularity and no cheap revert. The operator's original instruction was a single run with `--ship`.
+6. **Is inert-but-merged code acceptable on `main`?** Phases 1-3 land schema, adapters, and resolution with no user-visible surface until phase 6. If it is not acceptable, those increments need a long-lived integration branch with one final promotion instead of merging to `main` directly.
 
 <!-- slug: skills-sh-and-skillx-compatibility -->
