@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import { InMemoryGitHubInstallationStore } from '../src/github-installation-stor
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
+import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
 const roots: string[] = [];
 const cleanups: (() => void)[] = [];
@@ -34,6 +35,7 @@ function setup(withKeyring = true) {
   });
   const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
   const workspaces = {
+    toolkitCacheManager: new ToolkitCacheManager(join(root, 'toolkits'), principals),
     readArtifactSource: async (p: PrincipalSelector) => ({ ownerId: principals.resolvePrincipal(p), content: Buffer.from('snapshot') }),
     snapshotArtifact: async (p: PrincipalSelector, input: { workspaceId?: string; path: string; logicalName: string; retentionSeconds?: number; projectId?: string; environmentId?: string }) => {
       const ownerId = principals.resolvePrincipal(p);
@@ -89,6 +91,28 @@ const principal = { kind: 'external' as const, issuer: 'https://access.example.c
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
 
 describe('dashboard control service', () => {
+  it('creates a custom skill by publishing its content before the source row exists', async () => {
+    const { controls, principals, workspaces } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const instructions = '# Custom skill\n\nDo the thing.';
+
+    const created = await controls.execute(request('skill_create_custom', {
+      slug: 'custom-skill', displayName: 'Custom Skill', description: 'authored here', tags: ['custom'],
+      instructions, hasExecutableAssets: false, expectedGeneration: 0
+    }));
+    const { sourceId, revisionId, bundleSha256 } = created.data as { sourceId: string; revisionId: string; bundleSha256: string };
+
+    // The recorded digests and the published bytes have to agree. If they did not, the skill would
+    // resolve in the inventory and then fail at launch, which is what publishing first prevents.
+    const revision = principals.getSkillRevision(ownerId, sourceId, revisionId);
+    expect(revision?.bundleSha256).toBe(bundleSha256);
+    expect(revision?.contentSha256).toBe(createHash('sha256').update(instructions).digest('hex'));
+    expect(readFileSync(join(workspaces.toolkitCacheManager.bundlePath(ownerId, bundleSha256), 'skills/custom-skill/SKILL.md'), 'utf8')).toBe(instructions);
+
+    expect(principals.getSkillSource(ownerId, sourceId)).toMatchObject({
+      slug: 'custom-skill', kind: 'owner', provider: 'custom', currentRevisionId: revisionId, state: 'enabled'
+    });
+  });
   it('restores a previous revision by publishing a new one instead of rewriting history', async () => {
     const { controls, principals } = setup();
     const ownerId = principals.resolvePrincipal(principal);
