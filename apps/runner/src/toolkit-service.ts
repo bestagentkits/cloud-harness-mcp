@@ -107,8 +107,8 @@ export class ToolkitService {
 
   computeRequestFingerprint(toolkits: ToolkitSelection[]): string {
     const canonical = [...toolkits].sort((a, b) => {
-      const idA = a.kind === 'git' ? a.instanceId : a.id;
-      const idB = b.kind === 'git' ? b.instanceId : b.id;
+      const idA = a.kind === 'preset' ? (a.instanceId || a.id) : a.instanceId;
+      const idB = b.kind === 'preset' ? (b.instanceId || b.id) : b.instanceId;
       return idA.localeCompare(idB);
     });
     return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');

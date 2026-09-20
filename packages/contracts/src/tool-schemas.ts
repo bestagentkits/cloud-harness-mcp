@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import {
   JournalTypeSchema,
@@ -40,6 +40,35 @@ const SkillFilterSchema = z.object({
   }
 });
 
+const RegistryToolkitReferenceSchema = z.string().min(1).max(300).refine((value) => !value.includes('\0'), 'reference cannot contain null bytes');
+
+export const ToolkitRegistrySelectionSchema = z.object({
+  kind: z.literal('registry'),
+  provider: z.enum(['skills-sh', 'skillx']),
+  instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
+  reference: RegistryToolkitReferenceSchema,
+  ref: gitObjectId.optional(),
+  subdirectory: relativePath.optional(),
+  scope: z.enum(['owner', 'workspace']).default('owner'),
+  skills: SkillFilterSchema.optional(),
+  activation: z.literal('skills-only').default('skills-only')
+}).strict();
+
+export type ToolkitRegistrySelection = z.infer<typeof ToolkitRegistrySelectionSchema>;
+
+export const SkillSetSelectionSchema = z.object({
+  skillSetId: SkillSetIdSchema,
+  expectedGeneration: z.number().int().positive()
+}).strict();
+
+export const SkillOverrideMapSchema = z.record(
+  z.string().regex(/^[A-Za-z0-9._-]{1,80}$/, 'invalid skill name'),
+  SkillRevisionIdSchema
+).refine((value) => Object.keys(value).length <= 128, 'at most 128 skill overrides per launch');
+
+export type SkillSetSelection = z.infer<typeof SkillSetSelectionSchema>;
+export type SkillOverrideMap = z.infer<typeof SkillOverrideMapSchema>;
+
 export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('preset'),
@@ -63,7 +92,8 @@ export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
       recursive: z.boolean().default(true)
     }).strict().default({ skillRoots: ['skills'], recursive: true }),
     activation: z.literal('skills-only').default('skills-only')
-  }).strict()
+  }).strict(),
+  ToolkitRegistrySelectionSchema
 ]);
 
 export type ToolkitSelection = z.infer<typeof ToolkitSelectionSchema>;
@@ -283,6 +313,8 @@ const schemas = {
     environmentId: EnvironmentIdSchema.optional(),
     confirmEnvironmentInjection: z.literal(true).optional(),
     toolkits: z.array(ToolkitSelectionSchema).max(8).default([]),
+    skillSets: z.array(SkillSetSelectionSchema).max(16).default([]),
+    skillOverrides: SkillOverrideMapSchema.default({}),
     allowToolkitWorkspaceChanges: z.literal(true).optional()
   }).superRefine((input, context) => {
     if (input.networkMode !== undefined) {
@@ -301,11 +333,26 @@ const schemas = {
     }
     const instanceIds = new Set<string>();
     for (const t of input.toolkits) {
-      const key = t.kind === 'git' ? t.instanceId : (t.instanceId || t.id);
+      const key = t.kind === 'preset' ? (t.instanceId || t.id) : t.instanceId;
       if (instanceIds.has(key)) {
         context.addIssue({ code: 'custom', path: ['toolkits'], message: `duplicate toolkit instance or id: ${key}` });
       }
       instanceIds.add(key);
+    }
+    const skillSetIds = new Set<string>();
+    for (const set of input.skillSets) {
+      if (skillSetIds.has(set.skillSetId)) {
+        context.addIssue({ code: 'custom', path: ['skillSets'], message: `duplicate skill set: ${set.skillSetId}` });
+      }
+      skillSetIds.add(set.skillSetId);
+    }
+    const overrideNames = Object.keys(input.skillOverrides);
+    if (overrideNames.length > 0 && input.skillSets.length === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['skillOverrides'],
+        message: 'skill overrides require at least one skill set selection'
+      });
     }
   }),
   workspace_list: z.object(pagination),

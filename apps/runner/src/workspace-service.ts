@@ -72,8 +72,8 @@ export function computeWorkspaceOpenFingerprint(input: {
   allowToolkitWorkspaceChanges?: boolean | undefined;
 }): string {
   const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) => {
-    const idA = a.kind === 'git' ? a.instanceId : a.id;
-    const idB = b.kind === 'git' ? b.instanceId : b.id;
+    const idA = a.kind === 'preset' ? (a.instanceId || a.id) : a.instanceId;
+    const idB = b.kind === 'preset' ? (b.instanceId || b.id) : b.instanceId;
     return idA.localeCompare(idB);
   });
   const payload = {
