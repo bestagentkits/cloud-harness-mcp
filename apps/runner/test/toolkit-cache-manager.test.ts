@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveOwnerPrincipal } from '../src/principal-store.js';
@@ -176,8 +176,28 @@ describe('ToolkitCacheManager', () => {
     expect(entries[0]!.bundleSha256).toBe(sha2);
   });
 
-  it('quarantines a published bundle whose bytes no longer match the recorded digest', async () => {
-    const spec: ToolkitAcquisitionSpec = { sourceIdentity: 'skills-sh:mattpocock/skills', resolvedRevision: 'abc', adapterVersion: 1, configDigest: 'd' };
+  it('publishes a locally produced bundle and reuses the directory for identical content', async () => {
+    const files = { 'skills/tdd/SKILL.md': '# TDD' };
+    const first = await cacheManager.publishLocalBundle(ownerId, files);
+    expect(existsSync(first.bundlePath)).toBe(true);
+    expect(first.fileCount).toBe(1);
+    expect(readFileSync(join(first.bundlePath, 'skills/tdd/SKILL.md'), 'utf8')).toBe('# TDD');
+
+    // The same bytes resolve to the same directory rather than creating a second copy, which is what
+    // makes a repeated custom skill ever cheaper to publish and keeps one bundle per content hash.
+    const second = await cacheManager.publishLocalBundle(ownerId, files);
+    expect(second.bundleSha256).toBe(first.bundleSha256);
+    expect(second.bundlePath).toBe(first.bundlePath);
+  });
+
+  it('refuses a bundle member that would escape the owner directory', async () => {
+    await expect(cacheManager.publishLocalBundle(ownerId, { '../escape.md': 'x' })).rejects.toThrow(/unsafe bundle member path/);
+    await expect(cacheManager.publishLocalBundle(ownerId, { '/etc/passwd': 'x' })).rejects.toThrow(/unsafe bundle member path/);
+    await expect(cacheManager.publishLocalBundle(ownerId, { 'skills/space/': 'x' })).rejects.toThrow(/unsafe bundle member path/);
+    await expect(cacheManager.publishLocalBundle(ownerId, {})).rejects.toThrow(/at least one file/);
+  });
+
+  it('quarantines a published bundle whose bytes no longer match the recorded digest', async () => {    const spec: ToolkitAcquisitionSpec = { sourceIdentity: 'skills-sh:mattpocock/skills', resolvedRevision: 'abc', adapterVersion: 1, configDigest: 'd' };
     const published = await cacheManager.getOrAcquire(ownerId, spec, async (dir) => {
       writeFileSync(join(dir, 'manifest.json'), '{"id":"test"}');
       writeFileSync(join(dir, 'SKILL.md'), '# Skill');

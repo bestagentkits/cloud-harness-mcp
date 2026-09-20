@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, openSync, readdirSync } from 'node:fs';
-import { mkdir, readdir, rename, rm } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 import type { StateStore, ToolkitCacheEntryRecord } from './state-store.js';
@@ -39,6 +39,55 @@ export class ToolkitCacheManager {
 
   bundlePath(ownerId: string, bundleSha256: string): string {
     return join(this.root, ownerId, bundleSha256);
+  }
+
+  /**
+   * Publish a bundle whose content this process produced itself, so there is no acquisition spec to
+   * key it by. A custom skill is exactly that shape: a one-skill bundle laid out as
+   * `<bundle>/skills/<name>`, which is the layout the launch projection already reads from the cache
+   * root, so publishing here keeps one cache root and one projection path.
+   */
+  async publishLocalBundle(
+    ownerId: string,
+    files: Record<string, string>
+  ): Promise<{ bundleSha256: string; byteCount: number; fileCount: number; bundlePath: string }> {
+    const entries = Object.entries(files);
+    if (entries.length === 0) throw new Error('a local bundle needs at least one file');
+    for (const [relativePath] of entries) {
+      // The bundle is published into the cache root, so a traversing or absolute member would write
+      // outside the directory belonging to this owner.
+      if (relativePath.startsWith('/') || relativePath.includes('..') || relativePath.includes('\\') || relativePath.endsWith('/')) {
+        throw new Error(`unsafe bundle member path: ${relativePath}`);
+      }
+    }
+
+    const tempId = `staging-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const stagingDir = join(this.root, 'staging', tempId);
+    await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+    try {
+      for (const [relativePath, content] of entries) {
+        const memberPath = join(stagingDir, relativePath);
+        await mkdir(dirname(memberPath), { recursive: true, mode: 0o700 });
+        await writeFile(memberPath, content, { mode: 0o600 });
+      }
+
+      const { bundleSha256, byteCount, fileCount } = computeFullTreeDigest(stagingDir);
+      const targetDir = this.bundlePath(ownerId, bundleSha256);
+      await mkdir(dirname(targetDir), { recursive: true, mode: 0o700 });
+
+      if (existsSync(targetDir)) {
+        // Identical content is already published, so the new copy is redundant rather than conflicting.
+        await rm(stagingDir, { recursive: true, force: true });
+      } else {
+        this.fsyncDirectoryRecursive(stagingDir);
+        await rename(stagingDir, targetDir);
+        this.fsyncDirectory(dirname(targetDir));
+      }
+      return { bundleSha256, byteCount, fileCount, bundlePath: targetDir };
+    } catch (error) {
+      await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async reconcileStartup(): Promise<void> {
