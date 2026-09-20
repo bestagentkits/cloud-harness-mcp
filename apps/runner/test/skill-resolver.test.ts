@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ErrorCodeSchema } from '@cloud-harness/contracts';
 import {
   assertSkillSetGenerations,
   repositorySubRank,
@@ -164,6 +165,9 @@ describe('assertSkillSetGenerations', () => {
       assertSkillSetGenerations([{ skillSetId: 'skset_one', expectedGeneration: 2 }], [{ skillSetId: 'skset_one', generation: 4 }]);
     } catch (error) {
       expect((error as SkillSetGenerationError).code).toBe('STALE_GENERATION');
+      // The raised code must be a real contract error code rather than an invented string, or the
+      // control plane cannot map it to a status.
+      expect(ErrorCodeSchema.options).toContain((error as SkillSetGenerationError).code);
     }
   });
 });
