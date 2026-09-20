@@ -110,7 +110,11 @@
         <option value="dependency-access" selected>Dependency access (public DNS, TCP 80/443)</option>
       </select>
       <div class="form-section-title">Agent Toolkits & Skills (Optional)</div>
-      <div id="toolkits-selection-grid" class="toolkits-grid" role="group" aria-label="Available Toolkits"></div>
+      <label for="open-skill-sets-select">Skill sets</label>
+      <select id="open-skill-sets-select" name="skillSets" multiple size="4"></select>
+      <ul id="open-skill-sets-chips" class="skills-chips" aria-label="Selected skill sets"></ul>
+      <div id="open-skill-conflicts" class="skills-conflicts" role="group" aria-label="Skill conflicts"></div>
+      <p><a id="skills-manage-link" href="/dashboard/skills">Manage skills</a></p>
       <div id="open-workspace-preview" class="preflight-box" aria-live="polite"></div>
       <p id="open-workspace-status" class="status-message" aria-live="polite"></p>
       <div class="dialog-actions">

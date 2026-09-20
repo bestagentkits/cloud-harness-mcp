@@ -456,7 +456,10 @@ dialog::backdrop { background: oklch(0 0 0 / .66); }
 
 #open-workspace-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); }
 .form-section-title { font-family: var(--font-mono); font-size: var(--text-12); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-muted); margin-block: var(--space-3) var(--space-2); }
-.toolkits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-3); margin-block-end: var(--space-3); }
+.skills-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-block: var(--space-2); padding: 0; list-style: none; }
+.skills-chips li { padding: var(--space-1) var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-pill); font-size: var(--text-12); }
+.skills-conflicts { display: grid; gap: var(--space-2); margin-block-end: var(--space-3); }
+.skills-conflicts fieldset { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: var(--space-2); }
 .toolkit-card-select { display: grid; gap: var(--space-2); padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; position: relative; transition: border-color var(--motion-fast) var(--ease-out), background-color var(--motion-fast) var(--ease-out); }
 .toolkit-card-select:hover { border-color: var(--line-strong); }
 .toolkit-card-select.selected { border-color: var(--accent-line); background: var(--accent-soft); }
