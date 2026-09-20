@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   launchBlockedByConflicts,
+  renderRevisionDiff,
   renderSkillConflicts,
   renderSkillsLibraryRows,
   renderSkillsRegistryRows
 } from '../dashboard/dashboard-render.js';
-import { createSkillsLibraryController } from '../dashboard/dashboard.js';
+import { createImportPollingController, createSkillsLibraryController, validateSkillInstructions } from '../dashboard/dashboard.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
 describe('skills library rendering', () => {
@@ -155,6 +156,93 @@ describe('skills library controller', () => {
     const controller = createSkillsLibraryController({ onSearch: vi.fn(), onBulk });
     await expect(controller.runBulk('archive')).resolves.toEqual([]);
     expect(onBulk).not.toHaveBeenCalled();
+  });
+});
+
+describe('skill instructions validation', () => {
+  it('rejects what the runner would refuse and accepts ordinary frontmatter', () => {
+    expect(validateSkillInstructions('')).toMatch(/cannot be empty/i);
+    expect(validateSkillInstructions('   \n ')).toMatch(/cannot be empty/i);
+    expect(validateSkillInstructions('a\0b')).toMatch(/null bytes/i);
+    expect(validateSkillInstructions('---\nname: tdd\n')).toMatch(/never closes/i);
+    expect(validateSkillInstructions('---\nname: tdd\n---\nBody')).toBeNull();
+    expect(validateSkillInstructions('# Plain instructions')).toBeNull();
+  });
+});
+
+describe('revision diff rendering', () => {
+  it('marks added, removed, and metadata lines and carries a text alternative', () => {
+    const diff = '--- a/SKILL.md\n+++ b/SKILL.md\n context\n-removed line\n+added line\n';
+    const { html, text } = renderRevisionDiff(diff);
+
+    expect(html).toContain('diff-line diff-add');
+    expect(html).toContain('diff-line diff-remove');
+    expect(html).toContain('diff-line diff-meta');
+    // The header lines must not be counted as content changes.
+    expect(text).toBe('1 line added, 1 line removed');
+  });
+
+  it('escapes diff content, which came from a provider', () => {
+    const { html } = renderRevisionDiff('+<script>alert(1)</script>');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('handles an empty diff without claiming changes', () => {
+    expect(renderRevisionDiff(undefined).text).toBe('0 lines added, 0 lines removed');
+  });
+});
+
+describe('import job polling', () => {
+  it('polls until a terminal state and then stops', async () => {
+    vi.useFakeTimers();
+    try {
+      const jobs = [{ state: 'running' }, { state: 'running' }, { state: 'succeeded' }];
+      const fetchJob = vi.fn(async () => jobs.shift() ?? { state: 'succeeded' });
+      const states: string[] = [];
+      const controller = createImportPollingController({
+        fetchJob,
+        onState: (job) => states.push(job.state),
+        isTerminal: (job) => ['succeeded', 'failed', 'cancelled'].includes(job.state),
+        intervalMs: 1_000
+      });
+
+      await controller.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(states).toEqual(['running', 'running', 'succeeded']);
+      expect(controller.running()).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(fetchJob).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops once its attempt budget runs out, so a dead runner cannot poll forever', async () => {
+    const fetchJob = vi.fn(async () => ({ state: 'running' }));
+    const controller = createImportPollingController({
+      fetchJob, onState: vi.fn(), isTerminal: () => false, maxAttempts: 1
+    });
+
+    await controller.start();
+
+    expect(fetchJob).toHaveBeenCalledTimes(1);
+    expect(controller.running()).toBe(false);
+  });
+
+  it('stops on cancel while a job is still running', async () => {
+    const fetchJob = vi.fn(async () => ({ state: 'running' }));
+    const controller = createImportPollingController({ fetchJob, onState: vi.fn(), isTerminal: () => false });
+
+    await controller.start();
+    expect(controller.running()).toBe(true);
+
+    controller.stop();
+    expect(controller.running()).toBe(false);
+    expect(fetchJob).toHaveBeenCalledTimes(1);
   });
 });
 

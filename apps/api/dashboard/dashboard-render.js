@@ -279,6 +279,27 @@ export function launchBlockedByConflicts(conflicts, overrides = {}) {
   return (Array.isArray(conflicts) ? conflicts : []).some((conflict) => overrides[conflict.name] === undefined);
 }
 
+/**
+ * A unified diff with its lines marked, plus a text alternative. A diff conveyed only through colour
+ * is unreadable to a screen reader and to anyone who cannot distinguish the two shades, so the counts
+ * travel with the markup and the line classes carry the meaning.
+ */
+export function renderRevisionDiff(diff) {
+  const lines = String(diff ?? '').split('\n');
+  const body = lines.map((line) => {
+    if (line.startsWith('+++') || line.startsWith('---')) return `<span class="diff-line diff-meta">${escape(line)}</span>`;
+    if (line.startsWith('+')) return `<span class="diff-line diff-add">${escape(line)}</span>`;
+    if (line.startsWith('-')) return `<span class="diff-line diff-remove">${escape(line)}</span>`;
+    return `<span class="diff-line">${escape(line)}</span>`;
+  }).join('\n');
+  const added = lines.filter((line) => line.startsWith('+') && !line.startsWith('+++')).length;
+  const removed = lines.filter((line) => line.startsWith('-') && !line.startsWith('---')).length;
+  return {
+    html: `<code>${body}</code>`,
+    text: `${added} line${added === 1 ? '' : 's'} added, ${removed} line${removed === 1 ? '' : 's'} removed`
+  };
+}
+
 function renderServerPanel(server) {
   if (!server) return '';
   const oauth = server.managedOAuthUrl

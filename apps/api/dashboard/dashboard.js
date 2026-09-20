@@ -358,6 +358,50 @@ export function createSkillsLibraryController({ bulkBar, bulkCount, onSearch, on
   };
 }
 
+/**
+ * The editor stores instructions and never executes them, so this validation is not a safety control:
+ * it rejects input the runner would refuse anyway. A null byte cannot survive the contract, and
+ * frontmatter that opens and never closes would produce a skill that resolves but never loads.
+ */
+export function validateSkillInstructions(text) {
+  const value = String(text ?? '');
+  if (value.trim() === '') return 'Instructions cannot be empty.';
+  if (value.includes('\0')) return 'Instructions cannot contain null bytes.';
+  if (/^\s*---\s*\n/.test(value) && value.indexOf('\n---', 3) === -1) return 'Frontmatter opens with --- but never closes.';
+  return null;
+}
+
+/**
+ * Import polling with a bounded attempt count. It stops on a terminal job state and on exhausting the
+ * budget, so a job whose runner died leaves the operator with a stopped poller instead of a spinner
+ * that never ends.
+ */
+export function createImportPollingController({ fetchJob, onState, isTerminal, intervalMs = 1_500, maxAttempts = 40 }) {
+  let attempts = 0;
+  let stopped = false;
+  let timer;
+
+  async function tick() {
+    if (stopped) return;
+    attempts += 1;
+    const job = await fetchJob();
+    onState(job);
+    if (stopped) return;
+    if (isTerminal(job) || attempts >= maxAttempts) {
+      stopped = true;
+      return;
+    }
+    timer = globalThis.setTimeout(() => { void tick(); }, intervalMs);
+  }
+
+  return {
+    start() { stopped = false; attempts = 0; return tick(); },
+    stop() { stopped = true; if (timer) globalThis.clearTimeout(timer); timer = undefined; },
+    attempts() { return attempts; },
+    running() { return !stopped; }
+  };
+}
+
 export const PALETTE_PAGE_COMMANDS = [
   { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
   { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },
