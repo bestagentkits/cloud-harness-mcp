@@ -91,6 +91,22 @@ const principal = { kind: 'external' as const, issuer: 'https://access.example.c
 const request = (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, selected = principal) => ({ version: 2 as const, principal: selected, operation, input }) as MetadataRunnerRequest;
 
 describe('dashboard control service', () => {
+  it('serves the registry catalogue and still fails loudly for an operation with no handler', async () => {
+    const { controls } = setup();
+
+    // The route test uses a mocked runner, which answers anything, so it cannot tell a real handler
+    // from a missing one. This call goes through the service itself and would throw before the case
+    // existed.
+    const listed = await controls.execute(request('toolkit_registry_list', {}));
+    expect(Array.isArray((listed.data as { entries: unknown[] }).entries)).toBe(true);
+    expect((listed.data as { entries: unknown[] }).entries).toEqual([]);
+
+    const filtered = await controls.execute(request('toolkit_registry_list', { provider: 'skillx' }));
+    expect((filtered.data as { entries: unknown[] }).entries).toEqual([]);
+
+    await expect(controls.execute(request('toolkit_registry_refresh', { provider: 'skills-sh' })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
   it('creates a custom skill by publishing its content before the source row exists', async () => {
     const { controls, principals, workspaces } = setup();
     const ownerId = principals.resolvePrincipal(principal);

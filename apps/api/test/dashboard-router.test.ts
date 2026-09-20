@@ -107,7 +107,8 @@ describe('dashboard BFF', () => {
       [`/api/v1/skills/${skillId}/usage`, 'skill_usage'],
       ['/api/v1/skill-sets', 'skill_set_list'],
       [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_get'],
-      [`/api/v1/skill-imports/${jobId}`, 'skill_import_status']
+      [`/api/v1/skill-imports/${jobId}`, 'skill_import_status'],
+      ['/api/v1/toolkit-registry', 'toolkit_registry_list']
     ];
 
     for (const [path, operation] of expectations) {

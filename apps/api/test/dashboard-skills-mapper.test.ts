@@ -7,7 +7,8 @@ const SKILL_OPERATIONS = [
   'skill_usage', 'skill_search',
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
   'skill_revision_list', 'skill_revision_get', 'skill_revision_diff',
-  'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview'
+  'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
+  'toolkit_registry_list'
 ] as const satisfies readonly DashboardResponseOperation[];
 
 /** One payload carrying every shape those operations can read, so each branch has something to project. */
@@ -27,7 +28,8 @@ const populated = {
   usages: [{ workspaceId: 'ws_1', name: 'tdd' }],
   resolved: [{ name: 'tdd', tier: 'owner', revisionId: 'skrev_1' }],
   excluded: [{ name: 'old', tier: 'owner', reason: 'disabled' }],
-  conflicts: [{ name: 'dup', candidates: [] }]
+  conflicts: [{ name: 'dup', candidates: [] }],
+  entries: [{ id: 'cat_1', provider: 'skills-sh', slug: 'tdd', displayName: 'TDD', description: 'catalog entry', fetchedAt: 1 }]
 };
 
 describe('skills dashboard mapping', () => {

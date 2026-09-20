@@ -604,6 +604,8 @@ export class DashboardControlService {
             conflicts: resolution.conflicts
           });
         }
+        case 'toolkit_registry_list':
+          return ok('Registry catalog listed', { entries: this.principals.listSkillCatalogEntries(principalId, parsed.input.provider) });
         case 'skill_restore': {
           const revision = required(
             this.principals.getSkillRevision(principalId, parsed.input.skillId, parsed.input.revisionId),

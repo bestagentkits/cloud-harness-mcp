@@ -69,7 +69,8 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'skill_usage', 'skill_search',
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
   'skill_revision_list', 'skill_revision_get', 'skill_revision_diff',
-  'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview'
+  'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
+  'toolkit_registry_list'
 ] as const;
 
 /**
@@ -103,6 +104,7 @@ const skillUsageKeys = ['workspaceId', 'workspaceName', 'name', 'tier', 'pinned'
 const skillImportJobKeys = ['id', 'sourceKind', 'sourceRef', 'state', 'progress', 'result', 'errorCode', 'skillRevisionId', 'createdAt', 'updatedAt'] as const;
 const skillResolvedKeys = ['name', 'tier', 'skillSourceId', 'revisionId', 'contentSha256', 'pinned'] as const;
 const skillExcludedKeys = ['name', 'tier', 'reason'] as const;
+const skillCatalogKeys = ['id', 'provider', 'slug', 'displayName', 'description', 'fetchedAt'] as const;
 
 /**
  * A revision diff is prose the UI renders, so it is passed through only when the runner actually
@@ -258,6 +260,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       conflicts: listOf(data.conflicts, ['name', 'candidates', 'candidateCount'])
     };
   }
+  if (operation === 'toolkit_registry_list') return list(data, 'entries', skillCatalogKeys);
   return data;
 }
 const descriptiveOperations = new Set<string>([

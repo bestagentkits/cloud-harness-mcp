@@ -8,7 +8,6 @@ import { DASHBOARD_RESPONSE_OPERATIONS } from '../src/dashboard-response.js';
  * set routes, their mapper branches, and their tests together.
  */
 const PENDING_DASHBOARD_MAPPING: readonly string[] = [
-  'toolkit_registry_list',
   'toolkit_registry_update',
   'toolkit_registry_refresh'
 ];
