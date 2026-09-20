@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { ExecutorNetworkProfileSchema, ModelCredentialIdSchema, ModelProfileIdSchema, SkillImportJobIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, SkillSourceIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { ExecutorNetworkProfileSchema, IntegrationCredentialIdSchema, ModelCredentialIdSchema, ModelProfileIdSchema, SkillImportJobIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, SkillSourceIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { IntegrationCredentialCreateInputSchema, IntegrationCredentialRotateInputSchema, SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { ToolResultSchema } from './mcp-results.js';
 import {
   AgentModelProfileInputSchema,
@@ -141,10 +142,18 @@ export const MetadataRunnerOperationSchema = z.enum([
   'skill_create_custom', 'skill_update', 'skill_archive', 'skill_bulk', 'skill_usage', 'skill_search',
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
-  'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh'
+  'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
+  'skill_suggest', 'typesafe_status',
+  'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ]);
 
 const metadataInputs = {
+  skill_suggest: SkillSuggestInputSchema,
+  typesafe_status: z.object({}).strict(),
+  integration_credential_list: z.object({}).strict(),
+  integration_credential_create: IntegrationCredentialCreateInputSchema,
+  integration_credential_rotate: IntegrationCredentialRotateInputSchema,
+  integration_credential_delete: z.object({ credentialId: IntegrationCredentialIdSchema, expectedGeneration: generation }).strict(),
   project_list: z.object({}).strict(),
   project_create: z.object({ name, expectedGeneration: z.literal(0) }).strict(),
   project_update: z.object({ projectId: internalId('prj'), name, expectedGeneration: generation }).strict(),
@@ -470,7 +479,10 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('skill_import_start'), metadataRequest('skill_import_status'), metadataRequest('skill_import_cancel'),
   metadataRequest('skill_set_list'), metadataRequest('skill_set_get'), metadataRequest('skill_set_create'),
   metadataRequest('skill_set_update'), metadataRequest('skill_set_delete'), metadataRequest('skill_set_preview'),
-  metadataRequest('toolkit_registry_list'), metadataRequest('toolkit_registry_update'), metadataRequest('toolkit_registry_refresh')
+  metadataRequest('toolkit_registry_list'), metadataRequest('toolkit_registry_update'), metadataRequest('toolkit_registry_refresh'),
+  metadataRequest('skill_suggest'), metadataRequest('typesafe_status'),
+  metadataRequest('integration_credential_list'), metadataRequest('integration_credential_create'),
+  metadataRequest('integration_credential_rotate'), metadataRequest('integration_credential_delete')
 ]);
 
 export type InternalRunnerOperation = z.infer<typeof InternalRunnerOperationSchema>;
