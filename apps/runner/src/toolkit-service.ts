@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { HarnessError, type ToolkitLockItem, type ToolkitSelection } from '@cloud-harness/contracts';
 import { MattPocockAdapter } from './adapters/mattpocock-adapter.js';
 import { SuperpowersAdapter } from './adapters/superpowers-adapter.js';
@@ -147,6 +149,7 @@ export class ToolkitService {
     byteCount: number;
     fileCount: number;
     resolvedRevision: string;
+    hasExecutableAssets: boolean;
     skills: Array<{ name: string; contentSha256: string }>;
   }> {
     const ref = input.ref || 'HEAD';
@@ -171,6 +174,7 @@ export class ToolkitService {
     // records, so an imported revision names the commit that was actually read rather than the ref asked for.
     let resolvedRevision = ref;
     let skills: Array<{ name: string; contentSha256: string }> = [];
+    let hasExecutableAssets = false;
     const bundle = await this.cacheManager.getOrAcquire(ownerId, spec, async (stagingDir) => {
       const result = input.sourceKind === 'skillx'
         ? await this.skillXAdapter.acquireAndNormalize(ownerId, stagingDir, { reference: input.sourceRef, signal })
@@ -182,6 +186,10 @@ export class ToolkitService {
         });
       resolvedRevision = result.manifest.resolvedRevision;
       skills = result.manifest.skills;
+      // The adapters report a tree digest, not whether that tree carries anything to execute, so the
+      // answer is read from the staged tree. It decides whether a later run is allowed to look for a
+      // script at all, so it is measured here rather than assumed by the caller.
+      hasExecutableAssets = existsSync(join(stagingDir, 'scripts'));
       return result;
     });
 
@@ -190,6 +198,7 @@ export class ToolkitService {
       byteCount: bundle.byteCount,
       fileCount: bundle.fileCount,
       resolvedRevision,
+      hasExecutableAssets,
       skills
     };
   }

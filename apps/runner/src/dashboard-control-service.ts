@@ -45,6 +45,82 @@ export class DashboardControlService {
   ) {}
 
   /**
+   * Runs one import to completion and records every transition on the job row, because that row is what
+   * survives a restart. An import of a skill that is already present adds a revision rather than
+   * replacing the source, so a launch that pinned the previous revision keeps resolving to the bytes it
+   * verified. A failure is recorded rather than thrown: the caller already holds the job id and there is
+   * no request left for the error to answer.
+   */
+  private async runSkillImport(
+    ownerId: string,
+    jobId: string,
+    input: { sourceKind: 'skills-sh' | 'skillx' | 'git'; sourceRef: string; ref?: string | undefined; subdirectory?: string | undefined }
+  ): Promise<void> {
+    try {
+      this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'running', progressJson: JSON.stringify({ phase: 'acquiring' })
+      });
+      if (input.sourceKind === 'git') {
+        throw new HarnessError('INVALID_INPUT', 'this path acquires from a registry, so a git source is not supported here', 400, false);
+      }
+      const acquired = await this.workspaces.toolkitService.importSkillPackage(ownerId, {
+        sourceKind: input.sourceKind,
+        sourceRef: input.sourceRef,
+        ...(input.ref ? { ref: input.ref } : {}),
+        ...(input.subdirectory ? { subdirectory: input.subdirectory } : {})
+      });
+      const first = acquired.skills[0];
+      if (!first) {
+        throw new HarnessError('NOT_FOUND', `${input.sourceRef} resolved to no skills`, 404, false);
+      }
+      this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'running',
+        progressJson: JSON.stringify({ phase: 'publishing', skills: acquired.skills.length, resolvedRevision: acquired.resolvedRevision })
+      });
+      const slug = first.name.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 120) || 'imported-skill';
+      const existing = this.principals.listSkillSources(ownerId, { limit: 200 })
+        .find((skill) => skill !== undefined && skill.slug === slug);
+      const revisionId = existing
+        ? this.principals.addSkillRevision({
+          ownerId,
+          skillSourceId: existing.id,
+          bundleSha256: acquired.bundleSha256,
+          contentSha256: first.contentSha256,
+          hasExecutableAssets: acquired.hasExecutableAssets,
+          origin: 'import'
+        })
+        : this.principals.createSkillSource({
+          ownerId,
+          slug,
+          displayName: first.name,
+          kind: 'owner',
+          provider: input.sourceKind,
+          description: '',
+          revision: {
+            bundleSha256: acquired.bundleSha256,
+            contentSha256: first.contentSha256,
+            hasExecutableAssets: acquired.hasExecutableAssets,
+            origin: 'import'
+          }
+        }).revisionId;
+      this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'succeeded', skillRevisionId: revisionId,
+        resultJson: JSON.stringify({
+          slug,
+          resolvedRevision: acquired.resolvedRevision,
+          skills: acquired.skills.map((skill) => skill.name)
+        })
+      });
+    } catch (error) {
+      this.principals.advanceSkillImportJob({
+        ownerId, id: jobId, state: 'failed',
+        errorCode: error instanceof HarnessError ? error.code : 'INTERNAL_ERROR',
+        resultJson: JSON.stringify({ message: error instanceof Error ? error.message : 'import failed' })
+      });
+    }
+  }
+
+  /**
    * A provider that fails is reported as a warning rather than as zero results, because an empty list is
    * a claim about a catalogue while a failure is a claim about the request. Each lookup is isolated so
    * that one unreachable provider cannot hide the local results or the other provider's hits.
@@ -595,6 +671,37 @@ export class DashboardControlService {
         case 'skill_set_list': return ok('Skill sets listed', { sets: this.principals.listSkillSets(principalId) });
         case 'skill_set_get': return ok('Skill set read', required(this.principals.getSkillSet(principalId, parsed.input.skillSetId), `Skill set ${parsed.input.skillSetId} was not found`));
         case 'skill_import_status': return ok('Import job read', required(this.principals.getSkillImportJob(principalId, parsed.input.jobId), `Import job ${parsed.input.jobId} was not found`));
+        case 'skill_import_start': {
+          const jobId = this.principals.createSkillImportJob({
+            ownerId: principalId,
+            sourceKind: parsed.input.sourceKind,
+            sourceRef: parsed.input.sourceRef
+          });
+          // The row is written before any work starts, so the caller gets an id it can poll and a restart
+          // reports the job instead of losing it. The acquisition therefore runs detached: there is no
+          // request left to fail, and every outcome is recorded as a state on that row.
+          void this.runSkillImport(principalId, jobId, parsed.input);
+          return mutation('Skill import started', required(
+            this.principals.getSkillImportJob(principalId, jobId),
+            `Import job ${jobId} was not found`
+          ));
+        }
+        case 'skill_import_cancel': {
+          const job = required(
+            this.principals.getSkillImportJob(principalId, parsed.input.jobId),
+            `Import job ${parsed.input.jobId} was not found`
+          );
+          // Only a job that has not reached a terminal state can be cancelled, so a finished import is
+          // reported as a conflict rather than silently rewritten into a state it never had.
+          if (job.state !== 'queued' && job.state !== 'running') {
+            throw new HarnessError('CONFLICT', `Import job ${job.id} is ${job.state} and cannot be cancelled`, 409, false);
+          }
+          this.principals.advanceSkillImportJob({ ownerId: principalId, id: job.id, state: 'cancelled' });
+          return mutation('Import job cancelled', required(
+            this.principals.getSkillImportJob(principalId, job.id),
+            `Import job ${job.id} was not found`
+          ));
+        }
         case 'skill_update': return mutation('Skill updated', this.principals.updateSkillMetadata({
           ownerId: principalId,
           id: parsed.input.skillId,
