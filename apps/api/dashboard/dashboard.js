@@ -35,7 +35,7 @@ import {
   escapeHtml,
   launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
-  renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
+  renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
   renderMcpServersIndex, renderMcpServerDetail,
   renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
@@ -46,7 +46,8 @@ import {
   renderPrimaryAction,
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
   renderWorkspaceTabPlaceholder, renderFinalizeDialog,
-  renderAgentsIndex, renderAgentDetail
+  renderAgentsIndex, renderAgentDetail,
+  renderRuntimePanel
 } from './dashboard-render.js';
 import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -2798,13 +2799,17 @@ export function initializeDashboard() {
     // lifecycle actions still work from the workspace record alone.
     const contextResult = await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined);
     setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, files, git, automation, deploy, artifacts, and activity.');
-    const body = tab === 'summary'
-      ? renderWorkspaceSummary({ workspace: item, context: contextResult?.data })
-      : tab === 'agents'
-        ? await renderWorkspaceAgents(id)
-        : renderWorkspaceTabPlaceholder(tab);
+    const body = await cockpitTabBody(id, tab, item, contextResult?.data);
     insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${body}${renderFinalizeDialog()}`);
     bindCockpitActions(item);
+    if (tab === 'runtime') bindRuntimeControls(id);
+  }
+  /** Which body a cockpit tab renders, kept out of the loader so the switch stays readable. */
+  async function cockpitTabBody(workspaceId, tab, workspace, context) {
+    if (tab === 'summary') return renderWorkspaceSummary({ workspace, context });
+    if (tab === 'agents') return renderWorkspaceAgents(workspaceId);
+    if (tab === 'runtime') return runtimePanel(workspaceId);
+    return renderWorkspaceTabPlaceholder(tab);
   }
   /** The workspace Agents tab reuses the global renderer with a scoped list. */
   async function renderWorkspaceAgents(workspaceId) {
@@ -2916,9 +2921,70 @@ export function initializeDashboard() {
       insertRendered(content, renderFileList(id, result.data)); bindFileOperations(id);
     }
   }
-  async function loadRuntime(id) {
+  /** Tasks, the dependency graph and sessions: one bounded read each. */
+  async function runtimePanel(workspaceId, io) {
+    const [runtimeResult, graphResult] = await Promise.all([
+      api(`/workspaces/${encodeURIComponent(workspaceId)}/runtime`),
+      api(`/workspaces/${encodeURIComponent(workspaceId)}/tasks/graph`).catch(() => undefined)
+    ]);
+    return renderRuntimePanel({
+      tasks: runtimeResult.data?.tasks ?? [],
+      sessions: runtimeResult.data?.sessions ?? [],
+      graph: graphResult?.data ?? {},
+      io
+    });
+  }
+  /**
+   * Runtime controls. Cancel and close confirm first; reading a session is a bounded,
+   * read-only call that never sends input, so the dashboard stays a viewer here.
+   */
+  function bindRuntimeControls(workspaceId) {
+    for (const button of document.querySelectorAll('.cancel-task')) button.addEventListener('click', (event) => {
+      const scoped = button.dataset.taskId ?? '';
+      void confirmAction({
+        title: 'Cancel this task?', description: 'The command stops and anything depending on it stays blocked.',
+        target: scoped, label: 'Cancel task', pendingLabel: 'Cancelling…',
+        action: async () => {
+          await api(`/workspaces/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(scoped)}/cancel`, { method: 'POST', body: requestBody({}) });
+          announce('Task cancelled.');
+          await loadRuntime(workspaceId);
+        }
+      }, event.currentTarget);
+    });
+    for (const button of document.querySelectorAll('.read-session')) button.addEventListener('click', async () => {
+      const scoped = button.dataset.sessionId ?? '';
+      const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(scoped)}/io`).catch(() => undefined);
+      await loadRuntime(workspaceId, result?.data);
+    });
+    for (const button of document.querySelectorAll('.close-session')) button.addEventListener('click', (event) => {
+      const scoped = button.dataset.sessionId ?? '';
+      void confirmAction({
+        title: 'Close this session?', description: 'The session ends and its retained output stays readable.',
+        target: scoped, label: 'Close session', pendingLabel: 'Closing…',
+        action: async () => {
+          await api(`/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(scoped)}/close`, { method: 'POST', body: requestBody({}) });
+          announce('Session closed.');
+          await loadRuntime(workspaceId);
+        }
+      }, event.currentTarget);
+    });
+    const form = document.querySelector('#open-session-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      void submitForm(form, 'Opening…', async () => {
+        await api(`/workspaces/${encodeURIComponent(workspaceId)}/sessions`, {
+          method: 'POST',
+          body: requestBody({ name: values.get('name'), cwd: String(values.get('cwd') ?? '.'), idempotencyKey })
+        });
+      }, async () => { announce('Session opened.'); await loadRuntime(workspaceId); });
+    });
+  }
+  async function loadRuntime(id, io) {
     const item = await workspace(id); setTitle('Runtime', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'runtime');
-    insertRendered(content, renderRuntime((await api(`/workspaces/${encodeURIComponent(id)}/runtime`)).data));
+    insertRendered(content, await runtimePanel(id, io));
+    bindRuntimeControls(id);
   }
   function contextLinks(id, current) {
     insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/workspaces/${encodeURIComponent(id)}/files" ${current === 'files' ? 'aria-current="page"' : ''}>Files</a><a href="/dashboard/workspaces/${encodeURIComponent(id)}/runtime" ${current === 'runtime' ? 'aria-current="page"' : ''}>Runtime</a>`);

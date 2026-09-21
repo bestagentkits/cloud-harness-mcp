@@ -288,6 +288,24 @@ working one.
   [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) with
   the agent projections in
   [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
+- **Runtime:** the cockpit's Runtime tab shows what is actually executing: a task
+  table with status, duration, exit code, dependencies and a bounded output
+  disclosure, plus a cancel for every task that is not terminal; the task
+  dependency graph as **internal SVG** layered by dependency depth, where each node
+  writes its state and duration as text, carries a semantic `task-<status>` class,
+  and is focusable so its full `aria-label` is reachable from the keyboard, with the
+  task table beside it as the text fallback (a cycle or an edge to an unknown node
+  cannot break the layout); and sessions as named, closeable rows whose output is
+  read through a **read-only, bounded** call — the browser never supplies stdin, so
+  the dashboard cannot become a terminal — with truncation stated in the panel.
+  Owners: `taskStatusLabel`, `taskDuration`, `renderTaskList`, `taskGraphLayout`,
+  `renderTaskGraph`, `renderSessionsPanel` and `renderRuntimePanel` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters
+  are `/api/v1/workspaces/:id/tasks/{graph,:taskId,cancel}` and
+  `/api/v1/workspaces/:id/sessions{,/:id/io,/close}` in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts), with
+  the bounded task and session projections in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with

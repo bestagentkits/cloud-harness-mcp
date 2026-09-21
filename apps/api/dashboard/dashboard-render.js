@@ -294,6 +294,126 @@ export function renderAgentDetail({ agent, logs = [] } = {}) {
   return `${overview}${usagePanel}${logsPanel}${messagesPanel}`;
 }
 
+const TASK_STATUS_LABELS = {
+  queued: 'Queued', running: 'Running', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', timedOut: 'Timed out'
+};
+
+/** Task state is text plus a semantic class; colour is never the only signal. */
+export function taskStatusLabel(status) {
+  return (status && TASK_STATUS_LABELS[status]) ?? 'Unknown';
+}
+
+/** Duration from the task's own timestamps; a running task measures against now. */
+export function taskDuration(task = {}, now = Date.now()) {
+  // `Number(null)` is 0, which would read as "finished at the epoch", so absent
+  // timestamps are treated as absent before any coercion.
+  const start = task.startedAt === null || task.startedAt === undefined ? Number.NaN : Number(task.startedAt);
+  if (!Number.isFinite(start)) return 'Not started';
+  const finished = task.finishedAt === null || task.finishedAt === undefined ? Number.NaN : Number(task.finishedAt);
+  const end = Number.isFinite(finished) ? finished : now;
+  const ms = Math.max(0, end - start);
+  return ms < 60_000 ? `${(ms / 1_000).toFixed(1)} s` : `${(ms / 60_000).toFixed(1)} min`;
+}
+
+const TERMINAL_TASK_STATES = new Set(['succeeded', 'failed', 'cancelled', 'timedOut']);
+
+/**
+ * The task table: outcome, duration, exit code, dependencies and bounded output, with
+ * a cancel control for every task that can still be stopped.
+ */
+export function renderTaskList(tasks = [], now = Date.now()) {
+  const rows = tasks.length ? tasks.map((task) => {
+    const status = String(task.status ?? 'unknown');
+    const dependencyText = Array.isArray(task.dependsOn) && task.dependsOn.length ? task.dependsOn.map((id) => escape(String(id))).join(', ') : '—';
+    const outputText = typeof task.output === 'string' && task.output.trim() ? escape(task.output) : 'No output reported';
+    const cancel = TERMINAL_TASK_STATES.has(status) ? '' : `<button class="danger cancel-task" type="button" data-task-id="${escape(String(task.id ?? ''))}">Cancel</button>`;
+    return `<tr><th scope="row">${escape(String(task.name ?? task.id ?? 'task'))}<small class="mono wrap">${escape(String(task.id ?? ''))}</small></th><td><span class="status ${escape(status.toLowerCase())}">${escape(taskStatusLabel(status))}</span></td><td>${escape(taskDuration(task, now))}</td><td>${task.exitCode === undefined || task.exitCode === null ? '—' : escape(String(task.exitCode))}</td><td class="mono wrap">${dependencyText}</td><td><details class="row-edit"><summary>Output</summary><pre class="mono">${outputText}</pre></details></td><td>${cancel}</td></tr>`;
+  }).join('') : '<tr><td colspan="7">No tasks have run in this workspace yet.</td></tr>';
+  return `<div class="desktop-table"><table><caption>${tasks.length} task(s)</caption><thead><tr><th>Task</th><th>Status</th><th>Duration</th><th>Exit</th><th>Depends on</th><th>Output</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/**
+ * Lay the graph out by dependency depth. Cycle-guarded: a malformed graph cannot hang
+ * the layout, and an edge to an unknown node is simply not drawn.
+ */
+export function taskGraphLayout(graph = {}) {
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  const known = new Set(nodes.map((node) => String(node.id)));
+  const depth = new Map();
+  const depthOf = (id, seen = new Set()) => {
+    const cached = depth.get(id);
+    if (cached !== undefined) return cached;
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    const parents = edges.filter((edge) => edge.to === id && edge.from && known.has(edge.from)).map((edge) => String(edge.from));
+    const value = parents.length ? Math.max(...parents.map((parent) => depthOf(parent, seen) + 1)) : 0;
+    depth.set(id, value);
+    return value;
+  };
+  for (const node of nodes) depthOf(String(node.id));
+  const layers = [];
+  for (const node of nodes) {
+    const level = depth.get(String(node.id)) ?? 0;
+    if (!layers[level]) layers[level] = [];
+    layers[level].push(node);
+  }
+  const positions = new Map();
+  layers.forEach((layer, level) => layer.forEach((node, index) => positions.set(String(node.id), { x: 20 + level * 240, y: 20 + index * 92 })));
+  const tallest = Math.max(1, ...layers.map((layer) => layer.length));
+  return { layers, positions, edges, nodes, width: Math.max(340, layers.length * 240 + 20), height: Math.max(120, tallest * 92 + 20) };
+}
+
+/**
+ * Internal SVG for the task DAG. Each node carries its state as text and a semantic
+ * class, is focusable so its full description is reachable from the keyboard, and the
+ * caller renders the task table beside it as the text fallback.
+ */
+export function renderTaskGraph(graph = {}, now = Date.now()) {
+  const { positions, width, height, edges, nodes } = taskGraphLayout(graph);
+  if (!nodes.length) return '<p class="empty-note">No tasks have run in this workspace yet.</p>';
+  const lines = edges.map((edge) => {
+    const from = positions.get(String(edge.from)); const to = positions.get(String(edge.to));
+    if (!from || !to) return '';
+    return `<line x1="${from.x + 190}" y1="${from.y + 30}" x2="${to.x}" y2="${to.y + 30}" class="task-edge" aria-hidden="true"/>`;
+  }).join('');
+  const boxes = nodes.map((node) => {
+    const spot = positions.get(String(node.id));
+    const status = String(node.status ?? 'unknown').toLowerCase();
+    const label = `${String(node.name ?? node.id)}: ${taskStatusLabel(status)}, ${taskDuration(node, now)}, exit ${node.exitCode ?? 'none'}`;
+    return `<g class="task-node task-${escape(status)}" transform="translate(${spot?.x ?? 0},${spot?.y ?? 0})" tabindex="0" role="listitem" aria-label="${escape(label)}"><rect width="190" height="60" rx="6"/><text class="task-node-name" x="10" y="24">${escape(String(node.name ?? node.id))}</text><text class="task-node-state" x="10" y="44">${escape(taskStatusLabel(status))} · ${escape(taskDuration(node, now))}</text></g>`;
+  }).join('');
+  return `<figure class="task-graph-figure"><svg class="task-graph" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="Task dependency graph">${lines}${boxes}</svg><figcaption>Node state is written in each node; the task table below carries the same facts.</figcaption></figure>`;
+}
+
+/**
+ * Sessions: named, closeable, and readable only through a bounded, read-only view.
+ * The dashboard never sends input to a session, so this cannot become a terminal.
+ */
+export function renderSessionsPanel({ sessions = [], io } = {}) {
+  const rows = sessions.length ? sessions.map((session) => {
+    const status = String(session.status ?? 'unknown');
+    const closed = status === 'closed';
+    return `<li class="panel session-row"><div class="record-heading"><div><h3>${escape(String(session.name ?? session.id))}</h3><p>${renderCopyChip({ value: String(session.id ?? ''), label: 'Session ID' })}</p></div><span class="status ${escape(status.toLowerCase())}">${escape(status)}</span></div><div class="row-actions"><button class="read-session" type="button" data-session-id="${escape(String(session.id ?? ''))}">Read output</button><button class="danger close-session" type="button" data-session-id="${escape(String(session.id ?? ''))}"${closed ? ' disabled' : ''}>Close session</button></div></li>`;
+  }).join('') : '<li class="empty">No sessions are open in this workspace.</li>';
+  const ioPanel = io ? `<section class="panel" aria-labelledby="session-io-heading"><h2 id="session-io-heading">Session output</h2><p class="page-note"><strong>Read-only and bounded.</strong> The dashboard never sends input to a session.</p><pre id="session-io-output" class="mono">${escape(String(io.output ?? 'No output yet.'))}</pre>${io.truncated === true ? '<p class="status-message" role="status">Output is truncated. Read again with the returned cursor for the next slice.</p>' : ''}</section>` : '';
+  const dialog = renderFormDialog({
+    id: 'open-session-dialog', title: 'Open coding session',
+    description: 'Sessions are named and bounded; close one when you are done with it.',
+    formId: 'open-session-form', submitId: 'open-session-submit', submitLabel: 'Open session',
+    body: '<label for="session-name">Session name</label><input id="session-name" name="name" required maxlength="80"><label for="session-cwd">Working directory</label><input id="session-cwd" name="cwd" value="." maxlength="1024">'
+  });
+  return `<section class="panel" aria-labelledby="sessions-heading"><h2 id="sessions-heading">Sessions</h2><div class="row-actions"><button id="open-session" class="accent-btn" type="button" data-dialog="open-session-dialog">Open session</button></div><ul class="record-list">${rows}</ul></section>${ioPanel}${dialog}`;
+}
+
+/** The cockpit Runtime tab: tasks, the dependency graph, and sessions. */
+export function renderRuntimePanel({ tasks = [], graph = {}, sessions = [], io } = {}, now = Date.now()) {
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Live workspace runtime.</strong> Tasks and sessions are volatile: they disappear when the workspace is reaped, unlike retained artifacts.</div>',
+    body: `<section aria-labelledby="tasks-heading"><h2 id="tasks-heading">Tasks</h2>${renderTaskList(tasks, now)}</section><section aria-labelledby="graph-heading"><h2 id="graph-heading">Task dependency graph</h2>${renderTaskGraph(graph, now)}</section>`
+  })}${renderSessionsPanel({ sessions, io })}`;
+}
+
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';
