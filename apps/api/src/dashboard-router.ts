@@ -45,6 +45,8 @@ function preferredDisplayName(request: DashboardRequest): string | null {
 
 const workspaceId = z.string().regex(/^ws_[A-Za-z0-9_-]{20,80}$/);
 const agentId = z.string().regex(/^agent_[A-Za-z0-9_-]{20,80}$/);
+const taskId = z.string().regex(/^task_[A-Za-z0-9_-]{20,80}$/);
+const sessionId = z.string().regex(/^sess_[A-Za-z0-9_-]{20,80}$/);
 const agentStatus = z.enum(['SPAWNING', 'RUNNING', 'CANCELLING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']);
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
 const fileQuery = pageQuery.extend({ path: z.string().min(1).max(1_024).default('.') });
@@ -324,6 +326,52 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     await call(runner, request, response, next, 'agent_cancel', {
       agentId: agentId.parse(request.params.agentId),
       ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  // Runtime operations. The graph route is registered before the task detail route
+  // so `graph` is never parsed as a task id.
+  router.get('/api/v1/workspaces/:workspaceId/tasks/graph', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'tasks_graph', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/tasks/:taskId', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'tasks_status', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      taskId: taskId.parse(request.params.taskId),
+      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {})
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/tasks/:taskId/cancel', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'tasks_cancel', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      taskId: taskId.parse(request.params.taskId)
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/sessions', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'sessions_open', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  // A read-only, bounded view: the browser never supplies stdin, so this cannot
+  // become an interactive terminal through the dashboard.
+  router.get('/api/v1/workspaces/:workspaceId/sessions/:sessionId/io', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'sessions_io', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      sessionId: sessionId.parse(request.params.sessionId),
+      waitMs: 0,
+      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {})
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/sessions/:sessionId/close', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'sessions_close', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      sessionId: sessionId.parse(request.params.sessionId)
     });
   });
 

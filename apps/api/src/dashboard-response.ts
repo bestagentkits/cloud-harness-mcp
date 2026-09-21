@@ -62,8 +62,7 @@ function workspaceFinalizeProjection(data: Record<string, unknown>): Record<stri
   return pick(data, ['branch', 'commitSha', 'committed', 'pushed', 'filesChanged', 'summary', 'message', 'truncated']);
 }
 
-const agentKeys = ['agentId', 'workspaceId', 'parentAgentId', 'profileId', 'status', 'generation', 'createdAt', 'startedAt', 'terminalAt', 'expiresAt', 'terminalReason', 'outcomeUnknown', 'proxyOperations'] as const;
-const agentBudgetKeys = ['ttlSeconds', 'maxOutputBytes', 'maxInputTokens', 'maxOutputTokens', 'maxCostMicros'] as const;
+const agentKeys = ['agentId', 'workspaceId', 'parentAgentId', 'profileId', 'status', 'generation', 'createdAt', 'startedAt', 'terminalAt', 'expiresAt', 'terminalReason', 'outcomeUnknown', 'proxyOperations'] as const;const agentBudgetKeys = ['ttlSeconds', 'maxOutputBytes', 'maxInputTokens', 'maxOutputTokens', 'maxCostMicros'] as const;
 const agentUsageKeys = ['inputTokens', 'outputTokens', 'costMicros', 'outputBytes', 'eventCount', 'toolTimeMs', 'wallTimeMs'] as const;
 /** One log event may be 65 KB on the runner; the browser gets a bounded slice. */
 const AGENT_LOG_CONTENT_LIMIT = 4_000;
@@ -89,6 +88,30 @@ function agentLogEvents(value: unknown): Record<string, unknown>[] {
   });
 }
 
+const taskKeys = ['id', 'name', 'status', 'exitCode', 'dependsOn', 'startedAt', 'finishedAt', 'durationMs', 'cwd', 'outputBytes'] as const;
+const sessionKeys = ['id', 'name', 'status', 'cwd', 'createdAt', 'lastActivityAt', 'closedAt', 'cursor'] as const;
+/** Task and session output is bounded before it leaves the API. */
+const RUNTIME_OUTPUT_LIMIT = 8_000;
+
+function boundedOutput(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.length > RUNTIME_OUTPUT_LIMIT ? `${value.slice(0, RUNTIME_OUTPUT_LIMIT)}\n… truncated` : value;
+}
+
+/** Task identity, timing and outcome. Dependencies stay as ids so the UI can draw the DAG. */
+function taskProjection(value: unknown): Record<string, unknown> {
+  const source = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const output = boundedOutput(source.output);
+  return { ...pick(source, taskKeys), ...(output !== undefined ? { output } : {}) };
+}
+
+/** Session identity and lifecycle. `cursor` marks how far the bounded read reached. */
+function sessionProjection(value: unknown): Record<string, unknown> {
+  const source = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const output = boundedOutput(source.output);
+  return { ...pick(source, sessionKeys), ...(output !== undefined ? { output } : {}) };
+}
+
 export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_open',
   'workspace_list',
@@ -104,6 +127,12 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'agent_logs',
   'agent_message',
   'agent_cancel',
+  'tasks_status',
+  'tasks_cancel',
+  'tasks_graph',
+  'sessions_open',
+  'sessions_io',
+  'sessions_close',
   'toolkits_list',
   'toolkits_preview',
   'settings_get', 'settings_update', 'settings_network_check',
@@ -261,6 +290,19 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   }
   if (operation === 'agent_message' || operation === 'agent_cancel') {
     return pick(data, ['agentId', 'status', 'state', 'replayed', 'affectedAgentIds']);
+  }
+  if (operation === 'tasks_status') {
+    return { task: taskProjection(data.task ?? data), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}), truncated: data.truncated === true };
+  }
+  if (operation === 'tasks_cancel') return { task: taskProjection(data.task ?? data) };
+  if (operation === 'tasks_graph') {
+    const nodes = Array.isArray(data.nodes) ? data.nodes.map(taskProjection) : [];
+    const edges = Array.isArray(data.edges) ? data.edges.map((edge) => pick(edge, ['from', 'to'])) : [];
+    return { nodes, edges };
+  }
+  if (operation === 'sessions_open' || operation === 'sessions_close') return { session: sessionProjection(data.session ?? data) };
+  if (operation === 'sessions_io') {
+    return { session: sessionProjection(data.session ?? data), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}), truncated: data.truncated === true };
   }
   if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
