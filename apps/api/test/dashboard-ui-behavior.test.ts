@@ -670,15 +670,21 @@ describe('dashboard UI behavior', () => {
 
   it('escapes attacker-influenceable overview fields and renders a copy affordance', () => {
     const html = renderOverview({
-      metrics: [{ label: 'GitHub', value: '<img src=x onerror=alert(1)>', small: true, note: '<b>x</b>' }],
-      activity: [{ action: '<script>a</script>', subjectType: 'workspace', subjectId: '<script>b</script>', createdAt: '2026-01-01T00:00:00.000Z' }],
+      overview: {
+        attention: [{ id: 'x', label: '<script>a</script>', detail: '<b>x</b>', href: '/dashboard/activity' }],
+        running: { agents: 1, workspaces: 2 },
+        cost: { scope: '<script>s</script>', costMicros: 1_000_000 },
+        expiring: [{ windowMinutes: 60, label: '<script>w</script>', count: 1 }]
+      },
       access: { name: '<script>n</script>', email: 'op@example.com', sessionExpiresAt: undefined, endpoint: 'https://api.example.com/mcp"><script>' }
     });
     expect(html).not.toContain('<script>');
-    expect(html).not.toContain('<img src=x');
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('data-copy="https://api.example.com/mcp&quot;&gt;&lt;script&gt;"');
     expect(html).toContain('Never');
+    // The decision tiles stay first: attention, running, cost and expiry.
+    expect(html.indexOf('Needs attention')).toBeLessThan(html.indexOf('Signed in as'));
+    expect(html).toContain('scope: &lt;script&gt;s&lt;/script&gt;');
   });
   it('parses .env files with comment-to-description extraction and quote handling', () => {
     const sample = `

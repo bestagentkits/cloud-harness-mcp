@@ -357,6 +357,26 @@ working one.
   [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the loaders and
   the badge (`updateApprovalsBadge`, `refreshApprovalsBadge`) live in `dashboard.js`
   over the existing `/privilege-grants` and `/audit` routes.
+- **Decision Overview:** `/dashboard` answers four operator questions above the fold —
+  **Needs attention**, **Running now**, **Cost**, **Expiring soon** — and every tile is
+  a link into the filtered view that explains it (attention → Activity, running →
+  Agents, cost → Agents, expiry → Workspaces). Access and Server information moved
+  below the decision metrics, and the old inventory tiles are gone. The page reads one
+  server projection instead of fanning out: `GET /api/v1/overview` composes attention
+  reasons (failed or quarantined workspaces, leases inside 15 minutes, failed /
+  limit-exceeded / timed-out agents, pending approvals), running counts, a cost figure
+  whose `scope` **names what was measured** ("running agents" — the harness retains
+  per-agent usage, not a daily ledger, so no "today" claim is made), and expiry buckets
+  at 15 minutes, 1 hour and 4 hours. `GET /api/v1/metrics?window=1h|24h|7d` counts
+  retained audit events inside a validated window (an unsupported window is a 400) and
+  states its scope in the response, and `GET /api/v1/activity` composes the Activity
+  timeline server-side, marking live runtime rows apart from retained audit rows.
+  Owners: `buildOverviewProjection`, `buildMetricsProjection`,
+  `buildActivityProjection` and `METRIC_WINDOWS` in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts); the
+  routes live in [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts);
+  `renderOverview` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js).
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with

@@ -1,8 +1,8 @@
 import express, { Router, type NextFunction, type Response } from 'express';
-import { TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { principalFromAuthInfo } from './auth.js';
-import { mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
+import { buildActivityProjection, buildMetricsProjection, buildOverviewProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
 import { dashboardSecurity, requireJson } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -455,6 +455,55 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       workspaceId: workspaceId.parse(request.params.workspaceId),
       sessionId: sessionId.parse(request.params.sessionId)
     });
+  });
+
+  // Decision projections. The browser makes one bounded request per surface instead of
+  // fanning out, and every bucket names the scope its numbers came from.
+  const unavailable = (data: Record<string, unknown>): RunnerResponse => ({ ok: true, message: 'unavailable', truncated: false, data });
+
+  router.get('/api/v1/overview', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const [workspacesResult, agentsResult, grantsResult] = await Promise.all([
+        runner.call('workspace_list', input('workspace_list', { limit: 100 }), selected),
+        runner.call('agent_list', input('agent_list', { limit: 100 }), selected),
+        runner.callInternal ? runner.callInternal('privilege_grant_list', {}, selected) : Promise.resolve(unavailable({ grants: [] }))
+      ]);
+      const workspaces = workspacesResult.ok ? (mapDashboardData('workspace_list', workspacesResult.data) as { workspaces?: Record<string, unknown>[] }).workspaces : [];
+      const agents = agentsResult.ok ? (mapDashboardData('agent_list', agentsResult.data) as { agents?: Record<string, unknown>[] }).agents : [];
+      const grants = grantsResult.ok ? (mapDashboardData('privilege_grant_list', grantsResult.data) as { grants?: Record<string, unknown>[] }).grants : [];
+      response.json({ data: buildOverviewProjection({ workspaces: workspaces ?? [], agents: agents ?? [], grants: grants ?? [] }) });
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/v1/metrics', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const window = typeof request.query.window === 'string' ? request.query.window : '24h';
+      if (!(window in METRIC_WINDOWS)) {
+        response.status(400).json({ error: 'invalid_request', message: `window must be one of ${Object.keys(METRIC_WINDOWS).join(', ')}` });
+        return;
+      }
+      const audit = runner.callInternal ? await runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] });
+      const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
+      response.json({ data: buildMetricsProjection({ events: events ?? [], window }) });
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/v1/activity', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const [audit, agentsResult] = await Promise.all([
+        runner.callInternal ? runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] }),
+        runner.call('agent_list', input('agent_list', { limit: 100 }), selected)
+      ]);
+      const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
+      const agents = agentsResult.ok ? (mapDashboardData('agent_list', agentsResult.data) as { agents?: Record<string, unknown>[] }).agents : [];
+      response.json({ data: buildActivityProjection({ events: events ?? [], agents: agents ?? [] }) });
+    } catch (error) { next(error); }
   });
 
   // Workspace cockpit lifecycle operations. Each is a public runner operation, so

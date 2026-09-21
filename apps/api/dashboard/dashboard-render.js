@@ -1029,16 +1029,33 @@ function renderServerPanel(server) {
   return `<section class="panel" aria-labelledby="overview-server-heading"><div class="record-heading"><h2 id="overview-server-heading">Server</h2><span class="status active">Online</span></div><dl class="facts"><dt>Auth mode</dt><dd class="mono">${escape(server.authMode ?? 'Unknown')}</dd><dt>Version</dt><dd class="mono">${escape(server.version ?? 'Unknown')}</dd><dt>Managed OAuth</dt>${oauth}<dt>API-key gateway</dt>${gateway}<dt>Max request</dt><dd>${escape(maxBytes)}</dd><dt>Request timeout</dt><dd>${escape(timeout)}</dd><dt>Session expires</dt><dd>${optionalTime(server.session?.expiresAt)}</dd><dt>Checked</dt><dd>${optionalTime(server.checkedAt)}</dd></dl></section>`;
 }
 
-export function renderOverview(summary) {
-  const metrics = summary.metrics.map((metric) => `<li class="metric"><span class="metric-label">${escape(metric.label)}</span><span class="metric-value${metric.small ? ' small' : ''}">${escape(metric.value)}</span>${metric.note ? `<span class="metric-note">${escape(metric.note)}</span>` : ''}</li>`).join('');
-  const activity = summary.activity.length
-    ? `<ul class="activity-list">${summary.activity.map((event) => `<li><strong>${escape(event.action)}</strong>${time(event.createdAt)}<span class="subject">${escape(event.subjectType)} <span class="mono wrap">${escape(event.subjectId)}</span></span></li>`).join('')}</ul>`
-    : '<p>No retained audit events yet.</p>';
-  const access = summary.access;
-  const endpoint = access.endpoint
-    ? `<dt>Static endpoint</dt><dd class="wrap"><span class="mono wrap">${escape(access.endpoint)}</span> <button type="button" class="copy" data-copy="${escape(access.endpoint)}">Copy</button></dd>`
-    : '';
-  return `<div class="overview"><ul class="metric-grid">${metrics}</ul><div class="overview-columns"><section class="panel" aria-labelledby="overview-activity-heading"><h2 id="overview-activity-heading">Recent activity</h2>${activity}</section><section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name)}</dd><dt>Email</dt><dd class="wrap">${escape(access.email)}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section></div>${renderServerPanel(summary.server)}</div>`;
+/**
+ * The Overview answers decision questions first: what needs attention, what is running,
+ * what it costs, and what expires soon. Every tile links to the filtered view that
+ * explains it, and Access/Server move below the decision metrics.
+ */
+export function renderOverview({ overview = {}, access = {}, server } = {}) {
+  const attention = Array.isArray(overview.attention) ? overview.attention : [];
+  const running = overview.running ?? {};
+  const cost = overview.cost ?? {};
+  const expiring = Array.isArray(overview.expiring) ? overview.expiring : [];
+  const costMicros = Number(cost.costMicros);
+  const inAnHour = expiring.find((bucket) => bucket.windowMinutes === 60) ?? {};
+  const tiles = [
+    { id: 'attention', label: 'Needs attention', value: String(attention.length), note: attention.length ? 'Open the list and act on the first item.' : 'Nothing needs action right now.', href: '/dashboard/activity' },
+    { id: 'running', label: 'Running now', value: String(running.agents ?? 0), note: `${String(running.workspaces ?? 0)} active workspace(s)`, href: '/dashboard/agents' },
+    { id: 'cost', label: 'Cost', value: Number.isFinite(costMicros) ? `$${(costMicros / 1_000_000).toFixed(4)}` : 'Not reported', note: `scope: ${String(cost.scope ?? 'not reported')}`, href: '/dashboard/agents' },
+    { id: 'expiry', label: 'Expiring soon', value: String(inAnHour.count ?? 0), note: 'lease(s) within the hour', href: '/dashboard/workspaces' }
+  ];
+  const metricTiles = `<ul class="metric-grid decision-grid">${tiles.map((tile) => `<li class="metric decision-${escape(tile.id)}"><a href="${escape(tile.href)}"><span class="metric-label">${escape(tile.label)}</span><span class="metric-value">${escape(tile.value)}</span><span class="metric-note">${escape(tile.note)}</span></a></li>`).join('')}</ul>`;
+  const attentionList = attention.length
+    ? `<ul class="attention-list">${attention.map((item) => `<li class="attention-item"><a href="${escape(String(item.href ?? '/dashboard'))}">${escape(String(item.label ?? 'Attention'))}</a><span>${escape(String(item.detail ?? ''))}</span></li>`).join('')}</ul>`
+    : '<p class="empty-note">Nothing needs attention right now.</p>';
+  const expiryBuckets = expiring.length
+    ? `<ul class="record-list">${expiring.map((bucket) => `<li><a href="/dashboard/workspaces">${escape(String(bucket.label ?? ''))}</a><span>${escape(String(bucket.count ?? 0))} workspace(s)</span></li>`).join('')}</ul>`
+    : '<p class="empty-note">No workspaces are close to expiry.</p>';
+  const endpoint = access.endpoint ? `<dt>Static endpoint</dt><dd class="wrap"><span class="mono wrap">${escape(access.endpoint)}</span> <button type="button" class="copy" data-copy="${escape(access.endpoint)}">Copy</button></dd>` : '';
+  return `<div class="overview">${metricTiles}<div class="overview-columns"><section class="panel" aria-labelledby="overview-attention-heading"><h2 id="overview-attention-heading">Needs attention</h2>${attentionList}</section><section class="panel" aria-labelledby="overview-expiry-heading"><h2 id="overview-expiry-heading">Expiring soon</h2>${expiryBuckets}</section></div><section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name ?? 'Not provided')}</dd><dt>Email</dt><dd class="wrap">${escape(access.email ?? 'Not provided')}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section>${renderServerPanel(server)}</div>`;
 }
 
 export function renderModelsPage(profiles = [], credentials = [], status = null) {
