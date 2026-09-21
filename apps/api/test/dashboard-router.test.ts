@@ -40,6 +40,19 @@ beforeEach(async () => {
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z',
         generation: 7, ownerId: 'internal-owner', workspacePath: '/host/jobs/private', containerName: 'executor-secret'
       }] } };
+      if (operation === 'workspace_context') return { ok: true, message: 'context', truncated: false, data: {
+        workspaceId, repositoryUrl: 'https://github.com/example/project.git', ref: 'main', status: 'ACTIVE',
+        networkProfile: 'dependency-access', createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z',
+        expiresAt: '2026-08-17T00:10:00.000Z', generation: 7, branch: 'feature/x',
+        gitIdentity: { name: 'Operator', email: 'owner@example.com' },
+        capabilities: { tasks: true, sessions: false, label: 'not-a-boolean' },
+        ownerId: 'internal-owner', workspacePath: '/host/jobs/private', containerName: 'executor-secret',
+        manifest: { truncated: true, truncationReasons: ['max_bytes', 42], items: [{ path: '/host/jobs/private/secret.env', content: 'SECRET=1' }] }
+      } };
+      if (operation === 'workspace_finalize') return { ok: true, message: 'finalized', truncated: false, data: {
+        branch: 'feature/x', commitSha: 'a'.repeat(40), committed: true, pushed: true, filesChanged: 3,
+        remote: 'https://github.com/example/project.git', workspacePath: '/host/jobs/private', ownerId: 'internal-owner'
+      } };
       if (operation === 'files_write') return { ok: true, message: 'written', truncated: false, data: { path: input.path, sha256: 'b'.repeat(64) } };
       return { ok: true, message: 'ok', truncated: false, data: {} };
     }),
@@ -268,6 +281,47 @@ describe('dashboard BFF', () => {
     expect((await send('/api/v1/workspaces', { headers: { origin: 'https://evil.example' } })).status).toBe(403);
     expect((await send(`/api/v1/workspaces/${workspaceId}/files/directory`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(403);
     expect((await send(`/api/v1/workspaces/${workspaceId}/files/directory`, { method: 'POST', headers: { origin: 'https://dashboard.example', 'content-type': 'text/plain' }, body: '{}' })).status).toBe(415);
+  });
+
+  it('projects workspace context to cockpit posture and drops internals', async () => {
+    const response = await send(`/api/v1/workspaces/${workspaceId}/context`);
+    expect(response.status).toBe(200);
+    const raw = JSON.stringify(response.json);
+    // The context document can carry job paths, container names, the identity email
+    // and file contents; none of it may reach the browser.
+    for (const forbidden of ['internal-owner', '/host/jobs', 'executor-secret', 'owner@example.com', 'SECRET=1', 'secret.env']) {
+      expect(raw, forbidden).not.toContain(forbidden);
+    }
+    expect(response.json.data.branch).toBe('feature/x');
+    expect(response.json.data.gitIdentityName).toBe('Operator');
+    expect(response.json.data.capabilities).toEqual({ tasks: true, sessions: false });
+    expect(response.json.data.manifest).toEqual({ itemCount: 1, truncated: true, truncationReasons: ['max_bytes'] });
+  });
+
+  it('routes the cockpit lifecycle actions with the principal scope and contract validation', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    const renewed = await send(`/api/v1/workspaces/${workspaceId}/lease-renew`, { method: 'POST', headers, body: JSON.stringify({ extensionSeconds: 3_600 }) });
+    expect(renewed.status).toBe(200);
+    const renewCall = calls.find((call) => call.operation === 'workspace_lease_renew');
+    expect(renewCall?.input).toEqual({ workspaceId, extensionSeconds: 3_600 });
+    expect(renewCall?.principal).toEqual(principal);
+
+    const recovered = await send(`/api/v1/workspaces/${workspaceId}/recover`, { method: 'POST', headers, body: JSON.stringify({ mode: 'status' }) });
+    expect(recovered.status).toBe(200);
+    expect(calls.some((call) => call.operation === 'workspace_recover')).toBe(true);
+
+    // Finalize is contract-validated: without a commit message the runner is never called.
+    const rejected = await send(`/api/v1/workspaces/${workspaceId}/finalize`, { method: 'POST', headers, body: JSON.stringify({ all: true, push: true }) });
+    expect(rejected.status).toBe(400);
+    expect(calls.some((call) => call.operation === 'workspace_finalize')).toBe(false);
+
+    const finalized = await send(`/api/v1/workspaces/${workspaceId}/finalize`, { method: 'POST', headers, body: JSON.stringify({ all: true, push: true, commitMessage: 'feat: ship the cockpit' }) });
+    expect(finalized.status).toBe(200);
+    expect(JSON.stringify(finalized.json)).not.toContain('/host/jobs');
+    expect(finalized.json.data).toMatchObject({ commitSha: 'a'.repeat(40), committed: true, pushed: true, filesChanged: 3 });
   });
 
   it('accepts an allowlisted hostname when the request host includes its HTTPS port', async () => {

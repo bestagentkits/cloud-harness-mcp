@@ -77,6 +77,106 @@ export function renderWorkspaceIndex(workspaces, query) {
   return `<h2 id="workspace-list-heading">Workspace list</h2><div class="desktop-table"><table><caption>${filtered.length} workspaces</caption><thead><tr><th>Repository</th><th>State</th><th>Last activity</th><th>Expires</th><th>Network</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul>`;
 }
 
+/** Contextual workspace sections. These are never global rail entries. */
+export const WORKSPACE_TABS = [
+  { id: 'summary', label: 'Summary' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'runtime', label: 'Runtime' },
+  { id: 'files', label: 'Files' },
+  { id: 'git', label: 'Git' },
+  { id: 'automation', label: 'Automation' },
+  { id: 'deploy', label: 'Deploy' },
+  { id: 'artifacts', label: 'Artifacts' },
+  { id: 'activity', label: 'Activity' }
+];
+
+/** Tabs whose owning phase has not shipped yet, so the tab states its next step. */
+const WORKSPACE_TAB_PHASE = {
+  agents: 'the Agent Control Center phase',
+  git: 'the Git and Finalize phase',
+  automation: 'the Automation and Deploy phase',
+  deploy: 'the Automation and Deploy phase',
+  artifacts: 'a later workspace phase',
+  activity: 'the Activity Center phase'
+};
+
+/** Lease posture from the workspace record. Thresholds drive emphasis, never colour alone. */
+export function workspaceLeaseState(workspace, now = Date.now()) {
+  const expiresAt = Date.parse(workspace?.expiresAt ?? '');
+  if (!Number.isFinite(expiresAt)) return { state: 'unknown', label: 'Lease unknown' };
+  const remainingMs = expiresAt - now;
+  if (remainingMs <= 0) return { state: 'expired', label: 'Lease expired' };
+  const minutes = Math.round(remainingMs / 60_000);
+  if (remainingMs <= 10 * 60_000) return { state: 'soon', label: `${minutes} min left` };
+  return { state: 'ok', label: `${Math.round(minutes / 60)} h left` };
+}
+
+/**
+ * The attention list contains only reasons the dashboard can actually observe. An
+ * invented reason is worse than a missing one, so the agent, task and Git reasons
+ * join once the phases that expose them land.
+ */
+export function workspaceAttention(workspace, options = {}) {
+  const reasons = [];
+  const lease = workspaceLeaseState(workspace, options.now);
+  if (lease.state === 'expired') reasons.push({ id: 'lease-expired', label: 'Lease expired', detail: 'Renew the lease to keep working, or recover the workspace if it was reaped.' });
+  else if (lease.state === 'soon') reasons.push({ id: 'lease-soon', label: 'Lease expires soon', detail: lease.label });
+  if (workspace?.status === 'FAILED') reasons.push({ id: 'failed', label: 'Workspace setup failed', detail: 'Review the failure, and recover if the checkout is worth keeping.' });
+  if (workspace?.status === 'NETWORK_QUARANTINED') reasons.push({ id: 'quarantine', label: 'Network quarantined', detail: 'Egress was revoked for this workspace, so dependency access is denied.' });
+  if (options.dirty === true) reasons.push({ id: 'dirty-git', label: 'Uncommitted changes', detail: 'Commit or finalize before the workspace is reaped.' });
+  if (Array.isArray(options.extra)) reasons.push(...options.extra);
+  return reasons;
+}
+
+/** Header state first: repository, status, ref, network, lease, and the action set. */
+export function renderWorkspaceCockpitHeader(workspace, options = {}) {
+  const lease = workspaceLeaseState(workspace, options.now);
+  const attention = workspaceAttention(workspace, options);
+  const generation = Number(workspace?.version);
+  const canClose = Number.isSafeInteger(generation) && generation > 0;
+  return `<div class="cockpit-header"><div class="record-heading"><div><h2 id="workspace-detail-title">${escape(repositoryName(workspace.repositoryUrl))}</h2><p>${renderCopyChip({ value: workspace.workspaceId, label: 'Workspace ID' })}</p></div><span class="status ${escape(String(workspace.status ?? '').toLowerCase())}">${escape(statusLabel(workspace.status))}</span></div><dl class="facts"><dt>Ref</dt><dd>${escape(workspace.ref ?? 'Default branch')}</dd><dt>Network</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Lease</dt><dd class="lease-${escape(lease.state)}">${escape(lease.label)}</dd><dt>Attention</dt><dd>${attention.length ? `${escape(attention.length)} item(s) need action` : 'Nothing needs attention'}</dd></dl><div class="cockpit-actions"><button id="renew-workspace-lease" class="accent-btn" type="button">Renew lease</button><button id="finalize-workspace" type="button" data-dialog="finalize-workspace-dialog">Finalize workspace</button><details class="row-edit"><summary>More actions</summary><button id="recover-workspace" type="button"${workspace.status === 'ACTIVE' ? ' disabled' : ''}>Recover workspace</button><button id="close-workspace" class="danger" type="button"${canClose ? '' : ' disabled'}>Close workspace</button></details></div></div>`;
+}
+
+export function renderWorkspaceTabs(workspaceId, current) {
+  return `<nav class="cockpit-tabs" aria-label="Workspace sections">${WORKSPACE_TABS.map((tab) => `<a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/${tab.id}" ${tab.id === current ? 'aria-current="page"' : ''}>${escape(tab.label)}</a>`).join('')}</nav>`;
+}
+
+export function renderWorkspaceAttentionPanel(workspace, options = {}) {
+  const attention = workspaceAttention(workspace, options);
+  const items = attention.length
+    ? `<ul class="attention-list">${attention.map((item) => `<li class="attention-item attention-${escape(item.id)}"><strong>${escape(item.label)}</strong><span>${escape(item.detail)}</span></li>`).join('')}</ul>`
+    : '<p class="empty-note">Nothing needs attention right now.</p>';
+  return `<section class="panel" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs attention</h2>${items}</section>`;
+}
+
+/**
+ * The Summary tab reports only what the dashboard can read today. Cost, budget and
+ * agent/task counts arrive with the phases that expose them, and the panel says so
+ * rather than showing a zero that reads like a measurement.
+ */
+export function renderWorkspaceSummary({ workspace, context, options = {} }) {
+  const manifest = context?.manifest ?? {};
+  const capabilities = Object.entries(context?.capabilities ?? {}).filter(([, value]) => value === true).map(([key]) => escape(key)).join(', ');
+  const itemCount = Number.isFinite(manifest.itemCount) ? `${escape(manifest.itemCount)} attributable item(s)${manifest.truncated === true ? ' (truncated)' : ''}` : 'Not reported';
+  return `${renderWorkspaceAttentionPanel(workspace, options)}<section class="panel" aria-labelledby="summary-heading"><h2 id="summary-heading">Summary</h2><dl class="facts"><dt>Status</dt><dd>${escape(statusLabel(workspace.status))}</dd><dt>Branch</dt><dd>${escape(context?.branch ?? workspace.ref ?? 'Default branch')}</dd><dt>Repository context</dt><dd>${itemCount}</dd><dt>Capabilities</dt><dd>${capabilities || 'Not reported'}</dd><dt>Network posture</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Cost used</dt><dd>Not reported for workspaces yet</dd></dl><p class="page-note">Cost, budget, agent and task counts arrive with the phases that expose them; this panel never invents a number.</p></section>`;
+}
+
+export function renderWorkspaceTabPlaceholder(tab) {
+  const label = (WORKSPACE_TABS.find((entry) => entry.id === tab) ?? {}).label ?? tab;
+  const phase = WORKSPACE_TAB_PHASE[tab] ?? 'a later phase of issue #220';
+  return `<section class="panel"><h2>${escape(label)}</h2><p>This tab arrives with ${escape(phase)}. The Files and Runtime tabs carry the workspace operations that exist today.</p></section>`;
+}
+
+/** The finalize dialog: a commit message, plus the push decision. */
+export function renderFinalizeDialog() {
+  return renderFormDialog({
+    id: 'finalize-workspace-dialog', title: 'Finalize workspace',
+    description: 'Stages the changes, runs the preflights, commits with the workspace identity, and pushes when you ask it to.',
+    formId: 'finalize-workspace-form', submitId: 'finalize-workspace-submit', submitLabel: 'Finalize workspace',
+    body: '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
+  });
+}
+
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';

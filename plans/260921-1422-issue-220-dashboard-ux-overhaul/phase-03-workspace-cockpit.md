@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Workspace Cockpit shell, Summary, and bounded Dashboard REST adapters (issue Phase 2)"
-status: pending
+status: completed
 priority: P1
 effort: "2-3d"
 dependencies: [1, 2]
@@ -11,6 +11,22 @@ dependencies: [1, 2]
 
 Issue phase: **Phase 2**. This is the phase that makes workspace detail an
 operator surface and that adds the adapter layer every later phase depends on.
+
+**Status: completed** (with one documented boundary). Shipped the cockpit shell
+(nine contextual tabs), header posture with Renew/Finalize/More actions, the
+Summary that reports only observable state, the attention reasons the dashboard can
+observe today, and the four lifecycle adapters (`workspace_context`,
+`workspace_lease_renew`, `workspace_recover`, `workspace_finalize`) with redaction
+projections. Verification: `npx vitest run dashboard` 18 files / 264 tests green,
+`dashboard-router.test.ts` 29 tests including three new adapter cases, API
+typecheck clean, browser QA of the cockpit recorded in
+`plans/reports/vibe-260921-1500-issue-220-phase-3-cockpit.md`.
+
+Boundary: the agent, task, session, Git, worktree, hook and deployment adapters
+named in the issue ship with the phases that own those surfaces (goal tasks 4-8),
+because each needs its own redaction mapper and UI state. Until then the Summary
+states "Not reported" rather than inventing values, and the tabs name the phase
+they arrive with.
 
 ## Goal
 
