@@ -1,3 +1,25 @@
+# [0.54.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.53.0...v0.54.0) (2026-09-21)
+
+
+### Bug Fixes
+
+* **dashboard:** open resource dialogs from the shell action slot ([#228](https://github.com/bestagentkits/cloud-harness-mcp/issues/228)) ([dbfeeb1](https://github.com/bestagentkits/cloud-harness-mcp/commit/dbfeeb165a6c893fec23d9b5d5d651145e1432be))
+* **provenance:** read owner skills from the workspace projection ([#15](https://github.com/bestagentkits/cloud-harness-mcp/issues/15)) ([#226](https://github.com/bestagentkits/cloud-harness-mcp/issues/226)) ([147ce3a](https://github.com/bestagentkits/cloud-harness-mcp/commit/147ce3a88eea2398d949375bf37d006f7c0c1285))
+
+
+### Features
+
+* **dashboard:** add a contextual Git tab with Finalize as the happy path ([#232](https://github.com/bestagentkits/cloud-harness-mcp/issues/232)) ([1e28330](https://github.com/bestagentkits/cloud-harness-mcp/commit/1e28330992da3a44c306b2e8cf0f07702fdc7b25)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+* **dashboard:** add decision-useful analytics charts on internal SVG ([#236](https://github.com/bestagentkits/cloud-harness-mcp/issues/236)) ([a932fc5](https://github.com/bestagentkits/cloud-harness-mcp/commit/a932fc54a1baa0b7847ea7ee3e5aa0075b2073c3)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+* **dashboard:** add the activity center and the approvals inbox ([#234](https://github.com/bestagentkits/cloud-harness-mcp/issues/234)) ([190a2dd](https://github.com/bestagentkits/cloud-harness-mcp/commit/190a2ddc87ad4d123747d9d3dc7a5e050ee463f5)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+* **dashboard:** add the agent control center with bounded agent adapters ([#230](https://github.com/bestagentkits/cloud-harness-mcp/issues/230)) ([fbaec24](https://github.com/bestagentkits/cloud-harness-mcp/commit/fbaec241852fbd03acf3e062f1dd4c098962c6fa)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+* **dashboard:** add workspace automation and deployment surfaces ([#233](https://github.com/bestagentkits/cloud-harness-mcp/issues/233)) ([d53b1b8](https://github.com/bestagentkits/cloud-harness-mcp/commit/d53b1b813ee8f9fb94d6a119791c1d136d050f2a))
+* **dashboard:** make the overview decision-oriented with server projections ([#235](https://github.com/bestagentkits/cloud-harness-mcp/issues/235)) ([f546415](https://github.com/bestagentkits/cloud-harness-mcp/commit/f5464156f82d468c3faaf439b393072aecc0ec12)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+* **dashboard:** make workspace detail a cockpit with bounded lifecycle adapters ([#229](https://github.com/bestagentkits/cloud-harness-mcp/issues/229)) ([e74bb65](https://github.com/bestagentkits/cloud-harness-mcp/commit/e74bb6516a68d3725109368c9b3f7f79f43e4cc4))
+* **dashboard:** make workspace runtime actionable with tasks, a DAG and bounded sessions ([#231](https://github.com/bestagentkits/cloud-harness-mcp/issues/231)) ([2c2453e](https://github.com/bestagentkits/cloud-harness-mcp/commit/2c2453e1dadba2e22cd33ea339f25ffeb999b54c)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+* **dashboard:** mark state changes with bounded, collapsible motion ([#237](https://github.com/bestagentkits/cloud-harness-mcp/issues/237)) ([25c5164](https://github.com/bestagentkits/cloud-harness-mcp/commit/25c5164b2aed16c05c49c9c440f609835fd0f3b3)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+* **dashboard:** share one resource-page layout and move creation into dialogs ([#227](https://github.com/bestagentkits/cloud-harness-mcp/issues/227)) ([320fcb0](https://github.com/bestagentkits/cloud-harness-mcp/commit/320fcb040888b65f2fcfdf5002842a3503bee1d7)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+
 # [0.53.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.52.0...v0.53.0) (2026-09-21)
 
 
