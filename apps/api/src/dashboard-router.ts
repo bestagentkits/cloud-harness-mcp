@@ -2,7 +2,7 @@ import express, { Router, type NextFunction, type Response } from 'express';
 import { TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { principalFromAuthInfo } from './auth.js';
-import { buildActivityProjection, buildMetricsProjection, buildOverviewProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
+import { buildActivityProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
 import { dashboardSecurity, requireJson } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -489,6 +489,25 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       const audit = runner.callInternal ? await runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] });
       const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
       response.json({ data: buildMetricsProjection({ events: events ?? [], window }) });
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/v1/reliability', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) { response.json({ data: { servers: [], totalCalls: 0 } }); return; }
+      const serversResult = await runner.callInternal('mcp_server_list', {}, selected);
+      const servers = serversResult.ok ? (mapDashboardData('mcp_server_list', serversResult.data) as { servers?: Record<string, unknown>[] }).servers ?? [] : [];
+      // Bounded server-side fan-out: the five most recently listed servers, 200 traces each.
+      const traces: Record<string, unknown>[] = [];
+      for (const server of servers.slice(0, 5)) {
+        const serverId = String(server.id ?? '');
+        if (!serverId) continue;
+        const result = await runner.callInternal('mcp_gateway_trace_list', { serverId, limit: 200 }, selected);
+        if (result.ok) traces.push(...(mapDashboardData('mcp_gateway_trace_list', result.data) as { traces?: Record<string, unknown>[] }).traces ?? []);
+      }
+      response.json({ data: buildReliabilityProjection({ traces }) });
     } catch (error) { next(error); }
   });
 

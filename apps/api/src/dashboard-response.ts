@@ -636,6 +636,26 @@ export function buildOverviewProjection(input: {
     return total + (Number(usage.costMicros) || 0);
   }, 0);
   const buckets = [15, 60, 240].map((minutes) => ({ windowMinutes: minutes, label: minutes < 60 ? `${minutes} min` : `${minutes / 60} h`, count: expiringWithin(minutes).length }));
+  const usageByProfile = new Map<string, { profileId: string; inputTokens: number; outputTokens: number; costMicros: number }>();
+  const budgetBurn: Record<string, unknown>[] = [];
+  for (const agent of agents) {
+    const usage = agent.usage && typeof agent.usage === 'object' ? agent.usage as Record<string, unknown> : {};
+    const budget = agent.budget && typeof agent.budget === 'object' ? agent.budget as Record<string, unknown> : {};
+    const profileId = String(agent.profileId ?? 'unprofiled');
+    const entry = usageByProfile.get(profileId) ?? { profileId, inputTokens: 0, outputTokens: 0, costMicros: 0 };
+    entry.inputTokens += Number(usage.inputTokens) || 0;
+    entry.outputTokens += Number(usage.outputTokens) || 0;
+    entry.costMicros += Number(usage.costMicros) || 0;
+    usageByProfile.set(profileId, entry);
+    if (agent.status === 'RUNNING') {
+      budgetBurn.push({
+        agentId: String(agent.agentId ?? ''), profileId,
+        inputTokens: Number(usage.inputTokens) || 0, maxInputTokens: Number(budget.maxInputTokens) || 0,
+        outputTokens: Number(usage.outputTokens) || 0, maxOutputTokens: Number(budget.maxOutputTokens) || 0,
+        costMicros: Number(usage.costMicros) || 0, maxCostMicros: Number(budget.maxCostMicros) || 0
+      });
+    }
+  }
   return {
     attention,
     running: { agents: runningAgents.length, workspaces: activeWorkspaces.length },
@@ -643,6 +663,10 @@ export function buildOverviewProjection(input: {
     // the scope it actually measured instead of claiming a window it cannot prove.
     cost: { scope: 'running agents', costMicros: runningCost, agentCount: runningAgents.length },
     expiring: buckets,
+    // Token and cost totals per model profile, and the burn of every running agent, so the
+    // analytics view needs one request and no client-side fan-out.
+    usageByProfile: [...usageByProfile.values()].sort((left, right) => right.costMicros - left.costMicros),
+    budgetBurn: budgetBurn.sort((left, right) => (Number(right.costMicros) / Math.max(1, Number(right.maxCostMicros))) - (Number(left.costMicros) / Math.max(1, Number(left.maxCostMicros)))),
     generatedAt: new Date(nowMs).toISOString()
   };
 }
@@ -652,9 +676,10 @@ export const METRIC_WINDOWS: Record<string, number> = { '1h': 3_600_000, '24h': 
 
 /**
  * Metrics over retained audit events for a validated window. There is no daily cost
- * ledger, so this projection counts what is actually retained and says so in `scope`.
+ * ledger, so this projection counts what is actually retained and says so in `scope`,
+ * and returns the same counts as a time series so a chart never has to invent shape.
  */
-export function buildMetricsProjection(input: { events?: Record<string, unknown>[]; window: string; now?: number }): Record<string, unknown> {
+export function buildMetricsProjection(input: { events?: Record<string, unknown>[]; window: string; now?: number; buckets?: number }): Record<string, unknown> {
   const span = METRIC_WINDOWS[input.window];
   if (!span) throw new Error(`unsupported metrics window: ${input.window}`);
   const nowMs = input.now ?? Date.now();
@@ -668,7 +693,53 @@ export function buildMetricsProjection(input: { events?: Record<string, unknown>
     const key = String(event.subjectType ?? 'other');
     categories[key] = (categories[key] ?? 0) + 1;
   }
-  return { window: input.window, since: new Date(since).toISOString(), scope: `retained audit events in the last ${input.window}`, eventCount: events.length, categories };
+  // A fixed number of equal buckets keeps the series comparable between windows.
+  const bucketCount = Math.min(Math.max(input.buckets ?? 12, 1), 48);
+  const bucketMs = span / bucketCount;
+  const series = Array.from({ length: bucketCount }, (_, index) => ({
+    at: new Date(since + index * bucketMs).toISOString(),
+    count: 0
+  }));
+  for (const event of events) {
+    const at = Date.parse(String(event.createdAt ?? ''));
+    const index = Math.min(bucketCount - 1, Math.max(0, Math.floor((at - since) / bucketMs)));
+    const bucket = series[index];
+    if (bucket) bucket.count += 1;
+  }
+  return { window: input.window, since: new Date(since).toISOString(), scope: `retained audit events in the last ${input.window}`, eventCount: events.length, categories, series };
+}
+
+/**
+ * MCP reliability from gateway traces: per-server success and error counts plus the
+ * p50/p95 latency of the traced calls. Only the fields the reliability answer needs
+ * cross this boundary; traces carry request and response payloads that do not.
+ */
+export function buildReliabilityProjection(input: { traces?: Record<string, unknown>[] }): Record<string, unknown> {
+  const byServer = new Map<string, { serverName: string; durations: number[]; success: number; error: number }>();
+  for (const trace of input.traces ?? []) {
+    const serverId = String(trace.serverId ?? 'unknown');
+    const entry = byServer.get(serverId) ?? { serverName: String(trace.serverName ?? serverId), durations: [], success: 0, error: 0 };
+    const duration = Number(trace.durationMs);
+    if (Number.isFinite(duration)) entry.durations.push(duration);
+    const status = String(trace.status ?? '').toLowerCase();
+    if (status === 'error' || status === 'failed' || trace.errorCode !== undefined) entry.error += 1;
+    else entry.success += 1;
+    byServer.set(serverId, entry);
+  }
+  const percentile = (sorted: number[], fraction: number) => {
+    if (!sorted.length) return undefined;
+    const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1));
+    return sorted[index];
+  };
+  const servers = [...byServer.entries()].map(([serverId, entry]) => {
+    const sorted = [...entry.durations].sort((left, right) => left - right);
+    return {
+      serverId, serverName: entry.serverName, success: entry.success, error: entry.error,
+      calls: entry.success + entry.error,
+      p50Ms: percentile(sorted, 0.5), p95Ms: percentile(sorted, 0.95)
+    };
+  });
+  return { servers, totalCalls: servers.reduce((total, server) => total + server.calls, 0) };
 }
 
 /**

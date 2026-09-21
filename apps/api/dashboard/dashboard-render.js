@@ -573,6 +573,67 @@ export function renderApprovals({ grants = [] } = {}) {
   })}`;
 }
 
+/**
+ * Chart primitives. Internal SVG only: no external dependency, no gradient and no inline
+ * style (the geometry carries the value, the classes carry the colour), every mark is
+ * focusable with its numbers in the accessible name, and the same numbers are always
+ * available as a table beside the figure.
+ */
+export function renderBarChart({ label, unit = '', points = [], emptyNote = 'Nothing to chart yet.' }) {
+  if (!points.length) return `<p class="empty-note">${escape(emptyNote)}</p>`;
+  const values = points.map((point) => Number(point.value) || 0);
+  const ceiling = Math.max(1, ...values);
+  const width = Math.max(240, points.length * 28 + 12);
+  const height = 140;
+  const bars = points.map((point, index) => {
+    const value = Number(point.value) || 0;
+    const barHeight = Math.round((value / ceiling) * (height - 34));
+    const x = index * 28 + 6;
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}`)}"><rect x="${x}" y="${height - 22 - barHeight}" width="18" height="${Math.max(barHeight, 1)}" rx="2"/><text x="${x + 9}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
+  }).join('');
+  return renderChartFigure({ label, legend: 'Item', unit, points, svg: bars, width, height, className: 'chart-bars' });
+}
+
+/** Horizontal bars: the same primitive for values that read better as rows. */
+export function renderBarRows({ label, unit = '', points = [], emptyNote = 'Nothing to chart yet.' }) {
+  if (!points.length) return `<p class="empty-note">${escape(emptyNote)}</p>`;
+  const ceiling = Math.max(1, ...points.map((point) => Number(point.value) || 0));
+  const rows = points.map((point, index) => {
+    const value = Number(point.value) || 0;
+    const barWidth = Math.round((value / ceiling) * 200);
+    const y = index * 30;
+    const note = point.note ? `, ${point.note}` : '';
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}${note}`)}"><text x="0" y="${y + 14}" class="bar-label">${escape(String(point.label))}</text><rect x="150" y="${y + 3}" width="${Math.max(barWidth, 1)}" height="12" rx="2" class="bar-fill"/><text x="360" y="${y + 14}" class="bar-value">${escape(String(value))}${escape(unit)}</text></g>`;
+  }).join('');
+  return renderChartFigure({ label, legend: 'Item', unit, points, svg: rows, width: 420, height: points.length * 30, className: 'chart-rows' });
+}
+
+function renderChartFigure({ label, legend, unit, points, svg, width, height, className }) {
+  const columns = points.some((point) => point.note) ? `<th>Note</th>` : '';
+  const rows = points.map((point) => `<tr><th scope="row">${escape(String(point.label))}</th><td>${escape(String(point.value ?? 0))}${escape(unit)}</td>${point.note ? `<td>${escape(String(point.note))}</td>` : ''}</tr>`).join('');
+  return `<figure class="chart-figure"><figcaption>${escape(label)}</figcaption><svg class="chart ${escape(className)}" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="${escape(label)}">${svg}</svg><table class="chart-fallback"><caption>${escape(label)} (numbers)</caption><thead><tr><th>${escape(legend)}</th><th>Value</th>${columns}</tr></thead><tbody>${rows}</tbody></table></figure>`;
+}
+
+/**
+ * The analytics section. Only charts whose data is actually retained ship; the cost
+ * *trend* over time is called out as unavailable because the harness keeps per-agent
+ * usage rather than a dated ledger, and inventing a curve would be worse than saying so.
+ */
+export function renderAnalyticsSection({ overview = {}, metrics = {}, reliability = {} } = {}) {
+  const series = Array.isArray(metrics.series) ? metrics.series : [];
+  const activity = series.map((point) => ({ label: new Date(point.at).toLocaleTimeString(), tick: '', value: point.count }));
+  const profiles = (overview.usageByProfile ?? []).map((entry) => ({ label: String(entry.profileId ?? 'unprofiled'), value: (Number(entry.costMicros) || 0) / 1_000_000, note: `${Number(entry.inputTokens) || 0} in · ${Number(entry.outputTokens) || 0} out tokens` }));
+  const burn = (overview.budgetBurn ?? []).map((entry) => {
+    const used = Number(entry.costMicros) || 0;
+    const max = Number(entry.maxCostMicros) || 0;
+    const percent = max > 0 ? Math.round((used / max) * 100) : undefined;
+    return { label: String(entry.agentId ?? '').slice(0, 18), value: used / 1_000_000, note: percent === undefined ? 'cost limit not reported' : `${percent}% of cost limit` };
+  });
+  const expiry = (overview.expiring ?? []).map((bucket) => ({ label: String(bucket.label ?? ''), value: Number(bucket.count) || 0, note: 'workspaces' }));
+  const servers = (reliability.servers ?? []).map((server) => ({ label: String(server.serverName ?? server.serverId ?? 'server'), value: Number(server.calls) || 0, note: `${Number(server.error) || 0} error(s), p50 ${server.p50Ms ?? '—'} ms, p95 ${server.p95Ms ?? '—'} ms` }));
+  return `<section class="panel analytics" aria-labelledby="analytics-heading"><h2 id="analytics-heading">Analytics</h2><p class="page-note">Each chart states the scope it measured. A cost <em>trend</em> is not shown because the harness retains per-agent usage rather than a dated ledger.</p><div class="analytics-grid">${renderBarChart({ label: `Retained audit events per bucket (${String(metrics.window ?? 'window')})`, points: activity, emptyNote: 'No retained events in this window.' })}${renderBarRows({ label: 'Cost by model profile', unit: ' USD', points: profiles, emptyNote: 'No agent usage reported yet.' })}${renderBarRows({ label: 'Budget burn of running agents', unit: '', points: burn, emptyNote: 'No running agents report a budget.' })}${renderBarRows({ label: 'Workspace expiry buckets', points: expiry, emptyNote: 'No workspaces are close to expiry.' })}${renderBarRows({ label: 'MCP reliability by server', points: servers, emptyNote: 'No gateway traces reported yet.' })}</div></section>`;
+}
+
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';
@@ -1034,7 +1095,7 @@ function renderServerPanel(server) {
  * what it costs, and what expires soon. Every tile links to the filtered view that
  * explains it, and Access/Server move below the decision metrics.
  */
-export function renderOverview({ overview = {}, access = {}, server } = {}) {
+export function renderOverview({ overview = {}, access = {}, server, metrics = {}, reliability = {} } = {}) {
   const attention = Array.isArray(overview.attention) ? overview.attention : [];
   const running = overview.running ?? {};
   const cost = overview.cost ?? {};
@@ -1055,7 +1116,7 @@ export function renderOverview({ overview = {}, access = {}, server } = {}) {
     ? `<ul class="record-list">${expiring.map((bucket) => `<li><a href="/dashboard/workspaces">${escape(String(bucket.label ?? ''))}</a><span>${escape(String(bucket.count ?? 0))} workspace(s)</span></li>`).join('')}</ul>`
     : '<p class="empty-note">No workspaces are close to expiry.</p>';
   const endpoint = access.endpoint ? `<dt>Static endpoint</dt><dd class="wrap"><span class="mono wrap">${escape(access.endpoint)}</span> <button type="button" class="copy" data-copy="${escape(access.endpoint)}">Copy</button></dd>` : '';
-  return `<div class="overview">${metricTiles}<div class="overview-columns"><section class="panel" aria-labelledby="overview-attention-heading"><h2 id="overview-attention-heading">Needs attention</h2>${attentionList}</section><section class="panel" aria-labelledby="overview-expiry-heading"><h2 id="overview-expiry-heading">Expiring soon</h2>${expiryBuckets}</section></div><section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name ?? 'Not provided')}</dd><dt>Email</dt><dd class="wrap">${escape(access.email ?? 'Not provided')}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section>${renderServerPanel(server)}</div>`;
+  return `<div class="overview">${metricTiles}<div class="overview-columns"><section class="panel" aria-labelledby="overview-attention-heading"><h2 id="overview-attention-heading">Needs attention</h2>${attentionList}</section><section class="panel" aria-labelledby="overview-expiry-heading"><h2 id="overview-expiry-heading">Expiring soon</h2>${expiryBuckets}</section></div>${renderAnalyticsSection({ overview, metrics, reliability })}<section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name ?? 'Not provided')}</dd><dt>Email</dt><dd class="wrap">${escape(access.email ?? 'Not provided')}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section>${renderServerPanel(server)}</div>`;
 }
 
 export function renderModelsPage(profiles = [], credentials = [], status = null) {

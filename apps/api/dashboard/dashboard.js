@@ -1492,8 +1492,8 @@ export function initializeDashboard() {
     insertRendered(content, renderOverviewSkeleton());
     // One bounded projection replaces the previous client-side fan-out; identity and the
     // server panel stay separate because they are not decision metrics.
-    const [overviewResult, profile, server] = await Promise.allSettled([
-      api('/overview'), api('/profile'), api('/server')
+    const [overviewResult, profile, server, metrics, reliability] = await Promise.allSettled([
+      api('/overview'), api('/profile'), api('/server'), api('/metrics?window=24h'), api('/reliability')
     ]);
     const data = (result) => result.status === 'fulfilled' ? result.value.data : undefined;
     const identity = data(profile)?.identity ?? {};
@@ -1506,7 +1506,9 @@ export function initializeDashboard() {
         sessionExpiresAt: data(profile)?.sessionExpiresAt,
         endpoint: typeof readinessUrl === 'string' && /^https:\/\//.test(readinessUrl) ? readinessUrl : undefined
       },
-      server: data(server)
+      server: data(server),
+      metrics: data(metrics) ?? {},
+      reliability: data(reliability) ?? {}
     }));
     await refreshApprovalsBadge();
   }
