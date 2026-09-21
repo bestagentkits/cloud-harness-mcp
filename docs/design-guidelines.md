@@ -377,6 +377,27 @@ working one.
   routes live in [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts);
   `renderOverview` in
   [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js).
+- **Analytics:** the Overview's Analytics section carries the eight decision charts, all
+  internal SVG with focusable marks, accessible names, non-colour-only categories and a
+  table fallback per figure, and no external chart dependency:
+  - the **execution health timeline** — retained agents bucketed by start time and split
+    into succeeded / failed-or-limit / cancelled / running, answering "is execution health
+    degrading?";
+  - the **cost trend** — the same buckets summing each retained agent's
+    `usage.costMicros`, answering "is spend rising unexpectedly?";
+  - **cost and tokens by model profile**, **budget burn of running agents**, **workspace
+    expiry buckets**, and **MCP reliability per server** (calls, errors and p50/p95 from
+    gateway traces) — plus the **task DAG** in the Runtime tab and the **agent hierarchy**
+    in Agents.
+  Because the harness keeps agent state and per-agent usage but no dated outcome or
+  billing ledger, the two series charts state the scope they measured in their captions
+  ("retained agents, bucketed by start time") and the section says so in prose, rather
+  than implying a daily history the data cannot support. Owners: `renderStackedBars`,
+  `renderBarChart`, `renderBarRows` and `renderAnalyticsSection` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js);
+  `buildOverviewProjection` (`agentOutcomes` / `costSeries`) and
+  `buildMetricsProjection` (`series`) in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
 - **Motion:** motion exists only to convey a state change, inside the 150-250ms band
   (`--motion-fast` / `--motion-state` with `--ease-out`): a mutation crossfades the
   region it re-rendered (`.content-just-updated`), a save moves from `Saving…` to a

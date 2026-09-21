@@ -56,7 +56,12 @@ describe('analytics section', () => {
     expect(markup).toContain('Workspace expiry buckets');
     expect(markup).toContain('MCP reliability by server');
     expect(markup).toContain('3 error(s), p50 40 ms, p95 120 ms');
-    expect(markup).toContain('A cost <em>trend</em> is not shown');
+    // With no retained agents in this fixture, the two series charts render their empty
+    // notes instead of a titled axis; the scope copy is present either way. The populated
+    // case is asserted in dashboard-agent-series.test.ts.
+    expect(markup).toContain('No agents are on record yet.');
+    expect(markup).toContain('No agent usage is on record yet.');
+    expect(markup).toContain('keeps agent state and per-agent usage');
   });
 
   it('degrades to empty notes when a source is missing', () => {
