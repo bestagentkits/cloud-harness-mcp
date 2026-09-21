@@ -31,12 +31,47 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
   return clean;
 }
 
+/**
+ * The cockpit Summary needs the workspace's posture, not the context document. The
+ * workspace record, the branch, the git identity's name and manifest counts are
+ * enough to show health, while file paths, file contents and the identity's email
+ * stay in the runner.
+ */
+function workspaceContextProjection(data: Record<string, unknown>): Record<string, unknown> {
+  const manifest = data.manifest && typeof data.manifest === 'object' ? data.manifest as Record<string, unknown> : {};
+  const items = Array.isArray(manifest.items) ? manifest.items : [];
+  const capabilities = data.capabilities && typeof data.capabilities === 'object' ? data.capabilities as Record<string, unknown> : {};
+  const identity = data.gitIdentity && typeof data.gitIdentity === 'object' ? data.gitIdentity as Record<string, unknown> : {};
+  const truncationReasons = Array.isArray(manifest.truncationReasons)
+    ? manifest.truncationReasons.filter((reason): reason is string => typeof reason === 'string').slice(0, 8)
+    : [];
+  return {
+    ...cleanWorkspace(data),
+    ...(typeof data.branch === 'string' ? { branch: data.branch } : {}),
+    ...(typeof identity.name === 'string' ? { gitIdentityName: identity.name } : {}),
+    capabilities: Object.fromEntries(Object.entries(capabilities).filter(([, value]) => typeof value === 'boolean')),
+    manifest: { itemCount: items.length, truncated: manifest.truncated === true, truncationReasons }
+  };
+}
+
+/**
+ * A finalize result is a commit outcome and a push outcome. Remote URLs and raw
+ * command output stay in the runner; the cockpit only reports what happened.
+ */
+function workspaceFinalizeProjection(data: Record<string, unknown>): Record<string, unknown> {
+  return pick(data, ['branch', 'commitSha', 'committed', 'pushed', 'filesChanged', 'summary', 'message', 'truncated']);
+}
+
 export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_open',
   'workspace_list',
   'workspace_status',
   'workspace_detail',
   'workspace_close',
+  'workspace_context',
+  'workspace_lease_renew',
+  'workspace_recover',
+  'workspace_finalize',
   'toolkits_list',
   'toolkits_preview',
   'settings_get', 'settings_update', 'settings_network_check',
@@ -178,7 +213,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     const workspaces = Array.isArray(data.workspaces) ? data.workspaces.map(cleanWorkspace) : [];
     return { workspaces };
   }
-  if (operation === 'workspace_open' || operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close') return cleanWorkspace(data);
+  if (operation === 'workspace_open' || operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close' || operation === 'workspace_lease_renew' || operation === 'workspace_recover') return cleanWorkspace(data);
+  if (operation === 'workspace_context') return workspaceContextProjection(data);
+  if (operation === 'workspace_finalize') return workspaceFinalizeProjection(data);
   if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
     const entries = Array.isArray(data.entries) ? data.entries.map((entry) => {

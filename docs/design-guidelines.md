@@ -244,6 +244,29 @@ working one.
   `renderResourcePage`, `renderPrimaryAction`, `renderFormDialog` and
   `renderCopyChip` in `dashboard-render.js`; `setPageActions`,
   `bindDialogOpeners` and `bindCopyAffordances` in `dashboard.js`.
+- **Workspace Cockpit:** workspace detail is a cockpit, not a metadata page. The
+  header carries what an operator decides on — repository, status, ref, network
+  profile, lease posture and an attention count — with `Renew lease` as the single
+  accented action, `Finalize workspace` beside it, and recover/close behind a
+  `More actions` disclosure. A contextual tab row covers Summary, Agents, Runtime,
+  Files, Git, Automation, Deploy, Artifacts and Activity; these are workspace
+  sections, never global rail entries. Tabs whose owning phase has not shipped
+  state the phase they arrive with instead of rendering an empty box. Summary
+  reports only observable state (status, branch, attributable repository items,
+  capabilities, network posture) and says "Not reported" for cost and budget
+  rather than showing a zero that reads like a measurement. Attention reasons come
+  from what the dashboard can actually observe (lease expiry thresholds, workspace
+  failure, network quarantine, dirty Git when known); agent and task reasons join
+  with the phases that expose them. Lifecycle actions use the phase-1 dialog and
+  live-region machinery, and a missing context response degrades the Summary
+  without hiding the header or the actions. Owners: `renderWorkspaceCockpitHeader`,
+  `renderWorkspaceTabs`, `renderWorkspaceSummary`, `workspaceAttention` and
+  `workspaceLeaseState` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the lifecycle
+  adapters are `/api/v1/workspaces/:id/{context,lease-renew,recover,finalize}` in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) with
+  projections in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with

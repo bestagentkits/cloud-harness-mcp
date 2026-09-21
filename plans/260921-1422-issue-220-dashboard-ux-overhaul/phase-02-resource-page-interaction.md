@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Common resource-page layout and CRUD interaction model (issue Phase 1)"
-status: pending
+status: completed
 priority: P1
 effort: "1-1.5d"
 dependencies: [1]
@@ -10,6 +10,15 @@ dependencies: [1]
 # Phase 2: Common resource-page layout and CRUD interaction model
 
 Issue phase: **Phase 1**.
+
+**Status: completed.** Shipped in PR #227 with its follow-up fix in PR #228.
+Verification: `npx vitest run dashboard` 17 files / 254 tests green, eslint clean,
+new `dashboard-resource-page.test.ts` layout contract, browser QA of the action
+slot, dialog focus, invoker restore and copy affordances. Browser QA caught a
+wiring defect in the merged PR (the primary action opened nothing because openers
+were bound inside the content container); the fix delegates dialog opening on the
+document and adds a regression guard. Evidence:
+`plans/reports/vibe-260921-1452-issue-220-phase-2-resource-pages.md`.
 
 ## Goal
 

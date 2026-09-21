@@ -43,7 +43,9 @@ import {
   renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
   renderSkillsSkeleton,
   renderModelsActions, renderGitHubActions, renderMcpActions,
-  renderPrimaryAction
+  renderPrimaryAction,
+  renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
+  renderWorkspaceTabPlaceholder, renderFinalizeDialog
 } from './dashboard-render.js';
 import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -210,7 +212,14 @@ export async function submitPatchForm({ form, workspaceId, file, request, onSave
 }
 
 export async function renderWorkspaceDrawer({ trigger, detail, content, fetchWorkspace, modal }) {
-  const id = new URL(trigger.href).pathname.split('/').at(-1);
+  // A malformed or relative href must not escape as a raw URL error; the drawer
+  // reports one actionable message instead.
+  let id;
+  try {
+    id = new URL(trigger.href, globalThis.location?.origin ?? 'http://localhost').pathname.split('/').at(-1);
+  } catch {
+    throw new Error('Workspace link could not be resolved.');
+  }
   const item = await fetchWorkspace(id);
   content.querySelector('[aria-current="true"]')?.removeAttribute('aria-current');
   trigger.setAttribute('aria-current', 'true');
@@ -820,7 +829,7 @@ export function initializeDashboard() {
   insertRendered(document.querySelector('#sidebar-nav'), renderSidebarNavMarkup());
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
-  const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(files|runtime))?$/);
+  const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|files|git|automation|deploy|artifacts|activity))?$/);
   const projectMatch = location.pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
   const knowledgeMatch = location.pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
   const mcpServerMatch = location.pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
@@ -1061,7 +1070,7 @@ export function initializeDashboard() {
       const page = pageForPath(location.pathname);
       if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
-      else if (pathMatch) await loadWorkspace(pathMatch[1]);
+      else if (pathMatch) await loadWorkspace(pathMatch[1], pathMatch[2] ?? 'summary');
       else if (projectMatch) await loadProject(projectMatch[1]);
       else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
@@ -1496,7 +1505,7 @@ export function initializeDashboard() {
     const githubConnected = activeInstallations.length > 0;
     const identity = data(profile)?.identity ?? {};
     const endpoint = keyData?.readiness?.ready === true ? (keyData.readiness.publicUrl ?? keyData.publicUrl) : undefined;
-    content.innerHTML = renderOverview({
+    insertRendered(content, renderOverview({
       metrics: [
         { label: 'Active workspaces', value: workspaces.filter((item) => item.status === 'ACTIVE').length, note: `${workspaces.length} total` },
         { label: 'API keys', value: `${apiKeys.filter((item) => item.state === 'ACTIVE').length}/10`, note: 'Active of limit' },
@@ -1511,7 +1520,7 @@ export function initializeDashboard() {
         endpoint: typeof endpoint === 'string' && /^https:\/\//.test(endpoint) ? endpoint : undefined
       },
       server: data(server)
-    });
+    }));
   }
   async function loadIndex() {
     selectNavigation('workspaces'); document.querySelector('#command-surface').hidden = false;
@@ -1814,9 +1823,9 @@ export function initializeDashboard() {
       document.querySelector('#model-profile-edit-mode').value = 'false';
       document.querySelector('#model-profile-title').textContent = 'Add model profile';
 
-      credentialSelect.innerHTML = credentials.length
+      insertRendered(credentialSelect, credentials.length
         ? credentials.map((c) => `<option value="${escape(c.id)}">${escape(c.label)} (${escape(c.provider)})</option>`).join('')
-        : '<option value="">No credentials available (create one first)</option>';
+        : '<option value="">No credentials available (create one first)</option>');
 
       syncCustomUrlVisibility();
       profileDialog.showModal();
@@ -1830,7 +1839,14 @@ export function initializeDashboard() {
 
     for (const btn of document.querySelectorAll('.edit-model-profile')) {
       btn.addEventListener('click', (event) => {
-        const profile = JSON.parse(event.currentTarget.dataset.profileJson);
+        let profile;
+        try {
+          profile = JSON.parse(event.currentTarget.dataset.profileJson);
+        } catch {
+          // A malformed dataset value must not take the whole page down with it.
+          announce('This profile could not be opened. Reload the page and try again.');
+          return;
+        }
         profileForm.reset();
         document.querySelector('#model-profile-edit-mode').value = 'true';
         document.querySelector('#model-profile-generation').value = String(profile.generation);
@@ -2031,7 +2047,13 @@ export function initializeDashboard() {
         event.preventDefault(); const values = new FormData(form); const expectedAccountId = String(values.get('expectedAccountId') ?? '').trim();
         void submitForm(form, 'Preparing connection…', async () => {
           const result = await api('/github/setup', { method: 'POST', body: requestBody(expectedAccountId ? { expectedAccountId } : {}) });
-          const destination = new URL(result.data.url); if (destination.protocol !== 'https:') throw new Error('GitHub setup URL was invalid.');
+          let destination;
+          try {
+            destination = new URL(result.data.url);
+          } catch {
+            throw new Error('GitHub setup URL was invalid.');
+          }
+          if (destination.protocol !== 'https:') throw new Error('GitHub setup URL was invalid.');
           location.assign(destination.toString());
         }, async () => {});
       });
@@ -2226,9 +2248,9 @@ export function initializeDashboard() {
           const prjRes = await api('/projects');
           const projects = prjRes.data?.projects ?? [];
           if (projectSelect) {
-            projectSelect.innerHTML = projects.length
+            insertRendered(projectSelect, projects.length
               ? projects.map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')
-              : '<option value="">No projects available (create one first)</option>';
+              : '<option value="">No projects available (create one first)</option>');
           }
         } catch {
           /* ignore */
@@ -2763,9 +2785,57 @@ export function initializeDashboard() {
     });
   }
   async function workspace(id) { return (await api(`/workspaces/${encodeURIComponent(id)}`)).data; }
-  async function loadWorkspace(id) {
-    const item = await workspace(id); setTitle(repositoryName(item.repositoryUrl), 'Workspace lifecycle and bounded operations.');
-    insertRendered(content, renderWorkspaceDetail(item, false)); detail.hidden = true; document.querySelector('#command-surface').hidden = true; bindClose(item);
+  /**
+   * The Workspace Cockpit. The header carries what an operator decides on, the tab
+   * row carries the workspace context, and the Summary reports only observable
+   * state — the agent, task and Git reasons join with the phases that expose them.
+   */
+  async function loadWorkspace(id, tab = 'summary') {
+    selectNavigation('workspaces');
+    document.querySelector('#command-surface').hidden = true; detail.hidden = true;
+    const item = await workspace(id);
+    // A missing context response must not hide the cockpit: the header and the
+    // lifecycle actions still work from the workspace record alone.
+    const contextResult = await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined);
+    setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, files, git, automation, deploy, artifacts, and activity.');
+    const body = tab === 'summary'
+      ? renderWorkspaceSummary({ workspace: item, context: contextResult?.data })
+      : renderWorkspaceTabPlaceholder(tab);
+    insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${body}${renderFinalizeDialog()}`);
+    bindCockpitActions(item);
+  }
+  /** Renew, recover, finalize, and close, each with pending state and live feedback. */
+  function bindCockpitActions(item) {
+    const id = item.workspaceId;
+    document.querySelector('#renew-workspace-lease')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Renewing…', () => api(`/workspaces/${encodeURIComponent(id)}/lease-renew`, { method: 'POST', body: requestBody({}) }), 'Workspace lease renewed.'));
+    document.querySelector('#recover-workspace')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Recovering…', () => api(`/workspaces/${encodeURIComponent(id)}/recover`, { method: 'POST', body: requestBody({ mode: 'resume' }) }), 'Workspace recovery requested.'));
+    const form = document.querySelector('#finalize-workspace-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      void submitForm(form, 'Finalizing…', async () => {
+        await api(`/workspaces/${encodeURIComponent(id)}/finalize`, {
+          method: 'POST',
+          body: requestBody({ all: true, push: values.get('push') === 'on', commitMessage: values.get('commitMessage') })
+        });
+      }, async () => {
+        document.querySelector('#finalize-workspace-dialog')?.close();
+        announce('Workspace finalized.');
+        await loadWorkspace(id, 'summary');
+      });
+    });
+    bindClose(item);
+  }
+  async function cockpitAction(button, pendingLabel, action, successMessage) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = pendingLabel;
+    try {
+      await action();
+      announce(successMessage);
+      const id = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})/)?.[1];
+      if (id) await loadWorkspace(id, 'summary');
+    } catch (error) { showError(error); }
+    finally { button.disabled = false; button.textContent = original; }
   }
   async function loadFiles(id) {
     const item = await workspace(id); setTitle('Files', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'files');

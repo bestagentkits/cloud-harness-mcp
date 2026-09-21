@@ -276,6 +276,39 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     } catch (error) { next(error); }
   });
 
+  // Workspace cockpit lifecycle operations. Each is a public runner operation, so
+  // `call` validates the contract schema, keeps the principal scope, and maps the
+  // response through the cockpit projections rather than the raw runner payload.
+  router.get('/api/v1/workspaces/:workspaceId/context', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_context', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      clientProfile: 'all',
+      include: ['instructions', 'languages', 'test_commands', 'skills'],
+      contentMode: 'none'
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/lease-renew', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_lease_renew', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/recover', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_recover', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/finalize', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_finalize', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
   router.use((error: unknown, _request: DashboardRequest, response: Response, _next: NextFunction) => {
     void _next;
     if (error instanceof z.ZodError) {
