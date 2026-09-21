@@ -38,25 +38,39 @@ same commit were unaffected (`Deploy Cloudflare Pages` = success); only Release 
   PR) would alter what a release means for this repository and is not a change to make
   unilaterally.
 
-## Action taken
+## Resolution
 
-`main`'s branch protection was returned to its pre-enforcement state —
-`required_status_checks: null`, with every other toggle preserved (`enforce_admins: false`,
-no required reviews, no restrictions, no force pushes, no deletions) — so the release bot can
-push again. Verification: the `Release` run for `14710a6` was watched to completion after the
-revert.
+Option 1 was taken. The owner supplied `RELEASE_TOKEN` (a classic PAT whose owner holds
+admin on this repository), it is stored as a repository secret, and `release.yml` now passes
+`secrets.RELEASE_TOKEN || github.token` to both `actions/checkout` — which persists the
+credential the git push actually uses — and the semantic-release step, keeping the default
+token as a fallback so the workflow still runs when the secret is absent. PR #248 carried that
+change and was merged only after its own required `quality` check passed.
 
-## Durable options for the owner
+The required check was then re-enabled on `main` (`required_status_checks.contexts = ["quality"]`,
+`strict: false`, `enforce_admins: false`, every other toggle preserved). The bypass that makes
+this safe was verified by configuration rather than by breaking releases to test it: the token's
+owner reports `admin: true` on this repository, the token carries the `repo` scope, and with
+`enforce_admins: false` GitHub lets an admin identity bypass required status checks — which is
+exactly the identity the release bot now pushes with.
 
-1. **Add a release token.** Create a fine-grained PAT with `contents: write` and admin
-   rights on this repository, store it as `RELEASE_TOKEN`, and use it for
-   `GITHUB_TOKEN` in `release.yml`. With `enforce_admins: false`, an admin identity bypasses
-   required status checks, so the `quality` gate can be re-enabled and releases keep working.
-2. **Keep the gate and change the release flow.** Remove `@semantic-release/git` so
-   semantic-release only tags and publishes the GitHub release, accepting that
-   `package.json` versions and `CHANGELOG.md` no longer land on `main` by commit.
-3. **Leave the gate off** (current state). Merges are ungated again; the audit's criterion-14
-   concern remains documented rather than enforced.
+Ordering was learned the hard way. The gate was briefly enabled before the token-aware
+workflow reached `main`, which would have blocked the release bot's push, so the check was
+reverted until #248 landed and then re-applied. No release was lost in that window: `0.55.1`
+had already been published from `a94708d` while the gate was off, and the `Release` run for
+`f8a7d9b` had nothing to publish and completed `success`.
+
+## Alternatives considered
+
+1. **Drop `@semantic-release/git`** so semantic-release only tags and publishes the GitHub
+   release. Rejected: `package.json` versions and `CHANGELOG.md` would stop landing on `main`
+   by commit, changing what a release means for this repository.
+2. **Leave the gate off.** Rejected by the owner: merges would stay ungated, leaving the
+   audit's criterion-14 concern documented rather than enforced.
+
+This does not change the audit outcome for criterion 14. The phase merges happened before any
+required check existed and cannot be retrofitted. It does mean the repository now enforces the
+gate that criterion asked for, for every merge from here on.
 
 This does not change the audit outcome: criterion 14 describes the phase merges that already
 happened and cannot be retrofitted either way.
