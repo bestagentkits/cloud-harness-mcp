@@ -306,6 +306,24 @@ working one.
   [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts), with
   the bounded task and session projections in
   [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
+- **Git and Finalize:** the cockpit's Git tab keeps **Finalize** as the primary
+  happy path — one confirmed action that stages, commits and pushes — and treats
+  everything else as an advanced surface. The tab shows branch, upstream,
+  ahead/behind, and staged / modified / untracked counts parsed from
+  `git status --short --branch`, the changed-file list, a bounded staged or
+  unstaged diff with an explicit truncation notice, recent commits, and worktrees
+  inside a disclosure with their own create form. Advanced operations (fetch,
+  fast-forward-only pull, checkout, branch, merge, rebase) live in one collapsed
+  form, use the existing fenced contracts, and report conflicts back in place
+  rather than resolving anything automatically. The staged/unstaged toggle is a URL
+  parameter, so the view is shareable and the back button works. Owners:
+  `parseGitStatus` and `parseWorktrees` in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts);
+  `renderGitStatus`, `renderGitDiff`, `renderGitLog`, `renderWorktrees`,
+  `renderGitAdvanced` and `renderGitPanel` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters
+  are `/api/v1/workspaces/:id/git/*` and `/api/v1/workspaces/:id/worktrees` in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with

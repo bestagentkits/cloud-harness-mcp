@@ -414,6 +414,51 @@ export function renderRuntimePanel({ tasks = [], graph = {}, sessions = [], io }
   })}${renderSessionsPanel({ sessions, io })}`;
 }
 
+/** Git posture: branch, upstream, ahead/behind, and the index/working-tree summary. */
+export function renderGitStatus(status = {}) {
+  const entries = Array.isArray(status.entries) ? status.entries : [];
+  const rows = entries.length
+    ? entries.map((entry) => `<li class="git-entry"><span class="mono git-code">${escape(String(entry.code ?? '??'))}</span><span class="mono wrap">${escape(String(entry.path ?? ''))}</span></li>`).join('')
+    : '<li class="empty">No changed files.</li>';
+  return `<section class="panel" aria-labelledby="git-status-heading"><h2 id="git-status-heading">Working tree</h2><dl class="facts"><dt>Branch</dt><dd>${escape(String(status.branch ?? 'Not reported'))}</dd><dt>Upstream</dt><dd>${escape(String(status.upstream ?? 'Not reported'))}</dd><dt>Ahead / behind</dt><dd>${escape(String(status.ahead ?? 0))} ahead · ${escape(String(status.behind ?? 0))} behind</dd><dt>Staged</dt><dd>${escape(String(status.staged ?? 0))}</dd><dt>Modified</dt><dd>${escape(String(status.modified ?? 0))}</dd><dt>Untracked</dt><dd>${escape(String(status.untracked ?? 0))}</dd></dl><h3>File changes</h3><ul class="record-list git-entry-list">${rows}</ul></section>`;
+}
+
+/** The diff view: bounded, escaped, and explicit about truncation. */
+export function renderGitDiff({ staged = false, diff, truncated } = {}) {
+  return `<section class="panel" aria-labelledby="git-diff-heading"><h2 id="git-diff-heading">${staged ? 'Staged diff' : 'Unstaged diff'}</h2><div class="row-actions"><button class="git-diff-toggle" type="button" data-staged="${staged ? 'true' : 'false'}">Show ${staged ? 'unstaged' : 'staged'} diff</button></div><pre id="git-diff-output" class="mono">${diff ? escape(diff) : 'No diff to show.'}</pre>${truncated === true ? '<p class="status-message" role="status">Diff is truncated. Narrow it with a path filter before trusting the whole change set.</p>' : ''}</section>`;
+}
+
+export function renderGitLog(commits = []) {
+  const rows = commits.length
+    ? commits.map((commit) => `<li class="panel"><div class="record-heading"><strong>${escape(String(commit.subject ?? commit.message ?? 'Commit'))}</strong><span class="mono">${escape(String(commit.oid ?? commit.sha ?? '').slice(0, 12))}</span></div><p>${escape(String(commit.author ?? 'Unknown author'))}${commit.authoredAt || commit.date ? ` · ${time(commit.authoredAt ?? commit.date)}` : ''}</p></li>`).join('')
+    : '<li class="empty">No commits reported.</li>';
+  return `<section class="panel" aria-labelledby="git-log-heading"><h2 id="git-log-heading">Recent commits</h2><ul class="record-list">${rows}</ul></section>`;
+}
+
+/** Worktrees are an advanced surface, so they stay collapsed with their own create form. */
+export function renderWorktrees(worktrees = []) {
+  const rows = worktrees.length
+    ? worktrees.map((tree) => `<li class="worktree-row"><span class="mono wrap">${escape(String(tree.path ?? ''))}</span><span class="mono">${escape(String(tree.head ?? '').slice(0, 12))}</span><span>${escape(String(tree.branch ?? 'detached'))}</span><button class="danger remove-worktree" type="button" data-worktree-name="${escape(String(tree.path ?? '').split('/').pop() ?? '')}">Remove</button></li>`).join('')
+    : '<li class="empty">No managed worktrees.</li>';
+  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
+}
+
+/**
+ * Advanced Git operations, collapsed. Finalize is the happy path; these exist for the
+ * operator who needs them, and a conflict reports back through the same status line.
+ */
+export function renderGitAdvanced() {
+  return `<details class="row-edit"><summary>Advanced Git operations</summary><form id="git-advanced-form" class="stack-form"><label for="git-action">Action</label><select id="git-action" name="action"><option value="fetch">Fetch from origin</option><option value="pull">Pull (fast-forward only)</option><option value="checkout">Checkout a ref</option><option value="branch">Create a branch</option><option value="merge">Merge a ref</option><option value="rebase">Start a rebase</option></select><label for="git-argument">Ref (checkout, branch, merge, rebase)</label><input id="git-argument" name="argument" maxlength="255"><div class="form-row-actions"><button type="submit">Run Git operation</button></div><p class="form-status" aria-live="polite"></p></form><p class="page-note">Conflicts are reported here and never resolved automatically. Finalize remains the recommended path.</p></details>`;
+}
+
+/** The cockpit Git tab: status, diff, log, worktrees, and the collapsed advanced set. */
+export function renderGitPanel({ status = {}, diff = {}, log = [], worktrees = [] } = {}) {
+  return renderResourcePage({
+    note: '<div class="page-note"><strong>Workspace Git.</strong> Finalize stages, commits and pushes in one confirmed step. Advanced operations stay collapsed until you need them.</div>',
+    body: `${renderGitStatus(status)}${renderGitDiff(diff)}${renderGitLog(log)}${renderWorktrees(worktrees)}${renderGitAdvanced()}`
+  });
+}
+
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';

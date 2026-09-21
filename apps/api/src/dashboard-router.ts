@@ -280,6 +280,55 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     } catch (error) { next(error); }
   });
 
+  // Git and worktrees. Reads are bounded; mutations keep the contract's own fencing
+  // (identity, expected head, constrained ref arguments) and confirm in the UI.
+  router.get('/api/v1/workspaces/:workspaceId/git/status', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'git_status', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/git/diff', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'git_diff', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      staged: request.query.staged === 'true',
+      ...(typeof request.query.path === 'string' ? { path: request.query.path } : {})
+    });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/git/log', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'git_log', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(typeof request.query.limit === 'string' ? { limit: z.coerce.number().int().min(1).max(500).parse(request.query.limit) } : {})
+    });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/worktrees', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'worktrees_list', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  const gitMutation = (operation: 'git_fetch' | 'git_pull' | 'git_checkout' | 'git_branch' | 'git_merge' | 'git_rebase' | 'worktrees_create' | 'worktrees_remove') => {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      await call(runner, request, response, next, operation, {
+        workspaceId: workspaceId.parse(request.params.workspaceId),
+        ...(request.body && typeof request.body === 'object' ? request.body : {})
+      });
+    };
+  };
+
+  router.post('/api/v1/workspaces/:workspaceId/git/fetch', gitMutation('git_fetch'));
+  router.post('/api/v1/workspaces/:workspaceId/git/pull', gitMutation('git_pull'));
+  router.post('/api/v1/workspaces/:workspaceId/git/checkout', gitMutation('git_checkout'));
+  router.post('/api/v1/workspaces/:workspaceId/git/branch', gitMutation('git_branch'));
+  router.post('/api/v1/workspaces/:workspaceId/git/merge', gitMutation('git_merge'));
+  router.post('/api/v1/workspaces/:workspaceId/git/rebase', gitMutation('git_rebase'));
+  router.post('/api/v1/workspaces/:workspaceId/worktrees', gitMutation('worktrees_create'));
+  router.delete('/api/v1/workspaces/:workspaceId/worktrees/:name', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'worktrees_remove', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).parse(request.params.name),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
   // Agent Control Center. Agent operations are workspace-scoped in the runner
   // contract; the workspace id is optional there, so a global view lists across the
   // principal's workspaces and a scoped view passes it through.

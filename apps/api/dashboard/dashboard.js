@@ -47,7 +47,7 @@ import {
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
   renderWorkspaceTabPlaceholder, renderFinalizeDialog,
   renderAgentsIndex, renderAgentDetail,
-  renderRuntimePanel
+  renderRuntimePanel, renderGitPanel
 } from './dashboard-render.js';
 import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -2803,13 +2803,80 @@ export function initializeDashboard() {
     insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${body}${renderFinalizeDialog()}`);
     bindCockpitActions(item);
     if (tab === 'runtime') bindRuntimeControls(id);
+    if (tab === 'git') bindGitControls(id);
   }
   /** Which body a cockpit tab renders, kept out of the loader so the switch stays readable. */
   async function cockpitTabBody(workspaceId, tab, workspace, context) {
     if (tab === 'summary') return renderWorkspaceSummary({ workspace, context });
     if (tab === 'agents') return renderWorkspaceAgents(workspaceId);
     if (tab === 'runtime') return runtimePanel(workspaceId);
+    // The diff toggle is a URL parameter, so a staged/unstaged view is shareable and
+    // the back button behaves.
+    if (tab === 'git') return gitPanel(workspaceId, new URLSearchParams(location.search).get('staged') === 'true');
     return renderWorkspaceTabPlaceholder(tab);
+  }
+  /** Git status, a bounded diff, recent commits and worktrees in one pass. */
+  async function gitPanel(workspaceId, staged = false) {
+    const scoped = encodeURIComponent(workspaceId);
+    const [statusResult, diffResult, logResult, worktreeResult] = await Promise.all([
+      api(`/workspaces/${scoped}/git/status`),
+      api(`/workspaces/${scoped}/git/diff?staged=${staged ? 'true' : 'false'}`).catch(() => undefined),
+      api(`/workspaces/${scoped}/git/log?limit=20`).catch(() => undefined),
+      api(`/workspaces/${scoped}/worktrees`).catch(() => undefined)
+    ]);
+    return renderGitPanel({
+      status: statusResult.data ?? {},
+      diff: { staged, ...(diffResult?.data ?? {}) },
+      log: logResult?.data?.commits ?? [],
+      worktrees: worktreeResult?.data?.worktrees ?? []
+    });
+  }
+  /**
+   * Git controls. Finalize is the happy path; everything here is either a read-only
+   * toggle or an advanced operation that confirms or reports a conflict in place.
+   */
+  function bindGitControls(workspaceId) {
+    const scoped = encodeURIComponent(workspaceId);
+    document.querySelector('.git-diff-toggle')?.addEventListener('click', (event) => {
+      const next = event.currentTarget.dataset.staged !== 'true';
+      navigateTo(`/dashboard/workspaces/${scoped}/git?staged=${next ? 'true' : 'false'}`);
+    });
+    for (const button of document.querySelectorAll('.remove-worktree')) button.addEventListener('click', (event) => {
+      const name = button.dataset.worktreeName ?? '';
+      void confirmAction({
+        title: 'Remove this worktree?', description: 'The managed worktree is removed; its branch stays in the repository.',
+        target: name, label: 'Remove worktree', pendingLabel: 'Removing…',
+        action: async () => {
+          await api(`/workspaces/${scoped}/worktrees/${encodeURIComponent(name)}`, { method: 'DELETE', body: requestBody({}) });
+          announce('Worktree removed.');
+          navigateTo(`/dashboard/workspaces/${scoped}/git`);
+        }
+      }, event.currentTarget);
+    });
+    const createForm = document.querySelector('#create-worktree-form');
+    createForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(createForm);
+      void submitForm(createForm, 'Creating…', async () => {
+        await api(`/workspaces/${scoped}/worktrees`, { method: 'POST', body: requestBody({ name: values.get('name'), ref: values.get('ref') }) });
+      }, async () => { announce('Worktree created.'); navigateTo(`/dashboard/workspaces/${scoped}/git`); });
+    });
+    const advanced = document.querySelector('#git-advanced-form');
+    advanced?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(advanced);
+      const action = String(values.get('action') ?? 'fetch');
+      const argument = String(values.get('argument') ?? '').trim();
+      const body = action === 'fetch' ? { remote: 'origin' }
+        : action === 'pull' ? { remote: 'origin', strategy: 'ff-only' }
+          : action === 'checkout' ? { ref: argument }
+            : action === 'branch' ? { action: 'create', name: argument }
+              : action === 'merge' ? { ref: argument }
+                : { action: 'start', upstream: argument };
+      void submitForm(advanced, 'Running…', async () => {
+        await api(`/workspaces/${scoped}/git/${action}`, { method: 'POST', body: requestBody(body) });
+      }, async () => { announce(`Git ${action} completed.`); navigateTo(`/dashboard/workspaces/${scoped}/git`); });
+    });
   }
   /** The workspace Agents tab reuses the global renderer with a scoped list. */
   async function renderWorkspaceAgents(workspaceId) {
