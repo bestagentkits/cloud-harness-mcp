@@ -58,7 +58,8 @@ describe('dashboard page registry', () => {
       'overview',
       'workspaces',
       'agents',
-      'audit',
+      'activity',
+      'approvals',
       'projects',
       'secrets',
       'models',
@@ -70,6 +71,9 @@ describe('dashboard page registry', () => {
       'settings'
     ]);
     expect(navGroups().some((group) => group.pages.some((page) => page.id === 'profile'))).toBe(false);
+    // Audit history moved into the Activity Center, so the rail no longer lists it.
+    expect(navGroups().some((group) => group.pages.some((page) => page.id === 'audit'))).toBe(false);
+    expect(pageById('audit')?.palette).toBe(true);
     expect(groups[0].pages[0].route).toBe('/dashboard');
   });
 

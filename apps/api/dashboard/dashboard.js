@@ -48,7 +48,8 @@ import {
   renderWorkspaceTabPlaceholder, renderFinalizeDialog,
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
-  renderAutomationPanel, renderDeployPanel
+  renderAutomationPanel, renderDeployPanel,
+  renderActivityCenter, renderApprovals
 } from './dashboard-render.js';
 import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -432,7 +433,7 @@ function navigateTo(target) {
 export function renderSidebarNavMarkup(groups = navGroups()) {
   return groups.map((group) => [
     `<p class="nav-group">${escapeHtml(group.label)}</p>`,
-    ...group.pages.map((page) => `<a href="${escapeHtml(page.route)}" data-section="${escapeHtml(page.id)}"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${page.icon}</svg>${escapeHtml(page.label)}</a>`)
+    ...group.pages.map((page) => `<a href="${escapeHtml(page.route)}" data-section="${escapeHtml(page.id)}"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${page.icon}</svg>${escapeHtml(page.label)}${page.id === 'approvals' ? '<span class="nav-badge" id="nav-badge-approvals" hidden></span>' : ''}</a>`)
   ].join('')).join('');
 }
 
@@ -1060,6 +1061,8 @@ export function initializeDashboard() {
     integrations: () => (location.pathname === '/dashboard/integrations/mcp-servers' ? loadMcpServers() : loadGitHub()),
     knowledge: loadKnowledge,
     agents: loadAgents,
+    activity: loadActivity,
+    approvals: loadApprovals,
     artifacts: loadArtifacts,
     'api-keys': loadApiKeys,
     settings: loadSettings,
@@ -2972,6 +2975,81 @@ export function initializeDashboard() {
       if (id) await loadWorkspace(id, 'summary');
     } catch (error) { showError(error); }
     finally { button.disabled = false; button.textContent = original; }
+  }
+  /**
+   * The Activity Center. Audit is the durable spine; live agent state is an overlay,
+   * and every row says which of the two it is.
+   */
+  async function loadActivity() {
+    selectNavigation('activity');
+    document.querySelector('#command-surface').hidden = true;
+    const filter = new URLSearchParams(location.search).get('filter') ?? 'all';
+    const [auditResult, agentResult] = await Promise.all([
+      api('/audit?limit=50').catch(() => undefined),
+      api('/agents').catch(() => undefined)
+    ]);
+    const categoryFor = (action, subjectType) => {
+      const text = `${action ?? ''} ${subjectType ?? ''}`.toLowerCase();
+      if (text.includes('agent')) return 'agents';
+      if (text.includes('task')) return 'tasks';
+      if (text.includes('mcp') || text.includes('gateway')) return 'mcp';
+      if (text.includes('deploy')) return 'deployments';
+      return 'audit';
+    };
+    const auditEvents = (auditResult?.data?.events ?? []).map((event) => activityEvent({
+      at: event.createdAt,
+      category: categoryFor(event.action, event.subjectType),
+      status: 'recorded',
+      actor: `${event.subjectType ?? 'subject'} ${event.subjectId ?? ''}`.trim(),
+      summary: String(event.action ?? 'Audit event'),
+      durable: true
+    }));
+    const liveEvents = (agentResult?.data?.agents ?? []).map((agent) => activityEvent({
+      at: agent.startedAt ?? agent.createdAt,
+      category: 'agents',
+      status: String(agent.status ?? 'unknown').toLowerCase(),
+      actor: String(agent.workspaceId ?? ''),
+      summary: `Agent ${String(agent.agentId ?? '').slice(0, 18)}… ${String(agent.status ?? '')}`.toLowerCase(),
+      href: `/dashboard/agents/${encodeURIComponent(String(agent.agentId ?? ''))}`
+    }));
+    const events = [...liveEvents, ...auditEvents].sort((left, right) => String(right.at ?? '').localeCompare(String(left.at ?? '')));
+    insertRendered(content, renderActivityCenter({ events, filter }));
+    await refreshApprovalsBadge();
+  }
+  /** The approvals inbox: pending privilege grants and the two decisions. */
+  async function loadApprovals() {
+    selectNavigation('approvals');
+    document.querySelector('#command-surface').hidden = true;
+    const result = await api('/privilege-grants');
+    const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
+    insertRendered(content, renderApprovals({ grants }));
+    updateApprovalsBadge(grants.length);
+    for (const button of document.querySelectorAll('.approve-grant, .reject-grant')) button.addEventListener('click', (event) => {
+      const approving = button.classList.contains('approve-grant');
+      const grantId = button.dataset.grantId ?? '';
+      void confirmAction({
+        title: approving ? 'Approve this privilege request?' : 'Reject this privilege request?',
+        description: approving ? 'The command may then run in that workspace under your identity. The decision is audited.' : 'The request is discarded and the command stays blocked. The decision is audited.',
+        target: grantId, label: approving ? 'Approve' : 'Reject', pendingLabel: approving ? 'Approving…' : 'Rejecting…',
+        action: async () => {
+          await api(`/privilege-grants/${encodeURIComponent(grantId)}/${approving ? 'approve' : 'reject'}`, { method: 'POST', body: requestBody({}) });
+          announce(approving ? 'Privilege request approved.' : 'Privilege request rejected.');
+          await loadApprovals();
+        }
+      }, event.currentTarget);
+    });
+  }
+  /** The badge appears only while something is pending. */
+  function updateApprovalsBadge(count) {
+    const badge = document.querySelector('#nav-badge-approvals');
+    if (!badge) return;
+    badge.textContent = count > 0 ? String(count) : '';
+    badge.hidden = count === 0;
+  }
+  async function refreshApprovalsBadge() {
+    const result = await api('/privilege-grants').catch(() => undefined);
+    const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
+    updateApprovalsBadge(grants.filter((grant) => !['approved', 'rejected'].includes(String(grant.status ?? ''))).length);
   }
   /**
    * Global Agents page and the workspace-scoped tab share one renderer and one

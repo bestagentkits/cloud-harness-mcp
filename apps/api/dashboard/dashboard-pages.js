@@ -69,6 +69,30 @@ export const DASHBOARD_PAGES = [
     icon: '<circle cx="12" cy="8" r="3.2"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/><path d="M4 10H2.5"/><path d="M21.5 10H20"/>'
   },
   {
+    id: 'activity',
+    route: '/dashboard/activity',
+    label: 'Activity',
+    group: 'operate',
+    title: 'Activity',
+    help: 'One operational timeline across agents, tasks, MCP, deployments, and retained audit events.',
+    palette: true,
+    paletteHint: 'Operational timeline across agents, tasks, MCP, deployments, and audit',
+    nav: true,
+    icon: '<path d="M3 12h4l2.5-6 3 12L15 12h6"/>'
+  },
+  {
+    id: 'approvals',
+    route: '/dashboard/approvals',
+    label: 'Approvals',
+    group: 'operate',
+    title: 'Approvals',
+    help: 'Pending privilege grants waiting for your decision.',
+    palette: true,
+    paletteHint: 'Pending privilege grants awaiting a decision',
+    nav: true,
+    icon: '<path d="M9 12l2 2 4-4"/><path d="M12 3l8 4v6c0 4.5-3.2 7.3-8 8-4.8-.7-8-3.5-8-8V7z"/>'
+  },
+  {
     id: 'audit',
     route: '/dashboard/audit',
     label: 'Audit',
@@ -77,7 +101,9 @@ export const DASHBOARD_PAGES = [
     help: 'Retained redacted control-plane events.',
     palette: true,
     paletteHint: 'Retained control-plane events',
-    nav: true,
+    // Phase 8 moved audit history into the Activity Center's Audit tab, so the rail
+    // no longer spends a slot on it; the page and its palette entry remain reachable.
+    nav: false,
     icon: '<path d="M9 4.5h6a1 1 0 0 1 1 1V6a1 1 0 0 1-1 1H9A1 1 0 0 1 8 6v-.5a1 1 0 0 1 1-1z"/><path d="M16 5.5h2a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5a1 1 0 0 1 1-1h2"/><path d="M9 12h6"/><path d="M9 16h4"/>'
   },
   {

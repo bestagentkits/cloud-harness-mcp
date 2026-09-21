@@ -526,6 +526,53 @@ export function renderAutomationPanel({ skills = [], hooks = [] } = {}) {
   })}`;
 }
 
+/** The Activity Center's shared event grammar and its filters. */
+export const ACTIVITY_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'tasks', label: 'Tasks' },
+  { id: 'mcp', label: 'MCP' },
+  { id: 'deployments', label: 'Deployments' },
+  { id: 'audit', label: 'Audit' }
+];
+
+/**
+ * One event grammar for every source: when it happened, which category, its status,
+ * the actor or resource, a short summary and where to look next. `durable` marks the
+ * events that are retained audit records rather than live runtime data, so the UI can
+ * never imply that a running task is a durable history entry.
+ */
+export function activityEvent({ at, category, status, actor, summary, href, durable = false }) {
+  return { at, category, status, actor, summary, href, durable };
+}
+
+export function renderActivityCenter({ events = [], filter = 'all' } = {}) {
+  const tabs = ACTIVITY_FILTERS.map((entry) => `<a href="/dashboard/activity${entry.id === 'all' ? '' : `?filter=${entry.id}`}" ${entry.id === filter ? 'aria-current="page"' : ''}>${escape(entry.label)}${entry.id === 'all' ? '' : ` (${escape(String(events.filter((event) => event.category === entry.id).length))})`}</a>`).join('');
+  const visible = filter === 'all' ? events : events.filter((event) => event.category === filter);
+  const rows = visible.length
+    ? visible.map((event) => `<li class="activity-event"><div class="record-heading"><span class="mono">${event.at ? time(event.at) : 'Time not reported'}</span><span class="status ${escape(String(event.status ?? 'unknown').toLowerCase())}">${escape(String(event.status ?? 'unknown'))}</span></div><p><strong>${escape(String(event.summary ?? event.category))}</strong></p><p class="activity-meta">${escape(String(event.category))} · ${escape(String(event.actor ?? 'Not reported'))} ${event.durable ? '<span class="status active">Retained audit</span>' : '<span class="status">Live runtime</span>'}</p>${event.href ? `<a href="${escape(String(event.href))}">Open</a>` : ''}</li>`).join('')
+    : '<li class="empty">No events in this view yet.</li>';
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Operational activity.</strong> Runtime categories are live and disappear with their workspace; audit rows are retained and redacted. The panel labels each row, so the two are never confused.</div>',
+    filters: `<nav class="activity-filters" aria-label="Activity filters">${tabs}</nav>`,
+    body: `<section aria-labelledby="activity-heading"><h2 id="activity-heading">Events</h2><ul class="activity-list activity-center">${rows}</ul></section>`
+  })}`;
+}
+
+/** Pending privilege grants as an inbox: context, requested capability, decision. */
+export function renderApprovals({ grants = [] } = {}) {
+  const rows = grants.length
+    ? grants.map((grant) => {
+      const id = String(grant.id ?? '');
+      return `<li class="panel approval-row"><div class="record-heading"><div><h3>${escape(String(grant.command ?? 'Requested operation'))}</h3><p class="mono wrap">${escape(String(grant.workspaceId ?? 'Workspace not reported'))}</p></div><span class="status reaping">Pending</span></div><dl class="facts"><dt>Requested</dt><dd>${grant.createdAt ? time(grant.createdAt) : 'Not reported'}</dd><dt>Expires</dt><dd>${grant.expiresAt ? time(grant.expiresAt) : 'Not reported'}</dd><dt>Working directory</dt><dd class="mono wrap">${escape(String(grant.cwd ?? 'Not reported'))}</dd><dt>Command digest</dt><dd class="mono wrap">${escape(String(grant.commandSha256 ?? 'Not reported'))}</dd></dl><div class="row-actions"><button class="accent-btn approve-grant" type="button" data-grant-id="${escape(id)}">Approve</button><button class="danger reject-grant" type="button" data-grant-id="${escape(id)}">Reject</button></div></li>`;
+    }).join('')
+    : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending and leave once you decide.</p></li>';
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Privilege grants.</strong> Approving lets one command run in a workspace under your identity. Both decisions are audited.</div>',
+    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Pending requests</h2><ul class="record-list approval-list">${rows}</ul></section>`
+  })}`;
+}
+
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';
