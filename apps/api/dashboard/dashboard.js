@@ -45,7 +45,7 @@ import {
   renderModelsActions, renderGitHubActions, renderMcpActions,
   renderPrimaryAction,
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
-  renderWorkspaceTabPlaceholder, renderFinalizeDialog,
+  renderWorkspaceArtifacts, renderWorkspaceActivity, renderFinalizeDialog,
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
@@ -1514,7 +1514,7 @@ export function initializeDashboard() {
   }
   async function loadIndex() {
     selectNavigation('workspaces'); document.querySelector('#command-surface').hidden = false;
-    const parameters = new URLSearchParams(location.search); const query = { q: parameters.get('q') ?? '', status: parameters.get('status') ?? '' };
+    const parameters = new URLSearchParams(location.search); const query = { q: parameters.get('q') ?? '', status: parameters.get('status') ?? '', expiring: parameters.get('expiring') ?? '' };
     document.querySelector('#search').value = query.q; document.querySelector('#status').value = query.status;
     const result = await api('/workspaces'); insertRendered(content, renderWorkspaceIndex(result.data.workspaces, query));
     detail.hidden = true; document.querySelector('.app-shell').classList.remove('has-detail');
@@ -2817,7 +2817,19 @@ export function initializeDashboard() {
     if (tab === 'git') return gitPanel(workspaceId, new URLSearchParams(location.search).get('staged') === 'true');
     if (tab === 'automation') return automationPanel(workspaceId);
     if (tab === 'deploy') return deployPanel(workspaceId);
-    return renderWorkspaceTabPlaceholder(tab);
+    if (tab === 'artifacts') return artifactsPanel(workspaceId);
+    if (tab === 'activity') return activityPanel(workspaceId);
+    return renderWorkspaceSummary({ workspace, context });
+  }
+  /** The workspace's retained snapshots, scoped by each record's own workspaceId. */
+  async function artifactsPanel(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/artifacts`).catch(() => undefined);
+    return renderWorkspaceArtifacts({ artifacts: result?.data?.artifacts ?? [] });
+  }
+  /** The workspace's own activity rows, over the event grammar the Activity Center uses. */
+  async function activityPanel(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/activity`).catch(() => undefined);
+    return renderWorkspaceActivity({ events: result?.data?.events ?? [], workspaceId });
   }
   /** The workspace skill set and its lifecycle hooks. */
   async function automationPanel(workspaceId) {
@@ -3031,9 +3043,16 @@ export function initializeDashboard() {
     const parameters = new URLSearchParams(location.search);
     const status = parameters.get('status') ?? '';
     const scope = workspaceId ?? parameters.get('workspaceId') ?? '';
-    const query = new URLSearchParams({ ...(status ? { status } : {}), ...(scope ? { workspaceId: scope } : {}) });
+    const profileId = parameters.get('profileId') ?? '';
+    const parentAgentId = parameters.get('parentAgentId') ?? '';
+    const attention = parameters.get('attention') ?? '';
+    const query = new URLSearchParams({
+      ...(status ? { status } : {}), ...(scope ? { workspaceId: scope } : {}),
+      ...(profileId ? { profileId } : {}), ...(parentAgentId ? { parentAgentId } : {}),
+      ...(attention ? { attention } : {})
+    });
     const result = await api(`/agents${query.size ? `?${query}` : ''}`);
-    insertRendered(content, renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { status, workspaceId: scope } }));
+    insertRendered(content, renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { status, workspaceId: scope, profileId, parentAgentId, attention } }));
     document.querySelector('#agent-filters')?.addEventListener('submit', (event) => {
       event.preventDefault();
       const next = new URLSearchParams();

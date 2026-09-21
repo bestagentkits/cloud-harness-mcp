@@ -66,9 +66,19 @@ export function renderCopyChip({ value, label }) {
 }
 
 export function renderWorkspaceIndex(workspaces, query) {
+  const expiringMinutes = Number(query.expiring);
+  const now = Date.now();
   const filtered = workspaces.filter((workspace) => {
     const term = query.q.toLowerCase();
-    return (!query.status || workspace.status === query.status) && (!term || `${workspace.repositoryUrl} ${workspace.workspaceId}`.toLowerCase().includes(term));
+    if (query.status && workspace.status !== query.status) return false;
+    if (term && !`${workspace.repositoryUrl} ${workspace.workspaceId}`.toLowerCase().includes(term)) return false;
+    // The Overview's "Expiring soon" tile links here with a minute budget, so the view
+    // shows exactly the leases that budget names instead of the whole list.
+    if (Number.isFinite(expiringMinutes) && expiringMinutes > 0) {
+      const expiresAt = Date.parse(workspace.expiresAt ?? '');
+      if (!Number.isFinite(expiresAt) || expiresAt - now > expiringMinutes * 60_000) return false;
+    }
+    return true;
   });
   if (!workspaces.length) return '<h2 id="workspace-list-heading">Workspace list</h2><div class="empty"><h3>No workspaces yet.</h3><p>Open one from an MCP client and it will appear here.</p></div>';
   if (!filtered.length) return '<h2 id="workspace-list-heading">Workspace list</h2><div class="empty"><h3>No workspaces match these filters.</h3><button id="clear-filters" type="button">Clear filters</button></div>';
@@ -90,15 +100,7 @@ export const WORKSPACE_TABS = [
   { id: 'activity', label: 'Activity' }
 ];
 
-/** Tabs whose owning phase has not shipped yet, so the tab states its next step. */
-const WORKSPACE_TAB_PHASE = {
-  agents: 'the Agent Control Center phase',
-  git: 'the Git and Finalize phase',
-  automation: 'the Automation and Deploy phase',
-  deploy: 'the Automation and Deploy phase',
-  artifacts: 'a later workspace phase',
-  activity: 'the Activity Center phase'
-};
+/** Tabs are all backed by real adapters, so no tab needs a phase label. */
 
 /** Lease posture from the workspace record. Thresholds drive emphasis, never colour alone. */
 export function workspaceLeaseState(workspace, now = Date.now()) {
@@ -161,10 +163,21 @@ export function renderWorkspaceSummary({ workspace, context, options = {} }) {
   return `${renderWorkspaceAttentionPanel(workspace, options)}<section class="panel" aria-labelledby="summary-heading"><h2 id="summary-heading">Summary</h2><dl class="facts"><dt>Status</dt><dd>${escape(statusLabel(workspace.status))}</dd><dt>Branch</dt><dd>${escape(context?.branch ?? workspace.ref ?? 'Default branch')}</dd><dt>Repository context</dt><dd>${itemCount}</dd><dt>Capabilities</dt><dd>${capabilities || 'Not reported'}</dd><dt>Network posture</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Cost used</dt><dd>Not reported for workspaces yet</dd></dl><p class="page-note">Cost, budget, agent and task counts arrive with the phases that expose them; this panel never invents a number.</p></section>`;
 }
 
-export function renderWorkspaceTabPlaceholder(tab) {
-  const label = (WORKSPACE_TABS.find((entry) => entry.id === tab) ?? {}).label ?? tab;
-  const phase = WORKSPACE_TAB_PHASE[tab] ?? 'a later phase of issue #220';
-  return `<section class="panel"><h2>${escape(label)}</h2><p>This tab arrives with ${escape(phase)}. The Files and Runtime tabs carry the workspace operations that exist today.</p></section>`;
+/** Tabs are all backed by real adapters, so the cockpit never renders a placeholder.
+ * @param {{ artifacts?: Record<string, unknown>[] }} [input] */
+export function renderWorkspaceArtifacts({ artifacts = [] } = {}) {
+  const rows = artifacts.length
+    ? artifacts.map((artifact) => `<tr><th scope="row">${escape(artifact.logicalName)}<small class="mono wrap">${escape(artifact.artifactId)}</small></th><td>${escape(formatBytes(artifact.sizeBytes))}</td><td>${time(artifact.expiresAt)}</td><td><a class="secondary button download-artifact" href="/dashboard/api/v1/artifacts/${encodeURIComponent(artifact.artifactId)}/download" download="${escape(artifact.logicalName)}">Download</a></td></tr>`).join('')
+    : '<tr><td colspan="4">No retained snapshots belong to this workspace yet.</td></tr>';
+  return `<section class="panel" aria-labelledby="workspace-artifacts-heading"><h2 id="workspace-artifacts-heading">Artifacts</h2><p class="page-note">Bounded snapshots whose own record names this workspace. Creating and deleting snapshots stays on the global Artifacts page.</p><div class="desktop-table"><table><caption>${artifacts.length} snapshot(s)</caption><thead><tr><th>Name</th><th>Size</th><th>Expires</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
+/** The workspace's own activity: its live agent rows plus the audit rows recorded
+ * against it, over the same event grammar the Activity Center uses.
+ * @param {{ events?: Record<string, unknown>[]; workspaceId?: string }} [input] */
+export function renderWorkspaceActivity({ events = [], workspaceId = '' } = {}) {
+  const rows = events.length ? events.map(activityRow).join('') : '<li class="empty">No activity recorded for this workspace yet.</li>';
+  return `<section class="panel" aria-labelledby="workspace-activity-heading"><h2 id="workspace-activity-heading">Activity</h2><p class="page-note">Live runtime rows and retained audit rows recorded against <span class="mono">${escape(workspaceId)}</span>. The cross-workspace view is the Activity Center.</p><ul class="activity-list">${rows}</ul></section>`;
 }
 
 /** The finalize dialog: a commit message, plus the push decision. */
@@ -269,7 +282,14 @@ export function renderAgentTable(agents = [], now = Date.now()) {
 /** Global Agents page and the workspace-scoped tab share this body. */
 export function renderAgentsIndex({ agents = [], filters = {}, now = Date.now() } = {}) {
   const statusOptions = ['<option value="">All statuses</option>', ...AGENT_STATUSES.map((status) => `<option value="${escape(status)}"${filters.status === status ? ' selected' : ''}>${escape(agentStatusLabel(status))}</option>`)].join('');
-  const filterRow = `<form id="agent-filters" class="resource-filters" role="search" aria-label="Filter agents"><label for="agent-status-filter">Status</label><select id="agent-status-filter" name="status">${statusOptions}</select>${filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : '<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">'}<button type="submit">Apply filters</button></form>`;
+  const attentionOptions = [['', 'Any attention state'], ['needs-attention', 'Needs attention'], ['clear', 'Clear']].map(([value, label]) => `<option value="${value}"${(filters.attention ?? '') === value ? ' selected' : ''}>${label}</option>`).join('');
+  const filterRow = '<form id="agent-filters" class="resource-filters" role="search" aria-label="Filter agents">'
+    + `<label for="agent-status-filter">Status</label><select id="agent-status-filter" name="status">${statusOptions}</select>`
+    + (filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : `<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" value="${escape(filters.workspaceId ?? '')}" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">`)
+    + `<label for="agent-profile-filter">Profile</label><input id="agent-profile-filter" name="profileId" value="${escape(filters.profileId ?? '')}" placeholder="coding-fast">`
+    + `<label for="agent-parent-filter">Parent agent</label><input id="agent-parent-filter" name="parentAgentId" value="${escape(filters.parentAgentId ?? '')}" placeholder="agent_…">`
+    + `<label for="agent-attention-filter">Attention</label><select id="agent-attention-filter" name="attention">${attentionOptions}</select>`
+    + '<button type="submit">Apply filters</button></form>';
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Agent control.</strong> Every agent runs as your identity in an isolated executor with its own TTL, token, output and cost budgets. Child agents appear under the agent that spawned them.</div>',
     filters: filterRow,
@@ -546,11 +566,17 @@ export function activityEvent({ at, category, status, actor, summary, href, dura
   return { at, category, status, actor, summary, href, durable };
 }
 
+/** One activity row. The Activity Center and the cockpit's Activity tab share it, so a
+ * live runtime row and a retained audit row look the same wherever they appear. */
+function activityRow(event) {
+  return `<li class="activity-event"><div class="record-heading"><span class="mono">${event.at ? time(event.at) : 'Time not reported'}</span><span class="status ${escape(String(event.status ?? 'unknown').toLowerCase())}">${escape(String(event.status ?? 'unknown'))}</span></div><p><strong>${escape(String(event.summary ?? event.category))}</strong></p><p class="activity-meta">${escape(String(event.category))} · ${escape(String(event.actor ?? 'Not reported'))} ${event.durable ? '<span class="status active">Retained audit</span>' : '<span class="status">Live runtime</span>'}</p>${event.href ? `<a href="${escape(String(event.href))}">Open</a>` : ''}</li>`;
+}
+
 export function renderActivityCenter({ events = [], filter = 'all' } = {}) {
   const tabs = ACTIVITY_FILTERS.map((entry) => `<a href="/dashboard/activity${entry.id === 'all' ? '' : `?filter=${entry.id}`}" ${entry.id === filter ? 'aria-current="page"' : ''}>${escape(entry.label)}${entry.id === 'all' ? '' : ` (${escape(String(events.filter((event) => event.category === entry.id).length))})`}</a>`).join('');
   const visible = filter === 'all' ? events : events.filter((event) => event.category === filter);
   const rows = visible.length
-    ? visible.map((event) => `<li class="activity-event"><div class="record-heading"><span class="mono">${event.at ? time(event.at) : 'Time not reported'}</span><span class="status ${escape(String(event.status ?? 'unknown').toLowerCase())}">${escape(String(event.status ?? 'unknown'))}</span></div><p><strong>${escape(String(event.summary ?? event.category))}</strong></p><p class="activity-meta">${escape(String(event.category))} · ${escape(String(event.actor ?? 'Not reported'))} ${event.durable ? '<span class="status active">Retained audit</span>' : '<span class="status">Live runtime</span>'}</p>${event.href ? `<a href="${escape(String(event.href))}">Open</a>` : ''}</li>`).join('')
+    ? visible.map(activityRow).join('')
     : '<li class="empty">No events in this view yet.</li>';
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Operational activity.</strong> Runtime categories are live and disappear with their workspace; audit rows are retained and redacted. The panel labels each row, so the two are never confused.</div>',
@@ -1136,10 +1162,10 @@ export function renderOverview({ overview = {}, access = {}, server, metrics = {
   const costMicros = Number(cost.costMicros);
   const inAnHour = expiring.find((bucket) => bucket.windowMinutes === 60) ?? {};
   const tiles = [
-    { id: 'attention', label: 'Needs attention', value: String(attention.length), note: attention.length ? 'Open the list and act on the first item.' : 'Nothing needs action right now.', href: '/dashboard/activity' },
-    { id: 'running', label: 'Running now', value: String(running.agents ?? 0), note: `${String(running.workspaces ?? 0)} active workspace(s)`, href: '/dashboard/agents' },
-    { id: 'cost', label: 'Cost', value: Number.isFinite(costMicros) ? `$${(costMicros / 1_000_000).toFixed(4)}` : 'Not reported', note: `scope: ${String(cost.scope ?? 'not reported')}`, href: '/dashboard/agents' },
-    { id: 'expiry', label: 'Expiring soon', value: String(inAnHour.count ?? 0), note: 'lease(s) within the hour', href: '/dashboard/workspaces' }
+    { id: 'attention', label: 'Needs attention', value: String(attention.length), note: attention.length ? 'Open the agents needing attention; the list below also covers workspaces and approvals.' : 'Nothing needs action right now.', href: '/dashboard/agents?attention=needs-attention' },
+    { id: 'running', label: 'Running now', value: String(running.agents ?? 0), note: `${String(running.workspaces ?? 0)} active workspace(s)`, href: '/dashboard/agents?status=RUNNING' },
+    { id: 'cost', label: 'Cost', value: Number.isFinite(costMicros) ? `$${(costMicros / 1_000_000).toFixed(4)}` : 'Not reported', note: `scope: ${String(cost.scope ?? 'not reported')}`, href: '/dashboard/agents?status=RUNNING' },
+    { id: 'expiry', label: 'Expiring soon', value: String(inAnHour.count ?? 0), note: 'lease(s) within the hour', href: '/dashboard/workspaces?expiring=60' }
   ];
   const metricTiles = `<ul class="metric-grid decision-grid">${tiles.map((tile) => `<li class="metric decision-${escape(tile.id)}"><a href="${escape(tile.href)}"><span class="metric-label">${escape(tile.label)}</span><span class="metric-value">${escape(tile.value)}</span><span class="metric-note">${escape(tile.note)}</span></a></li>`).join('')}</ul>`;
   const attentionList = attention.length

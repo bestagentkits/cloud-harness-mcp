@@ -2,7 +2,7 @@ import express, { Router, type NextFunction, type Response } from 'express';
 import { TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { principalFromAuthInfo } from './auth.js';
-import { buildActivityProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
+import { agentNeedsAttention, buildActivityProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
 import { dashboardSecurity, requireJson } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -366,13 +366,29 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   // contract; the workspace id is optional there, so a global view lists across the
   // principal's workspaces and a scoped view passes it through.
   router.get('/api/v1/agents', async (request: DashboardRequest, response, next) => {
-    await call(runner, request, response, next, 'agent_list', {
-      ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {}),
-      ...(typeof request.query.parentAgentId === 'string' ? { parentAgentId: agentId.parse(request.query.parentAgentId) } : {}),
-      ...(typeof request.query.status === 'string' ? { status: agentStatus.parse(request.query.status) } : {}),
-      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {}),
-      ...(typeof request.query.limit === 'string' ? { limit: z.coerce.number().int().min(1).max(100).parse(request.query.limit) } : {})
-    });
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const result = await runner.call('agent_list', input('agent_list', {
+        ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {}),
+        ...(typeof request.query.parentAgentId === 'string' ? { parentAgentId: agentId.parse(request.query.parentAgentId) } : {}),
+        ...(typeof request.query.status === 'string' ? { status: agentStatus.parse(request.query.status) } : {}),
+        ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {}),
+        ...(typeof request.query.limit === 'string' ? { limit: z.coerce.number().int().min(1).max(100).parse(request.query.limit) } : {})
+      }), selected);
+      if (!result.ok) { sendRunnerResponse(response, 'agent_list', result); return; }
+      const mapped = mapDashboardData('agent_list', result.data) as { agents?: Record<string, unknown>[] };
+      // The runner contract filters by workspace, parent and status. Profile and
+      // attention are derived here from the same predicate the Agents view uses, so a
+      // filtered URL and the rows it shows can never disagree.
+      const profileId = typeof request.query.profileId === 'string' ? request.query.profileId.trim() : '';
+      const attention = typeof request.query.attention === 'string' ? request.query.attention : '';
+      const agents = (mapped.agents ?? []).filter((agent) => (
+        (!profileId || String(agent.profileId ?? '') === profileId) &&
+        (!attention || agentNeedsAttention(agent) === (attention === 'needs-attention'))
+      ));
+      response.json({ data: { ...mapped, agents } });
+    } catch (error) { next(error); }
   });
 
   router.get('/api/v1/workspaces/:workspaceId/agents', async (request: DashboardRequest, response, next) => {
@@ -380,6 +396,39 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       workspaceId: workspaceId.parse(request.params.workspaceId),
       ...(typeof request.query.status === 'string' ? { status: agentStatus.parse(request.query.status) } : {})
     });
+  });
+
+  // Workspace-scoped projections behind the cockpit's Artifacts and Activity tabs. Both
+  // reuse the adapters the global pages already call and narrow them to one workspace,
+  // so no cockpit tab has to render a placeholder or an unfiltered list.
+  router.get('/api/v1/workspaces/:workspaceId/artifacts', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const id = workspaceId.parse(request.params.workspaceId);
+      const result = await (runner.callInternal ? runner.callInternal('artifact_list', { limit: 100 }, selected) : unavailable({ artifacts: [] }));
+      if (!result.ok) { sendRunnerResponse(response, 'artifact_list', result); return; }
+      const mapped = mapDashboardData('artifact_list', result.data) as { artifacts?: Record<string, unknown>[] };
+      // `artifact_list` is not workspace-scoped in the runner contract, so the scope is
+      // applied to the records' own workspaceId rather than claimed from the request.
+      const artifacts = (mapped.artifacts ?? []).filter((artifact) => String(artifact.workspaceId ?? '') === id);
+      response.json({ data: { ...mapped, artifacts } });
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/activity', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const id = workspaceId.parse(request.params.workspaceId);
+      const [audit, agentsResult] = await Promise.all([
+        runner.callInternal ? runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] }),
+        runner.call('agent_list', input('agent_list', { workspaceId: id, limit: 100 }), selected)
+      ]);
+      const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
+      const agents = agentsResult.ok ? (mapDashboardData('agent_list', agentsResult.data) as { agents?: Record<string, unknown>[] }).agents : [];
+      response.json({ data: buildActivityProjection({ events: events ?? [], agents: agents ?? [], workspaceId: id }) });
+    } catch (error) { next(error); }
   });
 
   router.get('/api/v1/agents/:agentId', async (request: DashboardRequest, response, next) => {
