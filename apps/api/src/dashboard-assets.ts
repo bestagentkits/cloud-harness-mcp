@@ -52,6 +52,8 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
   '/workspaces/:workspaceId/deploy',
   '/workspaces/:workspaceId/artifacts',
   '/workspaces/:workspaceId/activity',
+  '/agents',
+  '/agents/:agentId',
   '/projects',
   '/projects/:projectId',
   '/secrets',

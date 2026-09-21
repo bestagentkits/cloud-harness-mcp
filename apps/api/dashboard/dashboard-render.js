@@ -177,6 +177,123 @@ export function renderFinalizeDialog() {
   });
 }
 
+export const AGENT_STATUSES = ['SPAWNING', 'RUNNING', 'CANCELLING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED'];
+
+const AGENT_STATUS_LABELS = {
+  SPAWNING: 'Spawning', RUNNING: 'Running', CANCELLING: 'Cancelling', SUCCEEDED: 'Succeeded',
+  FAILED: 'Failed', CANCELLED: 'Cancelled', TIMED_OUT: 'Timed out', LIMIT_EXCEEDED: 'Limit exceeded', INTERRUPTED: 'Interrupted'
+};
+
+/** Agent state is always text plus a semantic class; colour is never the only signal. */
+export function agentStatusLabel(status) {
+  return AGENT_STATUS_LABELS[status] ?? 'Unknown';
+}
+
+/**
+ * Budget utilization. A missing or unlimited budget reads as "Not reported" rather
+ * than as 0%, because a zero would look like a measurement the runner never made.
+ */
+export function budgetUtilization(used, max) {
+  if (!Number.isFinite(used) || !Number.isFinite(max) || max <= 0) return { state: 'unknown', percent: undefined };
+  const percent = Math.min(100, Math.round((used / max) * 100));
+  return { state: percent >= 100 ? 'exhausted' : percent >= 80 ? 'close' : 'ok', percent };
+}
+
+/** Age and TTL readouts for the list and the detail view. */
+export function agentAge(agent, now = Date.now()) {
+  const started = Date.parse(agent?.startedAt ?? agent?.createdAt ?? '');
+  if (!Number.isFinite(started)) return 'Not reported';
+  const minutes = Math.max(0, Math.round((now - started) / 60_000));
+  return minutes < 60 ? `${minutes} min` : `${(minutes / 60).toFixed(1)} h`;
+}
+
+export function agentTtl(agent, now = Date.now()) {
+  const expiresAt = Date.parse(agent?.expiresAt ?? '');
+  if (!Number.isFinite(expiresAt)) return 'Not reported';
+  const remaining = expiresAt - now;
+  return remaining <= 0 ? 'Expired' : `${Math.round(remaining / 60_000)} min`;
+}
+
+const costOf = (micros) => (Number.isFinite(micros) ? `$${(micros / 1_000_000).toFixed(4)}` : 'Not reported');
+const countOf = (value) => (Number.isFinite(value) ? String(value) : 'Not reported');
+const percentOf = (used, max) => {
+  const utilization = budgetUtilization(used, max);
+  return utilization.state === 'unknown' ? 'Not reported' : `${utilization.percent}%`;
+};
+
+/**
+ * Build the parent/child index. An agent whose parent is missing from this page is
+ * attached to the root so it cannot vanish from the hierarchy.
+ */
+export function agentTreeIndex(agents = []) {
+  const known = new Set(agents.map((agent) => agent.agentId));
+  const byParent = new Map();
+  for (const agent of agents) {
+    const parent = agent.parentAgentId && known.has(agent.parentAgentId) ? agent.parentAgentId : 'root';
+    if (!byParent.has(parent)) byParent.set(parent, []);
+    byParent.get(parent).push(agent);
+  }
+  return byParent;
+}
+
+function agentNode(agent, now) {
+  const status = escape(agent.status ?? 'UNKNOWN');
+  return `<div class="agent-node"><div class="agent-identity"><a href="/dashboard/agents/${encodeURIComponent(agent.agentId)}">${escape(agent.agentId)}</a><span class="status ${status.toLowerCase()}">${escape(agentStatusLabel(agent.status))}</span></div><dl class="facts"><dt>Workspace</dt><dd>${escape(agent.workspaceId ?? 'Not reported')}</dd><dt>Profile</dt><dd>${escape(agent.profileId ?? 'Not reported')}</dd><dt>Age</dt><dd>${escape(agentAge(agent, now))}</dd><dt>TTL</dt><dd>${escape(agentTtl(agent, now))}</dd><dt>Tokens</dt><dd>${escape(countOf(agent.usage?.inputTokens))} in · ${escape(countOf(agent.usage?.outputTokens))} out</dd><dt>Cost</dt><dd>${escape(costOf(agent.usage?.costMicros))}</dd><dt>Budget</dt><dd>${escape(percentOf(agent.usage?.costMicros, agent.budget?.maxCostMicros))} of cost limit</dd>${agent.terminalReason ? `<dt>Terminal reason</dt><dd>${escape(agent.terminalReason)}</dd>` : ''}${agent.outcomeUnknown === true ? '<dt>Outcome</dt><dd>Unknown — the agent stopped without a recorded terminal state</dd>' : ''}</dl></div>`;
+}
+
+/** Accessible parent/child hierarchy: a nested list, so a screen reader gets nesting. */
+export function renderAgentHierarchy(agents = [], now = Date.now()) {
+  const byParent = agentTreeIndex(agents);
+  const seen = new Set();
+  const render = (parentId) => {
+    const children = byParent.get(parentId) ?? [];
+    if (!children.length) return '';
+    return `<ul class="agent-tree" role="list">${children.map((agent) => {
+      if (seen.has(agent.agentId)) return '';
+      seen.add(agent.agentId);
+      return `<li>${agentNode(agent, now)}${render(agent.agentId)}</li>`;
+    }).join('')}</ul>`;
+  };
+  const markup = render('root');
+  return markup || '<p class="empty-note">No agents reported yet.</p>';
+}
+
+/** The flat fallback: same facts, one row per agent, with the parent named. */
+export function renderAgentTable(agents = [], now = Date.now()) {
+  const rows = agents.length
+    ? agents.map((agent) => `<tr><th scope="row"><a href="/dashboard/agents/${encodeURIComponent(agent.agentId)}">${escape(agent.agentId)}</a></th><td><span class="status ${escape(String(agent.status ?? '').toLowerCase())}">${escape(agentStatusLabel(agent.status))}</span></td><td>${escape(agent.workspaceId ?? 'Not reported')}</td><td>${escape(agent.parentAgentId ?? '—')}</td><td>${escape(agent.profileId ?? 'Not reported')}</td><td>${escape(agentAge(agent, now))}</td><td>${escape(percentOf(agent.usage?.costMicros, agent.budget?.maxCostMicros))}</td><td>${escape(costOf(agent.usage?.costMicros))}</td></tr>`).join('')
+    : '<tr><td colspan="8">No agents reported yet.</td></tr>';
+  return `<div class="desktop-table"><table><caption>${agents.length} agent(s)</caption><thead><tr><th>Agent</th><th>Status</th><th>Workspace</th><th>Parent</th><th>Profile</th><th>Age</th><th>Budget</th><th>Cost</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/** Global Agents page and the workspace-scoped tab share this body. */
+export function renderAgentsIndex({ agents = [], filters = {}, now = Date.now() } = {}) {
+  const statusOptions = ['<option value="">All statuses</option>', ...AGENT_STATUSES.map((status) => `<option value="${escape(status)}"${filters.status === status ? ' selected' : ''}>${escape(agentStatusLabel(status))}</option>`)].join('');
+  const filterRow = `<form id="agent-filters" class="resource-filters" role="search" aria-label="Filter agents"><label for="agent-status-filter">Status</label><select id="agent-status-filter" name="status">${statusOptions}</select>${filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : '<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">'}<button type="submit">Apply filters</button></form>`;
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Agent control.</strong> Every agent runs as your identity in an isolated executor with its own TTL, token, output and cost budgets. Child agents appear under the agent that spawned them.</div>',
+    filters: filterRow,
+    body: `<section aria-labelledby="agent-hierarchy-heading"><h2 id="agent-hierarchy-heading">Hierarchy</h2>${renderAgentHierarchy(agents, now)}</section><section aria-labelledby="agent-table-heading"><h2 id="agent-table-heading">All agents</h2>${renderAgentTable(agents, now)}</section>`
+  })}`;
+}
+
+/**
+ * One agent in full: overview, usage, logs, and the message controls. Logs are the
+ * bounded projection the adapter produced; nothing larger is rendered here.
+ */
+export function renderAgentDetail({ agent, logs = [] } = {}) {
+  const usage = agent?.usage ?? {};
+  const budget = agent?.budget ?? {};
+  const logRows = logs.length
+    ? logs.map((event) => `<li class="agent-log-event"><span class="mono">${escape(event.type ?? 'event')}</span>${time(event.timestamp)}<pre class="mono">${escape(event.content ?? '')}</pre></li>`).join('')
+    : '<li class="empty">No retained log events for this agent.</li>';
+  const overview = `<section class="panel" aria-labelledby="agent-overview-heading"><h2 id="agent-overview-heading">Overview</h2><dl class="facts"><dt>Status</dt><dd><span class="status ${escape(String(agent?.status ?? '').toLowerCase())}">${escape(agentStatusLabel(agent?.status))}</span></dd><dt>Profile</dt><dd>${escape(agent?.profileId ?? 'Not reported')}</dd><dt>Parent</dt><dd>${escape(agent?.parentAgentId ?? 'None')}</dd><dt>Started</dt><dd>${agent?.startedAt ? time(agent.startedAt) : 'Not reported'}</dd><dt>Terminal</dt><dd>${agent?.terminalAt ? time(agent.terminalAt) : 'Still running or not reported'}</dd><dt>Expires</dt><dd>${agent?.expiresAt ? time(agent.expiresAt) : 'Not reported'}</dd><dt>Terminal reason</dt><dd>${escape(agent?.terminalReason ?? 'Not reported')}</dd><dt>Outcome</dt><dd>${agent?.outcomeUnknown === true ? 'Unknown — no terminal state was recorded' : 'Reported'}</dd><dt>Allowed proxy operations</dt><dd>${Array.isArray(agent?.proxyOperations) && agent.proxyOperations.length ? agent.proxyOperations.map((operation) => escape(operation)).join(', ') : 'Not reported'}</dd></dl></section>`;
+  const usagePanel = `<section class="panel" aria-labelledby="agent-usage-heading"><h2 id="agent-usage-heading">Usage</h2><dl class="facts"><dt>Input tokens</dt><dd>${escape(countOf(usage.inputTokens))} of ${escape(countOf(budget.maxInputTokens))} (${escape(percentOf(usage.inputTokens, budget.maxInputTokens))})</dd><dt>Output tokens</dt><dd>${escape(countOf(usage.outputTokens))} of ${escape(countOf(budget.maxOutputTokens))} (${escape(percentOf(usage.outputTokens, budget.maxOutputTokens))})</dd><dt>Cost</dt><dd>${escape(costOf(usage.costMicros))} of ${escape(costOf(budget.maxCostMicros))} (${escape(percentOf(usage.costMicros, budget.maxCostMicros))})</dd><dt>Output bytes</dt><dd>${escape(countOf(usage.outputBytes))} of ${escape(countOf(budget.maxOutputBytes))}</dd><dt>Tool time</dt><dd>${escape(countOf(usage.toolTimeMs))} ms</dd><dt>Wall time</dt><dd>${escape(countOf(usage.wallTimeMs))} ms</dd><dt>Events</dt><dd>${escape(countOf(usage.eventCount))}</dd></dl><p class="page-note">Usage is the runner's reported counters; a limit that was never configured reads as “Not reported”.</p></section>`;
+  const logsPanel = `<section class="panel" aria-labelledby="agent-logs-heading"><h2 id="agent-logs-heading">Logs</h2><p class="page-note">Bounded and redacted: large events are truncated before they reach this page.</p><ul class="agent-log-list">${logRows}</ul></section>`;
+  const messagesPanel = `<section class="panel" aria-labelledby="agent-messages-heading"><h2 id="agent-messages-heading">Messages</h2><form id="agent-message-form" class="stack-form"><label for="agent-message-mode">Delivery</label><select id="agent-message-mode" name="mode"><option value="steer" selected>Steer the running agent</option><option value="followUp">Queue a follow-up</option></select><label for="agent-message-text">Message</label><textarea id="agent-message-text" name="message" rows="3" required maxlength="65536"></textarea><div class="form-row-actions"><button type="submit" class="accent-btn">Send message</button><button id="cancel-agent" class="danger" type="button">Cancel agent</button></div><p class="form-status" aria-live="polite"></p></form></section>`;
+  return `${overview}${usagePanel}${logsPanel}${messagesPanel}`;
+}
+
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';

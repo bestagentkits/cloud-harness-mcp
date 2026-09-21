@@ -53,6 +53,20 @@ beforeEach(async () => {
         branch: 'feature/x', commitSha: 'a'.repeat(40), committed: true, pushed: true, filesChanged: 3,
         remote: 'https://github.com/example/project.git', workspacePath: '/host/jobs/private', ownerId: 'internal-owner'
       } };
+      if (operation === 'agent_list') return { ok: true, message: 'agents', truncated: false, data: { agents: [
+        {
+          agentId: `agent_${'g'.repeat(24)}`, workspaceId, parentAgentId: null, profileId: 'coding-fast', status: 'RUNNING', generation: 3,
+          createdAt: '2026-08-17T00:00:00.000Z', startedAt: '2026-08-17T00:00:10.000Z', terminalAt: null, expiresAt: '2026-08-17T01:00:00.000Z',
+          budget: { ttlSeconds: 3_600, maxOutputBytes: 1_048_576, maxInputTokens: 200_000, maxOutputTokens: 32_000, maxCostMicros: 5_000_000 },
+          usage: { inputTokens: 1_000, outputTokens: 500, costMicros: 250_000, outputBytes: 2_048, eventCount: 12, toolTimeMs: 900, wallTimeMs: 5_000 },
+          terminalReason: null, outcomeUnknown: false, proxyOperations: ['files_read'],
+          ownerId: 'internal-owner', containerName: 'executor-secret', workspacePath: '/host/jobs/private', prompt: 'do the thing'
+        }
+      ] } };
+      if (operation === 'agent_logs') return { ok: true, message: 'logs', truncated: false, data: {
+        agentId: `agent_${'g'.repeat(24)}`, cursor: '0', nextCursor: '1', retainedBaseCursor: '0', truncated: false, hasMore: false,
+        events: [{ cursor: '0', nextCursor: '1', timestamp: '2026-08-17T00:00:30.000Z', type: 'tool.call', content: `hello ${'x'.repeat(5_000)}` }]
+      } };
       if (operation === 'files_write') return { ok: true, message: 'written', truncated: false, data: { path: input.path, sha256: 'b'.repeat(64) } };
       return { ok: true, message: 'ok', truncated: false, data: {} };
     }),
@@ -322,6 +336,37 @@ describe('dashboard BFF', () => {
     expect(finalized.status).toBe(200);
     expect(JSON.stringify(finalized.json)).not.toContain('/host/jobs');
     expect(finalized.json.data).toMatchObject({ commitSha: 'a'.repeat(40), committed: true, pushed: true, filesChanged: 3 });
+  });
+
+  it('projects agent records without owner, container or prompt leakage', async () => {
+    const list = await send('/api/v1/agents');
+    expect(list.status).toBe(200);
+    const raw = JSON.stringify(list.json);
+    for (const forbidden of ['internal-owner', 'executor-secret', '/host/jobs', 'do the thing']) {
+      expect(raw, forbidden).not.toContain(forbidden);
+    }
+    expect(list.json.data.agents[0]).toMatchObject({
+      agentId: `agent_${'g'.repeat(24)}`, workspaceId, profileId: 'coding-fast', status: 'RUNNING',
+      budget: { maxCostMicros: 5_000_000 }, usage: { inputTokens: 1_000, costMicros: 250_000 }
+    });
+    expect(list.json.data.agents[0].proxyOperations).toEqual(['files_read']);
+
+    // Log events stay bounded per event, and an oversized event is marked truncated.
+    const logs = await send(`/api/v1/agents/agent_${'g'.repeat(24)}/logs`);
+    expect(logs.status).toBe(200);
+    expect(logs.json.data.events[0].content).toContain('… truncated');
+    expect(logs.json.data.events[0].content.length).toBeLessThan(4_100);
+    expect(logs.json.data.events[0].type).toBe('tool.call');
+  });
+
+  it('serves the workspace-scoped agent list and rejects an unknown agent status', async () => {
+    const scoped = await send(`/api/v1/workspaces/${workspaceId}/agents`);
+    expect(scoped.status).toBe(200);
+    // The contract schema applies its own `limit` default, so match the scope only.
+    expect(calls.filter((call) => call.operation === 'agent_list').at(-1)?.input).toMatchObject({ workspaceId });
+
+    const rejected = await send('/api/v1/agents?status=NOPE');
+    expect(rejected.status).toBe(400);
   });
 
   it('accepts an allowlisted hostname when the request host includes its HTTPS port', async () => {

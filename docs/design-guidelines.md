@@ -267,6 +267,27 @@ working one.
   [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) with
   projections in
   [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
+- **Agents:** `/dashboard/agents` is the global control center, and the workspace
+  cockpit's Agents tab renders the same body scoped to one workspace, so a filter
+  and a fact mean the same thing in both places. The hierarchy is a nested list
+  built from `parentAgentId` — a screen reader gets real nesting — with every agent
+  also listed flat in a table that names its parent, so the non-graph fallback is
+  always present. An agent whose parent is missing from the page attaches to the
+  root instead of disappearing. Each agent shows status as text plus a semantic
+  class, workspace, profile, age, TTL, tokens, cost and cost-budget utilization;
+  a limit the runner never reported reads as "Not reported" rather than 0%, and
+  an over-spend clamps at 100%. The detail view splits Overview, Usage, Logs and
+  Messages; logs are the adapter's bounded projection (an oversized event is
+  truncated with an explicit marker) and messages carry a client-generated
+  idempotency key while cancel cascades to children behind a confirmation.
+  Owners: `agentStatusLabel`, `budgetUtilization`, `agentTreeIndex`,
+  `renderAgentHierarchy`, `renderAgentTable`, `renderAgentsIndex` and
+  `renderAgentDetail` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters
+  are `/api/v1/agents*` and `/api/v1/workspaces/:id/agents` in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) with
+  the agent projections in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with

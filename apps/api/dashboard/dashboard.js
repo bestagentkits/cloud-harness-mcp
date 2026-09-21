@@ -45,7 +45,8 @@ import {
   renderModelsActions, renderGitHubActions, renderMcpActions,
   renderPrimaryAction,
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
-  renderWorkspaceTabPlaceholder, renderFinalizeDialog
+  renderWorkspaceTabPlaceholder, renderFinalizeDialog,
+  renderAgentsIndex, renderAgentDetail
 } from './dashboard-render.js';
 import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -394,20 +395,16 @@ export function validateSkillInstructions(text) {
  * that never ends.
  */
 /**
- * Inserts renderer output without assigning innerHTML on a live element. The renderers escape every value
- * they interpolate, so this is a second layer rather than the only one: parsing into an inert document and
- * adopting the resulting nodes keeps the assignment off the live tree.
+ * Inserts renderer output by adopting parsed nodes. Browsers parse with DOMParser,
+ * which keeps renderer markup off the live tree as a string; the test doubles install
+ * their own parser and adoption method, so no raw-HTML assignment lives in this
+ * module. Every renderer escapes the values it interpolates.
  */
-function insertRendered(element, html) {  if (!element) return;
+function insertRendered(element, html) {
+  if (!element) return;
   const markup = String(html ?? '');
-  if (typeof globalThis.DOMParser === 'function') {
-    const parsed = new globalThis.DOMParser().parseFromString(markup, 'text/html');
-    element.replaceChildren(...parsed.body.childNodes);
-    return;
-  }
-  // The fake DOM the tests drive has no DOMParser, and every renderer escapes the values it interpolates,
-  // so the fallback keeps the assignment in one place instead of at each call site.
-  element.innerHTML = markup;
+  const parsed = new globalThis.DOMParser().parseFromString(markup, 'text/html');
+  element.replaceChildren(...parsed.body.childNodes);
 }
 
 /**
@@ -833,6 +830,7 @@ export function initializeDashboard() {
   const projectMatch = location.pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
   const knowledgeMatch = location.pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
   const mcpServerMatch = location.pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
+  const agentMatch = location.pathname.match(/^\/dashboard\/agents\/(agent_[A-Za-z0-9_-]{20,80})$/);
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
   const apiKeyReveal = createApiKeyRevealController({
     dialog: revealDialog, secretField: document.querySelector('#api-key-secret'), copyButton: document.querySelector('#copy-api-key'),
@@ -1059,6 +1057,7 @@ export function initializeDashboard() {
     skills: loadSkills,
     integrations: () => (location.pathname === '/dashboard/integrations/mcp-servers' ? loadMcpServers() : loadGitHub()),
     knowledge: loadKnowledge,
+    agents: loadAgents,
     artifacts: loadArtifacts,
     'api-keys': loadApiKeys,
     settings: loadSettings,
@@ -1074,6 +1073,7 @@ export function initializeDashboard() {
       else if (projectMatch) await loadProject(projectMatch[1]);
       else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
+      else if (agentMatch) await loadAgentDetail(agentMatch[1]);
       else if (page && PAGE_LOADERS[page.id]) await PAGE_LOADERS[page.id]();
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
       // Shared resource-page behavior is wired once per render rather than in every
@@ -2800,9 +2800,16 @@ export function initializeDashboard() {
     setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, files, git, automation, deploy, artifacts, and activity.');
     const body = tab === 'summary'
       ? renderWorkspaceSummary({ workspace: item, context: contextResult?.data })
-      : renderWorkspaceTabPlaceholder(tab);
+      : tab === 'agents'
+        ? await renderWorkspaceAgents(id)
+        : renderWorkspaceTabPlaceholder(tab);
     insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${body}${renderFinalizeDialog()}`);
     bindCockpitActions(item);
+  }
+  /** The workspace Agents tab reuses the global renderer with a scoped list. */
+  async function renderWorkspaceAgents(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/agents`);
+    return renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { workspaceId } });
   }
   /** Renew, recover, finalize, and close, each with pending state and live feedback. */
   function bindCockpitActions(item) {
@@ -2836,6 +2843,67 @@ export function initializeDashboard() {
       if (id) await loadWorkspace(id, 'summary');
     } catch (error) { showError(error); }
     finally { button.disabled = false; button.textContent = original; }
+  }
+  /**
+   * Global Agents page and the workspace-scoped tab share one renderer and one
+   * adapter; the workspace id decides the scope, and filters are URL-backed so a
+   * filtered view is shareable.
+   */
+  async function loadAgents(workspaceId) {
+    selectNavigation('agents');
+    document.querySelector('#command-surface').hidden = true;
+    const parameters = new URLSearchParams(location.search);
+    const status = parameters.get('status') ?? '';
+    const scope = workspaceId ?? parameters.get('workspaceId') ?? '';
+    const query = new URLSearchParams({ ...(status ? { status } : {}), ...(scope ? { workspaceId: scope } : {}) });
+    const result = await api(`/agents${query.size ? `?${query}` : ''}`);
+    insertRendered(content, renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { status, workspaceId: scope } }));
+    document.querySelector('#agent-filters')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const next = new URLSearchParams();
+      for (const [key, value] of new FormData(event.currentTarget)) if (String(value).trim()) next.set(key, String(value).trim());
+      navigateTo(`/dashboard/agents${next.size ? `?${next}` : ''}`);
+    });
+  }
+  /** One agent: overview, usage, bounded logs, and the message/cancel controls. */
+  async function loadAgentDetail(agentId) {
+    selectNavigation('agents');
+    document.querySelector('#command-surface').hidden = true;
+    const workspaceScope = new URLSearchParams(location.search).get('workspaceId');
+    const query = workspaceScope ? `?workspaceId=${encodeURIComponent(workspaceScope)}` : '';
+    const [statusResult, logsResult] = await Promise.all([
+      api(`/agents/${encodeURIComponent(agentId)}${query}`),
+      api(`/agents/${encodeURIComponent(agentId)}/logs${query}`).catch(() => undefined)
+    ]);
+    const agent = statusResult.data;
+    setTitle('Agent detail', 'One coding agent: status, usage, bounded logs, and control.');
+    insertRendered(content, renderAgentDetail({ agent, logs: logsResult?.data?.events ?? [] }));
+    bindAgentControls(agent, agentId);
+  }
+  function bindAgentControls(agent, agentId) {
+    const form = document.querySelector('#agent-message-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      // The contract requires an idempotency key, so a retry cannot double-deliver.
+      const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      void submitForm(form, 'Sending…', async () => {
+        await api(`/agents/${encodeURIComponent(agentId)}/messages`, {
+          method: 'POST',
+          body: requestBody({ workspaceId: agent.workspaceId, message: values.get('message'), mode: values.get('mode'), idempotencyKey })
+        });
+      }, async () => { announce('Message sent to the agent.'); await loadAgentDetail(agentId); });
+    });
+    document.querySelector('#cancel-agent')?.addEventListener('click', (event) => confirmAction({
+      title: 'Cancel this agent and its children?',
+      description: 'Cancellation cascades to every agent this one spawned and cannot be undone.',
+      target: agentId, label: 'Cancel agent', pendingLabel: 'Cancelling…',
+      action: async () => {
+        await api(`/agents/${encodeURIComponent(agentId)}/cancel`, { method: 'POST', body: requestBody({ workspaceId: agent.workspaceId }) });
+        announce('Agent cancelled.');
+        await loadAgentDetail(agentId);
+      }
+    }, event.currentTarget));
   }
   async function loadFiles(id) {
     const item = await workspace(id); setTitle('Files', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'files');
