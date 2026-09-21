@@ -341,6 +341,22 @@ working one.
   [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters are
   `/api/v1/workspaces/:id/{skills,hooks,deployments}` and their guarded run routes in
   [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
+- **Activity and Approvals:** `/dashboard/activity` is one operational timeline with
+  filters for All / Agents / Tasks / MCP / Deployments / Audit, and one event grammar
+  — when, category, status, actor/resource, a short summary and where to look next.
+  Every row states whether it is **Retained audit** or **Live runtime**, because audit
+  is the durable spine while agent, task and deployment state is volatile; the two are
+  never presented as the same kind of record. `/dashboard/approvals` is an inbox of
+  pending privilege grants showing the requested command, workspace, working
+  directory, command digest, created and expiry times, with Approve and Reject behind
+  a confirmation that says the decision is audited. The rail shows a pending count
+  **only while something is pending**, and an empty inbox explains what it means. Audit
+  history left the rail in this phase and is reachable through the Activity filter, the
+  command palette, and its own route. Owners: `ACTIVITY_FILTERS`, `activityEvent`,
+  `renderActivityCenter` and `renderApprovals` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the loaders and
+  the badge (`updateApprovalsBadge`, `refreshApprovalsBadge`) live in `dashboard.js`
+  over the existing `/privilege-grants` and `/audit` routes.
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with
