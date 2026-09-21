@@ -8,6 +8,7 @@ import {
 } from '../dashboard/dashboard.js';
 
 import { renderSkillsSkeleton, renderTypesafeSkeleton } from '../dashboard/dashboard-render.js';
+import { DASHBOARD_PAGES } from '../dashboard/dashboard-pages.js';
 
 const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
 
@@ -20,7 +21,7 @@ const squish = (value: string) => value.replace(/\s+/g, ' ').trim();
 describe('dashboard static UI contract', () => {
   const html = asset('index.html');
   const css = asset('dashboard.css');
-  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}`;
+  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}`;
   const squishedCss = squish(css);
 
   it('provides native landmarks, focus entry, live status, and destructive confirmation', () => {
@@ -145,17 +146,26 @@ describe('dashboard static UI contract', () => {
   });
 
   it('exposes accessible metadata navigation and only existing dashboard BFF controls', () => {
-    for (const [path, label] of [
-      ['/dashboard/overview', 'Overview'], ['/dashboard', 'Workspaces'], ['/dashboard/projects', 'Projects'],
-      ['/dashboard/secrets', 'Secrets'], ['/dashboard/models', 'Models'], ['/dashboard/artifacts', 'Artifacts'],
-      ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub'],
-      ['/dashboard/mcp-servers', 'MCP Servers'],
-      ['/dashboard/skills', 'Skills'],
-      ['/dashboard/profile', 'Profile']
+    // Navigation is registry output (see dashboard-pages.test.ts for the parity and
+    // group contracts), so this test asserts the destinations exist as pages rather
+    // than as literals in the shell markup.
+    for (const [id, route, label] of [
+      ['overview', '/dashboard', 'Overview'], ['workspaces', '/dashboard/workspaces', 'Workspaces'],
+      ['projects', '/dashboard/projects', 'Projects'], ['secrets', '/dashboard/secrets', 'Secrets'],
+      ['models', '/dashboard/models', 'Models & Budgets'], ['artifacts', '/dashboard/artifacts', 'Artifacts'],
+      ['audit', '/dashboard/audit', 'Audit'], ['api-keys', '/dashboard/api-keys', 'API Access'],
+      ['integrations', '/dashboard/integrations', 'Integrations'],
+      ['skills', '/dashboard/skills', 'Skills'],
+      ['profile', '/dashboard/profile', 'Profile']
     ]) {
-      expect(html).toContain(`href="${path}"`);
-      expect(html).toContain(`>${label}</a>`);
+      const page = DASHBOARD_PAGES.find((candidate) => candidate.id === id);
+      expect(page, id).toBeDefined();
+      expect(page?.route, id).toBe(route);
+      expect(page?.label, id).toBe(label);
     }
+    // GitHub and MCP Servers are tabs of the Integrations page, not own destinations.
+    expect(DASHBOARD_PAGES.some((page) => page.route === '/dashboard/github')).toBe(false);
+    expect(DASHBOARD_PAGES.some((page) => page.route === '/dashboard/mcp-servers')).toBe(false);
     for (const endpoint of [
       "api('/projects')", "api('/secrets')", "api('/artifacts',", '`/audit?limit=50', "api('/github')", "api('/profile')",
       "'/github/setup'", "'/github/complete'", "'/github/reconcile'", "'/github/disconnect'", '`/environments/${'
@@ -166,14 +176,14 @@ describe('dashboard static UI contract', () => {
     for (const forbidden of ['sessionStorage', 'document.cookie', 'secret.value', 'secretValue', 'privateKey', 'accessToken']) expect(script).not.toContain(forbidden);
   });
 
-  it('exposes the settings page through the shell navigation, the loader dispatch, and the palette', () => {
-    expect(html).toContain('href="/dashboard/settings"');
-    expect(html).toContain('data-section="settings"');
-    expect(html).toContain('>Settings</a>');
-    expect(script).toContain("location.pathname === '/dashboard/settings'");
+  it('exposes the settings page through the registry, the loader dispatch, and the palette', () => {
+    const settings = DASHBOARD_PAGES.find((page) => page.id === 'settings');
+    expect(settings?.route).toBe('/dashboard/settings');
+    expect(settings?.nav).toBe(true);
+    expect(settings?.palette).toBe(true);
     expect(script).toContain('loadSettings()');
-    expect(script).toContain("id: 'page:settings'");
-    expect(script).toContain("href: '/dashboard/settings'");
+    expect(script).toContain('settings: loadSettings');
+    expect(script).toContain('palettePageCommands()');
     for (const contract of ["api('/settings')", "api('/settings/network-check'", 'id="settings-network-profile"', 'id="settings-status"']) expect(script).toContain(contract);
   });
 

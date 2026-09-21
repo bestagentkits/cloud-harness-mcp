@@ -32,6 +32,7 @@ import {
   listGlobalSecrets
 } from './dashboard-api.js';
 import {
+  escapeHtml,
   launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
   renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
@@ -42,6 +43,7 @@ import {
   renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
   renderSkillsSkeleton
 } from './dashboard-render.js';
+import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -398,6 +400,19 @@ function insertRendered(element, html) {
   element.innerHTML = markup;
 }
 
+/**
+ * Sidebar markup for the page registry. Labels, routes, groups and icons are
+ * authored in `dashboard-pages.js` and nowhere else, so navigation cannot drift
+ * away from routing again. The icon markup is trusted static SVG from that
+ * module; every text value is escaped here.
+ */
+export function renderSidebarNavMarkup(groups = navGroups()) {
+  return groups.map((group) => [
+    `<p class="nav-group">${escapeHtml(group.label)}</p>`,
+    ...group.pages.map((page) => `<a href="${escapeHtml(page.route)}" data-section="${escapeHtml(page.id)}"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${page.icon}</svg>${escapeHtml(page.label)}</a>`)
+  ].join('')).join('');
+}
+
 export function createImportPollingController({ fetchJob, onState, isTerminal, intervalMs = 1_500, maxAttempts = 40 }) {
   let attempts = 0;
   let stopped = false;
@@ -603,22 +618,12 @@ export function buildSkillSetBody({ name, description, skills, selectedIds }) {
   return { ok: true, body: { name: trimmed, description: String(description ?? ''), items, expectedGeneration: 0 } };
 }
 
-export const PALETTE_PAGE_COMMANDS = [
-  { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
-  { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },
-  { id: 'page:projects', group: 'Pages', label: 'Projects', hint: 'Page', href: '/dashboard/projects' },
-  { id: 'page:secrets', group: 'Pages', label: 'Secrets', hint: 'Page', href: '/dashboard/secrets' },
-  { id: 'page:models', group: 'Pages', label: 'Models', hint: 'Page', href: '/dashboard/models' },
-  { id: 'page:api-keys', group: 'Pages', label: 'API keys', hint: 'Page', href: '/dashboard/api-keys' },
-  { id: 'page:github', group: 'Pages', label: 'GitHub', hint: 'Page', href: '/dashboard/github' },
-  { id: 'page:knowledge', group: 'Pages', label: 'Knowledge', hint: 'Search memories and journals here', href: '/dashboard/knowledge' },
-  { id: 'page:mcp-servers', group: 'Pages', label: 'MCP Servers', hint: 'Manage downstream MCP integrations', href: '/dashboard/mcp-servers' },
-  { id: 'page:skills', group: 'Pages', label: 'Skills', hint: 'Manage skills, revisions, imports, and sets', href: '/dashboard/skills' },
-  { id: 'page:settings', group: 'Pages', label: 'Settings', hint: 'Instance defaults for workspaces and network egress', href: '/dashboard/settings' },
-  { id: 'page:artifacts', group: 'Pages', label: 'Artifacts', hint: 'Page', href: '/dashboard/artifacts' },
-  { id: 'page:audit', group: 'Pages', label: 'Audit', hint: 'Page', href: '/dashboard/audit' },
-  { id: 'page:profile', group: 'Pages', label: 'Profile', hint: 'Page', href: '/dashboard/profile' }
-];
+/**
+ * Palette page commands are registry output, not a second list: a page cannot be
+ * navigable yet absent from the palette, and every hint lives beside the page it
+ * describes.
+ */
+export const PALETTE_PAGE_COMMANDS = palettePageCommands();
 
 export function isPaletteHotkey(event) {
   return Boolean(event)
@@ -795,6 +800,9 @@ export function validateSecretClient(name, value) {
 export function initializeDashboard() {
   const content = document.querySelector('#content'); const detail = document.querySelector('#detail'); const main = document.querySelector('#main');
   const sidebar = document.querySelector('#product-nav'); const alertBox = document.querySelector('#alert'); const announcer = document.querySelector('#announcer');
+  // The sidebar is registry output; index.html ships an empty container so a page
+  // label cannot live in two places.
+  insertRendered(document.querySelector('#sidebar-nav'), renderSidebarNavMarkup());
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
   const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(files|runtime))?$/);
@@ -948,42 +956,51 @@ export function initializeDashboard() {
     document.title = `${title} | Cloud Harness`;
   }
   function selectNavigation(section) {
+    // A loader passes a page id and nothing else: the registry owns which sidebar
+    // entry stays current, the heading, the help text and the document title.
+    const page = pageById(section);
+    const activeId = page ? navigationPageId(page) : section;
     for (const link of sidebar.querySelectorAll('a[data-section]')) {
-      if (link.dataset.section === section) link.setAttribute('aria-current', 'page');
+      if (link.dataset.section === activeId) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     }
     insertRendered(document.querySelector('#context-nav'), '');
+    if (page) setTitle(page.title, page.help);
   }
+  // Static pages resolve through the registry; detail routes keep their own matchers
+  // because they need the captured id.
+  const PAGE_LOADERS = {
+    overview: loadOverview,
+    workspaces: loadIndex,
+    audit: loadAudit,
+    projects: loadProjects,
+    secrets: loadGlobalSecrets,
+    models: loadModels,
+    skills: loadSkills,
+    integrations: () => (location.pathname === '/dashboard/integrations/mcp-servers' ? loadMcpServers() : loadGitHub()),
+    knowledge: loadKnowledge,
+    artifacts: loadArtifacts,
+    'api-keys': loadApiKeys,
+    settings: loadSettings,
+    profile: loadProfile
+  };
   async function load() {
     alertBox.hidden = true; setBusy(true);
     try {
-      if (location.pathname === '/dashboard' || location.pathname === '/dashboard/') await loadIndex();
-      else if (location.pathname === '/dashboard/overview') await loadOverview();
-      else if (location.pathname === '/dashboard/projects') await loadProjects();
-      else if (location.pathname === '/dashboard/secrets') await loadGlobalSecrets();
-      else if (location.pathname === '/dashboard/models') await loadModels();
-      else if (projectMatch) await loadProject(projectMatch[1]);
-      else if (location.pathname === '/dashboard/artifacts') await loadArtifacts();
-      else if (location.pathname === '/dashboard/audit') await loadAudit();
-      else if (location.pathname === '/dashboard/api-keys') await loadApiKeys();
-      else if (location.pathname === '/dashboard/github') await loadGitHub();
-      else if (location.pathname === '/dashboard/knowledge') await loadKnowledge();
-      else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
-      else if (location.pathname === '/dashboard/mcp-servers') await loadMcpServers();
-      else if (location.pathname === '/dashboard/skills') await loadSkills();
-      else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
-      else if (location.pathname === '/dashboard/settings') await loadSettings();
-      else if (location.pathname === '/dashboard/profile') await loadProfile();
-      else if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
+      const page = pageForPath(location.pathname);
+      if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
       else if (pathMatch) await loadWorkspace(pathMatch[1]);
+      else if (projectMatch) await loadProject(projectMatch[1]);
+      else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
+      else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
+      else if (page && PAGE_LOADERS[page.id]) await PAGE_LOADERS[page.id]();
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
       setBusy(false); main.focus({ preventScroll: true });
     } catch (error) { showError(error); }
   }
   async function loadSkills() {
     selectNavigation('skills');
-    setTitle('Skills', 'Browse the library, inspect revisions, import from a provider, and manage skill sets.');
     document.querySelector('#command-surface').hidden = true;
     insertRendered(content, renderSkillsSkeleton());
 
@@ -1381,7 +1398,6 @@ export function initializeDashboard() {
   }
   async function loadOverview() {
     selectNavigation('overview');
-    setTitle('Overview', 'A live summary of your workspaces, credentials, and recent activity.');
     document.querySelector('#command-surface').hidden = true;
     insertRendered(content, renderOverviewSkeleton());
     const [ws, keys, auditResult, github, profile, server] = await Promise.allSettled([
@@ -1422,8 +1438,7 @@ export function initializeDashboard() {
     });
   }
   async function loadIndex() {
-    selectNavigation('workspaces');
-    setTitle('Workspaces', 'TTL-limited coding environments available to your signed-in identity.'); document.querySelector('#command-surface').hidden = false;
+    selectNavigation('workspaces'); document.querySelector('#command-surface').hidden = false;
     const parameters = new URLSearchParams(location.search); const query = { q: parameters.get('q') ?? '', status: parameters.get('status') ?? '' };
     document.querySelector('#search').value = query.q; document.querySelector('#status').value = query.status;
     const result = await api('/workspaces'); insertRendered(content, renderWorkspaceIndex(result.data.workspaces, query));
@@ -1439,7 +1454,7 @@ export function initializeDashboard() {
     finally { form.removeAttribute('aria-busy'); button.disabled = false; button.textContent = original; }
   }
   async function loadProjects() {
-    selectNavigation('projects'); setTitle('Projects', 'Retained project and environment metadata for your signed-in identity.'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('projects'); document.querySelector('#command-surface').hidden = true;
     const result = await api('/projects'); insertRendered(content, renderProjectIndex(result.data.projects));
     document.querySelector('#create-project-form').addEventListener('submit', (event) => {
       event.preventDefault(); const form = event.currentTarget; const values = new FormData(form);
@@ -1510,7 +1525,6 @@ export function initializeDashboard() {
   }
   async function loadGlobalSecrets() {
     selectNavigation('secrets');
-    setTitle('Secrets', 'Retained global secrets available across all projects and workspaces.');
     document.querySelector('#command-surface').hidden = true;
     const result = await api('/secrets');
     const secrets = result.data?.secrets ?? [];
@@ -1596,7 +1610,6 @@ export function initializeDashboard() {
   }
   async function loadModels() {
     selectNavigation('models');
-    setTitle('Subagent Models', 'Manage model profiles and write-only provider credentials for Pi subagents.');
     document.querySelector('#command-surface').hidden = true;
 
     const [profilesRes, credsRes, statusRes] = await Promise.all([
@@ -1860,7 +1873,7 @@ export function initializeDashboard() {
     }
   }
   async function loadArtifacts() {
-    selectNavigation('artifacts'); setTitle('Artifacts', 'Bounded retained snapshots created from workspace files.'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('artifacts'); document.querySelector('#command-surface').hidden = true;
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
     const result = await api(`/artifacts?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); insertRendered(content, renderArtifactIndex(result.data.artifacts, result.cursor));
     const form = document.querySelector('#snapshot-form'); form.addEventListener('submit', (event) => {
@@ -1872,13 +1885,13 @@ export function initializeDashboard() {
     document.querySelector('#load-more-artifacts')?.addEventListener('click', (event) => { location.href = `/dashboard/artifacts?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`; });
   }
   async function loadAudit() {
-    selectNavigation('audit'); setTitle('Audit', 'Retained redacted control-plane events.'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('audit'); document.querySelector('#command-surface').hidden = true;
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
     const result = await api(`/audit?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); insertRendered(content, renderAuditIndex(result.data.events, result.cursor));
     document.querySelector('#load-more-audit')?.addEventListener('click', (event) => { location.href = `/dashboard/audit?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`; });
   }
   async function loadApiKeys() {
-    selectNavigation('api-keys'); setTitle('API keys', 'Expiring credentials for static MCP clients that cannot complete browser OAuth.');
+    selectNavigation('api-keys');
     document.querySelector('#command-surface').hidden = true;
     const result = await api('/api-keys'); apiKeyPageData = result.data; insertRendered(content, renderApiKeyIndex(apiKeyPageData)); bindApiKeyControls();
   }
@@ -1909,7 +1922,7 @@ export function initializeDashboard() {
     }, event.currentTarget));
   }
   async function loadGitHub() {
-    selectNavigation('github'); setTitle('GitHub', 'GitHub App installation and repository authorization status.'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('integrations'); integrationLinks('github'); document.querySelector('#command-surface').hidden = true;
     const callback = githubCallbackParameters(location.search);
     if (callback) {
       insertRendered(content, renderGitHub({ configured: true, installation: null, repositories: [] }, true));
@@ -1973,7 +1986,7 @@ export function initializeDashboard() {
     }
   }
   async function loadProfile() {
-    selectNavigation('profile'); setTitle('Profile', 'Your signed-in identity, display name, and session details.'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('profile'); document.querySelector('#command-surface').hidden = true;
     const result = await api('/profile'); insertRendered(content, renderProfile(result.data)); bindProfileControls();
   }
   function saveDisplayName(value) {
@@ -1994,7 +2007,6 @@ export function initializeDashboard() {
   let settingsReadiness;
   async function loadSettings() {
     selectNavigation('settings');
-    setTitle('Settings', 'Instance-wide defaults applied to new workspaces.');
     document.querySelector('#command-surface').hidden = true;
     insertRendered(content, '<div class="skeleton tile" aria-hidden="true"></div>');
     const { data } = await api('/settings');
@@ -2048,7 +2060,6 @@ export function initializeDashboard() {
   let currentKnowledgeItem;
   async function loadKnowledge(activeTab = 'all') {
     selectNavigation('knowledge');
-    setTitle('Knowledge Plane', 'Scoped memories, chronological journals, and knowledge graph relations.');
     document.querySelector('#command-surface').hidden = true;
 
     const parameters = new URLSearchParams(location.search);
@@ -2378,8 +2389,7 @@ export function initializeDashboard() {
     } catch { return raw; }
   }
   async function loadMcpServers() {
-    selectNavigation('mcp-servers');
-    setTitle('MCP Servers', 'Downstream MCP integrations available through the Cloud Harness gateway.');
+    selectNavigation('integrations'); integrationLinks('mcp-servers');
     document.querySelector('#command-surface').hidden = true;
     setBusy(true);
     try {
@@ -2391,7 +2401,7 @@ export function initializeDashboard() {
     } finally { setBusy(false); }
   }
   async function loadMcpServerDetail(serverId, tab = 'overview') {
-    selectNavigation('mcp-servers');
+    selectNavigation('integrations'); integrationLinks('mcp-servers');
     document.querySelector('#command-surface').hidden = true;
     currentMcpTab = tab;
     setBusy(true);
@@ -2619,7 +2629,7 @@ export function initializeDashboard() {
       action: async () => {
         await deleteMcpServer(button.dataset.mcpDelete, Number(button.dataset.generation));
         announce('MCP server deleted.');
-        location.href = '/dashboard/mcp-servers';
+        location.href = '/dashboard/integrations/mcp-servers';
       }
     }, event.currentTarget));
     for (const button of document.querySelectorAll('[data-mcp-tab]')) button.addEventListener('click', (event) => {
@@ -2686,6 +2696,11 @@ export function initializeDashboard() {
   }
   function contextLinks(id, current) {
     insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/workspaces/${encodeURIComponent(id)}/files" ${current === 'files' ? 'aria-current="page"' : ''}>Files</a><a href="/dashboard/workspaces/${encodeURIComponent(id)}/runtime" ${current === 'runtime' ? 'aria-current="page"' : ''}>Runtime</a>`);
+  }
+  // Secondary navigation for the single Integrations page: GitHub and MCP Servers
+  // are tabs of one destination instead of two top-level subsystems.
+  function integrationLinks(current) {
+    insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/integrations/github" ${current === 'github' ? 'aria-current="page"' : ''}>GitHub</a><a href="/dashboard/integrations/mcp-servers" ${current === 'mcp-servers' ? 'aria-current="page"' : ''}>MCP Servers</a>`);
   }
   function openFileConflict(id, localContent, invoker) {
     const conflictDialog = document.querySelector('#file-conflict-dialog'); const copyStatus = document.querySelector('#file-conflict-status');
