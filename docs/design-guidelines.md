@@ -324,6 +324,23 @@ working one.
   [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters
   are `/api/v1/workspaces/:id/git/*` and `/api/v1/workspaces/:id/worktrees` in
   [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
+- **Automation and Deploy:** the workspace Automation tab puts the resolved skill set
+  and the lifecycle hooks in one place. Hooks are grouped by the event that runs them
+  — `on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual` —
+  beside an ordered pipeline that states each stage and its hook count as text (no
+  colour-only or connector-only meaning), and a stage with no hooks says so rather
+  than disappearing. Activation and deactivation stay with the runner's manifest
+  contract; the page runs only what is already active, and a skill script runs only
+  when the operator names it, through the verified-bytes contract. The Deploy tab
+  lists repository-defined targets with their working directory, last reported result,
+  duration and failure detail, and states "Not reported" for a target the runner never
+  reported on instead of showing a zero; running a target confirms first because
+  deployments are external-effect operations. Owners: `HOOK_LIFECYCLE`,
+  `groupHooksByLifecycle`, `renderHookPipeline`, `renderHooks`,
+  `renderWorkspaceSkills`, `renderDeployPanel` and `renderAutomationPanel` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters are
+  `/api/v1/workspaces/:id/{skills,hooks,deployments}` and their guarded run routes in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with

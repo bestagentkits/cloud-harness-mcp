@@ -189,6 +189,15 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'worktrees_list',
   'worktrees_create',
   'worktrees_remove',
+  'skills_list',
+  'skills_read',
+  'skills_run',
+  'hooks_list',
+  'hooks_run',
+  'hooks_activate',
+  'hooks_deactivate',
+  'deployments_list',
+  'deployments_run',
   'toolkits_list',
   'toolkits_preview',
   'settings_get', 'settings_update', 'settings_network_check',
@@ -381,6 +390,23 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'git_fetch' || operation === 'git_pull' || operation === 'git_checkout' || operation === 'git_branch' || operation === 'git_merge' || operation === 'git_rebase' || operation === 'worktrees_create' || operation === 'worktrees_remove') {
     const output = boundedOutput(data.output);
     return { ...pick(data, ['name', 'path', 'head', 'branch', 'ref', 'action']), ...(output !== undefined ? { output } : {}) };
+  }
+  if (operation === 'skills_list') {
+    const skills = Array.isArray(data.skills) ? data.skills.map((skill) => pick(skill, ['name', 'tier', 'source', 'kind', 'state', 'sha256', 'description', 'shadowed'])) : [];
+    return { skills, ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
+  }
+  if (operation === 'skills_read') return pick(data, ['name', 'source', 'content', 'sha256', 'bytes', 'offset', 'truncated']);
+  if (operation === 'hooks_list') {
+    const hooks = Array.isArray(data.hooks) ? data.hooks.map((hook) => pick(hook, ['name', 'path', 'events', 'active', 'trigger', 'description', 'sha256'])) : [];
+    return { hooks, ...(typeof data.manifestSha256 === 'string' ? { manifestSha256: data.manifestSha256 } : {}), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
+  }
+  if (operation === 'deployments_list') {
+    const deployments = Array.isArray(data.deployments) ? data.deployments.map((entry) => pick(entry, ['name', 'cwd', 'status', 'lastResult', 'durationMs', 'error'])) : [];
+    return { deployments };
+  }
+  if (operation === 'skills_run' || operation === 'hooks_run' || operation === 'hooks_activate' || operation === 'hooks_deactivate' || operation === 'deployments_run') {
+    const output = boundedOutput(data.output);
+    return { ...pick(data, ['name', 'event', 'events', 'status', 'exitCode', 'durationMs', 'error', 'manifestSha256']), ...(output !== undefined ? { output } : {}) };
   }
   if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
