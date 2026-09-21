@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   renderApiKeyIndex, renderArtifactIndex, renderCopyChip, renderFormDialog, renderGitHubActions,
@@ -67,6 +68,18 @@ describe('shared resource-page layout', () => {
     for (const refused of ['https://evil.example/x', '//evil.example', 'javascript:alert(1)', '/other', '', undefined, null]) {
       expect(dashboardNavigationPath(refused), String(refused)).toBe('/dashboard');
     }
+  });
+
+  it('binds dialog opening by delegation so the shell action slot is covered', () => {
+    // Browser QA caught the original shape of this: the openers were bound only on
+    // `#content`, so the primary action — which lives in the shell header — opened
+    // nothing. Delegation on the document is what makes the action slot work, and
+    // this assertion fails if a future change goes back to a root-scoped query.
+    const script = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+    expect(script).toContain("document.addEventListener('click', (event) => {");
+    expect(script).toContain("event.target?.closest?.('[data-dialog]')");
+    expect(script).not.toContain('bindDialogOpeners');
+    expect(script).toContain("bindCopyAffordances(document.querySelector('#page-actions'))");
   });
 
   it('renders an empty state that names the next useful action', () => {
