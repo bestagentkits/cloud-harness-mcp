@@ -53,6 +53,20 @@ Phase 1 of 12 for #220. This PR does not close the epic.
   `new URL`) are pre-existing and unchanged by this phase: `innerHTML` 5 in
   `origin/main` and 5 here, `JSON.parse` 1/1, `new URL` 10/10.
 
+## Follow-up defect found by browser QA (fixed in the same phase)
+
+Browser QA of the merged phase-2 PR caught a wiring defect that the unit tests
+could not see: the primary action did not open its dialog. The openers were bound
+with a query scoped to `#content`, while the primary action renders into the
+shell's action slot (`#page-actions`) — outside that scope — so
+`dialogOpenAfterClick` was `false` and focus stayed on `main`. The fix delegates
+dialog opening once on the document (`openDialog` + a delegated click listener)
+and keeps only dismissal bound per render, since the `close` event does not
+bubble. Browser QA after the fix: `openAfterClick: true`, focus on `project-name`,
+invoker recorded, cancel affordance present. A source-level regression guard now
+asserts the delegation shape, and the copy-affordance binding covers the action
+slot as well.
+
 ## Operator-visible result
 
 - No page makes you scroll past a create form to reach the list.

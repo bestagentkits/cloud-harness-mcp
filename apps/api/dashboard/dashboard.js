@@ -993,21 +993,26 @@ export function initializeDashboard() {
     insertRendered(document.querySelector('#page-actions'), markup ?? '');
   }
   /**
-   * Opens every `[data-dialog]` trigger in the rendered page, closes its dialog
-   * from `[data-dialog-close]`, and restores focus to the invoker on close. Native
-   * `<dialog>` supplies the focus trap, so this adds no second focus manager.
+   * Dialog wiring. Opening is delegated once on the document, because a page's
+   * primary action lives in the shell's action slot — outside `#content` — so a
+   * content-scoped binding would silently miss the most important trigger.
+   * Dismissal is bound per render, since the `close` event does not bubble.
    */
-  function bindDialogOpeners(root) {
-    for (const trigger of root.querySelectorAll('[data-dialog]')) {
-      trigger.addEventListener('click', () => {
-        const target = document.getElementById(trigger.dataset.dialog);
-        if (!target || typeof target.showModal !== 'function') return;
-        target.dataset.invokerId = trigger.id ?? '';
-        if (!target.open) target.showModal();
-        const firstField = target.querySelector('input:not([type="hidden"]), select, textarea');
-        (firstField ?? target.querySelector('[data-dialog-close]'))?.focus?.();
-      });
-    }
+  function openDialog(trigger) {
+    const target = document.getElementById(trigger.dataset.dialog);
+    if (!target || typeof target.showModal !== 'function') return;
+    target.dataset.invokerId = trigger.id ?? '';
+    if (!target.open) target.showModal();
+    const firstField = target.querySelector('input:not([type="hidden"]), select, textarea');
+    (firstField ?? target.querySelector('[data-dialog-close]'))?.focus?.();
+  }
+  document.addEventListener('click', (event) => {
+    const closeTrigger = event.target?.closest?.('[data-dialog-close]');
+    if (closeTrigger) { closeTrigger.closest('dialog')?.close(); return; }
+    const trigger = event.target?.closest?.('[data-dialog]');
+    if (trigger) openDialog(trigger);
+  });
+  function bindDialogDismissal(root) {
     for (const dialogElement of root.querySelectorAll('dialog')) {
       dialogElement.querySelector('[data-dialog-close]')?.addEventListener('click', () => dialogElement.close());
       dialogElement.addEventListener('close', () => {
@@ -1063,8 +1068,10 @@ export function initializeDashboard() {
       else if (page && PAGE_LOADERS[page.id]) await PAGE_LOADERS[page.id]();
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
       // Shared resource-page behavior is wired once per render rather than in every
-      // loader: dialog open/close with focus restore, and copy affordances.
-      bindDialogOpeners(content); bindCopyAffordances(content);
+      // loader: dialog dismissal with focus restore, and copy affordances in both
+      // the content and the shell's action slot.
+      bindDialogDismissal(content);
+      bindCopyAffordances(content); bindCopyAffordances(document.querySelector('#page-actions'));
       setBusy(false); main.focus({ preventScroll: true });
     } catch (error) { showError(error); }
   }
