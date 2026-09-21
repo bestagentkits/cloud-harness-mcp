@@ -112,6 +112,50 @@ function sessionProjection(value: unknown): Record<string, unknown> {
   return { ...pick(source, sessionKeys), ...(output !== undefined ? { output } : {}) };
 }
 
+/**
+ * Git arrives from the worker as bounded text (`git status --short --branch`, a diff,
+ * `git worktree list`). Parsing it here keeps the browser free of porcelain parsing and
+ * makes the summary testable; the raw text still ships so an operator can read it.
+ */
+export function parseGitStatus(output: unknown): Record<string, unknown> {
+  const lines = String(output ?? '').split('\n');
+  const header = lines.find((line) => line.startsWith('## ')) ?? '';
+  const detail = header.slice(3).trim();
+  const bracket = detail.match(/\[([^\]]+)\]/);
+  const ahead = Number(bracket?.[1]?.match(/ahead (\d+)/)?.[1] ?? 0);
+  const behind = Number(bracket?.[1]?.match(/behind (\d+)/)?.[1] ?? 0);
+  const [left, right] = detail.replace(/\s*\[[^\]]+\]\s*/, '').split('...');
+  const entries = lines
+    .filter((line) => line.trim() && !line.startsWith('## '))
+    // The two-character XY code must keep its positions: the first column is the index
+    // and the second is the working tree, so trimming would erase which side changed.
+    .map((line) => ({ code: line.slice(0, 2).trim(), xy: line.slice(0, 2), path: line.slice(3).trim() }));
+  const index = (entry: { xy: string }) => entry.xy[0] !== ' ' && entry.xy[0] !== '?';
+  const worktree = (entry: { xy: string }) => entry.xy[1] !== ' ' && entry.xy[1] !== '?';
+  return {
+    branch: left || 'detached',
+    ...(right ? { upstream: right } : {}),
+    ahead,
+    behind,
+    entries: entries.map((entry) => ({ code: entry.code, path: entry.path })),
+    staged: entries.filter(index).length,
+    modified: entries.filter(worktree).length,
+    untracked: entries.filter((entry) => entry.xy.trim() === '??').length
+  };
+}
+
+/** `git worktree list` text: `<path> <oid> [branch]`. */
+export function parseWorktrees(output: unknown): Record<string, unknown>[] {
+  return String(output ?? '')
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => {
+      const [path, head, ...rest] = line.trim().split(/\s+/);
+      const branch = rest.join(' ').replace(/^\[|\]$/g, '');
+      return { path, head, ...(branch ? { branch } : {}) };
+    });
+}
+
 export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_open',
   'workspace_list',
@@ -133,6 +177,18 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'sessions_open',
   'sessions_io',
   'sessions_close',
+  'git_status',
+  'git_diff',
+  'git_log',
+  'git_fetch',
+  'git_pull',
+  'git_checkout',
+  'git_branch',
+  'git_merge',
+  'git_rebase',
+  'worktrees_list',
+  'worktrees_create',
+  'worktrees_remove',
   'toolkits_list',
   'toolkits_preview',
   'settings_get', 'settings_update', 'settings_network_check',
@@ -303,6 +359,28 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'sessions_open' || operation === 'sessions_close') return { session: sessionProjection(data.session ?? data) };
   if (operation === 'sessions_io') {
     return { session: sessionProjection(data.session ?? data), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}), truncated: data.truncated === true };
+  }
+  if (operation === 'git_status') {
+    return { ...parseGitStatus(data.output), output: boundedOutput(data.output) ?? '' };
+  }
+  if (operation === 'git_diff') {
+    const diff = boundedOutput(data.output ?? data.diff);
+    return { ...(diff !== undefined ? { diff } : {}), ...(typeof data.signature === 'string' ? { signature: data.signature } : {}), truncated: data.truncated === true || (diff ?? '').includes('… truncated') };
+  }
+  if (operation === 'git_log') {
+    const commits = Array.isArray(data.commits)
+      ? data.commits.map((commit) => pick(commit, ['oid', 'sha', 'subject', 'message', 'author', 'authoredAt', 'date', 'branch', 'refs']))
+      : [];
+    const output = boundedOutput(data.output);
+    return { commits, ...(output !== undefined ? { output } : {}), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}) };
+  }
+  if (operation === 'worktrees_list') {
+    const worktrees = Array.isArray(data.worktrees) ? data.worktrees.map((entry) => pick(entry, ['path', 'head', 'branch', 'name'])) : parseWorktrees(data.output);
+    return { worktrees, output: boundedOutput(data.output) ?? '' };
+  }
+  if (operation === 'git_fetch' || operation === 'git_pull' || operation === 'git_checkout' || operation === 'git_branch' || operation === 'git_merge' || operation === 'git_rebase' || operation === 'worktrees_create' || operation === 'worktrees_remove') {
+    const output = boundedOutput(data.output);
+    return { ...pick(data, ['name', 'path', 'head', 'branch', 'ref', 'action']), ...(output !== undefined ? { output } : {}) };
   }
   if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
