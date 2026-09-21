@@ -2692,6 +2692,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               if (accumulatedBytes + sBytes <= maxBytes) {
                 sanitizedItems.push(sItem);
                 accumulatedBytes += sBytes;
+              } else {
+                truncated = true;
+                if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
               }
               return;
             }

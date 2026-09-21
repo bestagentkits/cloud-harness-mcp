@@ -277,6 +277,9 @@ export class LocalWorkspaceBackend implements OperationBackend {
               if (accumulatedBytes + sBytes <= maxBytes) {
                 sanitizedItems.push(sItem);
                 accumulatedBytes += sBytes;
+              } else {
+                truncated = true;
+                if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
               }
               return;
             }

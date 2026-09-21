@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HarnessError, type RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, sanitizeAndAttributeProvenance, type RunnerConfig } from '@cloud-harness/contracts';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
@@ -444,5 +444,82 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
     } finally {
       delete process.env.CH_OWNER_SKILLS_ROOT;
     }
+  });
+
+  it('refuses over-budget trusted skill insertions and replacements without breaching maxBytes', async () => {
+    const { service, workspaceId, record } = createFixture();
+    const ownerRoot = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
+    const ownerSkillDir = join(ownerRoot, 'deploy');
+    mkdirSync(ownerSkillDir, { recursive: true });
+    writeFileSync(join(ownerSkillDir, 'SKILL.md'), '# Owner deploy');
+
+    const itemBytes = (raw: Record<string, unknown>, context: Parameters<typeof sanitizeAndAttributeProvenance>[1]) =>
+      Buffer.byteLength(JSON.stringify(sanitizeAndAttributeProvenance(raw, context)));
+    const repositoryContext = { partitionSource: 'repository' as const, repositoryRoot: record.workspacePath };
+    const ownerContext = { partitionSource: 'owner' as const, trustedRoot: ownerRoot };
+    const ownerSkill = () => ({
+      id: 'ctx_skill_deploy', kind: 'skill-summary', format: 'skill-md',
+      path: join(ownerSkillDir, 'SKILL.md'), clients: ['all'],
+      contentSha256: 'a'.repeat(64), excerpt: 'Skill "deploy" (owner)'
+    });
+    const repositorySkill = (): Record<string, unknown> => ({
+      id: 'ctx_skill_deploy', kind: 'skill-summary', format: 'skill-md',
+      path: '.agents/skills/deploy/SKILL.md', clients: ['all'],
+      contentSha256: 'b'.repeat(64), excerpt: 'Skill "deploy" (selected: repository)'
+    });
+    const filler = (excerptLength: number): Record<string, unknown> => ({
+      id: 'ctx_filler', kind: 'instruction', format: 'plain', path: 'CLAUDE.md',
+      contentSha256: 'c'.repeat(64), excerpt: 'x'.repeat(excerptLength)
+    });
+    // Largest filler excerpt whose sanitized item still fits a 4096-byte budget alongside `reserved`.
+    const fillTo = (reserved: number) => {
+      let best = 0;
+      for (let length = 0; length <= 4200; length += 1) {
+        if (itemBytes(filler(length), repositoryContext) <= 4096 - reserved) best = length; else break;
+      }
+      return best;
+    };
+
+    const runScan = async (items: Array<Record<string, unknown>>) => {
+      const spy = vi.spyOn(service as unknown as { runWorker: (...args: unknown[]) => Promise<unknown> }, 'runWorker');
+      spy.mockResolvedValue({
+        ok: true,
+        message: 'Workspace context',
+        data: { manifest: { contractVersion: 1, returnedBytes: 0, scannedFiles: 0, scannedSourceBytes: 0, truncated: false, truncationReasons: [], items, warnings: [] } },
+        truncated: false
+      });
+      const res = await service.execute('principal_1', 'workspace_context', { workspaceId, include: ['skills'], maxBytes: 4096 });
+      spy.mockRestore();
+      expect(res.ok).toBe(true);
+      return (res.data as Record<string, unknown>).manifest as {
+        items: Array<{ id?: string; provenance: { source: string } }>;
+        truncated: boolean;
+        truncationReasons: string[];
+        returnedBytes: number;
+      };
+    };
+
+    const ownerSkillBytes = itemBytes(ownerSkill(), ownerContext);
+    const repositorySkillBytes = itemBytes(repositorySkill(), repositoryContext);
+
+    // Insertion: the trusted owner skill cannot fit once the repository filler consumes the budget.
+    const insertionFiller = filler(fillTo(1));
+    expect(itemBytes(insertionFiller, repositoryContext) + ownerSkillBytes).toBeGreaterThan(4096);
+    const insertion = await runScan([insertionFiller]);
+    expect(insertion.items.find((it) => it.id === 'ctx_skill_deploy')).toBeUndefined();
+    expect(insertion.truncated).toBe(true);
+    expect(insertion.truncationReasons).toContain('byte-budget');
+    expect(insertion.returnedBytes).toBeLessThanOrEqual(4096);
+
+    // Replacement: the repository skill is admitted, but the higher-precedence owner replacement is not.
+    const replacementFiller = filler(fillTo(repositorySkillBytes));
+    expect(itemBytes(replacementFiller, repositoryContext) + repositorySkillBytes).toBeLessThanOrEqual(4096);
+    expect(itemBytes(replacementFiller, repositoryContext) + ownerSkillBytes).toBeGreaterThan(4096);
+    const replacement = await runScan([replacementFiller, repositorySkill()]);
+    const retained = replacement.items.find((it) => it.id === 'ctx_skill_deploy');
+    expect(retained?.provenance.source).toBe('repository');
+    expect(replacement.truncated).toBe(true);
+    expect(replacement.truncationReasons).toContain('byte-budget');
+    expect(replacement.returnedBytes).toBeLessThanOrEqual(4096);
   });
 });
