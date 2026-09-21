@@ -1,3 +1,11 @@
+# [0.55.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.54.0...v0.55.0) (2026-09-21)
+
+
+### Features
+
+* **dashboard:** add the execution health and cost series charts ([#240](https://github.com/bestagentkits/cloud-harness-mcp/issues/240)) ([20ff3ad](https://github.com/bestagentkits/cloud-harness-mcp/commit/20ff3ad2d45d0bb3f13ecad14ddd2924323584dd))
+* **toolkits:** mount licensed AgentKit kits as owner skills ([#215](https://github.com/bestagentkits/cloud-harness-mcp/issues/215)) ([14710a6](https://github.com/bestagentkits/cloud-harness-mcp/commit/14710a664a5d986c635cd60a55c27283089029f2))
+
 # [0.54.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.53.0...v0.54.0) (2026-09-21)
 
 
