@@ -151,6 +151,7 @@ describe('dashboard static UI contract', () => {
     // than as literals in the shell markup.
     for (const [id, route, label] of [
       ['overview', '/dashboard', 'Overview'], ['workspaces', '/dashboard/workspaces', 'Workspaces'],
+      ['agents', '/dashboard/agents', 'Agents'],
       ['projects', '/dashboard/projects', 'Projects'], ['secrets', '/dashboard/secrets', 'Secrets'],
       ['models', '/dashboard/models', 'Models & Budgets'], ['artifacts', '/dashboard/artifacts', 'Artifacts'],
       ['audit', '/dashboard/audit', 'Audit'], ['api-keys', '/dashboard/api-keys', 'API Access'],

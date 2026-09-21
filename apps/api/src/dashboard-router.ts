@@ -44,6 +44,8 @@ function preferredDisplayName(request: DashboardRequest): string | null {
 }
 
 const workspaceId = z.string().regex(/^ws_[A-Za-z0-9_-]{20,80}$/);
+const agentId = z.string().regex(/^agent_[A-Za-z0-9_-]{20,80}$/);
+const agentStatus = z.enum(['SPAWNING', 'RUNNING', 'CANCELLING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']);
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
 const fileQuery = pageQuery.extend({ path: z.string().min(1).max(1_024).default('.') });
 const readQuery = z.object({ path: z.string().min(1).max(1_024), offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(262_144).default(65_536) });
@@ -274,6 +276,55 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       }
       sendRunnerResponse(response, 'workspace_close', await runner.closeWorkspaceFenced(id, parsed.expectedGeneration, selected));
     } catch (error) { next(error); }
+  });
+
+  // Agent Control Center. Agent operations are workspace-scoped in the runner
+  // contract; the workspace id is optional there, so a global view lists across the
+  // principal's workspaces and a scoped view passes it through.
+  router.get('/api/v1/agents', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_list', {
+      ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {}),
+      ...(typeof request.query.parentAgentId === 'string' ? { parentAgentId: agentId.parse(request.query.parentAgentId) } : {}),
+      ...(typeof request.query.status === 'string' ? { status: agentStatus.parse(request.query.status) } : {}),
+      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {}),
+      ...(typeof request.query.limit === 'string' ? { limit: z.coerce.number().int().min(1).max(100).parse(request.query.limit) } : {})
+    });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/agents', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_list', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(typeof request.query.status === 'string' ? { status: agentStatus.parse(request.query.status) } : {})
+    });
+  });
+
+  router.get('/api/v1/agents/:agentId', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_status', {
+      agentId: agentId.parse(request.params.agentId),
+      ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {})
+    });
+  });
+
+  router.get('/api/v1/agents/:agentId/logs', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_logs', {
+      agentId: agentId.parse(request.params.agentId),
+      ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {}),
+      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {})
+    });
+  });
+
+  router.post('/api/v1/agents/:agentId/messages', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_message', {
+      agentId: agentId.parse(request.params.agentId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  router.post('/api/v1/agents/:agentId/cancel', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_cancel', {
+      agentId: agentId.parse(request.params.agentId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
   });
 
   // Workspace cockpit lifecycle operations. Each is a public runner operation, so

@@ -1,6 +1,17 @@
 import { vi } from 'vitest';
 
 /**
+ * The test environment has no DOM parser. Installing one here keeps the dashboard
+ * client on a single parse path (`DOMParser` + `replaceChildren`) instead of
+ * carrying a test-only raw-HTML fallback in shipped code.
+ */
+if (typeof (globalThis as { DOMParser?: unknown }).DOMParser !== 'function') {
+  (globalThis as { DOMParser?: unknown }).DOMParser = class {
+    parseFromString(markup: string) { return { body: { childNodes: [{ markup }] } }; }
+  };
+}
+
+/**
  * The shared element double the dashboard suites drive controllers with.
  *
  * It lives here rather than inside one suite because the behaviour, skills, and mount suites all need
@@ -23,6 +34,12 @@ export class FakeElement {
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   getAttribute(name: string) { return this.attributes.get(name); }
   removeAttribute(name: string) { this.attributes.delete(name); }
+  /** The controllers adopt parsed nodes; the double keeps their markup for assertions. */
+  replaceChildren(...nodes: Array<{ markup?: string }>) { this.markup = nodes.map((node) => node.markup ?? '').join(''); }
+  markup = '';
+  /** Markup adopted through `replaceChildren` is readable as `innerHTML`, so suites can assert on it. */
+  set innerHTML(value: string) { this.markup = value; }
+  get innerHTML() { return this.markup; }
   querySelectorAll() { return this.items; }
   getBoundingClientRect() { return this.bounds; }
   addEventListener(name: string, listener: (event: any) => void) {

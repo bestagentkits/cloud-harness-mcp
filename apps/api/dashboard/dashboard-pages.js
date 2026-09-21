@@ -57,6 +57,18 @@ export const DASHBOARD_PAGES = [
     icon: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/>'
   },
   {
+    id: 'agents',
+    route: '/dashboard/agents',
+    label: 'Agents',
+    group: 'operate',
+    title: 'Agents',
+    help: 'Coding agents across your workspaces: hierarchy, status, usage, budget and control.',
+    palette: true,
+    paletteHint: 'Coding agents, hierarchy, usage, and control',
+    nav: true,
+    icon: '<circle cx="12" cy="8" r="3.2"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/><path d="M4 10H2.5"/><path d="M21.5 10H20"/>'
+  },
+  {
     id: 'audit',
     route: '/dashboard/audit',
     label: 'Audit',
@@ -129,8 +141,7 @@ export const DASHBOARD_PAGES = [
     icon: '<circle cx="12" cy="12" r="3"/><path d="M12 3v6"/><path d="M12 15v6"/><path d="m5.6 5.6 4.2 4.2"/><path d="m14.2 14.2 4.2 4.2"/><path d="m18.4 5.6-4.2 4.2"/><path d="m9.8 14.2-4.2 4.2"/>'
   },
   {
-    id: 'knowledge',
-    route: '/dashboard/knowledge',
+    id: 'knowledge',    route: '/dashboard/knowledge',
     label: 'Knowledge',
     group: 'data',
     title: 'Knowledge',

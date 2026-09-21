@@ -487,9 +487,6 @@ describe('dashboard UI behavior', () => {
   it('keeps the clicked link across an async drawer fetch and renders its required heading', async () => {
     const heading = new FakeElement();
     const detail = Object.assign(new FakeElement(), {
-      _html: '',
-      set innerHTML(value: string) { this._html = value; },
-      get innerHTML() { return this._html; },
       querySelector: (selector: string) => selector === '#workspace-detail-title' && detail.innerHTML.includes('workspace-detail-title') ? heading : null
     });
     const trigger = Object.assign(new FakeElement(), { href: `https://dashboard.example/dashboard/workspaces/ws_${'a'.repeat(24)}` });

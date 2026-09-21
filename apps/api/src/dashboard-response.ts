@@ -62,6 +62,33 @@ function workspaceFinalizeProjection(data: Record<string, unknown>): Record<stri
   return pick(data, ['branch', 'commitSha', 'committed', 'pushed', 'filesChanged', 'summary', 'message', 'truncated']);
 }
 
+const agentKeys = ['agentId', 'workspaceId', 'parentAgentId', 'profileId', 'status', 'generation', 'createdAt', 'startedAt', 'terminalAt', 'expiresAt', 'terminalReason', 'outcomeUnknown', 'proxyOperations'] as const;
+const agentBudgetKeys = ['ttlSeconds', 'maxOutputBytes', 'maxInputTokens', 'maxOutputTokens', 'maxCostMicros'] as const;
+const agentUsageKeys = ['inputTokens', 'outputTokens', 'costMicros', 'outputBytes', 'eventCount', 'toolTimeMs', 'wallTimeMs'] as const;
+/** One log event may be 65 KB on the runner; the browser gets a bounded slice. */
+const AGENT_LOG_CONTENT_LIMIT = 4_000;
+
+/**
+ * Agent identity, budget and usage. Owner identifiers, credentials, prompts and raw
+ * runner payloads never project; `proxyOperations` is already the runner's bounded
+ * allowlist, so it passes through as computed.
+ */
+function agentProjection(value: unknown): Record<string, unknown> {
+  const source = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return { ...pick(source, agentKeys), budget: pick(source.budget, agentBudgetKeys), usage: pick(source.usage, agentUsageKeys) };
+}
+
+/** Bounded log events: an oversized event is truncated with an explicit marker. */
+function agentLogEvents(value: unknown): Record<string, unknown>[] {
+  const events = Array.isArray(value) ? value : [];
+  return events.map((entry) => {
+    const event = pick(entry, ['cursor', 'timestamp', 'type']);
+    const content = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).content : undefined;
+    const text = typeof content === 'string' ? content : '';
+    return { ...event, content: text.length > AGENT_LOG_CONTENT_LIMIT ? `${text.slice(0, AGENT_LOG_CONTENT_LIMIT)}\n… truncated` : text };
+  });
+}
+
 export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_open',
   'workspace_list',
@@ -72,6 +99,11 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_lease_renew',
   'workspace_recover',
   'workspace_finalize',
+  'agent_list',
+  'agent_status',
+  'agent_logs',
+  'agent_message',
+  'agent_cancel',
   'toolkits_list',
   'toolkits_preview',
   'settings_get', 'settings_update', 'settings_network_check',
@@ -216,6 +248,20 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'workspace_open' || operation === 'workspace_status' || operation === 'workspace_detail' || operation === 'workspace_close' || operation === 'workspace_lease_renew' || operation === 'workspace_recover') return cleanWorkspace(data);
   if (operation === 'workspace_context') return workspaceContextProjection(data);
   if (operation === 'workspace_finalize') return workspaceFinalizeProjection(data);
+  if (operation === 'agent_list') {
+    const agents = Array.isArray(data.agents) ? data.agents.map(agentProjection) : [];
+    return { agents };
+  }
+  if (operation === 'agent_status') return agentProjection(data.agent ?? data);
+  if (operation === 'agent_logs') {
+    return {
+      agentId: data.agentId, cursor: data.cursor, nextCursor: data.nextCursor, retainedBaseCursor: data.retainedBaseCursor,
+      truncated: data.truncated === true, hasMore: data.hasMore === true, events: agentLogEvents(data.events)
+    };
+  }
+  if (operation === 'agent_message' || operation === 'agent_cancel') {
+    return pick(data, ['agentId', 'status', 'state', 'replayed', 'affectedAgentIds']);
+  }
   if (operation === 'toolkits_list' || operation === 'toolkits_preview') return data;
   if (operation === 'files_list') {
     const entries = Array.isArray(data.entries) ? data.entries.map((entry) => {
