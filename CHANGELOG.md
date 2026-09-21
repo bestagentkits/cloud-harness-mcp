@@ -1,3 +1,10 @@
+# [0.53.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.52.0...v0.53.0) (2026-09-21)
+
+
+### Features
+
+* **dashboard:** make the page registry the single source for navigation and routing ([f6ecaf7](https://github.com/bestagentkits/cloud-harness-mcp/commit/f6ecaf786f4d9ca1cc6e67199cb827603cad3458)), closes [#220](https://github.com/bestagentkits/cloud-harness-mcp/issues/220)
+
 # [0.52.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.51.1...v0.52.0) (2026-09-20)
 
 
