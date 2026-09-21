@@ -1,7 +1,7 @@
 ---
 phase: 12
 title: "Docs sync, regression sweep, and issue closure evidence (issue Phase 11)"
-status: pending
+status: completed
 priority: P1
 effort: "1d"
 dependencies: [11]
@@ -11,6 +11,24 @@ dependencies: [11]
 
 Issue phase: **Phase 11** (issue delivery item 11: documentation and tests
 cleanup).
+
+**Status: completed.** Shipped in PR #238. `docs/design-guidelines.md` gained a section per
+shipped surface and the official docs site was resynced (new pages for Agents, Activity,
+Approvals and Integrations, updated Overview/Workspaces/GitHub/Models/API Access/Audit pages
+and a reordered sidebar); `npm run docs:build` is clean, and its dead-link check caught the
+missing Integrations page, which was written rather than exempted. `npx vitest run dashboard`
+reports 25 files / 323 tests passing. The browser sweep covers desktop, tablet and ~375px with
+no horizontal overflow in dark, light and system themes, plus keyboard-only navigation;
+reduced motion is verified at the CSS-contract level because the browser driver exposes no
+media-feature emulation. Issue #220 carries the Definition-of-Done mapping and is closed, and
+the five deliberate residuals are listed explicitly.
+
+**Closure corrected after audit.** An independent completion audit found that this phase's
+predecessor PR #234 had merged with a failing `quality` check (an undefined `activityEvent`
+reference in that diff) and that `main` had no required status checks, so no phase merge was
+gated on CI. The correction is recorded in the plan's closure record and in two comments on
+issue #220; the merged state was re-verified with CI's own gates; and the `quality` check is
+now required on `main` with the owner's approval.
 
 ## Goal
 
