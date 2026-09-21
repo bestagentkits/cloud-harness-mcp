@@ -188,9 +188,18 @@ working one.
   `dashboard.js`. `Escape`, the visible search trigger, and a tap or click on
   the backdrop all dismiss it (`dismissOnBackdrop` also ignores a drag that
   starts inside the dialog).
-- **Navigation:** left icon+label rail, grouped by concern (Runtime,
-  Configuration, Observability, Account) with an Overview home. Active item gets
-  the cyan rail + soft fill. The rail is **fixed to the viewport below the top
+- **Navigation:** left icon+label rail, grouped by operator intent — **Home**
+  (Overview), **Operate** (Workspaces, Audit), **Configure** (Projects, Secrets,
+  Models & Budgets, Skills, Integrations), **Data** (Knowledge, Artifacts), and
+  **Admin** (API Access, Settings). Active item gets the cyan rail + soft fill.
+  `Audit` keeps a rail slot only until the Activity Center owns an Audit tab;
+  `Agents`, `Activity`, and `Approvals` join **Operate** when those pages ship.
+  Profile deliberately has **no** rail slot: the top-bar profile chip and the
+  command palette are its entry points. GitHub and MCP Servers are not rail
+  entries either — they are tabs of the single **Integrations** page at
+  `/dashboard/integrations`, with `/dashboard/github` and `/dashboard/mcp-servers`
+  kept as redirects and `/dashboard/mcp-servers/:serverId` still serving a
+  server's detail view. The rail is **fixed to the viewport below the top
   bar and scrolls internally**, so a long navigation list never pushes the page
   or hides entries; the rail foot carries the running **server version** outside
   that scroll and hides it when the rail collapses to icons. A chevron control
@@ -198,9 +207,22 @@ working one.
   it also collapses to icons on tablet and to a drawer on mobile. The version is
   labelled "Server version" rather than "Release" because production runs the
   pre-version-bump commit, so the readout legitimately lags the newest tag by one
-  release. Owners: [`apps/api/src/version.ts`](../apps/api/src/version.ts) for the
-  value, [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
-  for the injection.
+  release. Owners:
+  [`apps/api/dashboard/dashboard-pages.js`](../apps/api/dashboard/dashboard-pages.js)
+  owns page identity, route, label, group, heading, help, icon and palette
+  membership, and the sidebar is rendered from it rather than authored in
+  `index.html`; [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
+  owns the shell path allowlist, the legacy redirects and the version injection,
+  and `apps/api/test/dashboard-pages.test.ts` asserts the two lists stay in
+  parity.
+- **Overview and route ownership:** `/dashboard` **is** the Overview, and the
+  workspace index lives at `/dashboard/workspaces`; `/dashboard/overview`
+  redirects to `/dashboard`. Every other page keeps its existing path so links
+  and bookmarks survive the reorganisation. Client route matching resolves
+  through the page registry, and detail routes (`/dashboard/workspaces/:id`,
+  `/dashboard/projects/:id`, `/dashboard/knowledge/:id`,
+  `/dashboard/mcp-servers/:id`) stay owned by the page whose rail entry must
+  remain current.
 - **Overview:** monospace metric tiles (corner-bracketed) capped at four above
   the fold, a recent-activity feed, an Access panel, and a Server panel. Tiles
   and feed aggregate client-side from allowlisted endpoints; the Server panel

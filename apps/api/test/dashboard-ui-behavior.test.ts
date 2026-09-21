@@ -58,7 +58,7 @@ describe('dashboard UI behavior', () => {
     });
 
     const hrefs = index.map((entry) => entry.href);
-    expect(hrefs).toContain('/dashboard/overview');
+    expect(hrefs).toContain('/dashboard');
     expect(hrefs).toContain(`/dashboard/workspaces/${workspaceId}`);
     expect(hrefs).toContain(`/dashboard/projects/${projectId}`);
     expect(hrefs).toContain('/dashboard/secrets');
