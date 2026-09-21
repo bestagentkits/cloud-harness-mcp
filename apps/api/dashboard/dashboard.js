@@ -2791,7 +2791,7 @@ export function initializeDashboard() {
    * row carries the workspace context, and the Summary reports only observable
    * state — the agent, task and Git reasons join with the phases that expose them.
    */
-  async function loadWorkspace(id, tab = 'summary') {
+  async function loadWorkspace(id, tab = 'summary', io) {
     selectNavigation('workspaces');
     document.querySelector('#command-surface').hidden = true; detail.hidden = true;
     const item = await workspace(id);
@@ -2799,19 +2799,24 @@ export function initializeDashboard() {
     // lifecycle actions still work from the workspace record alone.
     const contextResult = await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined);
     setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, files, git, automation, deploy, artifacts, and activity.');
-    const body = await cockpitTabBody(id, tab, item, contextResult?.data);
-    insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${body}${renderFinalizeDialog()}`);
+    const body = await cockpitTabBody(id, tab, item, contextResult?.data, io);
+    // A tab body may need to bind controls once it is in the document, so the Files tab
+    // returns its markup plus that hook instead of reaching into the DOM early.
+    const markup = typeof body === 'string' ? body : body.markup;
+    insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${markup}${renderFinalizeDialog()}`);
     bindCockpitActions(item);
+    if (typeof body !== 'string' && body.afterRender) body.afterRender();
     if (tab === 'runtime') bindRuntimeControls(id);
     if (tab === 'git') bindGitControls(id);
     if (tab === 'automation') bindAutomationControls(id);
     if (tab === 'deploy') bindDeployControls(id);
   }
   /** Which body a cockpit tab renders, kept out of the loader so the switch stays readable. */
-  async function cockpitTabBody(workspaceId, tab, workspace, context) {
+  async function cockpitTabBody(workspaceId, tab, workspace, context, io) {
     if (tab === 'summary') return renderWorkspaceSummary({ workspace, context });
     if (tab === 'agents') return renderWorkspaceAgents(workspaceId);
-    if (tab === 'runtime') return runtimePanel(workspaceId);
+    if (tab === 'runtime') return runtimePanel(workspaceId, io);
+    if (tab === 'files') return filesPanel(workspaceId);
     // The diff toggle is a URL parameter, so a staged/unstaged view is shareable and
     // the back button behaves.
     if (tab === 'git') return gitPanel(workspaceId, new URLSearchParams(location.search).get('staged') === 'true');
@@ -2820,6 +2825,18 @@ export function initializeDashboard() {
     if (tab === 'artifacts') return artifactsPanel(workspaceId);
     if (tab === 'activity') return activityPanel(workspaceId);
     return renderWorkspaceSummary({ workspace, context });
+  }
+  /** The Files tab inside the cockpit: the same adapters the standalone page used, now
+   * rendered under the cockpit header and tab row instead of a two-link context nav. */
+  async function filesPanel(workspaceId) {
+    const parameters = new URLSearchParams(location.search);
+    const path = parameters.get('path') ?? '.';
+    if (parameters.get('file') === '1') {
+      const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/files/content?path=${encodeURIComponent(path)}`);
+      return { markup: renderFile(workspaceId, result.data), afterRender: () => bindFileEditor(workspaceId, result.data) };
+    }
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}`);
+    return { markup: renderFileList(workspaceId, result.data), afterRender: () => bindFileOperations(workspaceId) };
   }
   /** The workspace's retained snapshots, scoped by each record's own workspaceId. */
   async function artifactsPanel(workspaceId) {
@@ -3101,15 +3118,8 @@ export function initializeDashboard() {
     }, event.currentTarget));
   }
   async function loadFiles(id) {
-    const item = await workspace(id); setTitle('Files', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'files');
-    const parameters = new URLSearchParams(location.search); const path = parameters.get('path') ?? '.';
-    if (parameters.get('file') === '1') {
-      const result = await api(`/workspaces/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path)}`);
-      insertRendered(content, renderFile(id, result.data)); bindFileEditor(id, result.data);
-    } else {
-      const result = await api(`/workspaces/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`);
-      insertRendered(content, renderFileList(id, result.data)); bindFileOperations(id);
-    }
+    // Files is a cockpit tab, so it delegates rather than rendering a standalone page.
+    await loadWorkspace(id, 'files');
   }
   /** Tasks, the dependency graph and sessions: one bounded read each. */
   async function runtimePanel(workspaceId, io) {
@@ -3172,12 +3182,8 @@ export function initializeDashboard() {
     });
   }
   async function loadRuntime(id, io) {
-    const item = await workspace(id); setTitle('Runtime', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'runtime');
-    insertRendered(content, await runtimePanel(id, io));
-    bindRuntimeControls(id);
-  }
-  function contextLinks(id, current) {
-    insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/workspaces/${encodeURIComponent(id)}/files" ${current === 'files' ? 'aria-current="page"' : ''}>Files</a><a href="/dashboard/workspaces/${encodeURIComponent(id)}/runtime" ${current === 'runtime' ? 'aria-current="page"' : ''}>Runtime</a>`);
+    // Runtime is a cockpit tab too, so it delegates rather than dropping the cockpit.
+    await loadWorkspace(id, 'runtime', io);
   }
   // Secondary navigation for the single Integrations page: GitHub and MCP Servers
   // are tabs of one destination instead of two top-level subsystems.
