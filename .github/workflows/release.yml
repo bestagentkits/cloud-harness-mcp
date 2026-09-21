@@ -17,16 +17,25 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      (github.event.workflow_run.head_branch == 'dev' || github.event.workflow_run.head_branch == 'main')
+      github.event.workflow_run.head_repository.full_name ==
+      github.repository &&
+      (github.event.workflow_run.head_branch == 'dev' ||
+      github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # RELEASE_TOKEN is an owner-supplied fine-grained PAT whose owner has admin
+      # rights on this repository. Branch protection cannot be bypassed by the
+      # github-actions bot, so the release commit must be pushed by an identity
+      # that can bypass it: with `enforce_admins: false`, an admin bypasses
+      # required status checks. The default token is kept as a fallback so the
+      # workflow still works when the secret is absent.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: true
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
       - name: Confirm CI tested the current release-branch tip
         shell: bash
         env:
@@ -44,7 +53,7 @@ jobs:
       - run: npm ci
       - name: Create GitHub release
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           test "$(git branch --show-current)" = "$RELEASE_BRANCH"
