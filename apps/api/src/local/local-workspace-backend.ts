@@ -278,14 +278,25 @@ export class LocalWorkspaceBackend implements OperationBackend {
                 sanitizedItems.push(sItem);
                 accumulatedBytes += sBytes;
               }
-            } else {
-              const existing = sanitizedItems[existingIdx]!;
-              const newRank = precedenceRank[sItem.provenance.source] || 0;
-              const existingRank = precedenceRank[existing.provenance.source] || 0;
-              if (newRank > existingRank) {
-                sanitizedItems[existingIdx] = sItem;
-              }
+              return;
             }
+            const existing = sanitizedItems[existingIdx]!;
+            const newRank = precedenceRank[sItem.provenance.source] || 0;
+            const existingRank = precedenceRank[existing.provenance.source] || 0;
+            if (newRank <= existingRank) return;
+            // Replacement is byte-accounted: return the superseded item's serialized size to the
+            // budget before admitting the higher-precedence candidate, so returnedBytes is never
+            // stale and a replacement can never push the manifest past maxBytes.
+            const sBytes = Buffer.byteLength(JSON.stringify(sItem));
+            const existingBytes = Buffer.byteLength(JSON.stringify(existing));
+            const nextBytes = accumulatedBytes - existingBytes + sBytes;
+            if (nextBytes > maxBytes) {
+              truncated = true;
+              if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
+              return;
+            }
+            sanitizedItems[existingIdx] = sItem;
+            accumulatedBytes = nextBytes;
           };
 
           // Scan trusted external owner and built-in skill partitions from local host

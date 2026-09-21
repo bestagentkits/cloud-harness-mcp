@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -401,5 +401,48 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
     const repositoryUrl = new URL('https://github.com/test-org/test-repo.git');
     await expect(call.repositoryToken('principal_1', repositoryUrl, 'read')).resolves.toBe(fallbackToken);
     await expect(call.repositoryToken('principal_1', repositoryUrl, 'write')).resolves.toBe(fallbackToken);
+  });
+
+  it('reads owner skills from the workspace toolkit projection instead of a host-global executor path', async () => {
+    const { service, workspaceId, record } = createFixture();
+    const decoyRoot = mkdtempSync(join(tmpdir(), 'ch-decoy-owner-'));
+    temporaryDirectories.push(decoyRoot);
+    process.env.CH_OWNER_SKILLS_ROOT = decoyRoot;
+    try {
+      const projectionSkillDir = join(record.workspacePath, 'toolkit-projection', 'owner-skills', 'deploy');
+      mkdirSync(projectionSkillDir, { recursive: true });
+      writeFileSync(join(projectionSkillDir, 'SKILL.md'), '# Owner deploy');
+      const decoySkillDir = join(decoyRoot, 'decoy-tool');
+      mkdirSync(decoySkillDir, { recursive: true });
+      writeFileSync(join(decoySkillDir, 'SKILL.md'), '# Decoy tool');
+
+      const runWorkerSpy = vi.spyOn(
+        service as unknown as { runWorker: (...args: unknown[]) => Promise<unknown> },
+        'runWorker'
+      );
+      runWorkerSpy.mockResolvedValue({
+        ok: true,
+        message: 'Workspace context',
+        data: { manifest: { contractVersion: 1, returnedBytes: 0, scannedFiles: 0, scannedSourceBytes: 0, truncated: false, truncationReasons: [], items: [], warnings: [] } },
+        truncated: false
+      });
+
+      const res = await service.execute('principal_1', 'workspace_context', { workspaceId, include: ['skills'] });
+      expect(res.ok).toBe(true);
+      const manifest = (res.data as Record<string, unknown>).manifest as Record<string, unknown>;
+      const items = (manifest.items ?? []) as Array<Record<string, any>>;
+
+      const owner = items.find((it) => it.id === 'ctx_skill_deploy');
+      expect(owner).toBeDefined();
+      expect(owner?.provenance.source).toBe('owner');
+      expect(owner?.provenance.trust).toBe('owner-controlled');
+      expect(owner?.provenance.mutableBy).toBe('owner');
+      expect(owner?.path).toBe(join(projectionSkillDir, 'SKILL.md'));
+
+      // The host-global override can never stand in for the workspace-scoped trusted partition.
+      expect(items.find((it) => it.id === 'ctx_skill_decoy-tool')).toBeUndefined();
+    } finally {
+      delete process.env.CH_OWNER_SKILLS_ROOT;
+    }
   });
 });
