@@ -223,3 +223,11 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 | **`Push touching workflows failed: 403`** | Missing `Workflows` permission when editing `.github/workflows/*`. | Add **Workflows: Read and write** to Repository Permissions in GitHub App settings. |
 | **`Token minting: UNAVAILABLE`** | App ID or Private Key mismatch. | Verify `GITHUB_APP_ID` matches GitHub App ID, and that the `.pem` file corresponds to that exact App. |
 | **Key rotation** | Need to rotate an existing key. | Generate a second key in GitHub first, update the `.pem` file on host, restart runner, then delete the old key in GitHub. |
+
+## Where this page lives now
+
+GitHub authorization is one tab of the single **Integrations** page. The rail links to
+[Integrations](/dashboard/integrations), and the GitHub tab is at
+`/dashboard/integrations/github`; `/dashboard/github` still works and redirects there, so
+existing bookmarks and documentation links keep resolving. MCP server connections are the
+second tab of the same page.
