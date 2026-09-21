@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { HarnessError, type ToolkitLockItem, type ToolkitSelection } from '@cloud-harness/contracts';
+import { HarnessError, toolkitSelectionIdentity, type LicensedKitCatalogEntry, type ToolkitLockItem, type ToolkitSelection } from '@cloud-harness/contracts';
 import { MattPocockAdapter } from './adapters/mattpocock-adapter.js';
 import { SuperpowersAdapter } from './adapters/superpowers-adapter.js';
 import { DeclarativeGitAdapter } from './adapters/git-adapter.js';
 import { SkillsShAdapter } from './adapters/skills-sh-adapter.js';
 import { SkillXAdapter } from './adapters/skillx-adapter.js';
+import { AgentKitRegistryAdapter } from './adapters/agentkit-adapter.js';
+import { normalizeAgentKitVersion, parseAgentKitPublicKey } from './agentkit-registry.js';
+import type { MetadataStore } from './metadata-store.js';
 import type { RepositoryCacheManager } from './repository-cache-manager.js';
-import type { SecretMetadataStore } from './secret-metadata-store.js';
 import type { StateStore } from './state-store.js';
 import type { ToolkitCacheManager } from './toolkit-cache-manager.js';
 
@@ -52,14 +54,43 @@ export const TOOLKIT_CATALOG: Record<string, ToolkitCatalogPreset> = {
 
 };
 
+export type LicensedKitDescriptor = {
+  kitId: 'engineer' | 'marketing';
+  name: string;
+  description: string;
+  defaultChannel: 'dev' | 'beta' | 'stable';
+};
+
+/**
+ * Licensed kit display metadata for `toolkits_list`. The installable surface is
+ * owned by the `agentkit` selection kind; this table only names the kits a
+ * client can offer, and availability is decided per instance and per principal.
+ */
+export const LICENSED_KIT_CATALOG: Record<'engineer' | 'marketing', LicensedKitDescriptor> = {
+  engineer: {
+    kitId: 'engineer',
+    name: 'AgentKit Engineer',
+    description: 'Engineer-specialized licensed kit: extends the core kit with engineer-unique agents, skills, hooks, schemas, and scripts.',
+    defaultChannel: 'stable'
+  },
+  marketing: {
+    kitId: 'marketing',
+    name: 'AgentKit Marketing',
+    description: 'Marketing-specialized licensed kit: extends the core kit with marketing-unique agents, skills, hooks, and scripts.',
+    defaultChannel: 'stable'
+  }
+};
+
 export class ToolkitService {
   private readonly cacheManager: ToolkitCacheManager;
   private readonly repoCacheManager: RepositoryCacheManager;
-  private readonly secretStore?: SecretMetadataStore;
   private readonly store: StateStore;
+  private readonly metadata?: MetadataStore | undefined;
   private readonly mattPocockAdapter: MattPocockAdapter;
   private readonly superpowersAdapter: SuperpowersAdapter;
   private readonly gitAdapter: DeclarativeGitAdapter;
+  private readonly agentkitAdapter?: AgentKitRegistryAdapter | undefined;
+  private readonly agentkitCredentialSecretName: string;
   private readonly skillsShAdapter: SkillsShAdapter;
   private readonly skillXAdapter: SkillXAdapter;
   private readonly enableToolkitCache: boolean;
@@ -68,7 +99,7 @@ export class ToolkitService {
   constructor(options: {
     cacheManager: ToolkitCacheManager;
     repoCacheManager: RepositoryCacheManager;
-    secretStore?: SecretMetadataStore | undefined;
+    metadata?: MetadataStore | undefined;
     store: StateStore;
     executorImage: string;
     provisioningNetwork: string;
@@ -77,16 +108,31 @@ export class ToolkitService {
     instanceId: string;
     enableToolkitCache?: boolean | undefined;
     toolkitNetworkPolicy?: ('cache-only' | 'runner-fetch') | undefined;
+    agentkitRegistry?: {
+      registryUrl: string;
+      credentialSecretName: string;
+      keyId?: string | undefined;
+      publicKey?: string | undefined;
+    } | undefined;
   }) {
     this.cacheManager = options.cacheManager;
     this.repoCacheManager = options.repoCacheManager;
-    if (options.secretStore) {
-      this.secretStore = options.secretStore;
-    }
+    this.metadata = options.metadata;
     this.store = options.store;
     this.enableToolkitCache = options.enableToolkitCache ?? true;
     this.toolkitNetworkPolicy = options.toolkitNetworkPolicy ?? 'cache-only';
     const proxyOpts = options.toolkitEgressProxy ? { toolkitEgressProxy: options.toolkitEgressProxy } : {};
+
+    this.agentkitCredentialSecretName = options.agentkitRegistry?.credentialSecretName ?? 'AGENTKIT_REGISTRY_TOKEN';
+    if (options.agentkitRegistry?.keyId && options.agentkitRegistry.publicKey) {
+      this.agentkitAdapter = new AgentKitRegistryAdapter({
+        registryUrl: options.agentkitRegistry.registryUrl,
+        credentialSecretName: this.agentkitCredentialSecretName,
+        keyId: options.agentkitRegistry.keyId,
+        publicKey: parseAgentKitPublicKey(options.agentkitRegistry.publicKey),
+        executorImage: options.executorImage
+      });
+    }
 
     this.mattPocockAdapter = new MattPocockAdapter({
       repoCacheManager: options.repoCacheManager,
@@ -122,16 +168,101 @@ export class ToolkitService {
   }
 
   computeRequestFingerprint(toolkits: ToolkitSelection[]): string {
-    const canonical = [...toolkits].sort((a, b) => {
-      const idA = a.kind === 'preset' ? (a.instanceId || a.id) : a.instanceId;
-      const idB = b.kind === 'preset' ? (b.instanceId || b.id) : b.instanceId;
-      return idA.localeCompare(idB);
-    });
+    const canonical = [...toolkits].sort((a, b) =>
+      toolkitSelectionIdentity(a).localeCompare(toolkitSelectionIdentity(b)));
     return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
   }
 
   listCatalogPresets(): ToolkitCatalogPreset[] {
     return Object.values(TOOLKIT_CATALOG);
+  }
+
+  /**
+   * Licensed kits this instance can serve, with the two readiness gates a client
+   * must know before offering them: `available` is instance key material and
+   * `credentialReady` is this principal's stored licence token. Neither field
+   * carries a credential value.
+   */
+  listLicensedKitCatalog(ownerId: string): LicensedKitCatalogEntry[] {
+    let credentialReady = false;
+    try {
+      credentialReady = Boolean(this.metadata?.secrets
+        .consumeProvisioningSecret(ownerId, 'global', undefined, this.agentkitCredentialSecretName)
+        .plaintext);
+    } catch {
+      // An unavailable secret store, or a token stored without `purpose: provisioning`, cannot serve
+      // a credential, so the catalog reports not-ready instead of failing the whole listing.
+      credentialReady = false;
+    }
+    return Object.values(LICENSED_KIT_CATALOG).map((kit) => ({
+      kind: 'agentkit' as const,
+      kitId: kit.kitId,
+      name: kit.name,
+      description: kit.description,
+      defaultChannel: kit.defaultChannel,
+      available: Boolean(this.agentkitAdapter),
+      credentialReady,
+      requiresCredentialSecret: this.agentkitCredentialSecretName,
+      supportedScopes: ['owner'] as ['owner'],
+      activation: 'skills-only' as const,
+      verification: 'registry-signed' as const
+    }));
+  }
+
+  /**
+   * Resolves the AgentKit licence token from a `provisioning`-purpose global secret. A `runtime`
+   * secret is refused: runtime secrets are injected into executor environments, so accepting one here
+   * would let untrusted repository code read the licence token.
+   */
+  private consumeAgentKitCredential(ownerId: string, secretName: string): string {
+    let credential: string | undefined;
+    try {
+      credential = this.metadata?.secrets
+        .consumeProvisioningSecret(ownerId, 'global', undefined, secretName)
+        .plaintext;
+    } catch {
+      credential = undefined;
+    }
+    if (!credential) {
+      throw new HarnessError(
+        'INVALID_INPUT',
+        `The agentkit toolkit needs the ${secretName} secret stored for this principal with purpose 'provisioning'; a runtime-purpose secret is refused because runtime secrets are injected into executors`,
+        400,
+        false
+      );
+    }
+    return credential;
+  }
+
+  /**
+   * Finds the most recently used cached AgentKit bundle for a selection without any registry call.
+   * `listToolkitCacheEntries` is ordered newest-first, and the requested version and skill filter must
+   * match the cached bundle's manifest so a cache-only start cannot serve a different selection.
+   */
+  private findCachedAgentKitBundle(
+    ownerId: string,
+    item: Extract<ToolkitSelection, { kind: 'agentkit' }>
+  ): { bundlePath: string; bundleSha256: string; resolvedRevision: string; version: string; skillsCount: number } | undefined {
+    const sourceIdentity = `agentkit:${item.kitId}:${item.channel}`;
+    for (const entry of this.store.listToolkitCacheEntries(ownerId)) {
+      if (entry.status !== 'READY') continue;
+      if (entry.sourceIdentity !== sourceIdentity) continue;
+      if (entry.adapterVersion !== AgentKitRegistryAdapter.ADAPTER_VERSION) continue;
+      const bundlePath = this.cacheManager.bundlePath(ownerId, entry.bundleSha256);
+      if (!existsSync(bundlePath)) continue;
+      const manifest = readAgentKitBundleManifest(bundlePath);
+      if (!manifest) continue;
+      if (item.version && normalizeAgentKitVersion(manifest.version) !== normalizeAgentKitVersion(item.version)) continue;
+      if (!matchesAgentKitSkillFilter(manifest.skills.map((skill) => skill.name), item.skills)) continue;
+      return {
+        bundlePath,
+        bundleSha256: entry.bundleSha256,
+        resolvedRevision: entry.resolvedRevision,
+        version: manifest.version,
+        skillsCount: manifest.skills.length
+      };
+    }
+    return undefined;
   }
 
   /**
@@ -412,9 +543,144 @@ export class ToolkitService {
           // holds the full commit OID the adapter resolved, not the mutable ref that was requested.
           verification: 'custom-unverified'
         });
+      } else if (item.kind === 'agentkit') {
+        const adapter = this.agentkitAdapter;
+        if (!adapter) {
+          throw new HarnessError(
+            'INVALID_INPUT',
+            'AgentKit kits are not configured on this instance; set AGENTKIT_REGISTRY_KEY_ID and AGENTKIT_REGISTRY_PUBLIC_KEY',
+            400,
+            false
+          );
+        }
+        const instanceId = item.instanceId ?? `agentkit:${item.kitId}:${item.channel}`;
+
+        // `cache-only` deployments never contact the registry: the bundle an earlier runner-fetch
+        // acquisition recorded is reused by its stable source identity, so a warm cache starts with
+        // zero toolkit network egress.
+        if (this.toolkitNetworkPolicy === 'cache-only') {
+          const cached = this.findCachedAgentKitBundle(ownerId, item);
+          if (!cached) {
+            throw new HarnessError(
+              'NOT_FOUND',
+              `Toolkit ${item.kitId}@${item.channel} is not cached and toolkitNetworkPolicy is cache-only; set TOOLKIT_NETWORK_POLICY=runner-fetch to acquire it`,
+              404,
+              false
+            );
+          }
+          bundlePaths.push({ instanceId, path: cached.bundlePath, scope: item.scope });
+          lockItems.push({
+            instanceId,
+            id: `agentkit:${item.kitId}`,
+            requestedVersion: item.version ?? null,
+            resolvedVersion: cached.version,
+            resolvedRevision: cached.resolvedRevision,
+            bundleSha256: cached.bundleSha256,
+            adapterVersion: AgentKitRegistryAdapter.ADAPTER_VERSION,
+            scope: item.scope,
+            status: 'ready',
+            cache: 'hit',
+            activation: item.activation,
+            skillsCount: cached.skillsCount,
+            verification: 'registry-signed',
+            ...(item.channel === 'stable' ? {} : { warnings: [`AgentKit ${item.channel} channel content`] })
+          });
+          continue;
+        }
+
+        const credential = this.consumeAgentKitCredential(ownerId, adapter.credentialSecretName);
+        // The signed manifest is resolved first, so the cache key names the exact
+        // published artifact rather than the floating channel: a channel that
+        // moves to a new release cannot be served from a stale cached bundle.
+        const resolved = await adapter.resolveKit(item, { credential, signal: options?.signal });
+        const configDigest = createHash('sha256').update(JSON.stringify({
+          kitId: item.kitId,
+          channel: item.channel,
+          version: item.version ?? null,
+          skills: item.skills ?? {}
+        })).digest('hex');
+        const spec = {
+          sourceIdentity: `agentkit:${item.kitId}:${item.channel}`,
+          resolvedRevision: resolved.artifact.sha256,
+          adapterVersion: AgentKitRegistryAdapter.ADAPTER_VERSION,
+          configDigest
+        };
+        const existing = this.cacheManager.getExisting(ownerId, spec);
+
+        const bundle = await this.cacheManager.getOrAcquire(ownerId, spec, async (stagingDir) => {
+          const res = await adapter.materialize(stagingDir, item, resolved, {
+            signal: options?.signal
+          });
+          return {
+            bundleSha256: res.bundleSha256,
+            byteCount: res.byteCount,
+            fileCount: res.fileCount
+          };
+        });
+
+        bundlePaths.push({ instanceId, path: bundle.bundlePath, scope: item.scope });
+        lockItems.push({
+          instanceId,
+          id: `agentkit:${item.kitId}`,
+          requestedVersion: item.version ?? null,
+          resolvedVersion: resolved.version,
+          resolvedRevision: resolved.artifact.sha256,
+          bundleSha256: bundle.bundleSha256,
+          adapterVersion: AgentKitRegistryAdapter.ADAPTER_VERSION,
+          scope: item.scope,
+          status: 'ready',
+          cache: existing ? 'hit' : 'miss',
+          activation: item.activation,
+          skillsCount: countBundleSkills(bundle.bundlePath),
+          verification: 'registry-signed',
+          ...(item.channel === 'stable' ? {} : { warnings: [`AgentKit ${item.channel} channel content`] })
+        });
       }
     }
 
     return { lockItems, bundlePaths };
   }
+}
+
+/** Skill count is read from the cached bundle manifest so a cache hit reports it too. */
+function countBundleSkills(bundlePath: string): number {
+  try {
+    const manifest = JSON.parse(readFileSync(join(bundlePath, 'manifest.json'), 'utf8')) as { skills?: unknown };
+    return Array.isArray(manifest.skills) ? manifest.skills.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+type AgentKitBundleManifest = { version: string; skills: Array<{ name: string }> };
+
+/** Reads the manifest the AgentKit adapter wrote into a cached bundle, or `undefined` if unusable. */
+function readAgentKitBundleManifest(bundlePath: string): AgentKitBundleManifest | undefined {
+  let parsed: { version?: unknown; skills?: unknown };
+  try {
+    parsed = JSON.parse(readFileSync(join(bundlePath, 'manifest.json'), 'utf8')) as { version?: unknown; skills?: unknown };
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed.version !== 'string' || !Array.isArray(parsed.skills)) return undefined;
+  const skills: Array<{ name: string }> = [];
+  for (const skill of parsed.skills) {
+    if (!skill || typeof skill !== 'object') return undefined;
+    const name = (skill as { name?: unknown }).name;
+    if (typeof name !== 'string') return undefined;
+    skills.push({ name });
+  }
+  return { version: parsed.version, skills };
+}
+
+/** A cached bundle satisfies the selection only when the requested include/exclude names all match. */
+function matchesAgentKitSkillFilter(
+  names: string[],
+  filter: { include?: string[] | undefined; exclude?: string[] | undefined } | undefined
+): boolean {
+  if (!filter) return true;
+  const available = new Set(names);
+  if (filter.include && filter.include.some((name) => !available.has(name))) return false;
+  if (filter.exclude && filter.exclude.some((name) => available.has(name))) return false;
+  return true;
 }

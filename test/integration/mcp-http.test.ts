@@ -65,6 +65,13 @@ describe('official SDK interoperability', () => {
     expect(result.structuredContent).toMatchObject({ ok: true });
     expect(result.content).toEqual([{ type: 'text', text: 'Stub runner result\n\noperation: workspace_list' }]);
 
+    // Server instructions are the only nudge a remote client gets to consult
+    // skills before planning, so the contract is pinned here.
+    const instructions = client.getInstructions() ?? '';
+    expect(instructions).toContain('skills_list');
+    expect(instructions).toContain('skills_read');
+    expect(instructions).toContain('skills_run');
+
     const ghResult = await client.callTool({
       name: 'github_action',
       arguments: {

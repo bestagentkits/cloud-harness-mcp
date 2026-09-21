@@ -1,9 +1,16 @@
 import { z } from 'zod';
 import { ExecutorNetworkProfileSchema } from './identifiers.js';
 import { AgentProxyOperationSchema } from './runner-api.js';
+import { SecretNameSchema } from './secret-policy.js';
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
 
-const httpsUrl = z.url().refine((value) => new URL(value).protocol === 'https:', 'HTTPS URL required');
+const httpsUrl = z.url().refine((value) => {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}, 'HTTPS URL required');
 const enabled = z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false);
 
 const principalRelink = z.object({
@@ -20,14 +27,18 @@ const positiveBoundedInteger = (maximum: number, defaultValue: number) =>
   z.coerce.number().int().min(1).max(maximum).default(defaultValue);
 
 const gatewayUrl = z.url().refine((value) => {
-  const url = new URL(value);
-  return url.protocol === 'http:'
-    && url.hostname === 'model-gateway'
-    && url.pathname === '/'
-    && !url.username
-    && !url.password
-    && !url.search
-    && !url.hash;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:'
+      && url.hostname === 'model-gateway'
+      && url.pathname === '/'
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash;
+  } catch {
+    return false;
+  }
 }, 'agent gateway URL must be the fixed internal http://model-gateway origin');
 
 export const AgentModelProfileSchema = z.object({
@@ -230,6 +241,20 @@ export const RunnerConfigSchema = z.object({
   toolkitCacheRoot: z.string().min(1).default('/var/lib/cloud-harness/cache/toolkits'),
   toolkitNetworkPolicy: z.enum(['cache-only', 'runner-fetch']).default('cache-only'),
   toolkitEgressProxy: z.string().min(1).optional(),
+  // Operator-owned host directory mounted read-only into every executor at
+  // /opt/cloud-harness/skills, which is the worker's highest-precedence
+  // `built-in` skills tier. Unset leaves the tier empty. The path is a host
+  // path because the runner mounts it through the Docker socket.
+  builtinSkillsRoot: z.string().min(1).max(1_024)
+    .refine((value) => value.startsWith('/'), 'builtinSkillsRoot must be an absolute host path')
+    .optional(),
+  // AgentKit registry: the first-party, authenticated kit source. Absent key
+  // material leaves the `agentkit` toolkit kind unavailable rather than
+  // accepting an unverified bundle.
+  agentkitRegistryUrl: httpsUrl.default('https://agentkit.best'),
+  agentkitRegistryCredentialSecret: SecretNameSchema.default('AGENTKIT_REGISTRY_TOKEN'),
+  agentkitRegistryKeyId: z.string().min(1).max(120).optional(),
+  agentkitRegistryPublicKey: z.string().min(1).max(8_192).optional(),
   provisioningNetwork: z.string().min(1).default('cloud-harness-mcp_provisioning'),
   secretKeyring: SecretKeyringConfigSchema.optional(),
   legacyPrincipalMapping: z.object({

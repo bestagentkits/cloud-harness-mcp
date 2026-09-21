@@ -128,3 +128,22 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 ### 13. A workspace is stuck in `REAPING`
 **Cause:** A teardown that failed before its final `CLOSED` write leaves the record in `REAPING`. A `REAPING` record holds no capacity slot, so it never blocks `workspace_open`; the visible symptom is a workspace that will not disappear from the dashboard.
 **Fix:** Call `workspace_close` again on that workspace. The close path skips the claim for a record already in `REAPING` and retries container and path removal, so a repeat close is the supported remedy. Only the fenced dashboard close refuses a `REAPING` record with `409 CONFLICT`. If removal keeps failing, fix the underlying Docker or filesystem fault rather than running broad Docker or database cleanup.
+
+### 14. `agentkit` toolkit fails during `workspace_open`
+**Cause:** The licensed AgentKit kit kind fails closed by design, and each message names the missing prerequisite.
+**Fix:**
+1. `AgentKit kits are not configured on this instance` — the operator must set both `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` (the pinned Ed25519 registry signing key) and restart the runner.
+2. `needs the <name> secret stored for this principal` — store the AgentKit licence token (an `ak_dev_`/`ak_cli_` credential) as a global secret with that name (`AGENTKIT_REGISTRY_TOKEN` unless `AGENTKIT_REGISTRY_CREDENTIAL_SECRET` changes it). The secret must be created with `purpose: provisioning`; the runner refuses a `runtime`-purpose token so it can never be injected into an executor. Credentials are never accepted as tool arguments.
+3. `registry rejected the credential ... (not_licensed | not_authenticated | license_inactive)` — the token has no entitlement for that `kitId`, or is not a registry bearer. Re-issue it from the AgentKit account that owns the licence.
+4. `manifest signature did not verify` / `signed by key ...; pinned key is ...` — the registry signing key rotated or the pinned key is stale. Update `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` together; do not disable verification.
+5. `package digest did not match the signed manifest`, `must contain exactly one <kitId> root directory`, or `outside the <kitId> root` — the downloaded artifact is not the published package. Retry once; if it persists, treat it as an upstream publish problem instead of mounting the content.
+6. `no published release for kit <kitId>` — that kit has no signed release on the requested channel yet. Try `channel: "beta"`, or pin a version that exists.
+
+### 15. Uploaded operator skills do not appear in `skills_list`
+**Cause:** The `built-in` tier is populated only when the runner is pointed at an operator-owned host directory, and only reads a strict layout.
+**Fix:**
+1. Set `BUILTIN_SKILLS_ROOT` to an absolute host directory in the runner environment (`/etc/cloud-harness-mcp/runtime.env` or `.env`) and restart the stack; with the variable unset the executor mounts nothing and the tier stays empty by design.
+2. Upload skills as `<root>/<skill-name>/SKILL.md`; a directory without `SKILL.md` is ignored.
+3. Confirm the host path is readable by the runner and that the directory exists (`deploy/scripts/bootstrap-vps.sh` creates `/var/lib/cloud-harness/skills` on first install).
+4. Remember the tier outranks project skills: a same-named `.agents/skills` or `.cloud-harness/skills` entry appears under `shadowed`, not as the selected skill.
+5. Only changes to already-open workspaces need a reopen; a new workspace sees an updated upload immediately.

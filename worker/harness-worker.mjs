@@ -381,7 +381,12 @@ async function deploymentEntries() {
     if (error?.code === 'ENOENT') return [];
     throw error;
   }
-  const config = JSON.parse(content);
+  let config;
+  try {
+    config = JSON.parse(content);
+  } catch {
+    throw new Error('deployments configuration must contain valid JSON');
+  }
   if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error('deployments configuration must be an object');
   const configured = Object.entries(config);
   if (configured.length > MAX_DEPLOYMENTS) throw new Error('too many deployment targets');
@@ -1595,7 +1600,12 @@ export async function executeWorkerRequest(operation, input = {}) {
 async function main() {
   const chunks = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
-  const request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  let request;
+  try {
+    request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return fail('INVALID_INPUT', 'worker request must contain valid JSON', false);
+  }
   return await executeWorkerRequest(request.operation, request.input ?? {});
 }
 

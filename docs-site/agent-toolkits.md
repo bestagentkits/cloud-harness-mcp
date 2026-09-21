@@ -79,6 +79,93 @@ You can load skills from any public HTTPS Git repository belonging to `ALLOWED_G
 
 ---
 
+## Licensed AgentKit Kits
+
+Operator instances that hold an AgentKit licence can mount licensed kit skills
+(such as the `engineer` kit) directly, without publishing them as a public Git
+repository:
+
+```json
+{
+  "repositoryUrl": "https://github.com/my-org/my-project.git",
+  "idempotencyKey": "unique-session-key-004",
+  "toolkits": [
+    {
+      "kind": "agentkit",
+      "kitId": "engineer",
+      "channel": "stable"
+    }
+  ]
+}
+```
+
+### AgentKit Kit Options
+
+- **`kitId` (required):** Licensed kit to mount. Supported: `engineer`, `marketing`.
+- **`channel` (optional):** Release channel — `stable` (default), `beta`, or `dev`.
+- **`version` (optional):** Exact semantic version to pin, for example `2.17.0-beta.10`. Omit to take the newest release on the channel.
+- **`instanceId` (optional):** Caller-assigned instance name, when you mount the same kit on two channels.
+- **`scope`:** Always `owner`. Licensed content is mounted read-only and is never written into your repository.
+- **`skills.include` / `skills.exclude` (optional):** Filter specific skill names to include or omit.
+
+Prerequisites are operator-owned: the instance must pin the registry signing key
+(`AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY`), and each caller
+needs an AgentKit licence token stored as a **provisioning-purpose** global
+secret (default name `AGENTKIT_REGISTRY_TOKEN`, overridable with
+`AGENTKIT_REGISTRY_CREDENTIAL_SECRET`). A `runtime`-purpose token is refused,
+because runtime secrets are injected into executor environments and the licence
+token must never be readable by repository code. Without a usable secret,
+`workspace_open` fails closed and names the missing setting. A `beta`/`dev` mount
+also reports a warning in the toolkit lock so pre-release content is visible in
+the result.
+
+### Discoverability
+
+`GET /api/v1/toolkits` (the dashboard's `toolkits_list` operation) returns the
+curated presets under `toolkits` and the licensed kits under `licensedKits`.
+Each licensed entry carries the exact selection to send, its default channel,
+`available` (instance key material configured) and `credentialReady` (this
+principal has the licence secret) plus `requiresCredentialSecret`, so a client
+can show why a kit is not usable yet without ever seeing a credential value.
+The remaining agent entry point is `workspace_open` itself.
+
+The runner verifies the Ed25519 manifest signature and the package SHA-256 from
+that signed manifest before projecting any skill, and refuses to unpack a
+package that is not a single kit root. Skills then appear through `skills_list`,
+`skills_read`, and `skills_run` exactly like any other toolkit.
+
+## Operator-Provided Skills (`built-in` tier)
+
+An operator can make skills available to **every** workspace on an instance
+without any toolkit selection, registry account, or entitlement. Point
+`BUILTIN_SKILLS_ROOT` at a host directory and upload skills into it:
+
+```bash
+# On the VPS, as root
+sudo install -d -m 0755 /var/lib/cloud-harness/skills
+sudo rsync -a --delete skills/ /var/lib/cloud-harness/skills/
+find /var/lib/cloud-harness/skills -name SKILL.md | wc -l
+```
+
+Then set `BUILTIN_SKILLS_ROOT=/var/lib/cloud-harness/skills` in the runner
+environment (`/etc/cloud-harness-mcp/runtime.env`) and restart the stack.
+
+- The directory is mounted **read-only** into every executor at
+  `/opt/cloud-harness/skills`, the highest-precedence tier, so it outranks
+  owner, workspace, and repository skills of the same name.
+- `skills_list` reports these as `built-in` with trust `trusted-control-plane`.
+- The harness never writes to the directory, and it is not copied into the
+  toolkit cache, so updating skills is a plain file upload.
+- Skill scripts remain runnable through `skills_run`, which still requires the
+  caller to pin the digest returned by `skills_list`.
+
+Use this for your own or licensed content that lives on your host. Use
+`{ "kind": "agentkit" }` instead when the content must come from a signed
+AgentKit registry release, and a `git` toolkit when it comes from a public
+repository.
+
+---
+
 ## Installation Scopes: `owner` vs `workspace`
 
 Cloud Harness supports two installation scopes depending on your workflow needs:

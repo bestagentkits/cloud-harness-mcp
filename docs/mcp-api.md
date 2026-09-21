@@ -57,6 +57,11 @@ permissions, traces, transports, and the managed API-key lane limitation.
    scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills` without
    polluting git status; `workspace` scope materializes files into
    `.cloud-harness/skills` with `allowToolkitWorkspaceChanges: true`.
+   Licensed AgentKit kits use `{ kind: 'agentkit', kitId, channel }`: the runner
+   resolves and signature-verifies the registry manifest with the operator's
+   stored licence token, verifies the package digest, and mounts the kit skills
+   read-only under `owner` scope only (licensed content is never written into a
+   repository).
 2. Subsequent tool calls may omit `workspaceId`. The runner resolves it in this
    order: an explicit `workspaceId`; the sole `ACTIVE` or `CREATING` workspace; a
    sole recoverable record when nothing is active; otherwise the caller's

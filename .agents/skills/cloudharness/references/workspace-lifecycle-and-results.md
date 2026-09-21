@@ -86,6 +86,11 @@ Clone an approved repository and start its bounded executor.
   blocks all executor egress. The legacy `networkMode` field is rejected.
 - Returns workspace metadata including opaque `workspaceId`, status, network
   profile, timestamps, and expiry.
+- `toolkits` accepts `{ kind: 'preset' | 'git' | 'agentkit' }` selections.
+  Licensed AgentKit kits (`kind: 'agentkit'`, e.g. `kitId: 'engineer'`) stay
+  `owner`-scoped, need an operator-pinned registry signing key plus a stored
+  licence token, and report `verification: 'registry-signed'` with a
+  `warnings` entry when a pre-release channel was mounted.
 - Side effects: clone, state record, workspace directory, executor creation;
   may contact the approved repository host through the trusted clone broker.
 - Recovery: after a lost response, retry with the same key. A different key is
