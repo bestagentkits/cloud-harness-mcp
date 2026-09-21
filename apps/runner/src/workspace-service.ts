@@ -2692,20 +2692,37 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               if (accumulatedBytes + sBytes <= maxBytes) {
                 sanitizedItems.push(sItem);
                 accumulatedBytes += sBytes;
+              } else {
+                truncated = true;
+                if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
               }
-            } else {
-              const existing = sanitizedItems[existingIdx]!;
-              const newRank = precedenceRank[sItem.provenance.source] || 0;
-              const existingRank = precedenceRank[existing.provenance.source] || 0;
-              if (newRank > existingRank) {
-                sanitizedItems[existingIdx] = sItem;
-              }
+              return;
             }
+            const existing = sanitizedItems[existingIdx]!;
+            const newRank = precedenceRank[sItem.provenance.source] || 0;
+            const existingRank = precedenceRank[existing.provenance.source] || 0;
+            if (newRank <= existingRank) return;
+            // Replacement is byte-accounted: return the superseded item's serialized size to the
+            // budget before admitting the higher-precedence candidate, so returnedBytes is never
+            // stale and a replacement can never push the manifest past maxBytes.
+            const sBytes = Buffer.byteLength(JSON.stringify(sItem));
+            const existingBytes = Buffer.byteLength(JSON.stringify(existing));
+            const nextBytes = accumulatedBytes - existingBytes + sBytes;
+            if (nextBytes > maxBytes) {
+              truncated = true;
+              if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
+              return;
+            }
+            sanitizedItems[existingIdx] = sItem;
+            accumulatedBytes = nextBytes;
           };
 
           const include = Array.isArray((validated as any).include) ? (validated as any).include : ['instructions', 'languages', 'test_commands', 'skills'];
           if (include.includes('skills')) {
-            const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+            // The Runner host trusts only the per-workspace owner toolkit projection it composed and
+            // mounted. `/opt/cloud-harness/owner-skills` is the executor mount target; reading it here
+            // would attribute host-global content that is not scoped to this workspace or principal.
+            const ownerRoot = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
             try {
               const ownerEntries = await readdir(ownerRoot, { withFileTypes: true });
               for (const oe of ownerEntries) {
@@ -2732,32 +2749,36 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               }
             } catch { /* owner root absent */ }
 
-            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
-            try {
-              const builtinEntries = await readdir(builtinRoot, { withFileTypes: true });
-              for (const be of builtinEntries) {
-                if (be.isDirectory()) {
-                  const sFile = join(builtinRoot, be.name, 'SKILL.md');
-                  try {
-                    const sRaw = await readFile(sFile);
-                    const sHash = createHash('sha256').update(sRaw).digest('hex');
-                    const sItem = sanitizeAndAttributeProvenance({
-                      id: `ctx_skill_${be.name}`,
-                      kind: 'skill-summary',
-                      format: 'skill-md',
-                      path: sFile,
-                      clients: ['all'],
-                      contentSha256: sHash,
-                      excerpt: `Skill "${be.name}" (built-in)`
-                    }, {
-                      partitionSource: 'built-in',
-                      trustedRoot: builtinRoot
-                    });
-                    mergeSkillItem(sItem);
-                  } catch { /* skip */ }
+            // `/opt/cloud-harness/skills` is likewise an executor mount target, not a Runner host
+            // path. Only an operator-declared Runner catalog may carry the built-in partition.
+            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT;
+            if (builtinRoot) {
+              try {
+                const builtinEntries = await readdir(builtinRoot, { withFileTypes: true });
+                for (const be of builtinEntries) {
+                  if (be.isDirectory()) {
+                    const sFile = join(builtinRoot, be.name, 'SKILL.md');
+                    try {
+                      const sRaw = await readFile(sFile);
+                      const sHash = createHash('sha256').update(sRaw).digest('hex');
+                      const sItem = sanitizeAndAttributeProvenance({
+                        id: `ctx_skill_${be.name}`,
+                        kind: 'skill-summary',
+                        format: 'skill-md',
+                        path: sFile,
+                        clients: ['all'],
+                        contentSha256: sHash,
+                        excerpt: `Skill "${be.name}" (built-in)`
+                      }, {
+                        partitionSource: 'built-in',
+                        trustedRoot: builtinRoot
+                      });
+                      mergeSkillItem(sItem);
+                    } catch { /* skip */ }
+                  }
                 }
-              }
-            } catch { /* builtin root absent */ }
+              } catch { /* builtin root absent */ }
+            }
           }
 
           manifest = {

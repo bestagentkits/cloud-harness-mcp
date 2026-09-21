@@ -276,4 +276,38 @@ describe('workspace_context manifest and passive scanner', () => {
       delete process.env.CH_BUILTIN_SKILLS_ROOT;
     }
   });
+
+  it('reconciles the byte budget when a trusted skill replaces a repository skill', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ch-ctx-replace-'));
+    const builtinDir = await mkdtemp(join(tmpdir(), 'ch-builtin-replace-'));
+    tempDirs.push(dir, builtinDir);
+    process.env.CH_BUILTIN_SKILLS_ROOT = builtinDir;
+
+    try {
+      await mkdir(join(dir, '.agents', 'skills', 'deploy'), { recursive: true });
+      await writeFile(join(dir, '.agents', 'skills', 'deploy', 'SKILL.md'), '# Repo Deploy');
+      await mkdir(join(builtinDir, 'deploy'), { recursive: true });
+      await writeFile(join(builtinDir, 'deploy', 'SKILL.md'), '# Built-in Deploy');
+
+      const backend = new LocalWorkspaceBackend(dir, { transport: 'stdio', workspace: dir });
+      const res = await backend.call('workspace_context', {
+        workspaceId: backend.workspaceId,
+        include: ['skills']
+      });
+
+      expect(res.ok).toBe(true);
+      const manifest = (res.data as any).manifest;
+      const items = manifest.items as Array<Record<string, unknown>>;
+      const deploySkill = items.find((it) => it.id === 'ctx_skill_deploy');
+      expect(deploySkill?.provenance).toMatchObject({ source: 'built-in', trust: 'trusted-control-plane' });
+
+      // The replacement must return the superseded item's bytes to the budget: returnedBytes is
+      // exactly the serialized size of the items that survived the merge, never a double count.
+      const expectedBytes = items.reduce((total, item) => total + Buffer.byteLength(JSON.stringify(item)), 0);
+      expect(manifest.returnedBytes).toBe(expectedBytes);
+      expect(manifest.returnedBytes).toBeLessThanOrEqual(32768);
+    } finally {
+      delete process.env.CH_BUILTIN_SKILLS_ROOT;
+    }
+  });
 });
