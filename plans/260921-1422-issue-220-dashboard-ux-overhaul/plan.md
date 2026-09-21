@@ -241,12 +241,14 @@ Critic. Findings and resolutions:
 
 ## Closure record
 
-Delivered as thirteen merged PRs: #225 (registry + operator IA), #227 and #228 (resource-page
+Delivered as fifteen merged PRs: #225 (registry + operator IA), #227 and #228 (resource-page
 layout and its dialog fix), #229 (Workspace Cockpit + lifecycle adapters), #230 (Agent Control
 Center), #231 (actionable Runtime + task DAG), #232 (Git + Finalize), #233 (Automation + Deploy),
 #234 (Activity + Approvals), #235 (decision Overview + server projections), #236 (analytics),
-#237 (state-conveying motion), #238 (docs-site sync). Issue #220 carries the
-Definition-of-Done mapping and is closed.
+#237 (state-conveying motion), #238 (docs-site sync), #239 (corrective closure record) and
+#240 (the two missing series charts plus the design-contract update). Issue #220 carries the
+Definition-of-Done mapping, names the verification run for each bullet, and is closed only after
+#240 merged under the required check.
 
 ### Process failure found by the completion audit (owned, not disputed)
 
@@ -280,13 +282,23 @@ correction comment on issue #220 records this rather than restating the claim.
   `quality` check had concluded green (run id recorded in the issue comment), and a
   repository-wide `npm run lint` plus `npm run typecheck` now run before every push rather
   than only the scoped suites.
-- **Recommended, owner decision:** mark the `quality` check as required on `main` so GitHub
-  can block a red merge. This is a repository-admin change affecting all contributors, so it
-  is recommended rather than applied unilaterally.
+- **Enforcement applied (owner-approved):** `main` now **requires** the `quality` status check
+  (`required_status_checks.contexts = ["quality"]`, all other protection toggles preserved), so
+  GitHub itself refuses a red merge. The gate was exercised end to end: #239 was refused while
+  the check was pending, merged only after `quality` passed in 3m1s (merge `8134d52`, post-merge
+  run `35580603915` = `quality: success`), and #240 was gated the same way (`35581425169` → merge
+  `20ff3ad2`).
+- **Second audit round, addressed:** the audit also found that success criterion 11 lists eight
+  charts and only five shipped. The execution-health timeline and the cost trend now ship as
+  `agentOutcomes` / `costSeries` in `buildOverviewProjection`, rendered by `renderStackedBars`
+  with scope-labelled captions ("retained agents, bucketed by start time"; a window under a
+  minute collapses to one bucket; no agents on record yields empty series rather than invented
+  buckets), asserted by `dashboard-agent-series.test.ts`.
 
-Residuals carried forward unchanged: no dated cost or outcome ledger (so no trend charts),
-cockpit attention reasons limited to observable data, reduced motion verified at the
-CSS-contract level, no optimistic toggles on generation-fenced surfaces, and sessions
-read-only by design.
+Residuals carried forward unchanged: cockpit attention reasons limited to observable data,
+reduced motion verified at the CSS-contract level, no optimistic toggles on generation-fenced
+surfaces, and sessions read-only by design. The cost and execution-health series are charted
+over the **retained agent window** rather than a dated ledger, and say so on the chart, because
+no dated cost ledger is stored.
 
 <!-- slug: issue-220-dashboard-ux-overhaul -->
