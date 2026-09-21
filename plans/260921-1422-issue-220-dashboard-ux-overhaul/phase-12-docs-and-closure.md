@@ -1,7 +1,7 @@
 ---
 phase: 12
 title: "Docs sync, regression sweep, and issue closure evidence (issue Phase 11)"
-status: pending
+status: completed
 priority: P1
 effort: "1d"
 dependencies: [11]
