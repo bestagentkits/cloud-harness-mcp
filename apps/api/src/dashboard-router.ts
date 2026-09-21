@@ -280,6 +280,39 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     } catch (error) { next(error); }
   });
 
+  // Workspace automation and deployments. Skills and hooks are discoverable here and
+  // every action goes through the guarded runner contract.
+  router.get('/api/v1/workspaces/:workspaceId/skills', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'skills_list', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/hooks', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'hooks_list', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      includeInactive: true
+    });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/deployments', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'deployments_list', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  const automationMutation = (operation: 'skills_run' | 'hooks_run' | 'hooks_activate' | 'hooks_deactivate' | 'deployments_run') => {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      await call(runner, request, response, next, operation, {
+        workspaceId: workspaceId.parse(request.params.workspaceId),
+        ...(request.body && typeof request.body === 'object' ? request.body : {}),
+        ...(operation === 'skills_run' && typeof request.params.name === 'string' ? { name: request.params.name } : {})
+      });
+    };
+  };
+
+  router.post('/api/v1/workspaces/:workspaceId/skills/:name/run', automationMutation('skills_run'));
+  router.post('/api/v1/workspaces/:workspaceId/hooks/run', automationMutation('hooks_run'));
+  router.post('/api/v1/workspaces/:workspaceId/hooks/activate', automationMutation('hooks_activate'));
+  router.post('/api/v1/workspaces/:workspaceId/hooks/deactivate', automationMutation('hooks_deactivate'));
+  router.post('/api/v1/workspaces/:workspaceId/deployments/run', automationMutation('deployments_run'));
+
   // Git and worktrees. Reads are bounded; mutations keep the contract's own fencing
   // (identity, expected head, constrained ref arguments) and confirm in the UI.
   router.get('/api/v1/workspaces/:workspaceId/git/status', async (request: DashboardRequest, response, next) => {

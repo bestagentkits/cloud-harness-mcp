@@ -47,7 +47,8 @@ import {
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
   renderWorkspaceTabPlaceholder, renderFinalizeDialog,
   renderAgentsIndex, renderAgentDetail,
-  renderRuntimePanel, renderGitPanel
+  renderRuntimePanel, renderGitPanel,
+  renderAutomationPanel, renderDeployPanel
 } from './dashboard-render.js';
 import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -2804,6 +2805,8 @@ export function initializeDashboard() {
     bindCockpitActions(item);
     if (tab === 'runtime') bindRuntimeControls(id);
     if (tab === 'git') bindGitControls(id);
+    if (tab === 'automation') bindAutomationControls(id);
+    if (tab === 'deploy') bindDeployControls(id);
   }
   /** Which body a cockpit tab renders, kept out of the loader so the switch stays readable. */
   async function cockpitTabBody(workspaceId, tab, workspace, context) {
@@ -2813,7 +2816,61 @@ export function initializeDashboard() {
     // The diff toggle is a URL parameter, so a staged/unstaged view is shareable and
     // the back button behaves.
     if (tab === 'git') return gitPanel(workspaceId, new URLSearchParams(location.search).get('staged') === 'true');
+    if (tab === 'automation') return automationPanel(workspaceId);
+    if (tab === 'deploy') return deployPanel(workspaceId);
     return renderWorkspaceTabPlaceholder(tab);
+  }
+  /** The workspace skill set and its lifecycle hooks. */
+  async function automationPanel(workspaceId) {
+    const scoped = encodeURIComponent(workspaceId);
+    const [skillsResult, hooksResult] = await Promise.all([
+      api(`/workspaces/${scoped}/skills`).catch(() => undefined),
+      api(`/workspaces/${scoped}/hooks`).catch(() => undefined)
+    ]);
+    return renderAutomationPanel({ skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [] });
+  }
+  /** Deployment targets defined by the repository. */
+  async function deployPanel(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/deployments`).catch(() => undefined);
+    return renderDeployPanel(result?.data?.deployments ?? []);
+  }
+  /** Hook runs and skill scripts go through the runner's guarded contracts. */
+  function bindAutomationControls(workspaceId) {
+    const scoped = encodeURIComponent(workspaceId);
+    const hookForm = document.querySelector('#hook-run-form');
+    hookForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(hookForm);
+      void submitForm(hookForm, 'Running…', async () => {
+        await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ event: values.get('event') }) });
+      }, async () => { announce('Hooks finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
+    });
+    const skillForm = document.querySelector('#skill-run-form');
+    skillForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(skillForm);
+      const name = String(values.get('name') ?? '');
+      void submitForm(skillForm, 'Running…', async () => {
+        await api(`/workspaces/${scoped}/skills/${encodeURIComponent(name)}/run`, { method: 'POST', body: requestBody({ script: values.get('script') }) });
+      }, async () => { announce('Skill script finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
+    });
+  }
+  /** Deployments are external-effect operations, so each run confirms first. */
+  function bindDeployControls(workspaceId) {
+    const scoped = encodeURIComponent(workspaceId);
+    for (const button of document.querySelectorAll('.run-deployment')) button.addEventListener('click', (event) => {
+      const name = button.dataset.deploymentName ?? '';
+      void confirmAction({
+        title: 'Run this deployment target?',
+        description: 'Deployment commands have external effects and run outside the harness sandbox.',
+        target: name, label: 'Run deployment', pendingLabel: 'Running…',
+        action: async () => {
+          await api(`/workspaces/${scoped}/deployments/run`, { method: 'POST', body: requestBody({ name }) });
+          announce('Deployment finished.');
+          navigateTo(`/dashboard/workspaces/${scoped}/deploy`);
+        }
+      }, event.currentTarget);
+    });
   }
   /** Git status, a bounded diff, recent commits and worktrees in one pass. */
   async function gitPanel(workspaceId, staged = false) {

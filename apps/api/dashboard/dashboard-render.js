@@ -459,6 +459,73 @@ export function renderGitPanel({ status = {}, diff = {}, log = [], worktrees = [
   });
 }
 
+/** The lifecycle events hooks can run on, in pipeline order. */
+export const HOOK_LIFECYCLE = [
+  { id: 'on_workspace_open', label: 'On workspace open' },
+  { id: 'post_checkout', label: 'After checkout' },
+  { id: 'pre_commit', label: 'Before commit' },
+  { id: 'post_commit', label: 'After commit' },
+  { id: 'manual', label: 'Manual' }
+];
+
+/** Hooks grouped by the lifecycle event that runs them. */
+export function groupHooksByLifecycle(hooks = []) {
+  return HOOK_LIFECYCLE.map((event) => ({
+    id: event.id,
+    label: event.label,
+    hooks: hooks.filter((hook) => (Array.isArray(hook.events) ? hook.events.includes(event.id) : hook.event === event.id))
+  }));
+}
+
+/**
+ * The lifecycle pipeline as an ordered list of stages with their hook counts. It is
+ * text-first on purpose: the same facts are readable without colour or connectors.
+ */
+export function renderHookPipeline(groups = []) {
+  const stages = groups.map((group) => `<li class="pipeline-stage${group.hooks.length ? ' has-hooks' : ''}"><span class="pipeline-label">${escape(group.label)}</span><span class="pipeline-count">${escape(String(group.hooks.length))} hook(s)</span></li>`).join('');
+  return `<ol class="hook-pipeline" aria-label="Hook lifecycle in run order">${stages}</ol>`;
+}
+
+/** Hooks, grouped by lifecycle, with the retained text list beside the pipeline. */
+export function renderHooks(hooks = []) {
+  const groups = groupHooksByLifecycle(hooks);
+  const lists = groups.map((group) => {
+    const rows = group.hooks.length
+      ? `<ul class="record-list">${group.hooks.map((hook) => `<li><strong>${escape(String(hook.name ?? hook.path ?? 'hook'))}</strong> <span class="status${hook.active === false ? '' : ' active'}">${hook.active === false ? 'Inactive' : 'Active'}</span>${hook.description ? `<p>${escape(String(hook.description))}</p>` : ''}</li>`).join('')}</ul>`
+      : '<p class="empty-note">No hooks run at this stage.</p>';
+    return `<section aria-labelledby="hooks-${escape(group.id)}"><h3 id="hooks-${escape(group.id)}">${escape(group.label)}</h3>${rows}</section>`;
+  }).join('');
+  const options = HOOK_LIFECYCLE.map((event) => `<option value="${escape(event.id)}">${escape(event.label)}</option>`).join('');
+  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}<form id="hook-run-form" class="stack-form"><label for="hook-event">Run the hooks for this event</label><select id="hook-event" name="event">${options}</select><button type="submit">Run hooks</button><p class="form-status" aria-live="polite"></p></form><p class="page-note">Activation and deactivation stay with the runner's manifest contract; this page runs only what is already active.</p></section>`;
+}
+
+/** The workspace skill set, with a guarded run form for an explicitly named script. */
+export function renderWorkspaceSkills(skills = []) {
+  const rows = skills.length
+    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${skill.sha256 ? `<small class="mono wrap">${escape(String(skill.sha256).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
+    : '<p class="empty-note">No skills are resolved for this workspace.</p>';
+  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs inside the workspace executor under the runner's verified-bytes contract. Nothing runs unless you name it here.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><input id="skill-run-name" name="name" required maxlength="120"><label for="skill-run-script">Script path</label><input id="skill-run-script" name="script" required maxlength="255"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details></section>`;
+}
+
+/** Deploy targets: external-effect risk, so every run confirms and every failure shows. */
+export function renderDeployPanel(deployments = []) {
+  const rows = deployments.length
+    ? deployments.map((target) => `<li class="panel deploy-target"><div class="record-heading"><div><h3>${escape(String(target.name ?? 'target'))}</h3><p class="mono wrap">${escape(String(target.cwd ?? ''))}</p></div><button class="accent-btn run-deployment" type="button" data-deployment-name="${escape(String(target.name ?? ''))}">Run deployment</button></div><dl class="facts"><dt>Last result</dt><dd>${escape(String(target.lastResult ?? target.status ?? 'Not reported'))}</dd><dt>Duration</dt><dd>${Number.isFinite(Number(target.durationMs)) ? `${escape(String(target.durationMs))} ms` : 'Not reported'}</dd><dt>Failure detail</dt><dd>${target.error ? escape(String(target.error)) : 'None reported'}</dd></dl></li>`).join('')
+    : '<li class="empty">No deployment targets are defined for this repository.</li>';
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Deployments run repository-defined commands.</strong> They are external-effect operations: each run confirms first and reports its exit status here.</div>',
+    body: `<section aria-labelledby="deploy-heading"><h2 id="deploy-heading">Deployment targets</h2><ul class="record-list">${rows}</ul></section>`
+  })}`;
+}
+
+/** The cockpit Automation tab: the workspace skill set and its hooks. */
+export function renderAutomationPanel({ skills = [], hooks = [] } = {}) {
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Workspace automation.</strong> Skills resolve from your library and pinned sets; hooks run at lifecycle events inside the executor.</div>',
+    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks)}`
+  })}`;
+}
+
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';
