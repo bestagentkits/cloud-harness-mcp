@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mcpStatusClass, mcpStatusLabel, renderMcpServerDetail, renderMcpServersIndex } from '../dashboard/dashboard-render.js';
+import { mcpStatusClass, mcpStatusLabel, renderMcpActions, renderMcpServerDetail, renderMcpServersIndex } from '../dashboard/dashboard-render.js';
 
 const gateway = {
   endpoint: '/mcp-gateway',
@@ -147,8 +147,9 @@ describe('MCP servers dashboard renderers', () => {
     expect(html).toContain('data-mcp-test="mcps_abcdefghijklmnopqrstuvwx"');
     expect(html).toContain('data-mcp-refresh="mcps_abcdefghijklmnopqrstuvwx"');
     expect(html).toContain('data-mcp-delete="mcps_abcdefghijklmnopqrstuvwx"');
-    expect(html).toContain('data-mcp-add');
-    expect(html).toContain('aria-haspopup="dialog"');
+    // The add action lives in the page's action slot (renderMcpActions), not the list.
+    expect(renderMcpActions()).toContain('data-mcp-add');
+    expect(renderMcpActions()).toContain('aria-haspopup="dialog"');
     expect(html).toContain('class="mobile-list"');
     expectCspSafe(html);
   });

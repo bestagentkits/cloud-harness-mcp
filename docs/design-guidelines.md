@@ -228,6 +228,22 @@ working one.
   and feed aggregate client-side from allowlisted endpoints; the Server panel
   reads `GET /api/v1/server`, a read-only projection of config and status that
   exposes no owner ID, runner URL, token, or secret.
+- **Resource pages:** every global resource page (Projects, Global Secrets,
+  Artifacts, API Access, Models & Budgets, Integrations) opens with the same
+  shape — page title and help from the page registry, **exactly one** primary
+  action in the shell's action slot next to the heading, an optional filter row,
+  then the resource list. Creation and edit flows live in a `<dialog>` built from
+  `renderFormDialog`, not in a permanent form under the list: the page's job is to
+  show the resource, and the dialog carries the effect description, the cancel
+  affordance and the live status line. Identifiers, generations and hashes are
+  secondary metadata with a copy affordance (`renderCopyChip`), never the page's
+  label. Destructive actions keep `confirmAction` and stay visually separated.
+  Navigation runs through one seam, `dashboardNavigationPath` + `navigateTo` in
+  `dashboard.js`, which refuses any target outside `/dashboard` so a rendered
+  value can never become an off-site redirect. Owners:
+  `renderResourcePage`, `renderPrimaryAction`, `renderFormDialog` and
+  `renderCopyChip` in `dashboard-render.js`; `setPageActions`,
+  `bindDialogOpeners` and `bindCopyAffordances` in `dashboard.js`.
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with

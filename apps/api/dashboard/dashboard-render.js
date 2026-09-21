@@ -6,6 +6,65 @@ const statusLabel = (status) => ({ CREATING: 'Creating', ACTIVE: 'Active', REAPI
 const networkLabel = (profile) => profile === 'dependency-access' ? 'Dependency access' : profile === 'local-host' ? 'Local host' : 'No network';
 const time = (value) => `<time datetime="${escape(value)}">${escape(new Date(value).toLocaleString())}</time>`;
 
+/**
+ * The shared resource-page layout: an optional note, an optional filter bar, and
+ * the resource body. Page identity (title, help) comes from the page registry;
+ * the primary action is rendered into the shell's action slot by the loader.
+ */
+export function renderResourcePage({ note = '', filters = '', body }) {
+  return `${note}${filters ? `<div class="resource-filters">${filters}</div>` : ''}<div class="resource-body">${body}</div>`;
+}
+
+/** Exactly one visually dominant action per page states the one thing to do next. */
+export function renderPrimaryAction({ id, label, dialogId, disabled = false }) {
+  return `<button id="${escape(id)}" class="accent-btn" type="button"${dialogId ? ` data-dialog="${escape(dialogId)}"` : ''}${disabled ? ' disabled' : ''}>${escape(label)}</button>`;
+}
+
+/** A secondary action in the same slot: never accented, never competing for attention. */
+export function renderSecondaryAction({ id, label, dialogId, disabled = false }) {
+  return `<button id="${escape(id)}" type="button"${dialogId ? ` data-dialog="${escape(dialogId)}"` : ''}${disabled ? ' disabled' : ''}>${escape(label)}</button>`;
+}
+
+/** The Models & Budgets page actions: one primary (a profile), one secondary (a credential). */
+export function renderModelsActions() {
+  return `${renderSecondaryAction({ id: 'open-add-credential-btn', label: '+ Add credential' })}${renderPrimaryAction({ id: 'open-add-profile-btn', label: '+ Add profile' })}`;
+}
+
+/** The MCP tab's single primary action. */
+export function renderMcpActions() {
+  return '<div class="row-actions"><button class="accent-btn" type="button" data-mcp-add aria-haspopup="dialog">Add MCP server</button></div>';
+}
+
+/**
+ * The GitHub tab's maintenance action. GitHub's own primary path is the setup form
+ * rendered in the page body, so this stays a plain action rather than a second
+ * accented button.
+ */
+export function renderGitHubActions(status) {
+  const installations = Array.isArray(status?.installations) && status.installations.length
+    ? status.installations
+    : (status?.installation ? [status.installation] : []);
+  const label = installations.length > 1 ? 'Reconcile all installations' : 'Reconcile installation';
+  return `<button id="reconcile-github" type="button"${installations.length === 0 ? ' disabled' : ''}>${escape(label)}</button>`;
+}
+
+/**
+ * A create/edit dialog. The form keeps the element ids the page loaders already
+ * bind and the UI contract tests already assert, so the mutation keeps one
+ * description while its markup moves off the page body.
+ */
+export function renderFormDialog({ id, title, description, formId, body, submitLabel, submitId, danger = false }) {
+  return `<dialog id="${escape(id)}" aria-labelledby="${escape(id)}-title" aria-describedby="${escape(id)}-description"><h2 id="${escape(id)}-title">${escape(title)}</h2><p id="${escape(id)}-description">${escape(description)}</p><form id="${escape(formId)}" class="stack-form">${body}<p class="form-status" aria-live="polite"></p><div class="dialog-actions"><button type="button" data-dialog-close>Cancel</button><button id="${escape(submitId)}" class="${danger ? 'danger' : 'accent-btn'}" type="submit">${escape(submitLabel)}</button></div></form></dialog>`;
+}
+
+/**
+ * A copy affordance for identifiers. Ids and generations are secondary metadata:
+ * they are copied, not read, so they never become the page's labels.
+ */
+export function renderCopyChip({ value, label }) {
+  return `<button class="copy-chip mono" type="button" data-copy="${escape(value)}" data-copy-label="${escape(label)}" aria-label="Copy ${escape(label)}">${escape(value)}</button>`;
+}
+
 export function renderWorkspaceIndex(workspaces, query) {
   const filtered = workspaces.filter((workspace) => {
     const term = query.q.toLowerCase();
@@ -27,9 +86,17 @@ export function renderWorkspaceDetail(workspace, dedicated = false, modal = fals
 
 export function renderProjectIndex(projects) {
   const items = projects.length
-    ? `<ul class="card-grid">${projects.map((project) => `<li class="panel"><h3><a href="/dashboard/projects/${encodeURIComponent(project.id)}">${escape(project.name)}</a></h3><p class="mono wrap">${escape(project.id)}</p><p>Generation ${escape(project.generation)}</p></li>`).join('')}</ul>`
+    ? `<ul class="card-grid">${projects.map((project) => `<li class="panel"><h3><a href="/dashboard/projects/${encodeURIComponent(project.id)}">${escape(project.name)}</a></h3>${renderCopyChip({ value: project.id, label: 'Project ID' })}<p>Generation ${escape(project.generation)}</p></li>`).join('')}</ul>`
     : '<div class="empty"><h3>No projects yet.</h3><p>Create a project to group retained environment metadata.</p></div>';
-  return `<div class="page-note"><strong>Retained control-plane metadata.</strong> Projects and environments persist independently from volatile workspace runtime.</div><section aria-labelledby="project-list-heading"><h2 id="project-list-heading">Projects</h2>${items}</section><section class="panel" aria-labelledby="create-project-heading"><h2 id="create-project-heading">Create project</h2><form id="create-project-form" class="stack-form"><label for="project-name">Project name</label><input id="project-name" name="name" required maxlength="100"><button type="submit">Create project</button><p class="form-status" aria-live="polite"></p></form></section>`;
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Retained control-plane metadata.</strong> Projects and environments persist independently from volatile workspace runtime.</div>',
+    body: `<section aria-labelledby="project-list-heading"><h2 id="project-list-heading">Projects</h2>${items}</section>`
+  })}${renderFormDialog({
+    id: 'create-project-dialog', title: 'Create project',
+    description: 'Projects group retained environment metadata for your signed-in identity. Nothing starts until you open a workspace.',
+    formId: 'create-project-form', submitId: 'create-project-submit', submitLabel: 'Create project',
+    body: '<label for="project-name">Project name</label><input id="project-name" name="name" required maxlength="100">'
+  })}`;
 }
 
 export function renderProjectDetail(project, environments) {
@@ -49,15 +116,32 @@ export function renderGlobalSecrets(secrets = [], readiness = { ready: true }) {
   const secretList = Array.isArray(secrets) ? secrets : [];
   const secretRows = secretList.length ? secretList.map((secret) => {
     const descHtml = secret.description ? `<p class="secret-desc">${escape(secret.description)}</p>` : '';
-    return `<li class="secret-reference"><div><strong>${escape(secret.name)}</strong>${descHtml}<span class="status">${escape(secret.state ?? 'unknown')}</span><small>Version ${escape(secret.version ?? secret.generation)} · Generation ${escape(secret.generation)}</small></div><form class="update-global-secret-desc-form inline-form" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}"><label>Description<input name="description" value="${escape(secret.description ?? '')}" maxlength="500" autocomplete="off"></label><button type="submit">Save desc</button><p class="form-status" aria-live="polite"></p></form><form class="rotate-global-secret-form inline-form" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}"><label>New write-only value<input name="value" type="password" autocomplete="new-password" data-write-only required></label><button type="submit">Rotate</button><p class="form-status" aria-live="polite"></p></form><button class="danger delete-global-secret" type="button" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}">Delete secret</button></li>`;
-  }).join('') : '<li>No global secrets yet.</li>';
+    return `<li class="secret-reference"><div><strong>${escape(secret.name)}</strong>${descHtml}<span class="status">${escape(secret.state ?? 'unknown')}</span><small>Version ${escape(secret.version ?? secret.generation)} · Generation ${escape(secret.generation)}</small></div><details class="row-edit"><summary>Rotate or edit</summary><form class="update-global-secret-desc-form inline-form" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}"><label>Description<input name="description" value="${escape(secret.description ?? '')}" maxlength="500" autocomplete="off"></label><button type="submit">Save desc</button><p class="form-status" aria-live="polite"></p></form><form class="rotate-global-secret-form inline-form" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}"><label>New write-only value<input name="value" type="password" autocomplete="new-password" data-write-only required></label><button type="submit">Rotate</button><p class="form-status" aria-live="polite"></p></form></details><button class="danger delete-global-secret" type="button" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}">Delete secret</button></li>`;
+  }).join('') : '<li class="empty"><h3>No global secrets yet.</h3><p>Add a secret when a workspace needs a credential that every project can inherit.</p></li>';
   const readinessWarning = readiness?.ready === false ? `<p class="warning">Secret storage unavailable: ${escape(readiness.error ?? 'Review runner readiness.')}</p>` : '';
-  return `<div class="page-note"><strong>Retained global configuration metadata.</strong> Global secrets are automatically inherited by all newly opened workspaces for your signed-in identity. Environment-specific secrets override global secrets on key collision. Secret rotation and deletion apply to future workspace opens and do not retroactively modify running workspaces. Values are write-only and never displayed.</div>${readinessWarning}<div class="record-heading"><div><h2>Global Secrets</h2><p>Inherited by all workspaces for your signed-in identity.</p></div><div class="row-actions"><button id="open-global-bulk-import" type="button">Bulk import .env</button><button id="export-global-env-example" type="button">Export .env.example</button></div></div><section class="panel" aria-labelledby="global-secrets-heading"><h2 id="global-secrets-heading">Secret references</h2><ul class="record-list">${secretRows}</ul></section><section class="panel"><h2>Add global secret</h2><form id="create-global-secret-form" class="stack-form"><label for="global-secret-name">Secret name</label><input id="global-secret-name" name="name" required maxlength="100" autocomplete="off"><label for="global-secret-value">Write-only value</label><input id="global-secret-value" name="value" type="password" required autocomplete="new-password" data-write-only><label for="global-secret-desc">Description <span class="optional">Optional</span></label><input id="global-secret-desc" name="description" maxlength="500" autocomplete="off"><button type="submit">Create global secret</button><p class="form-status" aria-live="polite"></p></form></section>`;
+  return `${renderResourcePage({
+    note: `<div class="page-note"><strong>Retained global configuration metadata.</strong> Global secrets are automatically inherited by all newly opened workspaces for your signed-in identity. Environment-specific secrets override global secrets on key collision. Secret rotation and deletion apply to future workspace opens and do not retroactively modify running workspaces. Values are write-only and never displayed.</div>${readinessWarning}`,
+    filters: '<div class="row-actions"><button id="open-global-bulk-import" type="button">Bulk import .env</button><button id="export-global-env-example" type="button">Export .env.example</button></div>',
+    body: `<section aria-labelledby="global-secrets-heading"><h2 id="global-secrets-heading">Secret references</h2><ul class="record-list">${secretRows}</ul></section>`
+  })}${renderFormDialog({
+    id: 'create-global-secret-dialog', title: 'Add global secret',
+    description: 'The value is write-only: it is encrypted, never returned, and never rendered again after you save it.',
+    formId: 'create-global-secret-form', submitId: 'create-global-secret-submit', submitLabel: 'Create global secret',
+    body: '<label for="global-secret-name">Secret name</label><input id="global-secret-name" name="name" required maxlength="100" autocomplete="off"><label for="global-secret-value">Write-only value</label><input id="global-secret-value" name="value" type="password" required autocomplete="new-password" data-write-only><label for="global-secret-desc">Description <span class="optional">Optional</span></label><input id="global-secret-desc" name="description" maxlength="500" autocomplete="off">'
+  })}`;
 }
 
 export function renderArtifactIndex(artifacts, cursor) {
-  const rows = artifacts.length ? artifacts.map((artifact) => `<tr><th scope="row">${escape(artifact.logicalName)}<small class="mono wrap">${escape(artifact.artifactId)}</small></th><td>${escape(formatBytes(artifact.sizeBytes))}</td><td class="mono wrap">${escape(artifact.sha256)}</td><td>${time(artifact.expiresAt)}</td><td><a class="secondary button download-artifact" href="/dashboard/api/v1/artifacts/${encodeURIComponent(artifact.artifactId)}/download" download="${escape(artifact.logicalName)}">Download</a> <button class="danger delete-artifact" type="button" data-artifact-id="${escape(artifact.artifactId)}" data-generation="${escape(artifact.generation)}">Delete</button></td></tr>`).join('') : '<tr><td colspan="5">No retained snapshots.</td></tr>';
-  return `<div class="page-note"><strong>Retained artifact snapshots.</strong> These bounded copies persist until their displayed expiry or deletion. Tasks and sessions are volatile runtime state.</div><section class="panel" aria-labelledby="snapshot-heading"><h2 id="snapshot-heading">Create snapshot</h2><form id="snapshot-form" class="stack-form"><label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default"><button type="submit">Create retained snapshot</button><p class="form-status" aria-live="polite"></p></form></section><section aria-labelledby="artifact-list-heading"><h2 id="artifact-list-heading">Retained artifacts</h2><div class="desktop-table"><table><caption>${artifacts.length} snapshots</caption><thead><tr><th>Name</th><th>Size</th><th>SHA-256</th><th>Expires</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>${cursor ? `<button id="load-more-artifacts" type="button" data-cursor="${escape(cursor)}">Load more</button>` : ''}</section>`;
+  const rows = artifacts.length ? artifacts.map((artifact) => `<tr><th scope="row">${escape(artifact.logicalName)}<small class="mono wrap">${escape(artifact.artifactId)}</small></th><td>${escape(formatBytes(artifact.sizeBytes))}</td><td class="mono wrap">${escape(artifact.sha256)}</td><td>${time(artifact.expiresAt)}</td><td><a class="secondary button download-artifact" href="/dashboard/api/v1/artifacts/${encodeURIComponent(artifact.artifactId)}/download" download="${escape(artifact.logicalName)}">Download</a> <button class="danger delete-artifact" type="button" data-artifact-id="${escape(artifact.artifactId)}" data-generation="${escape(artifact.generation)}">Delete</button></td></tr>`).join('') : '<tr><td colspan="5">No retained snapshots yet. Create one to keep a bounded copy of a workspace file.</td></tr>';
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Retained artifact snapshots.</strong> These bounded copies persist until their displayed expiry or deletion. Tasks and sessions are volatile runtime state.</div>',
+    body: `<section aria-labelledby="artifact-list-heading"><h2 id="artifact-list-heading">Retained artifacts</h2><div class="desktop-table"><table><caption>${artifacts.length} snapshots</caption><thead><tr><th>Name</th><th>Size</th><th>SHA-256</th><th>Expires</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>${cursor ? `<button id="load-more-artifacts" type="button" data-cursor="${escape(cursor)}">Load more</button>` : ''}</section>`
+  })}${renderFormDialog({
+    id: 'snapshot-dialog', title: 'Create snapshot',
+    description: 'Copy one workspace file into retained, bounded storage. The snapshot expires at the retention you set, or at the server default.',
+    formId: 'snapshot-form', submitId: 'snapshot-submit', submitLabel: 'Create retained snapshot',
+    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
+  })}`;
 }
 
 export function renderAuditIndex(events, cursor) {
@@ -77,7 +161,14 @@ export function renderApiKeyIndex(data) {
   const creationDisabled = readiness.ready === false || activeCount >= 10;
   const disabled = creationDisabled ? ' disabled' : '';
   const limitNote = activeCount >= 10 ? '<p class="warning" role="status">The 10-active-key limit is reached. Revoke an active key before creating another.</p>' : '';
-  return `${readinessNote}<section class="panel" aria-labelledby="create-api-key-heading"><h2 id="create-api-key-heading">Create API key</h2><p class="warning"><strong>Full remote execution authority.</strong> This key grants full MCP access as your identity, including arbitrary command execution. It expires, cannot be recovered, and must be revoked if exposed.</p>${limitNote}<form id="create-api-key-form" class="stack-form"><label for="api-key-name">Key name</label><input id="api-key-name" name="name" required maxlength="100" autocomplete="off"${disabled}><label for="api-key-expiry">Expires after (days)</label><input id="api-key-expiry" name="expiryDays" type="number" inputmode="numeric" min="1" max="3650" step="1" value="30" required${disabled}><label class="checkbox-label"><input name="authorityAcknowledged" type="checkbox" required${disabled}><span>I understand this key permits full MCP and command-execution access and will be shown only once.</span></label><button id="create-api-key-submit" type="submit"${disabled}>Create API key</button><p class="form-status" aria-live="polite"></p></form></section><section aria-labelledby="api-key-list-heading"><div class="record-heading"><div><h2 id="api-key-list-heading">API keys</h2><p>${escape(activeCount)} active of 10 · ${escape(keys.length)} total</p></div></div><ul class="record-list api-key-list">${items}</ul></section>`;
+  return `${readinessNote}${renderResourcePage({
+    body: `<section aria-labelledby="api-key-list-heading"><div class="record-heading"><div><h2 id="api-key-list-heading">API keys</h2><p>${escape(activeCount)} active of 10 · ${escape(keys.length)} total</p></div></div><ul class="record-list api-key-list">${items}</ul></section>`
+  })}${renderFormDialog({
+    id: 'create-api-key-dialog', title: 'Create API key',
+    description: 'The key is shown once and cannot be recovered. It carries full MCP access as your identity, including command execution.',
+    formId: 'create-api-key-form', submitId: 'create-api-key-submit', submitLabel: 'Create API key',
+    body: `<p class="warning"><strong>Full remote execution authority.</strong> This key grants full MCP access as your identity, including arbitrary command execution. It expires, cannot be recovered, and must be revoked if exposed.</p>${limitNote}<label for="api-key-name">Key name</label><input id="api-key-name" name="name" required maxlength="100" autocomplete="off"${disabled}><label for="api-key-expiry">Expires after (days)</label><input id="api-key-expiry" name="expiryDays" type="number" inputmode="numeric" min="1" max="3650" step="1" value="30" required${disabled}><label class="checkbox-label"><input name="authorityAcknowledged" type="checkbox" required${disabled}><span>I understand this key permits full MCP and command-execution access and will be shown only once.</span></label>`
+  })}`;
 }
 
 function renderApiKey(key) {
@@ -106,7 +197,8 @@ export function renderGitHub(status, callbackPending = false) {
     : '<p>No GitHub App installation is bound to this identity.</p>';
   const repositories = status?.repositories?.length ? `<ul class="record-list">${status.repositories.map((repository) => `<li><strong>${escape(repository.owner)}/${escape(repository.repository)}</strong><span>${escape(repository.status)} · Contents ${escape(repository.contents)}${repository.installationId ? ` · ID <code class="mono">${escape(repository.installationId)}</code>` : ''}</span></li>`).join('')}</ul>` : '<p>No authorized repositories reported.</p>';
   const reconcileLabel = installations.length > 1 ? 'Reconcile all installations' : 'Reconcile installation';
-  return `<div class="page-note"><strong>GitHub App authorization metadata.</strong> Provider private keys and minted tokens remain runner-only and are never rendered.</div>${callbackPending ? '<p class="status-message" role="status">Completing GitHub App connection…</p>' : ''}<section class="panel"><h2>Installation status</h2>${installationView}<button id="reconcile-github" type="button"${installations.length === 0 ? ' disabled' : ''}>${reconcileLabel}</button><p id="github-status-message" class="form-status" aria-live="polite"></p></section><section class="panel"><h2>Connect GitHub App</h2><form id="github-setup-form" class="stack-form"><label for="github-account-id">Expected account ID <span class="optional">Optional</span></label><input id="github-account-id" name="expectedAccountId" maxlength="100"><button type="submit">Connect GitHub App</button><p class="form-status" aria-live="polite"></p></form></section><section><h2>Authorized repositories</h2>${repositories}</section>`;
+  void reconcileLabel;
+  return `<div class="page-note"><strong>GitHub App authorization metadata.</strong> Provider private keys and minted tokens remain runner-only and are never rendered.</div>${callbackPending ? '<p class="status-message" role="status">Completing GitHub App connection…</p>' : ''}<section class="panel"><h2>Installation status</h2>${installationView}<p id="github-status-message" class="form-status" aria-live="polite"></p></section><section class="panel"><h2>Connect GitHub App</h2><form id="github-setup-form" class="stack-form"><label for="github-account-id">Expected account ID <span class="optional">Optional</span></label><input id="github-account-id" name="expectedAccountId" maxlength="100"><button type="submit">Connect GitHub App</button><p class="form-status" aria-live="polite"></p></form></section><section><h2>Authorized repositories</h2>${repositories}</section>`;
 }
 export function profileDisplayName(profile) {
   const preferred = typeof profile?.preferences?.displayName === 'string' ? profile.preferences.displayName.trim() : '';
@@ -515,8 +607,6 @@ export function renderModelsPage(profiles = [], credentials = [], status = null)
       </div>
       <div class="row-actions">
         <span class="status ${syncClass}">${syncLabel}</span>
-        <button id="open-add-credential-btn" type="button">+ Add credential</button>
-        <button id="open-add-profile-btn" class="accent-btn" type="button">+ Add profile</button>
       </div>
     </div>
     <section class="panel" aria-labelledby="model-profiles-heading">
@@ -1019,7 +1109,7 @@ export function renderMcpServersIndex(data) {
     ${renderMcpGatewayCard(gateway)}
     <div class="record-heading">
       <div><h2>MCP servers</h2><p>Downstream MCP integrations available to your signed-in identity.</p></div>
-      <div class="row-actions"><button class="accent-btn" type="button" data-mcp-add aria-haspopup="dialog">Add MCP server</button></div>
+      <div class="row-actions"></div>
     </div>
     <section aria-labelledby="mcp-server-list-heading">
       <h2 id="mcp-server-list-heading" class="sr-only">MCP servers</h2>
