@@ -130,4 +130,34 @@ describe('analytics section completeness', () => {
     expect(markup).toContain('keeps agent state and per-agent usage');
     expect(markup).toContain('Cost over retained agents');
   });
+
+  it('exposes only bucketed counts and costs, with no agent, owner or credential fields', () => {
+    const projection = buildOverviewProjection({
+      now,
+      workspaces: [],
+      agents: [
+        agent({ agentId: `agent_${'h'.repeat(24)}`, status: 'SUCCEEDED', startedAt: startedMinutesAgo(60), usage: { costMicros: 1_000_000 } }),
+        agent({ agentId: `agent_${'i'.repeat(24)}`, status: 'FAILED', startedAt: startedMinutesAgo(1), usage: { costMicros: 500_000 } })
+      ]
+    }) as Record<string, any>;
+
+    const series = JSON.stringify({
+      agentOutcomes: projection.agentOutcomes,
+      costSeries: projection.costSeries,
+      agentSeriesScope: projection.agentSeriesScope
+    });
+    // A bucket carries a timestamp, a label, a tick and the numbers behind the bar — no
+    // agent or workspace identity, no owner, no credential and no filesystem path.
+    expect(series).not.toMatch(/agent_/);
+    expect(series).not.toMatch(/ws_/);
+    expect(series).not.toMatch(/owner/i);
+    expect(series).not.toMatch(/token|secret|credential|password/i);
+    expect(series).not.toMatch(/\/(Users|home|var|tmp)\b/);
+    for (const bucket of projection.agentOutcomes) {
+      expect(Object.keys(bucket).sort()).toEqual(['at', 'label', 'segments', 'tick']);
+    }
+    for (const bucket of projection.costSeries) {
+      expect(Object.keys(bucket).sort()).toEqual(['at', 'label', 'tick', 'value']);
+    }
+  });
 });
