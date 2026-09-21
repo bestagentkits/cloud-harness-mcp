@@ -158,6 +158,15 @@ environment (`/etc/cloud-harness-mcp/runtime.env`) and restart the stack.
   toolkit cache, so updating skills is a plain file upload.
 - Skill scripts remain runnable through `skills_run`, which still requires the
   caller to pin the digest returned by `skills_list`.
+- `BUILTIN_SKILLS_ROOT` is a **reserved** name: a workspace can never set it as a
+  secret or environment value, so project content cannot shadow your catalog. If
+  the runner rejects a stored record with that name on upgrade, delete it with
+  `secret_delete` (deletion of a reserved name stays allowed) and reopen.
+- The former `CH_BUILTIN_SKILLS_ROOT` override is no longer read. Rename that
+  variable to `BUILTIN_SKILLS_ROOT`, or move the catalog to the mount target.
+- A container created before this change keeps its old environment until it is
+  closed or rebuilt, so close or let pre-upgrade workspaces expire before
+  relying on the tier being operator-only.
 
 Use this for your own or licensed content that lives on your host. Use
 `{ "kind": "agentkit" }` instead when the content must come from a signed

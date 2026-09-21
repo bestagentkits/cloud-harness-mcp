@@ -138,4 +138,54 @@ describe('context provenance attribution and partition-based verification', () =
     expect(sanitizedDefault.provenance.source).toBe('repository');
     expect(sanitizedDefault.provenance.trust).toBe('untrusted-executor');
   });
+
+  it('resolves the built-in root from BUILTIN_SKILLS_ROOT and never from the removed CH_ override', () => {
+    const previousBuiltin = process.env.BUILTIN_SKILLS_ROOT;
+    const previousCh = process.env.CH_BUILTIN_SKILLS_ROOT;
+    const decoyRoot = '/tmp/decoy-builtin';
+    const operatorRoot = '/tmp/operator-builtin';
+    try {
+      // The removed override must never widen the trusted built-in partition.
+      process.env.CH_BUILTIN_SKILLS_ROOT = decoyRoot;
+      delete process.env.BUILTIN_SKILLS_ROOT;
+      const decoy = sanitizeAndAttributeProvenance({
+        id: 'ctx_builtin_decoy',
+        kind: 'skill-summary',
+        format: 'skill-md',
+        path: `${decoyRoot}/deploy/SKILL.md`,
+        contentSha256: 'a'.repeat(64)
+      }, { partitionSource: 'built-in' });
+      expect(decoy.provenance.source).toBe('repository');
+      expect(decoy.provenance.trust).toBe('untrusted-executor');
+
+      // The fixed executor mount target stays authoritative when nothing is configured.
+      const mountTarget = sanitizeAndAttributeProvenance({
+        id: 'ctx_builtin_mount',
+        kind: 'skill-summary',
+        format: 'skill-md',
+        path: '/opt/cloud-harness/skills/deploy/SKILL.md',
+        contentSha256: 'b'.repeat(64)
+      }, { partitionSource: 'built-in' });
+      expect(mountTarget.provenance.source).toBe('built-in');
+      expect(mountTarget.provenance.trust).toBe('trusted-control-plane');
+      expect(mountTarget.provenance.mutableBy).toBe('release');
+
+      // The single operator-facing name selects the root.
+      process.env.BUILTIN_SKILLS_ROOT = operatorRoot;
+      const operator = sanitizeAndAttributeProvenance({
+        id: 'ctx_builtin_operator',
+        kind: 'skill-summary',
+        format: 'skill-md',
+        path: `${operatorRoot}/deploy/SKILL.md`,
+        contentSha256: 'c'.repeat(64)
+      }, { partitionSource: 'built-in' });
+      expect(operator.provenance.source).toBe('built-in');
+      expect(operator.provenance.trust).toBe('trusted-control-plane');
+    } finally {
+      if (previousBuiltin === undefined) delete process.env.BUILTIN_SKILLS_ROOT;
+      else process.env.BUILTIN_SKILLS_ROOT = previousBuiltin;
+      if (previousCh === undefined) delete process.env.CH_BUILTIN_SKILLS_ROOT;
+      else process.env.CH_BUILTIN_SKILLS_ROOT = previousCh;
+    }
+  });
 });

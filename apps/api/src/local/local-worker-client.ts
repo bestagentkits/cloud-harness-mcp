@@ -51,14 +51,13 @@ export class LocalWorkerClient {
     }
 
     return await new Promise<RunnerResponse>((resolvePromise) => {
-      // The operator declares the host catalog with `BUILTIN_SKILLS_ROOT`; the worker reads its
-      // own in-process override, so forward whichever is set.
-      const builtinSkillsRoot = process.env.BUILTIN_SKILLS_ROOT || process.env.CH_BUILTIN_SKILLS_ROOT;
+      // The worker reads the same single name the operator declares, so forward it unchanged.
+      const builtinSkillsRoot = process.env.BUILTIN_SKILLS_ROOT;
       const env = {
         ...buildLocalEnvironment(),
         HARNESS_WORKSPACE_ROOT: this.canonicalRoot,
         ...(process.env.CH_OWNER_SKILLS_ROOT ? { CH_OWNER_SKILLS_ROOT: process.env.CH_OWNER_SKILLS_ROOT } : {}),
-        ...(builtinSkillsRoot ? { CH_BUILTIN_SKILLS_ROOT: builtinSkillsRoot } : {})
+        ...(builtinSkillsRoot ? { BUILTIN_SKILLS_ROOT: builtinSkillsRoot } : {})
       };
 
       const child = spawn(process.execPath, [this.workerScript], {

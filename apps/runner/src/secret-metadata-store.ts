@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { validateSecretDescription, validateSecretName, validateSecretValue, type SecretPurpose } from '@cloud-harness/contracts';
+import { validateSecretDescription, validateSecretName, validateSecretNameShape, validateSecretValue, type SecretPurpose } from '@cloud-harness/contracts';
 import { appendAudit, opaqueId, secretView, transaction, type SecretView } from './metadata-records.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
@@ -30,6 +30,16 @@ type GlobalVersionRow = {
 
 const normalizedName = (name: string): string => {
   const validation = validateSecretName(name);
+  if (!validation.ok) throw new Error(validation.error);
+  return validation.name;
+};
+
+/**
+ * Delete-only normalization. Deleting a record cannot inject a value into an executor, and an
+ * operator must be able to remove a record whose name became reserved after it was stored.
+ */
+const normalizedNameForDelete = (name: string): string => {
+  const validation = validateSecretNameShape(name);
   if (!validation.ok) throw new Error(validation.error);
   return validation.name;
 };
@@ -204,7 +214,7 @@ export class SecretMetadataStore {
   delete(principalId: string, environmentId: string, name: string, expectedGeneration: number): SecretView | undefined {
     return transaction(this.database, () => {
       if (!this.hasActiveEnvironment(principalId, environmentId)) return undefined;
-      const secretName = normalizedName(name);
+      const secretName = normalizedNameForDelete(name);
       const current = this.byName(principalId, environmentId, secretName);
       if (!current || current.state !== 'ACTIVE' || current.generation !== expectedGeneration) return undefined;
       const now = Date.now();
@@ -305,7 +315,7 @@ export class SecretMetadataStore {
 
   globalDelete(principalId: string, name: string, expectedGeneration: number): SecretView | undefined {
     return transaction(this.database, () => {
-      const secretName = normalizedName(name);
+      const secretName = normalizedNameForDelete(name);
       const current = this.globalByName(principalId, secretName);
       if (!current || current.state !== 'ACTIVE' || current.generation !== expectedGeneration) return undefined;
       const now = Date.now();

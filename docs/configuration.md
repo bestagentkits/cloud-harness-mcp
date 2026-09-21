@@ -220,10 +220,32 @@ own machine instead of consuming a signed registry package.
   `/var/lib/cloud-harness/skills` on first install.
 - The runner rescans the same `BUILTIN_SKILLS_ROOT` directory when it builds the
   context manifest, so the partition the executor sees and the partition the
-  runner attributes as `built-in` are identical. `CH_BUILTIN_SKILLS_ROOT` is a
-  separate in-executor path override for the worker, defaulting to the
-  `/opt/cloud-harness/skills` mount target, and is never read as a runner host
-  path.
+  runner attributes as `built-in` are identical. This is the only name that
+  selects the tier: the executor worker, the local stdio backend, and the
+  provenance classifier all read it. In the executor the name is normally unset,
+  so the worker resolves the fixed `/opt/cloud-harness/skills` mount target; in
+  local stdio mode, which has no executor mount, the name falls back to the same
+  literal. The mount target stays authoritative on the executor side.
+- `BUILTIN_SKILLS_ROOT` is a reserved name. A caller can never supply it as a
+  workspace secret or environment value, so a workspace cannot shadow the
+  operator's catalog. A principal that already holds a stored record with that
+  name fails closed with `INVALID_INPUT` (HTTP 400) at `workspace_open` and
+  `workspace_recover`; failing closed is deliberate, because silently ignoring a
+  name that selects the trusted tier would hide a shadowing attempt. The operator
+  removes the record with `secret_delete` or `global_secret_delete`, which stay
+  shape-validated only, since deletion cannot inject a value.
+- **Migration.** The former `CH_BUILTIN_SKILLS_ROOT` override is no longer read.
+  It was honoured from a custom `EXECUTOR_IMAGE` `ENV` and from the local stdio
+  process environment. Rename that variable to `BUILTIN_SKILLS_ROOT`, or move the
+  catalog to the fixed mount target.
+- **Upgrading with live workspaces.** Deleting the record does not change a
+  container that already exists, because the executor environment is written when
+  the container is created. A workspace created before this release can therefore
+  keep a caller-supplied `BUILTIN_SKILLS_ROOT` inside its running container, and
+  the worker reads it for `skills_list` and `skills_read` until that container is
+  closed, rebuilt, or reaped; the `workspace_context` manifest still re-attributes
+  every worker item as `repository`. Close or let pre-upgrade workspaces expire
+  before relying on the tier being operator-only.
 
 ## Licensed AgentKit kits
 

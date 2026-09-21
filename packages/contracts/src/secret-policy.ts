@@ -32,7 +32,10 @@ export const FORBIDDEN_SECRET_NAMES: Record<string, true> = {
   JOBS_ROOT: true,
   DOCKER_HOST: true,
   LD_PRELOAD: true,
-  LD_LIBRARY_PATH: true
+  LD_LIBRARY_PATH: true,
+  // Selects the trusted `built-in` skills tier. Reserved so a workspace environment can never
+  // shadow the operator's catalog, now that the worker reads this single name.
+  BUILTIN_SKILLS_ROOT: true
 };
 
 export const FORBIDDEN_SECRET_PREFIXES = [
@@ -79,6 +82,22 @@ export function validateSecretName(rawName: unknown): { ok: true; name: string }
   return { ok: true, name };
 }
 
+/**
+ * Shape-only variant for operations that only read or DELETE an existing record. Reserving a name
+ * stops a value from being injected into an executor; it must not stop an operator from removing a
+ * record whose name became reserved after it was stored.
+ */
+export function validateSecretNameShape(rawName: unknown): { ok: true; name: string } | { ok: false; error: string } {
+  if (typeof rawName !== 'string') {
+    return { ok: false, error: 'secret name must be a string' };
+  }
+  const name = rawName.trim();
+  if (!SECRET_NAME_REGEX.test(name)) {
+    return { ok: false, error: 'secret name must be 1-100 characters and contain only letters, numbers, and underscores (starting with letter or underscore)' };
+  }
+  return { ok: true, name };
+}
+
 export function validateSecretValue(rawValue: unknown): { ok: true; value: string } | { ok: false; error: string } {
   if (typeof rawValue !== 'string') {
     return { ok: false, error: 'secret value must be a string' };
@@ -118,6 +137,14 @@ export function validateSecretDescription(rawDesc: unknown): { ok: true; descrip
 
 export const SecretNameSchema = z.string().superRefine((val, ctx) => {
   const result = validateSecretName(val);
+  if (!result.ok) {
+    ctx.addIssue({ code: 'custom', message: result.error });
+  }
+});
+
+/** Shape-only name schema for delete requests, so a record whose name became reserved can still be removed. */
+export const SecretNameShapeSchema = z.string().superRefine((val, ctx) => {
+  const result = validateSecretNameShape(val);
   if (!result.ok) {
     ctx.addIssue({ code: 'custom', message: result.error });
   }

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { LocalWorkerClient } from '../../api/src/local/local-worker-client.js';
 
 describe('skills precedence and resolver', () => {
@@ -140,6 +141,48 @@ describe('skills precedence and resolver', () => {
       expect(runRes.error?.message).toContain('mismatch');
     } finally {
       await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the built-in tier from BUILTIN_SKILLS_ROOT when the worker is invoked directly', async () => {
+    const workspaceDir = await mkdtemp(join(tmpdir(), 'skills-builtin-ws-'));
+    const builtinRoot = await mkdtemp(join(tmpdir(), 'skills-builtin-catalog-'));
+    try {
+      await mkdir(join(builtinRoot, 'deploy'), { recursive: true });
+      await writeFile(join(builtinRoot, 'deploy', 'SKILL.md'), '# Built-in deploy');
+
+      // The worker's built-in root must come from the single operator-facing name. This spawn
+      // passes a controlled environment without the removed CH_ override, because the local
+      // client would otherwise bridge the operator name into the CH_ name and mask the defect.
+      const workerScript = resolve(process.cwd(), 'worker/harness-worker.mjs');
+      const child = spawn(process.execPath, [workerScript], {
+        cwd: workspaceDir,
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: tmpdir(),
+          HARNESS_WORKSPACE_ROOT: workspaceDir,
+          BUILTIN_SKILLS_ROOT: builtinRoot
+        },
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      child.stdin.end(JSON.stringify({ operation: 'skills_list', input: {} }));
+
+      const exitCode = await new Promise<number | null>((resolveExit) => {
+        child.on('close', (code) => resolveExit(code));
+      });
+      expect(exitCode).toBe(0);
+
+      const parsed = JSON.parse(stdout) as { ok: boolean; data?: { skills?: Array<{ name: string; selectedSource: string }> } };
+      expect(parsed.ok).toBe(true);
+      const deploy = parsed.data?.skills?.find((skill) => skill.name === 'deploy');
+      expect(deploy).toBeDefined();
+      expect(deploy?.selectedSource).toBe('built-in');
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+      await rm(builtinRoot, { recursive: true, force: true });
     }
   });
 });

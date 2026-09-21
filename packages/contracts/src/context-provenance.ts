@@ -46,7 +46,7 @@ export function sanitizeAndAttributeProvenance(
   rawItem: Record<string, unknown>,
   context: ScanPartitionContext = {}
 ): ContextManifestItem {
-  const builtinRoot = context.builtinSkillsRoot || context.trustedRoot || process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
+  const builtinRoot = context.builtinSkillsRoot || context.trustedRoot || process.env.BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
   const ownerRoot = context.ownerSkillsRoot || context.trustedRoot || process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
   const workspaceSkillsRoot = context.workspaceSkillsRoot || process.env.CH_WORKSPACE_SKILLS_ROOT;
 

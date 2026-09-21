@@ -2768,12 +2768,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             } catch { /* owner root absent */ }
 
             // `/opt/cloud-harness/skills` is likewise an executor mount target, not a Runner host
-            // path. The operator declares the Runner-side catalog with `BUILTIN_SKILLS_ROOT`, the
-            // same directory mounted read-only into every executor, so scanning the configured root
-            // keeps the trusted partition identical to the one the executor actually sees.
-            // `CH_BUILTIN_SKILLS_ROOT` is the in-executor path override and must never be read here
-            // as a Runner host path. Only an operator-declared Runner catalog may carry the built-in
-            // partition.
+            // path. `BUILTIN_SKILLS_ROOT` is the single operator-facing name for this tier: it is
+            // the directory mounted read-only into every executor and the directory scanned here,
+            // so the trusted partition stays identical to the one the executor actually sees.
+            // Only an operator-declared Runner catalog may carry the built-in partition.
             const builtinRoot = this.config.builtinSkillsRoot;
             if (builtinRoot) {
               try {

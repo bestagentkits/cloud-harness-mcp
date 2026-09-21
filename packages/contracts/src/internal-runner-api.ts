@@ -8,7 +8,7 @@ import {
   ProviderCredentialInputSchema
 } from './model-profile-schemas.js';
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
-import { SecretDescriptionSchema, SecretNameSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
+import { SecretDescriptionSchema, SecretNameSchema, SecretNameShapeSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
 import { ToolkitSelectionSchema } from './tool-schemas.js';
 import {
   JournalTypeSchema,
@@ -166,7 +166,7 @@ const metadataInputs = {
   secret_create: z.object({ environmentId: internalId('env'), name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), purpose: SecretPurposeSchema.optional(), expectedGeneration: z.literal(0) }).strict(),
   secret_rotate: z.object({ environmentId: internalId('env'), name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), purpose: SecretPurposeSchema.optional(), expectedGeneration: generation }).strict(),
   secret_update: z.object({ environmentId: internalId('env'), name: SecretNameSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: generation }).strict(),
-  secret_delete: z.object({ environmentId: internalId('env'), name: SecretNameSchema, expectedGeneration: generation }).strict(),
+  secret_delete: z.object({ environmentId: internalId('env'), name: SecretNameShapeSchema, expectedGeneration: generation }).strict(),
   secret_bulk_apply: z.object({
     environmentId: internalId('env'),
     items: z.array(z.object({
@@ -182,7 +182,7 @@ const metadataInputs = {
   global_secret_create: z.object({ name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), purpose: SecretPurposeSchema.optional(), expectedGeneration: z.literal(0) }).strict(),
   global_secret_rotate: z.object({ name: SecretNameSchema, value: SecretValueSchema, description: SecretDescriptionSchema.optional(), purpose: SecretPurposeSchema.optional(), expectedGeneration: generation }).strict(),
   global_secret_update: z.object({ name: SecretNameSchema, description: SecretDescriptionSchema.optional(), expectedGeneration: generation }).strict(),
-  global_secret_delete: z.object({ name: SecretNameSchema, expectedGeneration: generation }).strict(),
+  global_secret_delete: z.object({ name: SecretNameShapeSchema, expectedGeneration: generation }).strict(),
   global_secret_bulk_apply: z.object({
     items: z.array(z.object({
       name: SecretNameSchema,

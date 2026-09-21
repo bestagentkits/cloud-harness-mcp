@@ -204,7 +204,9 @@ async function computeSkillBundleDigest(skillDir) {
 }
 
 async function skillEntries() {
-  const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
+  // `BUILTIN_SKILLS_ROOT` is the single operator-facing name for this tier. The runner mounts it
+  // at this fixed executor path, so the literal stays authoritative when the name is unset.
+  const builtinRoot = process.env.BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
   const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
   const sources = [
     { source: 'built-in', roots: [builtinRoot] },
