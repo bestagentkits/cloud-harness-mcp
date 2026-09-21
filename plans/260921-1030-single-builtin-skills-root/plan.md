@@ -1,7 +1,7 @@
 ---
 title: "Single built-in skills source (BUILTIN_SKILLS_ROOT)"
 description: "Consolidate the built-in skills tier onto one operator-facing source, BUILTIN_SKILLS_ROOT, and remove the CH_BUILTIN_SKILLS_ROOT override."
-status: pending
+status: completed
 priority: P1
 effort: "S"
 tags: [security, provenance, configuration, refactor]
@@ -82,31 +82,31 @@ unchanged.
 
 | Phase | Name | Status |
 | --- | --- | --- |
-| 1 | [Phase 1: Red — tests pin the single source](./phase-01-single-source-tests.md) | Pending |
-| 2 | [Phase 2: Green — reserve, remove, sync docs](./phase-02-remove-override.md) | Pending |
-| 3 | [Phase 3: Independent review findings](./phase-03-review-fixes.md) | Pending |
+| 1 | [Phase 1: Red — tests pin the single source](./phase-01-single-source-tests.md) | Done |
+| 2 | [Phase 2: Green — reserve, remove, sync docs](./phase-02-remove-override.md) | Done |
+| 3 | [Phase 3: Independent review findings](./phase-03-review-fixes.md) | Done |
 
 ## Success Criteria
 
-- [ ] No production file reads or names `CH_BUILTIN_SKILLS_ROOT`: it is gone from every source
+- [x] No production file reads or names `CH_BUILTIN_SKILLS_ROOT`: it is gone from every source
       reader in `apps`, `packages`, and `worker`, and from `compose*.yaml`. The name survives
       deliberately in (a) tests that assert it is inert, and (b) the migration documentation in
       `.env.example`, `docs/configuration.md` and the generated reference. `plans/` retains it as
       the record of this change. Generated build output is not a source of truth and is rebuilt by
       the gate.
-- [ ] `BUILTIN_SKILLS_ROOT` is honoured by the runner rescan, the local stdio backend, the
+- [x] `BUILTIN_SKILLS_ROOT` is honoured by the runner rescan, the local stdio backend, the
       worker, and the provenance classifier, each defaulting to `/opt/cloud-harness/skills`
       when unset. Executor-side resolution is evidenced by a direct worker invocation with a
       controlled environment; it is not exercised through Docker in this plan unless
       `npm run test:docker` is available.
-- [ ] `validatedWorkspaceEnvironment({ BUILTIN_SKILLS_ROOT: ... })` throws, proving the caller
+- [x] `validatedWorkspaceEnvironment({ BUILTIN_SKILLS_ROOT: ... })` throws, proving the caller
       boundary rather than only the policy function.
-- [ ] `built-in` attribution still requires the control-plane partition source; no new path can
+- [x] `built-in` attribution still requires the control-plane partition source; no new path can
       promote repository content.
-- [ ] Fail-before evidence exists for every guard that can fail before the change (guards 1, 3,
+- [x] Fail-before evidence exists for every guard that can fail before the change (guards 1, 3,
       4, 5, 7); guards 2, 6 and 8 are labelled conversions/omission-guards and are not
       presented as fail-before evidence.
-- [ ] `npm run docs:reference` leaves no uncommitted diff, `npm run docs:check` passes, and
+- [x] `npm run docs:reference` leaves no uncommitted diff, `npm run docs:check` passes, and
       `npm run verify` is green.
 
 <!-- slug: single-builtin-skills-root -->
