@@ -140,9 +140,9 @@ describe('overview renderer', () => {
     expect(markup).toContain('metric decision-running');
     expect(markup).toContain('metric decision-cost');
     expect(markup).toContain('metric decision-expiry');
-    expect(markup).toContain('href="/dashboard/activity"');
-    expect(markup).toContain('href="/dashboard/agents"');
-    expect(markup).toContain('href="/dashboard/workspaces"');
+    expect(markup).toContain('href="/dashboard/agents?attention=needs-attention"');
+    expect(markup).toContain('href="/dashboard/agents?status=RUNNING"');
+    expect(markup).toContain('href="/dashboard/workspaces?expiring=60"');
     expect(markup).toContain(`/dashboard/workspaces/${workspaceId}/summary`);
     // Decision metrics come before the Access panel.
     expect(markup.indexOf('Needs attention')).toBeLessThan(markup.indexOf('Signed in as'));

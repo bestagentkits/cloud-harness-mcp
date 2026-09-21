@@ -591,6 +591,16 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
 };
 
 /**
+ * Whether an agent is in a state an operator has to act on. This is the single
+ * definition behind the Agents page's attention filter, so the view and its filter can
+ * never disagree about which states matter.
+ */
+export function agentNeedsAttention(agent: Record<string, unknown> | undefined): boolean {
+  const status = String(agent?.status ?? '');
+  return ['FAILED', 'TIMED_OUT', 'LIMIT_EXCEEDED'].includes(status) || agent?.outcomeUnknown === true;
+}
+
+/**
  * The Overview's decision buckets. Each bucket carries the scope its numbers came
  * from, so the UI can label them honestly instead of implying a historical store the
  * harness does not keep.
@@ -793,7 +803,11 @@ export function buildReliabilityProjection(input: { traces?: Record<string, unkn
  * The Activity Center timeline, composed server-side so the browser makes one request
  * instead of merging several. Live runtime rows are labelled apart from retained ones.
  */
-export function buildActivityProjection(input: { events?: Record<string, unknown>[]; agents?: Record<string, unknown>[] }): Record<string, unknown> {
+export function buildActivityProjection(input: { events?: Record<string, unknown>[]; agents?: Record<string, unknown>[]; workspaceId?: string }): Record<string, unknown> {
+  // A workspace-scoped call narrows both sources to that workspace: audit rows by the
+  // subject they were recorded against, live rows by the agent's own workspace. With no
+  // scope both sources stay exactly as they are.
+  const scope = String(input.workspaceId ?? '');
   const categoryFor = (action: unknown, subjectType: unknown) => {
     const text = `${String(action ?? '')} ${String(subjectType ?? '')}`.toLowerCase();
     if (text.includes('agent')) return 'agents';
@@ -802,12 +816,12 @@ export function buildActivityProjection(input: { events?: Record<string, unknown
     if (text.includes('deploy')) return 'deployments';
     return 'audit';
   };
-  const auditRows = (input.events ?? []).map((event) => ({
+  const auditRows = (input.events ?? []).filter((event) => !scope || String(event.subjectId ?? '') === scope).map((event) => ({
     at: event.createdAt, category: categoryFor(event.action, event.subjectType), status: 'recorded',
     actor: `${String(event.subjectType ?? 'subject')} ${String(event.subjectId ?? '')}`.trim(),
     summary: String(event.action ?? 'Audit event'), durable: true
   }));
-  const liveRows = (input.agents ?? []).map((agent) => ({
+  const liveRows = (input.agents ?? []).filter((agent) => !scope || String(agent.workspaceId ?? '') === scope).map((agent) => ({
     at: agent.startedAt ?? agent.createdAt, category: 'agents', status: String(agent.status ?? 'unknown').toLowerCase(),
     actor: String(agent.workspaceId ?? ''), summary: `Agent ${String(agent.agentId ?? '')} ${String(agent.status ?? '')}`,
     href: `/dashboard/agents/${encodeURIComponent(String(agent.agentId ?? ''))}`, durable: false

@@ -189,12 +189,12 @@ working one.
   the backdrop all dismiss it (`dismissOnBackdrop` also ignores a drag that
   starts inside the dialog).
 - **Navigation:** left icon+label rail, grouped by operator intent — **Home**
-  (Overview), **Operate** (Workspaces, Audit), **Configure** (Projects, Secrets,
-  Models & Budgets, Skills, Integrations), **Data** (Knowledge, Artifacts), and
-  **Admin** (API Access, Settings). Active item gets the cyan rail + soft fill.
-  `Audit` keeps a rail slot only until the Activity Center owns an Audit tab;
-  `Agents`, `Activity`, and `Approvals` join **Operate** when those pages ship.
-  Profile deliberately has **no** rail slot: the top-bar profile chip and the
+  (Overview), **Operate** (Workspaces, Agents, Activity, Approvals), **Configure**
+  (Projects, Secrets, Models & Budgets, Skills, Integrations), **Data** (Knowledge,
+  Artifacts), and **Admin** (API Access, Settings). Active item gets the cyan rail +
+  soft fill. Audit history has no rail slot: it is the Activity Center's Audit filter,
+  a command-palette destination, and its own `/dashboard/audit` route. Profile
+  deliberately has **no** rail slot: the top-bar profile chip and the
   command palette are its entry points. GitHub and MCP Servers are not rail
   entries either — they are tabs of the single **Integrations** page at
   `/dashboard/integrations`, with `/dashboard/github` and `/dashboard/mcp-servers`
@@ -224,10 +224,13 @@ working one.
   `/dashboard/mcp-servers/:id`) stay owned by the page whose rail entry must
   remain current.
 - **Overview:** monospace metric tiles (corner-bracketed) capped at four above
-  the fold, a recent-activity feed, an Access panel, and a Server panel. Tiles
-  and feed aggregate client-side from allowlisted endpoints; the Server panel
-  reads `GET /api/v1/server`, a read-only projection of config and status that
-  exposes no owner ID, runner URL, token, or secret.
+  the fold, a recent-activity feed, an Access panel, and a Server panel. The tiles
+  and the feed read server-side read-only projections instead of fanning out in the
+  browser: `GET /api/v1/overview` composes the decision buckets, `GET /api/v1/metrics`
+  counts retained audit events inside a validated window, and `GET /api/v1/activity`
+  composes the timeline. The Server panel reads `GET /api/v1/server`, a read-only
+  projection of config and status that exposes no owner ID, runner URL, token, or
+  secret.
 - **Resource pages:** every global resource page (Projects, Global Secrets,
   Artifacts, API Access, Models & Budgets, Integrations) opens with the same
   shape — page title and help from the page registry, **exactly one** primary
@@ -250,8 +253,10 @@ working one.
   accented action, `Finalize workspace` beside it, and recover/close behind a
   `More actions` disclosure. A contextual tab row covers Summary, Agents, Runtime,
   Files, Git, Automation, Deploy, Artifacts and Activity; these are workspace
-  sections, never global rail entries. Tabs whose owning phase has not shipped
-  state the phase they arrive with instead of rendering an empty box. Summary
+  sections, never global rail entries. Every one of the nine tabs is backed by a real
+  adapter: Artifacts lists the retained snapshots whose own record names the workspace,
+  and Activity renders that workspace's live and retained rows over the shared event
+  grammar, so no tab shows a placeholder or an unfiltered global list. Summary
   reports only observable state (status, branch, attributable repository items,
   capabilities, network posture) and says "Not reported" for cost and budget
   rather than showing a zero that reads like a measurement. Attention reasons come
@@ -269,7 +274,13 @@ working one.
   [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
 - **Agents:** `/dashboard/agents` is the global control center, and the workspace
   cockpit's Agents tab renders the same body scoped to one workspace, so a filter
-  and a fact mean the same thing in both places. The hierarchy is a nested list
+  and a fact mean the same thing in both places. The filter row carries the five
+  dimensions the issue enumerates — status, workspace, model profile, parent agent and
+  attention state — and every one is URL-backed, so a filtered view is shareable.
+  Status, workspace and parent are applied by the runner contract; profile and
+  attention are derived in the adapter from one shared predicate
+  (`agentNeedsAttention`), so the filter and the rows it shows cannot disagree. The
+  hierarchy is a nested list
   built from `parentAgentId` — a screen reader gets real nesting — with every agent
   also listed flat in a table that names its parent, so the non-graph fallback is
   always present. An agent whose parent is missing from the page attaches to the
@@ -359,8 +370,10 @@ working one.
   over the existing `/privilege-grants` and `/audit` routes.
 - **Decision Overview:** `/dashboard` answers four operator questions above the fold —
   **Needs attention**, **Running now**, **Cost**, **Expiring soon** — and every tile is
-  a link into the filtered view that explains it (attention → Activity, running →
-  Agents, cost → Agents, expiry → Workspaces). Access and Server information moved
+  a link into the filtered view that explains it — attention →
+  `/dashboard/agents?attention=needs-attention`, running and cost →
+  `/dashboard/agents?status=RUNNING`, expiry → `/dashboard/workspaces?expiring=60`.
+  Access and Server information moved
   below the decision metrics, and the old inventory tiles are gone. The page reads one
   server projection instead of fanning out: `GET /api/v1/overview` composes attention
   reasons (failed or quarantined workspaces, leases inside 15 minutes, failed /

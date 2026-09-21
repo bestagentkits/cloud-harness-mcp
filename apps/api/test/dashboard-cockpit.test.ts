@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DASHBOARD_SHELL_PATHS } from '../src/dashboard-assets.js';
 import {
   WORKSPACE_TABS, renderFinalizeDialog, renderWorkspaceAttentionPanel, renderWorkspaceCockpitHeader,
-  renderWorkspaceSummary, renderWorkspaceTabPlaceholder, renderWorkspaceTabs, workspaceAttention,
+  renderWorkspaceSummary, renderWorkspaceArtifacts, renderWorkspaceActivity, renderWorkspaceTabs, workspaceAttention,
   workspaceLeaseState
 } from '../dashboard/dashboard-render.js';
 import { pageForPath } from '../dashboard/dashboard-pages.js';
@@ -94,13 +94,18 @@ describe('workspace cockpit', () => {
     expect(degraded).not.toContain('0 attributable');
   });
 
-  it('names the owning phase on tabs that have not shipped yet', () => {
-    for (const [tab, phase] of [['agents', 'Agent Control Center'], ['git', 'Git and Finalize'], ['automation', 'Automation and Deploy'], ['deploy', 'Automation and Deploy'], ['activity', 'Activity Center']]) {
-      const markup = renderWorkspaceTabPlaceholder(tab);
-      expect(markup, tab).toContain(phase);
-      expect(markup, tab).toContain('Files and Runtime');
-    }
-    expect(renderWorkspaceTabPlaceholder('artifacts')).toContain('a later workspace phase');
+  it('renders real bodies for the Artifacts and Activity cockpit tabs instead of a placeholder', () => {
+    const artifacts = renderWorkspaceArtifacts({ artifacts: [{ artifactId: `art_${'a'.repeat(24)}`, logicalName: 'notes.md', sizeBytes: 2048, expiresAt: '2026-08-17T02:00:00.000Z', generation: 3 }] });
+    expect(artifacts).toContain('workspace-artifacts-heading');
+    expect(artifacts).toContain('notes.md');
+    expect(artifacts).not.toContain('arrives with');
+    expect(renderWorkspaceArtifacts({})).toContain('No retained snapshots belong to this workspace yet.');
+
+    const activity = renderWorkspaceActivity({ events: [{ at: '2026-08-17T01:00:00.000Z', category: 'agents', status: 'running', summary: 'Agent started', actor: 'ws_a', durable: false }], workspaceId: 'ws_a' });
+    expect(activity).toContain('workspace-activity-heading');
+    expect(activity).toContain('Agent started');
+    expect(activity).toContain('Live runtime');
+    expect(renderWorkspaceActivity({})).toContain('No activity recorded for this workspace yet.');
   });
 
   it('describes the finalize dialog before the operator runs it', () => {
