@@ -277,6 +277,35 @@ describe('workspace_context manifest and passive scanner', () => {
     }
   });
 
+  it('honors the operator-declared BUILTIN_SKILLS_ROOT in local stdio mode', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ch-ctx-operator-builtin-'));
+    const builtinDir = await mkdtemp(join(tmpdir(), 'ch-builtin-operator-'));
+    tempDirs.push(dir, builtinDir);
+    process.env.BUILTIN_SKILLS_ROOT = builtinDir;
+
+    try {
+      await mkdir(join(builtinDir, 'deploy'), { recursive: true });
+      await writeFile(join(builtinDir, 'deploy', 'SKILL.md'), '# Operator Built-in Deploy');
+
+      const backend = new LocalWorkspaceBackend(dir, { transport: 'stdio', workspace: dir });
+      const res = await backend.call('workspace_context', {
+        workspaceId: backend.workspaceId,
+        include: ['skills']
+      });
+
+      expect(res.ok).toBe(true);
+      const deploySkill = (res.data as any).manifest.items.find((it: any) => it.id === 'ctx_skill_deploy');
+      expect(deploySkill).toBeDefined();
+      expect(deploySkill.provenance).toMatchObject({
+        source: 'built-in',
+        trust: 'trusted-control-plane',
+        mutableBy: 'release'
+      });
+    } finally {
+      delete process.env.BUILTIN_SKILLS_ROOT;
+    }
+  });
+
   it('reconciles the byte budget when a trusted skill replaces a repository skill', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ch-ctx-replace-'));
     const builtinDir = await mkdtemp(join(tmpdir(), 'ch-builtin-replace-'));
