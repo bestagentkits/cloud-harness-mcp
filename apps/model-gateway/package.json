@@ -1,6 +1,6 @@
 {
   "name": "@cloud-harness/model-gateway",
-  "version": "0.55.2",
+  "version": "0.55.3",
   "private": true,
   "type": "module",
   "scripts": {

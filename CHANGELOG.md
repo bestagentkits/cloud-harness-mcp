@@ -1,3 +1,10 @@
+## [0.55.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.2...v0.55.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* **dashboard:** add the missing agent filters, real cockpit tabs and filtered tile links ([#252](https://github.com/bestagentkits/cloud-harness-mcp/issues/252)) ([d866241](https://github.com/bestagentkits/cloud-harness-mcp/commit/d8662414168d2603eb7bac2c27587746163de508))
+
 ## [0.55.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.1...v0.55.2) (2026-09-21)
 
 
