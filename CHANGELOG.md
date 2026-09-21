@@ -1,3 +1,10 @@
+## [0.55.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.0...v0.55.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **provenance:** attribute the built-in tier from the catalog the runner mounts ([#243](https://github.com/bestagentkits/cloud-harness-mcp/issues/243)) ([a94708d](https://github.com/bestagentkits/cloud-harness-mcp/commit/a94708d263a9284f4925599b161300079b829dae))
+
 # [0.55.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.54.0...v0.55.0) (2026-09-21)
 
 
