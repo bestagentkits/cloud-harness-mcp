@@ -1523,10 +1523,21 @@ export function initializeDashboard() {
   }
   async function submitForm(form, pendingLabel, action, onSuccess) {
     const button = form.querySelector('button[type="submit"]'); const status = form.querySelector('.form-status'); const original = button.textContent;
-    form.setAttribute('aria-busy', 'true'); button.disabled = true; button.textContent = pendingLabel; if (status) status.textContent = pendingLabel;
-    try { await action(); if (status) status.textContent = ''; await onSuccess(); }
-    catch (error) { showError(error); }
+    form.setAttribute('aria-busy', 'true'); button.disabled = true; button.textContent = pendingLabel; if (status) { status.textContent = pendingLabel; status.dataset.saveState = 'saving'; }
+    try { await action(); if (status) { status.textContent = ''; status.dataset.saveState = 'saved'; } await onSuccess(); flashUpdated(); }
+    catch (error) { if (status) delete status.dataset.saveState; showError(error); }
     finally { form.removeAttribute('aria-busy'); button.disabled = false; button.textContent = original; }
+  }
+  /**
+   * The mutation cue: the region a mutation re-rendered crossfades once, so the operator
+   * sees which part of the page moved. Guarded for the test double, which has no classList.
+   */
+  function flashUpdated(region = content) {
+    if (!region?.classList) return;
+    region.classList.remove('content-just-updated');
+    void region.offsetWidth;
+    region.classList.add('content-just-updated');
+    globalThis.setTimeout(() => region.classList.remove('content-just-updated'), 900);
   }
   async function loadProjects() {
     selectNavigation('projects'); document.querySelector('#command-surface').hidden = true;

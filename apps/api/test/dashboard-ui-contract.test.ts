@@ -37,6 +37,32 @@ describe('dashboard static UI contract', () => {
     expect((html.match(/<h1/g) ?? [])).toHaveLength(1);
   });
 
+  it('marks state changes with bounded motion that reduced-motion collapses', () => {
+    for (const selector of [
+      '.content-just-updated', '.status-message[data-save-state="saved"]', '.lease-soon', '.lease-expired',
+      '.chart-bar:focus-visible', '.task-node:focus-visible', '.nav-badge', '#detail'
+    ]) expect(css, selector).toContain(selector);
+
+    // The only infinite animation is the loading skeleton; everything else is a
+    // state change, and the reduced-motion block collapses all of it by selector `*`.
+    const infinite = css.split('\n').filter((line) => line.includes('infinite'));
+    expect(infinite).toHaveLength(1);
+    expect(infinite[0]).toContain('.skeleton');
+    expect(css).toContain('animation-iteration-count: 1 !important');
+    expect(css).toContain('transition-duration: .01ms !important');
+    // Durations come from the motion tokens rather than ad-hoc numbers.
+    expect(css).toContain('var(--motion-fast)');
+    expect(css).toContain('var(--motion-state)');
+    expect(css).not.toContain('gradient(');
+  });
+
+  it('exposes the save state and the mutation cue in the client', () => {
+    expect(script).toContain("status.dataset.saveState = 'saved'");
+    expect(script).toContain("status.dataset.saveState = 'saving'");
+    expect(script).toContain('content-just-updated');
+    expect(script).toContain('flashUpdated');
+  });
+
   it('uses tokenized responsive styling with reduced-motion and narrow-screen rules', () => {
     for (const token of ['--canvas:', '--surface:', '--ink:', '--accent:', '--space-4:', '--motion-state:', '--info:', '--hud-cyan:', '--void:', '--panel:']) expect(css).toContain(token);
     expect(css).toContain('@media (max-width: 47.9375rem)');

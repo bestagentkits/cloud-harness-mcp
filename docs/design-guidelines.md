@@ -377,6 +377,18 @@ working one.
   routes live in [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts);
   `renderOverview` in
   [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js).
+- **Motion:** motion exists only to convey a state change, inside the 150-250ms band
+  (`--motion-fast` / `--motion-state` with `--ease-out`): a mutation crossfades the
+  region it re-rendered (`.content-just-updated`), a save moves from `Saving…` to a
+  `Saved` state on the status line (`data-save-state`), a copy affordance flips to
+  `Copied`, lease posture gains a rule and weight at its thresholds (`.lease-soon`,
+  `.lease-expired`), chart marks and task/agent nodes show a focus ring and transition
+  their stroke, disclosures colour their summary when open, and the detail drawer
+  slides and fades. There is exactly one infinite animation — the loading skeleton —
+  and no decorative or page-load choreography. The global
+  `@media (prefers-reduced-motion: reduce)` block collapses every animation and
+  transition to 0.01ms with `animation-iteration-count: 1`, so the preference is
+  honoured everywhere by construction rather than per rule.
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with
