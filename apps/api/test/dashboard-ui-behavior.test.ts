@@ -6,7 +6,7 @@ import {
   PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches,
   createPaletteIndexLoader, backdropHit, dismissOnBackdrop
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
+import { renderApiKeyIndex, renderGitHub, renderGitHubActions, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
 import { FakeElement } from './dashboard-test-dom.js';
 
 describe('dashboard UI behavior', () => {
@@ -536,7 +536,9 @@ describe('dashboard UI behavior', () => {
     expect(html).toContain('data-installation-id="102"');
     expect(html).toContain('class="reconcile-installation"');
     expect(html).toContain('class="danger disconnect-installation"');
-    expect(html).toContain('Reconcile all installations');
+    // The reconcile action moved to the page's action slot with the rest of the
+    // shared resource-page layout, so its label is asserted where it renders.
+    expect(renderGitHubActions({ installations: [{ installationId: '101' }, { installationId: '102' }] })).toContain('Reconcile all installations');
     expect(html).toContain('repo1');
     expect(html).toContain('repo2');
   });
@@ -544,7 +546,7 @@ describe('dashboard UI behavior', () => {
   it('renders a friendly placeholder when no GitHub installations are bound', () => {
     const html = renderGitHub({ configured: true, installations: [], repositories: [] });
     expect(html).toContain('No GitHub App installation is bound to this identity.');
-    expect(html).toContain('disabled');
+    expect(renderGitHubActions({})).toContain('disabled');
   });
 
   it('clears write-only inputs after secret submission', () => {
@@ -753,7 +755,9 @@ export STRIPE_SECRET=whsec_abc
       generation: 1
     }];
     const html = renderGlobalSecrets(secrets, { ready: true });
-    expect(html).toContain('Global Secrets');
+    // The page heading is owned by the page registry; the renderer owns the section
+    // heading, the filter row and the create dialog.
+    expect(html).toContain('Secret references');
     expect(html).toContain('GLOBAL_API_KEY');
     expect(html).toContain('Shared across all workspaces');
     expect(html).toContain('Bulk import .env');

@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Canonical Dashboard page registry and route/navigation migration (issue Phase 0)"
-status: pending
+status: completed
 priority: P1
 effort: "1-1.5d"
 dependencies: []
@@ -12,6 +12,13 @@ dependencies: []
 Issue phase: **Phase 0**. Deliverable: one authoritative page registry, the
 operator-intent navigation, `/dashboard` as Overview, and the workspace index at
 `/dashboard/workspaces`.
+
+**Status: completed.** Shipped in PR #225 (`main` merge commit `c793e18`).
+Verification: `npx vitest run dashboard` 247/247 tests green; API typecheck clean;
+`npm run verify` 1344/1345 with one documented host-dependent runner failure that
+predates this work; browser QA of rail groups, active state, Integrations tabs,
+palette flow, redirects, 375px and light theme. Evidence:
+`plans/reports/vibe-260921-1444-issue-220-phase-1-registry-and-ia.md`.
 
 ## Goal
 

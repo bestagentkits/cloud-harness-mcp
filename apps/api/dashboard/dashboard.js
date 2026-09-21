@@ -41,7 +41,9 @@ import {
   renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
   renderSkillConflicts,
   renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
-  renderSkillsSkeleton
+  renderSkillsSkeleton,
+  renderModelsActions, renderGitHubActions, renderMcpActions,
+  renderPrimaryAction
 } from './dashboard-render.js';
 import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
@@ -387,8 +389,7 @@ export function validateSkillInstructions(text) {
  * they interpolate, so this is a second layer rather than the only one: parsing into an inert document and
  * adopting the resulting nodes keeps the assignment off the live tree.
  */
-function insertRendered(element, html) {
-  if (!element) return;
+function insertRendered(element, html) {  if (!element) return;
   const markup = String(html ?? '');
   if (typeof globalThis.DOMParser === 'function') {
     const parsed = new globalThis.DOMParser().parseFromString(markup, 'text/html');
@@ -398,6 +399,20 @@ function insertRendered(element, html) {
   // The fake DOM the tests drive has no DOMParser, and every renderer escapes the values it interpolates,
   // so the fallback keeps the assignment in one place instead of at each call site.
   element.innerHTML = markup;
+}
+
+/**
+ * The single navigation seam. Every Dashboard navigation target is a same-origin
+ * Dashboard path; anything else is refused rather than followed, so a rendered
+ * value can never turn into an off-site redirect. Exported for its own test.
+ */
+export function dashboardNavigationPath(target) {
+  const value = String(target ?? '');
+  return /^\/dashboard(?:[/?#]|$)/.test(value) ? value : '/dashboard';
+}
+
+function navigateTo(target) {
+  globalThis.location.href = dashboardNavigationPath(target);
 }
 
 /**
@@ -965,7 +980,58 @@ export function initializeDashboard() {
       else link.removeAttribute('aria-current');
     }
     insertRendered(document.querySelector('#context-nav'), '');
+    // The action slot follows the page, so a page without a primary action cannot
+    // inherit the previous page's button.
+    insertRendered(document.querySelector('#page-actions'), '');
     if (page) setTitle(page.title, page.help);
+  }
+  /**
+   * The page's single primary action (plus at most one secondary action) lives in
+   * the shell's action slot, next to the page heading, instead of inside content.
+   */
+  function setPageActions(markup) {
+    insertRendered(document.querySelector('#page-actions'), markup ?? '');
+  }
+  /**
+   * Opens every `[data-dialog]` trigger in the rendered page, closes its dialog
+   * from `[data-dialog-close]`, and restores focus to the invoker on close. Native
+   * `<dialog>` supplies the focus trap, so this adds no second focus manager.
+   */
+  function bindDialogOpeners(root) {
+    for (const trigger of root.querySelectorAll('[data-dialog]')) {
+      trigger.addEventListener('click', () => {
+        const target = document.getElementById(trigger.dataset.dialog);
+        if (!target || typeof target.showModal !== 'function') return;
+        target.dataset.invokerId = trigger.id ?? '';
+        if (!target.open) target.showModal();
+        const firstField = target.querySelector('input:not([type="hidden"]), select, textarea');
+        (firstField ?? target.querySelector('[data-dialog-close]'))?.focus?.();
+      });
+    }
+    for (const dialogElement of root.querySelectorAll('dialog')) {
+      dialogElement.querySelector('[data-dialog-close]')?.addEventListener('click', () => dialogElement.close());
+      dialogElement.addEventListener('close', () => {
+        const invokerId = dialogElement.dataset.invokerId;
+        if (invokerId) document.getElementById(invokerId)?.focus?.({ preventScroll: true });
+      });
+    }
+  }
+  /** Copy affordances for identifiers: the value is copied, never re-rendered. */
+  function bindCopyAffordances(root) {
+    for (const chip of root.querySelectorAll('[data-copy]')) {
+      chip.addEventListener('click', async () => {
+        const value = chip.dataset.copy ?? '';
+        const label = chip.dataset.copyLabel ?? 'Value';
+        try {
+          await globalThis.navigator.clipboard.writeText(value);
+          chip.textContent = 'Copied';
+          announce(`${label} copied.`);
+          globalThis.setTimeout(() => { chip.textContent = value; }, 2_000);
+        } catch {
+          announce('Copy failed. Select the value and copy it manually.');
+        }
+      });
+    }
   }
   // Static pages resolve through the registry; detail routes keep their own matchers
   // because they need the captured id.
@@ -996,6 +1062,9 @@ export function initializeDashboard() {
       else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
       else if (page && PAGE_LOADERS[page.id]) await PAGE_LOADERS[page.id]();
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
+      // Shared resource-page behavior is wired once per render rather than in every
+      // loader: dialog open/close with focus restore, and copy affordances.
+      bindDialogOpeners(content); bindCopyAffordances(content);
       setBusy(false); main.focus({ preventScroll: true });
     } catch (error) { showError(error); }
   }
@@ -1443,7 +1512,7 @@ export function initializeDashboard() {
     document.querySelector('#search').value = query.q; document.querySelector('#status').value = query.status;
     const result = await api('/workspaces'); insertRendered(content, renderWorkspaceIndex(result.data.workspaces, query));
     detail.hidden = true; document.querySelector('.app-shell').classList.remove('has-detail');
-    document.querySelector('#clear-filters')?.addEventListener('click', () => { location.href = '/dashboard'; });
+    document.querySelector('#clear-filters')?.addEventListener('click', () => { navigateTo('/dashboard'); });
     bindWorkspaceDrawerLinks(); document.querySelector('#last-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
   }
   async function submitForm(form, pendingLabel, action, onSuccess) {
@@ -1455,6 +1524,7 @@ export function initializeDashboard() {
   }
   async function loadProjects() {
     selectNavigation('projects'); document.querySelector('#command-surface').hidden = true;
+    setPageActions(renderPrimaryAction({ id: 'open-create-project', label: 'Create project', dialogId: 'create-project-dialog' }));
     const result = await api('/projects'); insertRendered(content, renderProjectIndex(result.data.projects));
     document.querySelector('#create-project-form').addEventListener('submit', (event) => {
       event.preventDefault(); const form = event.currentTarget; const values = new FormData(form);
@@ -1521,11 +1591,12 @@ export function initializeDashboard() {
     });
     for (const button of document.querySelectorAll('.delete-secret')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete secret reference?', description: 'Delete this write-only reference and its encrypted value?', target: button.dataset.secretName, label: 'Delete secret', pendingLabel: 'Deleting…', action: async () => { await api(`/environments/${encodeURIComponent(button.dataset.environmentId)}/secrets/${encodeURIComponent(button.dataset.secretName)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); announce('Secret reference deleted.'); await loadProject(project.id); } }, event.currentTarget));
     for (const button of document.querySelectorAll('.delete-environment')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete environment?', description: 'Delete this environment and its retained metadata?', target: button.dataset.environmentId, label: 'Delete environment', pendingLabel: 'Deleting…', action: async () => { await api(`/environments/${encodeURIComponent(button.dataset.environmentId)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); announce('Environment deleted.'); await loadProject(project.id); } }, event.currentTarget));
-    document.querySelector('#delete-project').addEventListener('click', (event) => confirmAction({ title: 'Delete project?', description: 'Delete this project and its retained environment metadata?', target: project.name, label: 'Delete project', pendingLabel: 'Deleting…', action: async () => { await api(`/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: project.generation }) }); location.href = '/dashboard/projects'; } }, event.currentTarget));
+    document.querySelector('#delete-project').addEventListener('click', (event) => confirmAction({ title: 'Delete project?', description: 'Delete this project and its retained environment metadata?', target: project.name, label: 'Delete project', pendingLabel: 'Deleting…', action: async () => { await api(`/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: project.generation }) }); navigateTo('/dashboard/projects'); } }, event.currentTarget));
   }
   async function loadGlobalSecrets() {
     selectNavigation('secrets');
     document.querySelector('#command-surface').hidden = true;
+    setPageActions(renderPrimaryAction({ id: 'open-create-global-secret', label: 'Add global secret', dialogId: 'create-global-secret-dialog' }));
     const result = await api('/secrets');
     const secrets = result.data?.secrets ?? [];
     const readiness = result.data?.readiness;
@@ -1611,6 +1682,7 @@ export function initializeDashboard() {
   async function loadModels() {
     selectNavigation('models');
     document.querySelector('#command-surface').hidden = true;
+    setPageActions(renderModelsActions());
 
     const [profilesRes, credsRes, statusRes] = await Promise.all([
       listModelProfiles().catch(() => ({ data: { profiles: [] } })),
@@ -1874,26 +1946,32 @@ export function initializeDashboard() {
   }
   async function loadArtifacts() {
     selectNavigation('artifacts'); document.querySelector('#command-surface').hidden = true;
+    setPageActions(renderPrimaryAction({ id: 'open-create-snapshot', label: 'Create snapshot', dialogId: 'snapshot-dialog' }));
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
     const result = await api(`/artifacts?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); insertRendered(content, renderArtifactIndex(result.data.artifacts, result.cursor));
     const form = document.querySelector('#snapshot-form'); form.addEventListener('submit', (event) => {
       event.preventDefault(); const values = new FormData(form); const retention = String(values.get('retentionSeconds') ?? '').trim();
       const body = { workspaceId: values.get('workspaceId'), path: values.get('path'), logicalName: values.get('logicalName'), ...(retention ? { retentionSeconds: Number(retention) } : {}), expectedGeneration: 0 };
-      void submitForm(form, 'Creating snapshot…', async () => api('/artifacts', { method: 'POST', body: requestBody(body) }), async () => { announce('Retained artifact snapshot created.'); location.href = '/dashboard/artifacts'; });
+      void submitForm(form, 'Creating snapshot…', async () => api('/artifacts', { method: 'POST', body: requestBody(body) }), async () => { announce('Retained artifact snapshot created.'); navigateTo('/dashboard/artifacts'); });
     });
     for (const button of document.querySelectorAll('.delete-artifact')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete retained artifact?', description: 'Delete this bounded snapshot before its retention expiry?', target: button.dataset.artifactId, label: 'Delete artifact', pendingLabel: 'Deleting…', action: async () => { await api(`/artifacts/${encodeURIComponent(button.dataset.artifactId)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); await loadArtifacts(); announce('Artifact deleted.'); } }, event.currentTarget));
-    document.querySelector('#load-more-artifacts')?.addEventListener('click', (event) => { location.href = `/dashboard/artifacts?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`; });
+    document.querySelector('#load-more-artifacts')?.addEventListener('click', (event) => { navigateTo(`/dashboard/artifacts?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`); });
   }
   async function loadAudit() {
     selectNavigation('audit'); document.querySelector('#command-surface').hidden = true;
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
     const result = await api(`/audit?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); insertRendered(content, renderAuditIndex(result.data.events, result.cursor));
-    document.querySelector('#load-more-audit')?.addEventListener('click', (event) => { location.href = `/dashboard/audit?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`; });
+    document.querySelector('#load-more-audit')?.addEventListener('click', (event) => { navigateTo(`/dashboard/audit?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`); });
   }
   async function loadApiKeys() {
     selectNavigation('api-keys');
     document.querySelector('#command-surface').hidden = true;
     const result = await api('/api-keys'); apiKeyPageData = result.data; insertRendered(content, renderApiKeyIndex(apiKeyPageData)); bindApiKeyControls();
+    // The key limit and gateway readiness decide whether creating another key is
+    // even possible; the action states that instead of failing on submit.
+    const activeKeys = (Array.isArray(apiKeyPageData?.keys) ? apiKeyPageData.keys : []).filter((key) => key?.state === 'ACTIVE').length;
+    const blocked = apiKeyPageData?.readiness?.ready === false || activeKeys >= 10;
+    setPageActions(renderPrimaryAction({ id: 'open-create-api-key', label: 'Create API key', dialogId: 'create-api-key-dialog', disabled: blocked }));
   }
   function bindApiKeyControls() {
     const form = document.querySelector('#create-api-key-form');
@@ -1935,7 +2013,9 @@ export function initializeDashboard() {
         history.replaceState({}, '', '/dashboard/github');
       }
     }
-    const result = await api('/github'); insertRendered(content, renderGitHub(result.data)); bindGitHubControls();
+    const result = await api('/github'); insertRendered(content, renderGitHub(result.data));
+    setPageActions(renderGitHubActions(result.data));
+    bindGitHubControls();
   }
   function bindGitHubControls() {
     const form = document.querySelector('#github-setup-form');
@@ -2191,7 +2271,7 @@ export function initializeDashboard() {
         createKnDialog?.close();
         announce('Knowledge item created.');
         if (res.data?.id) {
-          location.href = `/dashboard/knowledge/${encodeURIComponent(res.data.id)}`;
+          navigateTo(`/dashboard/knowledge/${encodeURIComponent(res.data.id)}`);
         } else {
           await loadKnowledge(activeTab);
         }
@@ -2320,7 +2400,7 @@ export function initializeDashboard() {
         action: async () => {
           await deleteKnowledgeItem(item.id, gen);
           announce('Knowledge item deleted.');
-          location.href = '/dashboard/knowledge';
+          navigateTo('/dashboard/knowledge');
         }
       }, btn);
     });
@@ -2344,13 +2424,13 @@ export function initializeDashboard() {
     for (const nodeGroup of document.querySelectorAll('.graph-node-group')) {
       nodeGroup.addEventListener('click', (event) => {
         const id = event.currentTarget.dataset.nodeId;
-        if (id) location.href = `/dashboard/knowledge/${encodeURIComponent(id)}`;
+        if (id) navigateTo(`/dashboard/knowledge/${encodeURIComponent(id)}`);
       });
       nodeGroup.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           const id = event.currentTarget.dataset.nodeId;
-          if (id) location.href = `/dashboard/knowledge/${encodeURIComponent(id)}`;
+          if (id) navigateTo(`/dashboard/knowledge/${encodeURIComponent(id)}`);
         }
       });
     }
@@ -2397,6 +2477,7 @@ export function initializeDashboard() {
       currentMcpServers = Array.isArray(serversResult.data?.servers) ? serversResult.data.servers : [];
       currentMcpGateway = gatewayResult.data;
       insertRendered(content, renderMcpServersIndex({ servers: currentMcpServers, gateway: currentMcpGateway }));
+      setPageActions(renderMcpActions());
       bindMcpServersControls();
     } finally { setBusy(false); }
   }
@@ -2629,7 +2710,7 @@ export function initializeDashboard() {
       action: async () => {
         await deleteMcpServer(button.dataset.mcpDelete, Number(button.dataset.generation));
         announce('MCP server deleted.');
-        location.href = '/dashboard/integrations/mcp-servers';
+        navigateTo('/dashboard/integrations/mcp-servers');
       }
     }, event.currentTarget));
     for (const button of document.querySelectorAll('[data-mcp-tab]')) button.addEventListener('click', (event) => {
@@ -2729,19 +2810,19 @@ export function initializeDashboard() {
         onError: showError
       });
     });
-    document.querySelector('#delete-file').addEventListener('click', (event) => confirmAction({ title: 'Delete file?', description: `Delete ${file.path} from this workspace?`, target: file.path, label: 'Delete file', pendingLabel: 'Deleting…', action: async () => { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'DELETE', body: requestBody({ path: file.path, recursive: false, expectedSha256: file.sha256 }) }); location.href = `/dashboard/workspaces/${encodeURIComponent(id)}/files?path=.`; } }, event.currentTarget));
+    document.querySelector('#delete-file').addEventListener('click', (event) => confirmAction({ title: 'Delete file?', description: `Delete ${file.path} from this workspace?`, target: file.path, label: 'Delete file', pendingLabel: 'Deleting…', action: async () => { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'DELETE', body: requestBody({ path: file.path, recursive: false, expectedSha256: file.sha256 }) }); navigateTo(`/dashboard/workspaces/${encodeURIComponent(id)}/files?path=.`); } }, event.currentTarget));
   }
   function bindFileOperations(id) {
     document.querySelector('#folder-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api(`/workspaces/${encodeURIComponent(id)}/files/directory`, { method: 'POST', body: requestBody({ path: form.get('path'), recursive: true }) }); announce('Folder created.'); await loadFiles(id); } catch (error) { showError(error); } });
     document.querySelector('#move-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api(`/workspaces/${encodeURIComponent(id)}/files/move`, { method: 'POST', body: requestBody({ source: form.get('source'), destination: form.get('destination'), overwrite: false }) }); announce('Path moved.'); await loadFiles(id); } catch (error) { showError(error); } });
   }
   function bindClose(item) {
-    document.querySelector('#close-workspace')?.addEventListener('click', (event) => confirmAction({ title: 'Close workspace?', description: 'This stops the executor and removes the workspace checkout. This cannot be undone.', target: `${repositoryName(item.repositoryUrl)} ${item.workspaceId}`, label: 'Close workspace', pendingLabel: 'Closing…', action: async () => { await api(`/workspaces/${encodeURIComponent(item.workspaceId)}/close`, { method: 'POST', body: requestBody({ expectedGeneration: item.version }) }); location.href = '/dashboard'; } }, event.currentTarget));
+    document.querySelector('#close-workspace')?.addEventListener('click', (event) => confirmAction({ title: 'Close workspace?', description: 'This stops the executor and removes the workspace checkout. This cannot be undone.', target: `${repositoryName(item.repositoryUrl)} ${item.workspaceId}`, label: 'Close workspace', pendingLabel: 'Closing…', action: async () => { await api(`/workspaces/${encodeURIComponent(item.workspaceId)}/close`, { method: 'POST', body: requestBody({ expectedGeneration: item.version }) }); navigateTo('/dashboard'); } }, event.currentTarget));
   }
   function confirmAction(options, invoker) {
     document.querySelector('#confirm-title').textContent = options.title; document.querySelector('#confirm-description').textContent = options.description; document.querySelector('#confirm-target').textContent = options.target; confirm.open(options, invoker);
   }
-  document.querySelector('#workspace-filter').addEventListener('submit', (event) => { event.preventDefault(); location.href = `/dashboard?${new URLSearchParams(new FormData(event.currentTarget))}`; });
+  document.querySelector('#workspace-filter').addEventListener('submit', (event) => { event.preventDefault(); navigateTo(`/dashboard?${new URLSearchParams(new FormData(event.currentTarget))}`); });
   document.querySelector('#refresh').addEventListener('click', async () => { announce('Refreshing…'); await load(); announce('Workspace data refreshed.'); });
   const menu = createModalController({ panel: sidebar, backgrounds: [main], trigger: menuButton, initialFocus: () => sidebar.querySelector('a'), onOpen: () => { sidebar.classList.add('open'); menuButton.setAttribute('aria-expanded', 'true'); }, onClose: () => { sidebar.classList.remove('open'); menuButton.setAttribute('aria-expanded', 'false'); } });
   menuButton.addEventListener('click', () => menu.active ? menu.close() : menu.open());
@@ -2826,7 +2907,7 @@ export function initializeDashboard() {
     else if (event.key === 'End') paletteActive = options.length - 1;
     else if (event.key === 'Enter') {
       const href = options[paletteActive]?.dataset.href;
-      if (href) { event.preventDefault(); location.href = href; }
+      if (href) { event.preventDefault(); navigateTo(href); }
       return;
     } else return;
     event.preventDefault();
@@ -2836,7 +2917,7 @@ export function initializeDashboard() {
   paletteResults.addEventListener('mousedown', (event) => { if (event.target.closest?.('[role="option"]')) event.preventDefault(); });
   paletteResults.addEventListener('click', (event) => {
     const href = event.target.closest?.('[role="option"]')?.dataset.href;
-    if (href) location.href = href;
+    if (href) navigateTo(href);
   });
   paletteDialog.addEventListener('cancel', (event) => { event.preventDefault(); closePalette(); });
   dismissOnBackdrop(paletteDialog, closePalette);
