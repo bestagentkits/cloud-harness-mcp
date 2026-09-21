@@ -1,3 +1,10 @@
+## [0.55.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.3...v0.55.4) (2026-09-21)
+
+
+### Bug Fixes
+
+* **dashboard:** render the Files and Runtime tabs inside the cockpit ([#254](https://github.com/bestagentkits/cloud-harness-mcp/issues/254)) ([701a227](https://github.com/bestagentkits/cloud-harness-mcp/commit/701a22786bd99ba182f4cc8a38f23de34aaed5d0))
+
 ## [0.55.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.2...v0.55.3) (2026-09-21)
 
 
