@@ -611,6 +611,28 @@ dialog::backdrop { background: oklch(0 0 0 / .66); }
   .toasts { inset-inline: var(--space-4); max-width: none; }
 }
 
+/* State-conveying motion. Every rule here marks a state change: no endless decorative
+   motion, no page-load choreography, and the reduced-motion block below collapses it. */
+.nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem; margin-inline-start: auto; padding-inline: var(--space-1); border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: var(--text-13); font-weight: 700; }
+.nav-badge[hidden] { display: none; }
+/* A mutation re-renders its region, so the cue is applied to the region the changed
+   row lives in rather than to an arbitrary row after the fact. */
+.content-just-updated { animation: state-crossfade var(--motion-state) var(--ease-out); border-color: var(--accent-line); }
+@keyframes state-crossfade { from { opacity: .6; } to { opacity: 1; } }
+.status-message[data-save-state="saving"] { color: var(--ink-muted); }
+.status-message[data-save-state="saved"] { color: var(--accent-strong); font-weight: 600; }
+/* TTL emphasis by threshold: weight and a rule, never colour alone. */
+.lease-soon { border-inline-start: .1875rem solid var(--warning-line); padding-inline-start: var(--space-2); font-weight: 700; }
+.lease-expired { border-inline-start: .1875rem solid var(--danger); padding-inline-start: var(--space-2); font-weight: 700; }
+.chart-bar { transition: opacity var(--motion-fast) var(--ease-out); }
+.chart-bar:hover { opacity: .85; }
+.chart-bar:focus-visible rect, .chart-bar:focus-visible .bar-fill { stroke: var(--accent); stroke-width: 2px; outline: 2px solid var(--accent); outline-offset: 1px; }
+.task-node rect { transition: stroke var(--motion-fast) var(--ease-out); }
+.task-node:focus-visible rect { stroke: var(--accent); stroke-width: 2px; outline: 2px solid var(--accent); outline-offset: 1px; }
+.agent-tree li { transition: border-color var(--motion-fast) var(--ease-out); }
+.row-edit[open] > summary { color: var(--accent-strong); }
+#detail { transition: transform var(--motion-state) var(--ease-out), opacity var(--motion-state) var(--ease-out); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
