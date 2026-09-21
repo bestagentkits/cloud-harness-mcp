@@ -242,7 +242,7 @@ describe('workspace_context manifest and passive scanner', () => {
     const builtinDir = await mkdtemp(join(tmpdir(), 'ch-builtin-collide-'));
     tempDirs.push(dir, ownerDir, builtinDir);
     process.env.CH_OWNER_SKILLS_ROOT = ownerDir;
-    process.env.CH_BUILTIN_SKILLS_ROOT = builtinDir;
+    process.env.BUILTIN_SKILLS_ROOT = builtinDir;
 
     try {
       // 1. Repo skill named 'deploy'
@@ -273,7 +273,7 @@ describe('workspace_context manifest and passive scanner', () => {
       expect(deploySkill.provenance.mutableBy).toBe('release');
     } finally {
       delete process.env.CH_OWNER_SKILLS_ROOT;
-      delete process.env.CH_BUILTIN_SKILLS_ROOT;
+      delete process.env.BUILTIN_SKILLS_ROOT;
     }
   });
 
@@ -310,7 +310,7 @@ describe('workspace_context manifest and passive scanner', () => {
     const dir = await mkdtemp(join(tmpdir(), 'ch-ctx-replace-'));
     const builtinDir = await mkdtemp(join(tmpdir(), 'ch-builtin-replace-'));
     tempDirs.push(dir, builtinDir);
-    process.env.CH_BUILTIN_SKILLS_ROOT = builtinDir;
+    process.env.BUILTIN_SKILLS_ROOT = builtinDir;
 
     try {
       await mkdir(join(dir, '.agents', 'skills', 'deploy'), { recursive: true });
@@ -335,6 +335,33 @@ describe('workspace_context manifest and passive scanner', () => {
       const expectedBytes = items.reduce((total, item) => total + Buffer.byteLength(JSON.stringify(item)), 0);
       expect(manifest.returnedBytes).toBe(expectedBytes);
       expect(manifest.returnedBytes).toBeLessThanOrEqual(32768);
+    } finally {
+      delete process.env.BUILTIN_SKILLS_ROOT;
+    }
+  });
+
+  it('never attributes the removed CH_BUILTIN_SKILLS_ROOT override as built-in', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ch-ctx-removed-override-'));
+    const builtinDir = await mkdtemp(join(tmpdir(), 'ch-builtin-removed-'));
+    tempDirs.push(dir, builtinDir);
+    process.env.CH_BUILTIN_SKILLS_ROOT = builtinDir;
+
+    try {
+      await mkdir(join(builtinDir, 'decoy-tool'), { recursive: true });
+      await writeFile(join(builtinDir, 'decoy-tool', 'SKILL.md'), '# Decoy tool');
+
+      const backend = new LocalWorkspaceBackend(dir, { transport: 'stdio', workspace: dir });
+      const res = await backend.call('workspace_context', {
+        workspaceId: backend.workspaceId,
+        include: ['skills']
+      });
+
+      expect(res.ok).toBe(true);
+      const items = (res.data as any).manifest.items as Array<Record<string, any>>;
+      const decoy = items.find((it) => it.id === 'ctx_skill_decoy-tool');
+      // Unconditional: the removed override must not place the decoy in the manifest at all, so a
+      // future regression cannot pass by dropping the item for an unrelated reason.
+      expect(decoy).toBeUndefined();
     } finally {
       delete process.env.CH_BUILTIN_SKILLS_ROOT;
     }

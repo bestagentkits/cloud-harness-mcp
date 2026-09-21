@@ -91,6 +91,21 @@ describe('internal runner API contract', () => {
       version: 2, principal, operation: 'secret_rotate',
       input: { environmentId: `env_${'a'.repeat(24)}`, name: 'API_TOKEN', value: 'new secret', expectedGeneration: 2 }
     })).toMatchObject({ operation: 'secret_rotate' });
+    // A record whose name became reserved must stay deletable, or the operator cannot remediate
+    // the fail-closed state the reservation creates. Deleting cannot inject a value.
+    expect(MetadataRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'secret_delete',
+      input: { environmentId: `env_${'a'.repeat(24)}`, name: 'BUILTIN_SKILLS_ROOT', expectedGeneration: 1 }
+    })).toMatchObject({ operation: 'secret_delete' });
+    expect(MetadataRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'global_secret_delete',
+      input: { name: 'BUILTIN_SKILLS_ROOT', expectedGeneration: 1 }
+    })).toMatchObject({ operation: 'global_secret_delete' });
+    // Shape is still enforced on the delete path.
+    expect(() => MetadataRunnerRequestSchema.parse({
+      version: 2, principal, operation: 'secret_delete',
+      input: { environmentId: `env_${'a'.repeat(24)}`, name: 'INVALID-DASH', expectedGeneration: 1 }
+    })).toThrow();
     expect(() => MetadataRunnerRequestSchema.parse({
       version: 2, principal, operation: 'secret_rotate',
       input: { environmentId: `env_${'a'.repeat(24)}`, name: 'API_TOKEN', expectedGeneration: 2 }

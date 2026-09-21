@@ -3,6 +3,7 @@ import {
   GITHUB_CREDENTIAL_SECRET_NAMES,
   validateSecretDescription,
   validateSecretName,
+  validateSecretNameShape,
   validateSecretValue,
   SecretNameSchema,
   SecretValueSchema,
@@ -35,6 +36,19 @@ describe('secret-policy', () => {
       expect(validateSecretName('RUNNER_TOKEN').ok).toBe(false);
       expect(validateSecretName('AUTHORIZATION').ok).toBe(false);
       expect(validateSecretName('LD_PRELOAD').ok).toBe(false);
+      expect(validateSecretName('BUILTIN_SKILLS_ROOT').ok).toBe(false);
+      expect(validateSecretName('builtin_skills_root').ok).toBe(false);
+    });
+
+    it('validates shape without the reserved-name check so a reserved record stays deletable', () => {
+      expect(validateSecretName('BUILTIN_SKILLS_ROOT').ok).toBe(false);
+      expect(validateSecretNameShape('BUILTIN_SKILLS_ROOT')).toEqual({ ok: true, name: 'BUILTIN_SKILLS_ROOT' });
+      expect(validateSecretNameShape('PATH')).toEqual({ ok: true, name: 'PATH' });
+      expect(validateSecretNameShape('  CH_CONFIG  ')).toEqual({ ok: true, name: 'CH_CONFIG' });
+      expect(validateSecretNameShape('INVALID-DASH').ok).toBe(false);
+      expect(validateSecretNameShape('123_BAD').ok).toBe(false);
+      expect(validateSecretNameShape('').ok).toBe(false);
+      expect(validateSecretNameShape(42).ok).toBe(false);
     });
 
     it('accepts GitHub credential names so an operator can authenticate the workspace gh CLI', () => {

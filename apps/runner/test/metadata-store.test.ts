@@ -141,6 +141,19 @@ describe('MetadataStore', () => {
     keyring.close();
   });
 
+  it('allows deleting a record whose name became reserved, while still rejecting malformed names', () => {
+    const { owner, store, keyring } = fixture();
+    const { environment } = projectEnvironment(store, owner);
+
+    // Deleting cannot inject a value, so a name that became reserved after it was stored must stay
+    // removable; otherwise the documented remediation for the fail-closed state is unreachable.
+    expect(store.secrets.delete(owner, environment.id, 'BUILTIN_SKILLS_ROOT', 1)).toBeUndefined();
+    expect(store.secrets.globalDelete(owner, 'BUILTIN_SKILLS_ROOT', 1)).toBeUndefined();
+    expect(() => store.secrets.delete(owner, environment.id, 'INVALID-DASH', 1)).toThrow();
+    store.close();
+    keyring.close();
+  });
+
   it('validates active owner-qualified and project-consistent artifact provenance', () => {
     const { owner, foreign, store, keyring } = fixture();
     const { project, environment } = projectEnvironment(store, owner);
