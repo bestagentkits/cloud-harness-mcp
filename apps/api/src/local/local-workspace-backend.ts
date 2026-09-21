@@ -332,7 +332,10 @@ export class LocalWorkspaceBackend implements OperationBackend {
               }
             } catch { /* owner root absent */ }
 
-            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
+            // Local stdio mode has no executor mount, so the operator-declared
+            // `BUILTIN_SKILLS_ROOT` host directory is scanned directly; the in-process
+            // `CH_BUILTIN_SKILLS_ROOT` override stays supported for same-host setups.
+            const builtinRoot = process.env.BUILTIN_SKILLS_ROOT || process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
             try {
               const builtinEntries = await readdir(builtinRoot, { withFileTypes: true });
               for (const be of builtinEntries) {

@@ -218,6 +218,12 @@ own machine instead of consuming a signed registry package.
   variable in `/etc/cloud-harness-mcp/runtime.env` (or `.env`) is enough; no
   Compose change is required. `deploy/scripts/bootstrap-vps.sh` creates
   `/var/lib/cloud-harness/skills` on first install.
+- The runner rescans the same `BUILTIN_SKILLS_ROOT` directory when it builds the
+  context manifest, so the partition the executor sees and the partition the
+  runner attributes as `built-in` are identical. `CH_BUILTIN_SKILLS_ROOT` is a
+  separate in-executor path override for the worker, defaulting to the
+  `/opt/cloud-harness/skills` mount target, and is never read as a runner host
+  path.
 
 ## Licensed AgentKit kits
 

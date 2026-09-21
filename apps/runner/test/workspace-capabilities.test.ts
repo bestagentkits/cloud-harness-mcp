@@ -62,7 +62,7 @@ afterEach(() => {
   }
 });
 
-function createFixture(options: { authMode?: 'owner-bearer' | 'cloudflare-access'; githubApp?: RunnerConfig['githubApp']; githubToken?: string; githubSecret?: string } = {}) {
+function createFixture(options: { authMode?: 'owner-bearer' | 'cloudflare-access'; githubApp?: RunnerConfig['githubApp']; githubToken?: string; githubSecret?: string; builtinSkillsRoot?: string } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ch-cap-test-'));
   temporaryDirectories.push(directory);
   const workspaceId = `ws_${'c'.repeat(24)}`;
@@ -86,7 +86,8 @@ function createFixture(options: { authMode?: 'owner-bearer' | 'cloudflare-access
     maxWorkspaceBytes: 1_048_576,
     reaperIntervalSeconds: 30,
     githubApp: options.githubApp,
-    githubToken: options.githubToken
+    githubToken: options.githubToken,
+    builtinSkillsRoot: options.builtinSkillsRoot
   };
 
   const store = new StateStore(config.stateDb);
@@ -443,6 +444,83 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
       expect(items.find((it) => it.id === 'ctx_skill_decoy-tool')).toBeUndefined();
     } finally {
       delete process.env.CH_OWNER_SKILLS_ROOT;
+    }
+  });
+
+  it('reads built-in skills from the operator-declared Runner catalog it mounts, not the executor override', async () => {
+    const catalogRoot = mkdtempSync(join(tmpdir(), 'ch-builtin-catalog-'));
+    const executorOverrideRoot = mkdtempSync(join(tmpdir(), 'ch-builtin-override-'));
+    temporaryDirectories.push(catalogRoot, executorOverrideRoot);
+    const { service, workspaceId } = createFixture({ builtinSkillsRoot: catalogRoot });
+    process.env.CH_BUILTIN_SKILLS_ROOT = executorOverrideRoot;
+    try {
+      const catalogSkillDir = join(catalogRoot, 'deploy');
+      mkdirSync(catalogSkillDir, { recursive: true });
+      writeFileSync(join(catalogSkillDir, 'SKILL.md'), '# Built-in deploy');
+      const overrideSkillDir = join(executorOverrideRoot, 'override-tool');
+      mkdirSync(overrideSkillDir, { recursive: true });
+      writeFileSync(join(overrideSkillDir, 'SKILL.md'), '# Override tool');
+
+      const runWorkerSpy = vi.spyOn(
+        service as unknown as { runWorker: (...args: unknown[]) => Promise<unknown> },
+        'runWorker'
+      );
+      runWorkerSpy.mockResolvedValue({
+        ok: true,
+        message: 'Workspace context',
+        data: { manifest: { contractVersion: 1, returnedBytes: 0, scannedFiles: 0, scannedSourceBytes: 0, truncated: false, truncationReasons: [], items: [], warnings: [] } },
+        truncated: false
+      });
+
+      const res = await service.execute('principal_1', 'workspace_context', { workspaceId, include: ['skills'] });
+      expect(res.ok).toBe(true);
+      const manifest = (res.data as Record<string, unknown>).manifest as Record<string, unknown>;
+      const items = (manifest.items ?? []) as Array<Record<string, any>>;
+
+      const builtin = items.find((it) => it.id === 'ctx_skill_deploy');
+      expect(builtin).toBeDefined();
+      expect(builtin?.provenance.source).toBe('built-in');
+      expect(builtin?.provenance.trust).toBe('trusted-control-plane');
+      expect(builtin?.provenance.mutableBy).toBe('release');
+      expect(builtin?.path).toBe(join(catalogSkillDir, 'SKILL.md'));
+
+      // The in-executor override is not a Runner host path; it can never stand in for the catalog.
+      expect(items.find((it) => it.id === 'ctx_skill_override-tool')).toBeUndefined();
+    } finally {
+      delete process.env.CH_BUILTIN_SKILLS_ROOT;
+    }
+  });
+
+  it('never promotes an in-executor built-in override to the host built-in partition', async () => {
+    const overrideRoot = mkdtempSync(join(tmpdir(), 'ch-builtin-only-'));
+    temporaryDirectories.push(overrideRoot);
+    const { service, workspaceId } = createFixture();
+    process.env.CH_BUILTIN_SKILLS_ROOT = overrideRoot;
+    try {
+      const overrideSkillDir = join(overrideRoot, 'override-tool');
+      mkdirSync(overrideSkillDir, { recursive: true });
+      writeFileSync(join(overrideSkillDir, 'SKILL.md'), '# Override tool');
+
+      const runWorkerSpy = vi.spyOn(
+        service as unknown as { runWorker: (...args: unknown[]) => Promise<unknown> },
+        'runWorker'
+      );
+      runWorkerSpy.mockResolvedValue({
+        ok: true,
+        message: 'Workspace context',
+        data: { manifest: { contractVersion: 1, returnedBytes: 0, scannedFiles: 0, scannedSourceBytes: 0, truncated: false, truncationReasons: [], items: [], warnings: [] } },
+        truncated: false
+      });
+
+      const res = await service.execute('principal_1', 'workspace_context', { workspaceId, include: ['skills'] });
+      expect(res.ok).toBe(true);
+      const manifest = (res.data as Record<string, unknown>).manifest as Record<string, unknown>;
+      const items = (manifest.items ?? []) as Array<Record<string, any>>;
+
+      // Only `BUILTIN_SKILLS_ROOT` (the operator-declared Runner catalog) carries the built-in tier.
+      expect(items.find((it) => it.id === 'ctx_skill_override-tool')).toBeUndefined();
+    } finally {
+      delete process.env.CH_BUILTIN_SKILLS_ROOT;
     }
   });
 
