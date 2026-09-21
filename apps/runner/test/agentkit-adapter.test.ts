@@ -15,8 +15,13 @@ import {
 } from '../src/agentkit-registry.js';
 import {
   AgentKitRegistryAdapter,
+  AGENTKIT_EXTRACTED_MAX_BYTES,
+  AGENTKIT_EXTRACTED_MAX_FILES,
+  AGENTKIT_EXTRACTED_MAX_FILE_BYTES,
   assertExtractedKitTree,
-  assertSafePackageNames
+  assertPackageSizeBounds,
+  assertSafePackageNames,
+  parsePackageSizeListing
 } from '../src/adapters/agentkit-adapter.js';
 
 const runDockerMock = vi.fn();
@@ -116,6 +121,40 @@ const packageFixture = Buffer.from('kit-package-bytes');
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
+
+describe('AgentKit version pinning', () => {
+  const resolve = (version: string | undefined) => resolveAgentKitManifest({
+    registryUrl: 'https://agentkit.best',
+    kitId: KIT_ID,
+    channel: CHANNEL,
+    ...(version ? { version } : {}),
+    credential: 'ak_dev_test_credential',
+    credentialSecretName: 'AGENTKIT_REGISTRY_TOKEN',
+    fetchImpl: (async () => jsonResponse(signedManifest({ packageBytes: packageFixture, privateKey, keyId, tier: 'paid' }))) as unknown as typeof fetch
+  });
+
+  it('rejects a signed manifest whose version differs from an explicit pin', async () => {
+    await expect(resolve('9.9.9')).rejects.toThrow(/pinned request 9\.9\.9/);
+  });
+
+  it('accepts a v-prefixed pin that matches the manifest version', async () => {
+    await expect(resolve(`v${VERSION}`)).resolves.toMatchObject({ version: VERSION });
+  });
+});
+
+describe('AgentKit pre-extraction archive size bounds', () => {
+  it('parses the sizing helper output', () => {
+    expect(parsePackageSizeListing('3 1024 512\n')).toEqual({ files: 3, totalBytes: 1024, maxFileBytes: 512 });
+    expect(() => parsePackageSizeListing('not-a-listing')).toThrow(/did not report usable uncompressed sizes/);
+  });
+
+  it('rejects an archive that declares more members, bytes, or one file than the ceiling', () => {
+    expect(() => assertPackageSizeBounds(AGENTKIT_EXTRACTED_MAX_FILES + 1, 1, 1)).toThrow(/archive members/);
+    expect(() => assertPackageSizeBounds(1, AGENTKIT_EXTRACTED_MAX_BYTES + 1, 1)).toThrow(/uncompressed bytes/);
+    expect(() => assertPackageSizeBounds(1, 1, AGENTKIT_EXTRACTED_MAX_FILE_BYTES + 1)).toThrow(/per-file ceiling/);
+    expect(() => assertPackageSizeBounds(1, 1, 1)).not.toThrow();
+  });
+});
 
 describe('AgentKit manifest signature verification', () => {
   it('reproduces the frozen canonical payload byte for byte', () => {
@@ -344,6 +383,10 @@ describe('AgentKitRegistryAdapter materialization', () => {
       const command = args[args.indexOf('-c') + 1];
       const extractVolume = args.find((arg) => arg.endsWith(':/extract:rw'));
       const hostExtract = extractVolume?.replace(':/extract:rw', '') ?? '';
+      if (command.includes('-tvzf')) {
+        // Sizing pass: report a small declared uncompressed shape for the fixture members.
+        return { stdout: `${members.length} ${members.length * 64} 64\n`, stderr: '', exitCode: 0, truncated: false };
+      }
       if (command.includes('-tzf')) {
         return { stdout: `${members.join('\n')}\n`, stderr: '', exitCode: 0, truncated: false };
       }

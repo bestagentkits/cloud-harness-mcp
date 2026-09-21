@@ -28,6 +28,41 @@ const PACKAGE_DIR = '__agentkit_package';
 const PACKAGE_FILE = 'kit.tar.gz';
 
 /**
+ * Bounds applied to the archive's *declared* uncompressed size before any byte is extracted. The
+ * compressed artifact is already capped at `AGENTKIT_PACKAGE_MAX_BYTES`, but a highly compressible
+ * archive can expand far past the staging ceiling, so the declared sizes are summed first and the
+ * extraction only runs when they fit.
+ */
+export const AGENTKIT_EXTRACTED_MAX_BYTES = 536_870_912;
+export const AGENTKIT_EXTRACTED_MAX_FILES = 20_000;
+export const AGENTKIT_EXTRACTED_MAX_FILE_BYTES = 134_217_728;
+
+/** Reads the `files totalBytes maxFileBytes` line the sizing helper prints from `tar -tvzf`. */
+export function parsePackageSizeListing(stdout: string): { files: number; totalBytes: number; maxFileBytes: number } {
+  const match = /^(\d+)\s+(\d+)\s+(\d+)\s*$/m.exec(stdout.trim());
+  if (!match) {
+    throw new HarnessError('UNAVAILABLE', 'AgentKit package listing did not report usable uncompressed sizes', 503, false);
+  }
+  return { files: Number(match[1]), totalBytes: Number(match[2]), maxFileBytes: Number(match[3]) };
+}
+
+/** Rejects an archive whose declared uncompressed shape exceeds the staging budget, before extraction. */
+export function assertPackageSizeBounds(files: number, totalBytes: number, maxFileBytes: number): void {
+  if (!Number.isFinite(files) || !Number.isFinite(totalBytes) || !Number.isFinite(maxFileBytes)) {
+    throw new HarnessError('UNAVAILABLE', 'AgentKit package listing did not report usable uncompressed sizes', 503, false);
+  }
+  if (files > AGENTKIT_EXTRACTED_MAX_FILES) {
+    throw new HarnessError('UNAVAILABLE', `AgentKit package declares ${files} archive members, above the ${AGENTKIT_EXTRACTED_MAX_FILES} ceiling`, 503, false);
+  }
+  if (totalBytes > AGENTKIT_EXTRACTED_MAX_BYTES) {
+    throw new HarnessError('UNAVAILABLE', `AgentKit package declares ${totalBytes} uncompressed bytes, above the ${AGENTKIT_EXTRACTED_MAX_BYTES} ceiling`, 503, false);
+  }
+  if (maxFileBytes > AGENTKIT_EXTRACTED_MAX_FILE_BYTES) {
+    throw new HarnessError('UNAVAILABLE', `AgentKit package declares a ${maxFileBytes}-byte member, above the ${AGENTKIT_EXTRACTED_MAX_FILE_BYTES} per-file ceiling`, 503, false);
+  }
+}
+
+/**
  * Validates the archive member list before extraction. A member name that is
  * absolute, contains a `..` segment, or uses backslashes could write outside the
  * extraction root, so the package is rejected before any byte is unpacked.
@@ -196,6 +231,21 @@ export class AgentKitRegistryAdapter {
       spec.kitId
     );
 
+    // Sum the declared uncompressed sizes before extraction, so a compressible archive cannot fill the
+    // staging filesystem before `validateStagingDir` runs after the fact.
+    const sizeListing = await this.runPackageHelper(
+      'sizing',
+      `tar -tvzf "$1" | awk '{n++; s+=$3; if ($3>m) m=$3} END { printf "%d %d %d\\n", n, s, m }'`,
+      packageDir,
+      extractDir,
+      options?.signal
+    );
+    if (sizeListing.truncated) {
+      throw new HarnessError('UNAVAILABLE', 'AgentKit package sizing exceeded the inspection budget', 503, false);
+    }
+    const sizes = parsePackageSizeListing(sizeListing.stdout);
+    assertPackageSizeBounds(sizes.files, sizes.totalBytes, sizes.maxFileBytes);
+
     await this.runPackageHelper(
       'extraction',
       'tar -xzf "$1" --no-same-owner --no-same-permissions',
@@ -288,7 +338,7 @@ export class AgentKitRegistryAdapter {
   }
 
   private async runPackageHelper(
-    stage: 'listing' | 'extraction',
+    stage: 'listing' | 'sizing' | 'extraction',
     command: string,
     packageDir: string,
     extractDir: string,

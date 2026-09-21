@@ -110,11 +110,14 @@ repository:
 
 Prerequisites are operator-owned: the instance must pin the registry signing key
 (`AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY`), and each caller
-needs an AgentKit licence token stored as a global secret (default name
-`AGENTKIT_REGISTRY_TOKEN`, overridable with
-`AGENTKIT_REGISTRY_CREDENTIAL_SECRET`). Without them, `workspace_open` fails
-closed and names the missing setting. A `beta`/`dev` mount also reports a
-warning in the toolkit lock so pre-release content is visible in the result.
+needs an AgentKit licence token stored as a **provisioning-purpose** global
+secret (default name `AGENTKIT_REGISTRY_TOKEN`, overridable with
+`AGENTKIT_REGISTRY_CREDENTIAL_SECRET`). A `runtime`-purpose token is refused,
+because runtime secrets are injected into executor environments and the licence
+token must never be readable by repository code. Without a usable secret,
+`workspace_open` fails closed and names the missing setting. A `beta`/`dev` mount
+also reports a warning in the toolkit lock so pre-release content is visible in
+the result.
 
 ### Discoverability
 

@@ -29,6 +29,11 @@ export const AGENTKIT_PACKAGE_MAX_BYTES = 67_108_864;
 const sha256Hash = z.string().regex(/^[a-f0-9]{64}$/);
 const semver = z.string().regex(/^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/);
 
+/** The registry may publish `v1.2.3` or `1.2.3`; an explicit pin treats both spellings as the same version. */
+export function normalizeAgentKitVersion(version: string): string {
+  return version.replace(/^v/, '');
+}
+
 const dependencySchema = z.object({
   kitId: z.string().min(1).max(120),
   version: semver,
@@ -239,7 +244,12 @@ function registryErrorToHarnessError(
 
 export async function resolveAgentKitManifest(request: AgentKitResolveRequest): Promise<AgentKitRegistryManifest> {
   const fetchImpl = request.fetchImpl ?? fetch;
-  const url = new URL(`${request.registryUrl.replace(/\/+$/, '')}/api/agentkit/kits/${encodeURIComponent(request.kitId)}/resolve`);
+  let url: URL;
+  try {
+    url = new URL(`${request.registryUrl.replace(/\/+$/, '')}/api/agentkit/kits/${encodeURIComponent(request.kitId)}/resolve`);
+  } catch {
+    throw new HarnessError('INVALID_INPUT', 'AGENTKIT_REGISTRY_URL is not a usable absolute URL', 400, false);
+  }
   url.searchParams.set('runtime', AGENTKIT_KIT_RUNTIME);
   url.searchParams.set('channel', request.channel);
   if (request.version) url.searchParams.set('version', request.version);
@@ -287,6 +297,16 @@ export async function resolveAgentKitManifest(request: AgentKitResolveRequest): 
   }
   if (manifest.channel !== request.channel) {
     throw new HarnessError('UNAVAILABLE', `AgentKit registry returned channel ${manifest.channel} for ${request.channel}`, 503, false);
+  }
+  // An explicit pin must match the signed manifest version, otherwise a valid signed release for a
+  // different version could satisfy a caller that asked for an exact one.
+  if (request.version && normalizeAgentKitVersion(manifest.version) !== normalizeAgentKitVersion(request.version)) {
+    throw new HarnessError(
+      'UNAVAILABLE',
+      `AgentKit registry returned version ${manifest.version} for the pinned request ${request.version}`,
+      503,
+      false
+    );
   }
   if (manifest.tier !== 'paid') {
     throw new HarnessError('UNAVAILABLE', 'AgentKit registry did not identify the kit as a licensed (paid) release', 503, false);

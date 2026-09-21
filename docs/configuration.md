@@ -228,9 +228,11 @@ registry-published artifact, so it needs three settings before it is available:
 - `AGENTKIT_REGISTRY_URL` — registry origin, `https://agentkit.best` by default.
 - `AGENTKIT_REGISTRY_CREDENTIAL_SECRET` — name of the principal's global secret
   holding the licence token (`AGENTKIT_REGISTRY_TOKEN` by default). The token is
-  the operator's `ak_dev_`/`ak_cli_` registry credential; the runner never
-  accepts one from a tool argument. A caller without that secret gets a
-  fail-closed `INVALID_INPUT` naming the secret.
+  the operator's `ak_dev_`/`ak_cli_` registry credential and **must** be created
+  with `purpose: provisioning`; a `runtime`-purpose token is refused, because
+  runtime secrets are injected into executor environments. The runner never
+  accepts a credential from a tool argument, and a caller without a
+  provisioning-purpose secret gets a fail-closed `INVALID_INPUT` naming it.
 - `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` — the pinned
   Ed25519 signing key (PEM or base64 SPKI DER). Both are required: the runner
   refuses a manifest whose `keyId` or signature does not match, so a

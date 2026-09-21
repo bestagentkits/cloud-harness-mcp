@@ -8,7 +8,7 @@ import { DeclarativeGitAdapter } from './adapters/git-adapter.js';
 import { SkillsShAdapter } from './adapters/skills-sh-adapter.js';
 import { SkillXAdapter } from './adapters/skillx-adapter.js';
 import { AgentKitRegistryAdapter } from './adapters/agentkit-adapter.js';
-import { parseAgentKitPublicKey } from './agentkit-registry.js';
+import { normalizeAgentKitVersion, parseAgentKitPublicKey } from './agentkit-registry.js';
 import type { MetadataStore } from './metadata-store.js';
 import type { RepositoryCacheManager } from './repository-cache-manager.js';
 import type { StateStore } from './state-store.js';
@@ -186,10 +186,12 @@ export class ToolkitService {
   listLicensedKitCatalog(ownerId: string): LicensedKitCatalogEntry[] {
     let credentialReady = false;
     try {
-      credentialReady = Boolean(this.metadata?.globalSecretValue(ownerId, this.agentkitCredentialSecretName));
+      credentialReady = Boolean(this.metadata?.secrets
+        .consumeProvisioningSecret(ownerId, 'global', undefined, this.agentkitCredentialSecretName)
+        .plaintext);
     } catch {
-      // An unavailable secret store cannot serve a credential, so the catalog
-      // reports not-ready instead of failing the whole listing.
+      // An unavailable secret store, or a token stored without `purpose: provisioning`, cannot serve
+      // a credential, so the catalog reports not-ready instead of failing the whole listing.
       credentialReady = false;
     }
     return Object.values(LICENSED_KIT_CATALOG).map((kit) => ({
@@ -205,6 +207,62 @@ export class ToolkitService {
       activation: 'skills-only' as const,
       verification: 'registry-signed' as const
     }));
+  }
+
+  /**
+   * Resolves the AgentKit licence token from a `provisioning`-purpose global secret. A `runtime`
+   * secret is refused: runtime secrets are injected into executor environments, so accepting one here
+   * would let untrusted repository code read the licence token.
+   */
+  private consumeAgentKitCredential(ownerId: string, secretName: string): string {
+    let credential: string | undefined;
+    try {
+      credential = this.metadata?.secrets
+        .consumeProvisioningSecret(ownerId, 'global', undefined, secretName)
+        .plaintext;
+    } catch {
+      credential = undefined;
+    }
+    if (!credential) {
+      throw new HarnessError(
+        'INVALID_INPUT',
+        `The agentkit toolkit needs the ${secretName} secret stored for this principal with purpose 'provisioning'; a runtime-purpose secret is refused because runtime secrets are injected into executors`,
+        400,
+        false
+      );
+    }
+    return credential;
+  }
+
+  /**
+   * Finds the most recently used cached AgentKit bundle for a selection without any registry call.
+   * `listToolkitCacheEntries` is ordered newest-first, and the requested version and skill filter must
+   * match the cached bundle's manifest so a cache-only start cannot serve a different selection.
+   */
+  private findCachedAgentKitBundle(
+    ownerId: string,
+    item: Extract<ToolkitSelection, { kind: 'agentkit' }>
+  ): { bundlePath: string; bundleSha256: string; resolvedRevision: string; version: string; skillsCount: number } | undefined {
+    const sourceIdentity = `agentkit:${item.kitId}:${item.channel}`;
+    for (const entry of this.store.listToolkitCacheEntries(ownerId)) {
+      if (entry.status !== 'READY') continue;
+      if (entry.sourceIdentity !== sourceIdentity) continue;
+      if (entry.adapterVersion !== AgentKitRegistryAdapter.ADAPTER_VERSION) continue;
+      const bundlePath = this.cacheManager.bundlePath(ownerId, entry.bundleSha256);
+      if (!existsSync(bundlePath)) continue;
+      const manifest = readAgentKitBundleManifest(bundlePath);
+      if (!manifest) continue;
+      if (item.version && normalizeAgentKitVersion(manifest.version) !== normalizeAgentKitVersion(item.version)) continue;
+      if (!matchesAgentKitSkillFilter(manifest.skills.map((skill) => skill.name), item.skills)) continue;
+      return {
+        bundlePath,
+        bundleSha256: entry.bundleSha256,
+        resolvedRevision: entry.resolvedRevision,
+        version: manifest.version,
+        skillsCount: manifest.skills.length
+      };
+    }
+    return undefined;
   }
 
   /**
@@ -495,17 +553,42 @@ export class ToolkitService {
             false
           );
         }
-        const credential = this.metadata?.globalSecretValue(ownerId, adapter.credentialSecretName);
-        if (!credential) {
-          throw new HarnessError(
-            'INVALID_INPUT',
-            `The agentkit toolkit needs the ${adapter.credentialSecretName} secret stored for this principal`,
-            400,
-            false
-          );
+        const instanceId = item.instanceId ?? `agentkit:${item.kitId}:${item.channel}`;
+
+        // `cache-only` deployments never contact the registry: the bundle an earlier runner-fetch
+        // acquisition recorded is reused by its stable source identity, so a warm cache starts with
+        // zero toolkit network egress.
+        if (this.toolkitNetworkPolicy === 'cache-only') {
+          const cached = this.findCachedAgentKitBundle(ownerId, item);
+          if (!cached) {
+            throw new HarnessError(
+              'NOT_FOUND',
+              `Toolkit ${item.kitId}@${item.channel} is not cached and toolkitNetworkPolicy is cache-only; set TOOLKIT_NETWORK_POLICY=runner-fetch to acquire it`,
+              404,
+              false
+            );
+          }
+          bundlePaths.push({ instanceId, path: cached.bundlePath, scope: item.scope });
+          lockItems.push({
+            instanceId,
+            id: `agentkit:${item.kitId}`,
+            requestedVersion: item.version ?? null,
+            resolvedVersion: cached.version,
+            resolvedRevision: cached.resolvedRevision,
+            bundleSha256: cached.bundleSha256,
+            adapterVersion: AgentKitRegistryAdapter.ADAPTER_VERSION,
+            scope: item.scope,
+            status: 'ready',
+            cache: 'hit',
+            activation: item.activation,
+            skillsCount: cached.skillsCount,
+            verification: 'registry-signed',
+            ...(item.channel === 'stable' ? {} : { warnings: [`AgentKit ${item.channel} channel content`] })
+          });
+          continue;
         }
 
-        const instanceId = item.instanceId ?? `agentkit:${item.kitId}:${item.channel}`;
+        const credential = this.consumeAgentKitCredential(ownerId, adapter.credentialSecretName);
         // The signed manifest is resolved first, so the cache key names the exact
         // published artifact rather than the floating channel: a channel that
         // moves to a new release cannot be served from a stale cached bundle.
@@ -523,14 +606,6 @@ export class ToolkitService {
           configDigest
         };
         const existing = this.cacheManager.getExisting(ownerId, spec);
-        if (!existing && this.toolkitNetworkPolicy === 'cache-only') {
-          throw new HarnessError(
-            'NOT_FOUND',
-            `Toolkit ${item.kitId}@${resolved.version} is not cached and toolkitNetworkPolicy is cache-only`,
-            404,
-            false
-          );
-        }
 
         const bundle = await this.cacheManager.getOrAcquire(ownerId, spec, async (stagingDir) => {
           const res = await adapter.materialize(stagingDir, item, resolved, {
@@ -575,4 +650,37 @@ function countBundleSkills(bundlePath: string): number {
   } catch {
     return 0;
   }
+}
+
+type AgentKitBundleManifest = { version: string; skills: Array<{ name: string }> };
+
+/** Reads the manifest the AgentKit adapter wrote into a cached bundle, or `undefined` if unusable. */
+function readAgentKitBundleManifest(bundlePath: string): AgentKitBundleManifest | undefined {
+  let parsed: { version?: unknown; skills?: unknown };
+  try {
+    parsed = JSON.parse(readFileSync(join(bundlePath, 'manifest.json'), 'utf8')) as { version?: unknown; skills?: unknown };
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed.version !== 'string' || !Array.isArray(parsed.skills)) return undefined;
+  const skills: Array<{ name: string }> = [];
+  for (const skill of parsed.skills) {
+    if (!skill || typeof skill !== 'object') return undefined;
+    const name = (skill as { name?: unknown }).name;
+    if (typeof name !== 'string') return undefined;
+    skills.push({ name });
+  }
+  return { version: parsed.version, skills };
+}
+
+/** A cached bundle satisfies the selection only when the requested include/exclude names all match. */
+function matchesAgentKitSkillFilter(
+  names: string[],
+  filter: { include?: string[] | undefined; exclude?: string[] | undefined } | undefined
+): boolean {
+  if (!filter) return true;
+  const available = new Set(names);
+  if (filter.include && filter.include.some((name) => !available.has(name))) return false;
+  if (filter.exclude && filter.exclude.some((name) => available.has(name))) return false;
+  return true;
 }

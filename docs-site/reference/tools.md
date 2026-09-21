@@ -937,6 +937,7 @@ Execute one reviewed script packaged by a repository-provided skill.
 | `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
 | `expectedSha256` | `string` | No | length: 64–64 |
 | `expectedContentSha256` | `string` | No | length: 64–64 |
+| `approvalGrantToken` | `string` | No | length: 1–128 |
 
 ### `hooks_list`
 
