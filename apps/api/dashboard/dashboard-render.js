@@ -615,13 +615,46 @@ function renderChartFigure({ label, legend, unit, points, svg, width, height, cl
 }
 
 /**
- * The analytics section. Only charts whose data is actually retained ship; the cost
- * *trend* over time is called out as unavailable because the harness keeps per-agent
- * usage rather than a dated ledger, and inventing a curve would be worse than saying so.
+ * Stacked bars for a series with categories per bucket (an execution-health timeline).
+ * Each bar is focusable and its accessible name spells out every category count, the
+ * categories are named in a legend and by class, and the table below carries the same
+ * numbers — so nothing is conveyed by colour or height alone.
+ */
+export function renderStackedBars({ label, categories = [], points = [], emptyNote = 'Nothing to chart yet.' }) {
+  if (!points.length) return `<p class="empty-note">${escape(emptyNote)}</p>`;
+  const totals = points.map((point) => categories.reduce((sum, category) => sum + (Number(point.segments?.[category.key]) || 0), 0));
+  const ceiling = Math.max(1, ...totals);
+  const width = Math.max(240, points.length * 34 + 12);
+  const height = 150;
+  const bars = points.map((point, index) => {
+    let y = height - 22;
+    const segments = categories.map((category) => {
+      const value = Number(point.segments?.[category.key]) || 0;
+      const segmentHeight = Math.round((value / ceiling) * (height - 44));
+      if (segmentHeight <= 0) return '';
+      y -= segmentHeight;
+      return `<rect x="${index * 34 + 6}" y="${y}" width="22" height="${segmentHeight}" class="bar-segment segment-${escape(category.key)}"/>`;
+    }).join('');
+    const description = `${point.label}: ${categories.map((category) => `${category.label} ${Number(point.segments?.[category.key]) || 0}`).join(', ')}`;
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(description)}">${segments}<text x="${index * 34 + 17}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
+  }).join('');
+  const legend = `<ul class="chart-legend">${categories.map((category) => `<li><span class="legend-swatch legend-${escape(category.key)}" aria-hidden="true"></span>${escape(category.label)}</li>`).join('')}</ul>`;
+  const header = categories.map((category) => `<th>${escape(category.label)}</th>`).join('');
+  const rows = points.map((point) => `<tr><th scope="row">${escape(String(point.label))}</th>${categories.map((category) => `<td>${escape(String(Number(point.segments?.[category.key]) || 0))}</td>`).join('')}</tr>`).join('');
+  return `<figure class="chart-figure"><figcaption>${escape(label)}</figcaption>${legend}<svg class="chart chart-stacked" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="${escape(label)}">${bars}</svg><table class="chart-fallback"><caption>${escape(label)} (numbers)</caption><thead><tr><th>Bucket</th>${header}</tr></thead><tbody>${rows}</tbody></table></figure>`;
+}
+
+/**
+ * The analytics section. Every chart states the scope it measured; the two series charts
+ * cover the *retained agent window* rather than pretending to be a longer history, and no
+ * chart is drawn for data the harness does not keep.
  */
 export function renderAnalyticsSection({ overview = {}, metrics = {}, reliability = {} } = {}) {
   const series = Array.isArray(metrics.series) ? metrics.series : [];
   const activity = series.map((point) => ({ label: new Date(point.at).toLocaleTimeString(), tick: '', value: point.count }));
+  const outcomes = Array.isArray(overview.agentOutcomes) ? overview.agentOutcomes : [];
+  const costSeries = Array.isArray(overview.costSeries) ? overview.costSeries.map((point) => ({ ...point, value: Number(point.value) || 0 })) : [];
+  const scope = String(overview.agentSeriesScope ?? 'retained agents');
   const profiles = (overview.usageByProfile ?? []).map((entry) => ({ label: String(entry.profileId ?? 'unprofiled'), value: (Number(entry.costMicros) || 0) / 1_000_000, note: `${Number(entry.inputTokens) || 0} in · ${Number(entry.outputTokens) || 0} out tokens` }));
   const burn = (overview.budgetBurn ?? []).map((entry) => {
     const used = Number(entry.costMicros) || 0;
@@ -631,7 +664,7 @@ export function renderAnalyticsSection({ overview = {}, metrics = {}, reliabilit
   });
   const expiry = (overview.expiring ?? []).map((bucket) => ({ label: String(bucket.label ?? ''), value: Number(bucket.count) || 0, note: 'workspaces' }));
   const servers = (reliability.servers ?? []).map((server) => ({ label: String(server.serverName ?? server.serverId ?? 'server'), value: Number(server.calls) || 0, note: `${Number(server.error) || 0} error(s), p50 ${server.p50Ms ?? '—'} ms, p95 ${server.p95Ms ?? '—'} ms` }));
-  return `<section class="panel analytics" aria-labelledby="analytics-heading"><h2 id="analytics-heading">Analytics</h2><p class="page-note">Each chart states the scope it measured. A cost <em>trend</em> is not shown because the harness retains per-agent usage rather than a dated ledger.</p><div class="analytics-grid">${renderBarChart({ label: `Retained audit events per bucket (${String(metrics.window ?? 'window')})`, points: activity, emptyNote: 'No retained events in this window.' })}${renderBarRows({ label: 'Cost by model profile', unit: ' USD', points: profiles, emptyNote: 'No agent usage reported yet.' })}${renderBarRows({ label: 'Budget burn of running agents', unit: '', points: burn, emptyNote: 'No running agents report a budget.' })}${renderBarRows({ label: 'Workspace expiry buckets', points: expiry, emptyNote: 'No workspaces are close to expiry.' })}${renderBarRows({ label: 'MCP reliability by server', points: servers, emptyNote: 'No gateway traces reported yet.' })}</div></section>`;
+  return `<section class="panel analytics" aria-labelledby="analytics-heading"><h2 id="analytics-heading">Analytics</h2><p class="page-note">Each chart states the scope it measured. Execution health and cost cover the <strong>${escape(scope)}</strong>, because the harness keeps agent state and per-agent usage rather than a dated outcome or billing ledger.</p><div class="analytics-grid">${renderBarChart({ label: `Retained audit events per bucket (${String(metrics.window ?? 'window')})`, points: activity, emptyNote: 'No retained events in this window.' })}${renderStackedBars({ label: `Execution health over retained agents (${scope})`, categories: [{ key: 'succeeded', label: 'Succeeded' }, { key: 'attention', label: 'Failed / limit' }, { key: 'cancelled', label: 'Cancelled' }, { key: 'running', label: 'Running' }], points: outcomes, emptyNote: 'No agents are on record yet.' })}${renderBarChart({ label: `Cost over retained agents (${scope})`, unit: ' USD', points: costSeries, emptyNote: 'No agent usage is on record yet.' })}${renderBarRows({ label: 'Cost by model profile', unit: ' USD', points: profiles, emptyNote: 'No agent usage reported yet.' })}${renderBarRows({ label: 'Budget burn of running agents', unit: '', points: burn, emptyNote: 'No running agents report a budget.' })}${renderBarRows({ label: 'Workspace expiry buckets', points: expiry, emptyNote: 'No workspaces are close to expiry.' })}${renderBarRows({ label: 'MCP reliability by server', points: servers, emptyNote: 'No gateway traces reported yet.' })}</div></section>`;
 }
 
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {

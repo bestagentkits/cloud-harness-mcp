@@ -611,6 +611,23 @@ dialog::backdrop { background: oklch(0 0 0 / .66); }
   .toasts { inset-inline: var(--space-4); max-width: none; }
 }
 
+/* Stacked series segments and their legend. Every category is also named in the legend
+   and repeated in the table fallback, so colour is a convenience, never the only signal. */
+.bar-segment { fill: var(--ink-muted); }
+.segment-succeeded { fill: var(--accent); }
+.segment-attention { fill: var(--danger); }
+.segment-cancelled { fill: var(--ink-muted); }
+.segment-running { fill: var(--info); }
+.segment-other { fill: var(--line-strong); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-2); padding: 0; list-style: none; font-size: var(--text-13); }
+.chart-legend li { display: inline-flex; align-items: center; gap: var(--space-1); }
+.legend-swatch { display: inline-block; inline-size: .75rem; block-size: .75rem; border-radius: 2px; background: var(--ink-muted); }
+.legend-succeeded { background: var(--accent); }
+.legend-attention { background: var(--danger); }
+.legend-cancelled { background: var(--ink-muted); }
+.legend-running { background: var(--info); }
+.legend-other { background: var(--line-strong); }
+
 /* State-conveying motion. Every rule here marks a state change: no endless decorative
    motion, no page-load choreography, and the reduced-motion block below collapses it. */
 .nav-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem; margin-inline-start: auto; padding-inline: var(--space-1); border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: var(--text-13); font-weight: 700; }

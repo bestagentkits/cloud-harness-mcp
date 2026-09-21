@@ -636,6 +636,49 @@ export function buildOverviewProjection(input: {
     return total + (Number(usage.costMicros) || 0);
   }, 0);
   const buckets = [15, 60, 240].map((minutes) => ({ windowMinutes: minutes, label: minutes < 60 ? `${minutes} min` : `${minutes / 60} h`, count: expiringWithin(minutes).length }));
+
+  // Execution health and cost over the *retained* agent window. The harness keeps agent
+  // state and per-agent usage, not a long-lived outcome or billing ledger, so the series
+  // is bucketed over the agents on record and labelled as such rather than presented as
+  // a daily history.
+  const outcomeGroup = (status: unknown) => {
+    const value = String(status ?? '');
+    if (value === 'SUCCEEDED') return 'succeeded';
+    if (['FAILED', 'TIMED_OUT', 'LIMIT_EXCEEDED'].includes(value)) return 'attention';
+    if (value === 'CANCELLED') return 'cancelled';
+    if (['RUNNING', 'SPAWNING', 'CANCELLING'].includes(value)) return 'running';
+    return 'other';
+  };
+  const starts = agents
+    .map((agent) => ({ at: Date.parse(String(agent.startedAt ?? agent.createdAt ?? '')), agent }))
+    .filter((entry) => Number.isFinite(entry.at));
+  const OUTCOME_BUCKETS = 8;
+  const agentOutcomes: Record<string, unknown>[] = [];
+  const costSeries: Record<string, unknown>[] = [];
+  if (starts.length) {
+    const min = Math.min(...starts.map((entry) => entry.at));
+    const max = Math.max(...starts.map((entry) => entry.at));
+    // Agents that all started inside one minute would otherwise produce eight empty
+    // buckets, so a narrow window collapses to a single bucket.
+    const bucketsCount = max - min < 60_000 ? 1 : OUTCOME_BUCKETS;
+    const bucketMs = bucketsCount === 1 ? 1 : (max - min) / bucketsCount;
+    for (let index = 0; index < bucketsCount; index += 1) {
+      const from = min + index * bucketMs;
+      const to = index === bucketsCount - 1 ? max + 1 : min + (index + 1) * bucketMs;
+      const inBucket = starts.filter((entry) => entry.at >= from && entry.at < to);
+      const segments = { succeeded: 0, attention: 0, cancelled: 0, running: 0, other: 0 };
+      let costMicros = 0;
+      for (const entry of inBucket) {
+        segments[outcomeGroup(entry.agent.status)] += 1;
+        const usage = entry.agent.usage && typeof entry.agent.usage === 'object' ? entry.agent.usage as Record<string, unknown> : {};
+        costMicros += Number(usage.costMicros) || 0;
+      }
+      const at = new Date(from).toISOString();
+      agentOutcomes.push({ at, label: new Date(from).toLocaleString(), tick: String(index + 1), segments });
+      costSeries.push({ at, label: new Date(from).toLocaleTimeString(), tick: String(index + 1), value: costMicros / 1_000_000 });
+    }
+  }
+
   const usageByProfile = new Map<string, { profileId: string; inputTokens: number; outputTokens: number; costMicros: number }>();
   const budgetBurn: Record<string, unknown>[] = [];
   for (const agent of agents) {
@@ -667,6 +710,10 @@ export function buildOverviewProjection(input: {
     // analytics view needs one request and no client-side fan-out.
     usageByProfile: [...usageByProfile.values()].sort((left, right) => right.costMicros - left.costMicros),
     budgetBurn: budgetBurn.sort((left, right) => (Number(right.costMicros) / Math.max(1, Number(right.maxCostMicros))) - (Number(left.costMicros) / Math.max(1, Number(left.maxCostMicros)))),
+    // Both series cover the retained agent window only; the UI labels the scope.
+    agentOutcomes,
+    costSeries,
+    agentSeriesScope: starts.length ? 'retained agents, bucketed by start time' : 'no agents on record',
     generatedAt: new Date(nowMs).toISOString()
   };
 }
