@@ -161,6 +161,12 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
 
 ## Components
 
+- **Data tables:** a dense table is paired with a card list of the same rows, and
+the table carries `desktop-table`, which the mobile breakpoint hides. The Skills
+library follows this rule: its five columns cannot fit 375px, and a table that
+overflows the viewport is worse than a list that does not. Both renderings carry
+the same controls and both are wired, so the visible one is never the only
+working one.
 - **Top bar:** sticky header carrying the wordmark + `MCP Control Plane` tag, a
   search trigger (`aria-keyshortcuts="Meta+K Control+K"`), the theme icon, the
   profile chip, and Sign out. The chip is a link to the Profile page showing the
@@ -182,9 +188,18 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
   `dashboard.js`. `Escape`, the visible search trigger, and a tap or click on
   the backdrop all dismiss it (`dismissOnBackdrop` also ignores a drag that
   starts inside the dialog).
-- **Navigation:** left icon+label rail, grouped by concern (Runtime,
-  Configuration, Observability, Account) with an Overview home. Active item gets
-  the cyan rail + soft fill. The rail is **fixed to the viewport below the top
+- **Navigation:** left icon+label rail, grouped by operator intent — **Home**
+  (Overview), **Operate** (Workspaces, Audit), **Configure** (Projects, Secrets,
+  Models & Budgets, Skills, Integrations), **Data** (Knowledge, Artifacts), and
+  **Admin** (API Access, Settings). Active item gets the cyan rail + soft fill.
+  `Audit` keeps a rail slot only until the Activity Center owns an Audit tab;
+  `Agents`, `Activity`, and `Approvals` join **Operate** when those pages ship.
+  Profile deliberately has **no** rail slot: the top-bar profile chip and the
+  command palette are its entry points. GitHub and MCP Servers are not rail
+  entries either — they are tabs of the single **Integrations** page at
+  `/dashboard/integrations`, with `/dashboard/github` and `/dashboard/mcp-servers`
+  kept as redirects and `/dashboard/mcp-servers/:serverId` still serving a
+  server's detail view. The rail is **fixed to the viewport below the top
   bar and scrolls internally**, so a long navigation list never pushes the page
   or hides entries; the rail foot carries the running **server version** outside
   that scroll and hides it when the rail collapses to icons. A chevron control
@@ -192,14 +207,188 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
   it also collapses to icons on tablet and to a drawer on mobile. The version is
   labelled "Server version" rather than "Release" because production runs the
   pre-version-bump commit, so the readout legitimately lags the newest tag by one
-  release. Owners: [`apps/api/src/version.ts`](../apps/api/src/version.ts) for the
-  value, [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
-  for the injection.
+  release. Owners:
+  [`apps/api/dashboard/dashboard-pages.js`](../apps/api/dashboard/dashboard-pages.js)
+  owns page identity, route, label, group, heading, help, icon and palette
+  membership, and the sidebar is rendered from it rather than authored in
+  `index.html`; [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
+  owns the shell path allowlist, the legacy redirects and the version injection,
+  and `apps/api/test/dashboard-pages.test.ts` asserts the two lists stay in
+  parity.
+- **Overview and route ownership:** `/dashboard` **is** the Overview, and the
+  workspace index lives at `/dashboard/workspaces`; `/dashboard/overview`
+  redirects to `/dashboard`. Every other page keeps its existing path so links
+  and bookmarks survive the reorganisation. Client route matching resolves
+  through the page registry, and detail routes (`/dashboard/workspaces/:id`,
+  `/dashboard/projects/:id`, `/dashboard/knowledge/:id`,
+  `/dashboard/mcp-servers/:id`) stay owned by the page whose rail entry must
+  remain current.
 - **Overview:** monospace metric tiles (corner-bracketed) capped at four above
   the fold, a recent-activity feed, an Access panel, and a Server panel. Tiles
   and feed aggregate client-side from allowlisted endpoints; the Server panel
   reads `GET /api/v1/server`, a read-only projection of config and status that
   exposes no owner ID, runner URL, token, or secret.
+- **Resource pages:** every global resource page (Projects, Global Secrets,
+  Artifacts, API Access, Models & Budgets, Integrations) opens with the same
+  shape — page title and help from the page registry, **exactly one** primary
+  action in the shell's action slot next to the heading, an optional filter row,
+  then the resource list. Creation and edit flows live in a `<dialog>` built from
+  `renderFormDialog`, not in a permanent form under the list: the page's job is to
+  show the resource, and the dialog carries the effect description, the cancel
+  affordance and the live status line. Identifiers, generations and hashes are
+  secondary metadata with a copy affordance (`renderCopyChip`), never the page's
+  label. Destructive actions keep `confirmAction` and stay visually separated.
+  Navigation runs through one seam, `dashboardNavigationPath` + `navigateTo` in
+  `dashboard.js`, which refuses any target outside `/dashboard` so a rendered
+  value can never become an off-site redirect. Owners:
+  `renderResourcePage`, `renderPrimaryAction`, `renderFormDialog` and
+  `renderCopyChip` in `dashboard-render.js`; `setPageActions`,
+  `bindDialogOpeners` and `bindCopyAffordances` in `dashboard.js`.
+- **Workspace Cockpit:** workspace detail is a cockpit, not a metadata page. The
+  header carries what an operator decides on — repository, status, ref, network
+  profile, lease posture and an attention count — with `Renew lease` as the single
+  accented action, `Finalize workspace` beside it, and recover/close behind a
+  `More actions` disclosure. A contextual tab row covers Summary, Agents, Runtime,
+  Files, Git, Automation, Deploy, Artifacts and Activity; these are workspace
+  sections, never global rail entries. Tabs whose owning phase has not shipped
+  state the phase they arrive with instead of rendering an empty box. Summary
+  reports only observable state (status, branch, attributable repository items,
+  capabilities, network posture) and says "Not reported" for cost and budget
+  rather than showing a zero that reads like a measurement. Attention reasons come
+  from what the dashboard can actually observe (lease expiry thresholds, workspace
+  failure, network quarantine, dirty Git when known); agent and task reasons join
+  with the phases that expose them. Lifecycle actions use the phase-1 dialog and
+  live-region machinery, and a missing context response degrades the Summary
+  without hiding the header or the actions. Owners: `renderWorkspaceCockpitHeader`,
+  `renderWorkspaceTabs`, `renderWorkspaceSummary`, `workspaceAttention` and
+  `workspaceLeaseState` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the lifecycle
+  adapters are `/api/v1/workspaces/:id/{context,lease-renew,recover,finalize}` in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) with
+  projections in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
+- **Agents:** `/dashboard/agents` is the global control center, and the workspace
+  cockpit's Agents tab renders the same body scoped to one workspace, so a filter
+  and a fact mean the same thing in both places. The hierarchy is a nested list
+  built from `parentAgentId` — a screen reader gets real nesting — with every agent
+  also listed flat in a table that names its parent, so the non-graph fallback is
+  always present. An agent whose parent is missing from the page attaches to the
+  root instead of disappearing. Each agent shows status as text plus a semantic
+  class, workspace, profile, age, TTL, tokens, cost and cost-budget utilization;
+  a limit the runner never reported reads as "Not reported" rather than 0%, and
+  an over-spend clamps at 100%. The detail view splits Overview, Usage, Logs and
+  Messages; logs are the adapter's bounded projection (an oversized event is
+  truncated with an explicit marker) and messages carry a client-generated
+  idempotency key while cancel cascades to children behind a confirmation.
+  Owners: `agentStatusLabel`, `budgetUtilization`, `agentTreeIndex`,
+  `renderAgentHierarchy`, `renderAgentTable`, `renderAgentsIndex` and
+  `renderAgentDetail` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters
+  are `/api/v1/agents*` and `/api/v1/workspaces/:id/agents` in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts) with
+  the agent projections in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
+- **Runtime:** the cockpit's Runtime tab shows what is actually executing: a task
+  table with status, duration, exit code, dependencies and a bounded output
+  disclosure, plus a cancel for every task that is not terminal; the task
+  dependency graph as **internal SVG** layered by dependency depth, where each node
+  writes its state and duration as text, carries a semantic `task-<status>` class,
+  and is focusable so its full `aria-label` is reachable from the keyboard, with the
+  task table beside it as the text fallback (a cycle or an edge to an unknown node
+  cannot break the layout); and sessions as named, closeable rows whose output is
+  read through a **read-only, bounded** call — the browser never supplies stdin, so
+  the dashboard cannot become a terminal — with truncation stated in the panel.
+  Owners: `taskStatusLabel`, `taskDuration`, `renderTaskList`, `taskGraphLayout`,
+  `renderTaskGraph`, `renderSessionsPanel` and `renderRuntimePanel` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters
+  are `/api/v1/workspaces/:id/tasks/{graph,:taskId,cancel}` and
+  `/api/v1/workspaces/:id/sessions{,/:id/io,/close}` in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts), with
+  the bounded task and session projections in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
+- **Git and Finalize:** the cockpit's Git tab keeps **Finalize** as the primary
+  happy path — one confirmed action that stages, commits and pushes — and treats
+  everything else as an advanced surface. The tab shows branch, upstream,
+  ahead/behind, and staged / modified / untracked counts parsed from
+  `git status --short --branch`, the changed-file list, a bounded staged or
+  unstaged diff with an explicit truncation notice, recent commits, and worktrees
+  inside a disclosure with their own create form. Advanced operations (fetch,
+  fast-forward-only pull, checkout, branch, merge, rebase) live in one collapsed
+  form, use the existing fenced contracts, and report conflicts back in place
+  rather than resolving anything automatically. The staged/unstaged toggle is a URL
+  parameter, so the view is shareable and the back button works. Owners:
+  `parseGitStatus` and `parseWorktrees` in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts);
+  `renderGitStatus`, `renderGitDiff`, `renderGitLog`, `renderWorktrees`,
+  `renderGitAdvanced` and `renderGitPanel` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters
+  are `/api/v1/workspaces/:id/git/*` and `/api/v1/workspaces/:id/worktrees` in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
+- **Automation and Deploy:** the workspace Automation tab puts the resolved skill set
+  and the lifecycle hooks in one place. Hooks are grouped by the event that runs them
+  — `on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual` —
+  beside an ordered pipeline that states each stage and its hook count as text (no
+  colour-only or connector-only meaning), and a stage with no hooks says so rather
+  than disappearing. Activation and deactivation stay with the runner's manifest
+  contract; the page runs only what is already active, and a skill script runs only
+  when the operator names it, through the verified-bytes contract. The Deploy tab
+  lists repository-defined targets with their working directory, last reported result,
+  duration and failure detail, and states "Not reported" for a target the runner never
+  reported on instead of showing a zero; running a target confirms first because
+  deployments are external-effect operations. Owners: `HOOK_LIFECYCLE`,
+  `groupHooksByLifecycle`, `renderHookPipeline`, `renderHooks`,
+  `renderWorkspaceSkills`, `renderDeployPanel` and `renderAutomationPanel` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters are
+  `/api/v1/workspaces/:id/{skills,hooks,deployments}` and their guarded run routes in
+  [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
+- **Activity and Approvals:** `/dashboard/activity` is one operational timeline with
+  filters for All / Agents / Tasks / MCP / Deployments / Audit, and one event grammar
+  — when, category, status, actor/resource, a short summary and where to look next.
+  Every row states whether it is **Retained audit** or **Live runtime**, because audit
+  is the durable spine while agent, task and deployment state is volatile; the two are
+  never presented as the same kind of record. `/dashboard/approvals` is an inbox of
+  pending privilege grants showing the requested command, workspace, working
+  directory, command digest, created and expiry times, with Approve and Reject behind
+  a confirmation that says the decision is audited. The rail shows a pending count
+  **only while something is pending**, and an empty inbox explains what it means. Audit
+  history left the rail in this phase and is reachable through the Activity filter, the
+  command palette, and its own route. Owners: `ACTIVITY_FILTERS`, `activityEvent`,
+  `renderActivityCenter` and `renderApprovals` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the loaders and
+  the badge (`updateApprovalsBadge`, `refreshApprovalsBadge`) live in `dashboard.js`
+  over the existing `/privilege-grants` and `/audit` routes.
+- **Decision Overview:** `/dashboard` answers four operator questions above the fold —
+  **Needs attention**, **Running now**, **Cost**, **Expiring soon** — and every tile is
+  a link into the filtered view that explains it (attention → Activity, running →
+  Agents, cost → Agents, expiry → Workspaces). Access and Server information moved
+  below the decision metrics, and the old inventory tiles are gone. The page reads one
+  server projection instead of fanning out: `GET /api/v1/overview` composes attention
+  reasons (failed or quarantined workspaces, leases inside 15 minutes, failed /
+  limit-exceeded / timed-out agents, pending approvals), running counts, a cost figure
+  whose `scope` **names what was measured** ("running agents" — the harness retains
+  per-agent usage, not a daily ledger, so no "today" claim is made), and expiry buckets
+  at 15 minutes, 1 hour and 4 hours. `GET /api/v1/metrics?window=1h|24h|7d` counts
+  retained audit events inside a validated window (an unsupported window is a 400) and
+  states its scope in the response, and `GET /api/v1/activity` composes the Activity
+  timeline server-side, marking live runtime rows apart from retained audit rows.
+  Owners: `buildOverviewProjection`, `buildMetricsProjection`,
+  `buildActivityProjection` and `METRIC_WINDOWS` in
+  [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts); the
+  routes live in [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts);
+  `renderOverview` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js).
+- **Motion:** motion exists only to convey a state change, inside the 150-250ms band
+  (`--motion-fast` / `--motion-state` with `--ease-out`): a mutation crossfades the
+  region it re-rendered (`.content-just-updated`), a save moves from `Saving…` to a
+  `Saved` state on the status line (`data-save-state`), a copy affordance flips to
+  `Copied`, lease posture gains a rule and weight at its thresholds (`.lease-soon`,
+  `.lease-expired`), chart marks and task/agent nodes show a focus ring and transition
+  their stroke, disclosures colour their summary when open, and the detail drawer
+  slides and fades. There is exactly one infinite animation — the loading skeleton —
+  and no decorative or page-load choreography. The global
+  `@media (prefers-reduced-motion: reduce)` block collapses every animation and
+  transition to 0.01ms with `animation-iteration-count: 1`, so the preference is
+  honoured everywhere by construction rather than per rule.
 - **Tables:** rounded hairline container, uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with

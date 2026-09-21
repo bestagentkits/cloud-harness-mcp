@@ -16,7 +16,11 @@ Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Co
 
 ## Generating a Key
 
-1. Navigate to **API Keys** in the dashboard.
-2. Click **Create API Key**.
+1. Navigate to **API Access** in the dashboard.
+2. Click **Create API key** (the page's single accented action).
 3. Choose a descriptive label (e.g. `Cursor Workstation M1`) and select an expiration timeframe.
 4. Copy the key value immediately (`ch_live_...`).
+
+The key is shown once, in a dialog, and cannot be recovered. Creation moves into that
+dialog rather than sitting under the list, and the action is disabled with an explanation
+when the key limit is reached or the gateway is not ready.

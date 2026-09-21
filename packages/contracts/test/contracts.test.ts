@@ -7,6 +7,7 @@ import {
   ApiConfigSchema,
   ContextManifestItemSchema,
   ContextManifestSchema,
+  DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   ErrorCodeSchema,
   ExecutorNetworkProfileSchema,
   HarnessError,
@@ -100,6 +101,20 @@ describe('contracts', () => {
     expect(RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', legacyPrincipalMapping: mapping }).legacyPrincipalMapping).toEqual(mapping);
     expect(() => RunnerConfigSchema.parse({ ...runner, legacyPrincipalMapping: mapping })).toThrow();
     expect(() => RunnerConfigSchema.parse({ ...runner, authMode: 'cloudflare-access', legacyPrincipalMapping: { ...mapping, issuer: 'http://team.cloudflareaccess.com' } })).toThrow();
+  });
+
+  it('bounds the per-owner concurrent workspace limit and ships the shared default', () => {
+    const runner = {
+      serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
+      executorImage: 'executor:latest', allowedGitHosts: ['github.com']
+    };
+
+    expect(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER).toBe(3);
+    expect(RunnerConfigSchema.parse(runner).maxActiveWorkspacesPerOwner).toBe(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER);
+    expect(RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: '1' }).maxActiveWorkspacesPerOwner).toBe(1);
+    expect(RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: 64 }).maxActiveWorkspacesPerOwner).toBe(64);
+    expect(() => RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: '0' })).toThrow();
+    expect(() => RunnerConfigSchema.parse({ ...runner, maxActiveWorkspacesPerOwner: 65 })).toThrow();
   });
 
   it('accepts only complete, unique Access principal relinks', () => {
@@ -562,6 +577,10 @@ describe('contracts', () => {
 
     // skills_run requires expectedSha256
     expect(() => TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh' })).toThrow();
+    // The grant field is accepted but deliberately not required by the schema, so a caller without one
+    // still reaches the runner and receives an approval request that names the grant it needs, rather
+    // than a validation error that hides the way forward.
+    expect(TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh', expectedSha256: 'c'.repeat(64), approvalGrantToken: 'pvg_test' }).approvalGrantToken).toBe('pvg_test');
     expect(TOOL_SCHEMA_BY_NAME.skills_run.parse({ name: 'demo', script: 'run.sh', expectedSha256: 'c'.repeat(64) })).toMatchObject({
       name: 'demo',
       expectedSha256: 'c'.repeat(64)
@@ -765,6 +784,23 @@ describe('contracts', () => {
     for (const name of ['agent_status', 'agent_logs', 'agent_list']) {
       expect(specs[name]).toMatchObject({ readOnly: true, destructive: false, idempotent: true, openWorld: false });
     }
+  });
+
+  it('classifies the suggestion tool as egress without claiming it is side-effect free', () => {
+    const spec = TOOL_SPECS.find(({ name }) => name === 'skill_suggest');
+
+    expect(spec).toBeDefined();
+    // readOnly is false on purpose: the tool writes an audit row and causes egress, so a "pure read"
+    // classification would be inaccurate and could let a caller cache it as side-effect free.
+    expect(spec).toMatchObject({
+      title: 'Suggest a skill',
+      readOnly: false,
+      destructive: false,
+      idempotent: false,
+      openWorld: true
+    });
+    // The description is what a client shows a user before the call sends prompt content anywhere.
+    expect(spec!.description).toMatch(/redacted prompt/i);
   });
 
   it('validates bounded agent status result data without public identity', () => {

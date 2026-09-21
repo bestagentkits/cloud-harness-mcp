@@ -4,6 +4,7 @@ import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs,
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
+  DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   HarnessError,
   InternalRunnerRequestSchema,
   RunnerOperationSchema,
@@ -28,11 +29,19 @@ import type { GitHubInstallationRecord, GitHubInstallationStore } from './github
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
-import type { GitOperationStatus, PrincipalSelector, StateStore, WorkspaceRecord } from './state-store.js';
+import {
+  ActiveWorkspaceLimitReachedError,
+  COUNTED_WORKSPACE_STATUSES,
+  type GitOperationStatus,
+  type PrincipalSelector,
+  type StateStore,
+  type WorkspaceRecord
+} from './state-store.js';
 import { validatedWorkspaceEnvironment } from './workspace-environment.js';
 import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
+import { resolveWorkspaceSkills, type SkillCandidate } from './skill-resolver.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
@@ -46,6 +55,13 @@ import {
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
+/**
+ * Statuses that occupy a counted capacity slot. `REAPING` is excluded because it
+ * marks in-flight teardown, so a record being destroyed must not consume a slot or
+ * inflate the count reported in a quota error. Capacity decisions use this set;
+ * `activeStatus` remains the enumeration superset for sweeps and container cleanup.
+ */
+const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATUSES);
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
@@ -239,17 +255,16 @@ export class WorkspaceService {
     };
   }
 
-  private getRedactor(workspaceId: string): SecretSnapshotRedactor {
-    const cached = this.redactorCache.get(workspaceId);
-    if (cached) return cached;
+  /**
+   * The workspace and owner secret values. It is named separately from the redactor because the
+   * suggestion engine has to name both value sources explicitly: these are the workspace secrets, and a
+   * provider credential does not travel through this path.
+   */
+  redactionSecrets(workspaceId: string): Record<string, string> {
     const record = this.store.byId(workspaceId);
-    if (!record) {
-      const empty = new SecretSnapshotRedactor({});
-      this.redactorCache.set(workspaceId, empty);
-      return empty;
-    }
-    const snapshotResult = this.store.getSecretSnapshot(workspaceId);
+    if (!record) return {};
     const values: Record<string, string> = {};
+    const snapshotResult = this.store.getSecretSnapshot(workspaceId);
     if (snapshotResult.initialized) {
       for (const item of snapshotResult.secrets) {
         values[item.name] = this.metadata?.decryptEnvelope(record.ownerId, item.environmentId, item.name, item.version, item.envelope) ?? '';
@@ -266,7 +281,13 @@ export class WorkspaceService {
       metadata: this.metadata
     });
     if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
-    const redactor = new SecretSnapshotRedactor(values);
+    return values;
+  }
+
+  private getRedactor(workspaceId: string): SecretSnapshotRedactor {
+    const cached = this.redactorCache.get(workspaceId);
+    if (cached) return cached;
+    const redactor = new SecretSnapshotRedactor(this.redactionSecrets(workspaceId));
     this.redactorCache.set(workspaceId, redactor);
     return redactor;
   }
@@ -434,6 +455,30 @@ export class WorkspaceService {
     }
   }
 
+  /**
+   * Concurrent counted workspaces this owner may hold. The `??` fallback mirrors
+   * the existing `dependencyNetworkName` pattern and exists because several tests
+   * build partial `RunnerConfig` literals; production values always come from the
+   * validated schema.
+   */
+  private activeWorkspaceLimit(): number {
+    return this.config.maxActiveWorkspacesPerOwner ?? DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER;
+  }
+
+  /**
+   * The remedy deliberately omits "wait for one to expire":
+   * `NETWORK_QUARANTINED` and `REAPING` records are counted but no sweep ever
+   * expires them, so `workspace_close` is the only remedy that always works.
+   */
+  private activeWorkspaceLimitError(active: number, limit: number): HarnessError {
+    return new HarnessError(
+      'LIMIT_EXCEEDED',
+      `active workspace limit reached: ${active} active of a maximum ${limit}; close a workspace with workspace_close before opening another`,
+      429,
+      true
+    );
+  }
+
   private async ensureCapacity(ownerId: string): Promise<void> {
     const list = this.store.list(ownerId);
     const active = list.filter((record) => activeStatus.has(record.status));
@@ -453,9 +498,10 @@ export class WorkspaceService {
         }
       }
     }
-    const remainingActive = this.store.list(ownerId).filter((record) => activeStatus.has(record.status));
-    if (remainingActive.length > 0) {
-      throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+    const remainingActive = this.store.list(ownerId).filter((record) => countedStatus.has(record.status));
+    const limit = this.activeWorkspaceLimit();
+    if (remainingActive.length >= limit) {
+      throw this.activeWorkspaceLimitError(remainingActive.length, limit);
     }
     const info = await statfs(this.config.jobsRoot);
     const freeBytes = Number(info.bavail) * Number(info.bsize);
@@ -748,11 +794,22 @@ export class WorkspaceService {
       throw new HarnessError('UNAVAILABLE', 'Workspace secret injection is temporarily unavailable', 503, false);
     }
     const containerName = await this.createExecutor(record, repositoryPath, validatedWorkspaceEnvironment(environment));
-    const updated = this.store.updateFenced(record.id, record.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'], {
-      containerName,
-      status: 'ACTIVE',
-      error: null
-    });
+    let updated: WorkspaceRecord | undefined;
+    try {
+      updated = this.store.activateWithLimit(
+        record.id,
+        record.generation,
+        ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'],
+        { containerName, status: 'ACTIVE', error: null },
+        this.activeWorkspaceLimit()
+      );
+    } catch (error) {
+      await removeContainer(containerName).catch(() => undefined);
+      if (error instanceof ActiveWorkspaceLimitReachedError) {
+        throw this.activeWorkspaceLimitError(error.active, error.limit);
+      }
+      throw error;
+    }
     if (!updated) {
       await removeContainer(containerName).catch(() => undefined);
       throw new HarnessError('CONFLICT', 'workspace lifecycle changed during executor activation', 409, true);
@@ -787,7 +844,7 @@ export class WorkspaceService {
       mutationLockedUntil: null, generation: 1, error: null, requestFingerprint
     };
     try {
-      this.store.create(record);
+      this.store.admit(record, this.activeWorkspaceLimit());
     } catch (error) {
       const replay = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
       if (replay) {
@@ -796,8 +853,8 @@ export class WorkspaceService {
         }
         return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(replay), truncated: false };
       }
-      if (this.store.list(ownerId).some((candidate) => activeStatus.has(candidate.status))) {
-        throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+      if (error instanceof ActiveWorkspaceLimitReachedError) {
+        throw this.activeWorkspaceLimitError(error.active, error.limit);
       }
       throw error;
     }
@@ -848,7 +905,7 @@ export class WorkspaceService {
       const ownerBundles = bundlePaths.filter(b => b.scope === 'owner');
       const workspaceBundles = bundlePaths.filter(b => b.scope === 'workspace');
 
-      await this.composeOwnerToolkitProjection(record, ownerBundles);
+      await this.composeOwnerToolkitProjection(record, ownerBundles, parsed.skillOverrides);
 
       const repositoryPath = await this.clone(record, url, parsed.ref);
       if (workspaceBundles.length > 0) {
@@ -890,12 +947,16 @@ export class WorkspaceService {
 
   private async composeOwnerToolkitProjection(
     record: WorkspaceRecord,
-    ownerBundlePaths: Array<{ instanceId: string; path: string }>
+    ownerBundlePaths: Array<{ instanceId: string; path: string }>,
+    overrides?: Record<string, string>
   ): Promise<void> {
     const ownerSkillsPath = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
     await mkdir(ownerSkillsPath, { recursive: true, mode: 0o755 });
 
-    const seenSkills = new Map<string, { bundlePath: string; contentHash: string }>();
+    // The same-tier collision rule has one owner, the resolver, so the launch path and the preview
+    // path cannot drift on what counts as a conflict or on how an override settles one.
+    const candidates: SkillCandidate[] = [];
+    const sources = new Map<string, string>();
 
     for (const item of ownerBundlePaths) {
       const skillsDir = join(item.path, 'skills');
@@ -909,17 +970,30 @@ export class WorkspaceService {
         if (!existsSync(skillMd)) continue;
 
         const digest = computeFullTreeDigest(srcSkill).bundleSha256;
+        candidates.push({
+          name: entry.name,
+          tier: 'owner',
+          sourceId: item.instanceId,
+          revisionId: digest,
+          contentSha256: digest,
+          rootPath: item.path
+        });
+        sources.set(`${entry.name}:${digest}`, srcSkill);
+      }
+    }
 
-        const prior = seenSkills.get(entry.name);
-        if (prior && prior.contentHash !== digest) {
-          throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${entry.name} is defined with conflicting content in multiple toolkits`, 409, false);
-        }
+    const resolution = resolveWorkspaceSkills({ candidates, overrides });
+    const conflict = resolution.conflicts[0];
+    if (conflict) {
+      throw new HarnessError('CONFLICT', `Same-tier toolkit skill collision: ${conflict.name} is defined with conflicting content in multiple toolkits`, 409, false);
+    }
 
-        const destSkill = join(ownerSkillsPath, entry.name);
-        if (!existsSync(destSkill)) {
-          await cp(srcSkill, destSkill, { recursive: true });
-        }
-        seenSkills.set(entry.name, { bundlePath: item.path, contentHash: digest });
+    for (const skill of resolution.resolved) {
+      const srcSkill = sources.get(`${skill.name}:${skill.contentSha256}`);
+      if (!srcSkill) continue;
+      const destSkill = join(ownerSkillsPath, skill.name);
+      if (!existsSync(destSkill)) {
+        await cp(srcSkill, destSkill, { recursive: true });
       }
     }
   }
@@ -1168,6 +1242,24 @@ export class WorkspaceService {
     };
   }
 
+  /**
+   * The roster the suggestion engine ranks against. It runs in the workspace's own executor, which is
+   * where the skills are, so the control plane reads the inventory instead of guessing at it.
+   */
+  async skillRoster(
+    principal: PrincipalSelector,
+    workspaceId: string
+  ): Promise<{ entries: Array<Record<string, unknown>>; rosterDigest: string }> {
+    const ownerId = this.store.resolvePrincipal(principal);
+    const record = this.requireWorkspace(ownerId, workspaceId);
+    const response = await this.runWorker(record, 'skills_roster', {});
+    if (!response.ok) {
+      throw new HarnessError('UNAVAILABLE', response.message || 'the workspace could not list its skills', 503, true);
+    }
+    const data = (response.data ?? {}) as { entries?: Array<Record<string, unknown>>; rosterDigest?: string };
+    return { entries: data.entries ?? [], rosterDigest: data.rosterDigest ?? '' };
+  }
+
   private requireWorkspace(ownerId: string, workspaceId?: string, active = true, allowRecoverable = false): WorkspaceRecord {
     let record: WorkspaceRecord;
     try {
@@ -1179,7 +1271,7 @@ export class WorkspaceService {
         }
         if (err.message === 'AMBIGUOUS_ACTIVE_WORKSPACES') {
           const list = this.store.list(ownerId).filter((w) => w.status === 'ACTIVE' || w.status === 'CREATING');
-          throw new HarnessError('CONFLICT', `Multiple active workspaces found (${list.map((w) => w.id).join(', ')}). Specify workspaceId or set active workspace.`, 409);
+          throw new HarnessError('CONFLICT', `Multiple active workspaces found (${list.map((w) => w.id).join(', ')}). Specify workspaceId on each call.`, 409);
         }
         if (err.message === 'FORBIDDEN') {
           throw new HarnessError('FORBIDDEN', 'workspace access not authorized', 403);
@@ -1246,7 +1338,103 @@ export class WorkspaceService {
     }
   }
 
-  private async runWorker(record: WorkspaceRecord, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /**
+   * `skills_run` executes the verified script inside a disposable helper container rather than in the
+   * workspace executor, and that path is gated on an owner privilege grant. Without a grant the caller
+   * receives an approval request instead of a run, and there is deliberately no local fallback: a caller
+   * must never be able to read an isolation guarantee into a run that did not have it.
+   */
+  private async runSkillInHelperContainer(
+    record: WorkspaceRecord,
+    input: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
+    const name = input.name as string;
+    const script = input.script as string;
+    const expectedSha = (input.expectedContentSha256 ?? input.expectedSha256) as string;
+    const timeoutMs = (input.timeoutMs as number) || 60_000;
+    const maxOutputBytes = this.config.maxOutputBytes;
+    // The grant is bound to a descriptor the owner can actually read, rather than to the shell command
+    // that happens to carry it, so approving means "run this skill script at this digest".
+    const grantCommand = `skills_run ${name} script=${script} expected=${expectedSha}`;
+    const commandSha256 = createHash('sha256').update(grantCommand).digest('hex');
+    const approvalGrantToken = input.approvalGrantToken as string | undefined;
+
+    if (!approvalGrantToken) {
+      const grant = this.store.createPrivilegeGrant({
+        ownerId: record.ownerId,
+        workspaceId: record.id,
+        command: grantCommand,
+        cwd: '.',
+        ttlMs: 60_000
+      });
+      return {
+        ok: false,
+        message: 'Skill execution requires explicit operator approval grant',
+        error: {
+          code: 'PRIVILEGE_APPROVAL_REQUIRED',
+          message: `Approval grant required to run skill script ${name}/${script} in a disposable helper container`,
+          grantRequest: {
+            grantId: grant.id,
+            workspaceId: grant.workspaceId,
+            commandSha256: grant.commandSha256,
+            cwd: grant.cwd,
+            expiresAt: new Date(grant.expiresAt).toISOString()
+          },
+          retryable: true
+        },
+        truncated: false
+      };
+    }
+
+    const grantValid = this.store.consumePrivilegeGrant({
+      ownerId: record.ownerId,
+      workspaceId: record.id,
+      grantId: approvalGrantToken,
+      commandSha256,
+      cwd: '.'
+    });
+    if (!grantValid) {
+      throw new HarnessError('FORBIDDEN', 'Invalid, expired, or already-consumed approval grant token', 403, false);
+    }
+
+    // The helper container reuses the worker's one-shot entry point, so the snapshot, the digest check,
+    // and the read-only hardening that the tests cover stay exactly where they were; only the process
+    // that finally runs the script moves into a container of its own.
+    const payload = JSON.stringify({ operation: 'skills_run', input: { ...input, approvalGrantToken: undefined } });
+    const command = `printf '%s' ${shellQuote(payload)} | node /opt/harness/harness-worker.mjs`;
+    const result = await this.runPrivilegedEphemeralExec(record, { command, cwd: '.', timeoutMs, maxOutputBytes, runAs: 'unprivileged' }, signal);
+
+    const raw = (result.data as { stdout?: string } | undefined)?.stdout ?? '';
+    let parsed: RunnerResponse;
+    try {
+      parsed = RunnerResponseSchema.parse(JSON.parse(raw));
+    } catch {
+      throw new HarnessError('INTERNAL_ERROR', 'skill helper container returned an invalid bounded result', 500, true);
+    }
+    const redactor = this.getRedactor(record.id);
+    const sanitized = redactor.sanitizeObject(parsed);
+    return {
+      ...sanitized,
+      data: sanitized.data && typeof sanitized.data === 'object'
+        ? { ...sanitized.data, executionMode: 'helper-container' }
+        : sanitized.data
+    };
+  }
+
+  private async runWorker(
+    record: WorkspaceRecord,
+    /**
+     * `skills_roster` is executed by the worker but is not a public operation: it feeds the suggestion
+     * engine rather than a caller, so it stays out of the shared operation enum and is named here.
+     */
+    operation: RunnerOperation | 'skills_roster',
+    input: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<RunnerResponse> {
+    if (operation === 'skills_run') {
+      return await this.runSkillInHelperContainer(record, input, signal);
+    }
     if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
     const containerName = record.containerName;
     const timeout = typeof input.timeoutMs === 'number' ? input.timeoutMs + 5_000 : 65_000;
@@ -1591,7 +1779,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         throw new HarnessError('CONFLICT', 'Git push operation with this idempotency key is already in progress', 409, true);
       }
       if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
-        const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+        const parsed = parseCachedResponse(claim.existing.resultJson);
         return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
       }
       if (claim.action === 'RECONCILE_REQUIRED' && claim.existing) {
@@ -1791,7 +1979,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
   private async runPrivilegedEphemeralExec(
     record: WorkspaceRecord,
-    input: { command: string; cwd: string; timeoutMs: number; maxOutputBytes: number },
+    input: {
+      command: string;
+      cwd: string;
+      timeoutMs: number;
+      maxOutputBytes: number;
+      /**
+       * Privileged commands run as root because that is what the owner approved. Skill scripts do not:
+       * they are repository-controlled content, and the security model puts them under UID 10001, so the
+       * skill path asks for the unprivileged variant rather than inheriting root from this helper.
+       */
+      runAs?: 'root' | 'unprivileged' | undefined;
+    },
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
     const privName = `chm-priv-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
@@ -1809,7 +2008,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         '--label', 'cloud-harness.role=priv-exec',
         '--label', 'cloud-harness.ephemeral=true',
         ...this.networkProfileManager.dockerLaunchArgs(record.networkProfile),
-        '--user', '0:0',
+        '--user', input.runAs === 'unprivileged' ? '10001:10001' : '0:0',
+        ...(input.runAs === 'unprivileged' ? ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true'] : []),
         '--workdir', workdir,
         '--pids-limit', '256',
         '--memory', '1g', '--memory-swap', '1g', '--cpus', '1',
@@ -2125,6 +2325,21 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       const targetId = validated.workspaceId as string;
       const targetRecord = this.store.byOwnerAndId(ownerId, targetId);
       if (!targetRecord) throw new HarnessError('NOT_FOUND', `workspace ${targetId} not found`);
+      // The stored preference is consulted only when the target is unambiguous, so
+      // reject a target resolution would ignore instead of reporting success for a
+      // preference that never takes effect.
+      const activeWorkspaces = this.store.list(ownerId).filter((w) => w.status === 'ACTIVE' || w.status === 'CREATING');
+      const isActiveTarget = targetRecord.status === 'ACTIVE' || targetRecord.status === 'CREATING';
+      const isRecoverableTarget = targetRecord.status === 'EXPIRED_RECOVERABLE' || targetRecord.status === 'NETWORK_QUARANTINED';
+      if (isActiveTarget && activeWorkspaces.length > 1) {
+        throw new HarnessError('CONFLICT', 'more than one active workspace exists; pass workspaceId on each call instead of setting a default', 409, true);
+      }
+      if (isRecoverableTarget && activeWorkspaces.length > 0) {
+        throw new HarnessError('CONFLICT', 'an active workspace exists, so a recoverable workspace cannot become the default; pass workspaceId explicitly', 409, true);
+      }
+      if (!isActiveTarget && !isRecoverableTarget) {
+        throw new HarnessError('CONFLICT', `workspace is ${targetRecord.status.toLowerCase()} and cannot be set as the active workspace`, 409, true);
+      }
       this.store.setPreferredWorkspace(ownerId, targetId);
       return {
         ok: true,
@@ -2244,9 +2459,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       const isRecoverable = rec.status === 'EXPIRED_RECOVERABLE';
       if (isRecoverable) {
-        const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && activeStatus.has(w.status));
-        if (activeSiblings.length > 0) {
-          throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+        const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && countedStatus.has(w.status));
+        const limit = this.activeWorkspaceLimit();
+        if (activeSiblings.length >= limit) {
+          throw this.activeWorkspaceLimitError(activeSiblings.length, limit);
         }
         const holdExpiry = now + 300_000;
         try {
@@ -2264,16 +2480,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
         let updated: WorkspaceRecord | undefined;
         try {
-          updated = this.store.updateFenced(activeRecord.id, activeRecord.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE'], {
-            status: 'ACTIVE',
-            lastActivityAt: now,
-            expiresAt: newExpires
-          });
-        } catch (err) {
-          if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
-            throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+          updated = this.store.activateWithLimit(
+            activeRecord.id,
+            activeRecord.generation,
+            ['ACTIVE', 'EXPIRED_RECOVERABLE'],
+            { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires },
+            this.activeWorkspaceLimit()
+          );
+        } catch (error) {
+          if (error instanceof ActiveWorkspaceLimitReachedError) {
+            throw this.activeWorkspaceLimitError(error.active, error.limit);
           }
-          throw err;
+          throw error;
         }
         if (!updated) {
           throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during renewal', 409);
@@ -2301,9 +2519,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
         const isRecoverable = rec.status === 'EXPIRED_RECOVERABLE';
         if (isRecoverable) {
-          const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && activeStatus.has(w.status));
-          if (activeSiblings.length > 0) {
-            throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+          const activeSiblings = this.store.list(ownerId).filter((w) => w.id !== rec.id && countedStatus.has(w.status));
+          const limit = this.activeWorkspaceLimit();
+          if (activeSiblings.length >= limit) {
+            throw this.activeWorkspaceLimitError(activeSiblings.length, limit);
           }
           const holdExpiry = now + 300_000;
           try {
@@ -2318,17 +2537,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           const newExpires = Math.min(activeRecord.hardExpiresAt, now + extSec * 1000);
           let updated: WorkspaceRecord | undefined;
           try {
-            updated = this.store.updateFenced(activeRecord.id, activeRecord.generation, ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'], {
-              status: 'ACTIVE',
-              lastActivityAt: now,
-              expiresAt: newExpires,
-              error: null
-            });
-          } catch (err) {
-            if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
-              throw new HarnessError('LIMIT_EXCEEDED', 'only one active workspace is allowed in this MVP', 429, true);
+            updated = this.store.activateWithLimit(
+              activeRecord.id,
+              activeRecord.generation,
+              ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'],
+              { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires, error: null },
+              this.activeWorkspaceLimit()
+            );
+          } catch (error) {
+            if (error instanceof ActiveWorkspaceLimitReachedError) {
+              throw this.activeWorkspaceLimitError(error.active, error.limit);
             }
-            throw err;
+            throw error;
           }
           if (!updated) {
             throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during recovery', 409);
@@ -2490,20 +2710,37 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               if (accumulatedBytes + sBytes <= maxBytes) {
                 sanitizedItems.push(sItem);
                 accumulatedBytes += sBytes;
+              } else {
+                truncated = true;
+                if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
               }
-            } else {
-              const existing = sanitizedItems[existingIdx]!;
-              const newRank = precedenceRank[sItem.provenance.source] || 0;
-              const existingRank = precedenceRank[existing.provenance.source] || 0;
-              if (newRank > existingRank) {
-                sanitizedItems[existingIdx] = sItem;
-              }
+              return;
             }
+            const existing = sanitizedItems[existingIdx]!;
+            const newRank = precedenceRank[sItem.provenance.source] || 0;
+            const existingRank = precedenceRank[existing.provenance.source] || 0;
+            if (newRank <= existingRank) return;
+            // Replacement is byte-accounted: return the superseded item's serialized size to the
+            // budget before admitting the higher-precedence candidate, so returnedBytes is never
+            // stale and a replacement can never push the manifest past maxBytes.
+            const sBytes = Buffer.byteLength(JSON.stringify(sItem));
+            const existingBytes = Buffer.byteLength(JSON.stringify(existing));
+            const nextBytes = accumulatedBytes - existingBytes + sBytes;
+            if (nextBytes > maxBytes) {
+              truncated = true;
+              if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
+              return;
+            }
+            sanitizedItems[existingIdx] = sItem;
+            accumulatedBytes = nextBytes;
           };
 
           const include = Array.isArray((validated as any).include) ? (validated as any).include : ['instructions', 'languages', 'test_commands', 'skills'];
           if (include.includes('skills')) {
-            const ownerRoot = process.env.CH_OWNER_SKILLS_ROOT || '/opt/cloud-harness/owner-skills';
+            // The Runner host trusts only the per-workspace owner toolkit projection it composed and
+            // mounted. `/opt/cloud-harness/owner-skills` is the executor mount target; reading it here
+            // would attribute host-global content that is not scoped to this workspace or principal.
+            const ownerRoot = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
             try {
               const ownerEntries = await readdir(ownerRoot, { withFileTypes: true });
               for (const oe of ownerEntries) {
@@ -2530,32 +2767,36 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               }
             } catch { /* owner root absent */ }
 
-            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT || '/opt/cloud-harness/skills';
-            try {
-              const builtinEntries = await readdir(builtinRoot, { withFileTypes: true });
-              for (const be of builtinEntries) {
-                if (be.isDirectory()) {
-                  const sFile = join(builtinRoot, be.name, 'SKILL.md');
-                  try {
-                    const sRaw = await readFile(sFile);
-                    const sHash = createHash('sha256').update(sRaw).digest('hex');
-                    const sItem = sanitizeAndAttributeProvenance({
-                      id: `ctx_skill_${be.name}`,
-                      kind: 'skill-summary',
-                      format: 'skill-md',
-                      path: sFile,
-                      clients: ['all'],
-                      contentSha256: sHash,
-                      excerpt: `Skill "${be.name}" (built-in)`
-                    }, {
-                      partitionSource: 'built-in',
-                      trustedRoot: builtinRoot
-                    });
-                    mergeSkillItem(sItem);
-                  } catch { /* skip */ }
+            // `/opt/cloud-harness/skills` is likewise an executor mount target, not a Runner host
+            // path. Only an operator-declared Runner catalog may carry the built-in partition.
+            const builtinRoot = process.env.CH_BUILTIN_SKILLS_ROOT;
+            if (builtinRoot) {
+              try {
+                const builtinEntries = await readdir(builtinRoot, { withFileTypes: true });
+                for (const be of builtinEntries) {
+                  if (be.isDirectory()) {
+                    const sFile = join(builtinRoot, be.name, 'SKILL.md');
+                    try {
+                      const sRaw = await readFile(sFile);
+                      const sHash = createHash('sha256').update(sRaw).digest('hex');
+                      const sItem = sanitizeAndAttributeProvenance({
+                        id: `ctx_skill_${be.name}`,
+                        kind: 'skill-summary',
+                        format: 'skill-md',
+                        path: sFile,
+                        clients: ['all'],
+                        contentSha256: sHash,
+                        excerpt: `Skill "${be.name}" (built-in)`
+                      }, {
+                        partitionSource: 'built-in',
+                        trustedRoot: builtinRoot
+                      });
+                      mergeSkillItem(sItem);
+                    } catch { /* skip */ }
+                  }
                 }
-              }
-            } catch { /* builtin root absent */ }
+              } catch { /* builtin root absent */ }
+            }
           }
 
           manifest = {
@@ -2885,7 +3126,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (idempotencyKey) {
         const cached = this.store.getBatchWriteIdempotency(ownerId, record.id, idempotencyKey);
         if (cached) {
-          return JSON.parse(cached) as RunnerResponse;
+          return parseCachedResponse(cached);
         }
       }
       const result = await this.runWorker(record, 'files_write_batch', validated, signal);
@@ -2923,7 +3164,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           throw new HarnessError('CONFLICT', 'Finalize operation with this idempotency key is already in progress', 409, true);
         }
         if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
-          const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+          const parsed = parseCachedResponse(claim.existing.resultJson);
           return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
         }
         if (claim.action === 'RECONCILE_REQUIRED' && claim.existing) {
@@ -3205,7 +3446,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           throw new HarnessError('CONFLICT', 'idempotency key reused with different request payload', 409);
         }
         if (cached?.resultJson) {
-          return JSON.parse(cached.resultJson) as RunnerResponse;
+          return parseCachedResponse(cached.resultJson);
         }
       }
       let args: string[] = [];
@@ -3426,7 +3667,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             throw new HarnessError('CONFLICT', 'Idempotency key reused with different commit parameters', 409, false);
           }
           if (existing.status === 'SUCCEEDED' && existing.resultJson) {
-            const parsed = JSON.parse(existing.resultJson) as RunnerResponse;
+            const parsed = parseCachedResponse(existing.resultJson);
             return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
           }
           if (existing.status === 'PENDING') {
@@ -3464,7 +3705,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           throw new HarnessError('CONFLICT', 'Git commit operation with this idempotency key is already in progress', 409, true);
         }
         if (claim.action === 'REPLAY_SUCCEEDED' && claim.existing?.resultJson) {
-          const parsed = JSON.parse(claim.existing.resultJson) as RunnerResponse;
+          const parsed = parseCachedResponse(claim.existing.resultJson);
           return { ...parsed, data: { ...(typeof parsed.data === 'object' && parsed.data ? parsed.data : {}), alreadyFinalized: true } };
         }
       }
@@ -4183,6 +4424,22 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
     return ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
   }
   return false;
+}
+
+/**
+ * A cached response that cannot be read is reported as an internal error rather than thrown raw, because a
+ * corrupt row should surface as a named failure instead of an unhandled parse error.
+ */
+function parseCachedResponse(value: unknown): RunnerResponse {
+  try {
+    return JSON.parse(String(value ?? '')) as RunnerResponse;
+  } catch {
+    throw new HarnessError('INTERNAL_ERROR', 'a cached operation result could not be read', 500, true);
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function normalizePushRefspec(refspec: string | undefined, defaultBranch: string | undefined): string {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "cloud-harness",
-  "version": "0.48.0",
+  "version": "0.54.0",
   "description": "Operate a private Cloud Harness MCP coding workspace with safe file, execution, Git, automation, and recovery workflows.",
   "author": {
     "name": "Best Agent Kits",
@@ -16,5 +16,14 @@
     "remote-coding",
     "developer-tools"
   ],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "userConfig": {
+    "mcpUrl": {
+      "type": "string",
+      "title": "Cloud Harness MCP URL",
+      "description": "The operator's existing Cloud Harness MCP endpoint. The plugin reuses its authentication and stores no credential of its own."
+    }
+  },
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json"
 }

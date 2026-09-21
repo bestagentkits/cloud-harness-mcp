@@ -7,6 +7,9 @@ import {
   validateSecretClient
 } from '../dashboard/dashboard.js';
 
+import { renderSkillsSkeleton, renderTypesafeSkeleton } from '../dashboard/dashboard-render.js';
+import { DASHBOARD_PAGES } from '../dashboard/dashboard-pages.js';
+
 const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
 
 // The stylesheet is authored as compact single-line rules, but a formatter may
@@ -18,7 +21,7 @@ const squish = (value: string) => value.replace(/\s+/g, ' ').trim();
 describe('dashboard static UI contract', () => {
   const html = asset('index.html');
   const css = asset('dashboard.css');
-  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}`;
+  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}`;
   const squishedCss = squish(css);
 
   it('provides native landmarks, focus entry, live status, and destructive confirmation', () => {
@@ -32,6 +35,32 @@ describe('dashboard static UI contract', () => {
     for (const recovery of ['Review latest', 'Copy my changes', 'Cancel']) expect(html).toContain(recovery);
     expect(html).not.toContain('<form method="dialog"');
     expect((html.match(/<h1/g) ?? [])).toHaveLength(1);
+  });
+
+  it('marks state changes with bounded motion that reduced-motion collapses', () => {
+    for (const selector of [
+      '.content-just-updated', '.status-message[data-save-state="saved"]', '.lease-soon', '.lease-expired',
+      '.chart-bar:focus-visible', '.task-node:focus-visible', '.nav-badge', '#detail'
+    ]) expect(css, selector).toContain(selector);
+
+    // The only infinite animation is the loading skeleton; everything else is a
+    // state change, and the reduced-motion block collapses all of it by selector `*`.
+    const infinite = css.split('\n').filter((line) => line.includes('infinite'));
+    expect(infinite).toHaveLength(1);
+    expect(infinite[0]).toContain('.skeleton');
+    expect(css).toContain('animation-iteration-count: 1 !important');
+    expect(css).toContain('transition-duration: .01ms !important');
+    // Durations come from the motion tokens rather than ad-hoc numbers.
+    expect(css).toContain('var(--motion-fast)');
+    expect(css).toContain('var(--motion-state)');
+    expect(css).not.toContain('gradient(');
+  });
+
+  it('exposes the save state and the mutation cue in the client', () => {
+    expect(script).toContain("status.dataset.saveState = 'saved'");
+    expect(script).toContain("status.dataset.saveState = 'saving'");
+    expect(script).toContain('content-just-updated');
+    expect(script).toContain('flashUpdated');
   });
 
   it('uses tokenized responsive styling with reduced-motion and narrow-screen rules', () => {
@@ -97,17 +126,73 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain('No named sessions.');
   });
 
+  it('renders the typename panel with a write-only key and no prompt surface', () => {
+    const skeleton = renderTypesafeSkeleton();
+    for (const selector of [
+      'id="typesafe-panel"', 'id="typesafe-key"', 'id="typesafe-model"', 'id="typesafe-gate-threshold"',
+      'id="typesafe-fit-threshold"', 'id="typesafe-max-egress-bytes"', 'id="typesafe-cache-ttl"',
+      'id="typesafe-enabled"', 'id="typesafe-egress"', 'id="typesafe-test"', 'id="typesafe-status"', 'id="typesafe-usage"'
+    ]) expect(skeleton, selector).toContain(selector);
+
+    // The key field never renders a stored value back, and the usage surface has no prompt column.
+    expect(skeleton).toMatch(/id="typesafe-key"[^>]*type="password"/);
+    expect(skeleton).not.toMatch(/prompt/i);
+    expect(skeleton).toContain('aria-live="polite"');
+  });
+
+  it('renders every skills selector the UI contract names', () => {
+    const skeleton = renderSkillsSkeleton();
+    for (const selector of [
+      'id="skills-section"',
+      'id="skills-tab-library"', 'id="skills-tab-discover"', 'id="skills-tab-sets"', 'id="skills-tab-registry"',
+      'id="skills-library-search"', 'id="skills-library-table"', 'id="skills-bulk-bar"',
+      'id="skill-detail"', 'id="skill-detail-instructions"', 'id="skill-detail-files"', 'id="skill-detail-revisions"', 'id="skill-detail-usage"',
+      'id="skill-editor"', 'id="skill-editor-save"', 'id="skill-editor-status"',
+      'id="skill-revision-diff"',
+      'id="skill-import-dialog"', 'id="skill-import-source"', 'id="skill-import-ref"', 'id="skill-import-scope"',
+      'id="skill-import-review"', 'id="skill-import-job"', 'id="skill-import-retry"',
+      'id="skill-set-builder"', 'id="skill-set-picker"', 'id="skill-set-members"', 'id="skill-set-save"', 'id="skill-set-status"',
+      'id="skills-registry-table"', 'id="skills-registry-status"'
+    ]) expect(skeleton, selector).toContain(selector);
+    // The registry live region has to announce changes, or a cache-state update stays silent.
+    expect(skeleton).toMatch(/id="skills-registry-status"[^>]*aria-live="polite"/);
+  });
+
+  it('reduces the open workspace dialog to skill-set selection and drops the dead toolkit grid', () => {
+    for (const selector of [
+      'id="open-skill-sets-select"', 'id="open-skill-sets-chips"', 'id="open-skill-conflicts"',
+      'id="open-workspace-preview"', 'id="skills-manage-link"'
+    ]) expect(html, selector).toContain(selector);
+
+    // The placeholder grid was never populated by any code path, so leaving it would show operators an
+    // empty box that looks like a loading failure.
+    expect(html).not.toContain('toolkits-selection-grid');
+    expect(script).not.toContain('toolkits-selection-grid');
+    expect(script).not.toContain('toolkits-grid');
+  });
+
   it('exposes accessible metadata navigation and only existing dashboard BFF controls', () => {
-    for (const [path, label] of [
-      ['/dashboard/overview', 'Overview'], ['/dashboard', 'Workspaces'], ['/dashboard/projects', 'Projects'],
-      ['/dashboard/secrets', 'Secrets'], ['/dashboard/models', 'Models'], ['/dashboard/artifacts', 'Artifacts'],
-      ['/dashboard/audit', 'Audit'], ['/dashboard/api-keys', 'API keys'], ['/dashboard/github', 'GitHub'],
-      ['/dashboard/mcp-servers', 'MCP Servers'],
-      ['/dashboard/profile', 'Profile']
+    // Navigation is registry output (see dashboard-pages.test.ts for the parity and
+    // group contracts), so this test asserts the destinations exist as pages rather
+    // than as literals in the shell markup.
+    for (const [id, route, label] of [
+      ['overview', '/dashboard', 'Overview'], ['workspaces', '/dashboard/workspaces', 'Workspaces'],
+      ['agents', '/dashboard/agents', 'Agents'],
+      ['projects', '/dashboard/projects', 'Projects'], ['secrets', '/dashboard/secrets', 'Secrets'],
+      ['models', '/dashboard/models', 'Models & Budgets'], ['artifacts', '/dashboard/artifacts', 'Artifacts'],
+      ['audit', '/dashboard/audit', 'Audit'], ['api-keys', '/dashboard/api-keys', 'API Access'],
+      ['integrations', '/dashboard/integrations', 'Integrations'],
+      ['skills', '/dashboard/skills', 'Skills'],
+      ['profile', '/dashboard/profile', 'Profile']
     ]) {
-      expect(html).toContain(`href="${path}"`);
-      expect(html).toContain(`>${label}</a>`);
+      const page = DASHBOARD_PAGES.find((candidate) => candidate.id === id);
+      expect(page, id).toBeDefined();
+      expect(page?.route, id).toBe(route);
+      expect(page?.label, id).toBe(label);
     }
+    // GitHub and MCP Servers are tabs of the Integrations page, not own destinations.
+    expect(DASHBOARD_PAGES.some((page) => page.route === '/dashboard/github')).toBe(false);
+    expect(DASHBOARD_PAGES.some((page) => page.route === '/dashboard/mcp-servers')).toBe(false);
     for (const endpoint of [
       "api('/projects')", "api('/secrets')", "api('/artifacts',", '`/audit?limit=50', "api('/github')", "api('/profile')",
       "'/github/setup'", "'/github/complete'", "'/github/reconcile'", "'/github/disconnect'", '`/environments/${'
@@ -118,14 +203,14 @@ describe('dashboard static UI contract', () => {
     for (const forbidden of ['sessionStorage', 'document.cookie', 'secret.value', 'secretValue', 'privateKey', 'accessToken']) expect(script).not.toContain(forbidden);
   });
 
-  it('exposes the settings page through the shell navigation, the loader dispatch, and the palette', () => {
-    expect(html).toContain('href="/dashboard/settings"');
-    expect(html).toContain('data-section="settings"');
-    expect(html).toContain('>Settings</a>');
-    expect(script).toContain("location.pathname === '/dashboard/settings'");
+  it('exposes the settings page through the registry, the loader dispatch, and the palette', () => {
+    const settings = DASHBOARD_PAGES.find((page) => page.id === 'settings');
+    expect(settings?.route).toBe('/dashboard/settings');
+    expect(settings?.nav).toBe(true);
+    expect(settings?.palette).toBe(true);
     expect(script).toContain('loadSettings()');
-    expect(script).toContain("id: 'page:settings'");
-    expect(script).toContain("href: '/dashboard/settings'");
+    expect(script).toContain('settings: loadSettings');
+    expect(script).toContain('palettePageCommands()');
     for (const contract of ["api('/settings')", "api('/settings/network-check'", 'id="settings-network-profile"', 'id="settings-status"']) expect(script).toContain(contract);
   });
 
@@ -181,7 +266,10 @@ describe('dashboard static UI contract', () => {
       "api('/api-keys')", "api('/api-keys', { method: 'POST'", '`/api-keys/${',
       "method: 'DELETE'", 'expiresInDays', 'expectedGeneration', 'apiKeyReveal.clear()'
     ]) expect(script).toContain(contract);
-    for (const forbidden of ['localStorage', 'sessionStorage', 'document.cookie', 'console.', 'sendBeacon(', 'analytics']) expect(script).not.toContain(forbidden);
+    // No client-side tracking, and no persistence of a transient key. The word
+    // "analytics" itself is allowed: the Analytics section is a dashboard surface, not a
+    // tracking call, so the guard checks the call shapes instead of the word.
+    for (const forbidden of ['localStorage', 'sessionStorage', 'document.cookie', 'console.', 'sendBeacon(', 'gtag(', 'posthog', 'plausible(', 'mixpanel']) expect(script).not.toContain(forbidden);
     expect(html).not.toContain('value="chm_key_');
   });
 

@@ -12,12 +12,12 @@ import { migratePrincipalSchema } from '../src/principal-store.js';
 const tempDbPath = () => join(tmpdir(), `test-state-v10-${randomBytes(8).toString('hex')}.sqlite`);
 
 describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
-  it('migrates fresh database to exact schema version 10', () => {
+  it('migrates a fresh database to the current head version', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
       const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(row.version).toBe(10);
+      expect(row.version).toBe(11);
 
       // Verify knowledge tables exist
       const tableRows = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
@@ -33,13 +33,13 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
     }
   });
 
-  it('proves v10 fixture upgrades to exact 10, downgrades to exact 9, 8, and round-trips with FKs enabled', () => {
+  it('proves a v10 fixture upgrades to the head version, downgrades to exact 9 and 8, and round-trips with FKs enabled', () => {
     const dbPath = tempDbPath();
     const store = new StateStore(dbPath);
     try {
       store.database.exec('PRAGMA foreign_keys = ON');
       const initial = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(initial.version).toBe(10);
+      expect(initial.version).toBe(11);
 
       // Downgrade to exact version 9
       downgradeStateSchemaToV9(store.database);
@@ -64,7 +64,7 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
       // Re-upgrade to exact version 10
       migratePrincipalSchema(store.database);
       const v10Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(v10Row.version).toBe(10);
+      expect(v10Row.version).toBe(11);
 
       const tableRowsV10 = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
       const tablesV10 = new Set(tableRowsV10.map((r) => r.name));
@@ -92,9 +92,14 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
         INSERT INTO memories
         (id, principal_id, scope, repository_key, workspace_id, name, content, content_sha256, generation, created_at, updated_at, expires_at, deleted_at, provenance_json)
         VALUES
-        ('mem_owner1', 'p_test', 'owner', NULL, NULL, 'owner-doc', 'Owner Content', '1111111111111111111111111111111111111111111111111111111111111111', 1, ${now}, ${now}, ${now + 100000}, NULL, '{"source":"owner","trust":"owner-controlled","mutableBy":"owner"}'),
-        ('mem_repo1', 'p_test', 'repository', 'repo_hash123', NULL, 'repo-doc', 'Repo Content', '2222222222222222222222222222222222222222222222222222222222222222', 1, ${now}, ${now}, ${now + 100000}, NULL, '{"source":"repository","trust":"untrusted-executor","mutableBy":"repository-commit"}')
-      `).run();
+          (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?),
+          (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?)
+      `).run(
+        'mem_owner1', 'p_test', 'owner', null, null, 'owner-doc', 'Owner Content', '1'.repeat(64), now, now, now + 100_000,
+        '{"source":"owner","trust":"owner-controlled","mutableBy":"owner"}',
+        'mem_repo1', 'p_test', 'repository', 'repo_hash123', null, 'repo-doc', 'Repo Content', '2'.repeat(64), now, now, now + 100_000,
+        '{"source":"repository","trust":"untrusted-executor","mutableBy":"repository-commit"}'
+      );
 
       store.database.prepare(`
         INSERT INTO memory_tags (principal_id, memory_id, tag)

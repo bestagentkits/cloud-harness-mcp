@@ -50,8 +50,18 @@ behavior is owned by
 
 ## Workspace opening
 
-- `LIMIT_EXCEEDED` with an active-workspace message means this MVP already has
-  one active workspace. List it, recover it by ID, or close it.
+- `LIMIT_EXCEEDED` with `active workspace limit reached: N active of a maximum M`
+  means the principal already holds `M` counted workspaces (`CREATING`, `ACTIVE`,
+  `NETWORK_QUARANTINED`). Call `workspace_list` to see them and `workspace_close`
+  to free a slot, or raise `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner.
+  Lowering the limit never reaps an existing workspace; it only blocks new
+  admission. A record in `REAPING` is in flight to teardown and holds no slot, so it
+  never appears in this count.
+- A workspace whose lease is `ACTIVE` also frees its slot when its idle or wall TTL
+  expires. A `NETWORK_QUARANTINED` record does not expire, so close it explicitly.
+  A `REAPING` record is already being torn down, so `workspace_close` retries the
+  removal and is the supported remedy; only the fenced dashboard close refuses a
+  `REAPING` record with `409 CONFLICT`.
 - A free-space reserve error means `/var/lib/cloud-harness` is below
   `MIN_FREE_BYTES`. Inspect disk use before deleting anything. The configured
   workspace size is a periodically checked soft ceiling, not a hard quota.

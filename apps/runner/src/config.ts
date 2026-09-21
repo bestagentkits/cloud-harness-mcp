@@ -27,16 +27,30 @@ function plausibleGitHubToken(value: string | undefined): string | undefined {
 
 const csv = (value: string | undefined, fallback: string) => (value ?? fallback).split(',').map((entry) => entry.trim()).filter(Boolean);
 
-const json = (value: string | undefined): unknown => value === undefined ? undefined : JSON.parse(value) as unknown;
+type PrincipalRelinks = NonNullable<RunnerConfig['principalRelinks']>;
+type AgentProfiles = NonNullable<RunnerConfig['agents']>['profiles'];
 
-function agentProfiles(value: string | undefined, file: string | undefined): unknown {
+/**
+ * Parse `ACCESS_PRINCIPAL_RELINKS` at its boundary. The configuration schema owns the shape, so this
+ * only guarantees the value is JSON and fails closed with a named error rather than a bare SyntaxError.
+ */
+function principalRelinks(value: string | undefined): PrincipalRelinks | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(value) as PrincipalRelinks;
+  } catch {
+    throw new Error('ACCESS_PRINCIPAL_RELINKS must contain valid JSON');
+  }
+}
+
+function agentProfiles(value: string | undefined, file: string | undefined): AgentProfiles | undefined {
   if (value !== undefined && file !== undefined) {
     throw new Error('configure only one of AGENT_PROFILES_JSON or AGENT_PROFILES_FILE');
   }
   const serialized = value ?? (file === undefined ? undefined : readFileSync(file, 'utf8'));
   if (serialized === undefined) return undefined;
   try {
-    return JSON.parse(serialized);
+    return JSON.parse(serialized) as AgentProfiles;
   } catch {
     throw new Error('agent profiles must contain valid JSON');
   }
@@ -123,6 +137,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     maxOutputBytes: process.env.MAX_OUTPUT_BYTES,
     minFreeBytes: process.env.MIN_FREE_BYTES,
     maxWorkspaceBytes: process.env.MAX_WORKSPACE_BYTES,
+    maxActiveWorkspacesPerOwner: process.env.MAX_ACTIVE_WORKSPACES_PER_OWNER,
     reaperIntervalSeconds: process.env.REAPER_INTERVAL_SECONDS,
     artifactRoot: process.env.ARTIFACT_ROOT,
     maxArtifactBytes: process.env.MAX_ARTIFACT_BYTES,
@@ -146,7 +161,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       issuer: legacyIssuer,
       subject: legacySubject
     } : undefined,
-    principalRelinks: json(process.env['ACCESS_PRINCIPAL_RELINKS']),
+    principalRelinks: principalRelinks(process.env['ACCESS_PRINCIPAL_RELINKS']),
     githubApp: githubAppId || githubInstallationId || githubPrivateKey || githubAppSlug ? {
       appId: githubAppId,
       installationId: githubInstallationId,

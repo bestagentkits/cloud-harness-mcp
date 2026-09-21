@@ -1,7 +1,69 @@
 const escape = (value) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
+
+/** Exported so the shell navigation renders registry values through the same escaping path as every renderer. */
+export const escapeHtml = escape;
 const statusLabel = (status) => ({ CREATING: 'Creating', ACTIVE: 'Active', REAPING: 'Closing', CLOSED: 'Closed', FAILED: 'Failed', NETWORK_QUARANTINED: 'Quarantined' })[status] ?? 'Unknown';
 const networkLabel = (profile) => profile === 'dependency-access' ? 'Dependency access' : profile === 'local-host' ? 'Local host' : 'No network';
 const time = (value) => `<time datetime="${escape(value)}">${escape(new Date(value).toLocaleString())}</time>`;
+
+/**
+ * The shared resource-page layout: an optional note, an optional filter bar, and
+ * the resource body. Page identity (title, help) comes from the page registry;
+ * the primary action is rendered into the shell's action slot by the loader.
+ */
+export function renderResourcePage({ note = '', filters = '', body }) {
+  return `${note}${filters ? `<div class="resource-filters">${filters}</div>` : ''}<div class="resource-body">${body}</div>`;
+}
+
+/** Exactly one visually dominant action per page states the one thing to do next. */
+export function renderPrimaryAction({ id, label, dialogId, disabled = false }) {
+  return `<button id="${escape(id)}" class="accent-btn" type="button"${dialogId ? ` data-dialog="${escape(dialogId)}"` : ''}${disabled ? ' disabled' : ''}>${escape(label)}</button>`;
+}
+
+/** A secondary action in the same slot: never accented, never competing for attention. */
+export function renderSecondaryAction({ id, label, dialogId, disabled = false }) {
+  return `<button id="${escape(id)}" type="button"${dialogId ? ` data-dialog="${escape(dialogId)}"` : ''}${disabled ? ' disabled' : ''}>${escape(label)}</button>`;
+}
+
+/** The Models & Budgets page actions: one primary (a profile), one secondary (a credential). */
+export function renderModelsActions() {
+  return `${renderSecondaryAction({ id: 'open-add-credential-btn', label: '+ Add credential' })}${renderPrimaryAction({ id: 'open-add-profile-btn', label: '+ Add profile' })}`;
+}
+
+/** The MCP tab's single primary action. */
+export function renderMcpActions() {
+  return '<div class="row-actions"><button class="accent-btn" type="button" data-mcp-add aria-haspopup="dialog">Add MCP server</button></div>';
+}
+
+/**
+ * The GitHub tab's maintenance action. GitHub's own primary path is the setup form
+ * rendered in the page body, so this stays a plain action rather than a second
+ * accented button.
+ */
+export function renderGitHubActions(status) {
+  const installations = Array.isArray(status?.installations) && status.installations.length
+    ? status.installations
+    : (status?.installation ? [status.installation] : []);
+  const label = installations.length > 1 ? 'Reconcile all installations' : 'Reconcile installation';
+  return `<button id="reconcile-github" type="button"${installations.length === 0 ? ' disabled' : ''}>${escape(label)}</button>`;
+}
+
+/**
+ * A create/edit dialog. The form keeps the element ids the page loaders already
+ * bind and the UI contract tests already assert, so the mutation keeps one
+ * description while its markup moves off the page body.
+ */
+export function renderFormDialog({ id, title, description, formId, body, submitLabel, submitId, danger = false }) {
+  return `<dialog id="${escape(id)}" aria-labelledby="${escape(id)}-title" aria-describedby="${escape(id)}-description"><h2 id="${escape(id)}-title">${escape(title)}</h2><p id="${escape(id)}-description">${escape(description)}</p><form id="${escape(formId)}" class="stack-form">${body}<p class="form-status" aria-live="polite"></p><div class="dialog-actions"><button type="button" data-dialog-close>Cancel</button><button id="${escape(submitId)}" class="${danger ? 'danger' : 'accent-btn'}" type="submit">${escape(submitLabel)}</button></div></form></dialog>`;
+}
+
+/**
+ * A copy affordance for identifiers. Ids and generations are secondary metadata:
+ * they are copied, not read, so they never become the page's labels.
+ */
+export function renderCopyChip({ value, label }) {
+  return `<button class="copy-chip mono" type="button" data-copy="${escape(value)}" data-copy-label="${escape(label)}" aria-label="Copy ${escape(label)}">${escape(value)}</button>`;
+}
 
 export function renderWorkspaceIndex(workspaces, query) {
   const filtered = workspaces.filter((workspace) => {
@@ -15,6 +77,563 @@ export function renderWorkspaceIndex(workspaces, query) {
   return `<h2 id="workspace-list-heading">Workspace list</h2><div class="desktop-table"><table><caption>${filtered.length} workspaces</caption><thead><tr><th>Repository</th><th>State</th><th>Last activity</th><th>Expires</th><th>Network</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul>`;
 }
 
+/** Contextual workspace sections. These are never global rail entries. */
+export const WORKSPACE_TABS = [
+  { id: 'summary', label: 'Summary' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'runtime', label: 'Runtime' },
+  { id: 'files', label: 'Files' },
+  { id: 'git', label: 'Git' },
+  { id: 'automation', label: 'Automation' },
+  { id: 'deploy', label: 'Deploy' },
+  { id: 'artifacts', label: 'Artifacts' },
+  { id: 'activity', label: 'Activity' }
+];
+
+/** Tabs whose owning phase has not shipped yet, so the tab states its next step. */
+const WORKSPACE_TAB_PHASE = {
+  agents: 'the Agent Control Center phase',
+  git: 'the Git and Finalize phase',
+  automation: 'the Automation and Deploy phase',
+  deploy: 'the Automation and Deploy phase',
+  artifacts: 'a later workspace phase',
+  activity: 'the Activity Center phase'
+};
+
+/** Lease posture from the workspace record. Thresholds drive emphasis, never colour alone. */
+export function workspaceLeaseState(workspace, now = Date.now()) {
+  const expiresAt = Date.parse(workspace?.expiresAt ?? '');
+  if (!Number.isFinite(expiresAt)) return { state: 'unknown', label: 'Lease unknown' };
+  const remainingMs = expiresAt - now;
+  if (remainingMs <= 0) return { state: 'expired', label: 'Lease expired' };
+  const minutes = Math.round(remainingMs / 60_000);
+  if (remainingMs <= 10 * 60_000) return { state: 'soon', label: `${minutes} min left` };
+  return { state: 'ok', label: `${Math.round(minutes / 60)} h left` };
+}
+
+/**
+ * The attention list contains only reasons the dashboard can actually observe. An
+ * invented reason is worse than a missing one, so the agent, task and Git reasons
+ * join once the phases that expose them land.
+ */
+export function workspaceAttention(workspace, options = {}) {
+  const reasons = [];
+  const lease = workspaceLeaseState(workspace, options.now);
+  if (lease.state === 'expired') reasons.push({ id: 'lease-expired', label: 'Lease expired', detail: 'Renew the lease to keep working, or recover the workspace if it was reaped.' });
+  else if (lease.state === 'soon') reasons.push({ id: 'lease-soon', label: 'Lease expires soon', detail: lease.label });
+  if (workspace?.status === 'FAILED') reasons.push({ id: 'failed', label: 'Workspace setup failed', detail: 'Review the failure, and recover if the checkout is worth keeping.' });
+  if (workspace?.status === 'NETWORK_QUARANTINED') reasons.push({ id: 'quarantine', label: 'Network quarantined', detail: 'Egress was revoked for this workspace, so dependency access is denied.' });
+  if (options.dirty === true) reasons.push({ id: 'dirty-git', label: 'Uncommitted changes', detail: 'Commit or finalize before the workspace is reaped.' });
+  if (Array.isArray(options.extra)) reasons.push(...options.extra);
+  return reasons;
+}
+
+/** Header state first: repository, status, ref, network, lease, and the action set. */
+export function renderWorkspaceCockpitHeader(workspace, options = {}) {
+  const lease = workspaceLeaseState(workspace, options.now);
+  const attention = workspaceAttention(workspace, options);
+  const generation = Number(workspace?.version);
+  const canClose = Number.isSafeInteger(generation) && generation > 0;
+  return `<div class="cockpit-header"><div class="record-heading"><div><h2 id="workspace-detail-title">${escape(repositoryName(workspace.repositoryUrl))}</h2><p>${renderCopyChip({ value: workspace.workspaceId, label: 'Workspace ID' })}</p></div><span class="status ${escape(String(workspace.status ?? '').toLowerCase())}">${escape(statusLabel(workspace.status))}</span></div><dl class="facts"><dt>Ref</dt><dd>${escape(workspace.ref ?? 'Default branch')}</dd><dt>Network</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Lease</dt><dd class="lease-${escape(lease.state)}">${escape(lease.label)}</dd><dt>Attention</dt><dd>${attention.length ? `${escape(attention.length)} item(s) need action` : 'Nothing needs attention'}</dd></dl><div class="cockpit-actions"><button id="renew-workspace-lease" class="accent-btn" type="button">Renew lease</button><button id="finalize-workspace" type="button" data-dialog="finalize-workspace-dialog">Finalize workspace</button><details class="row-edit"><summary>More actions</summary><button id="recover-workspace" type="button"${workspace.status === 'ACTIVE' ? ' disabled' : ''}>Recover workspace</button><button id="close-workspace" class="danger" type="button"${canClose ? '' : ' disabled'}>Close workspace</button></details></div></div>`;
+}
+
+export function renderWorkspaceTabs(workspaceId, current) {
+  return `<nav class="cockpit-tabs" aria-label="Workspace sections">${WORKSPACE_TABS.map((tab) => `<a href="/dashboard/workspaces/${encodeURIComponent(workspaceId)}/${tab.id}" ${tab.id === current ? 'aria-current="page"' : ''}>${escape(tab.label)}</a>`).join('')}</nav>`;
+}
+
+export function renderWorkspaceAttentionPanel(workspace, options = {}) {
+  const attention = workspaceAttention(workspace, options);
+  const items = attention.length
+    ? `<ul class="attention-list">${attention.map((item) => `<li class="attention-item attention-${escape(item.id)}"><strong>${escape(item.label)}</strong><span>${escape(item.detail)}</span></li>`).join('')}</ul>`
+    : '<p class="empty-note">Nothing needs attention right now.</p>';
+  return `<section class="panel" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs attention</h2>${items}</section>`;
+}
+
+/**
+ * The Summary tab reports only what the dashboard can read today. Cost, budget and
+ * agent/task counts arrive with the phases that expose them, and the panel says so
+ * rather than showing a zero that reads like a measurement.
+ */
+export function renderWorkspaceSummary({ workspace, context, options = {} }) {
+  const manifest = context?.manifest ?? {};
+  const capabilities = Object.entries(context?.capabilities ?? {}).filter(([, value]) => value === true).map(([key]) => escape(key)).join(', ');
+  const itemCount = Number.isFinite(manifest.itemCount) ? `${escape(manifest.itemCount)} attributable item(s)${manifest.truncated === true ? ' (truncated)' : ''}` : 'Not reported';
+  return `${renderWorkspaceAttentionPanel(workspace, options)}<section class="panel" aria-labelledby="summary-heading"><h2 id="summary-heading">Summary</h2><dl class="facts"><dt>Status</dt><dd>${escape(statusLabel(workspace.status))}</dd><dt>Branch</dt><dd>${escape(context?.branch ?? workspace.ref ?? 'Default branch')}</dd><dt>Repository context</dt><dd>${itemCount}</dd><dt>Capabilities</dt><dd>${capabilities || 'Not reported'}</dd><dt>Network posture</dt><dd>${escape(networkLabel(workspace.networkProfile))}</dd><dt>Cost used</dt><dd>Not reported for workspaces yet</dd></dl><p class="page-note">Cost, budget, agent and task counts arrive with the phases that expose them; this panel never invents a number.</p></section>`;
+}
+
+export function renderWorkspaceTabPlaceholder(tab) {
+  const label = (WORKSPACE_TABS.find((entry) => entry.id === tab) ?? {}).label ?? tab;
+  const phase = WORKSPACE_TAB_PHASE[tab] ?? 'a later phase of issue #220';
+  return `<section class="panel"><h2>${escape(label)}</h2><p>This tab arrives with ${escape(phase)}. The Files and Runtime tabs carry the workspace operations that exist today.</p></section>`;
+}
+
+/** The finalize dialog: a commit message, plus the push decision. */
+export function renderFinalizeDialog() {
+  return renderFormDialog({
+    id: 'finalize-workspace-dialog', title: 'Finalize workspace',
+    description: 'Stages the changes, runs the preflights, commits with the workspace identity, and pushes when you ask it to.',
+    formId: 'finalize-workspace-form', submitId: 'finalize-workspace-submit', submitLabel: 'Finalize workspace',
+    body: '<label for="finalize-commit-message">Commit message</label><input id="finalize-commit-message" name="commitMessage" required maxlength="10000"><label class="checkbox-label"><input name="push" type="checkbox" checked><span>Push to the remote after committing</span></label>'
+  });
+}
+
+export const AGENT_STATUSES = ['SPAWNING', 'RUNNING', 'CANCELLING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED'];
+
+const AGENT_STATUS_LABELS = {
+  SPAWNING: 'Spawning', RUNNING: 'Running', CANCELLING: 'Cancelling', SUCCEEDED: 'Succeeded',
+  FAILED: 'Failed', CANCELLED: 'Cancelled', TIMED_OUT: 'Timed out', LIMIT_EXCEEDED: 'Limit exceeded', INTERRUPTED: 'Interrupted'
+};
+
+/** Agent state is always text plus a semantic class; colour is never the only signal. */
+export function agentStatusLabel(status) {
+  return AGENT_STATUS_LABELS[status] ?? 'Unknown';
+}
+
+/**
+ * Budget utilization. A missing or unlimited budget reads as "Not reported" rather
+ * than as 0%, because a zero would look like a measurement the runner never made.
+ */
+export function budgetUtilization(used, max) {
+  if (!Number.isFinite(used) || !Number.isFinite(max) || max <= 0) return { state: 'unknown', percent: undefined };
+  const percent = Math.min(100, Math.round((used / max) * 100));
+  return { state: percent >= 100 ? 'exhausted' : percent >= 80 ? 'close' : 'ok', percent };
+}
+
+/** Age and TTL readouts for the list and the detail view. */
+export function agentAge(agent, now = Date.now()) {
+  const started = Date.parse(agent?.startedAt ?? agent?.createdAt ?? '');
+  if (!Number.isFinite(started)) return 'Not reported';
+  const minutes = Math.max(0, Math.round((now - started) / 60_000));
+  return minutes < 60 ? `${minutes} min` : `${(minutes / 60).toFixed(1)} h`;
+}
+
+export function agentTtl(agent, now = Date.now()) {
+  const expiresAt = Date.parse(agent?.expiresAt ?? '');
+  if (!Number.isFinite(expiresAt)) return 'Not reported';
+  const remaining = expiresAt - now;
+  return remaining <= 0 ? 'Expired' : `${Math.round(remaining / 60_000)} min`;
+}
+
+const costOf = (micros) => (Number.isFinite(micros) ? `$${(micros / 1_000_000).toFixed(4)}` : 'Not reported');
+const countOf = (value) => (Number.isFinite(value) ? String(value) : 'Not reported');
+const percentOf = (used, max) => {
+  const utilization = budgetUtilization(used, max);
+  return utilization.state === 'unknown' ? 'Not reported' : `${utilization.percent}%`;
+};
+
+/**
+ * Build the parent/child index. An agent whose parent is missing from this page is
+ * attached to the root so it cannot vanish from the hierarchy.
+ */
+export function agentTreeIndex(agents = []) {
+  const known = new Set(agents.map((agent) => agent.agentId));
+  const byParent = new Map();
+  for (const agent of agents) {
+    const parent = agent.parentAgentId && known.has(agent.parentAgentId) ? agent.parentAgentId : 'root';
+    if (!byParent.has(parent)) byParent.set(parent, []);
+    byParent.get(parent).push(agent);
+  }
+  return byParent;
+}
+
+function agentNode(agent, now) {
+  const status = escape(agent.status ?? 'UNKNOWN');
+  return `<div class="agent-node"><div class="agent-identity"><a href="/dashboard/agents/${encodeURIComponent(agent.agentId)}">${escape(agent.agentId)}</a><span class="status ${status.toLowerCase()}">${escape(agentStatusLabel(agent.status))}</span></div><dl class="facts"><dt>Workspace</dt><dd>${escape(agent.workspaceId ?? 'Not reported')}</dd><dt>Profile</dt><dd>${escape(agent.profileId ?? 'Not reported')}</dd><dt>Age</dt><dd>${escape(agentAge(agent, now))}</dd><dt>TTL</dt><dd>${escape(agentTtl(agent, now))}</dd><dt>Tokens</dt><dd>${escape(countOf(agent.usage?.inputTokens))} in · ${escape(countOf(agent.usage?.outputTokens))} out</dd><dt>Cost</dt><dd>${escape(costOf(agent.usage?.costMicros))}</dd><dt>Budget</dt><dd>${escape(percentOf(agent.usage?.costMicros, agent.budget?.maxCostMicros))} of cost limit</dd>${agent.terminalReason ? `<dt>Terminal reason</dt><dd>${escape(agent.terminalReason)}</dd>` : ''}${agent.outcomeUnknown === true ? '<dt>Outcome</dt><dd>Unknown — the agent stopped without a recorded terminal state</dd>' : ''}</dl></div>`;
+}
+
+/** Accessible parent/child hierarchy: a nested list, so a screen reader gets nesting. */
+export function renderAgentHierarchy(agents = [], now = Date.now()) {
+  const byParent = agentTreeIndex(agents);
+  const seen = new Set();
+  const render = (parentId) => {
+    const children = byParent.get(parentId) ?? [];
+    if (!children.length) return '';
+    return `<ul class="agent-tree" role="list">${children.map((agent) => {
+      if (seen.has(agent.agentId)) return '';
+      seen.add(agent.agentId);
+      return `<li>${agentNode(agent, now)}${render(agent.agentId)}</li>`;
+    }).join('')}</ul>`;
+  };
+  const markup = render('root');
+  return markup || '<p class="empty-note">No agents reported yet.</p>';
+}
+
+/** The flat fallback: same facts, one row per agent, with the parent named. */
+export function renderAgentTable(agents = [], now = Date.now()) {
+  const rows = agents.length
+    ? agents.map((agent) => `<tr><th scope="row"><a href="/dashboard/agents/${encodeURIComponent(agent.agentId)}">${escape(agent.agentId)}</a></th><td><span class="status ${escape(String(agent.status ?? '').toLowerCase())}">${escape(agentStatusLabel(agent.status))}</span></td><td>${escape(agent.workspaceId ?? 'Not reported')}</td><td>${escape(agent.parentAgentId ?? '—')}</td><td>${escape(agent.profileId ?? 'Not reported')}</td><td>${escape(agentAge(agent, now))}</td><td>${escape(percentOf(agent.usage?.costMicros, agent.budget?.maxCostMicros))}</td><td>${escape(costOf(agent.usage?.costMicros))}</td></tr>`).join('')
+    : '<tr><td colspan="8">No agents reported yet.</td></tr>';
+  return `<div class="desktop-table"><table><caption>${agents.length} agent(s)</caption><thead><tr><th>Agent</th><th>Status</th><th>Workspace</th><th>Parent</th><th>Profile</th><th>Age</th><th>Budget</th><th>Cost</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/** Global Agents page and the workspace-scoped tab share this body. */
+export function renderAgentsIndex({ agents = [], filters = {}, now = Date.now() } = {}) {
+  const statusOptions = ['<option value="">All statuses</option>', ...AGENT_STATUSES.map((status) => `<option value="${escape(status)}"${filters.status === status ? ' selected' : ''}>${escape(agentStatusLabel(status))}</option>`)].join('');
+  const filterRow = `<form id="agent-filters" class="resource-filters" role="search" aria-label="Filter agents"><label for="agent-status-filter">Status</label><select id="agent-status-filter" name="status">${statusOptions}</select>${filters.workspaceId ? `<input type="hidden" name="workspaceId" value="${escape(filters.workspaceId)}">` : '<label for="agent-workspace-filter">Workspace</label><input id="agent-workspace-filter" name="workspaceId" placeholder="ws_…" pattern="ws_[A-Za-z0-9_-]{20,80}">'}<button type="submit">Apply filters</button></form>`;
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Agent control.</strong> Every agent runs as your identity in an isolated executor with its own TTL, token, output and cost budgets. Child agents appear under the agent that spawned them.</div>',
+    filters: filterRow,
+    body: `<section aria-labelledby="agent-hierarchy-heading"><h2 id="agent-hierarchy-heading">Hierarchy</h2>${renderAgentHierarchy(agents, now)}</section><section aria-labelledby="agent-table-heading"><h2 id="agent-table-heading">All agents</h2>${renderAgentTable(agents, now)}</section>`
+  })}`;
+}
+
+/**
+ * One agent in full: overview, usage, logs, and the message controls. Logs are the
+ * bounded projection the adapter produced; nothing larger is rendered here.
+ */
+export function renderAgentDetail({ agent, logs = [] } = {}) {
+  const usage = agent?.usage ?? {};
+  const budget = agent?.budget ?? {};
+  const logRows = logs.length
+    ? logs.map((event) => `<li class="agent-log-event"><span class="mono">${escape(event.type ?? 'event')}</span>${time(event.timestamp)}<pre class="mono">${escape(event.content ?? '')}</pre></li>`).join('')
+    : '<li class="empty">No retained log events for this agent.</li>';
+  const overview = `<section class="panel" aria-labelledby="agent-overview-heading"><h2 id="agent-overview-heading">Overview</h2><dl class="facts"><dt>Status</dt><dd><span class="status ${escape(String(agent?.status ?? '').toLowerCase())}">${escape(agentStatusLabel(agent?.status))}</span></dd><dt>Profile</dt><dd>${escape(agent?.profileId ?? 'Not reported')}</dd><dt>Parent</dt><dd>${escape(agent?.parentAgentId ?? 'None')}</dd><dt>Started</dt><dd>${agent?.startedAt ? time(agent.startedAt) : 'Not reported'}</dd><dt>Terminal</dt><dd>${agent?.terminalAt ? time(agent.terminalAt) : 'Still running or not reported'}</dd><dt>Expires</dt><dd>${agent?.expiresAt ? time(agent.expiresAt) : 'Not reported'}</dd><dt>Terminal reason</dt><dd>${escape(agent?.terminalReason ?? 'Not reported')}</dd><dt>Outcome</dt><dd>${agent?.outcomeUnknown === true ? 'Unknown — no terminal state was recorded' : 'Reported'}</dd><dt>Allowed proxy operations</dt><dd>${Array.isArray(agent?.proxyOperations) && agent.proxyOperations.length ? agent.proxyOperations.map((operation) => escape(operation)).join(', ') : 'Not reported'}</dd></dl></section>`;
+  const usagePanel = `<section class="panel" aria-labelledby="agent-usage-heading"><h2 id="agent-usage-heading">Usage</h2><dl class="facts"><dt>Input tokens</dt><dd>${escape(countOf(usage.inputTokens))} of ${escape(countOf(budget.maxInputTokens))} (${escape(percentOf(usage.inputTokens, budget.maxInputTokens))})</dd><dt>Output tokens</dt><dd>${escape(countOf(usage.outputTokens))} of ${escape(countOf(budget.maxOutputTokens))} (${escape(percentOf(usage.outputTokens, budget.maxOutputTokens))})</dd><dt>Cost</dt><dd>${escape(costOf(usage.costMicros))} of ${escape(costOf(budget.maxCostMicros))} (${escape(percentOf(usage.costMicros, budget.maxCostMicros))})</dd><dt>Output bytes</dt><dd>${escape(countOf(usage.outputBytes))} of ${escape(countOf(budget.maxOutputBytes))}</dd><dt>Tool time</dt><dd>${escape(countOf(usage.toolTimeMs))} ms</dd><dt>Wall time</dt><dd>${escape(countOf(usage.wallTimeMs))} ms</dd><dt>Events</dt><dd>${escape(countOf(usage.eventCount))}</dd></dl><p class="page-note">Usage is the runner's reported counters; a limit that was never configured reads as “Not reported”.</p></section>`;
+  const logsPanel = `<section class="panel" aria-labelledby="agent-logs-heading"><h2 id="agent-logs-heading">Logs</h2><p class="page-note">Bounded and redacted: large events are truncated before they reach this page.</p><ul class="agent-log-list">${logRows}</ul></section>`;
+  const messagesPanel = `<section class="panel" aria-labelledby="agent-messages-heading"><h2 id="agent-messages-heading">Messages</h2><form id="agent-message-form" class="stack-form"><label for="agent-message-mode">Delivery</label><select id="agent-message-mode" name="mode"><option value="steer" selected>Steer the running agent</option><option value="followUp">Queue a follow-up</option></select><label for="agent-message-text">Message</label><textarea id="agent-message-text" name="message" rows="3" required maxlength="65536"></textarea><div class="form-row-actions"><button type="submit" class="accent-btn">Send message</button><button id="cancel-agent" class="danger" type="button">Cancel agent</button></div><p class="form-status" aria-live="polite"></p></form></section>`;
+  return `${overview}${usagePanel}${logsPanel}${messagesPanel}`;
+}
+
+const TASK_STATUS_LABELS = {
+  queued: 'Queued', running: 'Running', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', timedOut: 'Timed out'
+};
+
+/** Task state is text plus a semantic class; colour is never the only signal. */
+export function taskStatusLabel(status) {
+  return (status && TASK_STATUS_LABELS[status]) ?? 'Unknown';
+}
+
+/** Duration from the task's own timestamps; a running task measures against now. */
+export function taskDuration(task = {}, now = Date.now()) {
+  // `Number(null)` is 0, which would read as "finished at the epoch", so absent
+  // timestamps are treated as absent before any coercion.
+  const start = task.startedAt === null || task.startedAt === undefined ? Number.NaN : Number(task.startedAt);
+  if (!Number.isFinite(start)) return 'Not started';
+  const finished = task.finishedAt === null || task.finishedAt === undefined ? Number.NaN : Number(task.finishedAt);
+  const end = Number.isFinite(finished) ? finished : now;
+  const ms = Math.max(0, end - start);
+  return ms < 60_000 ? `${(ms / 1_000).toFixed(1)} s` : `${(ms / 60_000).toFixed(1)} min`;
+}
+
+const TERMINAL_TASK_STATES = new Set(['succeeded', 'failed', 'cancelled', 'timedOut']);
+
+/**
+ * The task table: outcome, duration, exit code, dependencies and bounded output, with
+ * a cancel control for every task that can still be stopped.
+ */
+export function renderTaskList(tasks = [], now = Date.now()) {
+  const rows = tasks.length ? tasks.map((task) => {
+    const status = String(task.status ?? 'unknown');
+    const dependencyText = Array.isArray(task.dependsOn) && task.dependsOn.length ? task.dependsOn.map((id) => escape(String(id))).join(', ') : '—';
+    const outputText = typeof task.output === 'string' && task.output.trim() ? escape(task.output) : 'No output reported';
+    const cancel = TERMINAL_TASK_STATES.has(status) ? '' : `<button class="danger cancel-task" type="button" data-task-id="${escape(String(task.id ?? ''))}">Cancel</button>`;
+    return `<tr><th scope="row">${escape(String(task.name ?? task.id ?? 'task'))}<small class="mono wrap">${escape(String(task.id ?? ''))}</small></th><td><span class="status ${escape(status.toLowerCase())}">${escape(taskStatusLabel(status))}</span></td><td>${escape(taskDuration(task, now))}</td><td>${task.exitCode === undefined || task.exitCode === null ? '—' : escape(String(task.exitCode))}</td><td class="mono wrap">${dependencyText}</td><td><details class="row-edit"><summary>Output</summary><pre class="mono">${outputText}</pre></details></td><td>${cancel}</td></tr>`;
+  }).join('') : '<tr><td colspan="7">No tasks have run in this workspace yet.</td></tr>';
+  return `<div class="desktop-table"><table><caption>${tasks.length} task(s)</caption><thead><tr><th>Task</th><th>Status</th><th>Duration</th><th>Exit</th><th>Depends on</th><th>Output</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/**
+ * Lay the graph out by dependency depth. Cycle-guarded: a malformed graph cannot hang
+ * the layout, and an edge to an unknown node is simply not drawn.
+ */
+export function taskGraphLayout(graph = {}) {
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  const known = new Set(nodes.map((node) => String(node.id)));
+  const depth = new Map();
+  const depthOf = (id, seen = new Set()) => {
+    const cached = depth.get(id);
+    if (cached !== undefined) return cached;
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    const parents = edges.filter((edge) => edge.to === id && edge.from && known.has(edge.from)).map((edge) => String(edge.from));
+    const value = parents.length ? Math.max(...parents.map((parent) => depthOf(parent, seen) + 1)) : 0;
+    depth.set(id, value);
+    return value;
+  };
+  for (const node of nodes) depthOf(String(node.id));
+  const layers = [];
+  for (const node of nodes) {
+    const level = depth.get(String(node.id)) ?? 0;
+    if (!layers[level]) layers[level] = [];
+    layers[level].push(node);
+  }
+  const positions = new Map();
+  layers.forEach((layer, level) => layer.forEach((node, index) => positions.set(String(node.id), { x: 20 + level * 240, y: 20 + index * 92 })));
+  const tallest = Math.max(1, ...layers.map((layer) => layer.length));
+  return { layers, positions, edges, nodes, width: Math.max(340, layers.length * 240 + 20), height: Math.max(120, tallest * 92 + 20) };
+}
+
+/**
+ * Internal SVG for the task DAG. Each node carries its state as text and a semantic
+ * class, is focusable so its full description is reachable from the keyboard, and the
+ * caller renders the task table beside it as the text fallback.
+ */
+export function renderTaskGraph(graph = {}, now = Date.now()) {
+  const { positions, width, height, edges, nodes } = taskGraphLayout(graph);
+  if (!nodes.length) return '<p class="empty-note">No tasks have run in this workspace yet.</p>';
+  const lines = edges.map((edge) => {
+    const from = positions.get(String(edge.from)); const to = positions.get(String(edge.to));
+    if (!from || !to) return '';
+    return `<line x1="${from.x + 190}" y1="${from.y + 30}" x2="${to.x}" y2="${to.y + 30}" class="task-edge" aria-hidden="true"/>`;
+  }).join('');
+  const boxes = nodes.map((node) => {
+    const spot = positions.get(String(node.id));
+    const status = String(node.status ?? 'unknown').toLowerCase();
+    const label = `${String(node.name ?? node.id)}: ${taskStatusLabel(status)}, ${taskDuration(node, now)}, exit ${node.exitCode ?? 'none'}`;
+    return `<g class="task-node task-${escape(status)}" transform="translate(${spot?.x ?? 0},${spot?.y ?? 0})" tabindex="0" role="listitem" aria-label="${escape(label)}"><rect width="190" height="60" rx="6"/><text class="task-node-name" x="10" y="24">${escape(String(node.name ?? node.id))}</text><text class="task-node-state" x="10" y="44">${escape(taskStatusLabel(status))} · ${escape(taskDuration(node, now))}</text></g>`;
+  }).join('');
+  return `<figure class="task-graph-figure"><svg class="task-graph" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="Task dependency graph">${lines}${boxes}</svg><figcaption>Node state is written in each node; the task table below carries the same facts.</figcaption></figure>`;
+}
+
+/**
+ * Sessions: named, closeable, and readable only through a bounded, read-only view.
+ * The dashboard never sends input to a session, so this cannot become a terminal.
+ */
+export function renderSessionsPanel({ sessions = [], io } = {}) {
+  const rows = sessions.length ? sessions.map((session) => {
+    const status = String(session.status ?? 'unknown');
+    const closed = status === 'closed';
+    return `<li class="panel session-row"><div class="record-heading"><div><h3>${escape(String(session.name ?? session.id))}</h3><p>${renderCopyChip({ value: String(session.id ?? ''), label: 'Session ID' })}</p></div><span class="status ${escape(status.toLowerCase())}">${escape(status)}</span></div><div class="row-actions"><button class="read-session" type="button" data-session-id="${escape(String(session.id ?? ''))}">Read output</button><button class="danger close-session" type="button" data-session-id="${escape(String(session.id ?? ''))}"${closed ? ' disabled' : ''}>Close session</button></div></li>`;
+  }).join('') : '<li class="empty">No sessions are open in this workspace.</li>';
+  const ioPanel = io ? `<section class="panel" aria-labelledby="session-io-heading"><h2 id="session-io-heading">Session output</h2><p class="page-note"><strong>Read-only and bounded.</strong> The dashboard never sends input to a session.</p><pre id="session-io-output" class="mono">${escape(String(io.output ?? 'No output yet.'))}</pre>${io.truncated === true ? '<p class="status-message" role="status">Output is truncated. Read again with the returned cursor for the next slice.</p>' : ''}</section>` : '';
+  const dialog = renderFormDialog({
+    id: 'open-session-dialog', title: 'Open coding session',
+    description: 'Sessions are named and bounded; close one when you are done with it.',
+    formId: 'open-session-form', submitId: 'open-session-submit', submitLabel: 'Open session',
+    body: '<label for="session-name">Session name</label><input id="session-name" name="name" required maxlength="80"><label for="session-cwd">Working directory</label><input id="session-cwd" name="cwd" value="." maxlength="1024">'
+  });
+  return `<section class="panel" aria-labelledby="sessions-heading"><h2 id="sessions-heading">Sessions</h2><div class="row-actions"><button id="open-session" class="accent-btn" type="button" data-dialog="open-session-dialog">Open session</button></div><ul class="record-list">${rows}</ul></section>${ioPanel}${dialog}`;
+}
+
+/** The cockpit Runtime tab: tasks, the dependency graph, and sessions. */
+export function renderRuntimePanel({ tasks = [], graph = {}, sessions = [], io } = {}, now = Date.now()) {
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Live workspace runtime.</strong> Tasks and sessions are volatile: they disappear when the workspace is reaped, unlike retained artifacts.</div>',
+    body: `<section aria-labelledby="tasks-heading"><h2 id="tasks-heading">Tasks</h2>${renderTaskList(tasks, now)}</section><section aria-labelledby="graph-heading"><h2 id="graph-heading">Task dependency graph</h2>${renderTaskGraph(graph, now)}</section>`
+  })}${renderSessionsPanel({ sessions, io })}`;
+}
+
+/** Git posture: branch, upstream, ahead/behind, and the index/working-tree summary. */
+export function renderGitStatus(status = {}) {
+  const entries = Array.isArray(status.entries) ? status.entries : [];
+  const rows = entries.length
+    ? entries.map((entry) => `<li class="git-entry"><span class="mono git-code">${escape(String(entry.code ?? '??'))}</span><span class="mono wrap">${escape(String(entry.path ?? ''))}</span></li>`).join('')
+    : '<li class="empty">No changed files.</li>';
+  return `<section class="panel" aria-labelledby="git-status-heading"><h2 id="git-status-heading">Working tree</h2><dl class="facts"><dt>Branch</dt><dd>${escape(String(status.branch ?? 'Not reported'))}</dd><dt>Upstream</dt><dd>${escape(String(status.upstream ?? 'Not reported'))}</dd><dt>Ahead / behind</dt><dd>${escape(String(status.ahead ?? 0))} ahead · ${escape(String(status.behind ?? 0))} behind</dd><dt>Staged</dt><dd>${escape(String(status.staged ?? 0))}</dd><dt>Modified</dt><dd>${escape(String(status.modified ?? 0))}</dd><dt>Untracked</dt><dd>${escape(String(status.untracked ?? 0))}</dd></dl><h3>File changes</h3><ul class="record-list git-entry-list">${rows}</ul></section>`;
+}
+
+/** The diff view: bounded, escaped, and explicit about truncation. */
+export function renderGitDiff({ staged = false, diff, truncated } = {}) {
+  return `<section class="panel" aria-labelledby="git-diff-heading"><h2 id="git-diff-heading">${staged ? 'Staged diff' : 'Unstaged diff'}</h2><div class="row-actions"><button class="git-diff-toggle" type="button" data-staged="${staged ? 'true' : 'false'}">Show ${staged ? 'unstaged' : 'staged'} diff</button></div><pre id="git-diff-output" class="mono">${diff ? escape(diff) : 'No diff to show.'}</pre>${truncated === true ? '<p class="status-message" role="status">Diff is truncated. Narrow it with a path filter before trusting the whole change set.</p>' : ''}</section>`;
+}
+
+export function renderGitLog(commits = []) {
+  const rows = commits.length
+    ? commits.map((commit) => `<li class="panel"><div class="record-heading"><strong>${escape(String(commit.subject ?? commit.message ?? 'Commit'))}</strong><span class="mono">${escape(String(commit.oid ?? commit.sha ?? '').slice(0, 12))}</span></div><p>${escape(String(commit.author ?? 'Unknown author'))}${commit.authoredAt || commit.date ? ` · ${time(commit.authoredAt ?? commit.date)}` : ''}</p></li>`).join('')
+    : '<li class="empty">No commits reported.</li>';
+  return `<section class="panel" aria-labelledby="git-log-heading"><h2 id="git-log-heading">Recent commits</h2><ul class="record-list">${rows}</ul></section>`;
+}
+
+/** Worktrees are an advanced surface, so they stay collapsed with their own create form. */
+export function renderWorktrees(worktrees = []) {
+  const rows = worktrees.length
+    ? worktrees.map((tree) => `<li class="worktree-row"><span class="mono wrap">${escape(String(tree.path ?? ''))}</span><span class="mono">${escape(String(tree.head ?? '').slice(0, 12))}</span><span>${escape(String(tree.branch ?? 'detached'))}</span><button class="danger remove-worktree" type="button" data-worktree-name="${escape(String(tree.path ?? '').split('/').pop() ?? '')}">Remove</button></li>`).join('')
+    : '<li class="empty">No managed worktrees.</li>';
+  return `<details class="row-edit"><summary>Worktrees</summary><ul class="record-list worktree-list">${rows}</ul><form id="create-worktree-form" class="stack-form"><label for="worktree-name">Name</label><input id="worktree-name" name="name" required pattern="[A-Za-z0-9._-]{1,80}"><label for="worktree-ref">Ref</label><input id="worktree-ref" name="ref" required maxlength="255"><button type="submit">Create worktree</button><p class="form-status" aria-live="polite"></p></form></details>`;
+}
+
+/**
+ * Advanced Git operations, collapsed. Finalize is the happy path; these exist for the
+ * operator who needs them, and a conflict reports back through the same status line.
+ */
+export function renderGitAdvanced() {
+  return `<details class="row-edit"><summary>Advanced Git operations</summary><form id="git-advanced-form" class="stack-form"><label for="git-action">Action</label><select id="git-action" name="action"><option value="fetch">Fetch from origin</option><option value="pull">Pull (fast-forward only)</option><option value="checkout">Checkout a ref</option><option value="branch">Create a branch</option><option value="merge">Merge a ref</option><option value="rebase">Start a rebase</option></select><label for="git-argument">Ref (checkout, branch, merge, rebase)</label><input id="git-argument" name="argument" maxlength="255"><div class="form-row-actions"><button type="submit">Run Git operation</button></div><p class="form-status" aria-live="polite"></p></form><p class="page-note">Conflicts are reported here and never resolved automatically. Finalize remains the recommended path.</p></details>`;
+}
+
+/** The cockpit Git tab: status, diff, log, worktrees, and the collapsed advanced set. */
+export function renderGitPanel({ status = {}, diff = {}, log = [], worktrees = [] } = {}) {
+  return renderResourcePage({
+    note: '<div class="page-note"><strong>Workspace Git.</strong> Finalize stages, commits and pushes in one confirmed step. Advanced operations stay collapsed until you need them.</div>',
+    body: `${renderGitStatus(status)}${renderGitDiff(diff)}${renderGitLog(log)}${renderWorktrees(worktrees)}${renderGitAdvanced()}`
+  });
+}
+
+/** The lifecycle events hooks can run on, in pipeline order. */
+export const HOOK_LIFECYCLE = [
+  { id: 'on_workspace_open', label: 'On workspace open' },
+  { id: 'post_checkout', label: 'After checkout' },
+  { id: 'pre_commit', label: 'Before commit' },
+  { id: 'post_commit', label: 'After commit' },
+  { id: 'manual', label: 'Manual' }
+];
+
+/** Hooks grouped by the lifecycle event that runs them. */
+export function groupHooksByLifecycle(hooks = []) {
+  return HOOK_LIFECYCLE.map((event) => ({
+    id: event.id,
+    label: event.label,
+    hooks: hooks.filter((hook) => (Array.isArray(hook.events) ? hook.events.includes(event.id) : hook.event === event.id))
+  }));
+}
+
+/**
+ * The lifecycle pipeline as an ordered list of stages with their hook counts. It is
+ * text-first on purpose: the same facts are readable without colour or connectors.
+ */
+export function renderHookPipeline(groups = []) {
+  const stages = groups.map((group) => `<li class="pipeline-stage${group.hooks.length ? ' has-hooks' : ''}"><span class="pipeline-label">${escape(group.label)}</span><span class="pipeline-count">${escape(String(group.hooks.length))} hook(s)</span></li>`).join('');
+  return `<ol class="hook-pipeline" aria-label="Hook lifecycle in run order">${stages}</ol>`;
+}
+
+/** Hooks, grouped by lifecycle, with the retained text list beside the pipeline. */
+export function renderHooks(hooks = []) {
+  const groups = groupHooksByLifecycle(hooks);
+  const lists = groups.map((group) => {
+    const rows = group.hooks.length
+      ? `<ul class="record-list">${group.hooks.map((hook) => `<li><strong>${escape(String(hook.name ?? hook.path ?? 'hook'))}</strong> <span class="status${hook.active === false ? '' : ' active'}">${hook.active === false ? 'Inactive' : 'Active'}</span>${hook.description ? `<p>${escape(String(hook.description))}</p>` : ''}</li>`).join('')}</ul>`
+      : '<p class="empty-note">No hooks run at this stage.</p>';
+    return `<section aria-labelledby="hooks-${escape(group.id)}"><h3 id="hooks-${escape(group.id)}">${escape(group.label)}</h3>${rows}</section>`;
+  }).join('');
+  const options = HOOK_LIFECYCLE.map((event) => `<option value="${escape(event.id)}">${escape(event.label)}</option>`).join('');
+  return `<section class="panel" aria-labelledby="hooks-heading"><h2 id="hooks-heading">Hooks</h2>${renderHookPipeline(groups)}${lists}<form id="hook-run-form" class="stack-form"><label for="hook-event">Run the hooks for this event</label><select id="hook-event" name="event">${options}</select><button type="submit">Run hooks</button><p class="form-status" aria-live="polite"></p></form><p class="page-note">Activation and deactivation stay with the runner's manifest contract; this page runs only what is already active.</p></section>`;
+}
+
+/** The workspace skill set, with a guarded run form for an explicitly named script. */
+export function renderWorkspaceSkills(skills = []) {
+  const rows = skills.length
+    ? `<ul class="record-list">${skills.map((skill) => `<li><strong>${escape(String(skill.name ?? 'skill'))}</strong>${skill.tier ? ` <span class="status">${escape(String(skill.tier))}</span>` : ''}${skill.description ? `<p>${escape(String(skill.description))}</p>` : ''}${skill.sha256 ? `<small class="mono wrap">${escape(String(skill.sha256).slice(0, 16))}</small>` : ''}</li>`).join('')}</ul>`
+    : '<p class="empty-note">No skills are resolved for this workspace.</p>';
+  return `<section class="panel" aria-labelledby="skills-heading"><h2 id="skills-heading">Skills</h2>${rows}<details class="row-edit"><summary>Run a skill script</summary><p class="page-note">A script runs inside the workspace executor under the runner's verified-bytes contract. Nothing runs unless you name it here.</p><form id="skill-run-form" class="stack-form"><label for="skill-run-name">Skill</label><input id="skill-run-name" name="name" required maxlength="120"><label for="skill-run-script">Script path</label><input id="skill-run-script" name="script" required maxlength="255"><button type="submit">Run script</button><p class="form-status" aria-live="polite"></p></form></details></section>`;
+}
+
+/** Deploy targets: external-effect risk, so every run confirms and every failure shows. */
+export function renderDeployPanel(deployments = []) {
+  const rows = deployments.length
+    ? deployments.map((target) => `<li class="panel deploy-target"><div class="record-heading"><div><h3>${escape(String(target.name ?? 'target'))}</h3><p class="mono wrap">${escape(String(target.cwd ?? ''))}</p></div><button class="accent-btn run-deployment" type="button" data-deployment-name="${escape(String(target.name ?? ''))}">Run deployment</button></div><dl class="facts"><dt>Last result</dt><dd>${escape(String(target.lastResult ?? target.status ?? 'Not reported'))}</dd><dt>Duration</dt><dd>${Number.isFinite(Number(target.durationMs)) ? `${escape(String(target.durationMs))} ms` : 'Not reported'}</dd><dt>Failure detail</dt><dd>${target.error ? escape(String(target.error)) : 'None reported'}</dd></dl></li>`).join('')
+    : '<li class="empty">No deployment targets are defined for this repository.</li>';
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Deployments run repository-defined commands.</strong> They are external-effect operations: each run confirms first and reports its exit status here.</div>',
+    body: `<section aria-labelledby="deploy-heading"><h2 id="deploy-heading">Deployment targets</h2><ul class="record-list">${rows}</ul></section>`
+  })}`;
+}
+
+/** The cockpit Automation tab: the workspace skill set and its hooks. */
+export function renderAutomationPanel({ skills = [], hooks = [] } = {}) {
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Workspace automation.</strong> Skills resolve from your library and pinned sets; hooks run at lifecycle events inside the executor.</div>',
+    body: `${renderWorkspaceSkills(skills)}${renderHooks(hooks)}`
+  })}`;
+}
+
+/** The Activity Center's shared event grammar and its filters. */
+export const ACTIVITY_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'tasks', label: 'Tasks' },
+  { id: 'mcp', label: 'MCP' },
+  { id: 'deployments', label: 'Deployments' },
+  { id: 'audit', label: 'Audit' }
+];
+
+/**
+ * One event grammar for every source: when it happened, which category, its status,
+ * the actor or resource, a short summary and where to look next. `durable` marks the
+ * events that are retained audit records rather than live runtime data, so the UI can
+ * never imply that a running task is a durable history entry.
+ */
+export function activityEvent({ at, category, status, actor, summary, href, durable = false }) {
+  return { at, category, status, actor, summary, href, durable };
+}
+
+export function renderActivityCenter({ events = [], filter = 'all' } = {}) {
+  const tabs = ACTIVITY_FILTERS.map((entry) => `<a href="/dashboard/activity${entry.id === 'all' ? '' : `?filter=${entry.id}`}" ${entry.id === filter ? 'aria-current="page"' : ''}>${escape(entry.label)}${entry.id === 'all' ? '' : ` (${escape(String(events.filter((event) => event.category === entry.id).length))})`}</a>`).join('');
+  const visible = filter === 'all' ? events : events.filter((event) => event.category === filter);
+  const rows = visible.length
+    ? visible.map((event) => `<li class="activity-event"><div class="record-heading"><span class="mono">${event.at ? time(event.at) : 'Time not reported'}</span><span class="status ${escape(String(event.status ?? 'unknown').toLowerCase())}">${escape(String(event.status ?? 'unknown'))}</span></div><p><strong>${escape(String(event.summary ?? event.category))}</strong></p><p class="activity-meta">${escape(String(event.category))} · ${escape(String(event.actor ?? 'Not reported'))} ${event.durable ? '<span class="status active">Retained audit</span>' : '<span class="status">Live runtime</span>'}</p>${event.href ? `<a href="${escape(String(event.href))}">Open</a>` : ''}</li>`).join('')
+    : '<li class="empty">No events in this view yet.</li>';
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Operational activity.</strong> Runtime categories are live and disappear with their workspace; audit rows are retained and redacted. The panel labels each row, so the two are never confused.</div>',
+    filters: `<nav class="activity-filters" aria-label="Activity filters">${tabs}</nav>`,
+    body: `<section aria-labelledby="activity-heading"><h2 id="activity-heading">Events</h2><ul class="activity-list activity-center">${rows}</ul></section>`
+  })}`;
+}
+
+/** Pending privilege grants as an inbox: context, requested capability, decision. */
+export function renderApprovals({ grants = [] } = {}) {
+  const rows = grants.length
+    ? grants.map((grant) => {
+      const id = String(grant.id ?? '');
+      return `<li class="panel approval-row"><div class="record-heading"><div><h3>${escape(String(grant.command ?? 'Requested operation'))}</h3><p class="mono wrap">${escape(String(grant.workspaceId ?? 'Workspace not reported'))}</p></div><span class="status reaping">Pending</span></div><dl class="facts"><dt>Requested</dt><dd>${grant.createdAt ? time(grant.createdAt) : 'Not reported'}</dd><dt>Expires</dt><dd>${grant.expiresAt ? time(grant.expiresAt) : 'Not reported'}</dd><dt>Working directory</dt><dd class="mono wrap">${escape(String(grant.cwd ?? 'Not reported'))}</dd><dt>Command digest</dt><dd class="mono wrap">${escape(String(grant.commandSha256 ?? 'Not reported'))}</dd></dl><div class="row-actions"><button class="accent-btn approve-grant" type="button" data-grant-id="${escape(id)}">Approve</button><button class="danger reject-grant" type="button" data-grant-id="${escape(id)}">Reject</button></div></li>`;
+    }).join('')
+    : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending and leave once you decide.</p></li>';
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Privilege grants.</strong> Approving lets one command run in a workspace under your identity. Both decisions are audited.</div>',
+    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Pending requests</h2><ul class="record-list approval-list">${rows}</ul></section>`
+  })}`;
+}
+
+/**
+ * Chart primitives. Internal SVG only: no external dependency, no gradient and no inline
+ * style (the geometry carries the value, the classes carry the colour), every mark is
+ * focusable with its numbers in the accessible name, and the same numbers are always
+ * available as a table beside the figure.
+ */
+export function renderBarChart({ label, unit = '', points = [], emptyNote = 'Nothing to chart yet.' }) {
+  if (!points.length) return `<p class="empty-note">${escape(emptyNote)}</p>`;
+  const values = points.map((point) => Number(point.value) || 0);
+  const ceiling = Math.max(1, ...values);
+  const width = Math.max(240, points.length * 28 + 12);
+  const height = 140;
+  const bars = points.map((point, index) => {
+    const value = Number(point.value) || 0;
+    const barHeight = Math.round((value / ceiling) * (height - 34));
+    const x = index * 28 + 6;
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}`)}"><rect x="${x}" y="${height - 22 - barHeight}" width="18" height="${Math.max(barHeight, 1)}" rx="2"/><text x="${x + 9}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
+  }).join('');
+  return renderChartFigure({ label, legend: 'Item', unit, points, svg: bars, width, height, className: 'chart-bars' });
+}
+
+/** Horizontal bars: the same primitive for values that read better as rows. */
+export function renderBarRows({ label, unit = '', points = [], emptyNote = 'Nothing to chart yet.' }) {
+  if (!points.length) return `<p class="empty-note">${escape(emptyNote)}</p>`;
+  const ceiling = Math.max(1, ...points.map((point) => Number(point.value) || 0));
+  const rows = points.map((point, index) => {
+    const value = Number(point.value) || 0;
+    const barWidth = Math.round((value / ceiling) * 200);
+    const y = index * 30;
+    const note = point.note ? `, ${point.note}` : '';
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}${note}`)}"><text x="0" y="${y + 14}" class="bar-label">${escape(String(point.label))}</text><rect x="150" y="${y + 3}" width="${Math.max(barWidth, 1)}" height="12" rx="2" class="bar-fill"/><text x="360" y="${y + 14}" class="bar-value">${escape(String(value))}${escape(unit)}</text></g>`;
+  }).join('');
+  return renderChartFigure({ label, legend: 'Item', unit, points, svg: rows, width: 420, height: points.length * 30, className: 'chart-rows' });
+}
+
+function renderChartFigure({ label, legend, unit, points, svg, width, height, className }) {
+  const columns = points.some((point) => point.note) ? `<th>Note</th>` : '';
+  const rows = points.map((point) => `<tr><th scope="row">${escape(String(point.label))}</th><td>${escape(String(point.value ?? 0))}${escape(unit)}</td>${point.note ? `<td>${escape(String(point.note))}</td>` : ''}</tr>`).join('');
+  return `<figure class="chart-figure"><figcaption>${escape(label)}</figcaption><svg class="chart ${escape(className)}" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="${escape(label)}">${svg}</svg><table class="chart-fallback"><caption>${escape(label)} (numbers)</caption><thead><tr><th>${escape(legend)}</th><th>Value</th>${columns}</tr></thead><tbody>${rows}</tbody></table></figure>`;
+}
+
+/**
+ * The analytics section. Only charts whose data is actually retained ship; the cost
+ * *trend* over time is called out as unavailable because the harness keeps per-agent
+ * usage rather than a dated ledger, and inventing a curve would be worse than saying so.
+ */
+export function renderAnalyticsSection({ overview = {}, metrics = {}, reliability = {} } = {}) {
+  const series = Array.isArray(metrics.series) ? metrics.series : [];
+  const activity = series.map((point) => ({ label: new Date(point.at).toLocaleTimeString(), tick: '', value: point.count }));
+  const profiles = (overview.usageByProfile ?? []).map((entry) => ({ label: String(entry.profileId ?? 'unprofiled'), value: (Number(entry.costMicros) || 0) / 1_000_000, note: `${Number(entry.inputTokens) || 0} in · ${Number(entry.outputTokens) || 0} out tokens` }));
+  const burn = (overview.budgetBurn ?? []).map((entry) => {
+    const used = Number(entry.costMicros) || 0;
+    const max = Number(entry.maxCostMicros) || 0;
+    const percent = max > 0 ? Math.round((used / max) * 100) : undefined;
+    return { label: String(entry.agentId ?? '').slice(0, 18), value: used / 1_000_000, note: percent === undefined ? 'cost limit not reported' : `${percent}% of cost limit` };
+  });
+  const expiry = (overview.expiring ?? []).map((bucket) => ({ label: String(bucket.label ?? ''), value: Number(bucket.count) || 0, note: 'workspaces' }));
+  const servers = (reliability.servers ?? []).map((server) => ({ label: String(server.serverName ?? server.serverId ?? 'server'), value: Number(server.calls) || 0, note: `${Number(server.error) || 0} error(s), p50 ${server.p50Ms ?? '—'} ms, p95 ${server.p95Ms ?? '—'} ms` }));
+  return `<section class="panel analytics" aria-labelledby="analytics-heading"><h2 id="analytics-heading">Analytics</h2><p class="page-note">Each chart states the scope it measured. A cost <em>trend</em> is not shown because the harness retains per-agent usage rather than a dated ledger.</p><div class="analytics-grid">${renderBarChart({ label: `Retained audit events per bucket (${String(metrics.window ?? 'window')})`, points: activity, emptyNote: 'No retained events in this window.' })}${renderBarRows({ label: 'Cost by model profile', unit: ' USD', points: profiles, emptyNote: 'No agent usage reported yet.' })}${renderBarRows({ label: 'Budget burn of running agents', unit: '', points: burn, emptyNote: 'No running agents report a budget.' })}${renderBarRows({ label: 'Workspace expiry buckets', points: expiry, emptyNote: 'No workspaces are close to expiry.' })}${renderBarRows({ label: 'MCP reliability by server', points: servers, emptyNote: 'No gateway traces reported yet.' })}</div></section>`;
+}
+
 export function renderWorkspaceDetail(workspace, dedicated = false, modal = false) {
   const heading = dedicated ? 'h1' : 'h2';
   const warning = workspace.networkProfile === 'dependency-access' ? '<p class="warning">Executor network access is enabled for this workspace (public DNS/HTTP/HTTPS).</p>' : '';
@@ -24,9 +643,17 @@ export function renderWorkspaceDetail(workspace, dedicated = false, modal = fals
 
 export function renderProjectIndex(projects) {
   const items = projects.length
-    ? `<ul class="card-grid">${projects.map((project) => `<li class="panel"><h3><a href="/dashboard/projects/${encodeURIComponent(project.id)}">${escape(project.name)}</a></h3><p class="mono wrap">${escape(project.id)}</p><p>Generation ${escape(project.generation)}</p></li>`).join('')}</ul>`
+    ? `<ul class="card-grid">${projects.map((project) => `<li class="panel"><h3><a href="/dashboard/projects/${encodeURIComponent(project.id)}">${escape(project.name)}</a></h3>${renderCopyChip({ value: project.id, label: 'Project ID' })}<p>Generation ${escape(project.generation)}</p></li>`).join('')}</ul>`
     : '<div class="empty"><h3>No projects yet.</h3><p>Create a project to group retained environment metadata.</p></div>';
-  return `<div class="page-note"><strong>Retained control-plane metadata.</strong> Projects and environments persist independently from volatile workspace runtime.</div><section aria-labelledby="project-list-heading"><h2 id="project-list-heading">Projects</h2>${items}</section><section class="panel" aria-labelledby="create-project-heading"><h2 id="create-project-heading">Create project</h2><form id="create-project-form" class="stack-form"><label for="project-name">Project name</label><input id="project-name" name="name" required maxlength="100"><button type="submit">Create project</button><p class="form-status" aria-live="polite"></p></form></section>`;
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Retained control-plane metadata.</strong> Projects and environments persist independently from volatile workspace runtime.</div>',
+    body: `<section aria-labelledby="project-list-heading"><h2 id="project-list-heading">Projects</h2>${items}</section>`
+  })}${renderFormDialog({
+    id: 'create-project-dialog', title: 'Create project',
+    description: 'Projects group retained environment metadata for your signed-in identity. Nothing starts until you open a workspace.',
+    formId: 'create-project-form', submitId: 'create-project-submit', submitLabel: 'Create project',
+    body: '<label for="project-name">Project name</label><input id="project-name" name="name" required maxlength="100">'
+  })}`;
 }
 
 export function renderProjectDetail(project, environments) {
@@ -46,15 +673,32 @@ export function renderGlobalSecrets(secrets = [], readiness = { ready: true }) {
   const secretList = Array.isArray(secrets) ? secrets : [];
   const secretRows = secretList.length ? secretList.map((secret) => {
     const descHtml = secret.description ? `<p class="secret-desc">${escape(secret.description)}</p>` : '';
-    return `<li class="secret-reference"><div><strong>${escape(secret.name)}</strong>${descHtml}<span class="status">${escape(secret.state ?? 'unknown')}</span><small>Version ${escape(secret.version ?? secret.generation)} · Generation ${escape(secret.generation)}</small></div><form class="update-global-secret-desc-form inline-form" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}"><label>Description<input name="description" value="${escape(secret.description ?? '')}" maxlength="500" autocomplete="off"></label><button type="submit">Save desc</button><p class="form-status" aria-live="polite"></p></form><form class="rotate-global-secret-form inline-form" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}"><label>New write-only value<input name="value" type="password" autocomplete="new-password" data-write-only required></label><button type="submit">Rotate</button><p class="form-status" aria-live="polite"></p></form><button class="danger delete-global-secret" type="button" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}">Delete secret</button></li>`;
-  }).join('') : '<li>No global secrets yet.</li>';
+    return `<li class="secret-reference"><div><strong>${escape(secret.name)}</strong>${descHtml}<span class="status">${escape(secret.state ?? 'unknown')}</span><small>Version ${escape(secret.version ?? secret.generation)} · Generation ${escape(secret.generation)}</small></div><details class="row-edit"><summary>Rotate or edit</summary><form class="update-global-secret-desc-form inline-form" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}"><label>Description<input name="description" value="${escape(secret.description ?? '')}" maxlength="500" autocomplete="off"></label><button type="submit">Save desc</button><p class="form-status" aria-live="polite"></p></form><form class="rotate-global-secret-form inline-form" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}"><label>New write-only value<input name="value" type="password" autocomplete="new-password" data-write-only required></label><button type="submit">Rotate</button><p class="form-status" aria-live="polite"></p></form></details><button class="danger delete-global-secret" type="button" data-secret-name="${escape(secret.name)}" data-generation="${escape(secret.generation)}">Delete secret</button></li>`;
+  }).join('') : '<li class="empty"><h3>No global secrets yet.</h3><p>Add a secret when a workspace needs a credential that every project can inherit.</p></li>';
   const readinessWarning = readiness?.ready === false ? `<p class="warning">Secret storage unavailable: ${escape(readiness.error ?? 'Review runner readiness.')}</p>` : '';
-  return `<div class="page-note"><strong>Retained global configuration metadata.</strong> Global secrets are automatically inherited by all newly opened workspaces for your signed-in identity. Environment-specific secrets override global secrets on key collision. Secret rotation and deletion apply to future workspace opens and do not retroactively modify running workspaces. Values are write-only and never displayed.</div>${readinessWarning}<div class="record-heading"><div><h2>Global Secrets</h2><p>Inherited by all workspaces for your signed-in identity.</p></div><div class="row-actions"><button id="open-global-bulk-import" type="button">Bulk import .env</button><button id="export-global-env-example" type="button">Export .env.example</button></div></div><section class="panel" aria-labelledby="global-secrets-heading"><h2 id="global-secrets-heading">Secret references</h2><ul class="record-list">${secretRows}</ul></section><section class="panel"><h2>Add global secret</h2><form id="create-global-secret-form" class="stack-form"><label for="global-secret-name">Secret name</label><input id="global-secret-name" name="name" required maxlength="100" autocomplete="off"><label for="global-secret-value">Write-only value</label><input id="global-secret-value" name="value" type="password" required autocomplete="new-password" data-write-only><label for="global-secret-desc">Description <span class="optional">Optional</span></label><input id="global-secret-desc" name="description" maxlength="500" autocomplete="off"><button type="submit">Create global secret</button><p class="form-status" aria-live="polite"></p></form></section>`;
+  return `${renderResourcePage({
+    note: `<div class="page-note"><strong>Retained global configuration metadata.</strong> Global secrets are automatically inherited by all newly opened workspaces for your signed-in identity. Environment-specific secrets override global secrets on key collision. Secret rotation and deletion apply to future workspace opens and do not retroactively modify running workspaces. Values are write-only and never displayed.</div>${readinessWarning}`,
+    filters: '<div class="row-actions"><button id="open-global-bulk-import" type="button">Bulk import .env</button><button id="export-global-env-example" type="button">Export .env.example</button></div>',
+    body: `<section aria-labelledby="global-secrets-heading"><h2 id="global-secrets-heading">Secret references</h2><ul class="record-list">${secretRows}</ul></section>`
+  })}${renderFormDialog({
+    id: 'create-global-secret-dialog', title: 'Add global secret',
+    description: 'The value is write-only: it is encrypted, never returned, and never rendered again after you save it.',
+    formId: 'create-global-secret-form', submitId: 'create-global-secret-submit', submitLabel: 'Create global secret',
+    body: '<label for="global-secret-name">Secret name</label><input id="global-secret-name" name="name" required maxlength="100" autocomplete="off"><label for="global-secret-value">Write-only value</label><input id="global-secret-value" name="value" type="password" required autocomplete="new-password" data-write-only><label for="global-secret-desc">Description <span class="optional">Optional</span></label><input id="global-secret-desc" name="description" maxlength="500" autocomplete="off">'
+  })}`;
 }
 
 export function renderArtifactIndex(artifacts, cursor) {
-  const rows = artifacts.length ? artifacts.map((artifact) => `<tr><th scope="row">${escape(artifact.logicalName)}<small class="mono wrap">${escape(artifact.artifactId)}</small></th><td>${escape(formatBytes(artifact.sizeBytes))}</td><td class="mono wrap">${escape(artifact.sha256)}</td><td>${time(artifact.expiresAt)}</td><td><a class="secondary button download-artifact" href="/dashboard/api/v1/artifacts/${encodeURIComponent(artifact.artifactId)}/download" download="${escape(artifact.logicalName)}">Download</a> <button class="danger delete-artifact" type="button" data-artifact-id="${escape(artifact.artifactId)}" data-generation="${escape(artifact.generation)}">Delete</button></td></tr>`).join('') : '<tr><td colspan="5">No retained snapshots.</td></tr>';
-  return `<div class="page-note"><strong>Retained artifact snapshots.</strong> These bounded copies persist until their displayed expiry or deletion. Tasks and sessions are volatile runtime state.</div><section class="panel" aria-labelledby="snapshot-heading"><h2 id="snapshot-heading">Create snapshot</h2><form id="snapshot-form" class="stack-form"><label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default"><button type="submit">Create retained snapshot</button><p class="form-status" aria-live="polite"></p></form></section><section aria-labelledby="artifact-list-heading"><h2 id="artifact-list-heading">Retained artifacts</h2><div class="desktop-table"><table><caption>${artifacts.length} snapshots</caption><thead><tr><th>Name</th><th>Size</th><th>SHA-256</th><th>Expires</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>${cursor ? `<button id="load-more-artifacts" type="button" data-cursor="${escape(cursor)}">Load more</button>` : ''}</section>`;
+  const rows = artifacts.length ? artifacts.map((artifact) => `<tr><th scope="row">${escape(artifact.logicalName)}<small class="mono wrap">${escape(artifact.artifactId)}</small></th><td>${escape(formatBytes(artifact.sizeBytes))}</td><td class="mono wrap">${escape(artifact.sha256)}</td><td>${time(artifact.expiresAt)}</td><td><a class="secondary button download-artifact" href="/dashboard/api/v1/artifacts/${encodeURIComponent(artifact.artifactId)}/download" download="${escape(artifact.logicalName)}">Download</a> <button class="danger delete-artifact" type="button" data-artifact-id="${escape(artifact.artifactId)}" data-generation="${escape(artifact.generation)}">Delete</button></td></tr>`).join('') : '<tr><td colspan="5">No retained snapshots yet. Create one to keep a bounded copy of a workspace file.</td></tr>';
+  return `${renderResourcePage({
+    note: '<div class="page-note"><strong>Retained artifact snapshots.</strong> These bounded copies persist until their displayed expiry or deletion. Tasks and sessions are volatile runtime state.</div>',
+    body: `<section aria-labelledby="artifact-list-heading"><h2 id="artifact-list-heading">Retained artifacts</h2><div class="desktop-table"><table><caption>${artifacts.length} snapshots</caption><thead><tr><th>Name</th><th>Size</th><th>SHA-256</th><th>Expires</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>${cursor ? `<button id="load-more-artifacts" type="button" data-cursor="${escape(cursor)}">Load more</button>` : ''}</section>`
+  })}${renderFormDialog({
+    id: 'snapshot-dialog', title: 'Create snapshot',
+    description: 'Copy one workspace file into retained, bounded storage. The snapshot expires at the retention you set, or at the server default.',
+    formId: 'snapshot-form', submitId: 'snapshot-submit', submitLabel: 'Create retained snapshot',
+    body: '<label for="snapshot-workspace">Workspace ID</label><input id="snapshot-workspace" name="workspaceId" required pattern="ws_[A-Za-z0-9_-]{20,80}"><label for="snapshot-path">Workspace path</label><input id="snapshot-path" name="path" required maxlength="1024"><label for="snapshot-name">Logical name</label><input id="snapshot-name" name="logicalName" required maxlength="128"><label for="snapshot-retention">Retention in seconds</label><input id="snapshot-retention" name="retentionSeconds" type="number" min="60" max="2592000" placeholder="Use server default">'
+  })}`;
 }
 
 export function renderAuditIndex(events, cursor) {
@@ -74,7 +718,14 @@ export function renderApiKeyIndex(data) {
   const creationDisabled = readiness.ready === false || activeCount >= 10;
   const disabled = creationDisabled ? ' disabled' : '';
   const limitNote = activeCount >= 10 ? '<p class="warning" role="status">The 10-active-key limit is reached. Revoke an active key before creating another.</p>' : '';
-  return `${readinessNote}<section class="panel" aria-labelledby="create-api-key-heading"><h2 id="create-api-key-heading">Create API key</h2><p class="warning"><strong>Full remote execution authority.</strong> This key grants full MCP access as your identity, including arbitrary command execution. It expires, cannot be recovered, and must be revoked if exposed.</p>${limitNote}<form id="create-api-key-form" class="stack-form"><label for="api-key-name">Key name</label><input id="api-key-name" name="name" required maxlength="100" autocomplete="off"${disabled}><label for="api-key-expiry">Expires after (days)</label><input id="api-key-expiry" name="expiryDays" type="number" inputmode="numeric" min="1" max="3650" step="1" value="30" required${disabled}><label class="checkbox-label"><input name="authorityAcknowledged" type="checkbox" required${disabled}><span>I understand this key permits full MCP and command-execution access and will be shown only once.</span></label><button id="create-api-key-submit" type="submit"${disabled}>Create API key</button><p class="form-status" aria-live="polite"></p></form></section><section aria-labelledby="api-key-list-heading"><div class="record-heading"><div><h2 id="api-key-list-heading">API keys</h2><p>${escape(activeCount)} active of 10 · ${escape(keys.length)} total</p></div></div><ul class="record-list api-key-list">${items}</ul></section>`;
+  return `${readinessNote}${renderResourcePage({
+    body: `<section aria-labelledby="api-key-list-heading"><div class="record-heading"><div><h2 id="api-key-list-heading">API keys</h2><p>${escape(activeCount)} active of 10 · ${escape(keys.length)} total</p></div></div><ul class="record-list api-key-list">${items}</ul></section>`
+  })}${renderFormDialog({
+    id: 'create-api-key-dialog', title: 'Create API key',
+    description: 'The key is shown once and cannot be recovered. It carries full MCP access as your identity, including command execution.',
+    formId: 'create-api-key-form', submitId: 'create-api-key-submit', submitLabel: 'Create API key',
+    body: `<p class="warning"><strong>Full remote execution authority.</strong> This key grants full MCP access as your identity, including arbitrary command execution. It expires, cannot be recovered, and must be revoked if exposed.</p>${limitNote}<label for="api-key-name">Key name</label><input id="api-key-name" name="name" required maxlength="100" autocomplete="off"${disabled}><label for="api-key-expiry">Expires after (days)</label><input id="api-key-expiry" name="expiryDays" type="number" inputmode="numeric" min="1" max="3650" step="1" value="30" required${disabled}><label class="checkbox-label"><input name="authorityAcknowledged" type="checkbox" required${disabled}><span>I understand this key permits full MCP and command-execution access and will be shown only once.</span></label>`
+  })}`;
 }
 
 function renderApiKey(key) {
@@ -103,7 +754,8 @@ export function renderGitHub(status, callbackPending = false) {
     : '<p>No GitHub App installation is bound to this identity.</p>';
   const repositories = status?.repositories?.length ? `<ul class="record-list">${status.repositories.map((repository) => `<li><strong>${escape(repository.owner)}/${escape(repository.repository)}</strong><span>${escape(repository.status)} · Contents ${escape(repository.contents)}${repository.installationId ? ` · ID <code class="mono">${escape(repository.installationId)}</code>` : ''}</span></li>`).join('')}</ul>` : '<p>No authorized repositories reported.</p>';
   const reconcileLabel = installations.length > 1 ? 'Reconcile all installations' : 'Reconcile installation';
-  return `<div class="page-note"><strong>GitHub App authorization metadata.</strong> Provider private keys and minted tokens remain runner-only and are never rendered.</div>${callbackPending ? '<p class="status-message" role="status">Completing GitHub App connection…</p>' : ''}<section class="panel"><h2>Installation status</h2>${installationView}<button id="reconcile-github" type="button"${installations.length === 0 ? ' disabled' : ''}>${reconcileLabel}</button><p id="github-status-message" class="form-status" aria-live="polite"></p></section><section class="panel"><h2>Connect GitHub App</h2><form id="github-setup-form" class="stack-form"><label for="github-account-id">Expected account ID <span class="optional">Optional</span></label><input id="github-account-id" name="expectedAccountId" maxlength="100"><button type="submit">Connect GitHub App</button><p class="form-status" aria-live="polite"></p></form></section><section><h2>Authorized repositories</h2>${repositories}</section>`;
+  void reconcileLabel;
+  return `<div class="page-note"><strong>GitHub App authorization metadata.</strong> Provider private keys and minted tokens remain runner-only and are never rendered.</div>${callbackPending ? '<p class="status-message" role="status">Completing GitHub App connection…</p>' : ''}<section class="panel"><h2>Installation status</h2>${installationView}<p id="github-status-message" class="form-status" aria-live="polite"></p></section><section class="panel"><h2>Connect GitHub App</h2><form id="github-setup-form" class="stack-form"><label for="github-account-id">Expected account ID <span class="optional">Optional</span></label><input id="github-account-id" name="expectedAccountId" maxlength="100"><button type="submit">Connect GitHub App</button><p class="form-status" aria-live="polite"></p></form></section><section><h2>Authorized repositories</h2>${repositories}</section>`;
 }
 export function profileDisplayName(profile) {
   const preferred = typeof profile?.preferences?.displayName === 'string' ? profile.preferences.displayName.trim() : '';
@@ -134,7 +786,7 @@ export function renderSettings(data, readiness) {
   const readinessFact = readiness
     ? `<dt>Egress readiness</dt><dd>${readiness.ready === true ? 'Ready' : `Not ready: ${escape(readiness.reason ?? 'the readiness probe reported no reason')}`}</dd>`
     : '';
-  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>`;
+  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${renderTypesafeSkeleton()}`;
 }
 
 export function renderRuntime(data) {
@@ -172,6 +824,259 @@ export function renderOverviewSkeleton() {
   return `<div class="overview"><ul class="metric-grid">${tile.repeat(4)}</ul><div class="overview-columns">${block}${block}</div></div>`;
 }
 
+/**
+ * The Skills page skeleton. Every identifier here is named by the phase's UI contract, so the page
+ * structure is asserted rather than assumed, and the four tabs keep their panels in the document so a
+ * tab switch never has to rebuild markup the operators are reading.
+ */
+export function renderSkillsSkeleton() {
+  const tab = (name, label, selected) =>
+    `<button type="button" role="tab" id="skills-tab-${name}" aria-controls="skills-panel-${name}" aria-selected="${selected ? 'true' : 'false'}" tabindex="${selected ? '0' : '-1'}">${label}</button>`;
+  const panel = (name, body, selected) =>
+    `<div class="skills-panel" role="tabpanel" id="skills-panel-${name}" aria-labelledby="skills-tab-${name}"${selected ? '' : ' hidden'}>${body}</div>`;
+
+  const library = `<form class="skills-toolbar" role="search" aria-label="Filter skills">
+        <label for="skills-library-search">Search</label><input id="skills-library-search" name="q" placeholder="Filter by name or provider">
+        <label for="skills-library-provider">Provider</label><select id="skills-library-provider" name="provider"><option value="">Any</option><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="custom">Custom</option><option value="git">Git</option></select>
+        <label for="skills-library-state">State</label><select id="skills-library-state" name="state"><option value="">Any</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="archived">Archived</option></select>
+        <label for="skills-library-tag">Tag</label><input id="skills-library-tag" name="tag" placeholder="Filter by tag">
+        <label for="skills-library-sort">Sort</label><select id="skills-library-sort" name="sort"><option value="name">Name</option><option value="provider">Provider</option><option value="state">State</option></select>
+      </form>
+      <div id="skills-bulk-bar" class="skills-bulk-bar" hidden><span id="skills-bulk-count"></span><button type="button" id="skills-bulk-archive">Archive</button><button type="button" id="skills-bulk-disable">Disable</button></div>
+      <table id="skills-library-table" class="data-table desktop-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
+      <ul id="skills-library-cards" class="card-grid"></ul>
+      <aside id="skill-detail" class="drawer" hidden>
+        <div id="skill-detail-instructions"></div>
+        <div id="skill-detail-files"></div>
+        <div id="skill-detail-revisions"></div>
+        <div id="skill-detail-usage"></div>
+        <button type="button" id="skill-detail-edit">Edit instructions</button>
+      </aside>
+      <form id="skill-editor">
+        <h3>Create a custom skill</h3>
+        <label for="skill-editor-slug">Slug</label><input id="skill-editor-slug" name="slug" placeholder="my-skill">
+        <label for="skill-editor-name">Display name</label><input id="skill-editor-name" name="displayName">
+        <label for="skill-editor-instructions">Instructions</label><textarea id="skill-editor-instructions" name="instructions"></textarea>
+        <button type="submit" id="skill-editor-save">Save skill</button><span id="skill-editor-status" role="status"></span>
+      </form>`;
+
+  const discover = `<div class="skills-search"><label for="skills-search-input">Search providers</label><input id="skills-search-input" name="q"><button type="button" id="skills-search-run">Search</button></div>
+      <div id="skills-search-results"></div>
+      <dialog id="skill-import-dialog" aria-labelledby="skill-import-heading">
+        <h2 id="skill-import-heading">Import skill</h2>
+        <label for="skill-import-source">Source</label><input id="skill-import-source" name="source" placeholder="owner/repository">
+        <label for="skill-import-ref">Ref</label><input id="skill-import-ref" name="ref" placeholder="Full commit id (optional)">
+        <!-- The UI contract pins this id; the operation it feeds takes a source kind, not an install
+             scope, because an imported skill always lands in the owner tier. The label says what the
+             value actually is so the operator is not offered a choice the runner cannot honour. -->
+        <label for="skill-import-scope">Source kind</label><select id="skill-import-scope" name="sourceKind"><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="git">Git</option></select>
+        <div id="skill-import-review"></div>
+        <div id="skill-import-job" role="status"></div>
+        <button type="button" id="skill-import-submit">Import</button>
+        <button type="button" id="skill-import-retry">Retry</button>
+        <button type="button" id="skill-import-cancel">Cancel</button>
+      </dialog>
+      <pre id="skill-revision-diff" class="skills-diff" tabindex="0" aria-label="Revision diff"></pre>`;
+
+  const sets = `<div id="skill-set-builder">
+        <label for="skill-set-name">Name</label><input id="skill-set-name" name="name">
+        <div id="skill-set-picker" role="group" aria-label="Available skills"></div>
+        <ol id="skill-set-members"></ol>
+        <button type="button" id="skill-set-save">Save set</button><span id="skill-set-status" role="status"></span>
+      </div>`;
+
+  const registry = `<table id="skills-registry-table" class="data-table"><caption class="sr-only">Registry and toolkit inventory</caption><thead><tr><th scope="col">Name</th><th scope="col">Cache state</th><th scope="col">Pinned commit</th><th scope="col">Skills</th><th scope="col">Lock</th></tr></thead><tbody></tbody></table>
+      <h3>Suggested toolkits to install</h3>
+      <ul id="skills-registry-suggestions" class="preset-suggestions"></ul>
+      <p id="skills-registry-status" role="status" aria-live="polite"></p>`;
+
+  return `<section id="skills-section" aria-labelledby="skills-heading">
+      <h2 id="skills-heading" class="sr-only">Skills</h2>
+      <div class="skills-tabs" role="tablist" aria-label="Skills views">${tab('library', 'Library', true)}${tab('discover', 'Discover', false)}${tab('sets', 'Skill Sets', false)}${tab('registry', 'Registry', false)}</div>
+      ${panel('library', library, true)}${panel('discover', discover, false)}${panel('sets', sets, false)}${panel('registry', registry, false)}
+    </section>`;
+}
+
+/**
+ * Rows for the library table, injected into the skeleton's tbody once data arrives. Every value goes
+ * through `escape`, because a skill's display name and slug are operator-supplied and a skill imported
+ * from a provider carries a name this dashboard never authored.
+ */
+export function renderSkillsLibraryRows(skills) {
+  const rows = Array.isArray(skills) ? skills : [];
+  if (rows.length === 0) return '<tr><td colspan="5">No skills yet. Import one from Discover, or create a custom skill.</td></tr>';
+  return rows.map((skill) => `<tr data-skill-id="${escape(skill.id)}">
+      <th scope="row"><button type="button" class="link-btn" data-skill-detail="${escape(skill.id)}">${escape(skill.displayName)}</button><small class="mono">${escape(skill.slug)}</small></th>
+      <td>${escape(skill.provider)}</td>
+      <td>${escape(skill.kind)}</td>
+      <td><span class="status ${escape(String(skill.state))}">${escape(skill.state)}</span></td>
+      <td><input type="checkbox" data-skill-select="${escape(skill.id)}" aria-label="Select ${escape(skill.displayName)}"></td>
+    </tr>`).join('');
+}
+
+/** Rows for the registry table: cache state, pinned commit, skill count, and lock state per entry. */
+export function renderSkillsRegistryRows(entries) {
+  const rows = Array.isArray(entries) ? entries : [];
+  if (rows.length === 0) return '<tr><td colspan="5">No registry entries yet.</td></tr>';
+  return rows.map((entry) => `<tr>
+      <th scope="row">${escape(entry.displayName ?? entry.slug)}</th>
+      <td><span class="status">${escape(entry.cacheState ?? 'unknown')}</span></td>
+      <td class="mono">${escape(entry.pinnedCommit ?? '—')}</td>
+      <td>${escape(entry.skillCount ?? 0)}</td>
+      <td>${escape(entry.lockState ?? 'unlocked')}</td>
+    </tr>`).join('');
+}
+
+/**
+ * Conflict radios for the launch dialog. A name is unresolved until an override names one of its
+ * candidates, which is the same rule the resolver applies, so the dialog cannot offer a choice the
+ * launch path would then refuse.
+ */
+export function renderSkillConflicts(conflicts, overrides = {}) {
+  const list = Array.isArray(conflicts) ? conflicts : [];
+  return list.map((conflict) => {
+    const choices = (Array.isArray(conflict.candidates) ? conflict.candidates : []).map((candidate) =>
+      `<label><input type="radio" name="conflict-${escape(conflict.name)}" value="${escape(candidate.revisionId)}"${overrides[conflict.name] === candidate.revisionId ? ' checked' : ''}> ${escape(candidate.tier)} · ${escape(candidate.revisionId)}</label>`).join('');
+    return `<fieldset data-conflict-name="${escape(conflict.name)}"><legend>${escape(conflict.name)}</legend>${choices}</fieldset>`;
+  }).join('');
+}
+
+/** True while any conflict still lacks an override, which is what keeps launch disabled. */
+export function launchBlockedByConflicts(conflicts, overrides = {}) {
+  return (Array.isArray(conflicts) ? conflicts : []).some((conflict) => overrides[conflict.name] === undefined);
+}
+
+/**
+ * The TypeSafe panel. The key field is a password input that is never rendered back, the kill switch is
+ * an ordinary checkbox, and the usage list shows scores rather than prompts, because prompt text never
+ * belongs on this page.
+ */
+export function renderTypesafeSkeleton() {
+  return `<section id="typesafe-panel" aria-labelledby="typesafe-heading">
+      <h2 id="typesafe-heading">TypeSafe skill suggestions</h2>
+      <p id="typesafe-egress" role="status" aria-live="polite"></p>
+      <form class="stack-form" id="typesafe-form">
+        <label for="typesafe-key">API key (write-only, never shown again)</label>
+        <input id="typesafe-key" name="value" type="password" autocomplete="new-password">
+        <label for="typesafe-model">Model</label>
+        <input id="typesafe-model" name="model" value="jev-latest">
+        <label for="typesafe-gate-threshold">Gate threshold</label>
+        <input id="typesafe-gate-threshold" name="gateThreshold" type="number" min="0" max="1" step="0.05">
+        <label for="typesafe-fit-threshold">Fit threshold</label>
+        <input id="typesafe-fit-threshold" name="fitThreshold" type="number" min="0" max="1" step="0.05">
+        <label for="typesafe-max-egress-bytes">Maximum egress bytes</label>
+        <input id="typesafe-max-egress-bytes" name="maxEgressBytes" type="number" min="256" max="8192">
+        <label for="typesafe-cache-ttl">Cache lifetime (minutes)</label>
+        <input id="typesafe-cache-ttl" name="cacheTtlMinutes" type="number" min="1" max="1440">
+        <label for="typesafe-enabled"><input id="typesafe-enabled" name="enabled" type="checkbox"> Send suggestions</label>
+        <button type="button" id="typesafe-test">Test connection</button>
+        <button type="submit" id="typesafe-save">Save</button>
+        <span id="typesafe-status" role="status" aria-live="polite"></span>
+      </form>
+      <table id="typesafe-usage" class="data-table desktop-table"><caption class="sr-only">Recent suggestions</caption><thead><tr><th scope="col">Skill</th><th scope="col">Gate</th><th scope="col">Fit</th><th scope="col">Latency</th><th scope="col">Redactions</th><th scope="col">Cached</th></tr></thead><tbody></tbody></table>
+    </section>`;
+}
+
+/** Chips for the selected skill sets, so the launch dialog names what is about to be bound. */
+export function renderSkillSetChips(names) {
+  const list = Array.isArray(names) ? names : [];
+  return list.map((name) => `<li>${escape(name)}</li>`).join('');
+}
+
+/**
+ * The same rows as cards, for narrow screens. A five-column table cannot fit a phone, and the shell
+ * already hides `.desktop-table` under its mobile breakpoint, so the two renderings share one source.
+ */
+export function renderSkillsLibraryCards(skills) {
+  const list = Array.isArray(skills) ? skills : [];
+  if (list.length === 0) return '<li class="panel">No skills yet. Import one from Discover, or create a custom skill.</li>';
+  return list.map((skill) => `<li class="panel">
+      <h3><button type="button" class="link-btn" data-skill-detail="${escape(skill.id)}">${escape(skill.displayName)}</button></h3>
+      <p class="mono">${escape(skill.slug)}</p>
+      <p><span class="status ${escape(String(skill.state))}">${escape(skill.state)}</span> ${escape(skill.provider)}</p>
+      <label><input type="checkbox" data-skill-select="${escape(skill.id)}" aria-label="Select ${escape(skill.displayName)}"> Select</label>
+    </li>`).join('');
+}
+
+/** Options for the launch dialog's skill-set selector. */
+export function renderSkillSetOptions(sets) {
+  const list = Array.isArray(sets) ? sets : [];
+  return list.map((set) => `<option value="${escape(set.id)}">${escape(set.name)}</option>`).join('');
+}
+
+/** Pickable skills for the set builder. Names come from the inventory, so every one is escaped. */
+export function renderSkillSetPicker(skills) {
+  const list = Array.isArray(skills) ? skills : [];
+  if (list.length === 0) return '<p>No skills to add yet.</p>';
+  return list.map((skill) => `<label><input type="checkbox" data-set-member="${escape(skill.id)}"> ${escape(skill.displayName)}</label>`).join('');
+}
+
+/**
+ * Revision rows for the detail drawer. The current revision is labelled rather than offering a restore
+ * to itself, so the only restore a reader can press is one that would actually change something.
+ */
+export function renderSkillRevisions(revisions, currentRevisionId) {
+  const list = Array.isArray(revisions) ? revisions : [];
+  if (list.length === 0) return '<p>No revisions yet.</p>';
+  return `<ul class="skills-revisions">${list.map((revision) => `<li>
+      <span class="mono">${escape(revision.id)}</span>
+      <span>${escape(revision.origin)}</span>
+      ${time(revision.createdAt)}
+      ${revision.id === currentRevisionId
+        ? '<span class="status">current</span>'
+        : `<button type="button" data-skill-restore="${escape(revision.id)}">Restore</button>`}
+      <button type="button" data-skill-diff="${escape(revision.id)}">Diff</button>
+      <button type="button" data-skill-fork="${escape(revision.id)}">Fork</button>
+    </li>`).join('')}</ul>`;
+}
+
+/**
+ * Guidance for an import job. A failed job is only actionable if it says which failure it was, and a
+ * cache miss in particular has an exact remedy, so it gets its own sentence rather than a generic
+ * failure line that leaves the operator guessing.
+ */
+export function renderImportJobGuidance(job) {
+  const state = job ? job.state : undefined;
+  if (state === 'failed') {
+    const code = job.errorCode ?? 'unknown';
+    if (code === 'CACHE_MISS') {
+      return 'CACHE_MISS: this skill is not mirrored in the runner cache. Import it while the runner has network access, then retry.';
+    }
+    return `The import failed (${code}). Retry, or check the runner logs for the provider response.`;
+  }
+  if (state === 'succeeded') return 'Import finished. The skill is now in the library.';
+  if (state === 'cancelled') return 'Import cancelled.';
+  const percent = job && job.progress && typeof job.progress.percent === 'number' ? job.progress.percent : undefined;
+  return `Import ${state ?? 'queued'}${percent === undefined ? '' : ` (${percent}%)`}.`;
+}
+
+/** True when a job has reached a state the operator can act on, which is when polling should stop. */
+export function isTerminalImportState(job) {
+  const state = job ? job.state : undefined;
+  return state === 'succeeded' || state === 'failed' || state === 'cancelled';
+}
+
+/**
+ * A unified diff with its lines marked, plus a text alternative. A diff conveyed only through colour
+ * is unreadable to a screen reader and to anyone who cannot distinguish the two shades, so the counts
+ * travel with the markup and the line classes carry the meaning.
+ */
+export function renderRevisionDiff(diff) {
+  const lines = String(diff ?? '').split('\n');
+  const body = lines.map((line) => {
+    if (line.startsWith('+++') || line.startsWith('---')) return `<span class="diff-line diff-meta">${escape(line)}</span>`;
+    if (line.startsWith('+')) return `<span class="diff-line diff-add">${escape(line)}</span>`;
+    if (line.startsWith('-')) return `<span class="diff-line diff-remove">${escape(line)}</span>`;
+    return `<span class="diff-line">${escape(line)}</span>`;
+  }).join('\n');
+  const added = lines.filter((line) => line.startsWith('+') && !line.startsWith('+++')).length;
+  const removed = lines.filter((line) => line.startsWith('-') && !line.startsWith('---')).length;
+  return {
+    html: `<code>${body}</code>`,
+    text: `${added} line${added === 1 ? '' : 's'} added, ${removed} line${removed === 1 ? '' : 's'} removed`
+  };
+}
+
 function renderServerPanel(server) {
   if (!server) return '';
   const oauth = server.managedOAuthUrl
@@ -185,16 +1090,33 @@ function renderServerPanel(server) {
   return `<section class="panel" aria-labelledby="overview-server-heading"><div class="record-heading"><h2 id="overview-server-heading">Server</h2><span class="status active">Online</span></div><dl class="facts"><dt>Auth mode</dt><dd class="mono">${escape(server.authMode ?? 'Unknown')}</dd><dt>Version</dt><dd class="mono">${escape(server.version ?? 'Unknown')}</dd><dt>Managed OAuth</dt>${oauth}<dt>API-key gateway</dt>${gateway}<dt>Max request</dt><dd>${escape(maxBytes)}</dd><dt>Request timeout</dt><dd>${escape(timeout)}</dd><dt>Session expires</dt><dd>${optionalTime(server.session?.expiresAt)}</dd><dt>Checked</dt><dd>${optionalTime(server.checkedAt)}</dd></dl></section>`;
 }
 
-export function renderOverview(summary) {
-  const metrics = summary.metrics.map((metric) => `<li class="metric"><span class="metric-label">${escape(metric.label)}</span><span class="metric-value${metric.small ? ' small' : ''}">${escape(metric.value)}</span>${metric.note ? `<span class="metric-note">${escape(metric.note)}</span>` : ''}</li>`).join('');
-  const activity = summary.activity.length
-    ? `<ul class="activity-list">${summary.activity.map((event) => `<li><strong>${escape(event.action)}</strong>${time(event.createdAt)}<span class="subject">${escape(event.subjectType)} <span class="mono wrap">${escape(event.subjectId)}</span></span></li>`).join('')}</ul>`
-    : '<p>No retained audit events yet.</p>';
-  const access = summary.access;
-  const endpoint = access.endpoint
-    ? `<dt>Static endpoint</dt><dd class="wrap"><span class="mono wrap">${escape(access.endpoint)}</span> <button type="button" class="copy" data-copy="${escape(access.endpoint)}">Copy</button></dd>`
-    : '';
-  return `<div class="overview"><ul class="metric-grid">${metrics}</ul><div class="overview-columns"><section class="panel" aria-labelledby="overview-activity-heading"><h2 id="overview-activity-heading">Recent activity</h2>${activity}</section><section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name)}</dd><dt>Email</dt><dd class="wrap">${escape(access.email)}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section></div>${renderServerPanel(summary.server)}</div>`;
+/**
+ * The Overview answers decision questions first: what needs attention, what is running,
+ * what it costs, and what expires soon. Every tile links to the filtered view that
+ * explains it, and Access/Server move below the decision metrics.
+ */
+export function renderOverview({ overview = {}, access = {}, server, metrics = {}, reliability = {} } = {}) {
+  const attention = Array.isArray(overview.attention) ? overview.attention : [];
+  const running = overview.running ?? {};
+  const cost = overview.cost ?? {};
+  const expiring = Array.isArray(overview.expiring) ? overview.expiring : [];
+  const costMicros = Number(cost.costMicros);
+  const inAnHour = expiring.find((bucket) => bucket.windowMinutes === 60) ?? {};
+  const tiles = [
+    { id: 'attention', label: 'Needs attention', value: String(attention.length), note: attention.length ? 'Open the list and act on the first item.' : 'Nothing needs action right now.', href: '/dashboard/activity' },
+    { id: 'running', label: 'Running now', value: String(running.agents ?? 0), note: `${String(running.workspaces ?? 0)} active workspace(s)`, href: '/dashboard/agents' },
+    { id: 'cost', label: 'Cost', value: Number.isFinite(costMicros) ? `$${(costMicros / 1_000_000).toFixed(4)}` : 'Not reported', note: `scope: ${String(cost.scope ?? 'not reported')}`, href: '/dashboard/agents' },
+    { id: 'expiry', label: 'Expiring soon', value: String(inAnHour.count ?? 0), note: 'lease(s) within the hour', href: '/dashboard/workspaces' }
+  ];
+  const metricTiles = `<ul class="metric-grid decision-grid">${tiles.map((tile) => `<li class="metric decision-${escape(tile.id)}"><a href="${escape(tile.href)}"><span class="metric-label">${escape(tile.label)}</span><span class="metric-value">${escape(tile.value)}</span><span class="metric-note">${escape(tile.note)}</span></a></li>`).join('')}</ul>`;
+  const attentionList = attention.length
+    ? `<ul class="attention-list">${attention.map((item) => `<li class="attention-item"><a href="${escape(String(item.href ?? '/dashboard'))}">${escape(String(item.label ?? 'Attention'))}</a><span>${escape(String(item.detail ?? ''))}</span></li>`).join('')}</ul>`
+    : '<p class="empty-note">Nothing needs attention right now.</p>';
+  const expiryBuckets = expiring.length
+    ? `<ul class="record-list">${expiring.map((bucket) => `<li><a href="/dashboard/workspaces">${escape(String(bucket.label ?? ''))}</a><span>${escape(String(bucket.count ?? 0))} workspace(s)</span></li>`).join('')}</ul>`
+    : '<p class="empty-note">No workspaces are close to expiry.</p>';
+  const endpoint = access.endpoint ? `<dt>Static endpoint</dt><dd class="wrap"><span class="mono wrap">${escape(access.endpoint)}</span> <button type="button" class="copy" data-copy="${escape(access.endpoint)}">Copy</button></dd>` : '';
+  return `<div class="overview">${metricTiles}<div class="overview-columns"><section class="panel" aria-labelledby="overview-attention-heading"><h2 id="overview-attention-heading">Needs attention</h2>${attentionList}</section><section class="panel" aria-labelledby="overview-expiry-heading"><h2 id="overview-expiry-heading">Expiring soon</h2>${expiryBuckets}</section></div>${renderAnalyticsSection({ overview, metrics, reliability })}<section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name ?? 'Not provided')}</dd><dt>Email</dt><dd class="wrap">${escape(access.email ?? 'Not provided')}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section>${renderServerPanel(server)}</div>`;
 }
 
 export function renderModelsPage(profiles = [], credentials = [], status = null) {
@@ -259,8 +1181,6 @@ export function renderModelsPage(profiles = [], credentials = [], status = null)
       </div>
       <div class="row-actions">
         <span class="status ${syncClass}">${syncLabel}</span>
-        <button id="open-add-credential-btn" type="button">+ Add credential</button>
-        <button id="open-add-profile-btn" class="accent-btn" type="button">+ Add profile</button>
       </div>
     </div>
     <section class="panel" aria-labelledby="model-profiles-heading">
@@ -763,7 +1683,7 @@ export function renderMcpServersIndex(data) {
     ${renderMcpGatewayCard(gateway)}
     <div class="record-heading">
       <div><h2>MCP servers</h2><p>Downstream MCP integrations available to your signed-in identity.</p></div>
-      <div class="row-actions"><button class="accent-btn" type="button" data-mcp-add aria-haspopup="dialog">Add MCP server</button></div>
+      <div class="row-actions"></div>
     </div>
     <section aria-labelledby="mcp-server-list-heading">
       <h2 id="mcp-server-list-heading" class="sr-only">MCP servers</h2>

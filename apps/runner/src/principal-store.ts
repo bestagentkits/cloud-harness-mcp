@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
+  DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
   RunnerPrincipalSelectorSchema,
   type ExternalPrincipal,
   type RunnerPrincipalSelector
@@ -67,6 +68,72 @@ function transaction<T>(database: DatabaseSync, action: () => T): T {
   } catch (error) {
     database.exec('ROLLBACK');
     throw error;
+  }
+}
+
+/**
+ * Workspace statuses that occupy a counted active-workspace slot for their owner.
+ * `REAPING` is deliberately absent: it marks in-flight teardown, so a record on its
+ * way to `CLOSED` must not consume a slot or inflate the quota reported to callers.
+ * Declared here because this module owned the retired partial unique index that
+ * previously enumerated them, and `state-store.ts` already imports from here, so
+ * this stays the single source of truth without an import cycle.
+ */
+export const COUNTED_WORKSPACE_STATUSES = ['CREATING', 'ACTIVE', 'NETWORK_QUARANTINED'] as const;
+
+/** Bound-parameter list for the counted statuses, shared with the state store. */
+export const COUNTED_WORKSPACE_STATUS_PARAMS = COUNTED_WORKSPACE_STATUSES.map(() => '?').join(',');
+
+/**
+ * Statuses that sweeps and startup reconciliation enumerate: the counted slots plus
+ * in-flight teardown, so a workspace stuck in `REAPING` is still reconciled.
+ */
+export const ENUMERATED_WORKSPACE_STATUSES = [...COUNTED_WORKSPACE_STATUSES, 'REAPING'] as const;
+
+/** Bound-parameter list for the enumerated statuses. */
+export const ENUMERATED_WORKSPACE_STATUS_PARAMS = ENUMERATED_WORKSPACE_STATUSES.map(() => '?').join(',');
+
+/** Counts the counted workspaces held by one owner id. */
+const COUNT_OWNER_WORKSPACES_SQL = `SELECT count(*) AS count FROM workspaces WHERE owner_id = ? AND status IN (${COUNTED_WORKSPACE_STATUS_PARAMS})`;
+
+/** Counts one owner's counted workspaces. */
+export function countOwnerCountedWorkspaces(database: DatabaseSync, ownerId: string): number {
+  const row = database.prepare(COUNT_OWNER_WORKSPACES_SQL)
+    .get(ownerId, ...COUNTED_WORKSPACE_STATUSES) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+/** Raised when a write would take an owner past `maxActiveWorkspacesPerOwner`. */
+export class ActiveWorkspaceLimitReachedError extends Error {
+  constructor(readonly active: number, readonly limit: number) {
+    super(`active workspace limit reached (${active} of ${limit})`);
+    this.name = 'ActiveWorkspaceLimitReachedError';
+  }
+}
+
+/**
+ * Guards legacy ownership migration against the capacity invariant the retired
+ * `one_active_workspace_per_owner` index enforced. That index failed the
+ * `UPDATE workspaces SET owner_id` statement once the destination held two counted
+ * workspaces, because one was then the maximum; under a configurable limit the
+ * equivalent rule is that the destination must not end up above that limit. Only
+ * the legacy owner's rows change owner, so a legacy owner holding no counted
+ * workspace is a no-op merge and is never refused.
+ */
+export function assertActiveWorkspaceMergeAllowed(
+  database: DatabaseSync,
+  destinationOwnerId: string,
+  legacyOwnerId: string,
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
+): void {
+  if (destinationOwnerId === legacyOwnerId) return;
+  const legacyCount = countOwnerCountedWorkspaces(database, legacyOwnerId);
+  if (legacyCount === 0) return;
+  const destinationCount = countOwnerCountedWorkspaces(database, destinationOwnerId);
+  if (destinationCount + legacyCount > activeLimit) {
+    throw new Error(
+      `legacy ownership merge would leave one principal with ${destinationCount + legacyCount} counted workspaces, above the active workspace limit of ${activeLimit}`
+    );
   }
 }
 
@@ -313,9 +380,6 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
           DROP TABLE workspaces;
           ALTER TABLE workspaces_v6 RENAME TO workspaces;
 
-          CREATE UNIQUE INDEX IF NOT EXISTS one_active_workspace_per_owner
-            ON workspaces(owner_id)
-            WHERE status IN ('CREATING','ACTIVE','REAPING','NETWORK_QUARANTINED');
           CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_id_id
             ON workspaces(owner_id, id);
 
@@ -723,6 +787,8 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
           deleted_at: number | null;
           provenance_json: string;
         }
+        // SAFETY: node:sqlite returns untyped records; the column list in LegacyMemoryRow mirrors the
+        // legacy `memories` schema this migration reads, and every field is re-validated on insert below.
         const legacyRows = database.prepare('SELECT * FROM memories').all() as unknown as LegacyMemoryRow[];
         for (const row of legacyRows) {
           const knId = 'kn_' + (row.id.startsWith('mem_') ? row.id.slice(4) : row.id);
@@ -757,11 +823,248 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
     });
     version = 10;
   }
-  if (version !== 10) throw new Error(`unsupported state schema version ${version}`);
+  if (version === 10) {
+    transaction(database, () => {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS skill_sources (
+          owner_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          slug TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          kind TEXT NOT NULL CHECK (kind IN ('built-in','owner','workspace','repository','registry')),
+          provider TEXT CHECK (provider IN ('skills-sh','skillx','git','custom')),
+          source_ref TEXT,
+          current_revision_id TEXT,
+          state TEXT NOT NULL DEFAULT 'enabled' CHECK (state IN ('enabled','disabled','archived')),
+          tags TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags) AND json_type(tags) = 'array' AND length(tags) <= 4096),
+          generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          UNIQUE (owner_id, slug),
+          FOREIGN KEY (owner_id) REFERENCES principals(id) ON DELETE RESTRICT,
+          FOREIGN KEY (owner_id, id, current_revision_id)
+            REFERENCES skill_revisions(owner_id, skill_source_id, id) DEFERRABLE INITIALLY DEFERRED
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_revisions (
+          owner_id TEXT NOT NULL,
+          skill_source_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          parent_revision_id TEXT,
+          origin TEXT NOT NULL CHECK (origin IN ('import','refresh','edit','restore','fork')),
+          bundle_sha256 TEXT NOT NULL,
+          content_sha256 TEXT NOT NULL,
+          has_executable_assets INTEGER NOT NULL DEFAULT 0 CHECK (has_executable_assets IN (0,1)),
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          UNIQUE (owner_id, skill_source_id, id),
+          FOREIGN KEY (owner_id, skill_source_id) REFERENCES skill_sources(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id, parent_revision_id) REFERENCES skill_revisions(owner_id, id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS skill_revisions_source_idx ON skill_revisions(owner_id, skill_source_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS skill_sets (
+          owner_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          FOREIGN KEY (owner_id) REFERENCES principals(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_set_items (
+          owner_id TEXT NOT NULL,
+          skill_set_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          skill_source_id TEXT NOT NULL,
+          revision_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          PRIMARY KEY (owner_id, skill_set_id, ordinal),
+          UNIQUE (owner_id, skill_set_id, name),
+          FOREIGN KEY (owner_id, skill_set_id) REFERENCES skill_sets(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id, skill_source_id, revision_id) REFERENCES skill_revisions(owner_id, skill_source_id, id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_skill_set_snapshots (
+          owner_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          skill_set_id TEXT NOT NULL,
+          skill_set_generation INTEGER NOT NULL CHECK (skill_set_generation > 0),
+          snapshot_sha256 TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, workspace_id, ordinal),
+          FOREIGN KEY (owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id, skill_set_id) REFERENCES skill_sets(owner_id, id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_skill_assignments (
+          owner_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          skill_source_id TEXT NOT NULL,
+          revision_id TEXT NOT NULL,
+          tier TEXT NOT NULL CHECK (tier IN ('built-in','owner','workspace','repository')),
+          pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0,1)),
+          PRIMARY KEY (owner_id, workspace_id, ordinal),
+          UNIQUE (owner_id, workspace_id, name),
+          FOREIGN KEY (owner_id, workspace_id) REFERENCES workspaces(owner_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_id, skill_source_id, revision_id) REFERENCES skill_revisions(owner_id, skill_source_id, id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_catalog_entries (
+          owner_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          provider TEXT NOT NULL CHECK (provider IN ('skills-sh','skillx')),
+          slug TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          fetched_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          UNIQUE (owner_id, provider, slug),
+          FOREIGN KEY (owner_id) REFERENCES principals(id) ON DELETE RESTRICT
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_import_jobs (
+          owner_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('skills-sh','skillx','git')),
+          source_ref TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('queued','running','succeeded','failed','cancelled')),
+          progress_json TEXT NOT NULL DEFAULT '{}',
+          result_json TEXT,
+          error_code TEXT,
+          skill_revision_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (owner_id, id),
+          FOREIGN KEY (owner_id, skill_revision_id) REFERENCES skill_revisions(owner_id, id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS skill_import_jobs_state_idx ON skill_import_jobs(owner_id, state, updated_at DESC);
+
+        CREATE TRIGGER IF NOT EXISTS skill_sources_state_transition
+        BEFORE UPDATE OF state ON skill_sources
+        FOR EACH ROW
+        WHEN NOT (
+          (OLD.state = 'enabled' AND NEW.state IN ('enabled','disabled','archived')) OR
+          (OLD.state = 'disabled' AND NEW.state IN ('disabled','enabled','archived'))
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'illegal skill state transition');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS skill_revisions_immutable
+        BEFORE UPDATE ON skill_revisions
+        FOR EACH ROW
+        WHEN (
+          OLD.owner_id IS NOT NEW.owner_id OR
+          OLD.id IS NOT NEW.id OR
+          OLD.skill_source_id IS NOT NEW.skill_source_id OR
+          OLD.parent_revision_id IS NOT NEW.parent_revision_id OR
+          OLD.origin IS NOT NEW.origin OR
+          OLD.bundle_sha256 IS NOT NEW.bundle_sha256 OR
+          OLD.content_sha256 IS NOT NEW.content_sha256 OR
+          OLD.has_executable_assets IS NOT NEW.has_executable_assets
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'skill revisions are immutable; create a new revision');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS skill_import_jobs_terminal_once
+        BEFORE UPDATE ON skill_import_jobs
+        FOR EACH ROW
+        WHEN (
+          OLD.state IN ('succeeded','failed','cancelled') AND
+          (NEW.state IS NOT OLD.state OR NEW.result_json IS NOT OLD.result_json OR NEW.error_code IS NOT OLD.error_code)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'terminal skill import jobs are immutable');
+        END;
+
+        -- A dedicated integration credential rather than a model provider: a TypeSafe key is not a
+        -- gateway provider, and extending that closed enum would route it through gateway snapshots.
+        CREATE TABLE IF NOT EXISTS integration_credentials (
+          id TEXT PRIMARY KEY,
+          principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE RESTRICT,
+          integration TEXT NOT NULL CHECK(integration IN ('typesafe')),
+          label TEXT NOT NULL,
+          active_version INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'DISABLED', 'REVOKED')),
+          generation INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS integration_credentials_principal_idx
+          ON integration_credentials(principal_id, integration);
+
+        -- The envelope columns mirror model_provider_credential_versions. The value is written once per
+        -- version and read only by the decrypting path, so no read operation can return it.
+        CREATE TABLE IF NOT EXISTS integration_credential_versions (
+          principal_id TEXT NOT NULL,
+          credential_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          key_version INTEGER NOT NULL,
+          nonce TEXT NOT NULL,
+          ciphertext TEXT NOT NULL,
+          auth_tag TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(principal_id, credential_id, version),
+          FOREIGN KEY(credential_id) REFERENCES integration_credentials(id) ON DELETE CASCADE
+        );
+      `);
+
+      database.exec('UPDATE schema_meta SET version = 11;');
+    });
+    version = 11;
+  }
+  if (version !== 11) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV10(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 11) throw new Error(`state schema must be version 11 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const sourceCount = (database.prepare('SELECT count(*) as count FROM skill_sources').get() as { count: number }).count;
+    const revisionCount = (database.prepare('SELECT count(*) as count FROM skill_revisions').get() as { count: number }).count;
+    const setCount = (database.prepare('SELECT count(*) as count FROM skill_sets').get() as { count: number }).count;
+    const jobCount = (database.prepare('SELECT count(*) as count FROM skill_import_jobs').get() as { count: number }).count;
+    if (sourceCount > 0 || revisionCount > 0 || setCount > 0 || jobCount > 0) {
+      throw new Error('cannot downgrade state schema to v10: skill tables contain records (export or discard required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      DROP TRIGGER IF EXISTS skill_import_jobs_terminal_once;
+      DROP TRIGGER IF EXISTS skill_revisions_immutable;
+      DROP TRIGGER IF EXISTS skill_sources_state_transition;
+      DROP TABLE IF EXISTS skill_import_jobs;
+      DROP TABLE IF EXISTS skill_catalog_entries;
+      DROP TABLE IF EXISTS workspace_skill_assignments;
+      DROP TABLE IF EXISTS workspace_skill_set_snapshots;
+      DROP TABLE IF EXISTS skill_set_items;
+      DROP TABLE IF EXISTS skill_sets;
+      DROP TABLE IF EXISTS skill_revisions;
+      DROP TABLE IF EXISTS skill_sources;
+      DROP INDEX IF EXISTS skill_import_jobs_state_idx;
+      DROP INDEX IF EXISTS skill_revisions_source_idx;
+      UPDATE schema_meta SET version = 10;
+    `);
+  });
 }
 
 export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss = false): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version === 11) {
+    downgradeStateSchemaToV10(database, allowDataLoss);
+    version = 10;
+  }
   if (version !== 10) throw new Error(`state schema must be version 10 before downgrade, got ${version}`);
   if (!allowDataLoss) {
     const knCount = (database.prepare('SELECT count(*) as count FROM knowledge_items').get() as { count: number }).count;
@@ -795,7 +1098,7 @@ export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -823,7 +1126,7 @@ export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -851,7 +1154,7 @@ export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss =
 }
 export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -883,7 +1186,7 @@ export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -959,7 +1262,7 @@ export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
   }
@@ -1004,7 +1307,7 @@ export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-  if (version === 10) {
+  if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, true);
     version = 9;
   }
@@ -1100,7 +1403,11 @@ export function principalByLegacyOwnerId(database: DatabaseSync, legacyOwnerId: 
   return row ? fromRow(row) : undefined;
 }
 
-export function resolveOwnerPrincipal(database: DatabaseSync, ownerId: string): string {
+export function resolveOwnerPrincipal(
+  database: DatabaseSync,
+  ownerId: string,
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
+): string {
   if (!ownerId || ownerId.length > 100) throw new Error('invalid owner identity');
   return transaction(database, () => {
     if (database.prepare('SELECT 1 FROM principals WHERE id = ?').get(ownerId)) return ownerId;
@@ -1114,6 +1421,7 @@ export function resolveOwnerPrincipal(database: DatabaseSync, ownerId: string): 
       VALUES (?, ?, ?, NULL, NULL, ?, ?, ?)`).run(
       principalId, ownerBearerIssuer, ownerId, ownerId, now, now
     );
+    assertActiveWorkspaceMergeAllowed(database, principalId, ownerId, activeLimit);
     database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, ownerId);
     return principalId;
   });
@@ -1122,19 +1430,21 @@ export function resolveOwnerPrincipal(database: DatabaseSync, ownerId: string): 
 export function resolveExternalPrincipal(
   database: DatabaseSync,
   selector: ExternalPrincipalSelector,
-  options: { legacyOwnerId?: string } = {}
+  options: { legacyOwnerId?: string } = {},
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
 ): string {
   const parsed = RunnerPrincipalSelectorSchema.parse(selector) as ExternalPrincipalSelector;
   const legacyOwnerId = options.legacyOwnerId;
   if (legacyOwnerId !== undefined && (!legacyOwnerId || legacyOwnerId.length > 100)) throw new Error('invalid legacy owner mapping');
 
-  return transaction(database, () => resolveExternalPrincipalInTransaction(database, parsed, legacyOwnerId));
+  return transaction(database, () => resolveExternalPrincipalInTransaction(database, parsed, legacyOwnerId, activeLimit));
 }
 
 function resolveExternalPrincipalInTransaction(
   database: DatabaseSync,
   selector: ExternalPrincipalSelector,
-  legacyOwnerId?: string
+  legacyOwnerId?: string,
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
 ): string {
   const existing = principalByExternalIdentity(database, selector);
   if (legacyOwnerId !== undefined && existing?.legacyOwnerId && existing.legacyOwnerId !== legacyOwnerId) {
@@ -1148,6 +1458,7 @@ function resolveExternalPrincipalInTransaction(
     if (legacyOwnerId && !existing.legacyOwnerId) {
       database.prepare('UPDATE principals SET legacy_owner_id = ?, updated_at = ? WHERE id = ?')
         .run(legacyOwnerId, now, existing.id);
+      assertActiveWorkspaceMergeAllowed(database, existing.id, legacyOwnerId, activeLimit);
       database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(existing.id, legacyOwnerId);
     }
     return existing.id;
@@ -1176,6 +1487,7 @@ function resolveExternalPrincipalInTransaction(
     legacyOwnerId ?? null, now, now
   );
   if (legacyOwnerId) {
+    assertActiveWorkspaceMergeAllowed(database, principalId, legacyOwnerId, activeLimit);
     database.prepare('UPDATE workspaces SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
     try {
       database.prepare('UPDATE finalize_idempotency SET owner_id = ? WHERE owner_id = ?').run(principalId, legacyOwnerId);
@@ -1198,14 +1510,15 @@ function resolveExternalPrincipalInTransaction(
 
 export function applyLegacyPrincipalMapping(
   database: DatabaseSync,
-  mapping: { legacyOwnerId: string; issuer: string; subject: string }
+  mapping: { legacyOwnerId: string; issuer: string; subject: string },
+  activeLimit: number = DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER
 ): string {
   const selector = RunnerPrincipalSelectorSchema.parse({
     kind: 'external', issuer: mapping.issuer, subject: mapping.subject
   }) as ExternalPrincipalSelector;
   if (!mapping.legacyOwnerId || mapping.legacyOwnerId.length > 100) throw new Error('invalid legacy owner mapping');
   return transaction(database, () => {
-    const principalId = resolveExternalPrincipalInTransaction(database, selector, mapping.legacyOwnerId);
+    const principalId = resolveExternalPrincipalInTransaction(database, selector, mapping.legacyOwnerId, activeLimit);
     const unmapped = database.prepare(`SELECT 1
       FROM workspaces
       LEFT JOIN principals ON principals.id = workspaces.owner_id

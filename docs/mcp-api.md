@@ -62,9 +62,15 @@ permissions, traces, transports, and the managed API-key lane limitation.
    stored licence token, verifies the package digest, and mounts the kit skills
    read-only under `owner` scope only (licensed content is never written into a
    repository).
-2. Subsequent tool calls can omit `workspaceId` when exactly one active
-   workspace is open. The runner automatically resolves the active workspace,
-   or returns a structured `CONFLICT` ambiguity error if multiple exist.
+2. Subsequent tool calls may omit `workspaceId`. The runner resolves it in this
+   order: an explicit `workspaceId`; the sole `ACTIVE` or `CREATING` workspace; a
+   sole recoverable record when nothing is active; otherwise the caller's
+   `workspace_set_active` preference among recoverable records. More than one
+   active workspace, or several recoverable records with no preference, returns a
+   structured `CONFLICT` naming the candidate ids rather than guessing. Because the
+   destructive tools (`workspace_close`, `workspace_finalize`, `files_write`,
+   `git_commit`) accept an optional `workspaceId`, pass it explicitly whenever more
+   than one workspace is counted. `workspace_open` never moves the preference.
 3. Use bounded file and code-intelligence tools for inspection and edits.
    `files_write_batch` allows atomic multi-file creation with parent directory
    scaffolding in one call.

@@ -1,6 +1,6 @@
 {
   "name": "cloud-harness-mcp",
-  "version": "0.48.0",
+  "version": "0.54.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -28,7 +28,7 @@
     "pretest:integration": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
     "test:integration": "vitest run test/integration --exclude '**/*.docker.test.ts'",
     "pretest:docker": "npm run build -w @cloud-harness/contracts",
-    "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/dependency-egress.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts test/integration/agent-isolation.docker.test.ts --testTimeout=180000",
+    "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/dependency-egress.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts test/integration/agent-isolation.docker.test.ts apps/runner/test/cli-compatibility-airgap.docker.test.ts test/integration/skills-compatibility.docker.test.ts --testTimeout=180000",
     "pretest:e2e": "npm run build -w @cloud-harness/contracts",
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
     "pages:check": "node scripts/verify-pages-artifact.mjs",
@@ -52,7 +52,8 @@
     "release:dry-run": "semantic-release --dry-run --no-ci",
     "verify:production": "node scripts/verify-production.mjs",
     "verify:compose": "node scripts/verify-compose-boundaries.mjs",
-    "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build"
+    "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "verify:typesafe": "node scripts/verify-typesafe.mjs"
   },
   "devDependencies": {
     "@semantic-release/changelog": "7.0.0",

@@ -6,34 +6,8 @@ import {
   PALETTE_BATCH_SIZE, chunkPaletteRequests, isPaletteHotkey, buildPaletteIndex, rankPaletteMatches,
   createPaletteIndexLoader, backdropHit, dismissOnBackdrop
 } from '../dashboard/dashboard.js';
-import { renderApiKeyIndex, renderGitHub, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
-
-class FakeElement {
-  hidden = false;
-  inert = false;
-  disabled = false;
-  open = false;
-  textContent = '';
-  value = '';
-  items: FakeElement[] = [];
-  bounds?: { top: number; bottom: number; left: number; right: number };
-  focus = vi.fn();
-  private readonly attributes = new Map<string, string>();
-  private readonly listeners = new Map<string, Set<(event: any) => void>>();
-
-  setAttribute(name: string, value: string) { this.attributes.set(name, value); }
-  getAttribute(name: string) { return this.attributes.get(name); }
-  removeAttribute(name: string) { this.attributes.delete(name); }
-  querySelectorAll() { return this.items; }
-  getBoundingClientRect() { return this.bounds; }
-  addEventListener(name: string, listener: (event: any) => void) {
-    const listeners = this.listeners.get(name) ?? new Set(); listeners.add(listener); this.listeners.set(name, listeners);
-  }
-  removeEventListener(name: string, listener: (event: any) => void) { this.listeners.get(name)?.delete(listener); }
-  dispatch(name: string, event: any) { for (const listener of this.listeners.get(name) ?? []) listener(event); }
-  showModal() { this.open = true; }
-  close() { this.open = false; }
-}
+import { renderApiKeyIndex, renderGitHub, renderGitHubActions, renderGlobalSecrets, renderOverview, renderPaletteResults, renderProfile, renderProjectDetail, renderSettings, renderWorkspaceDetail, profileDisplayName } from '../dashboard/dashboard-render.js';
+import { FakeElement } from './dashboard-test-dom.js';
 
 describe('dashboard UI behavior', () => {
   it('cycles the three theme states in order and names the next action', () => {
@@ -84,7 +58,7 @@ describe('dashboard UI behavior', () => {
     });
 
     const hrefs = index.map((entry) => entry.href);
-    expect(hrefs).toContain('/dashboard/overview');
+    expect(hrefs).toContain('/dashboard');
     expect(hrefs).toContain(`/dashboard/workspaces/${workspaceId}`);
     expect(hrefs).toContain(`/dashboard/projects/${projectId}`);
     expect(hrefs).toContain('/dashboard/secrets');
@@ -513,9 +487,6 @@ describe('dashboard UI behavior', () => {
   it('keeps the clicked link across an async drawer fetch and renders its required heading', async () => {
     const heading = new FakeElement();
     const detail = Object.assign(new FakeElement(), {
-      _html: '',
-      set innerHTML(value: string) { this._html = value; },
-      get innerHTML() { return this._html; },
       querySelector: (selector: string) => selector === '#workspace-detail-title' && detail.innerHTML.includes('workspace-detail-title') ? heading : null
     });
     const trigger = Object.assign(new FakeElement(), { href: `https://dashboard.example/dashboard/workspaces/ws_${'a'.repeat(24)}` });
@@ -562,7 +533,9 @@ describe('dashboard UI behavior', () => {
     expect(html).toContain('data-installation-id="102"');
     expect(html).toContain('class="reconcile-installation"');
     expect(html).toContain('class="danger disconnect-installation"');
-    expect(html).toContain('Reconcile all installations');
+    // The reconcile action moved to the page's action slot with the rest of the
+    // shared resource-page layout, so its label is asserted where it renders.
+    expect(renderGitHubActions({ installations: [{ installationId: '101' }, { installationId: '102' }] })).toContain('Reconcile all installations');
     expect(html).toContain('repo1');
     expect(html).toContain('repo2');
   });
@@ -570,7 +543,7 @@ describe('dashboard UI behavior', () => {
   it('renders a friendly placeholder when no GitHub installations are bound', () => {
     const html = renderGitHub({ configured: true, installations: [], repositories: [] });
     expect(html).toContain('No GitHub App installation is bound to this identity.');
-    expect(html).toContain('disabled');
+    expect(renderGitHubActions({})).toContain('disabled');
   });
 
   it('clears write-only inputs after secret submission', () => {
@@ -697,15 +670,21 @@ describe('dashboard UI behavior', () => {
 
   it('escapes attacker-influenceable overview fields and renders a copy affordance', () => {
     const html = renderOverview({
-      metrics: [{ label: 'GitHub', value: '<img src=x onerror=alert(1)>', small: true, note: '<b>x</b>' }],
-      activity: [{ action: '<script>a</script>', subjectType: 'workspace', subjectId: '<script>b</script>', createdAt: '2026-01-01T00:00:00.000Z' }],
+      overview: {
+        attention: [{ id: 'x', label: '<script>a</script>', detail: '<b>x</b>', href: '/dashboard/activity' }],
+        running: { agents: 1, workspaces: 2 },
+        cost: { scope: '<script>s</script>', costMicros: 1_000_000 },
+        expiring: [{ windowMinutes: 60, label: '<script>w</script>', count: 1 }]
+      },
       access: { name: '<script>n</script>', email: 'op@example.com', sessionExpiresAt: undefined, endpoint: 'https://api.example.com/mcp"><script>' }
     });
     expect(html).not.toContain('<script>');
-    expect(html).not.toContain('<img src=x');
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('data-copy="https://api.example.com/mcp&quot;&gt;&lt;script&gt;"');
     expect(html).toContain('Never');
+    // The decision tiles stay first: attention, running, cost and expiry.
+    expect(html.indexOf('Needs attention')).toBeLessThan(html.indexOf('Signed in as'));
+    expect(html).toContain('scope: &lt;script&gt;s&lt;/script&gt;');
   });
   it('parses .env files with comment-to-description extraction and quote handling', () => {
     const sample = `
@@ -779,7 +758,9 @@ export STRIPE_SECRET=whsec_abc
       generation: 1
     }];
     const html = renderGlobalSecrets(secrets, { ready: true });
-    expect(html).toContain('Global Secrets');
+    // The page heading is owned by the page registry; the renderer owns the section
+    // heading, the filter row and the create dialog.
+    expect(html).toContain('Secret references');
     expect(html).toContain('GLOBAL_API_KEY');
     expect(html).toContain('Shared across all workspaces');
     expect(html).toContain('Bulk import .env');

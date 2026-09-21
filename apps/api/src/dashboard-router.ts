@@ -1,8 +1,8 @@
 import express, { Router, type NextFunction, type Response } from 'express';
-import { TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { principalFromAuthInfo } from './auth.js';
-import { mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
+import { buildActivityProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
 import { dashboardSecurity, requireJson } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
@@ -44,6 +44,10 @@ function preferredDisplayName(request: DashboardRequest): string | null {
 }
 
 const workspaceId = z.string().regex(/^ws_[A-Za-z0-9_-]{20,80}$/);
+const agentId = z.string().regex(/^agent_[A-Za-z0-9_-]{20,80}$/);
+const taskId = z.string().regex(/^task_[A-Za-z0-9_-]{20,80}$/);
+const sessionId = z.string().regex(/^sess_[A-Za-z0-9_-]{20,80}$/);
+const agentStatus = z.enum(['SPAWNING', 'RUNNING', 'CANCELLING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']);
 const pageQuery = z.object({ cursor: z.string().max(256).optional(), limit: z.coerce.number().int().min(1).max(100).default(100) });
 const fileQuery = pageQuery.extend({ path: z.string().min(1).max(1_024).default('.') });
 const readQuery = z.object({ path: z.string().min(1).max(1_024), offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(262_144).default(65_536) });
@@ -274,6 +278,284 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       }
       sendRunnerResponse(response, 'workspace_close', await runner.closeWorkspaceFenced(id, parsed.expectedGeneration, selected));
     } catch (error) { next(error); }
+  });
+
+  // Workspace automation and deployments. Skills and hooks are discoverable here and
+  // every action goes through the guarded runner contract.
+  router.get('/api/v1/workspaces/:workspaceId/skills', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'skills_list', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/hooks', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'hooks_list', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      includeInactive: true
+    });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/deployments', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'deployments_list', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  const automationMutation = (operation: 'skills_run' | 'hooks_run' | 'hooks_activate' | 'hooks_deactivate' | 'deployments_run') => {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      await call(runner, request, response, next, operation, {
+        workspaceId: workspaceId.parse(request.params.workspaceId),
+        ...(request.body && typeof request.body === 'object' ? request.body : {}),
+        ...(operation === 'skills_run' && typeof request.params.name === 'string' ? { name: request.params.name } : {})
+      });
+    };
+  };
+
+  router.post('/api/v1/workspaces/:workspaceId/skills/:name/run', automationMutation('skills_run'));
+  router.post('/api/v1/workspaces/:workspaceId/hooks/run', automationMutation('hooks_run'));
+  router.post('/api/v1/workspaces/:workspaceId/hooks/activate', automationMutation('hooks_activate'));
+  router.post('/api/v1/workspaces/:workspaceId/hooks/deactivate', automationMutation('hooks_deactivate'));
+  router.post('/api/v1/workspaces/:workspaceId/deployments/run', automationMutation('deployments_run'));
+
+  // Git and worktrees. Reads are bounded; mutations keep the contract's own fencing
+  // (identity, expected head, constrained ref arguments) and confirm in the UI.
+  router.get('/api/v1/workspaces/:workspaceId/git/status', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'git_status', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/git/diff', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'git_diff', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      staged: request.query.staged === 'true',
+      ...(typeof request.query.path === 'string' ? { path: request.query.path } : {})
+    });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/git/log', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'git_log', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(typeof request.query.limit === 'string' ? { limit: z.coerce.number().int().min(1).max(500).parse(request.query.limit) } : {})
+    });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/worktrees', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'worktrees_list', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  const gitMutation = (operation: 'git_fetch' | 'git_pull' | 'git_checkout' | 'git_branch' | 'git_merge' | 'git_rebase' | 'worktrees_create' | 'worktrees_remove') => {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      await call(runner, request, response, next, operation, {
+        workspaceId: workspaceId.parse(request.params.workspaceId),
+        ...(request.body && typeof request.body === 'object' ? request.body : {})
+      });
+    };
+  };
+
+  router.post('/api/v1/workspaces/:workspaceId/git/fetch', gitMutation('git_fetch'));
+  router.post('/api/v1/workspaces/:workspaceId/git/pull', gitMutation('git_pull'));
+  router.post('/api/v1/workspaces/:workspaceId/git/checkout', gitMutation('git_checkout'));
+  router.post('/api/v1/workspaces/:workspaceId/git/branch', gitMutation('git_branch'));
+  router.post('/api/v1/workspaces/:workspaceId/git/merge', gitMutation('git_merge'));
+  router.post('/api/v1/workspaces/:workspaceId/git/rebase', gitMutation('git_rebase'));
+  router.post('/api/v1/workspaces/:workspaceId/worktrees', gitMutation('worktrees_create'));
+  router.delete('/api/v1/workspaces/:workspaceId/worktrees/:name', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'worktrees_remove', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).parse(request.params.name),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  // Agent Control Center. Agent operations are workspace-scoped in the runner
+  // contract; the workspace id is optional there, so a global view lists across the
+  // principal's workspaces and a scoped view passes it through.
+  router.get('/api/v1/agents', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_list', {
+      ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {}),
+      ...(typeof request.query.parentAgentId === 'string' ? { parentAgentId: agentId.parse(request.query.parentAgentId) } : {}),
+      ...(typeof request.query.status === 'string' ? { status: agentStatus.parse(request.query.status) } : {}),
+      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {}),
+      ...(typeof request.query.limit === 'string' ? { limit: z.coerce.number().int().min(1).max(100).parse(request.query.limit) } : {})
+    });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/agents', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_list', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(typeof request.query.status === 'string' ? { status: agentStatus.parse(request.query.status) } : {})
+    });
+  });
+
+  router.get('/api/v1/agents/:agentId', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_status', {
+      agentId: agentId.parse(request.params.agentId),
+      ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {})
+    });
+  });
+
+  router.get('/api/v1/agents/:agentId/logs', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_logs', {
+      agentId: agentId.parse(request.params.agentId),
+      ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {}),
+      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {})
+    });
+  });
+
+  router.post('/api/v1/agents/:agentId/messages', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_message', {
+      agentId: agentId.parse(request.params.agentId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  router.post('/api/v1/agents/:agentId/cancel', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_cancel', {
+      agentId: agentId.parse(request.params.agentId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  // Runtime operations. The graph route is registered before the task detail route
+  // so `graph` is never parsed as a task id.
+  router.get('/api/v1/workspaces/:workspaceId/tasks/graph', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'tasks_graph', { workspaceId: workspaceId.parse(request.params.workspaceId) });
+  });
+
+  router.get('/api/v1/workspaces/:workspaceId/tasks/:taskId', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'tasks_status', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      taskId: taskId.parse(request.params.taskId),
+      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {})
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/tasks/:taskId/cancel', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'tasks_cancel', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      taskId: taskId.parse(request.params.taskId)
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/sessions', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'sessions_open', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  // A read-only, bounded view: the browser never supplies stdin, so this cannot
+  // become an interactive terminal through the dashboard.
+  router.get('/api/v1/workspaces/:workspaceId/sessions/:sessionId/io', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'sessions_io', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      sessionId: sessionId.parse(request.params.sessionId),
+      waitMs: 0,
+      ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {})
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/sessions/:sessionId/close', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'sessions_close', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      sessionId: sessionId.parse(request.params.sessionId)
+    });
+  });
+
+  // Decision projections. The browser makes one bounded request per surface instead of
+  // fanning out, and every bucket names the scope its numbers came from.
+  const unavailable = (data: Record<string, unknown>): RunnerResponse => ({ ok: true, message: 'unavailable', truncated: false, data });
+
+  router.get('/api/v1/overview', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const [workspacesResult, agentsResult, grantsResult] = await Promise.all([
+        runner.call('workspace_list', input('workspace_list', { limit: 100 }), selected),
+        runner.call('agent_list', input('agent_list', { limit: 100 }), selected),
+        runner.callInternal ? runner.callInternal('privilege_grant_list', {}, selected) : Promise.resolve(unavailable({ grants: [] }))
+      ]);
+      const workspaces = workspacesResult.ok ? (mapDashboardData('workspace_list', workspacesResult.data) as { workspaces?: Record<string, unknown>[] }).workspaces : [];
+      const agents = agentsResult.ok ? (mapDashboardData('agent_list', agentsResult.data) as { agents?: Record<string, unknown>[] }).agents : [];
+      const grants = grantsResult.ok ? (mapDashboardData('privilege_grant_list', grantsResult.data) as { grants?: Record<string, unknown>[] }).grants : [];
+      response.json({ data: buildOverviewProjection({ workspaces: workspaces ?? [], agents: agents ?? [], grants: grants ?? [] }) });
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/v1/metrics', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const window = typeof request.query.window === 'string' ? request.query.window : '24h';
+      if (!(window in METRIC_WINDOWS)) {
+        response.status(400).json({ error: 'invalid_request', message: `window must be one of ${Object.keys(METRIC_WINDOWS).join(', ')}` });
+        return;
+      }
+      const audit = runner.callInternal ? await runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] });
+      const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
+      response.json({ data: buildMetricsProjection({ events: events ?? [], window }) });
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/v1/reliability', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!runner.callInternal) { response.json({ data: { servers: [], totalCalls: 0 } }); return; }
+      const serversResult = await runner.callInternal('mcp_server_list', {}, selected);
+      const servers = serversResult.ok ? (mapDashboardData('mcp_server_list', serversResult.data) as { servers?: Record<string, unknown>[] }).servers ?? [] : [];
+      // Bounded server-side fan-out: the five most recently listed servers, 200 traces each.
+      const traces: Record<string, unknown>[] = [];
+      for (const server of servers.slice(0, 5)) {
+        const serverId = String(server.id ?? '');
+        if (!serverId) continue;
+        const result = await runner.callInternal('mcp_gateway_trace_list', { serverId, limit: 200 }, selected);
+        if (result.ok) traces.push(...(mapDashboardData('mcp_gateway_trace_list', result.data) as { traces?: Record<string, unknown>[] }).traces ?? []);
+      }
+      response.json({ data: buildReliabilityProjection({ traces }) });
+    } catch (error) { next(error); }
+  });
+
+  router.get('/api/v1/activity', async (request: DashboardRequest, response, next) => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      const [audit, agentsResult] = await Promise.all([
+        runner.callInternal ? runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] }),
+        runner.call('agent_list', input('agent_list', { limit: 100 }), selected)
+      ]);
+      const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
+      const agents = agentsResult.ok ? (mapDashboardData('agent_list', agentsResult.data) as { agents?: Record<string, unknown>[] }).agents : [];
+      response.json({ data: buildActivityProjection({ events: events ?? [], agents: agents ?? [] }) });
+    } catch (error) { next(error); }
+  });
+
+  // Workspace cockpit lifecycle operations. Each is a public runner operation, so
+  // `call` validates the contract schema, keeps the principal scope, and maps the
+  // response through the cockpit projections rather than the raw runner payload.
+  router.get('/api/v1/workspaces/:workspaceId/context', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_context', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      clientProfile: 'all',
+      include: ['instructions', 'languages', 'test_commands', 'skills'],
+      contentMode: 'none'
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/lease-renew', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_lease_renew', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/recover', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_recover', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
+  });
+
+  router.post('/api/v1/workspaces/:workspaceId/finalize', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'workspace_finalize', {
+      workspaceId: workspaceId.parse(request.params.workspaceId),
+      ...(request.body && typeof request.body === 'object' ? request.body : {})
+    });
   });
 
   router.use((error: unknown, _request: DashboardRequest, response: Response, _next: NextFunction) => {

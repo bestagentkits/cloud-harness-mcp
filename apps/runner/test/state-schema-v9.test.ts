@@ -22,7 +22,7 @@ describe('StateStore Schema Version 9 Migration & Model Profile Tables', () => {
     const store = new StateStore(dbPath);
     try {
       const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(row.version).toBe(10);
+      expect(row.version).toBe(11);
 
       // Verify model tables exist
       const tableRows = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
@@ -46,7 +46,7 @@ describe('StateStore Schema Version 9 Migration & Model Profile Tables', () => {
     try {
       store.database.exec('PRAGMA foreign_keys = ON');
       const initial = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(initial.version).toBe(10);
+      expect(initial.version).toBe(11);
 
       // Downgrade to exact version 9
       downgradeStateSchemaToV9(store.database);
@@ -71,7 +71,7 @@ describe('StateStore Schema Version 9 Migration & Model Profile Tables', () => {
       // Re-upgrade to exact version 9
       migratePrincipalSchema(store.database);
       const v10Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(v10Row.version).toBe(10);
+      expect(v10Row.version).toBe(11);
 
       const tableRowsV9 = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
       const tablesV9 = new Set(tableRowsV9.map((r) => r.name));

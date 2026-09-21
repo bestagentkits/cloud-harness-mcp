@@ -105,7 +105,7 @@ afterEach(() => {
   }
 });
 
-function createTestService(): { service: WorkspaceService; store: StateStore; ownerId: string; jobsRoot: string } {
+function createTestService(maxActiveWorkspacesPerOwner = 1): { service: WorkspaceService; store: StateStore; ownerId: string; jobsRoot: string } {
   const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-recovery-test-'));
   temporaryDirectories.push(directory);
   const jobsRoot = join(directory, 'jobs');
@@ -119,6 +119,7 @@ function createTestService(): { service: WorkspaceService; store: StateStore; ow
     maxOutputBytes: 262144,
     maxWorkspaceBytes: 104857600,
     minFreeBytes: 1048576,
+    maxActiveWorkspacesPerOwner,
     networkProfile: 'network-none',
     allowedGitHosts: ['github.com'],
     executorImage: 'cloud-harness-executor:test'
@@ -477,6 +478,66 @@ describe('Workspace Recovery and Lease Renewal (Issue #103)', () => {
     await expect(service.execute(ownerId, 'workspace_lease_renew', { workspaceId: wsRecover })).rejects.toMatchObject({
       code: 'LIMIT_EXCEEDED'
     });
+  });
+
+  it('recovers and renews the same expired workspace once the owner has room under the limit', async () => {
+    const { service, store, ownerId, jobsRoot } = createTestService(2);
+    const now = Date.now();
+
+    const wsActive = 'ws_roomactive123456789012';
+    const wsActivePath = join(jobsRoot, wsActive);
+    mkdirSync(join(wsActivePath, 'repo'), { recursive: true });
+    store.create({
+      id: wsActive,
+      ownerId,
+      idempotencyKey: 'idemp-room-active',
+      repositoryUrl: 'https://github.com/example/repo.git',
+      repositoryRef: 'main',
+      containerName: 'chm-room-active',
+      workspacePath: wsActivePath,
+      status: 'ACTIVE',
+      networkProfile: 'network-none',
+      createdAt: now,
+      lastActivityAt: now,
+      expiresAt: now + 3600000,
+      hardExpiresAt: now + 14400000,
+      gitAuthorName: null,
+      gitAuthorEmail: null,
+      generation: 1,
+      error: null
+    });
+
+    const wsRecover = 'ws_roomrecover1234567890';
+    const wsRecoverPath = join(jobsRoot, wsRecover);
+    mkdirSync(join(wsRecoverPath, 'repo'), { recursive: true });
+    store.create({
+      id: wsRecover,
+      ownerId,
+      idempotencyKey: 'idemp-room-recover',
+      repositoryUrl: 'https://github.com/example/repo.git',
+      repositoryRef: 'main',
+      containerName: null,
+      workspacePath: wsRecoverPath,
+      status: 'EXPIRED_RECOVERABLE',
+      networkProfile: 'network-none',
+      createdAt: now - 5000,
+      lastActivityAt: now - 4000,
+      expiresAt: now - 1000,
+      hardExpiresAt: now + 14400000,
+      gitAuthorName: null,
+      gitAuthorEmail: null,
+      generation: 1,
+      error: null
+    });
+
+    const recovered = await service.execute(ownerId, 'workspace_recover', { workspaceId: wsRecover, mode: 'resume' });
+    expect(recovered.ok).toBe(true);
+    expect(store.byId(wsRecover)?.status).toBe('ACTIVE');
+    expect(store.byId(wsActive)?.status).toBe('ACTIVE');
+
+    const renewed = await service.execute(ownerId, 'workspace_lease_renew', { workspaceId: wsRecover });
+    expect(renewed.ok).toBe(true);
+    expect(store.list(ownerId).filter((entry) => entry.status === 'ACTIVE')).toHaveLength(2);
   });
 
   it('restarts stopped container on renew or recover if container is not running', async () => {

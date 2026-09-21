@@ -40,6 +40,33 @@ beforeEach(async () => {
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z',
         generation: 7, ownerId: 'internal-owner', workspacePath: '/host/jobs/private', containerName: 'executor-secret'
       }] } };
+      if (operation === 'workspace_context') return { ok: true, message: 'context', truncated: false, data: {
+        workspaceId, repositoryUrl: 'https://github.com/example/project.git', ref: 'main', status: 'ACTIVE',
+        networkProfile: 'dependency-access', createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z',
+        expiresAt: '2026-08-17T00:10:00.000Z', generation: 7, branch: 'feature/x',
+        gitIdentity: { name: 'Operator', email: 'owner@example.com' },
+        capabilities: { tasks: true, sessions: false, label: 'not-a-boolean' },
+        ownerId: 'internal-owner', workspacePath: '/host/jobs/private', containerName: 'executor-secret',
+        manifest: { truncated: true, truncationReasons: ['max_bytes', 42], items: [{ path: '/host/jobs/private/secret.env', content: 'SECRET=1' }] }
+      } };
+      if (operation === 'workspace_finalize') return { ok: true, message: 'finalized', truncated: false, data: {
+        branch: 'feature/x', commitSha: 'a'.repeat(40), committed: true, pushed: true, filesChanged: 3,
+        remote: 'https://github.com/example/project.git', workspacePath: '/host/jobs/private', ownerId: 'internal-owner'
+      } };
+      if (operation === 'agent_list') return { ok: true, message: 'agents', truncated: false, data: { agents: [
+        {
+          agentId: `agent_${'g'.repeat(24)}`, workspaceId, parentAgentId: null, profileId: 'coding-fast', status: 'RUNNING', generation: 3,
+          createdAt: '2026-08-17T00:00:00.000Z', startedAt: '2026-08-17T00:00:10.000Z', terminalAt: null, expiresAt: '2026-08-17T01:00:00.000Z',
+          budget: { ttlSeconds: 3_600, maxOutputBytes: 1_048_576, maxInputTokens: 200_000, maxOutputTokens: 32_000, maxCostMicros: 5_000_000 },
+          usage: { inputTokens: 1_000, outputTokens: 500, costMicros: 250_000, outputBytes: 2_048, eventCount: 12, toolTimeMs: 900, wallTimeMs: 5_000 },
+          terminalReason: null, outcomeUnknown: false, proxyOperations: ['files_read'],
+          ownerId: 'internal-owner', containerName: 'executor-secret', workspacePath: '/host/jobs/private', prompt: 'do the thing'
+        }
+      ] } };
+      if (operation === 'agent_logs') return { ok: true, message: 'logs', truncated: false, data: {
+        agentId: `agent_${'g'.repeat(24)}`, cursor: '0', nextCursor: '1', retainedBaseCursor: '0', truncated: false, hasMore: false,
+        events: [{ cursor: '0', nextCursor: '1', timestamp: '2026-08-17T00:00:30.000Z', type: 'tool.call', content: `hello ${'x'.repeat(5_000)}` }]
+      } };
       if (operation === 'files_write') return { ok: true, message: 'written', truncated: false, data: { path: input.path, sha256: 'b'.repeat(64) } };
       return { ok: true, message: 'ok', truncated: false, data: {} };
     }),
@@ -94,6 +121,73 @@ function send(path: string, options: { method?: string; headers?: Record<string,
 }
 
 describe('dashboard BFF', () => {
+  it('dispatches every read-only skills endpoint to its operation', async () => {
+    const skillId = `sk_${'b'.repeat(24)}`;
+    const skillSetId = `skset_${'c'.repeat(24)}`;
+    const jobId = `skjob_${'d'.repeat(24)}`;
+    const revisionId = `skrev_${'g'.repeat(24)}`;
+    const expectations: Array<[string, string]> = [
+      ['/api/v1/skills', 'skill_list'],
+      [`/api/v1/skills/${skillId}`, 'skill_get'],
+      [`/api/v1/skills/${skillId}/revisions`, 'skill_revision_list'],
+      [`/api/v1/skills/${skillId}/revisions/${revisionId}`, 'skill_revision_get'],
+      [`/api/v1/skills/${skillId}/usage`, 'skill_usage'],
+      ['/api/v1/skill-sets', 'skill_set_list'],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_get'],
+      [`/api/v1/skill-imports/${jobId}`, 'skill_import_status'],
+      ['/api/v1/toolkit-registry', 'toolkit_registry_list']
+    ];
+
+    for (const [path, operation] of expectations) {
+      const response = await send(path);
+      expect(response.status, path).toBe(200);
+      expect(calls.at(-1)?.operation, path).toBe(operation);
+    }
+    // The route forwards only the identifier it parsed; the operation schema applies `limit` and the
+    // list filters when the runner parses the request, so the route cannot disagree with the contract.
+    expect(calls.findLast((call) => call.operation === 'skill_revision_list')?.input).toEqual({ skillId });
+  });
+
+  it('reaches the skills search route instead of treating search as an identifier', async () => {
+    const response = await send('/api/v1/skills/search?query=tdd&providers=local');
+    expect(response.status).toBe(200);
+    expect(calls.at(-1)?.operation).toBe('skill_search');
+    expect(calls.at(-1)?.input).toMatchObject({ query: 'tdd' });
+  });
+
+  it('dispatches the skills mutation endpoints to their operations', async () => {
+    const skillId = `sk_${'e'.repeat(24)}`;
+    const skillSetId = `skset_${'f'.repeat(24)}`;
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const cases: Array<[string, string, string, Record<string, unknown>]> = [
+      [`/api/v1/skills/${skillId}`, 'skill_update', 'PATCH', { displayName: 'Renamed', expectedGeneration: 2 }],
+      [`/api/v1/skills/${skillId}/archive`, 'skill_archive', 'POST', { expectedGeneration: 2 }],
+      ['/api/v1/skill-sets', 'skill_set_create', 'POST', { name: 'core' }],
+      ['/api/v1/skills', 'skill_create_custom', 'POST', { slug: 'custom', displayName: 'Custom' }],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_update', 'PATCH', { name: 'core', expectedGeneration: 2 }],
+      ['/api/v1/skill-sets/preview', 'skill_set_preview', 'POST', { skillSets: [{ skillSetId, expectedGeneration: 2 }] }],
+      [`/api/v1/skill-sets/${skillSetId}`, 'skill_set_delete', 'DELETE', { expectedGeneration: 2 }]
+    ];
+
+    for (const [path, operation, method, payload] of cases) {
+      const body = JSON.stringify(payload);
+      const response = await send(path, { method, headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) }, body });
+      expect(response.status, `${method} ${path}`).toBe(200);
+      expect(calls.at(-1)?.operation, `${method} ${path}`).toBe(operation);
+    }
+
+    // The route forwards the identifier it owns together with the validated generation, so a stale
+    // edit reaches the store as a generation conflict rather than an unguarded write.
+    expect(calls.findLast((call) => call.operation === 'skill_set_delete')?.input).toEqual({ skillSetId, expectedGeneration: 2 });
+  });
+
+  it('rejects a skills identifier that does not match the contract shape', async () => {
+    const response = await send('/api/v1/skills/not-a-skill-id');
+    expect(response.status).toBe(400);
+    expect(calls.some((call) => call.operation === 'skill_get')).toBe(false);
+  });
   it('allowlists successful response fields for every dashboard operation', () => {
     const hostile = { ownerId: 'future-owner', token: 'future-token', workspacePath: '/future/private', futureSecret: 'do-not-forward' };
     const fixtures: Record<DashboardResponseOperation, unknown> = {
@@ -203,6 +297,78 @@ describe('dashboard BFF', () => {
     expect((await send(`/api/v1/workspaces/${workspaceId}/files/directory`, { method: 'POST', headers: { origin: 'https://dashboard.example', 'content-type': 'text/plain' }, body: '{}' })).status).toBe(415);
   });
 
+  it('projects workspace context to cockpit posture and drops internals', async () => {
+    const response = await send(`/api/v1/workspaces/${workspaceId}/context`);
+    expect(response.status).toBe(200);
+    const raw = JSON.stringify(response.json);
+    // The context document can carry job paths, container names, the identity email
+    // and file contents; none of it may reach the browser.
+    for (const forbidden of ['internal-owner', '/host/jobs', 'executor-secret', 'owner@example.com', 'SECRET=1', 'secret.env']) {
+      expect(raw, forbidden).not.toContain(forbidden);
+    }
+    expect(response.json.data.branch).toBe('feature/x');
+    expect(response.json.data.gitIdentityName).toBe('Operator');
+    expect(response.json.data.capabilities).toEqual({ tasks: true, sessions: false });
+    expect(response.json.data.manifest).toEqual({ itemCount: 1, truncated: true, truncationReasons: ['max_bytes'] });
+  });
+
+  it('routes the cockpit lifecycle actions with the principal scope and contract validation', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+
+    const renewed = await send(`/api/v1/workspaces/${workspaceId}/lease-renew`, { method: 'POST', headers, body: JSON.stringify({ extensionSeconds: 3_600 }) });
+    expect(renewed.status).toBe(200);
+    const renewCall = calls.find((call) => call.operation === 'workspace_lease_renew');
+    expect(renewCall?.input).toEqual({ workspaceId, extensionSeconds: 3_600 });
+    expect(renewCall?.principal).toEqual(principal);
+
+    const recovered = await send(`/api/v1/workspaces/${workspaceId}/recover`, { method: 'POST', headers, body: JSON.stringify({ mode: 'status' }) });
+    expect(recovered.status).toBe(200);
+    expect(calls.some((call) => call.operation === 'workspace_recover')).toBe(true);
+
+    // Finalize is contract-validated: without a commit message the runner is never called.
+    const rejected = await send(`/api/v1/workspaces/${workspaceId}/finalize`, { method: 'POST', headers, body: JSON.stringify({ all: true, push: true }) });
+    expect(rejected.status).toBe(400);
+    expect(calls.some((call) => call.operation === 'workspace_finalize')).toBe(false);
+
+    const finalized = await send(`/api/v1/workspaces/${workspaceId}/finalize`, { method: 'POST', headers, body: JSON.stringify({ all: true, push: true, commitMessage: 'feat: ship the cockpit' }) });
+    expect(finalized.status).toBe(200);
+    expect(JSON.stringify(finalized.json)).not.toContain('/host/jobs');
+    expect(finalized.json.data).toMatchObject({ commitSha: 'a'.repeat(40), committed: true, pushed: true, filesChanged: 3 });
+  });
+
+  it('projects agent records without owner, container or prompt leakage', async () => {
+    const list = await send('/api/v1/agents');
+    expect(list.status).toBe(200);
+    const raw = JSON.stringify(list.json);
+    for (const forbidden of ['internal-owner', 'executor-secret', '/host/jobs', 'do the thing']) {
+      expect(raw, forbidden).not.toContain(forbidden);
+    }
+    expect(list.json.data.agents[0]).toMatchObject({
+      agentId: `agent_${'g'.repeat(24)}`, workspaceId, profileId: 'coding-fast', status: 'RUNNING',
+      budget: { maxCostMicros: 5_000_000 }, usage: { inputTokens: 1_000, costMicros: 250_000 }
+    });
+    expect(list.json.data.agents[0].proxyOperations).toEqual(['files_read']);
+
+    // Log events stay bounded per event, and an oversized event is marked truncated.
+    const logs = await send(`/api/v1/agents/agent_${'g'.repeat(24)}/logs`);
+    expect(logs.status).toBe(200);
+    expect(logs.json.data.events[0].content).toContain('… truncated');
+    expect(logs.json.data.events[0].content.length).toBeLessThan(4_100);
+    expect(logs.json.data.events[0].type).toBe('tool.call');
+  });
+
+  it('serves the workspace-scoped agent list and rejects an unknown agent status', async () => {
+    const scoped = await send(`/api/v1/workspaces/${workspaceId}/agents`);
+    expect(scoped.status).toBe(200);
+    // The contract schema applies its own `limit` default, so match the scope only.
+    expect(calls.filter((call) => call.operation === 'agent_list').at(-1)?.input).toMatchObject({ workspaceId });
+
+    const rejected = await send('/api/v1/agents?status=NOPE');
+    expect(rejected.status).toBe(400);
+  });
+
   it('accepts an allowlisted hostname when the request host includes its HTTPS port', async () => {
     const response = await send('/api/v1/workspaces', { headers: { host: 'dashboard.example:443' } });
     expect(response.status).toBe(200);
@@ -217,6 +383,54 @@ describe('dashboard BFF', () => {
     });
     expect(response.status).toBe(503);
     expect(calls.some((call) => call.operation === 'workspace_close')).toBe(false);
+  });
+
+  it('passes the workspace quota message through instead of a generic throttling notice', async () => {
+    const quotaMessage = 'active workspace limit reached: 3 active of a maximum 3; close a workspace with workspace_close before opening another';
+    vi.mocked(runner.call).mockImplementationOnce(async (): Promise<RunnerResponse> => ({
+      ok: false,
+      message: 'Workspace admission refused',
+      truncated: false,
+      error: { code: 'LIMIT_EXCEEDED', message: quotaMessage, retryable: true }
+    }));
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const response = await send('/api/v1/workspaces', {
+      method: 'POST',
+      headers: { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken },
+      body: JSON.stringify({ repositoryUrl: 'https://github.com/example/project.git', idempotencyKey: 'dashboard-quota-1' })
+    });
+
+    expect(response.status).toBe(429);
+    expect(response.json.message).toBe(quotaMessage);
+    expect(response.text).not.toContain('Too many requests');
+  });
+
+  it('replaces a non-quota workspace failure with the generic notice', async () => {
+    vi.mocked(runner.call).mockImplementationOnce(async (): Promise<RunnerResponse> => ({
+      ok: false,
+      message: 'Workspace admission refused',
+      truncated: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'executor creation failed: docker: Error response from daemon: /job/repo mount denied',
+        retryable: false
+      }
+    }));
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const response = await send('/api/v1/workspaces', {
+      method: 'POST',
+      headers: { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken },
+      body: JSON.stringify({ repositoryUrl: 'https://github.com/example/project.git', idempotencyKey: 'dashboard-internal-1' })
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.json.message).toBe('The workspace service could not complete the request.');
+    expect(response.text).not.toContain('docker');
+    expect(response.text).not.toContain('/job/repo');
   });
 
   it('lists safe key metadata and requires CSRF for one-time create and revoke', async () => {

@@ -117,17 +117,29 @@ To work without egress meanwhile, reset the default to `network-none` on the Set
 2. Alternatively, configure the fallback credential for that principal: the runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in `owner-bearer` mode, or that principal's global runtime secret in Access mode. The runner-environment credential is harness-side only and never enters an executor; a principal's global runtime secret is injected into that principal's workspaces, so it also authenticates the workspace `gh` CLI.
 A `403` from the helper is never retried, because the operation may already have had side effects; inspect the issue or pull request before retrying.
 
-### 12. `agentkit` toolkit fails during `workspace_open`
+### 12. `LIMIT_EXCEEDED: active workspace limit reached` on `workspace_open`
+**Cause:** The principal already holds `MAX_ACTIVE_WORKSPACES_PER_OWNER` counted workspaces (`CREATING`, `ACTIVE`, `NETWORK_QUARANTINED`). A record in `REAPING` is in flight to teardown and holds no slot. Multiple concurrent workspaces are supported by design, so this is a quota rather than a harness limitation.
+**Fix:**
+1. Call `workspace_list` to see the counted workspaces, then `workspace_close` one you no longer need. Closing removes that workspace's files, so finalize or push unpushed work first.
+2. An `ACTIVE` workspace also frees its slot when its idle or wall TTL expires. A `NETWORK_QUARANTINED` record does not expire, so close it explicitly.
+3. Raise `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner (default `3`, maximum `64`) after sizing host memory for the new limit, because each counted workspace may use up to 1 GiB of container memory, one CPU, and 256 pids.
+Lowering the limit never reaps an existing workspace; it only blocks new admission and recovery until the counted total drops.
+
+### 13. A workspace is stuck in `REAPING`
+**Cause:** A teardown that failed before its final `CLOSED` write leaves the record in `REAPING`. A `REAPING` record holds no capacity slot, so it never blocks `workspace_open`; the visible symptom is a workspace that will not disappear from the dashboard.
+**Fix:** Call `workspace_close` again on that workspace. The close path skips the claim for a record already in `REAPING` and retries container and path removal, so a repeat close is the supported remedy. Only the fenced dashboard close refuses a `REAPING` record with `409 CONFLICT`. If removal keeps failing, fix the underlying Docker or filesystem fault rather than running broad Docker or database cleanup.
+
+### 14. `agentkit` toolkit fails during `workspace_open`
 **Cause:** The licensed AgentKit kit kind fails closed by design, and each message names the missing prerequisite.
 **Fix:**
 1. `AgentKit kits are not configured on this instance` — the operator must set both `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` (the pinned Ed25519 registry signing key) and restart the runner.
-2. `needs the <name> secret stored for this principal` — store the AgentKit licence token (an `ak_dev_`/`ak_cli_` credential) as a global secret with that name (`AGENTKIT_REGISTRY_TOKEN` unless `AGENTKIT_REGISTRY_CREDENTIAL_SECRET` changes it). Credentials are never accepted as tool arguments.
+2. `needs the <name> secret stored for this principal` — store the AgentKit licence token (an `ak_dev_`/`ak_cli_` credential) as a global secret with that name (`AGENTKIT_REGISTRY_TOKEN` unless `AGENTKIT_REGISTRY_CREDENTIAL_SECRET` changes it). The secret must be created with `purpose: provisioning`; the runner refuses a `runtime`-purpose token so it can never be injected into an executor. Credentials are never accepted as tool arguments.
 3. `registry rejected the credential ... (not_licensed | not_authenticated | license_inactive)` — the token has no entitlement for that `kitId`, or is not a registry bearer. Re-issue it from the AgentKit account that owns the licence.
 4. `manifest signature did not verify` / `signed by key ...; pinned key is ...` — the registry signing key rotated or the pinned key is stale. Update `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` together; do not disable verification.
 5. `package digest did not match the signed manifest`, `must contain exactly one <kitId> root directory`, or `outside the <kitId> root` — the downloaded artifact is not the published package. Retry once; if it persists, treat it as an upstream publish problem instead of mounting the content.
 6. `no published release for kit <kitId>` — that kit has no signed release on the requested channel yet. Try `channel: "beta"`, or pin a version that exists.
 
-### 13. Uploaded operator skills do not appear in `skills_list`
+### 15. Uploaded operator skills do not appear in `skills_list`
 **Cause:** The `built-in` tier is populated only when the runner is pointed at an operator-owned host directory, and only reads a strict layout.
 **Fix:**
 1. Set `BUILTIN_SKILLS_ROOT` to an absolute host directory in the runner environment (`/etc/cloud-harness-mcp/runtime.env` or `.env`) and restart the stack; with the variable unset the executor mounts nothing and the tier stays empty by design.

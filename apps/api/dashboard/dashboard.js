@@ -32,11 +32,26 @@ import {
   listGlobalSecrets
 } from './dashboard-api.js';
 import {
+  escapeHtml,
+  launchBlockedByConflicts,
   renderApiKeyIndex, renderArtifactIndex, renderAuditIndex, renderFile, renderFileList, renderGitHub, renderGlobalSecrets, renderModelsPage, renderOverview, renderOverviewSkeleton,
-  renderProjectDetail, renderProfile, renderProjectIndex, renderRuntime, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
+  renderProjectDetail, renderProfile, renderProjectIndex, renderWorkspaceDetail, renderWorkspaceIndex, renderSettings, repositoryName,
   renderKnowledgeIndex, renderKnowledgeDetail, renderKnowledgeGraph, renderMarkdown, renderPaletteResults, profileDisplayName,
-  renderMcpServersIndex, renderMcpServerDetail
+  renderMcpServersIndex, renderMcpServerDetail,
+  renderSkillsLibraryCards, renderSkillsLibraryRows, renderSkillsRegistryRows,
+  renderSkillConflicts,
+  renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
+  renderSkillsSkeleton,
+  renderModelsActions, renderGitHubActions, renderMcpActions,
+  renderPrimaryAction,
+  renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
+  renderWorkspaceTabPlaceholder, renderFinalizeDialog,
+  renderAgentsIndex, renderAgentDetail,
+  renderRuntimePanel, renderGitPanel,
+  renderAutomationPanel, renderDeployPanel,
+  renderActivityCenter, renderApprovals
 } from './dashboard-render.js';
+import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -201,11 +216,18 @@ export async function submitPatchForm({ form, workspaceId, file, request, onSave
 }
 
 export async function renderWorkspaceDrawer({ trigger, detail, content, fetchWorkspace, modal }) {
-  const id = new URL(trigger.href).pathname.split('/').at(-1);
+  // A malformed or relative href must not escape as a raw URL error; the drawer
+  // reports one actionable message instead.
+  let id;
+  try {
+    id = new URL(trigger.href, globalThis.location?.origin ?? 'http://localhost').pathname.split('/').at(-1);
+  } catch {
+    throw new Error('Workspace link could not be resolved.');
+  }
   const item = await fetchWorkspace(id);
   content.querySelector('[aria-current="true"]')?.removeAttribute('aria-current');
   trigger.setAttribute('aria-current', 'true');
-  detail.innerHTML = renderWorkspaceDetail(item, false, modal);
+  insertRendered(detail, renderWorkspaceDetail(item, false, modal));
   const heading = detail.querySelector('#workspace-detail-title');
   if (!heading) throw new Error('Workspace detail heading is unavailable.');
   heading.setAttribute('tabindex', '-1');
@@ -305,21 +327,327 @@ export const PALETTE_SOURCE_REQUESTS = [
   { key: 'artifacts', path: '/artifacts?limit=100', rows: 'artifacts', group: 'Artifacts' }
 ];
 
-export const PALETTE_PAGE_COMMANDS = [
-  { id: 'page:overview', group: 'Pages', label: 'Overview', hint: 'Page', href: '/dashboard/overview' },
-  { id: 'page:workspaces', group: 'Pages', label: 'Workspaces', hint: 'Page', href: '/dashboard' },
-  { id: 'page:projects', group: 'Pages', label: 'Projects', hint: 'Page', href: '/dashboard/projects' },
-  { id: 'page:secrets', group: 'Pages', label: 'Secrets', hint: 'Page', href: '/dashboard/secrets' },
-  { id: 'page:models', group: 'Pages', label: 'Models', hint: 'Page', href: '/dashboard/models' },
-  { id: 'page:api-keys', group: 'Pages', label: 'API keys', hint: 'Page', href: '/dashboard/api-keys' },
-  { id: 'page:github', group: 'Pages', label: 'GitHub', hint: 'Page', href: '/dashboard/github' },
-  { id: 'page:knowledge', group: 'Pages', label: 'Knowledge', hint: 'Search memories and journals here', href: '/dashboard/knowledge' },
-  { id: 'page:mcp-servers', group: 'Pages', label: 'MCP Servers', hint: 'Manage downstream MCP integrations', href: '/dashboard/mcp-servers' },
-  { id: 'page:settings', group: 'Pages', label: 'Settings', hint: 'Instance defaults for workspaces and network egress', href: '/dashboard/settings' },
-  { id: 'page:artifacts', group: 'Pages', label: 'Artifacts', hint: 'Page', href: '/dashboard/artifacts' },
-  { id: 'page:audit', group: 'Pages', label: 'Audit', hint: 'Page', href: '/dashboard/audit' },
-  { id: 'page:profile', group: 'Pages', label: 'Profile', hint: 'Page', href: '/dashboard/profile' }
-];
+/**
+ * Library tab controller: debounced search, selection that drives the bulk bar, and a bulk call whose
+ * per-item results decide what stays selected. The server is authoritative, so a row it could not
+ * apply keeps its selection and reports its blocker instead of being dropped from the batch, which
+ * would silently turn a partial failure into an apparent success.
+ */
+export function createSkillsLibraryController({ bulkBar, bulkCount, onSearch, onBulk, debounceMs = 300 }) {
+  let timer;
+  const selected = new Map();
+
+  function renderBulkBar() {
+    if (bulkBar) bulkBar.hidden = selected.size === 0;
+    if (bulkCount) bulkCount.textContent = `${selected.size} selected`;
+  }
+
+  function applyResults(results) {
+    for (const result of Array.isArray(results) ? results : []) {
+      if (result.ok === true) selected.delete(result.skillId);
+      else selected.set(result.skillId, result.error ?? 'unknown');
+    }
+    renderBulkBar();
+    return blockers();
+  }
+
+  function blockers() {
+    return [...selected.entries()]
+      .filter(([, blocker]) => blocker !== undefined)
+      .map(([skillId, blocker]) => ({ skillId, blocker }));
+  }
+
+  return {
+    search(value) {
+      if (timer) globalThis.clearTimeout(timer);
+      timer = globalThis.setTimeout(() => { timer = undefined; onSearch(value); }, debounceMs);
+    },
+    pendingSearch() { return timer !== undefined; },
+    toggle(skillId, isSelected) {
+      if (isSelected) selected.set(skillId, undefined);
+      else selected.delete(skillId);
+      renderBulkBar();
+    },
+    selectedIds() { return [...selected.keys()]; },
+    blockers,
+    applyResults,
+    async runBulk(action) {
+      const skillIds = [...selected.keys()];
+      if (skillIds.length === 0) return [];
+      return applyResults(await onBulk(action, skillIds));
+    }
+  };
+}
+
+/**
+ * The editor stores instructions and never executes them, so this validation is not a safety control:
+ * it rejects input the runner would refuse anyway. A null byte cannot survive the contract, and
+ * frontmatter that opens and never closes would produce a skill that resolves but never loads.
+ */
+export function validateSkillInstructions(text) {
+  const value = String(text ?? '');
+  if (value.trim() === '') return 'Instructions cannot be empty.';
+  if (value.includes('\0')) return 'Instructions cannot contain null bytes.';
+  if (/^\s*---\s*\n/.test(value) && value.indexOf('\n---', 3) === -1) return 'Frontmatter opens with --- but never closes.';
+  return null;
+}
+
+/**
+ * Import polling with a bounded attempt count. It stops on a terminal job state and on exhausting the
+ * budget, so a job whose runner died leaves the operator with a stopped poller instead of a spinner
+ * that never ends.
+ */
+/**
+ * Inserts renderer output by adopting parsed nodes. Browsers parse with DOMParser,
+ * which keeps renderer markup off the live tree as a string; the test doubles install
+ * their own parser and adoption method, so no raw-HTML assignment lives in this
+ * module. Every renderer escapes the values it interpolates.
+ */
+function insertRendered(element, html) {
+  if (!element) return;
+  const markup = String(html ?? '');
+  const parsed = new globalThis.DOMParser().parseFromString(markup, 'text/html');
+  element.replaceChildren(...parsed.body.childNodes);
+}
+
+/**
+ * The single navigation seam. Every Dashboard navigation target is a same-origin
+ * Dashboard path; anything else is refused rather than followed, so a rendered
+ * value can never turn into an off-site redirect. Exported for its own test.
+ */
+export function dashboardNavigationPath(target) {
+  const value = String(target ?? '');
+  return /^\/dashboard(?:[/?#]|$)/.test(value) ? value : '/dashboard';
+}
+
+function navigateTo(target) {
+  globalThis.location.href = dashboardNavigationPath(target);
+}
+
+/**
+ * Sidebar markup for the page registry. Labels, routes, groups and icons are
+ * authored in `dashboard-pages.js` and nowhere else, so navigation cannot drift
+ * away from routing again. The icon markup is trusted static SVG from that
+ * module; every text value is escaped here.
+ */
+export function renderSidebarNavMarkup(groups = navGroups()) {
+  return groups.map((group) => [
+    `<p class="nav-group">${escapeHtml(group.label)}</p>`,
+    ...group.pages.map((page) => `<a href="${escapeHtml(page.route)}" data-section="${escapeHtml(page.id)}"><svg class="nav-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${page.icon}</svg>${escapeHtml(page.label)}${page.id === 'approvals' ? '<span class="nav-badge" id="nav-badge-approvals" hidden></span>' : ''}</a>`)
+  ].join('')).join('');
+}
+
+export function createImportPollingController({ fetchJob, onState, isTerminal, intervalMs = 1_500, maxAttempts = 40 }) {
+  let attempts = 0;
+  let stopped = false;
+  let timer;
+
+  async function tick() {
+    if (stopped) return;
+    attempts += 1;
+    const job = await fetchJob();
+    onState(job);
+    if (stopped) return;
+    if (isTerminal(job) || attempts >= maxAttempts) {
+      stopped = true;
+      return;
+    }
+    timer = globalThis.setTimeout(() => { void tick(); }, intervalMs);
+  }
+
+  return {
+    start() { stopped = false; attempts = 0; return tick(); },
+    stop() { stopped = true; if (timer) globalThis.clearTimeout(timer); timer = undefined; },
+    attempts() { return attempts; },
+    running() { return !stopped; }
+  };
+}
+
+/**
+ * Tab controller for the skills page. It keeps `aria-selected` and `tabindex` in step with the visible
+ * panel, and enters each tab once so switching back and forth does not re-request what is already on
+ * screen.
+ */
+export function createSkillsTabsController({ tabs, panels, onEnter }) {
+  const entered = new Set();
+  return {
+    select(name) {
+      for (const tab of tabs) {
+        tab.element.setAttribute('aria-selected', tab.name === name ? 'true' : 'false');
+        tab.element.setAttribute('tabindex', tab.name === name ? '0' : '-1');
+      }
+      for (const panel of panels) panel.element.hidden = panel.name !== name;
+      if (!entered.has(name)) {
+        entered.add(name);
+        if (onEnter) onEnter(name);
+      }
+    },
+    enteredTabs() { return [...entered]; }
+  };
+}
+
+/**
+ * Editor submit. Nothing is executed here, so the failure modes that matter are an input the runner
+ * would refuse and a generation conflict. In both cases the draft is kept: discarding an operator's
+ * typing because the server moved on would lose work that is still valid against the newer revision.
+ *
+ * The editor creates a skill. Changing the instructions of an existing one would need a revision the
+ * runner does not offer an operation for, so the form does not pretend to do it: metadata edits go
+ * through the update operation, and content edits are a new skill until such an operation exists.
+ */
+export function createSkillEditorController({ slug, displayName, instructions, save }) {
+  return {
+    async submit() {
+      const value = instructions ? instructions.value : '';
+      const slugValue = slug ? String(slug.value).trim() : '';
+      const nameValue = displayName ? String(displayName.value).trim() : '';
+      if (slug && !/^[A-Za-z0-9._-]{1,120}$/.test(slugValue)) {
+        return { ok: false, reason: 'invalid', message: 'A slug may contain letters, digits, dot, dash, and underscore.', keepDraft: true };
+      }
+      const problem = validateSkillInstructions(value);
+      if (problem) return { ok: false, reason: 'invalid', message: problem, keepDraft: true };
+      try {
+        const body = { slug: slugValue, displayName: nameValue, instructions: value, expectedGeneration: 0 };
+        return { ok: true, result: await save(body), keepDraft: false };
+      } catch (error) {
+        const status = error && typeof error === 'object' ? error.status : undefined;
+        const message = error instanceof Error ? error.message : 'Save failed.';
+        return {
+          ok: false,
+          reason: status === 409 ? 'conflict' : 'error',
+          message: status === 409 ? 'A skill with this slug already exists. Choose another slug.' : message,
+          keepDraft: true
+        };
+      }
+    }
+  };
+}
+
+/**
+ * Builds the import request the runner accepts. The source is checked here because the wizard's review
+ * step has to show the operator something concrete before anything is fetched, and a mistyped source
+ * discovered after a provider round trip costs more than a message beside the field.
+ */
+export function buildSkillImportRequest({ sourceKind, sourceRef, ref }) {
+  const kind = ['skills-sh', 'skillx', 'git'].includes(sourceKind) ? sourceKind : 'skills-sh';
+  const value = String(sourceRef ?? '').trim();
+  if (value === '') return { ok: false, message: 'Enter the skill source to import.' };
+  if (kind !== 'skillx' && !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value)) {
+    return { ok: false, message: 'Enter the source as owner/repository.' };
+  }
+
+  const pinned = String(ref ?? '').trim();
+  // The operation takes a full object id, not a branch or tag, so a branch name would be refused by
+  // the runner after the wizard claimed to accept it.
+  if (pinned !== '' && !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(pinned)) {
+    return { ok: false, message: 'A ref has to be a full 40 or 64 character hexadecimal commit id.' };
+  }
+
+  return {
+    ok: true,
+    body: {
+      sourceKind: kind,
+      sourceRef: value,
+      ...(pinned === '' ? {} : { ref: pinned }),
+      expectedGeneration: 0
+    }
+  };
+}
+
+/**
+ * Launch skill-set selection. Submit stays disabled while a conflict has no override, because the
+ * resolver would refuse the launch anyway, and a control that looks available but fails is worse than
+ * one that says why it cannot be used yet. The preview is what makes that decision honest: the dialog
+ * gates on what launch would actually resolve rather than on a local guess.
+ */
+export function createLaunchSkillSetController({ submit, loadSets, preview }) {
+  let sets = [];
+  let chosen = [];
+  let overrides = {};
+  let conflicts = [];
+
+  function request() {
+    return chosen.map((id) => {
+      const match = sets.find((set) => set.id === id);
+      return { skillSetId: id, expectedGeneration: match ? match.generation : 0 };
+    });
+  }
+
+  const controller = {
+    async load() { sets = (await loadSets()) ?? []; return sets; },
+    sets() { return sets; },
+    choose(ids) { chosen = [...ids]; return chosen; },
+    chosen() { return chosen; },
+    conflictList() { return conflicts; },
+    overrides() { return overrides; },
+    blocked() { return launchBlockedByConflicts(conflicts, overrides); },
+    body() { return { skillSets: request(), skillOverrides: overrides }; },
+    async resolve(name, revisionId) {
+      overrides = { ...overrides, [name]: revisionId };
+      return controller.refresh();
+    },
+    async refresh() {
+      const payload = request();
+      // Nothing selected means nothing to resolve, so the preview is not asked to describe an empty
+      // launch and submit is left available for a workspace with no skill sets.
+      const result = payload.length === 0 ? { resolved: [], excluded: [], conflicts: [] } : await preview(payload, overrides);
+      conflicts = result.conflicts ?? [];
+      const blocked = launchBlockedByConflicts(conflicts, overrides);
+      if (submit) submit.disabled = blocked;
+      return { ...result, blocked };
+    }
+  };
+  return controller;
+}
+
+/**
+ * The bulk operation carries one generation for the whole batch, so a caller that selects rows from
+ * different generations has to group them. Sending one batch with a single generation would report
+ * every other row as a conflict, which looks like a locking problem when it is really a batching one.
+ */
+export function groupBulkRequests(skills, skillIds) {
+  const groups = new Map();
+  for (const skillId of Array.isArray(skillIds) ? skillIds : []) {
+    const skill = (Array.isArray(skills) ? skills : []).find((candidate) => candidate.id === skillId);
+    const generation = skill ? skill.generation : undefined;
+    const key = String(generation ?? 'unknown');
+    const group = groups.get(key) ?? { generation, skillIds: [] };
+    group.skillIds.push(skillId);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+/**
+ * Body for creating a skill set. A set stores the exact revision of each member, so the builder
+ * resolves the current revision of every chosen skill rather than storing a name that could later
+ * resolve to different content. A member without a revision is refused here, because the runner would
+ * accept the name and only fail when the set is used.
+ */
+export function buildSkillSetBody({ name, description, skills, selectedIds }) {
+  const trimmed = String(name ?? '').trim();
+  if (trimmed === '') return { ok: false, message: 'A skill set needs a name.' };
+  const ids = Array.isArray(selectedIds) ? selectedIds : [];
+  if (ids.length === 0) return { ok: false, message: 'Select at least one skill.' };
+
+  const items = [];
+  for (const id of ids) {
+    const skill = (Array.isArray(skills) ? skills : []).find((candidate) => candidate.id === id);
+    if (!skill || !skill.currentRevisionId) {
+      return { ok: false, message: 'Every member needs a skill that has a revision.' };
+    }
+    items.push({ skillSourceId: id, revisionId: skill.currentRevisionId, name: skill.slug ?? skill.displayName ?? id });
+  }
+
+  return { ok: true, body: { name: trimmed, description: String(description ?? ''), items, expectedGeneration: 0 } };
+}
+
+/**
+ * Palette page commands are registry output, not a second list: a page cannot be
+ * navigable yet absent from the palette, and every hint lives beside the page it
+ * describes.
+ */
+export const PALETTE_PAGE_COMMANDS = palettePageCommands();
 
 export function isPaletteHotkey(event) {
   return Boolean(event)
@@ -496,12 +824,16 @@ export function validateSecretClient(name, value) {
 export function initializeDashboard() {
   const content = document.querySelector('#content'); const detail = document.querySelector('#detail'); const main = document.querySelector('#main');
   const sidebar = document.querySelector('#product-nav'); const alertBox = document.querySelector('#alert'); const announcer = document.querySelector('#announcer');
+  // The sidebar is registry output; index.html ships an empty container so a page
+  // label cannot live in two places.
+  insertRendered(document.querySelector('#sidebar-nav'), renderSidebarNavMarkup());
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
-  const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(files|runtime))?$/);
+  const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|files|git|automation|deploy|artifacts|activity))?$/);
   const projectMatch = location.pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
   const knowledgeMatch = location.pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
   const mcpServerMatch = location.pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
+  const agentMatch = location.pathname.match(/^\/dashboard\/agents\/(agent_[A-Za-z0-9_-]{20,80})$/);
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
   const apiKeyReveal = createApiKeyRevealController({
     dialog: revealDialog, secretField: document.querySelector('#api-key-secret'), copyButton: document.querySelector('#copy-api-key'),
@@ -528,14 +860,14 @@ export function initializeDashboard() {
     currentBulkProject = project;
     if (bulkEnvIdField) bulkEnvIdField.value = environment.id;
     if (bulkInput) bulkInput.value = '';
-    if (bulkPreview) bulkPreview.innerHTML = '';
+    if (bulkPreview) insertRendered(bulkPreview, '');
     if (bulkStatus) bulkStatus.textContent = '';
     if (bulkDialog) bulkDialog.showModal();
     if (bulkInput) bulkInput.focus();
   }
   function closeBulkImport() {
     if (bulkInput) bulkInput.value = '';
-    if (bulkPreview) bulkPreview.innerHTML = '';
+    if (bulkPreview) insertRendered(bulkPreview, '');
     if (bulkStatus) bulkStatus.textContent = '';
     if (bulkDialog && bulkDialog.open) bulkDialog.close();
   }
@@ -545,7 +877,7 @@ export function initializeDashboard() {
   bulkInput?.addEventListener('input', () => {
     const parsed = parseDotEnv(bulkInput.value);
     if (!parsed.length) {
-      bulkPreview.innerHTML = '<span class="diff-skip">No variable assignments found.</span>';
+      insertRendered(bulkPreview, '<span class="diff-skip">No variable assignments found.</span>');
       return;
     }
     const existing = new Map((currentBulkEnvironment.secrets ?? []).map((s) => [s.name, s]));
@@ -569,7 +901,7 @@ export function initializeDashboard() {
         }
       }
     }
-    bulkPreview.innerHTML = lines.join('');
+    insertRendered(bulkPreview, lines.join(''));
   });
   document.querySelector('#bulk-import-form')?.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -649,100 +981,568 @@ export function initializeDashboard() {
     document.title = `${title} | Cloud Harness`;
   }
   function selectNavigation(section) {
+    // A loader passes a page id and nothing else: the registry owns which sidebar
+    // entry stays current, the heading, the help text and the document title.
+    const page = pageById(section);
+    const activeId = page ? navigationPageId(page) : section;
     for (const link of sidebar.querySelectorAll('a[data-section]')) {
-      if (link.dataset.section === section) link.setAttribute('aria-current', 'page');
+      if (link.dataset.section === activeId) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     }
-    document.querySelector('#context-nav').innerHTML = '';
+    insertRendered(document.querySelector('#context-nav'), '');
+    // The action slot follows the page, so a page without a primary action cannot
+    // inherit the previous page's button.
+    insertRendered(document.querySelector('#page-actions'), '');
+    if (page) setTitle(page.title, page.help);
   }
+  /**
+   * The page's single primary action (plus at most one secondary action) lives in
+   * the shell's action slot, next to the page heading, instead of inside content.
+   */
+  function setPageActions(markup) {
+    insertRendered(document.querySelector('#page-actions'), markup ?? '');
+  }
+  /**
+   * Dialog wiring. Opening is delegated once on the document, because a page's
+   * primary action lives in the shell's action slot — outside `#content` — so a
+   * content-scoped binding would silently miss the most important trigger.
+   * Dismissal is bound per render, since the `close` event does not bubble.
+   */
+  function openDialog(trigger) {
+    const target = document.getElementById(trigger.dataset.dialog);
+    if (!target || typeof target.showModal !== 'function') return;
+    target.dataset.invokerId = trigger.id ?? '';
+    if (!target.open) target.showModal();
+    const firstField = target.querySelector('input:not([type="hidden"]), select, textarea');
+    (firstField ?? target.querySelector('[data-dialog-close]'))?.focus?.();
+  }
+  document.addEventListener('click', (event) => {
+    const closeTrigger = event.target?.closest?.('[data-dialog-close]');
+    if (closeTrigger) { closeTrigger.closest('dialog')?.close(); return; }
+    const trigger = event.target?.closest?.('[data-dialog]');
+    if (trigger) openDialog(trigger);
+  });
+  function bindDialogDismissal(root) {
+    for (const dialogElement of root.querySelectorAll('dialog')) {
+      dialogElement.querySelector('[data-dialog-close]')?.addEventListener('click', () => dialogElement.close());
+      dialogElement.addEventListener('close', () => {
+        const invokerId = dialogElement.dataset.invokerId;
+        if (invokerId) document.getElementById(invokerId)?.focus?.({ preventScroll: true });
+      });
+    }
+  }
+  /** Copy affordances for identifiers: the value is copied, never re-rendered. */
+  function bindCopyAffordances(root) {
+    for (const chip of root.querySelectorAll('[data-copy]')) {
+      chip.addEventListener('click', async () => {
+        const value = chip.dataset.copy ?? '';
+        const label = chip.dataset.copyLabel ?? 'Value';
+        try {
+          await globalThis.navigator.clipboard.writeText(value);
+          chip.textContent = 'Copied';
+          announce(`${label} copied.`);
+          globalThis.setTimeout(() => { chip.textContent = value; }, 2_000);
+        } catch {
+          announce('Copy failed. Select the value and copy it manually.');
+        }
+      });
+    }
+  }
+  // Static pages resolve through the registry; detail routes keep their own matchers
+  // because they need the captured id.
+  const PAGE_LOADERS = {
+    overview: loadOverview,
+    workspaces: loadIndex,
+    audit: loadAudit,
+    projects: loadProjects,
+    secrets: loadGlobalSecrets,
+    models: loadModels,
+    skills: loadSkills,
+    integrations: () => (location.pathname === '/dashboard/integrations/mcp-servers' ? loadMcpServers() : loadGitHub()),
+    knowledge: loadKnowledge,
+    agents: loadAgents,
+    activity: loadActivity,
+    approvals: loadApprovals,
+    artifacts: loadArtifacts,
+    'api-keys': loadApiKeys,
+    settings: loadSettings,
+    profile: loadProfile
+  };
   async function load() {
     alertBox.hidden = true; setBusy(true);
     try {
-      if (location.pathname === '/dashboard' || location.pathname === '/dashboard/') await loadIndex();
-      else if (location.pathname === '/dashboard/overview') await loadOverview();
-      else if (location.pathname === '/dashboard/projects') await loadProjects();
-      else if (location.pathname === '/dashboard/secrets') await loadGlobalSecrets();
-      else if (location.pathname === '/dashboard/models') await loadModels();
-      else if (projectMatch) await loadProject(projectMatch[1]);
-      else if (location.pathname === '/dashboard/artifacts') await loadArtifacts();
-      else if (location.pathname === '/dashboard/audit') await loadAudit();
-      else if (location.pathname === '/dashboard/api-keys') await loadApiKeys();
-      else if (location.pathname === '/dashboard/github') await loadGitHub();
-      else if (location.pathname === '/dashboard/knowledge') await loadKnowledge();
-      else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
-      else if (location.pathname === '/dashboard/mcp-servers') await loadMcpServers();
-      else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
-      else if (location.pathname === '/dashboard/settings') await loadSettings();
-      else if (location.pathname === '/dashboard/profile') await loadProfile();
-      else if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
+      const page = pageForPath(location.pathname);
+      if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
-      else if (pathMatch) await loadWorkspace(pathMatch[1]);
+      else if (pathMatch) await loadWorkspace(pathMatch[1], pathMatch[2] ?? 'summary');
+      else if (projectMatch) await loadProject(projectMatch[1]);
+      else if (knowledgeMatch) await loadKnowledgeDetailView(knowledgeMatch[1]);
+      else if (mcpServerMatch) await loadMcpServerDetail(mcpServerMatch[1]);
+      else if (agentMatch) await loadAgentDetail(agentMatch[1]);
+      else if (page && PAGE_LOADERS[page.id]) await PAGE_LOADERS[page.id]();
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
+      // Shared resource-page behavior is wired once per render rather than in every
+      // loader: dialog dismissal with focus restore, and copy affordances in both
+      // the content and the shell's action slot.
+      bindDialogDismissal(content);
+      bindCopyAffordances(content); bindCopyAffordances(document.querySelector('#page-actions'));
       setBusy(false); main.focus({ preventScroll: true });
     } catch (error) { showError(error); }
   }
+  async function loadSkills() {
+    selectNavigation('skills');
+    document.querySelector('#command-surface').hidden = true;
+    insertRendered(content, renderSkillsSkeleton());
+
+    let rows = [];
+    let query = '';
+    // Filters and sort are applied in the browser over the rows the server already returned, because the
+    // library is small enough that a round trip per keystroke would cost more than it explains.
+    let providerFilter = '';
+    let stateFilter = '';
+    let tagFilter = '';
+    let sortKey = 'name';
+
+    const library = createSkillsLibraryController({
+      bulkBar: document.querySelector('#skills-bulk-bar'),
+      bulkCount: document.querySelector('#skills-bulk-count'),
+      onSearch: (value) => { query = value; paintLibrary(); },
+      onBulk: async (action, skillIds) => {
+        const merged = [];
+        for (const group of groupBulkRequests(rows, skillIds)) {
+          const result = await api('/skills/bulk', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action, skillIds: group.skillIds, expectedGeneration: group.generation ?? 0 })
+          });
+          merged.push(...(result.data.results ?? []));
+        }
+        return merged;
+      }
+    });
+
+    function paintLibrary() {
+      const body = document.querySelector('#skills-library-table tbody');
+      if (!body) return;
+      const needle = query.trim().toLowerCase();
+      const tag = tagFilter.trim().toLowerCase();
+      const sortField = sortKey === 'name' ? 'displayName' : sortKey;
+      const visible = rows
+        .filter((skill) => providerFilter === '' || skill.provider === providerFilter)
+        .filter((skill) => stateFilter === '' || skill.state === stateFilter)
+        .filter((skill) => tag === '' || (Array.isArray(skill.tags) ? skill.tags : [])
+          .some((entry) => String(entry).toLowerCase().includes(tag)))
+        .filter((skill) => needle === '' || `${skill.displayName} ${skill.slug} ${skill.provider}`.toLowerCase().includes(needle))
+        .sort((a, b) => String(a[sortField] ?? '').localeCompare(String(b[sortField] ?? '')));
+      insertRendered(body, renderSkillsLibraryRows(visible));
+      const cards = document.querySelector('#skills-library-cards');
+      if (cards) insertRendered(cards, renderSkillsLibraryCards(visible));
+      // Both renderings carry the same controls, so both are wired rather than only the visible one.
+      for (const scope of [body, cards]) {
+        if (!scope) continue;
+        for (const box of scope.querySelectorAll('[data-skill-select]')) {
+          box.addEventListener('change', () => library.toggle(box.getAttribute('data-skill-select'), box.checked));
+        }
+        for (const button of scope.querySelectorAll('[data-skill-detail]')) {
+          button.addEventListener('click', () => { void openSkillDetail(button.getAttribute('data-skill-detail')).catch(showError); });
+        }
+      }
+    }
+
+    /**
+     * Usage and preset rows are built from text nodes rather than from markup, because both lists carry
+     * values the server chose and a list is not worth an injection surface. Usage names the two places a
+     * skill can be in use rather than a count, since a skill inside a set and a skill pinned by a live
+     * workspace are different risks, and lock is that fact stated as its consequence.
+     */
+    function skillUsageNodes(usage) {
+      const sets = Array.isArray(usage?.sets) ? usage.sets : [];
+      const live = Array.isArray(usage?.liveWorkspaces) ? usage.liveWorkspaces : [];
+      const locked = sets.length > 0 || live.length > 0;
+      const nodes = [];
+      const lock = document.createElement('p');
+      lock.id = 'skill-usage-lock';
+      lock.textContent = locked ? 'locked' : 'unlocked';
+      nodes.push(lock);
+      const setsHeading = document.createElement('h4');
+      setsHeading.textContent = 'Skill sets';
+      nodes.push(setsHeading, ...(sets.length === 0
+        ? [textNode('li', 'Not in any skill set.')]
+        : sets.map((set) => textNode('li', `${set.name} ${set.skillSetId}`))));
+      const liveHeading = document.createElement('h4');
+      liveHeading.textContent = 'Live workspaces';
+      nodes.push(liveHeading, ...(live.length === 0
+        ? [textNode('li', 'Not pinned by any live workspace.')]
+        : live.map((entry) => textNode('li', `${entry.name} ${entry.status} ${entry.revisionId}`))));
+      return nodes;
+    }
+
+    /** A preset is a suggestion to install, so its row says installable rather than reading as inventory. */
+    function skillPresetNodes(presets) {
+      const rows = Array.isArray(presets) ? presets : [];
+      if (rows.length === 0) return [textNode('li', 'No presets are available to install.')];
+      return rows.map((preset) => {
+        const item = textNode('li', `${preset.name} ${preset.defaultRevision} ${preset.description} ${preset.installable ? 'installable' : 'unavailable'}`);
+        item.setAttribute('data-preset-id', String(preset.id ?? ''));
+        return item;
+      });
+    }
+
+    function textNode(tag, value) {
+      const element = document.createElement(tag);
+      element.textContent = String(value ?? '');
+      return element;
+    }
+
+    /**
+     * Search results name what could be imported, so each row carries the provider and the reference an
+     * import would take. A provider that failed is reported beside the hits rather than replacing them,
+     * because an empty list and a broken provider are different facts.
+     */
+    function skillSearchNodes(data) {
+      const local = Array.isArray(data?.local) ? data.local : [];
+      const remote = Array.isArray(data?.results) ? data.results : [];
+      const providers = Array.isArray(data?.providers) ? data.providers : [];
+      const nodes = [];
+      for (const provider of providers) {
+        if (provider.status !== 'ok') nodes.push(textNode('p', `${provider.provider}: ${provider.warning ?? 'unavailable'}`));
+      }
+      if (local.length === 0 && remote.length === 0) {
+        nodes.push(textNode('p', 'No skills matched.'));
+        return nodes;
+      }
+      const list = document.createElement('ul');
+      for (const skill of local) list.append(textNode('li', `${skill.displayName} ${skill.slug} local`));
+      for (const hit of remote) list.append(textNode('li', `${hit.name} ${hit.reference} ${hit.provider}`));
+      nodes.push(list);
+      return nodes;
+    }
+
+    /** Loads a tab's data the first time it is entered, which is what the tab controller guarantees. */
+    /** The drawer reads revisions from the server, and a restore republishes rather than rewrites. */
+    async function openSkillDetail(skillId) {
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      const drawer = document.querySelector('#skill-detail');
+      if (!drawer) return;
+      drawer.hidden = false;
+
+      const revisions = (await api(`/skills/${encodeURIComponent(skillId)}/revisions`)).data.revisions ?? [];
+      const box = document.querySelector('#skill-detail-revisions');
+      if (!box) return;
+      insertRendered(box, renderSkillRevisions(revisions, skill ? skill.currentRevisionId : undefined));
+      for (const button of box.querySelectorAll('[data-skill-restore]')) {
+        button.addEventListener('click', () => { void restoreRevision(skillId, button.getAttribute('data-skill-restore')).catch(showError); });
+      }
+      for (const button of box.querySelectorAll('[data-skill-diff]')) {
+        button.addEventListener('click', () => { void showRevisionDiff(skillId, button.getAttribute('data-skill-diff')).catch(showError); });
+      }
+      for (const button of box.querySelectorAll('[data-skill-fork]')) {
+        button.addEventListener('click', () => { void forkRevision(skillId, button.getAttribute('data-skill-fork')).catch(showError); });
+      }
+      // The drawer is what tells the editor which skill it is editing, so opening a skill is also what
+      // switches the form from creating a source to adding a revision.
+      editingSkillId = skillId;
+
+      // Usage and lock come from their own reader, because what would break if this skill changed is a
+      // different question from what its revisions contain, and the drawer previously left the usage
+      // container in the skeleton empty while showing a lock column only for registry entries.
+      const usageBox = document.querySelector('#skill-detail-usage');
+      if (usageBox) {
+        const usage = (await api(`/skills/${encodeURIComponent(skillId)}/usage`)).data;
+        usageBox.replaceChildren(...skillUsageNodes(usage));
+      }
+    }
+
+    /**
+     * A fork starts a new source from the bytes a revision pinned, so it asks for the new source's slug and
+     * display name rather than rewriting the revision it came from.
+     */
+    async function forkRevision(skillId, revisionId) {
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      const slug = `${skill ? skill.slug : 'skill'}-fork`;
+      await api(`/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revisionId)}/fork`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug, displayName: `${skill ? skill.displayName : 'Skill'} fork`, expectedGeneration: 0 })
+      });
+      rows = (await api('/skills')).data.skills ?? [];
+      paintLibrary();
+    }
+
+    /** The diff reader reports a revision whose bytes are missing rather than an empty diff, so the two
+     * outcomes are shown as what they are instead of both reading as "no changes". */
+    async function showRevisionDiff(skillId, revisionId) {
+      const box = document.querySelector('#skill-revision-diff');
+      if (!box) return;
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      const from = skill ? skill.currentRevisionId : undefined;
+      if (!from) {
+        box.textContent = 'No current revision to compare against.';
+        return;
+      }
+      const response = await api(`/skills/${encodeURIComponent(skillId)}/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(revisionId)}`);
+      const data = response.data ?? {};
+      box.textContent = typeof data.diff === 'string' && data.diff !== ''
+        ? data.diff
+        : (typeof data.warning === 'string' ? data.warning : 'No differences.');
+    }
+
+    async function restoreRevision(skillId, revisionId) {
+      const skill = rows.find((candidate) => candidate.id === skillId);
+      await api(`/skills/${encodeURIComponent(skillId)}/restore`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ revisionId, expectedGeneration: skill ? skill.generation : 0 })
+      });
+      rows = (await api('/skills')).data.skills ?? [];
+      paintLibrary();
+      await openSkillDetail(skillId);
+    }
+
+    async function enterSkillsTab(name) {
+      try {
+        if (name === 'library') {
+          rows = (await api('/skills')).data.skills ?? [];
+          paintLibrary();
+        } else if (name === 'discover') {
+          // The Discover tab is search-driven, so entering it states what it waits for instead of leaving the
+          // panel at whatever the skeleton shipped with, which is what made it look like dead UI.
+          const results = document.querySelector('#skills-search-results');
+          if (results && results.childElementCount === 0) {
+            results.replaceChildren(textNode('p', 'Search a registry to find a skill to import.'));
+          }
+        } else if (name === 'sets') {
+          if (rows.length === 0) rows = (await api('/skills')).data.skills ?? [];
+          const picker = document.querySelector('#skill-set-picker');
+          if (picker) insertRendered(picker, renderSkillSetPicker(rows));
+        } else if (name === 'registry') {
+          const body = document.querySelector('#skills-registry-table tbody');
+          const registry = await api('/toolkit-registry');
+          if (body) insertRendered(body, renderSkillsRegistryRows(registry.data.entries));
+          // Presets are rendered from their own field, so a suggestion to install never appears in the
+          // table of what is already cached and locked.
+          const suggestions = document.querySelector('#skills-registry-suggestions');
+          if (suggestions) suggestions.replaceChildren(...skillPresetNodes(registry.data.presets));
+        }
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    /** Server state is authoritative after a bulk change, so the table is reloaded rather than patched. */
+    async function runBulk(action) {
+      await library.runBulk(action);
+      rows = (await api('/skills')).data.skills ?? [];
+      paintLibrary();
+    }
+
+    document.querySelector('#skills-bulk-archive')?.addEventListener('click', () => { void runBulk('archive').catch(showError); });
+    document.querySelector('#skills-bulk-disable')?.addEventListener('click', () => { void runBulk('disable').catch(showError); });
+    document.querySelector('#skills-library-search')?.addEventListener('input', (event) => library.search(event.target.value));
+    document.querySelector('#skills-library-provider')?.addEventListener('change', (event) => { providerFilter = String(event.target.value); paintLibrary(); });
+    document.querySelector('#skills-library-state')?.addEventListener('change', (event) => { stateFilter = String(event.target.value); paintLibrary(); });
+    document.querySelector('#skills-library-tag')?.addEventListener('input', (event) => { tagFilter = String(event.target.value); paintLibrary(); });
+    document.querySelector('#skills-library-sort')?.addEventListener('change', (event) => { sortKey = String(event.target.value); paintLibrary(); });
+
+    document.querySelector('#skills-search-run')?.addEventListener('click', () => {
+      const input = document.querySelector('#skills-search-input');
+      const results = document.querySelector('#skills-search-results');
+      const query = input ? String(input.value).trim() : '';
+      if (query === '') {
+        if (results) results.replaceChildren(textNode('p', 'Enter a search term.'));
+        return;
+      }
+      // Every provider the schema allows is asked, so a fan-out that reached only the local registry would
+      // be a visible result rather than a silent one.
+      void api(`/skills/search?query=${encodeURIComponent(query)}&providers=local,skills-sh,skillx`)
+        .then((response) => { if (results) results.replaceChildren(...skillSearchNodes(response.data)); })
+        .catch(showError);
+    });
+
+    // The import dialog had a review area, a job line, and a retry, but no control that started an import,
+    // which is why the wizard could not be used at all.
+    document.querySelector('#skill-import-submit')?.addEventListener('click', () => {
+      const source = document.querySelector('#skill-import-source');
+      const refField = document.querySelector('#skill-import-ref');
+      const kindField = document.querySelector('#skill-import-scope');
+      const review = document.querySelector('#skill-import-review');
+      const jobBox = document.querySelector('#skill-import-job');
+      const built = buildSkillImportRequest({
+        sourceKind: kindField ? kindField.value : 'skills-sh',
+        sourceRef: source ? source.value : '',
+        ref: refField ? refField.value : ''
+      });
+      if (!built.ok) {
+        if (review) review.textContent = built.message;
+        return;
+      }
+      if (review) review.textContent = 'Import queued.';
+      void api('/skill-imports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(built.body)
+      })
+        .then((started) => {
+          const jobId = started && started.data ? started.data.id : undefined;
+          if (!jobId || !jobBox) return undefined;
+          const poller = createImportPollingController({
+            fetchJob: async () => (await api(`/skill-imports/${encodeURIComponent(jobId)}`)).data,
+            onState: (job) => {
+              jobBox.textContent = String(job.state ?? 'queued');
+              // The cancel control reads the id from the line the operator is already watching, so the two
+              // cannot drift apart.
+              jobBox.setAttribute('data-job-id', String(job.id ?? jobId));
+            },
+            isTerminal: (job) => ['succeeded', 'failed', 'cancelled'].includes(job.state)
+          });
+          return poller.start();
+        })
+        .catch(showError);
+    });
+
+    document.querySelector('#skill-import-cancel')?.addEventListener('click', () => {
+      const jobBox = document.querySelector('#skill-import-job');
+      const jobId = jobBox ? jobBox.getAttribute('data-job-id') : null;
+      if (!jobId) return;
+      void api(`/skill-imports/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedGeneration: 1 })
+      }).catch(showError);
+    });
+
+    document.querySelector('#skill-set-save')?.addEventListener('click', () => {
+      const nameField = document.querySelector('#skill-set-name');
+      const status = document.querySelector('#skill-set-status');
+      const selectedIds = [...document.querySelectorAll('#skill-set-picker [data-set-member]:checked')]
+        .map((box) => box.getAttribute('data-set-member'));
+      const built = buildSkillSetBody({ name: nameField ? nameField.value : '', skills: rows, selectedIds });
+      if (!built.ok) {
+        if (status) status.textContent = built.message;
+        return;
+      }
+      void api('/skill-sets', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(built.body)
+      })
+        .then(() => { if (status) status.textContent = 'Skill set created.'; })
+        .catch((error) => { if (status) status.textContent = error instanceof Error ? error.message : 'The set could not be created.'; });
+    });
+
+    // Editing an existing skill and creating a new one share one form, so the form has to know which of the
+    // two it is doing: a create posts a new source, an edit adds a revision to the skill open in the drawer.
+    let editingSkillId = null;
+    const editor = createSkillEditorController({
+      slug: document.querySelector('#skill-editor-slug'),
+      displayName: document.querySelector('#skill-editor-name'),
+      instructions: document.querySelector('#skill-editor-instructions'),
+      save: async (body) => {
+        if (editingSkillId) {
+          return (await api(`/skills/${encodeURIComponent(editingSkillId)}/revisions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ instructions: body.instructions, expectedGeneration: body.expectedGeneration })
+          })).data;
+        }
+        return (await api('/skills', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        })).data;
+      }
+    });
+
+    document.querySelector('#skill-detail-edit')?.addEventListener('click', () => {
+      const skill = rows.find((candidate) => candidate.id === editingSkillId);
+      const slugField = document.querySelector('#skill-editor-slug');
+      const nameField = document.querySelector('#skill-editor-name');
+      const instructions = document.querySelector('#skill-editor-instructions');
+      if (slugField) slugField.value = skill ? skill.slug : '';
+      if (nameField) nameField.value = skill ? skill.displayName : '';
+      if (instructions) instructions.value = skill && typeof skill.instructions === 'string' ? skill.instructions : '';
+      const status = document.querySelector('#skill-editor-status');
+      if (status) status.textContent = `Editing ${skill ? skill.slug : 'this skill'}; saving adds a revision.`;
+    });
+    document.querySelector('#skill-editor')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const status = document.querySelector('#skill-editor-status');
+      void editor.submit().then(async (result) => {
+        if (status) status.textContent = result.ok ? (editingSkillId ? 'Revision added.' : 'Skill created.') : result.message;
+        // The new skill is only visible once the server agrees it exists, so the library reloads from
+        // the server rather than assuming the row it just sent.
+        if (result.ok) await enterSkillsTab('library');
+      }).catch(showError);
+    });
+
+    const names = ['library', 'discover', 'sets', 'registry'];
+    const panels = names.map((name) => ({ name, element: document.querySelector(`#skills-panel-${name}`) }));
+    const tabs = names.map((name) => ({ name, element: document.querySelector(`#skills-tab-${name}`) }));
+    const tabController = createSkillsTabsController({
+      tabs,
+      panels,
+      onEnter: (name) => { void enterSkillsTab(name); }
+    });
+    for (const tab of tabs) tab.element?.addEventListener('click', () => tabController.select(tab.name));
+    tabController.select('library');
+  }
   async function loadOverview() {
     selectNavigation('overview');
-    setTitle('Overview', 'A live summary of your workspaces, credentials, and recent activity.');
     document.querySelector('#command-surface').hidden = true;
-    content.innerHTML = renderOverviewSkeleton();
-    const [ws, keys, auditResult, github, profile, server] = await Promise.allSettled([
-      api('/workspaces'), api('/api-keys'), api('/audit?limit=50'), api('/github'), api('/profile'), api('/server')
+    insertRendered(content, renderOverviewSkeleton());
+    // One bounded projection replaces the previous client-side fan-out; identity and the
+    // server panel stay separate because they are not decision metrics.
+    const [overviewResult, profile, server, metrics, reliability] = await Promise.allSettled([
+      api('/overview'), api('/profile'), api('/server'), api('/metrics?window=24h'), api('/reliability')
     ]);
     const data = (result) => result.status === 'fulfilled' ? result.value.data : undefined;
-    const workspaces = data(ws)?.workspaces ?? [];
-    const keyData = data(keys);
-    const apiKeys = Array.isArray(keyData?.keys) ? keyData.keys : [];
-    const events = data(auditResult)?.events ?? [];
-    const githubData = data(github);
-    const installations = Array.isArray(githubData?.installations) ? githubData.installations : (githubData?.installation ? [githubData.installation] : []);
-    const activeInstallations = installations.filter((inst) => inst.status === 'active');
-    const installationCount = installations.length;
-    const githubNote = installationCount === 1
-      ? (installations[0].accountLogin ?? installations[0].accountId ?? '1 account bound')
-      : installationCount > 1
-        ? `${installationCount} accounts/orgs bound`
-        : 'No installation bound';
-    const githubConnected = activeInstallations.length > 0;
     const identity = data(profile)?.identity ?? {};
-    const endpoint = keyData?.readiness?.ready === true ? (keyData.readiness.publicUrl ?? keyData.publicUrl) : undefined;
-    content.innerHTML = renderOverview({
-      metrics: [
-        { label: 'Active workspaces', value: workspaces.filter((item) => item.status === 'ACTIVE').length, note: `${workspaces.length} total` },
-        { label: 'API keys', value: `${apiKeys.filter((item) => item.state === 'ACTIVE').length}/10`, note: 'Active of limit' },
-        { label: 'GitHub', value: githubConnected ? 'Connected' : 'Not connected', small: true, note: githubNote },
-        { label: 'Recent events', value: events.length, note: 'Retained audit records' }
-      ],
-      activity: events.slice(0, 6).map((event) => ({ action: event.action, subjectType: event.subjectType, subjectId: event.subjectId, createdAt: event.createdAt })),
+    const readinessUrl = data(profile)?.readiness?.publicUrl;
+    insertRendered(content, renderOverview({
+      overview: data(overviewResult) ?? {},
       access: {
         name: identity.name ?? 'Not provided',
         email: identity.email ?? 'Not provided',
         sessionExpiresAt: data(profile)?.sessionExpiresAt,
-        endpoint: typeof endpoint === 'string' && /^https:\/\//.test(endpoint) ? endpoint : undefined
+        endpoint: typeof readinessUrl === 'string' && /^https:\/\//.test(readinessUrl) ? readinessUrl : undefined
       },
-      server: data(server)
-    });
+      server: data(server),
+      metrics: data(metrics) ?? {},
+      reliability: data(reliability) ?? {}
+    }));
+    await refreshApprovalsBadge();
   }
   async function loadIndex() {
-    selectNavigation('workspaces');
-    setTitle('Workspaces', 'TTL-limited coding environments available to your signed-in identity.'); document.querySelector('#command-surface').hidden = false;
+    selectNavigation('workspaces'); document.querySelector('#command-surface').hidden = false;
     const parameters = new URLSearchParams(location.search); const query = { q: parameters.get('q') ?? '', status: parameters.get('status') ?? '' };
     document.querySelector('#search').value = query.q; document.querySelector('#status').value = query.status;
-    const result = await api('/workspaces'); content.innerHTML = renderWorkspaceIndex(result.data.workspaces, query);
+    const result = await api('/workspaces'); insertRendered(content, renderWorkspaceIndex(result.data.workspaces, query));
     detail.hidden = true; document.querySelector('.app-shell').classList.remove('has-detail');
-    document.querySelector('#clear-filters')?.addEventListener('click', () => { location.href = '/dashboard'; });
+    document.querySelector('#clear-filters')?.addEventListener('click', () => { navigateTo('/dashboard'); });
     bindWorkspaceDrawerLinks(); document.querySelector('#last-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
   }
   async function submitForm(form, pendingLabel, action, onSuccess) {
     const button = form.querySelector('button[type="submit"]'); const status = form.querySelector('.form-status'); const original = button.textContent;
-    form.setAttribute('aria-busy', 'true'); button.disabled = true; button.textContent = pendingLabel; if (status) status.textContent = pendingLabel;
-    try { await action(); if (status) status.textContent = ''; await onSuccess(); }
-    catch (error) { showError(error); }
+    form.setAttribute('aria-busy', 'true'); button.disabled = true; button.textContent = pendingLabel; if (status) { status.textContent = pendingLabel; status.dataset.saveState = 'saving'; }
+    try { await action(); if (status) { status.textContent = ''; status.dataset.saveState = 'saved'; } await onSuccess(); flashUpdated(); }
+    catch (error) { if (status) delete status.dataset.saveState; showError(error); }
     finally { form.removeAttribute('aria-busy'); button.disabled = false; button.textContent = original; }
   }
+  /**
+   * The mutation cue: the region a mutation re-rendered crossfades once, so the operator
+   * sees which part of the page moved. Guarded for the test double, which has no classList.
+   */
+  function flashUpdated(region = content) {
+    if (!region?.classList) return;
+    region.classList.remove('content-just-updated');
+    void region.offsetWidth;
+    region.classList.add('content-just-updated');
+    globalThis.setTimeout(() => region.classList.remove('content-just-updated'), 900);
+  }
   async function loadProjects() {
-    selectNavigation('projects'); setTitle('Projects', 'Retained project and environment metadata for your signed-in identity.'); document.querySelector('#command-surface').hidden = true;
-    const result = await api('/projects'); content.innerHTML = renderProjectIndex(result.data.projects);
+    selectNavigation('projects'); document.querySelector('#command-surface').hidden = true;
+    setPageActions(renderPrimaryAction({ id: 'open-create-project', label: 'Create project', dialogId: 'create-project-dialog' }));
+    const result = await api('/projects'); insertRendered(content, renderProjectIndex(result.data.projects));
     document.querySelector('#create-project-form').addEventListener('submit', (event) => {
       event.preventDefault(); const form = event.currentTarget; const values = new FormData(form);
       void submitForm(form, 'Creating…', async () => api('/projects', { method: 'POST', body: requestBody({ name: values.get('name'), expectedGeneration: 0 }) }), async () => { announce('Project created.'); await loadProjects(); });
@@ -757,7 +1557,7 @@ export function initializeDashboard() {
       const result = await api(`/environments/${encodeURIComponent(environment.id)}/secrets`);
       return { ...environment, secrets: result.data.secrets, readiness: result.data.readiness };
     }));
-    setTitle(project.name, 'Retained environments and write-only secret references.'); content.innerHTML = renderProjectDetail(project, environments);
+    setTitle(project.name, 'Retained environments and write-only secret references.'); insertRendered(content, renderProjectDetail(project, environments));
     bindProjectControls(project, environments);
   }
   function bindProjectControls(project, environments = []) {
@@ -808,16 +1608,16 @@ export function initializeDashboard() {
     });
     for (const button of document.querySelectorAll('.delete-secret')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete secret reference?', description: 'Delete this write-only reference and its encrypted value?', target: button.dataset.secretName, label: 'Delete secret', pendingLabel: 'Deleting…', action: async () => { await api(`/environments/${encodeURIComponent(button.dataset.environmentId)}/secrets/${encodeURIComponent(button.dataset.secretName)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); announce('Secret reference deleted.'); await loadProject(project.id); } }, event.currentTarget));
     for (const button of document.querySelectorAll('.delete-environment')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete environment?', description: 'Delete this environment and its retained metadata?', target: button.dataset.environmentId, label: 'Delete environment', pendingLabel: 'Deleting…', action: async () => { await api(`/environments/${encodeURIComponent(button.dataset.environmentId)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); announce('Environment deleted.'); await loadProject(project.id); } }, event.currentTarget));
-    document.querySelector('#delete-project').addEventListener('click', (event) => confirmAction({ title: 'Delete project?', description: 'Delete this project and its retained environment metadata?', target: project.name, label: 'Delete project', pendingLabel: 'Deleting…', action: async () => { await api(`/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: project.generation }) }); location.href = '/dashboard/projects'; } }, event.currentTarget));
+    document.querySelector('#delete-project').addEventListener('click', (event) => confirmAction({ title: 'Delete project?', description: 'Delete this project and its retained environment metadata?', target: project.name, label: 'Delete project', pendingLabel: 'Deleting…', action: async () => { await api(`/projects/${encodeURIComponent(project.id)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: project.generation }) }); navigateTo('/dashboard/projects'); } }, event.currentTarget));
   }
   async function loadGlobalSecrets() {
     selectNavigation('secrets');
-    setTitle('Secrets', 'Retained global secrets available across all projects and workspaces.');
     document.querySelector('#command-surface').hidden = true;
+    setPageActions(renderPrimaryAction({ id: 'open-create-global-secret', label: 'Add global secret', dialogId: 'create-global-secret-dialog' }));
     const result = await api('/secrets');
     const secrets = result.data?.secrets ?? [];
     const readiness = result.data?.readiness;
-    content.innerHTML = renderGlobalSecrets(secrets, readiness);
+    insertRendered(content, renderGlobalSecrets(secrets, readiness));
     bindGlobalSecretControls(secrets);
   }
   function bindGlobalSecretControls(secrets = []) {
@@ -898,8 +1698,8 @@ export function initializeDashboard() {
   }
   async function loadModels() {
     selectNavigation('models');
-    setTitle('Subagent Models', 'Manage model profiles and write-only provider credentials for Pi subagents.');
     document.querySelector('#command-surface').hidden = true;
+    setPageActions(renderModelsActions());
 
     const [profilesRes, credsRes, statusRes] = await Promise.all([
       listModelProfiles().catch(() => ({ data: { profiles: [] } })),
@@ -911,7 +1711,7 @@ export function initializeDashboard() {
     const credentials = credsRes.data?.credentials ?? [];
     const status = statusRes.data?.status ?? null;
 
-    content.innerHTML = renderModelsPage(profiles, credentials, status);
+    insertRendered(content, renderModelsPage(profiles, credentials, status));
     bindModelsControls(credentials);
   }
 
@@ -1024,9 +1824,9 @@ export function initializeDashboard() {
       document.querySelector('#model-profile-edit-mode').value = 'false';
       document.querySelector('#model-profile-title').textContent = 'Add model profile';
 
-      credentialSelect.innerHTML = credentials.length
+      insertRendered(credentialSelect, credentials.length
         ? credentials.map((c) => `<option value="${escape(c.id)}">${escape(c.label)} (${escape(c.provider)})</option>`).join('')
-        : '<option value="">No credentials available (create one first)</option>';
+        : '<option value="">No credentials available (create one first)</option>');
 
       syncCustomUrlVisibility();
       profileDialog.showModal();
@@ -1040,7 +1840,14 @@ export function initializeDashboard() {
 
     for (const btn of document.querySelectorAll('.edit-model-profile')) {
       btn.addEventListener('click', (event) => {
-        const profile = JSON.parse(event.currentTarget.dataset.profileJson);
+        let profile;
+        try {
+          profile = JSON.parse(event.currentTarget.dataset.profileJson);
+        } catch {
+          // A malformed dataset value must not take the whole page down with it.
+          announce('This profile could not be opened. Reload the page and try again.');
+          return;
+        }
         profileForm.reset();
         document.querySelector('#model-profile-edit-mode').value = 'true';
         document.querySelector('#model-profile-generation').value = String(profile.generation);
@@ -1049,7 +1856,7 @@ export function initializeDashboard() {
         document.querySelector('#model-profile-display-name').value = profile.displayName;
         document.querySelector('#model-profile-title').textContent = `Edit profile (${profile.displayName})`;
 
-        credentialSelect.innerHTML = credentials.map((c) => `<option value="${escape(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escape(c.label)} (${escape(c.provider)})</option>`).join('');
+        insertRendered(credentialSelect, credentials.map((c) => `<option value="${escape(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escape(c.label)} (${escape(c.provider)})</option>`).join(''));
 
         if (profile.activeRevision) {
           document.querySelector('#model-profile-model').value = profile.activeRevision.model;
@@ -1162,27 +1969,33 @@ export function initializeDashboard() {
     }
   }
   async function loadArtifacts() {
-    selectNavigation('artifacts'); setTitle('Artifacts', 'Bounded retained snapshots created from workspace files.'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('artifacts'); document.querySelector('#command-surface').hidden = true;
+    setPageActions(renderPrimaryAction({ id: 'open-create-snapshot', label: 'Create snapshot', dialogId: 'snapshot-dialog' }));
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
-    const result = await api(`/artifacts?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); content.innerHTML = renderArtifactIndex(result.data.artifacts, result.cursor);
+    const result = await api(`/artifacts?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); insertRendered(content, renderArtifactIndex(result.data.artifacts, result.cursor));
     const form = document.querySelector('#snapshot-form'); form.addEventListener('submit', (event) => {
       event.preventDefault(); const values = new FormData(form); const retention = String(values.get('retentionSeconds') ?? '').trim();
       const body = { workspaceId: values.get('workspaceId'), path: values.get('path'), logicalName: values.get('logicalName'), ...(retention ? { retentionSeconds: Number(retention) } : {}), expectedGeneration: 0 };
-      void submitForm(form, 'Creating snapshot…', async () => api('/artifacts', { method: 'POST', body: requestBody(body) }), async () => { announce('Retained artifact snapshot created.'); location.href = '/dashboard/artifacts'; });
+      void submitForm(form, 'Creating snapshot…', async () => api('/artifacts', { method: 'POST', body: requestBody(body) }), async () => { announce('Retained artifact snapshot created.'); navigateTo('/dashboard/artifacts'); });
     });
     for (const button of document.querySelectorAll('.delete-artifact')) button.addEventListener('click', (event) => confirmAction({ title: 'Delete retained artifact?', description: 'Delete this bounded snapshot before its retention expiry?', target: button.dataset.artifactId, label: 'Delete artifact', pendingLabel: 'Deleting…', action: async () => { await api(`/artifacts/${encodeURIComponent(button.dataset.artifactId)}`, { method: 'DELETE', body: requestBody({ expectedGeneration: Number(button.dataset.generation) }) }); await loadArtifacts(); announce('Artifact deleted.'); } }, event.currentTarget));
-    document.querySelector('#load-more-artifacts')?.addEventListener('click', (event) => { location.href = `/dashboard/artifacts?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`; });
+    document.querySelector('#load-more-artifacts')?.addEventListener('click', (event) => { navigateTo(`/dashboard/artifacts?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`); });
   }
   async function loadAudit() {
-    selectNavigation('audit'); setTitle('Audit', 'Retained redacted control-plane events.'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('audit'); document.querySelector('#command-surface').hidden = true;
     const parameters = new URLSearchParams(location.search); const cursor = parameters.get('cursor');
-    const result = await api(`/audit?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); content.innerHTML = renderAuditIndex(result.data.events, result.cursor);
-    document.querySelector('#load-more-audit')?.addEventListener('click', (event) => { location.href = `/dashboard/audit?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`; });
+    const result = await api(`/audit?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); insertRendered(content, renderAuditIndex(result.data.events, result.cursor));
+    document.querySelector('#load-more-audit')?.addEventListener('click', (event) => { navigateTo(`/dashboard/audit?cursor=${encodeURIComponent(event.currentTarget.dataset.cursor)}`); });
   }
   async function loadApiKeys() {
-    selectNavigation('api-keys'); setTitle('API keys', 'Expiring credentials for static MCP clients that cannot complete browser OAuth.');
+    selectNavigation('api-keys');
     document.querySelector('#command-surface').hidden = true;
-    const result = await api('/api-keys'); apiKeyPageData = result.data; content.innerHTML = renderApiKeyIndex(apiKeyPageData); bindApiKeyControls();
+    const result = await api('/api-keys'); apiKeyPageData = result.data; insertRendered(content, renderApiKeyIndex(apiKeyPageData)); bindApiKeyControls();
+    // The key limit and gateway readiness decide whether creating another key is
+    // even possible; the action states that instead of failing on submit.
+    const activeKeys = (Array.isArray(apiKeyPageData?.keys) ? apiKeyPageData.keys : []).filter((key) => key?.state === 'ACTIVE').length;
+    const blocked = apiKeyPageData?.readiness?.ready === false || activeKeys >= 10;
+    setPageActions(renderPrimaryAction({ id: 'open-create-api-key', label: 'Create API key', dialogId: 'create-api-key-dialog', disabled: blocked }));
   }
   function bindApiKeyControls() {
     const form = document.querySelector('#create-api-key-form');
@@ -1196,7 +2009,7 @@ export function initializeDashboard() {
         created = undefined;
         const previousKeys = Array.isArray(apiKeyPageData?.keys) ? apiKeyPageData.keys : [];
         current.reset(); apiKeyPageData = { ...apiKeyPageData, keys: [metadata, ...previousKeys.filter((key) => key.id !== metadata.id)] };
-        content.innerHTML = renderApiKeyIndex(apiKeyPageData); bindApiKeyControls();
+        insertRendered(content, renderApiKeyIndex(apiKeyPageData)); bindApiKeyControls();
         apiKeyReveal.open(apiKey, document.querySelector('#create-api-key-submit') ?? invoker);
         announce('API key created. Copy it now; it will not be shown again.');
       });
@@ -1211,10 +2024,10 @@ export function initializeDashboard() {
     }, event.currentTarget));
   }
   async function loadGitHub() {
-    selectNavigation('github'); setTitle('GitHub', 'GitHub App installation and repository authorization status.'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('integrations'); integrationLinks('github'); document.querySelector('#command-surface').hidden = true;
     const callback = githubCallbackParameters(location.search);
     if (callback) {
-      content.innerHTML = renderGitHub({ configured: true, installation: null, repositories: [] }, true);
+      insertRendered(content, renderGitHub({ configured: true, installation: null, repositories: [] }, true));
       try {
         await api('/github/complete', { method: 'POST', body: requestBody(callback) });
         announce('GitHub App connection completed.');
@@ -1224,7 +2037,9 @@ export function initializeDashboard() {
         history.replaceState({}, '', '/dashboard/github');
       }
     }
-    const result = await api('/github'); content.innerHTML = renderGitHub(result.data); bindGitHubControls();
+    const result = await api('/github'); insertRendered(content, renderGitHub(result.data));
+    setPageActions(renderGitHubActions(result.data));
+    bindGitHubControls();
   }
   function bindGitHubControls() {
     const form = document.querySelector('#github-setup-form');
@@ -1233,7 +2048,13 @@ export function initializeDashboard() {
         event.preventDefault(); const values = new FormData(form); const expectedAccountId = String(values.get('expectedAccountId') ?? '').trim();
         void submitForm(form, 'Preparing connection…', async () => {
           const result = await api('/github/setup', { method: 'POST', body: requestBody(expectedAccountId ? { expectedAccountId } : {}) });
-          const destination = new URL(result.data.url); if (destination.protocol !== 'https:') throw new Error('GitHub setup URL was invalid.');
+          let destination;
+          try {
+            destination = new URL(result.data.url);
+          } catch {
+            throw new Error('GitHub setup URL was invalid.');
+          }
+          if (destination.protocol !== 'https:') throw new Error('GitHub setup URL was invalid.');
           location.assign(destination.toString());
         }, async () => {});
       });
@@ -1275,8 +2096,8 @@ export function initializeDashboard() {
     }
   }
   async function loadProfile() {
-    selectNavigation('profile'); setTitle('Profile', 'Your signed-in identity, display name, and session details.'); document.querySelector('#command-surface').hidden = true;
-    const result = await api('/profile'); content.innerHTML = renderProfile(result.data); bindProfileControls();
+    selectNavigation('profile'); document.querySelector('#command-surface').hidden = true;
+    const result = await api('/profile'); insertRendered(content, renderProfile(result.data)); bindProfileControls();
   }
   function saveDisplayName(value) {
     return api('/preferences', { method: 'PUT', body: requestBody({ displayName: value }) });
@@ -1296,16 +2117,15 @@ export function initializeDashboard() {
   let settingsReadiness;
   async function loadSettings() {
     selectNavigation('settings');
-    setTitle('Settings', 'Instance-wide defaults applied to new workspaces.');
     document.querySelector('#command-surface').hidden = true;
-    content.innerHTML = '<div class="skeleton tile" aria-hidden="true"></div>';
+    insertRendered(content, '<div class="skeleton tile" aria-hidden="true"></div>');
     const { data } = await api('/settings');
     settingsPageData = data;
     settingsReadiness = undefined;
     renderSettingsView();
   }
   function renderSettingsView() {
-    content.innerHTML = renderSettings(settingsPageData, settingsReadiness);
+    insertRendered(content, renderSettings(settingsPageData, settingsReadiness));
     bindSettingsControls();
   }
   function settingsStatus(message) {
@@ -1350,7 +2170,6 @@ export function initializeDashboard() {
   let currentKnowledgeItem;
   async function loadKnowledge(activeTab = 'all') {
     selectNavigation('knowledge');
-    setTitle('Knowledge Plane', 'Scoped memories, chronological journals, and knowledge graph relations.');
     document.querySelector('#command-surface').hidden = true;
 
     const parameters = new URLSearchParams(location.search);
@@ -1382,7 +2201,7 @@ export function initializeDashboard() {
       data = listRes.data ?? { items: [] };
     }
 
-    content.innerHTML = renderKnowledgeIndex(data, { q: query, kind, scope, projectId }, activeTab);
+    insertRendered(content, renderKnowledgeIndex(data, { q: query, kind, scope, projectId }, activeTab));
     bindKnowledgeIndexControls(activeTab);
 
     if (activeTab === 'graph') {
@@ -1394,10 +2213,10 @@ export function initializeDashboard() {
             depth: 2,
             maxNodes: 50
           });
-          graphMount.innerHTML = renderKnowledgeGraph(graphRes.data);
+          insertRendered(graphMount, renderKnowledgeGraph(graphRes.data));
           bindKnowledgeGraphControls();
         } catch (err) {
-          graphMount.innerHTML = `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`;
+          insertRendered(graphMount, `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`);
         }
       }
     }
@@ -1430,9 +2249,9 @@ export function initializeDashboard() {
           const prjRes = await api('/projects');
           const projects = prjRes.data?.projects ?? [];
           if (projectSelect) {
-            projectSelect.innerHTML = projects.length
+            insertRendered(projectSelect, projects.length
               ? projects.map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')
-              : '<option value="">No projects available (create one first)</option>';
+              : '<option value="">No projects available (create one first)</option>');
           }
         } catch {
           /* ignore */
@@ -1482,7 +2301,7 @@ export function initializeDashboard() {
         createKnDialog?.close();
         announce('Knowledge item created.');
         if (res.data?.id) {
-          location.href = `/dashboard/knowledge/${encodeURIComponent(res.data.id)}`;
+          navigateTo(`/dashboard/knowledge/${encodeURIComponent(res.data.id)}`);
         } else {
           await loadKnowledge(activeTab);
         }
@@ -1497,7 +2316,7 @@ export function initializeDashboard() {
     const item = res.data;
     currentKnowledgeItem = item;
     setTitle(item.title, 'Knowledge item detail, Markdown editor, and relationship graph.');
-    content.innerHTML = renderKnowledgeDetail(item);
+    insertRendered(content, renderKnowledgeDetail(item));
     bindKnowledgeDetailControls(item);
   }
 
@@ -1530,7 +2349,7 @@ export function initializeDashboard() {
         const textarea = document.querySelector('#knowledge-editor-input');
         if (textarea) textarea.value = conflictData.currentContent ?? '';
         const preview = document.querySelector('#knowledge-preview-output');
-        if (preview) preview.innerHTML = renderMarkdown(conflictData.currentContent ?? '');
+        if (preview) insertRendered(preview, renderMarkdown(conflictData.currentContent ?? ''));
         const genEl = document.querySelector('#kn-current-generation');
         if (genEl) genEl.textContent = String(conflictData.currentGeneration ?? '');
         currentKnowledgeItem = { ...currentKnowledgeItem, generation: conflictData.currentGeneration, content: conflictData.currentContent };
@@ -1561,7 +2380,7 @@ export function initializeDashboard() {
       if (editStatus) editStatus.textContent = 'Unsaved changes';
       globalThis.clearTimeout(debounceTimer);
       debounceTimer = globalThis.setTimeout(() => {
-        if (preview && textarea) preview.innerHTML = renderMarkdown(textarea.value);
+        if (preview && textarea) insertRendered(preview, renderMarkdown(textarea.value));
       }, 200);
     });
 
@@ -1611,7 +2430,7 @@ export function initializeDashboard() {
         action: async () => {
           await deleteKnowledgeItem(item.id, gen);
           announce('Knowledge item deleted.');
-          location.href = '/dashboard/knowledge';
+          navigateTo('/dashboard/knowledge');
         }
       }, btn);
     });
@@ -1635,13 +2454,13 @@ export function initializeDashboard() {
     for (const nodeGroup of document.querySelectorAll('.graph-node-group')) {
       nodeGroup.addEventListener('click', (event) => {
         const id = event.currentTarget.dataset.nodeId;
-        if (id) location.href = `/dashboard/knowledge/${encodeURIComponent(id)}`;
+        if (id) navigateTo(`/dashboard/knowledge/${encodeURIComponent(id)}`);
       });
       nodeGroup.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           const id = event.currentTarget.dataset.nodeId;
-          if (id) location.href = `/dashboard/knowledge/${encodeURIComponent(id)}`;
+          if (id) navigateTo(`/dashboard/knowledge/${encodeURIComponent(id)}`);
         }
       });
     }
@@ -1680,20 +2499,20 @@ export function initializeDashboard() {
     } catch { return raw; }
   }
   async function loadMcpServers() {
-    selectNavigation('mcp-servers');
-    setTitle('MCP Servers', 'Downstream MCP integrations available through the Cloud Harness gateway.');
+    selectNavigation('integrations'); integrationLinks('mcp-servers');
     document.querySelector('#command-surface').hidden = true;
     setBusy(true);
     try {
       const [serversResult, gatewayResult] = await Promise.all([listMcpServers(), getMcpGatewayEndpoint()]);
       currentMcpServers = Array.isArray(serversResult.data?.servers) ? serversResult.data.servers : [];
       currentMcpGateway = gatewayResult.data;
-      content.innerHTML = renderMcpServersIndex({ servers: currentMcpServers, gateway: currentMcpGateway });
+      insertRendered(content, renderMcpServersIndex({ servers: currentMcpServers, gateway: currentMcpGateway }));
+      setPageActions(renderMcpActions());
       bindMcpServersControls();
     } finally { setBusy(false); }
   }
   async function loadMcpServerDetail(serverId, tab = 'overview') {
-    selectNavigation('mcp-servers');
+    selectNavigation('integrations'); integrationLinks('mcp-servers');
     document.querySelector('#command-surface').hidden = true;
     currentMcpTab = tab;
     setBusy(true);
@@ -1709,7 +2528,7 @@ export function initializeDashboard() {
       if (currentMcpServer?.name) setTitle(currentMcpServer.name, 'MCP server detail, tools, permissions, and gateway logs.');
       currentMcpTraces = Array.isArray(logsResult?.data?.traces) ? logsResult.data.traces : [];
       currentMcpLogCursor = logsResult?.cursor;
-      content.innerHTML = renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, tab, currentMcpLogCursor, currentMcpGateway);
+      insertRendered(content, renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, tab, currentMcpLogCursor, currentMcpGateway));
       bindMcpServersControls();
     } finally { setBusy(false); }
   }
@@ -1921,7 +2740,7 @@ export function initializeDashboard() {
       action: async () => {
         await deleteMcpServer(button.dataset.mcpDelete, Number(button.dataset.generation));
         announce('MCP server deleted.');
-        location.href = '/dashboard/mcp-servers';
+        navigateTo('/dashboard/integrations/mcp-servers');
       }
     }, event.currentTarget));
     for (const button of document.querySelectorAll('[data-mcp-tab]')) button.addEventListener('click', (event) => {
@@ -1962,32 +2781,389 @@ export function initializeDashboard() {
       if (!serverId) return;
       const result = await listMcpServerLogs(serverId, event.currentTarget.dataset.cursor);
       currentMcpTraces = [...currentMcpTraces, ...(result.data?.traces ?? [])];
-      content.innerHTML = renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, 'logs', result.cursor, currentMcpGateway);
+      insertRendered(content, renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, 'logs', result.cursor, currentMcpGateway));
       bindMcpServersControls();
     });
   }
   async function workspace(id) { return (await api(`/workspaces/${encodeURIComponent(id)}`)).data; }
-  async function loadWorkspace(id) {
-    const item = await workspace(id); setTitle(repositoryName(item.repositoryUrl), 'Workspace lifecycle and bounded operations.');
-    content.innerHTML = renderWorkspaceDetail(item, false); detail.hidden = true; document.querySelector('#command-surface').hidden = true; bindClose(item);
+  /**
+   * The Workspace Cockpit. The header carries what an operator decides on, the tab
+   * row carries the workspace context, and the Summary reports only observable
+   * state — the agent, task and Git reasons join with the phases that expose them.
+   */
+  async function loadWorkspace(id, tab = 'summary') {
+    selectNavigation('workspaces');
+    document.querySelector('#command-surface').hidden = true; detail.hidden = true;
+    const item = await workspace(id);
+    // A missing context response must not hide the cockpit: the header and the
+    // lifecycle actions still work from the workspace record alone.
+    const contextResult = await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined);
+    setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, files, git, automation, deploy, artifacts, and activity.');
+    const body = await cockpitTabBody(id, tab, item, contextResult?.data);
+    insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${body}${renderFinalizeDialog()}`);
+    bindCockpitActions(item);
+    if (tab === 'runtime') bindRuntimeControls(id);
+    if (tab === 'git') bindGitControls(id);
+    if (tab === 'automation') bindAutomationControls(id);
+    if (tab === 'deploy') bindDeployControls(id);
+  }
+  /** Which body a cockpit tab renders, kept out of the loader so the switch stays readable. */
+  async function cockpitTabBody(workspaceId, tab, workspace, context) {
+    if (tab === 'summary') return renderWorkspaceSummary({ workspace, context });
+    if (tab === 'agents') return renderWorkspaceAgents(workspaceId);
+    if (tab === 'runtime') return runtimePanel(workspaceId);
+    // The diff toggle is a URL parameter, so a staged/unstaged view is shareable and
+    // the back button behaves.
+    if (tab === 'git') return gitPanel(workspaceId, new URLSearchParams(location.search).get('staged') === 'true');
+    if (tab === 'automation') return automationPanel(workspaceId);
+    if (tab === 'deploy') return deployPanel(workspaceId);
+    return renderWorkspaceTabPlaceholder(tab);
+  }
+  /** The workspace skill set and its lifecycle hooks. */
+  async function automationPanel(workspaceId) {
+    const scoped = encodeURIComponent(workspaceId);
+    const [skillsResult, hooksResult] = await Promise.all([
+      api(`/workspaces/${scoped}/skills`).catch(() => undefined),
+      api(`/workspaces/${scoped}/hooks`).catch(() => undefined)
+    ]);
+    return renderAutomationPanel({ skills: skillsResult?.data?.skills ?? [], hooks: hooksResult?.data?.hooks ?? [] });
+  }
+  /** Deployment targets defined by the repository. */
+  async function deployPanel(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/deployments`).catch(() => undefined);
+    return renderDeployPanel(result?.data?.deployments ?? []);
+  }
+  /** Hook runs and skill scripts go through the runner's guarded contracts. */
+  function bindAutomationControls(workspaceId) {
+    const scoped = encodeURIComponent(workspaceId);
+    const hookForm = document.querySelector('#hook-run-form');
+    hookForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(hookForm);
+      void submitForm(hookForm, 'Running…', async () => {
+        await api(`/workspaces/${scoped}/hooks/run`, { method: 'POST', body: requestBody({ event: values.get('event') }) });
+      }, async () => { announce('Hooks finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
+    });
+    const skillForm = document.querySelector('#skill-run-form');
+    skillForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(skillForm);
+      const name = String(values.get('name') ?? '');
+      void submitForm(skillForm, 'Running…', async () => {
+        await api(`/workspaces/${scoped}/skills/${encodeURIComponent(name)}/run`, { method: 'POST', body: requestBody({ script: values.get('script') }) });
+      }, async () => { announce('Skill script finished.'); navigateTo(`/dashboard/workspaces/${scoped}/automation`); });
+    });
+  }
+  /** Deployments are external-effect operations, so each run confirms first. */
+  function bindDeployControls(workspaceId) {
+    const scoped = encodeURIComponent(workspaceId);
+    for (const button of document.querySelectorAll('.run-deployment')) button.addEventListener('click', (event) => {
+      const name = button.dataset.deploymentName ?? '';
+      void confirmAction({
+        title: 'Run this deployment target?',
+        description: 'Deployment commands have external effects and run outside the harness sandbox.',
+        target: name, label: 'Run deployment', pendingLabel: 'Running…',
+        action: async () => {
+          await api(`/workspaces/${scoped}/deployments/run`, { method: 'POST', body: requestBody({ name }) });
+          announce('Deployment finished.');
+          navigateTo(`/dashboard/workspaces/${scoped}/deploy`);
+        }
+      }, event.currentTarget);
+    });
+  }
+  /** Git status, a bounded diff, recent commits and worktrees in one pass. */
+  async function gitPanel(workspaceId, staged = false) {
+    const scoped = encodeURIComponent(workspaceId);
+    const [statusResult, diffResult, logResult, worktreeResult] = await Promise.all([
+      api(`/workspaces/${scoped}/git/status`),
+      api(`/workspaces/${scoped}/git/diff?staged=${staged ? 'true' : 'false'}`).catch(() => undefined),
+      api(`/workspaces/${scoped}/git/log?limit=20`).catch(() => undefined),
+      api(`/workspaces/${scoped}/worktrees`).catch(() => undefined)
+    ]);
+    return renderGitPanel({
+      status: statusResult.data ?? {},
+      diff: { staged, ...(diffResult?.data ?? {}) },
+      log: logResult?.data?.commits ?? [],
+      worktrees: worktreeResult?.data?.worktrees ?? []
+    });
+  }
+  /**
+   * Git controls. Finalize is the happy path; everything here is either a read-only
+   * toggle or an advanced operation that confirms or reports a conflict in place.
+   */
+  function bindGitControls(workspaceId) {
+    const scoped = encodeURIComponent(workspaceId);
+    document.querySelector('.git-diff-toggle')?.addEventListener('click', (event) => {
+      const next = event.currentTarget.dataset.staged !== 'true';
+      navigateTo(`/dashboard/workspaces/${scoped}/git?staged=${next ? 'true' : 'false'}`);
+    });
+    for (const button of document.querySelectorAll('.remove-worktree')) button.addEventListener('click', (event) => {
+      const name = button.dataset.worktreeName ?? '';
+      void confirmAction({
+        title: 'Remove this worktree?', description: 'The managed worktree is removed; its branch stays in the repository.',
+        target: name, label: 'Remove worktree', pendingLabel: 'Removing…',
+        action: async () => {
+          await api(`/workspaces/${scoped}/worktrees/${encodeURIComponent(name)}`, { method: 'DELETE', body: requestBody({}) });
+          announce('Worktree removed.');
+          navigateTo(`/dashboard/workspaces/${scoped}/git`);
+        }
+      }, event.currentTarget);
+    });
+    const createForm = document.querySelector('#create-worktree-form');
+    createForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(createForm);
+      void submitForm(createForm, 'Creating…', async () => {
+        await api(`/workspaces/${scoped}/worktrees`, { method: 'POST', body: requestBody({ name: values.get('name'), ref: values.get('ref') }) });
+      }, async () => { announce('Worktree created.'); navigateTo(`/dashboard/workspaces/${scoped}/git`); });
+    });
+    const advanced = document.querySelector('#git-advanced-form');
+    advanced?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(advanced);
+      const action = String(values.get('action') ?? 'fetch');
+      const argument = String(values.get('argument') ?? '').trim();
+      const body = action === 'fetch' ? { remote: 'origin' }
+        : action === 'pull' ? { remote: 'origin', strategy: 'ff-only' }
+          : action === 'checkout' ? { ref: argument }
+            : action === 'branch' ? { action: 'create', name: argument }
+              : action === 'merge' ? { ref: argument }
+                : { action: 'start', upstream: argument };
+      void submitForm(advanced, 'Running…', async () => {
+        await api(`/workspaces/${scoped}/git/${action}`, { method: 'POST', body: requestBody(body) });
+      }, async () => { announce(`Git ${action} completed.`); navigateTo(`/dashboard/workspaces/${scoped}/git`); });
+    });
+  }
+  /** The workspace Agents tab reuses the global renderer with a scoped list. */
+  async function renderWorkspaceAgents(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/agents`);
+    return renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { workspaceId } });
+  }
+  /** Renew, recover, finalize, and close, each with pending state and live feedback. */
+  function bindCockpitActions(item) {
+    const id = item.workspaceId;
+    document.querySelector('#renew-workspace-lease')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Renewing…', () => api(`/workspaces/${encodeURIComponent(id)}/lease-renew`, { method: 'POST', body: requestBody({}) }), 'Workspace lease renewed.'));
+    document.querySelector('#recover-workspace')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Recovering…', () => api(`/workspaces/${encodeURIComponent(id)}/recover`, { method: 'POST', body: requestBody({ mode: 'resume' }) }), 'Workspace recovery requested.'));
+    const form = document.querySelector('#finalize-workspace-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      void submitForm(form, 'Finalizing…', async () => {
+        await api(`/workspaces/${encodeURIComponent(id)}/finalize`, {
+          method: 'POST',
+          body: requestBody({ all: true, push: values.get('push') === 'on', commitMessage: values.get('commitMessage') })
+        });
+      }, async () => {
+        document.querySelector('#finalize-workspace-dialog')?.close();
+        announce('Workspace finalized.');
+        await loadWorkspace(id, 'summary');
+      });
+    });
+    bindClose(item);
+  }
+  async function cockpitAction(button, pendingLabel, action, successMessage) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = pendingLabel;
+    try {
+      await action();
+      announce(successMessage);
+      const id = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})/)?.[1];
+      if (id) await loadWorkspace(id, 'summary');
+    } catch (error) { showError(error); }
+    finally { button.disabled = false; button.textContent = original; }
+  }
+  /**
+   * The Activity Center reads one server-composed projection: the timeline is merged
+   * and labelled by the API, so the browser does not fan out or re-derive categories.
+   */
+  async function loadActivity() {
+    selectNavigation('activity');
+    document.querySelector('#command-surface').hidden = true;
+    const filter = new URLSearchParams(location.search).get('filter') ?? 'all';
+    const result = await api('/activity').catch(() => undefined);
+    const events = Array.isArray(result?.data?.events) ? result.data.events : [];
+    insertRendered(content, renderActivityCenter({ events, filter }));
+    await refreshApprovalsBadge();
+  }
+  /** The approvals inbox: pending privilege grants and the two decisions. */
+  async function loadApprovals() {
+    selectNavigation('approvals');
+    document.querySelector('#command-surface').hidden = true;
+    const result = await api('/privilege-grants');
+    const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
+    insertRendered(content, renderApprovals({ grants }));
+    updateApprovalsBadge(grants.length);
+    for (const button of document.querySelectorAll('.approve-grant, .reject-grant')) button.addEventListener('click', (event) => {
+      const approving = button.classList.contains('approve-grant');
+      const grantId = button.dataset.grantId ?? '';
+      void confirmAction({
+        title: approving ? 'Approve this privilege request?' : 'Reject this privilege request?',
+        description: approving ? 'The command may then run in that workspace under your identity. The decision is audited.' : 'The request is discarded and the command stays blocked. The decision is audited.',
+        target: grantId, label: approving ? 'Approve' : 'Reject', pendingLabel: approving ? 'Approving…' : 'Rejecting…',
+        action: async () => {
+          await api(`/privilege-grants/${encodeURIComponent(grantId)}/${approving ? 'approve' : 'reject'}`, { method: 'POST', body: requestBody({}) });
+          announce(approving ? 'Privilege request approved.' : 'Privilege request rejected.');
+          await loadApprovals();
+        }
+      }, event.currentTarget);
+    });
+  }
+  /** The badge appears only while something is pending. */
+  function updateApprovalsBadge(count) {
+    const badge = document.querySelector('#nav-badge-approvals');
+    if (!badge) return;
+    badge.textContent = count > 0 ? String(count) : '';
+    badge.hidden = count === 0;
+  }
+  async function refreshApprovalsBadge() {
+    const result = await api('/privilege-grants').catch(() => undefined);
+    const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
+    updateApprovalsBadge(grants.filter((grant) => !['approved', 'rejected'].includes(String(grant.status ?? ''))).length);
+  }
+  /**
+   * Global Agents page and the workspace-scoped tab share one renderer and one
+   * adapter; the workspace id decides the scope, and filters are URL-backed so a
+   * filtered view is shareable.
+   */
+  async function loadAgents(workspaceId) {
+    selectNavigation('agents');
+    document.querySelector('#command-surface').hidden = true;
+    const parameters = new URLSearchParams(location.search);
+    const status = parameters.get('status') ?? '';
+    const scope = workspaceId ?? parameters.get('workspaceId') ?? '';
+    const query = new URLSearchParams({ ...(status ? { status } : {}), ...(scope ? { workspaceId: scope } : {}) });
+    const result = await api(`/agents${query.size ? `?${query}` : ''}`);
+    insertRendered(content, renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { status, workspaceId: scope } }));
+    document.querySelector('#agent-filters')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const next = new URLSearchParams();
+      for (const [key, value] of new FormData(event.currentTarget)) if (String(value).trim()) next.set(key, String(value).trim());
+      navigateTo(`/dashboard/agents${next.size ? `?${next}` : ''}`);
+    });
+  }
+  /** One agent: overview, usage, bounded logs, and the message/cancel controls. */
+  async function loadAgentDetail(agentId) {
+    selectNavigation('agents');
+    document.querySelector('#command-surface').hidden = true;
+    const workspaceScope = new URLSearchParams(location.search).get('workspaceId');
+    const query = workspaceScope ? `?workspaceId=${encodeURIComponent(workspaceScope)}` : '';
+    const [statusResult, logsResult] = await Promise.all([
+      api(`/agents/${encodeURIComponent(agentId)}${query}`),
+      api(`/agents/${encodeURIComponent(agentId)}/logs${query}`).catch(() => undefined)
+    ]);
+    const agent = statusResult.data;
+    setTitle('Agent detail', 'One coding agent: status, usage, bounded logs, and control.');
+    insertRendered(content, renderAgentDetail({ agent, logs: logsResult?.data?.events ?? [] }));
+    bindAgentControls(agent, agentId);
+  }
+  function bindAgentControls(agent, agentId) {
+    const form = document.querySelector('#agent-message-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      // The contract requires an idempotency key, so a retry cannot double-deliver.
+      const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      void submitForm(form, 'Sending…', async () => {
+        await api(`/agents/${encodeURIComponent(agentId)}/messages`, {
+          method: 'POST',
+          body: requestBody({ workspaceId: agent.workspaceId, message: values.get('message'), mode: values.get('mode'), idempotencyKey })
+        });
+      }, async () => { announce('Message sent to the agent.'); await loadAgentDetail(agentId); });
+    });
+    document.querySelector('#cancel-agent')?.addEventListener('click', (event) => confirmAction({
+      title: 'Cancel this agent and its children?',
+      description: 'Cancellation cascades to every agent this one spawned and cannot be undone.',
+      target: agentId, label: 'Cancel agent', pendingLabel: 'Cancelling…',
+      action: async () => {
+        await api(`/agents/${encodeURIComponent(agentId)}/cancel`, { method: 'POST', body: requestBody({ workspaceId: agent.workspaceId }) });
+        announce('Agent cancelled.');
+        await loadAgentDetail(agentId);
+      }
+    }, event.currentTarget));
   }
   async function loadFiles(id) {
     const item = await workspace(id); setTitle('Files', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'files');
     const parameters = new URLSearchParams(location.search); const path = parameters.get('path') ?? '.';
     if (parameters.get('file') === '1') {
       const result = await api(`/workspaces/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path)}`);
-      content.innerHTML = renderFile(id, result.data); bindFileEditor(id, result.data);
+      insertRendered(content, renderFile(id, result.data)); bindFileEditor(id, result.data);
     } else {
       const result = await api(`/workspaces/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`);
-      content.innerHTML = renderFileList(id, result.data); bindFileOperations(id);
+      insertRendered(content, renderFileList(id, result.data)); bindFileOperations(id);
     }
   }
-  async function loadRuntime(id) {
+  /** Tasks, the dependency graph and sessions: one bounded read each. */
+  async function runtimePanel(workspaceId, io) {
+    const [runtimeResult, graphResult] = await Promise.all([
+      api(`/workspaces/${encodeURIComponent(workspaceId)}/runtime`),
+      api(`/workspaces/${encodeURIComponent(workspaceId)}/tasks/graph`).catch(() => undefined)
+    ]);
+    return renderRuntimePanel({
+      tasks: runtimeResult.data?.tasks ?? [],
+      sessions: runtimeResult.data?.sessions ?? [],
+      graph: graphResult?.data ?? {},
+      io
+    });
+  }
+  /**
+   * Runtime controls. Cancel and close confirm first; reading a session is a bounded,
+   * read-only call that never sends input, so the dashboard stays a viewer here.
+   */
+  function bindRuntimeControls(workspaceId) {
+    for (const button of document.querySelectorAll('.cancel-task')) button.addEventListener('click', (event) => {
+      const scoped = button.dataset.taskId ?? '';
+      void confirmAction({
+        title: 'Cancel this task?', description: 'The command stops and anything depending on it stays blocked.',
+        target: scoped, label: 'Cancel task', pendingLabel: 'Cancelling…',
+        action: async () => {
+          await api(`/workspaces/${encodeURIComponent(workspaceId)}/tasks/${encodeURIComponent(scoped)}/cancel`, { method: 'POST', body: requestBody({}) });
+          announce('Task cancelled.');
+          await loadRuntime(workspaceId);
+        }
+      }, event.currentTarget);
+    });
+    for (const button of document.querySelectorAll('.read-session')) button.addEventListener('click', async () => {
+      const scoped = button.dataset.sessionId ?? '';
+      const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(scoped)}/io`).catch(() => undefined);
+      await loadRuntime(workspaceId, result?.data);
+    });
+    for (const button of document.querySelectorAll('.close-session')) button.addEventListener('click', (event) => {
+      const scoped = button.dataset.sessionId ?? '';
+      void confirmAction({
+        title: 'Close this session?', description: 'The session ends and its retained output stays readable.',
+        target: scoped, label: 'Close session', pendingLabel: 'Closing…',
+        action: async () => {
+          await api(`/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(scoped)}/close`, { method: 'POST', body: requestBody({}) });
+          announce('Session closed.');
+          await loadRuntime(workspaceId);
+        }
+      }, event.currentTarget);
+    });
+    const form = document.querySelector('#open-session-form');
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      void submitForm(form, 'Opening…', async () => {
+        await api(`/workspaces/${encodeURIComponent(workspaceId)}/sessions`, {
+          method: 'POST',
+          body: requestBody({ name: values.get('name'), cwd: String(values.get('cwd') ?? '.'), idempotencyKey })
+        });
+      }, async () => { announce('Session opened.'); await loadRuntime(workspaceId); });
+    });
+  }
+  async function loadRuntime(id, io) {
     const item = await workspace(id); setTitle('Runtime', repositoryName(item.repositoryUrl)); document.querySelector('#command-surface').hidden = true; contextLinks(id, 'runtime');
-    content.innerHTML = renderRuntime((await api(`/workspaces/${encodeURIComponent(id)}/runtime`)).data);
+    insertRendered(content, await runtimePanel(id, io));
+    bindRuntimeControls(id);
   }
   function contextLinks(id, current) {
-    document.querySelector('#context-nav').innerHTML = `<a href="/dashboard/workspaces/${encodeURIComponent(id)}/files" ${current === 'files' ? 'aria-current="page"' : ''}>Files</a><a href="/dashboard/workspaces/${encodeURIComponent(id)}/runtime" ${current === 'runtime' ? 'aria-current="page"' : ''}>Runtime</a>`;
+    insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/workspaces/${encodeURIComponent(id)}/files" ${current === 'files' ? 'aria-current="page"' : ''}>Files</a><a href="/dashboard/workspaces/${encodeURIComponent(id)}/runtime" ${current === 'runtime' ? 'aria-current="page"' : ''}>Runtime</a>`);
+  }
+  // Secondary navigation for the single Integrations page: GitHub and MCP Servers
+  // are tabs of one destination instead of two top-level subsystems.
+  function integrationLinks(current) {
+    insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/integrations/github" ${current === 'github' ? 'aria-current="page"' : ''}>GitHub</a><a href="/dashboard/integrations/mcp-servers" ${current === 'mcp-servers' ? 'aria-current="page"' : ''}>MCP Servers</a>`);
   }
   function openFileConflict(id, localContent, invoker) {
     const conflictDialog = document.querySelector('#file-conflict-dialog'); const copyStatus = document.querySelector('#file-conflict-status');
@@ -2016,19 +3192,19 @@ export function initializeDashboard() {
         onError: showError
       });
     });
-    document.querySelector('#delete-file').addEventListener('click', (event) => confirmAction({ title: 'Delete file?', description: `Delete ${file.path} from this workspace?`, target: file.path, label: 'Delete file', pendingLabel: 'Deleting…', action: async () => { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'DELETE', body: requestBody({ path: file.path, recursive: false, expectedSha256: file.sha256 }) }); location.href = `/dashboard/workspaces/${encodeURIComponent(id)}/files?path=.`; } }, event.currentTarget));
+    document.querySelector('#delete-file').addEventListener('click', (event) => confirmAction({ title: 'Delete file?', description: `Delete ${file.path} from this workspace?`, target: file.path, label: 'Delete file', pendingLabel: 'Deleting…', action: async () => { await api(`/workspaces/${encodeURIComponent(id)}/files/content`, { method: 'DELETE', body: requestBody({ path: file.path, recursive: false, expectedSha256: file.sha256 }) }); navigateTo(`/dashboard/workspaces/${encodeURIComponent(id)}/files?path=.`); } }, event.currentTarget));
   }
   function bindFileOperations(id) {
     document.querySelector('#folder-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api(`/workspaces/${encodeURIComponent(id)}/files/directory`, { method: 'POST', body: requestBody({ path: form.get('path'), recursive: true }) }); announce('Folder created.'); await loadFiles(id); } catch (error) { showError(error); } });
     document.querySelector('#move-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api(`/workspaces/${encodeURIComponent(id)}/files/move`, { method: 'POST', body: requestBody({ source: form.get('source'), destination: form.get('destination'), overwrite: false }) }); announce('Path moved.'); await loadFiles(id); } catch (error) { showError(error); } });
   }
   function bindClose(item) {
-    document.querySelector('#close-workspace')?.addEventListener('click', (event) => confirmAction({ title: 'Close workspace?', description: 'This stops the executor and removes the workspace checkout. This cannot be undone.', target: `${repositoryName(item.repositoryUrl)} ${item.workspaceId}`, label: 'Close workspace', pendingLabel: 'Closing…', action: async () => { await api(`/workspaces/${encodeURIComponent(item.workspaceId)}/close`, { method: 'POST', body: requestBody({ expectedGeneration: item.version }) }); location.href = '/dashboard'; } }, event.currentTarget));
+    document.querySelector('#close-workspace')?.addEventListener('click', (event) => confirmAction({ title: 'Close workspace?', description: 'This stops the executor and removes the workspace checkout. This cannot be undone.', target: `${repositoryName(item.repositoryUrl)} ${item.workspaceId}`, label: 'Close workspace', pendingLabel: 'Closing…', action: async () => { await api(`/workspaces/${encodeURIComponent(item.workspaceId)}/close`, { method: 'POST', body: requestBody({ expectedGeneration: item.version }) }); navigateTo('/dashboard'); } }, event.currentTarget));
   }
   function confirmAction(options, invoker) {
     document.querySelector('#confirm-title').textContent = options.title; document.querySelector('#confirm-description').textContent = options.description; document.querySelector('#confirm-target').textContent = options.target; confirm.open(options, invoker);
   }
-  document.querySelector('#workspace-filter').addEventListener('submit', (event) => { event.preventDefault(); location.href = `/dashboard?${new URLSearchParams(new FormData(event.currentTarget))}`; });
+  document.querySelector('#workspace-filter').addEventListener('submit', (event) => { event.preventDefault(); navigateTo(`/dashboard?${new URLSearchParams(new FormData(event.currentTarget))}`); });
   document.querySelector('#refresh').addEventListener('click', async () => { announce('Refreshing…'); await load(); announce('Workspace data refreshed.'); });
   const menu = createModalController({ panel: sidebar, backgrounds: [main], trigger: menuButton, initialFocus: () => sidebar.querySelector('a'), onOpen: () => { sidebar.classList.add('open'); menuButton.setAttribute('aria-expanded', 'true'); }, onClose: () => { sidebar.classList.remove('open'); menuButton.setAttribute('aria-expanded', 'false'); } });
   menuButton.addEventListener('click', () => menu.active ? menu.close() : menu.open());
@@ -2075,7 +3251,7 @@ export function initializeDashboard() {
     if (paletteActive >= entries.length) paletteActive = entries.length - 1;
     if (paletteActive < 0 && entries.length) paletteActive = 0;
     if (!entries.length) paletteActive = -1;
-    paletteResults.innerHTML = renderPaletteResults(entries, paletteActive);
+    insertRendered(paletteResults, renderPaletteResults(entries, paletteActive));
     paletteInput.setAttribute('aria-expanded', String(entries.length > 0));
     if (paletteActive >= 0) paletteInput.setAttribute('aria-activedescendant', `palette-opt-${paletteActive}`);
     else paletteInput.removeAttribute('aria-activedescendant');
@@ -2113,7 +3289,7 @@ export function initializeDashboard() {
     else if (event.key === 'End') paletteActive = options.length - 1;
     else if (event.key === 'Enter') {
       const href = options[paletteActive]?.dataset.href;
-      if (href) { event.preventDefault(); location.href = href; }
+      if (href) { event.preventDefault(); navigateTo(href); }
       return;
     } else return;
     event.preventDefault();
@@ -2123,7 +3299,7 @@ export function initializeDashboard() {
   paletteResults.addEventListener('mousedown', (event) => { if (event.target.closest?.('[role="option"]')) event.preventDefault(); });
   paletteResults.addEventListener('click', (event) => {
     const href = event.target.closest?.('[role="option"]')?.dataset.href;
-    if (href) location.href = href;
+    if (href) navigateTo(href);
   });
   paletteDialog.addEventListener('cancel', (event) => { event.preventDefault(); closePalette(); });
   dismissOnBackdrop(paletteDialog, closePalette);
@@ -2154,7 +3330,61 @@ export function initializeDashboard() {
     void globalThis.navigator.clipboard.writeText(trigger.dataset.copy).then(() => announce('Copied to clipboard.')).catch(() => announce('Copy failed. Select and copy the value manually.'));
   });
   addEventListener('pagehide', () => { apiKeyReveal.clear(); paletteLoader.invalidate(); });
-  addEventListener('popstate', () => location.reload()); void load();
+  /**
+   * The launch dialog shows what the preview would resolve, so a conflict is visible before launch
+   * rather than discovered when the resolver refuses. The sets load once: reopening the dialog is not
+   * a reason to re-request what has not changed.
+   */
+  function wireOpenWorkspaceSkillSets() {
+    const dialog = document.querySelector('#open-workspace-dialog');
+    const openButton = document.querySelector('#open-workspace-btn');
+    const select = document.querySelector('#open-skill-sets-select');
+    const chips = document.querySelector('#open-skill-sets-chips');
+    const conflictBox = document.querySelector('#open-skill-conflicts');
+    const previewBox = document.querySelector('#open-workspace-preview');
+    const submit = document.querySelector('#submit-open-workspace');
+    if (!dialog || !openButton || !select) return;
+
+    const controller = createLaunchSkillSetController({
+      submit,
+      loadSets: async () => (await api('/skill-sets')).data.sets ?? [],
+      preview: async (skillSets, skillOverrides) => (await api('/skill-sets/preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ skillSets, skillOverrides })
+      })).data
+    });
+
+    function paint(result) {
+      const chosen = controller.chosen();
+      if (chips) insertRendered(chips, renderSkillSetChips(controller.sets().filter((set) => chosen.includes(set.id)).map((set) => set.name)));
+      if (conflictBox) insertRendered(conflictBox, renderSkillConflicts(controller.conflictList(), controller.overrides()));
+      if (previewBox) previewBox.textContent = `${(result.resolved ?? []).length} skill(s) resolved.`;
+    }
+
+    openButton.addEventListener('click', () => {
+      dialog.showModal();
+      void controller.load()
+        .then(() => { insertRendered(select, renderSkillSetOptions(controller.sets())); })
+        .catch(showError);
+    });
+
+    select.addEventListener('change', () => {
+      controller.choose([...select.selectedOptions].map((option) => option.value));
+      void controller.refresh().then(paint).catch(showError);
+    });
+
+    // A conflict radio is the operator's override, and it is what releases the launch button.
+    conflictBox?.addEventListener('change', (event) => {
+      const name = event.target?.closest?.('fieldset')?.dataset?.conflictName;
+      if (!name || !event.target?.value) return;
+      void controller.resolve(name, event.target.value).then(paint).catch(showError);
+    });
+  }
+
+  addEventListener('popstate', () => location.reload());
+  wireOpenWorkspaceSkillSets();
+  void load();
 }
 
 if (typeof document !== 'undefined') initializeDashboard();

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ApiConfig } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { createApiApp, type ApiRuntime } from '../src/app.js';
-import { createDashboardAssetsRouter } from '../src/dashboard-assets.js';
+import { DASHBOARD_COMPAT_REDIRECTS, DASHBOARD_SHELL_PATHS, createDashboardAssetsRouter } from '../src/dashboard-assets.js';
 import { normalizeServerVersion } from '../src/version.js';
 
 const manifestVersion = z.object({ version: z.string() })
@@ -34,18 +34,52 @@ async function serve(config: ApiConfig): Promise<string> {
 }
 
 describe('dashboard application mount', () => {
-  it('serves the dashboard shell for every direct navigation route', async () => {
+  it('serves the dashboard shell for every registered route', async () => {
     const app = express();
     app.use('/dashboard', createDashboardAssetsRouter());
     server = createServer(app);
     await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server failed');
-    for (const path of ['/overview', '/projects', '/projects/prj_abcdefghijklmnopqrst', '/models', '/artifacts', '/audit', '/github', '/api-keys', '/profile', '/mcp-servers', '/mcp-servers/:serverId']) {
-      const response = await fetch(`http://127.0.0.1:${address.port}/dashboard${path}`);
+    // The path list is the router's own export, so a page cannot ship without the
+    // shell route that serves it.
+    for (const path of DASHBOARD_SHELL_PATHS) {
+      const requestPath = path
+        .replace(':workspaceId', 'ws_abcdefghijklmnopqrstuvwx')
+        .replace(':projectId', 'prj_abcdefghijklmnopqrst')
+        .replace(':id', 'kn_1234567890')
+        .replace(':serverId', 'mcps_abcdefghijklmnopqrstuvwx');
+      const response = await fetch(`http://127.0.0.1:${address.port}/dashboard${requestPath === '/' ? '' : requestPath}`);
       expect(response.status, path).toBe(200);
-      expect(await response.text(), path).toContain('<title>Workspaces | Cloud Harness</title>');
+      expect(await response.text(), path).toContain('<title>Overview | Cloud Harness</title>');
     }
+  });
+
+  it('redirects the legacy dashboard paths that moved', async () => {
+    const app = express();
+    app.use('/dashboard', createDashboardAssetsRouter());
+    server = createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server failed');
+    for (const [from, to] of Object.entries(DASHBOARD_COMPAT_REDIRECTS)) {
+      const response = await fetch(`http://127.0.0.1:${address.port}${from}`, { redirect: 'manual' });
+      expect(response.status, from).toBe(302);
+      expect(response.headers.get('location'), from).toBe(to);
+    }
+  });
+
+  it('serves the page registry module the shell imports', async () => {
+    const app = express();
+    app.use('/dashboard', createDashboardAssetsRouter());
+    server = createServer(app);
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server failed');
+    const response = await fetch(`http://127.0.0.1:${address.port}/dashboard/assets/dashboard-pages.js`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('javascript');
+    expect(await response.text()).toContain('DASHBOARD_PAGES');
   });
 
   it('injects the forced theme from the preference cookie into the shell', async () => {

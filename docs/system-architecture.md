@@ -208,6 +208,15 @@ repository checkout lives under the configured jobs root and persists across
 MCP calls while the workspace is active. Close or TTL cleanup removes the
 executor and its workspace directory; SQLite retains the resulting metadata.
 
+The skill registry is a separate concern that shares that store. Sources, revisions, sets, and import
+jobs are written through [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts), while
+4-tier resolution and the same-tier conflict rule live in
+[`apps/runner/src/skill-resolver.ts`](../apps/runner/src/skill-resolver.ts) and are applied both when a
+workspace launches and when the dashboard previews a set, so the two paths cannot disagree.
+Integration credentials are deliberately not model provider credentials: they live beside them in
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts) under the same keyring
+envelope, so a key that is not a gateway provider never travels through a gateway snapshot.
+
 Dependency-task records, dependency DAGs, execution state, and output byte counts
 are durable SQLite state (`durable_tasks`, `task_dependencies`), while task output
 logs are streamed to 0600 log files on disk. They survive runner restarts and
@@ -250,9 +259,14 @@ schemas and lifecycle owners are under `apps/runner/src/metadata-*`,
 [`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts), and
 [`apps/runner/src/github-installation-sqlite-store.ts`](../apps/runner/src/github-installation-sqlite-store.ts).
 
-The current admission policy permits one active workspace per principal. Idle
-and wall TTLs converge on the earliest expiry, and the runner is the single
-cleanup authority.
+The admission policy permits up to `MAX_ACTIVE_WORKSPACES_PER_OWNER` concurrent
+counted workspaces per principal (default 3; `1` restores single-workspace
+behaviour). Admission and promotion are counted atomically in
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts) and enforced
+by
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts).
+Idle and wall TTLs are per workspace and converge on the earliest expiry, and the
+runner remains the single cleanup authority.
 
 ## Deployment topology
 

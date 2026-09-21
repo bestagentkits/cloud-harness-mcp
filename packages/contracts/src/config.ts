@@ -4,7 +4,13 @@ import { AgentProxyOperationSchema } from './runner-api.js';
 import { SecretNameSchema } from './secret-policy.js';
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
 
-const httpsUrl = z.url().refine((value) => new URL(value).protocol === 'https:', 'HTTPS URL required');
+const httpsUrl = z.url().refine((value) => {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}, 'HTTPS URL required');
 const enabled = z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false);
 
 const principalRelink = z.object({
@@ -21,14 +27,18 @@ const positiveBoundedInteger = (maximum: number, defaultValue: number) =>
   z.coerce.number().int().min(1).max(maximum).default(defaultValue);
 
 const gatewayUrl = z.url().refine((value) => {
-  const url = new URL(value);
-  return url.protocol === 'http:'
-    && url.hostname === 'model-gateway'
-    && url.pathname === '/'
-    && !url.username
-    && !url.password
-    && !url.search
-    && !url.hash;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:'
+      && url.hostname === 'model-gateway'
+      && url.pathname === '/'
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash;
+  } catch {
+    return false;
+  }
 }, 'agent gateway URL must be the fixed internal http://model-gateway origin');
 
 export const AgentModelProfileSchema = z.object({
@@ -95,6 +105,16 @@ export const RunnerAgentLimitsSchema = z.object({
 });
 
 export const DEFAULT_RUNNER_AGENT_LIMITS = RunnerAgentLimitsSchema.parse({});
+
+/**
+ * Concurrent counted workspaces allowed per principal. The shipped default is the
+ * low end of the range the multi-workspace feature targets, because every counted
+ * workspace may use up to 1 GiB of container memory, one CPU, and 256 pids
+ * (`apps/runner/src/workspace-service.ts`), and `minFreeBytes` only guards disk.
+ * Operators raise it on hosts sized for parallel builds. `1` restores the previous
+ * single-workspace behaviour.
+ */
+export const DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER = 3;
 
 export const RunnerAgentsConfigSchema = z.object({
   image: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/),
@@ -209,6 +229,7 @@ export const RunnerConfigSchema = z.object({
   maxOutputBytes: z.coerce.number().int().min(1_024).max(10_485_760).default(262_144),
   minFreeBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
+  maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
   reaperIntervalSeconds: z.coerce.number().int().min(10).max(3_600).default(30),
   artifactRoot: z.string().min(1).default('/var/lib/cloud-harness/artifacts'),
   maxArtifactBytes: z.coerce.number().int().min(1_024).max(268_435_456).default(16_777_216),

@@ -43,6 +43,59 @@ export function registerDashboardControlRoutes(
   router.put('/api/v1/provider-credentials/:id/rotate', endpoint('model_credential_rotate', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.delete('/api/v1/provider-credentials/:id', endpoint('model_credential_delete', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...generation.parse(request.body) })));
   router.get('/api/v1/agent-model-profiles', endpoint('model_profile_list', () => ({})));
+  // Skills. `limit` and the list filters default inside the operation schema, so the route only
+  // parses the identifier it owns and lets the schema fill the rest.
+  router.get('/api/v1/skills', endpoint('skill_list', () => ({})));
+  // Registered before the identifier route: otherwise `search` is captured as a skill id and rejected
+  // as a malformed identifier.
+  router.get('/api/v1/skills/search', endpoint('skill_search', (request) => ({
+    query: request.query.query,
+    ...(request.query.providers ? { providers: String(request.query.providers).split(',') } : {})
+  })));
+  router.get('/api/v1/skills/:skillId', endpoint('skill_get', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
+  router.get('/api/v1/skills/:skillId/revisions', endpoint('skill_revision_list', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
+  router.get('/api/v1/skills/:skillId/revisions/:revisionId', endpoint('skill_revision_get', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), revisionId: internalId('skrev').parse(request.params.revisionId) })));
+  router.get('/api/v1/skills/:skillId/diff', endpoint('skill_revision_diff', (request) => ({
+    skillId: internalId('sk').parse(request.params.skillId),
+    fromRevisionId: internalId('skrev').parse(request.query.from),
+    toRevisionId: internalId('skrev').parse(request.query.to)
+  })));
+  router.get('/api/v1/skills/:skillId/usage', endpoint('skill_usage', (request) => ({ skillId: internalId('sk').parse(request.params.skillId) })));
+  router.get('/api/v1/skill-sets', endpoint('skill_set_list', () => ({})));
+  router.post('/api/v1/skill-sets/preview', endpoint('skill_set_preview', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.get('/api/v1/toolkit-registry', endpoint('toolkit_registry_list', (request) => ({
+    ...(request.query.provider ? { provider: String(request.query.provider) } : {})
+  })));
+  router.get('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_get', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId) })));
+  router.get('/api/v1/skill-imports/:jobId', endpoint('skill_import_status', (request) => ({ jobId: internalId('skjob').parse(request.params.jobId) })));
+  // Without these two the import wizard had nothing to call: the job reader existed while nothing could
+  // create a job or stop one, which is why the dialog's submit had no route to reach.
+  router.post('/api/v1/skill-imports', endpoint('skill_import_start', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.post('/api/v1/skill-imports/:jobId/cancel', endpoint('skill_import_cancel', (request) => ({
+    jobId: internalId('skjob').parse(request.params.jobId),
+    ...(request.body && typeof request.body === 'object' ? request.body : {})
+  })));
+  router.patch('/api/v1/skills/:skillId', endpoint('skill_update', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.post('/api/v1/skills/:skillId/archive', endpoint('skill_archive', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.post('/api/v1/skills/:skillId/restore', endpoint('skill_restore', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.post('/api/v1/skill-sets', endpoint('skill_set_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.post('/api/v1/skills/bulk', endpoint('skill_bulk', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.post('/api/v1/skills', endpoint('skill_create_custom', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  // Editing instructions adds a revision instead of rewriting the last one, so a launch that pinned the
+  // previous revision keeps resolving to the bytes it was verified against.
+  router.post('/api/v1/skills/:skillId/revisions', endpoint('skill_revision_create', (request) => ({
+    skillId: internalId('sk').parse(request.params.skillId),
+    ...(request.body && typeof request.body === 'object' ? request.body : {})
+  })));
+  // A fork starts a new source from the bytes a revision pinned, so it names both the source and the
+  // revision rather than the source alone.
+  router.post('/api/v1/skills/:skillId/revisions/:revisionId/fork', endpoint('skill_revision_fork', (request) => ({
+    skillId: internalId('sk').parse(request.params.skillId),
+    revisionId: internalId('skrev').parse(request.params.revisionId),
+    ...(request.body && typeof request.body === 'object' ? request.body : {})
+  })));
+  router.patch('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_update', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.delete('/api/v1/skill-sets/:skillSetId', endpoint('skill_set_delete', (request) => ({ skillSetId: internalId('skset').parse(request.params.skillSetId), ...generation.parse(request.body) })));
   router.post('/api/v1/agent-model-profiles', endpoint('model_profile_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.patch('/api/v1/agent-model-profiles/:id', endpoint('model_profile_update', (request) => ({ profileId: request.params.id, ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.post('/api/v1/agent-model-profiles/:id/activate', endpoint('model_profile_activate', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
@@ -201,7 +254,12 @@ export function registerDashboardControlRoutes(
     return true;
   }
 
-  function endpoint(operation: MetadataRunnerOperation, input: (request: DashboardRequest) => Record<string, unknown>, options?: { evict?: boolean; validateEndpoint?: boolean }) {
+  // A dashboard route may only expose an operation that has BOTH an internal input schema and a
+  // dashboard response mapping, so a new internal operation cannot reach the browser through an
+  // unmapped response and be dropped by the mapper's key allowlist.
+  type DashboardRoutableOperation = Extract<MetadataRunnerOperation, Parameters<typeof sendRunnerResponse>[1]>;
+
+  function endpoint(operation: DashboardRoutableOperation, input: (request: DashboardRequest) => Record<string, unknown>, options?: { evict?: boolean; validateEndpoint?: boolean }) {
     return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
       try {
         const selected = principal(request, response);

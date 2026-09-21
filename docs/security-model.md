@@ -267,7 +267,7 @@ Workspace disk usage metering calculates the combined footprint of all three per
 Skills are resolved across four deterministic precedence tiers (`built-in > owner > workspace > repository`):
 
 1. **Built-in & Owner Tiers (`/opt/cloud-harness/skills:ro`, `/opt/cloud-harness/owner-skills:ro`)**: Mounted read-only (`:ro`) at the container boundary. Because they reside on immutable host mounts, processes within the executor (including any process running as UID 10001) cannot modify these skill files.
-2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope.
+2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope. A skill revision that carries instructions but no scripts is refused with `NO_EXECUTABLE_ASSETS` rather than a generic miss, because the revision exists and simply has nothing to run. Where those bytes execute is a deliberate choice, not an accident: the script runs in a disposable helper container launched through `runPrivilegedEphemeralExec`, which is gated on an owner privilege grant. Without a grant the runner returns `PRIVILEGE_APPROVAL_REQUIRED` naming the grant it needs, and it never falls back to running the script locally, so a caller cannot read a stronger isolation guarantee into the result than the run actually had. The response reports `executionMode: 'helper-container'`. The helper container reuses the worker's one-shot entry point, so the isolated snapshot, the full-tree bundle digest, and the script SHA checks described here still happen before the script is invoked; only the process that finally runs it moves into a container of its own.
 
 ### Privileged execution and operator approval grants
 
@@ -352,9 +352,13 @@ the ceiling triggers cleanup. If the host UID cannot remove executor-owned
 files, cleanup uses a separate fixed no-network, capability-free helper;
 startup reaps interrupted ephemeral helpers.
 
-The current storage ceiling is not a hard quota. One-workspace admission, a
-host free-space floor, operation-boundary checks, and periodic reaping reduce
-risk, but a process can still fill the shared filesystem between checks.
+The current storage ceiling is not a hard quota. Per-principal workspace
+admission, a host free-space floor, operation-boundary checks, and periodic
+reaping reduce risk, but a process can still fill the shared filesystem between
+checks. The shipped `MAX_ACTIVE_WORKSPACES_PER_OWNER` default already permits three
+counted workspaces per principal, and raising it multiplies the per-workspace
+container bounds rather than replacing them: every counted workspace keeps its own
+memory, CPU, pid, and byte limits, and only their number grows.
 Monitor the host and use a dedicated quota-backed filesystem before accepting
 untrusted workloads.
 
