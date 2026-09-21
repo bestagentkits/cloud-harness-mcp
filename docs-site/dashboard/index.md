@@ -5,21 +5,25 @@ description: Tour of the Cloud Harness Mission Control operator dashboard.
 
 # Operator Dashboard
 
-The **Mission Control** operator dashboard is available at `https://harness.zuey.me/dashboard`. It provides operators with live visibility into active workspaces, security audit logs, API key management, and GitHub App integrations.
+The **Mission Control** operator dashboard is available at `https://harness.zuey.me/dashboard`. It is organised around operator intent — **Home**, **Operate**, **Configure**, **Data**, and **Admin** — rather than around the subsystems behind it. `/dashboard` is the Overview; it answers four questions above the fold (what needs attention, what is running, what it costs, and what expires soon) and every tile links into the filtered view that explains it.
 
 ## Key Sections
 
-- **[Workspaces](/dashboard/workspaces):** Inspect live Docker containers, open files, interactive shells, and close running workspaces.
+- **[Overview](/dashboard/):** Decision metrics first — Needs attention, Running now, Cost (with the scope it measured), and Expiring soon — then an Analytics section, then Access and Server information. Each figure links to the view behind it.
+- **[Workspaces](/dashboard/workspaces):** Open, inspect, and finalize TTL-limited workspaces. Each workspace opens as a cockpit with Summary, Agents, Runtime, Files, Git, Automation, Deploy, Artifacts, and Activity sections plus Renew lease, Finalize, recover and close actions.
+- **[Agents](/dashboard/agents):** Every coding agent across your workspaces with its parent-child hierarchy, status, model profile, age, TTL, tokens, cost, and budget utilisation; each agent opens into Overview, Usage, bounded Logs, and Messages (steer, follow-up, cancel).
+- **[Activity](/dashboard/activity):** One operational timeline with All, Agents, Tasks, MCP, Deployments, and Audit filters. Runtime rows are live; audit rows are retained and redacted, and every row says which it is.
+- **[Approvals](/dashboard/approvals):** Pending privilege grants with the requested command, workspace, working directory, and command digest, plus Approve and Reject. The rail shows a count only while something is pending.
 - **[Projects](/dashboard/projects):** Track repositories and manage project-scoped environment configurations.
-- **[Secrets & Credentials](/dashboard/secrets):** Manage global and project-scoped credentials encrypted at rest with AES-256-GCM and automatic ingest-time output stream redaction.
-- **[Subagent Models](/dashboard/models):** Configure LLM provider credentials, model profiles, token pricing, and capability limits for Pi subagents.
-- **[MCP Servers](/mcp-gateway):** Register downstream MCP servers, manage their tools and permissions, review logs, and copy the one `/mcp-gateway` endpoint to configure in an MCP client.
-- **[API Keys](/dashboard/api-keys):** Create and revoke static API keys for IDE and local CLI tools.
-- **[GitHub App](/dashboard/github):** Manage GitHub App installation bindings for private repository cloning and push access.
-- **[Artifacts](/dashboard/artifacts):** Download and inspect workspace output files, build logs, and test results.
+- **[Secrets & Credentials](/dashboard/secrets):** Manage global and project-scoped credentials encrypted at rest with AES-256-GCM and automatic ingest-time output stream redaction. Creating a secret is a dialog; the value is write-only.
+- **[Models & Budgets](/dashboard/models):** Configure LLM provider credentials, model profiles, token pricing, and capability limits for coding agents.
 - **[Skills & Skill Sets](/dashboard/skills):** Manage the skill library, provider imports, skill sets, and the toolkit registry.
-- **[Audit Trail](/dashboard/audit):** Review immutable security logs of every tool invocation and authorization event.
-- **[Profile & Preferences](/dashboard/profile):** View signed-in identity details, edit the display name shown in the top-bar chip, and switch the theme with the icon control in the top bar, which cycles System, Light, and Dark and persists server-side.
+- **[Integrations](/dashboard/integrations):** One page for external connections, with GitHub and MCP Servers as its two tabs. `/dashboard/github` and `/dashboard/mcp-servers` redirect here.
+- **[Artifacts](/dashboard/artifacts):** Download and inspect workspace output files, build logs, and test results.
+- **[API Access](/dashboard/api-keys):** Create and revoke static gateway keys for IDE and local CLI tools.
+- **[Audit Logs](/dashboard/audit):** The durable security record, also reachable as the Audit filter inside the Activity Center.
+- **[Settings](/dashboard/settings):** Instance-wide defaults applied to newly opened workspaces.
+- **[Profile & Preferences](/dashboard/profile):** View signed-in identity details, edit the display name shown in the top-bar chip, and switch the theme with the icon control in the top bar, which cycles System, Light, and Dark and persists server-side. Profile has no rail entry: the top-bar chip and the command palette are its entry points.
 
 ## Search and Version
 

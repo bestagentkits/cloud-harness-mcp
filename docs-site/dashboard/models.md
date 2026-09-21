@@ -36,3 +36,12 @@ Model profiles define how subagents interact with LLMs:
 - **Token Pricing:** Input and output token pricing in USD per 1M tokens.
 - **Budget Limits:** Hard limits for maximum input tokens, output tokens, and cost per agent execution.
 - **Allowed Proxy Operations:** Hard ceiling on permitted file and search operations from the exact 10 safe tools (`files_list`, `files_read`, `files_write`, `files_apply_patch`, `files_delete`, `files_move`, `files_mkdir`, `grep_search`, `symbols_search`, `symbols_references`).
+
+## Where this page lives now
+
+The page is labelled **Models & Budgets** in the navigation and still lives at
+`/dashboard/models`, so existing links keep working. It follows the shared resource-page
+layout: the page heading and help come from the dashboard's page registry, the single
+accented action (**Add profile**) and its secondary (**Add credential**) sit in the header
+action slot, and both open dialogs rather than permanent forms under the list. Identifiers
+are copy affordances rather than labels.
