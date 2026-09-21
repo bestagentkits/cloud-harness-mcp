@@ -1,3 +1,10 @@
+## [0.55.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.1...v0.55.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* **config:** consolidate the built-in skills tier onto BUILTIN_SKILLS_ROOT ([#251](https://github.com/bestagentkits/cloud-harness-mcp/issues/251)) ([122092c](https://github.com/bestagentkits/cloud-harness-mcp/commit/122092c1e4c56a294210f51d392ed516f08c0c87))
+
 ## [0.55.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.0...v0.55.1) (2026-09-21)
 
 
