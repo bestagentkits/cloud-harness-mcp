@@ -1490,42 +1490,25 @@ export function initializeDashboard() {
     selectNavigation('overview');
     document.querySelector('#command-surface').hidden = true;
     insertRendered(content, renderOverviewSkeleton());
-    const [ws, keys, auditResult, github, profile, server] = await Promise.allSettled([
-      api('/workspaces'), api('/api-keys'), api('/audit?limit=50'), api('/github'), api('/profile'), api('/server')
+    // One bounded projection replaces the previous client-side fan-out; identity and the
+    // server panel stay separate because they are not decision metrics.
+    const [overviewResult, profile, server] = await Promise.allSettled([
+      api('/overview'), api('/profile'), api('/server')
     ]);
     const data = (result) => result.status === 'fulfilled' ? result.value.data : undefined;
-    const workspaces = data(ws)?.workspaces ?? [];
-    const keyData = data(keys);
-    const apiKeys = Array.isArray(keyData?.keys) ? keyData.keys : [];
-    const events = data(auditResult)?.events ?? [];
-    const githubData = data(github);
-    const installations = Array.isArray(githubData?.installations) ? githubData.installations : (githubData?.installation ? [githubData.installation] : []);
-    const activeInstallations = installations.filter((inst) => inst.status === 'active');
-    const installationCount = installations.length;
-    const githubNote = installationCount === 1
-      ? (installations[0].accountLogin ?? installations[0].accountId ?? '1 account bound')
-      : installationCount > 1
-        ? `${installationCount} accounts/orgs bound`
-        : 'No installation bound';
-    const githubConnected = activeInstallations.length > 0;
     const identity = data(profile)?.identity ?? {};
-    const endpoint = keyData?.readiness?.ready === true ? (keyData.readiness.publicUrl ?? keyData.publicUrl) : undefined;
+    const readinessUrl = data(profile)?.readiness?.publicUrl;
     insertRendered(content, renderOverview({
-      metrics: [
-        { label: 'Active workspaces', value: workspaces.filter((item) => item.status === 'ACTIVE').length, note: `${workspaces.length} total` },
-        { label: 'API keys', value: `${apiKeys.filter((item) => item.state === 'ACTIVE').length}/10`, note: 'Active of limit' },
-        { label: 'GitHub', value: githubConnected ? 'Connected' : 'Not connected', small: true, note: githubNote },
-        { label: 'Recent events', value: events.length, note: 'Retained audit records' }
-      ],
-      activity: events.slice(0, 6).map((event) => ({ action: event.action, subjectType: event.subjectType, subjectId: event.subjectId, createdAt: event.createdAt })),
+      overview: data(overviewResult) ?? {},
       access: {
         name: identity.name ?? 'Not provided',
         email: identity.email ?? 'Not provided',
         sessionExpiresAt: data(profile)?.sessionExpiresAt,
-        endpoint: typeof endpoint === 'string' && /^https:\/\//.test(endpoint) ? endpoint : undefined
+        endpoint: typeof readinessUrl === 'string' && /^https:\/\//.test(readinessUrl) ? readinessUrl : undefined
       },
       server: data(server)
     }));
+    await refreshApprovalsBadge();
   }
   async function loadIndex() {
     selectNavigation('workspaces'); document.querySelector('#command-surface').hidden = false;
@@ -2977,42 +2960,15 @@ export function initializeDashboard() {
     finally { button.disabled = false; button.textContent = original; }
   }
   /**
-   * The Activity Center. Audit is the durable spine; live agent state is an overlay,
-   * and every row says which of the two it is.
+   * The Activity Center reads one server-composed projection: the timeline is merged
+   * and labelled by the API, so the browser does not fan out or re-derive categories.
    */
   async function loadActivity() {
     selectNavigation('activity');
     document.querySelector('#command-surface').hidden = true;
     const filter = new URLSearchParams(location.search).get('filter') ?? 'all';
-    const [auditResult, agentResult] = await Promise.all([
-      api('/audit?limit=50').catch(() => undefined),
-      api('/agents').catch(() => undefined)
-    ]);
-    const categoryFor = (action, subjectType) => {
-      const text = `${action ?? ''} ${subjectType ?? ''}`.toLowerCase();
-      if (text.includes('agent')) return 'agents';
-      if (text.includes('task')) return 'tasks';
-      if (text.includes('mcp') || text.includes('gateway')) return 'mcp';
-      if (text.includes('deploy')) return 'deployments';
-      return 'audit';
-    };
-    const auditEvents = (auditResult?.data?.events ?? []).map((event) => activityEvent({
-      at: event.createdAt,
-      category: categoryFor(event.action, event.subjectType),
-      status: 'recorded',
-      actor: `${event.subjectType ?? 'subject'} ${event.subjectId ?? ''}`.trim(),
-      summary: String(event.action ?? 'Audit event'),
-      durable: true
-    }));
-    const liveEvents = (agentResult?.data?.agents ?? []).map((agent) => activityEvent({
-      at: agent.startedAt ?? agent.createdAt,
-      category: 'agents',
-      status: String(agent.status ?? 'unknown').toLowerCase(),
-      actor: String(agent.workspaceId ?? ''),
-      summary: `Agent ${String(agent.agentId ?? '').slice(0, 18)}… ${String(agent.status ?? '')}`.toLowerCase(),
-      href: `/dashboard/agents/${encodeURIComponent(String(agent.agentId ?? ''))}`
-    }));
-    const events = [...liveEvents, ...auditEvents].sort((left, right) => String(right.at ?? '').localeCompare(String(left.at ?? '')));
+    const result = await api('/activity').catch(() => undefined);
+    const events = Array.isArray(result?.data?.events) ? result.data.events : [];
     insertRendered(content, renderActivityCenter({ events, filter }));
     await refreshApprovalsBadge();
   }

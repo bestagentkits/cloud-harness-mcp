@@ -590,6 +590,114 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   skill_set_preview: { CONFLICT: 'This skill set changed after you opened it.', NOT_FOUND: 'Skill set not found.' }
 };
 
+/**
+ * The Overview's decision buckets. Each bucket carries the scope its numbers came
+ * from, so the UI can label them honestly instead of implying a historical store the
+ * harness does not keep.
+ */
+export function buildOverviewProjection(input: {
+  workspaces?: Record<string, unknown>[];
+  agents?: Record<string, unknown>[];
+  grants?: Record<string, unknown>[];
+  now?: number;
+}): Record<string, unknown> {
+  const nowMs = input.now ?? Date.now();
+  const workspaces = input.workspaces ?? [];
+  const agents = input.agents ?? [];
+  const grants = input.grants ?? [];
+  const remaining = (value: unknown) => {
+    const at = Date.parse(String(value ?? ''));
+    return Number.isFinite(at) ? at - nowMs : undefined;
+  };
+  const expiringWithin = (minutes: number) => workspaces.filter((workspace) => {
+    const ms = remaining(workspace.expiresAt);
+    return ms !== undefined && ms > 0 && ms <= minutes * 60_000;
+  });
+  const attention: Record<string, unknown>[] = [];
+  for (const workspace of workspaces) {
+    const id = String(workspace.workspaceId ?? '');
+    if (workspace.status === 'FAILED') attention.push({ id: `workspace-failed-${id}`, label: 'Workspace setup failed', detail: 'Review the failure and recover if the checkout is worth keeping.', href: `/dashboard/workspaces/${encodeURIComponent(id)}/summary` });
+    if (workspace.status === 'NETWORK_QUARANTINED') attention.push({ id: `workspace-quarantined-${id}`, label: 'Workspace network quarantined', detail: 'Egress was revoked, so dependency access is denied.', href: `/dashboard/workspaces/${encodeURIComponent(id)}/summary` });
+  }
+  for (const workspace of expiringWithin(15)) {
+    attention.push({ id: `workspace-expiring-${String(workspace.workspaceId ?? '')}`, label: 'Lease expires soon', detail: 'Renew the lease or finalize before the workspace is reaped.', href: `/dashboard/workspaces/${encodeURIComponent(String(workspace.workspaceId ?? ''))}/summary` });
+  }
+  for (const agent of agents) {
+    const status = String(agent.status ?? '');
+    if (!['FAILED', 'LIMIT_EXCEEDED', 'TIMED_OUT'].includes(status)) continue;
+    attention.push({ id: `agent-${String(agent.agentId ?? '')}`, label: `Agent ${status.toLowerCase().replace('_', ' ')}`, detail: 'Open the agent for its terminal reason and usage.', href: `/dashboard/agents/${encodeURIComponent(String(agent.agentId ?? ''))}` });
+  }
+  if (grants.length) attention.push({ id: 'pending-approvals', label: `${grants.length} pending approval(s)`, detail: 'Privilege requests are waiting for a decision.', href: '/dashboard/approvals' });
+
+  const runningAgents = agents.filter((agent) => agent.status === 'RUNNING');
+  const activeWorkspaces = workspaces.filter((workspace) => workspace.status === 'ACTIVE');
+  const runningCost = runningAgents.reduce((total, agent) => {
+    const usage = agent.usage && typeof agent.usage === 'object' ? agent.usage as Record<string, unknown> : {};
+    return total + (Number(usage.costMicros) || 0);
+  }, 0);
+  const buckets = [15, 60, 240].map((minutes) => ({ windowMinutes: minutes, label: minutes < 60 ? `${minutes} min` : `${minutes / 60} h`, count: expiringWithin(minutes).length }));
+  return {
+    attention,
+    running: { agents: runningAgents.length, workspaces: activeWorkspaces.length },
+    // The harness retains per-agent usage, not a daily ledger, so the cost bucket names
+    // the scope it actually measured instead of claiming a window it cannot prove.
+    cost: { scope: 'running agents', costMicros: runningCost, agentCount: runningAgents.length },
+    expiring: buckets,
+    generatedAt: new Date(nowMs).toISOString()
+  };
+}
+
+/** The only windows the metrics projection accepts; anything else is rejected. */
+export const METRIC_WINDOWS: Record<string, number> = { '1h': 3_600_000, '24h': 86_400_000, '7d': 604_800_000 };
+
+/**
+ * Metrics over retained audit events for a validated window. There is no daily cost
+ * ledger, so this projection counts what is actually retained and says so in `scope`.
+ */
+export function buildMetricsProjection(input: { events?: Record<string, unknown>[]; window: string; now?: number }): Record<string, unknown> {
+  const span = METRIC_WINDOWS[input.window];
+  if (!span) throw new Error(`unsupported metrics window: ${input.window}`);
+  const nowMs = input.now ?? Date.now();
+  const since = nowMs - span;
+  const events = (input.events ?? []).filter((event) => {
+    const at = Date.parse(String(event.createdAt ?? ''));
+    return Number.isFinite(at) && at >= since;
+  });
+  const categories: Record<string, number> = {};
+  for (const event of events) {
+    const key = String(event.subjectType ?? 'other');
+    categories[key] = (categories[key] ?? 0) + 1;
+  }
+  return { window: input.window, since: new Date(since).toISOString(), scope: `retained audit events in the last ${input.window}`, eventCount: events.length, categories };
+}
+
+/**
+ * The Activity Center timeline, composed server-side so the browser makes one request
+ * instead of merging several. Live runtime rows are labelled apart from retained ones.
+ */
+export function buildActivityProjection(input: { events?: Record<string, unknown>[]; agents?: Record<string, unknown>[] }): Record<string, unknown> {
+  const categoryFor = (action: unknown, subjectType: unknown) => {
+    const text = `${String(action ?? '')} ${String(subjectType ?? '')}`.toLowerCase();
+    if (text.includes('agent')) return 'agents';
+    if (text.includes('task')) return 'tasks';
+    if (text.includes('mcp') || text.includes('gateway')) return 'mcp';
+    if (text.includes('deploy')) return 'deployments';
+    return 'audit';
+  };
+  const auditRows = (input.events ?? []).map((event) => ({
+    at: event.createdAt, category: categoryFor(event.action, event.subjectType), status: 'recorded',
+    actor: `${String(event.subjectType ?? 'subject')} ${String(event.subjectId ?? '')}`.trim(),
+    summary: String(event.action ?? 'Audit event'), durable: true
+  }));
+  const liveRows = (input.agents ?? []).map((agent) => ({
+    at: agent.startedAt ?? agent.createdAt, category: 'agents', status: String(agent.status ?? 'unknown').toLowerCase(),
+    actor: String(agent.workspaceId ?? ''), summary: `Agent ${String(agent.agentId ?? '')} ${String(agent.status ?? '')}`,
+    href: `/dashboard/agents/${encodeURIComponent(String(agent.agentId ?? ''))}`, durable: false
+  }));
+  const events = [...liveRows, ...auditRows].sort((left, right) => String(right.at ?? '').localeCompare(String(left.at ?? ''))).slice(0, 200);
+  return { events };
+}
+
 export function sendRunnerResponse(response: Response, operation: DashboardResponseOperation, result: RunnerResponse): void {
   if (!result.ok) {
     const code = result.error?.code ?? 'INTERNAL_ERROR';
