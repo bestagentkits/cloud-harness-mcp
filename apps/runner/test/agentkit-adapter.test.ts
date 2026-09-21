@@ -60,6 +60,18 @@ function frozenPayload(input: {
   return `{"schemaVersion":"remote-registry.v1","kitId":"engineer",${tier}"runtime":"cloud-harness","version":"${VERSION}","channel":"${CHANNEL}","adapterSchemaVersion":"agentkit-adapter.v1","requiredCliVersion":"2.17.0","sourceCommit":"${SOURCE_COMMIT}","createdAt":"${CREATED_AT}","artifactUrl":"https://acct.r2.cloudflarestorage.com/agentkits-staging/kits/engineer/cloud-harness/2.17.0-beta.10/kit.tar.gz?X-Amz-Signature=abc\\u0026X-Amz-Credential=def%2Fghi","artifactSha256":"${input.sha256}","artifactSize":${input.size},"artifactExpiresAt":"${expiresAt}","dependencies":[{"kitId":"core","version":"2.17.0","sha256":"${'b'.repeat(64)}"}],"resolvedFrom":[{"kitId":"core","version":"2.17.0"}],"githubAssets":[{"kind":"archive","name":"agentkit-kit-engineer-cloud-harness-${VERSION}.tar.gz","sha256":"${input.sha256}","size":${input.size}}]}`;
 }
 
+/**
+ * Registry timestamps are RFC3339 with trailing fractional zeros trimmed (Go `time.Time`), and the
+ * runner canonicalizes the signed payload exactly the same way. A live fixture must therefore sign
+ * that form: a raw `toISOString()` such as `:23.450Z` canonicalizes to `:23.45Z`, so verification
+ * failed whenever the live milliseconds ended in zero.
+ */
+function goTimestamp(date: Date): string {
+  const iso = date.toISOString();
+  if (iso.endsWith('.000Z')) return iso.replace('.000Z', 'Z');
+  return iso.replace(/(\.\d*?[1-9])0+Z$/, '$1Z');
+}
+
 function signedManifest(input: {
   packageBytes: Buffer;
   privateKey: KeyObject;
@@ -68,7 +80,7 @@ function signedManifest(input: {
   tier?: 'paid';
   expiresAt?: string;
 }): AgentKitRegistryManifest {
-  const expiresAt = input.expiresAt ?? new Date(Date.now() + 600_000).toISOString();
+  const expiresAt = input.expiresAt ?? goTimestamp(new Date(Date.now() + 600_000));
   const sha256 = createHash('sha256').update(input.packageBytes).digest('hex');
   const payload = frozenPayload({
     sha256,
@@ -182,6 +194,23 @@ describe('AgentKit manifest signature verification', () => {
       keyId,
       publicKey: parseAgentKitPublicKey(publicKeyB64)
     })).not.toThrow();
+  });
+
+  it('verifies a live-clock expiry whose milliseconds end in zero', () => {
+    // Regression: the fixture signed a raw `toISOString()`, so `:19:23.450Z` was signed while
+    // verification canonicalized it to `:19:23.45Z`. That flake redded the required `quality`
+    // check on roughly one run in ten, and it is reproduced deterministically here.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-21T10:09:23.450Z'));
+    try {
+      const manifest = signedManifest({ packageBytes: packageFixture, privateKey, keyId, tier: 'paid' });
+      expect(() => verifyAgentKitManifest(manifest, {
+        keyId,
+        publicKey: parseAgentKitPublicKey(publicKeyB64)
+      })).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects a tampered artifact digest, a foreign key id, and a foreign key', () => {
