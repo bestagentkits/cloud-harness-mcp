@@ -240,7 +240,10 @@ describe('dashboard static UI contract', () => {
       "api('/api-keys')", "api('/api-keys', { method: 'POST'", '`/api-keys/${',
       "method: 'DELETE'", 'expiresInDays', 'expectedGeneration', 'apiKeyReveal.clear()'
     ]) expect(script).toContain(contract);
-    for (const forbidden of ['localStorage', 'sessionStorage', 'document.cookie', 'console.', 'sendBeacon(', 'analytics']) expect(script).not.toContain(forbidden);
+    // No client-side tracking, and no persistence of a transient key. The word
+    // "analytics" itself is allowed: the Analytics section is a dashboard surface, not a
+    // tracking call, so the guard checks the call shapes instead of the word.
+    for (const forbidden of ['localStorage', 'sessionStorage', 'document.cookie', 'console.', 'sendBeacon(', 'gtag(', 'posthog', 'plausible(', 'mixpanel']) expect(script).not.toContain(forbidden);
     expect(html).not.toContain('value="chm_key_');
   });
 
