@@ -35,15 +35,20 @@ revision untouched.
 The panel's **Usage** section states whether the skill is locked, and whether a skill set or a live
 workspace is what pins it — those are different risks, so it names them rather than counting them.
 
-**Create a custom skill** writes the instructions into the runner's package cache first and records the
-source second. That order matters: a source row written first would resolve and then fail at launch,
-because the bytes it names would not exist.
+**New skill** in the page header opens a dialog rather than a form under the list, because creating is
+the page's one primary action and the library is what the page is for. The dialog writes the
+instructions into the runner's package cache first and records the source second. That order matters: a
+source row written first would resolve and then fail at launch, because the bytes it names would not
+exist.
 
 ### Editing existing instructions
 
-**Edit instructions** opens the skill in the editor, which then says it is adding a revision, and saving
-publishes that revision rather than rewriting the existing content. Closing the detail panel returns the
-editor to creating a new skill.
+**Edit instructions** opens the same dialog on the skill you are already looking at, so creating and
+editing share one form and one set of validations. While editing, the slug and display name are fixed,
+because a revision carries the instructions only: an editable field there would look like a change the
+save path silently drops. Saving publishes a new revision rather than rewriting the existing content,
+and a successful save closes the dialog and reports the outcome as a notification. A failure keeps the
+dialog open with your draft intact.
 
 ## Discovery and imports
 

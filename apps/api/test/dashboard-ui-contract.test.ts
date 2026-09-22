@@ -18,6 +18,28 @@ const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, imp
 // cannot silently drop the contract.
 const squish = (value: string) => value.replace(/\s+/g, ' ').trim();
 
+// Tag names that never open a container, so the depth walk below must not push them.
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+/**
+ * How many containers are still open at `id` inside `ownerId`, so a test can assert nesting rather than
+ * mere source order. A direct child of the owner is 0; anything inside a wrapper is 1 or more.
+ */
+function containerDepth(markup: string, ownerId: string, id: string): number {
+  const owner = markup.indexOf(`id="${ownerId}"`);
+  const target = markup.indexOf(`id="${id}"`);
+  if (owner < 0 || target < 0 || target < owner) return -1;
+  const open: string[] = [];
+  for (const match of markup.slice(owner, target).matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9-]*)([^>]*?)(\/?)>/g)) {
+    const [, closing, rawName, , selfClose] = match;
+    const name = rawName.toLowerCase();
+    if (VOID_TAGS.has(name)) continue;
+    if (closing) open.pop();
+    else if (!selfClose) open.push(name);
+  }
+  return open.length;
+}
+
 describe('dashboard static UI contract', () => {
   const html = asset('index.html');
   const css = asset('dashboard.css');
@@ -188,6 +210,41 @@ describe('dashboard static UI contract', () => {
     // inside it instead of in the Discover panel, which is hidden whenever the Library tab is open.
     expect(skeleton.indexOf('id="skill-revision-diff"')).toBeLessThan(skeleton.indexOf('id="skills-panel-discover"'));
     expect(skeleton.indexOf('id="skill-revision-diff"')).toBeGreaterThan(skeleton.indexOf('id="skills-panel-library"'));
+  });
+
+  it('opens the skill editor as a dialog that is a sibling of the tab panels', () => {
+    const skeleton = renderSkillsSkeleton();
+
+    // The dialog is named by the element the submit path switches between create and edit, and it carries
+    // the shared close affordance the dismissal binder looks for.
+    expect(skeleton).toMatch(/<dialog id="skill-editor-dialog"[^>]*aria-labelledby="skill-editor-title"/);
+    expect(skeleton).toMatch(/id="skill-editor-description"/);
+    expect(skeleton).toContain('data-dialog-close');
+
+    // Nesting, not source order: a dialog inside a hidden `.skills-panel` never renders, and this dialog's
+    // opener is the page-action button, which belongs to the page rather than to any one tab. The detail
+    // drawer is measured as the control, and it is inside the library panel.
+    expect(containerDepth(skeleton, 'skills-section', 'skill-editor-dialog')).toBe(0);
+    expect(containerDepth(skeleton, 'skills-section', 'skill-detail')).toBeGreaterThan(0);
+
+    // The form itself lives in the dialog rather than floating on the page.
+    expect(skeleton.indexOf('id="skill-editor"')).toBeGreaterThan(skeleton.indexOf('id="skill-editor-dialog"'));
+  });
+
+  it('wires the skill editor to a page action and gives it one start path for both modes', () => {
+    // Creating a skill is the page's primary action; `selectNavigation` runs first and empties the slot, so
+    // no other page can inherit this button.
+    expect(script).toContain("setPageActions(renderPrimaryAction({ id: 'open-skill-editor', label: 'New skill', dialogId: 'skill-editor-dialog' }))");
+    expect(script).toContain("selectNavigation('skills')");
+    // One opener fills the dialog for both modes, so create and edit cannot drift, and the slug and name
+    // are fixed while editing because a revision carries the instructions only.
+    expect(script).toContain('function openSkillEditor(skill)');
+    expect(script).toContain("dialog.dataset.invokerId = skill ? 'skill-detail-edit' : 'open-skill-editor'");
+    // A successful save closes the dialog and announces the outcome where the operator still is; a failure
+    // keeps the dialog open with the draft intact.
+    expect(script).toContain("document.querySelector('#skill-editor-dialog')?.close()");
+    expect(script).toContain("announce(wasEditing ? 'Revision added.' : 'Skill created.')");
+    expect(script).toContain('if (!result.ok) { if (status) status.textContent = result.message; return; }');
   });
 
   it('drives the import wizard from one path, including its retry, and states the job guidance', () => {

@@ -183,7 +183,11 @@ wired, so the visible one is never the only working one. Owners:
   takes a hairline frame and no shadow; it names the skill it opened and carries the
   close control, because a panel that only opens is a trap, and the revision diff
   renders inside it rather than in Discover, which is hidden whenever Library is
-  open. The library has three exclusive states — rows, empty, and filtered to
+  open. The create and edit flow is one `<dialog>` placed outside the tab panels,
+  opened by the page's single primary action and by the drawer's Edit control,
+  because a dialog nested in a hidden panel does not render; the slug and display
+  name are fixed while editing, since a revision carries the instructions only.
+  The library has three exclusive states — rows, empty, and filtered to
   nothing — and only the two empty states state a reason and offer the single action
   that resolves them; the count is stated in every state, so a filter is never
   mistaken for an empty library. Owners: `renderSkillsSkeleton`,
