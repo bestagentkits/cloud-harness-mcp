@@ -1,3 +1,10 @@
+# [0.57.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.56.0...v0.57.0) (2026-09-22)
+
+
+### Features
+
+* **dashboard:** open the skill editor as a dialog instead of a permanent form ([#259](https://github.com/bestagentkits/cloud-harness-mcp/issues/259)) ([f051645](https://github.com/bestagentkits/cloud-harness-mcp/commit/f0516451497d509eb65d56ad4c75973a8daa1e64))
+
 # [0.56.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.4...v0.56.0) (2026-09-22)
 
 
