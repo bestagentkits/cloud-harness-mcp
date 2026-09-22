@@ -148,6 +148,11 @@ export class AgentManager {
     }
     for (const workspace of this.store.active()) {
       if (workspace.status !== 'ACTIVE') continue;
+      // Agent admission is defined only for network-disabled workspaces, matching the eligibility
+      // guard in reserveSpawn and dispatch. An ineligible workspace must be skipped rather than
+      // admitted: openWorkspaceAdmission throws NOT_FOUND for it, which would abort runner startup
+      // and take the whole compose stack down.
+      if (workspace.networkProfile !== 'network-none') continue;
       const records = this.repository.prepareWorkspaceStartupRepair(workspace.ownerId, workspace.id, workspace.generation, this.now());
       records.sort((left, right) => agentDepth(right, records) - agentDepth(left, records));
       for (const record of records) await this.reconcileInterrupted(record);

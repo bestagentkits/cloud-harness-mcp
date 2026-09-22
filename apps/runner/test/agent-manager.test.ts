@@ -198,6 +198,21 @@ describe('AgentManager', () => {
     store.close();
   });
 
+  it('skips agent admission for an ACTIVE dependency-access workspace instead of aborting startup', async () => {
+    // Regression: openWorkspaceAdmission throws NOT_FOUND for a workspace whose profile is not
+    // network-none, and the startup loop called it unconditionally. A single ACTIVE
+    // dependency-access workspace therefore killed the runner on every restart, and the unhealthy
+    // runner took the entire compose stack down with it.
+    const { manager, record, store } = setup('dependency-access');
+    await expect(manager.start()).resolves.toBeUndefined();
+    const admission = store.database.prepare('SELECT COUNT(*) AS count FROM agent_workspace_admission').get() as { count: number };
+    expect(admission.count).toBe(0);
+    // The eligibility rule itself is unchanged: spawning there is still refused.
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record))).rejects.toMatchObject({ code: 'CONFLICT' });
+    await manager.stop();
+    store.close();
+  });
+
   it('makes foreign ownership indistinguishable from a missing workspace', async () => {
     const { manager, record, store } = setup();
     const foreignOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'foreign' });
