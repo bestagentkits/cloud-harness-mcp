@@ -86,7 +86,7 @@ describe('StateStore schema version 11 migration and skill registry', () => {
     const store = new StateStore(tempDbPath());
     try {
       const version = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(version).toBe(11);
+      expect(version).toBe(12);
       const tables = tableNames(store.database);
       for (const table of SKILL_TABLES) expect(tables.has(table)).toBe(true);
     } finally {
@@ -135,7 +135,7 @@ describe('StateStore schema version 11 migration and skill registry', () => {
 
       migratePrincipalSchema(store.database);
 
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(11);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(12);
       expect((store.database.prepare("SELECT title FROM knowledge_items WHERE id = 'kn_keep'").get() as { title: string }).title).toBe('keep-me');
       expect(store.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
       for (const table of SKILL_TABLES) expect(tableNames(store.database).has(table)).toBe(true);
@@ -259,7 +259,7 @@ describe('StateStore schema version 11 migration and skill registry', () => {
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(9);
 
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(11);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(12);
       expect(tableNames(store.database).has('skill_sources')).toBe(true);
       expect(tableNames(store.database).has('knowledge_items')).toBe(true);
     } finally {

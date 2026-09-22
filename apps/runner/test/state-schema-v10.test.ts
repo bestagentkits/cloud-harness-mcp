@@ -4,6 +4,8 @@ import { randomBytes } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import {
   StateStore,
+  downgradeStateSchemaToV11,
+  downgradeStateSchemaToV10,
   downgradeStateSchemaToV9,
   downgradeStateSchemaToV8
 } from '../src/state-store.js';
@@ -17,7 +19,7 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
     const store = new StateStore(dbPath);
     try {
       const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(row.version).toBe(11);
+      expect(row.version).toBe(12);
 
       // Verify knowledge tables exist
       const tableRows = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
@@ -39,8 +41,11 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
     try {
       store.database.exec('PRAGMA foreign_keys = ON');
       const initial = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(initial.version).toBe(11);
+      expect(initial.version).toBe(12);
 
+      // Head is v12, so step down through v11 and v10 to reach v9.
+      downgradeStateSchemaToV11(store.database);
+      downgradeStateSchemaToV10(store.database);
       // Downgrade to exact version 9
       downgradeStateSchemaToV9(store.database);
       const v9Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
@@ -64,7 +69,7 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
       // Re-upgrade to exact version 10
       migratePrincipalSchema(store.database);
       const v10Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(v10Row.version).toBe(11);
+      expect(v10Row.version).toBe(12);
 
       const tableRowsV10 = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
       const tablesV10 = new Set(tableRowsV10.map((r) => r.name));
@@ -84,6 +89,8 @@ describe('StateStore Schema Version 10 Migration & Knowledge Plane', () => {
     const store = new StateStore(dbPath);
     try {
       // Downgrade to v9
+      downgradeStateSchemaToV11(store.database);
+      downgradeStateSchemaToV10(store.database);
       downgradeStateSchemaToV9(store.database);
       store.database.prepare("INSERT INTO principals (id, issuer, subject, created_at, updated_at) VALUES ('p_test', 'https://auth.example.com', 'test-user', 1000, 1000)").run();
       // Create legacy memories and memory_tags if needed, insert legacy records
