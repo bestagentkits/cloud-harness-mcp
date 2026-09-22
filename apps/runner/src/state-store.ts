@@ -51,7 +51,8 @@ export {
   downgradeStateSchemaToV7,
   downgradeStateSchemaToV8,
   downgradeStateSchemaToV9,
-  downgradeStateSchemaToV10
+  downgradeStateSchemaToV10,
+  downgradeStateSchemaToV11
 } from './principal-store.js';
 
 export type MemoryRecord = {
