@@ -623,10 +623,14 @@ dialog::backdrop { background: oklch(0 0 0 / .66); }
 .preset-suggestions li { padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); font-size: var(--text-13); color: var(--ink-muted); }
 
 /* A name is a link, not a control. Without this the base `button` rule renders every skill name as an
-   uppercase box, which reads as an action and hides the operator's own casing. */
+   uppercase box, which reads as an action and hides the operator's own casing. The table row already
+   provides the 44px target, which is why the min-height floor goes; the card's name link is the primary
+   tap target on a phone, so it expands its hit area to that floor the way `.copy` does. */
 .link-btn { min-height: auto; padding: 0; border: none; background: none; color: var(--ink); font: inherit; font-weight: 600; letter-spacing: normal; text-transform: none; text-align: start; text-decoration: underline; text-decoration-color: var(--accent-line); text-underline-offset: .18em; }
 .link-btn:hover:not(:disabled) { border: none; background: none; color: var(--accent-strong); text-decoration-color: var(--accent); }
 .link-btn:active:not(:disabled) { background: none; transform: none; }
+#skills-library-cards .link-btn { position: relative; }
+#skills-library-cards .link-btn::before { content: ""; position: absolute; inset: -.75rem; }
 
 .drawer { border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); padding: var(--space-4); }
 .drawer-head { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--space-3); border-block-end: 1px solid var(--line); padding-block-end: var(--space-3); }
