@@ -1130,6 +1130,9 @@ export function initializeDashboard() {
   async function loadSkills() {
     selectNavigation('skills');
     document.querySelector('#command-surface').hidden = true;
+    // Creating a skill is this page's one primary action, and it lives in the shell's action slot so it is
+    // reachable from every tab. `selectNavigation` has already emptied that slot, so nothing is inherited.
+    setPageActions(renderPrimaryAction({ id: 'open-skill-editor', label: 'New skill', dialogId: 'skill-editor-dialog' }));
     insertRendered(content, renderSkillsSkeleton());
 
     let rows = [];
@@ -1538,18 +1541,40 @@ export function initializeDashboard() {
       }
     });
 
-    document.querySelector('#skill-detail-edit')?.addEventListener('click', () => {
-      const skill = rows.find((candidate) => candidate.id === editingSkillId);
+    /**
+     * One dialog serves both modes, so creating and editing cannot drift in their validation or their
+     * mode switch. The slug and display name are fixed while editing because a revision carries the
+     * instructions only, and an editable field there would look like a change the save path drops.
+     */
+    function openSkillEditor(skill) {
+      const dialog = document.querySelector('#skill-editor-dialog');
+      const title = document.querySelector('#skill-editor-title');
+      const description = document.querySelector('#skill-editor-description');
       const slugField = document.querySelector('#skill-editor-slug');
       const nameField = document.querySelector('#skill-editor-name');
       const instructions = document.querySelector('#skill-editor-instructions');
-      if (slugField) slugField.value = skill ? skill.slug : '';
-      if (nameField) nameField.value = skill ? skill.displayName : '';
-      if (instructions) instructions.value = skill && typeof skill.instructions === 'string' ? skill.instructions : '';
       const status = document.querySelector('#skill-editor-status');
-      if (status) status.textContent = `Editing ${skill ? skill.slug : 'this skill'}; saving adds a revision.`;
-      const title = document.querySelector('#skill-editor-title');
-      if (title) title.textContent = `Add a revision to ${skill ? skill.slug : 'this skill'}`;
+      editingSkillId = skill ? skill.id : null;
+      if (title) title.textContent = skill ? `Add a revision to ${skill.slug}` : 'Create a custom skill';
+      if (description) {
+        description.textContent = skill
+          ? 'Saving adds a revision of the instructions. The slug and display name stay as they are.'
+          : 'Instructions are stored as the skill\u2019s SKILL.md.';
+      }
+      if (slugField) { slugField.value = skill ? skill.slug : ''; slugField.disabled = Boolean(skill); }
+      if (nameField) { nameField.value = skill ? skill.displayName : ''; nameField.disabled = Boolean(skill); }
+      if (instructions) instructions.value = skill && typeof skill.instructions === 'string' ? skill.instructions : '';
+      if (status) status.textContent = '';
+      if (!dialog || dialog.open) return;
+      // The invoker is remembered so closing the dialog puts focus back on what opened it.
+      dialog.dataset.invokerId = skill ? 'skill-detail-edit' : 'open-skill-editor';
+      dialog.showModal();
+      // Editing has one editable field, so focus belongs there rather than on the fixed slug.
+      (skill ? instructions : slugField)?.focus?.();
+    }
+
+    document.querySelector('#skill-detail-edit')?.addEventListener('click', () => {
+      openSkillEditor(rows.find((candidate) => candidate.id === editingSkillId));
     });
 
     // The drawer had no way out: `openSkillDetail` set `hidden = false` and nothing ever set it back, so
@@ -1564,11 +1589,18 @@ export function initializeDashboard() {
     document.querySelector('#skill-editor')?.addEventListener('submit', (event) => {
       event.preventDefault();
       const status = document.querySelector('#skill-editor-status');
+      const wasEditing = editingSkillId !== null;
       void editor.submit().then(async (result) => {
-        if (status) status.textContent = result.ok ? (editingSkillId ? 'Revision added.' : 'Skill created.') : result.message;
+        // A failure keeps the dialog open with the draft intact, which is why the status line stays for it.
+        if (!result.ok) { if (status) status.textContent = result.message; return; }
+        // A success closes the dialog, so the outcome is announced where the operator still is rather than
+        // on a status line that is about to disappear.
+        if (status) status.textContent = '';
+        document.querySelector('#skill-editor-dialog')?.close();
+        announce(wasEditing ? 'Revision added.' : 'Skill created.');
         // The new skill is only visible once the server agrees it exists, so the library reloads from
         // the server rather than assuming the row it just sent.
-        if (result.ok) await enterSkillsTab('library');
+        await enterSkillsTab('library');
       }).catch(showError);
     });
 

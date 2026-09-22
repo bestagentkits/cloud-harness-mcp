@@ -603,8 +603,11 @@ dialog::backdrop { background: oklch(0 0 0 / .66); }
 .skills-bulk-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
 .skills-editor { display: grid; gap: var(--space-3); }
-.skills-editor h3 { margin: 0; }
 .skills-editor textarea { min-height: 10rem; }
+/* A skill's instructions are the reason this dialog exists, so it is wider than the default 32rem. */
+#skill-editor-dialog { width: min(46rem, calc(100vw - 2 * var(--space-4))); }
+/* The editor's grid gap already spaces its actions, so the shared rule would double it. */
+#skill-editor-dialog .dialog-actions { margin-block-start: 0; }
 
 .skills-search { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); }
 .skills-search .skills-field { flex: 1 1 16rem; }

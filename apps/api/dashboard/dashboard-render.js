@@ -961,27 +961,7 @@ export function renderSkillsSkeleton() {
         <div class="drawer-actions">
           <button type="button" id="skill-detail-edit">Edit instructions</button>
         </div>
-      </aside>
-      <form id="skill-editor" class="panel skills-editor">
-        <h3 id="skill-editor-title">Create a custom skill</h3>
-        <div class="skills-form-row">
-          <div class="skills-field">
-            <label for="skill-editor-slug">Slug</label>
-            <input id="skill-editor-slug" name="slug" placeholder="my-skill">
-          </div>
-          <div class="skills-field">
-            <label for="skill-editor-name">Display name</label>
-            <input id="skill-editor-name" name="displayName">
-          </div>
-        </div>
-        <div class="skills-field">
-          <label for="skill-editor-instructions">Instructions</label>
-          <textarea id="skill-editor-instructions" name="instructions"></textarea>
-        </div>
-        <div class="skills-form-actions">
-          <button type="submit" id="skill-editor-save">Save skill</button><span id="skill-editor-status" role="status"></span>
-        </div>
-      </form>`;
+      </aside>`;
 
   const discover = `<div class="skills-search panel">
         <div class="skills-field skills-field-search">
@@ -1048,6 +1028,34 @@ export function renderSkillsSkeleton() {
       <h2 id="skills-heading" class="sr-only">Skills</h2>
       <div class="skills-tabs" role="tablist" aria-label="Skills views">${tab('library', 'Library', true)}${tab('discover', 'Discover', false)}${tab('sets', 'Skill Sets', false)}${tab('registry', 'Registry', false)}</div>
       ${panel('library', library, true)}${panel('discover', discover, false)}${panel('sets', sets, false)}${panel('registry', registry, false)}
+      <!-- One dialog serves creating and editing, and it sits outside the tab panels on purpose: a dialog
+           inside a hidden panel does not render, and its opener is the page-action button, which belongs
+           to the page rather than to any one tab. -->
+      <dialog id="skill-editor-dialog" aria-labelledby="skill-editor-title" aria-describedby="skill-editor-description">
+        <h2 id="skill-editor-title">Create a custom skill</h2>
+        <p id="skill-editor-description">Instructions are stored as the skill's SKILL.md.</p>
+        <form id="skill-editor" class="skills-editor">
+          <div class="skills-form-row">
+            <div class="skills-field">
+              <label for="skill-editor-slug">Slug</label>
+              <input id="skill-editor-slug" name="slug" placeholder="my-skill">
+            </div>
+            <div class="skills-field">
+              <label for="skill-editor-name">Display name</label>
+              <input id="skill-editor-name" name="displayName">
+            </div>
+          </div>
+          <div class="skills-field">
+            <label for="skill-editor-instructions">Instructions</label>
+            <textarea id="skill-editor-instructions" name="instructions"></textarea>
+          </div>
+          <p id="skill-editor-status" class="form-status" role="status"></p>
+          <div class="dialog-actions">
+            <button type="button" data-dialog-close>Cancel</button>
+            <button type="submit" id="skill-editor-save">Save skill</button>
+          </div>
+        </form>
+      </dialog>
     </section>`;
 }
 
