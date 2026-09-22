@@ -161,12 +161,40 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
 
 ## Components
 
-- **Data tables:** a dense table is paired with a card list of the same rows, and
-the table carries `desktop-table`, which the mobile breakpoint hides. The Skills
-library follows this rule: its five columns cannot fit 375px, and a table that
-overflows the viewport is worse than a list that does not. Both renderings carry
-the same controls and both are wired, so the visible one is never the only
-working one.
+- **Data tables:** a dense table is paired with a card list of the same rows. The
+table carries `desktop-table`, which the mobile breakpoint hides, **and** the card
+list is hidden at base and returns only inside that same breakpoint — hiding one
+side is not enough, because a card list with no base rule renders beside the table
+and duplicates every row. Both renderings carry the same controls and both are
+wired, so the visible one is never the only working one. Owners:
+`renderWorkspaceIndex` and the Skills library's `renderSkillsLibraryRows` /
+`renderSkillsLibraryCards` in `dashboard-render.js`, with the visibility pair in
+[`dashboard.css`](../apps/api/dashboard/dashboard.css).
+- **Skills page:** `/dashboard/skills` is four tabs — Library, Discover, Skill Sets,
+  Registry — and each tab body is a plain layout container, so every surface inside
+  it is a sibling framed element rather than a panel nested in a panel; the table
+  keeps the single frame `.desktop-table` gives it. The tab strip marks the active
+  tab through `[aria-selected="true"]`, which the tab controller already maintains,
+  so the strip has no second source of truth. The Library's filter bar and the
+  create/edit editor are `<form>` elements that declare their own grid, because the
+  dashboard's global `form` rule lays form children out as one wrapping,
+  end-aligned row, which reads as a single crowded line for a labelled filter bar or
+  for a form. The detail panel is an in-flow `.drawer`, not a floating layer, so it
+  takes a hairline frame and no shadow; it names the skill it opened and carries the
+  close control, because a panel that only opens is a trap, and the revision diff
+  renders inside it rather than in Discover, which is hidden whenever Library is
+  open. The library has three exclusive states — rows, empty, and filtered to
+  nothing — and only the two empty states state a reason and offer the single action
+  that resolves them; the count is stated in every state, so a filter is never
+  mistaken for an empty library. Owners: `renderSkillsSkeleton`,
+  `renderSkillsLibraryRows`, `renderSkillsLibraryCards`, `renderSkillRevisions`,
+  `renderSkillsRegistryRows`, `renderImportJobGuidance` and
+  `isTerminalImportState` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js);
+  `skillsLibraryState`, `createSkillsLibraryController` and
+  `createSkillsTabsController` in `dashboard.js`; the `.skills-*` and `.drawer`
+  rules in [`dashboard.css`](../apps/api/dashboard/dashboard.css), pinned by
+  `apps/api/test/dashboard-ui-contract.test.ts`.
 - **Top bar:** sticky header carrying the wordmark + `MCP Control Plane` tag, a
   search trigger (`aria-keyshortcuts="Meta+K Control+K"`), the theme icon, the
   profile chip, and Sign out. The chip is a link to the Profile page showing the

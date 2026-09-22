@@ -12,8 +12,11 @@ them: the library, provider discovery, skill sets, and the toolkit registry.
 ## The library
 
 The Library tab lists the skills this owner can use, with the provider and tier each came from and the
-current state. Narrow the list with the search field; the filter runs locally, so typing does not send
-the text anywhere.
+current state. Narrow the list with the search field, the provider and state selectors, a tag filter,
+and a sort order; the filters run locally, so typing does not send the text anywhere. The heading states
+how many of how many rows you are looking at, so a filter that matches nothing is never mistaken for an
+empty library: a library with no skills and a library whose filters exclude everything state different
+reasons, and each offers the single action that resolves it — **Discover skills** or **Clear filters**.
 
 Select rows to reveal the bulk bar. **Archive** and **Disable** apply per item, which means a row the
 runner refuses — because it changed since the page loaded, or because a set still references it — stays
@@ -21,9 +24,16 @@ selected and reports its blocker while the rows that could be changed are change
 from the runner afterwards rather than patching the row locally, because the runner is authoritative
 about what actually changed.
 
-Opening a skill shows its revisions, each labelled with the origin that produced it. **Restore**
-publishes the chosen revision as a *new* revision pointing at the same content: existing revision rows
-are immutable, so history is append-only and a restore never rewrites what happened.
+Opening a skill opens a detail panel that names the skill and its slug, and **Close** dismisses it.
+Each revision is labelled with the origin that produced it. **Restore** publishes the chosen revision
+as a *new* revision pointing at the same content: existing revision rows are immutable, so history is
+append-only and a restore never rewrites what happened. **Diff** compares a revision against the
+current one and prints the result inside that panel. **Fork** starts a new source from the bytes a
+revision pinned, deriving its slug and display name from the skill it came from and leaving that
+revision untouched.
+
+The panel's **Usage** section states whether the skill is locked, and whether a skill set or a live
+workspace is what pins it — those are different risks, so it names them rather than counting them.
 
 **Create a custom skill** writes the instructions into the runner's package cache first and records the
 source second. That order matters: a source row written first would resolve and then fail at launch,
@@ -31,9 +41,9 @@ because the bytes it names would not exist.
 
 ### Editing existing instructions
 
-The editor creates skills. Changing the instructions of a skill that already exists would need a new
-revision, and the runner has no operation for that yet, so the page does not offer it rather than
-appearing to edit content while only changing metadata.
+**Edit instructions** opens the skill in the editor, which then says it is adding a revision, and saving
+publishes that revision rather than rewriting the existing content. Closing the detail panel returns the
+editor to creating a new skill.
 
 ## Discovery and imports
 
@@ -42,9 +52,10 @@ kind, and an optional pinned commit. The source kind is what the runner accepts 
 always lands in the owner tier — and a ref must be a full 40 or 64 character hexadecimal commit id,
 because a branch name would be refused after the wizard claimed to accept it.
 
-Starting an import needs a runner operation that does not exist yet, so the wizard's submit is
-deliberately not wired. Validation, review, and guidance are in place and tested; the guidance names
-the `CACHE_MISS` remedy in its own sentence, because that failure has an exact fix.
+Starting an import uses the `POST /skill-imports` route, and the job line reports what the job is
+doing rather than a bare state token: progress while it runs, and for a failure the specific remedy,
+including the `CACHE_MISS` case, which has an exact fix. **Retry** starts the same request again from
+whatever the wizard currently holds. **Cancel** stops a job that is still running.
 
 ## Skill sets
 

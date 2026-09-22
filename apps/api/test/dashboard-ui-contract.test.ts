@@ -146,8 +146,10 @@ describe('dashboard static UI contract', () => {
       'id="skills-section"',
       'id="skills-tab-library"', 'id="skills-tab-discover"', 'id="skills-tab-sets"', 'id="skills-tab-registry"',
       'id="skills-library-search"', 'id="skills-library-table"', 'id="skills-bulk-bar"',
-      'id="skill-detail"', 'id="skill-detail-instructions"', 'id="skill-detail-files"', 'id="skill-detail-revisions"', 'id="skill-detail-usage"',
-      'id="skill-editor"', 'id="skill-editor-save"', 'id="skill-editor-status"',
+      'id="skills-library-empty"', 'id="skills-library-empty-message"', 'id="skills-library-empty-action"',
+      'id="skill-detail"', 'id="skill-detail-title"', 'id="skill-detail-slug"', 'id="skill-detail-close"',
+      'id="skill-detail-instructions"', 'id="skill-detail-files"', 'id="skill-detail-revisions"', 'id="skill-detail-usage"',
+      'id="skill-editor"', 'id="skill-editor-title"', 'id="skill-editor-save"', 'id="skill-editor-status"',
       'id="skill-revision-diff"',
       'id="skill-import-dialog"', 'id="skill-import-source"', 'id="skill-import-ref"', 'id="skill-import-scope"',
       'id="skill-import-review"', 'id="skill-import-job"', 'id="skill-import-retry"',
@@ -156,6 +158,49 @@ describe('dashboard static UI contract', () => {
     ]) expect(skeleton, selector).toContain(selector);
     // The registry live region has to announce changes, or a cache-state update stays silent.
     expect(skeleton).toMatch(/id="skills-registry-status"[^>]*aria-live="polite"/);
+  });
+
+  it('keeps the skills layout decisions the previous markup got wrong', () => {
+    const skeleton = renderSkillsSkeleton();
+    const mobileBreakpoint = squishedCss.indexOf('@media (max-width: 47.9375rem)');
+    expect(mobileBreakpoint, 'the mobile breakpoint exists').toBeGreaterThan(-1);
+
+    // The card list is the library's mobile rendering of the same rows. It had no base rule while the
+    // table was already hidden on a phone, so it rendered beside the table at every wider width and every
+    // skill appeared twice. The base rule hides it and the mobile block is the only place it returns.
+    expect(squishedCss).toContain(squish('#skills-library-cards { display: none; }'));
+    expect(squishedCss.slice(mobileBreakpoint)).toContain(squish('#skills-library-cards { display: grid; }'));
+
+    // The active tab is marked from the state the tab controller already maintains, so the strip needs no
+    // second source of truth.
+    expect(squishedCss).toContain(squish('.skills-tabs [role="tab"][aria-selected="true"]'));
+
+    // The filter bar and the editor declare their own layout rather than inheriting the global form rule
+    // that laid every label and control out as one wrapping, end-aligned row.
+    expect(squishedCss).toContain(squish('.skills-toolbar { display: grid;'));
+    expect(squishedCss).toContain(squish('.skills-editor { display: grid;'));
+
+    // An author `display` rule beats the UA `[hidden]` rule, so each surface this page toggles from data or
+    // from its tab controller needs an explicit guard, the same way `.command-surface[hidden]` does.
+    expect(squishedCss).toContain(squish('#skills-library-table[hidden], #skills-library-cards[hidden], #skills-library-empty[hidden], #skill-detail[hidden], .skills-panel[hidden] { display: none; }'));
+
+    // The detail panel names the skill it opened and offers the only way out, and the revision diff renders
+    // inside it instead of in the Discover panel, which is hidden whenever the Library tab is open.
+    expect(skeleton.indexOf('id="skill-revision-diff"')).toBeLessThan(skeleton.indexOf('id="skills-panel-discover"'));
+    expect(skeleton.indexOf('id="skill-revision-diff"')).toBeGreaterThan(skeleton.indexOf('id="skills-panel-library"'));
+  });
+
+  it('drives the import wizard from one path, including its retry, and states the job guidance', () => {
+    // The wizard's submit and its retry are one start path, and the job line reports the guidance for the
+    // state rather than the bare state token, so a failed import is actionable where the operator is
+    // already looking. The control router does serve these routes
+    // (`apps/api/src/dashboard-control-router.ts`), so the wizard is wired end to end.
+    expect(script).toContain("document.querySelector('#skill-import-submit')?.addEventListener");
+    expect(script).toContain("document.querySelector('#skill-import-retry')?.addEventListener");
+    expect(script).toContain('jobBox.textContent = renderImportJobGuidance(job)');
+    expect(script).toContain("api('/skill-imports'");
+    // The bare state token is what the job line used to print, and it is not guidance.
+    expect(script).not.toContain("String(job.state ?? 'queued')");
   });
 
   it('reduces the open workspace dialog to skill-set selection and drops the dead toolkit grid', () => {
