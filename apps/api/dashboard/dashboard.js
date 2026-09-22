@@ -1597,7 +1597,11 @@ export function initializeDashboard() {
         // on a status line that is about to disappear.
         if (status) status.textContent = '';
         document.querySelector('#skill-editor-dialog')?.close();
-        announce(wasEditing ? 'Revision added.' : 'Skill created.');
+        // Version drift is advisory: the runner reports it alongside a successful save rather than
+        // refusing one, so it is announced with the outcome instead of shown as a failure.
+        const drift = typeof result.data?.warning === 'string' ? result.data.warning : null;
+        const outcome = wasEditing ? 'Revision added.' : 'Skill created.';
+        announce(drift ? `${outcome} ${drift}` : outcome);
         // The new skill is only visible once the server agrees it exists, so the library reloads from
         // the server rather than assuming the row it just sent.
         await enterSkillsTab('library');

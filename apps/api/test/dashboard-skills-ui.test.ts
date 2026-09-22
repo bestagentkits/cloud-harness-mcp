@@ -49,7 +49,7 @@ describe('skills library rendering', () => {
   it('explains an empty library instead of rendering an empty table', () => {
     const html = renderSkillsLibraryRows([]);
     expect(html).toContain('No skills yet');
-    expect(html).toContain('colspan="5"');
+    expect(html).toContain('colspan="6"');
   });
 
   it('survives a payload that is not an array', () => {

@@ -924,7 +924,7 @@ export function renderSkillsSkeleton() {
         </div>
       </form>
       <div id="skills-bulk-bar" class="skills-bulk-bar" hidden><span id="skills-bulk-count" class="skills-bulk-count"></span><div class="skills-bulk-actions"><button type="button" id="skills-bulk-archive">Archive</button><button type="button" id="skills-bulk-disable">Disable</button></div></div>
-      <table id="skills-library-table" class="data-table desktop-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
+      <table id="skills-library-table" class="data-table desktop-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">Version</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
       <ul id="skills-library-cards" class="card-grid"></ul>
       <div id="skills-library-empty" class="empty" hidden>
         <p id="skills-library-empty-message"></p>
@@ -1066,11 +1066,12 @@ export function renderSkillsSkeleton() {
  */
 export function renderSkillsLibraryRows(skills) {
   const rows = Array.isArray(skills) ? skills : [];
-  if (rows.length === 0) return '<tr><td colspan="5">No skills yet. Import one from Discover, or create a custom skill.</td></tr>';
+  if (rows.length === 0) return '<tr><td colspan="6">No skills yet. Import one from Discover, or create a custom skill.</td></tr>';
   return rows.map((skill) => `<tr data-skill-id="${escape(skill.id)}">
       <th scope="row"><button type="button" class="link-btn" data-skill-detail="${escape(skill.id)}">${escape(skill.displayName)}</button><small class="mono">${escape(skill.slug)}</small></th>
       <td>${escape(skill.provider)}</td>
       <td>${escape(skill.kind)}</td>
+      <td>${skill.version ? `<span class="mono">${escape(skill.version)}</span>` : '—'}</td>
       <td><span class="status ${escape(String(skill.state))}">${escape(skill.state)}</span></td>
       <td><input type="checkbox" data-skill-select="${escape(skill.id)}" aria-label="Select ${escape(skill.displayName)}"></td>
     </tr>`).join('');
@@ -1183,6 +1184,7 @@ export function renderSkillRevisions(revisions, currentRevisionId) {
   return `<ul class="skills-revisions">${list.map((revision) => `<li>
       <span class="mono">${escape(revision.id)}</span>
       <span>${escape(revision.origin)}</span>
+      <span class="mono">${revision.version ? escape(revision.version) : '—'}</span>
       ${time(revision.createdAt)}
       ${revision.id === currentRevisionId
         ? '<span class="status">current</span>'

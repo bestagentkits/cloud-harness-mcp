@@ -2437,9 +2437,19 @@ export class StateStore {
     id: string; slug: string; displayName: string; description: string; kind: SkillSourceKind;
     provider: SkillProvider | null; sourceRef: string | null; currentRevisionId: string | null;
     state: SkillSourceState; tags: string[]; generation: number; updatedAt: number;
+    /** The version the current revision declares, or null when it declares none. */
+    version: string | null;
   } | undefined {
-    const row = this.database.prepare(`SELECT id, slug, display_name, description, kind, provider, source_ref,
-      current_revision_id, state, tags, generation, updated_at FROM skill_sources WHERE owner_id = ? AND id = ?`)
+    // The version lives on the revision, so the library list needs it joined from the current one.
+    const row = this.database.prepare(`SELECT skill_sources.id, skill_sources.slug, skill_sources.display_name,
+      skill_sources.description, skill_sources.kind, skill_sources.provider, skill_sources.source_ref,
+      skill_sources.current_revision_id, skill_sources.state, skill_sources.tags, skill_sources.generation,
+      skill_sources.updated_at, skill_revisions.version AS revision_version
+      FROM skill_sources
+      LEFT JOIN skill_revisions
+        ON skill_revisions.owner_id = skill_sources.owner_id
+       AND skill_revisions.id = skill_sources.current_revision_id
+      WHERE skill_sources.owner_id = ? AND skill_sources.id = ?`)
       .get(ownerId, id) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return {
@@ -2449,7 +2459,8 @@ export class StateStore {
       sourceRef: (row.source_ref as string | null) ?? null,
       currentRevisionId: (row.current_revision_id as string | null) ?? null,
       state: row.state as SkillSourceState, tags: parseSkillTags(String(row.tags)),
-      generation: Number(row.generation), updatedAt: Number(row.updated_at)
+      generation: Number(row.generation), updatedAt: Number(row.updated_at),
+      version: (row.revision_version as string | null) ?? null
     };
   }
 
