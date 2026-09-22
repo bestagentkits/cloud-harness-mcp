@@ -1,3 +1,10 @@
+## [0.57.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.57.0...v0.57.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **runner:** stop aborting startup on an ineligible workspace ([#260](https://github.com/bestagentkits/cloud-harness-mcp/issues/260)) ([09ada6c](https://github.com/bestagentkits/cloud-harness-mcp/commit/09ada6cd1c1c226acb522aaa5976688269e19adb))
+
 # [0.57.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.56.0...v0.57.0) (2026-09-22)
 
 
