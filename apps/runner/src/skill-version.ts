@@ -28,7 +28,7 @@ export function isSemver(value: string): boolean {
 /** Returns the frontmatter block without its delimiters, or an empty string when there is none. */
 export function extractFrontmatter(document: string): string {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(document);
-  return match ? match[1] : '';
+  return match?.[1] ?? '';
 }
 
 /**
@@ -58,7 +58,7 @@ export function parseSkillVersion(document: string): string | undefined {
 
     const declared = /^version\s*:\s*(.+?)\s*$/.exec(content);
     if (declared) {
-      const raw = declared[1].replace(/^["']|["']$/g, '').trim();
+      const raw = (declared[1] ?? '').replace(/^["']|["']$/g, '').trim();
       return raw === '' ? undefined : raw;
     }
   }
