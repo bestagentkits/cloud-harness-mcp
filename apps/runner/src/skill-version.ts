@@ -66,6 +66,21 @@ export function parseSkillVersion(document: string): string | undefined {
 }
 
 /**
+ * Orders two valid semver values by MAJOR.MINOR.PATCH. Prerelease ordering is deliberately not
+ * modelled: the only consumer is an advisory drift warning, which must never change an outcome.
+ */
+export function compareSemver(left: string, right: string): number {
+  const core = (value: string) => value.split('+')[0]!.split('-')[0]!.split('.').map(Number);
+  const a = core(left);
+  const b = core(right);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
  * The version a skill document declares, or undefined when it declares none or declares one that is
  * not valid semver. Intended for paths where repository-controlled text must not be trusted.
  */

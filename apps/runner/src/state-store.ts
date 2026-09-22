@@ -2470,16 +2470,17 @@ export class StateStore {
 
   listSkillRevisions(ownerId: string, skillSourceId: string, limit = 100): {
     id: string; origin: SkillRevisionOrigin; parentRevisionId: string | null; contentSha256: string;
-    hasExecutableAssets: boolean; createdAt: number;
+    hasExecutableAssets: boolean; createdAt: number; version: string | null;
   }[] {
-    const rows = this.database.prepare(`SELECT id, origin, parent_revision_id, content_sha256, has_executable_assets, created_at
+    const rows = this.database.prepare(`SELECT id, origin, parent_revision_id, content_sha256, has_executable_assets, created_at, version
       FROM skill_revisions WHERE owner_id = ? AND skill_source_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`)
       .all(ownerId, skillSourceId, Math.min(limit, 500)) as Record<string, unknown>[];
     return rows.map((row) => ({
       id: String(row.id), origin: row.origin as SkillRevisionOrigin,
       parentRevisionId: (row.parent_revision_id as string | null) ?? null,
       contentSha256: String(row.content_sha256),
-      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at)
+      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at),
+      version: (row.version as string | null) ?? null
     }));
   }
 
@@ -2490,8 +2491,9 @@ export class StateStore {
   getSkillRevision(ownerId: string, skillSourceId: string, id: string): {
     id: string; skillSourceId: string; origin: SkillRevisionOrigin; parentRevisionId: string | null;
     bundleSha256: string; contentSha256: string; hasExecutableAssets: boolean; createdAt: number;
+    version: string | null;
   } | undefined {
-    const row = this.database.prepare(`SELECT id, skill_source_id, origin, parent_revision_id, bundle_sha256, content_sha256, has_executable_assets, created_at
+    const row = this.database.prepare(`SELECT id, skill_source_id, origin, parent_revision_id, bundle_sha256, content_sha256, has_executable_assets, created_at, version
       FROM skill_revisions WHERE owner_id = ? AND skill_source_id = ? AND id = ?`)
       .get(ownerId, skillSourceId, id) as Record<string, unknown> | undefined;
     if (!row) return undefined;
@@ -2499,7 +2501,8 @@ export class StateStore {
       id: String(row.id), skillSourceId: String(row.skill_source_id), origin: row.origin as SkillRevisionOrigin,
       parentRevisionId: (row.parent_revision_id as string | null) ?? null,
       bundleSha256: String(row.bundle_sha256), contentSha256: String(row.content_sha256),
-      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at)
+      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at),
+      version: (row.version as string | null) ?? null
     };
   }
 

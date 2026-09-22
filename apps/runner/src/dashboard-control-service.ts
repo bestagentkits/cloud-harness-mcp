@@ -11,9 +11,32 @@ import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
+import { compareSemver, isSemver, parseSkillVersion } from './skill-version.js';
 import { IntegrationCredentialRepository } from './integration-credential-repository.js';
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
+
+/**
+ * The version a revision should carry. An explicit contract value wins because the operator chose it
+ * deliberately; otherwise the document's own declaration is used. A malformed declaration is refused
+ * rather than stored, because a version that cannot be parsed could never be compared for drift.
+ */
+function resolveSkillVersion(instructions: string, explicit?: string): string | null {
+  const declared = parseSkillVersion(instructions);
+  if (declared !== undefined && !isSemver(declared)) {
+    throw new HarnessError('INVALID_INPUT', `metadata.version "${declared}" is not a semantic version`, 400, false);
+  }
+  return explicit ?? declared ?? null;
+}
+
+/**
+ * Advisory text when a revision does not advance the declared version. This is deliberately not a
+ * rejection: keeping a version is a legitimate operator choice, so drift only ever warns.
+ */
+function skillVersionDriftWarning(previous: string | null, next: string | null): string | undefined {
+  if (previous === null || next === null || compareSemver(next, previous) > 0) return undefined;
+  return `declared version ${next} does not advance the current revision's ${previous}`;
+}
 import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
 import { TOOLKIT_CATALOG } from './toolkit-service.js';
 import { diffRevisionText, formatRevisionDiff } from './revision-diff.js';
@@ -795,7 +818,8 @@ export class DashboardControlService {
               // The bundle digest covers the whole tree; this digest is the authored instructions.
               contentSha256: createHash('sha256').update(parsed.input.instructions).digest('hex'),
               hasExecutableAssets: parsed.input.hasExecutableAssets,
-              origin: 'edit'
+              origin: 'edit',
+              version: resolveSkillVersion(parsed.input.instructions, parsed.input.version)
             }
           });
           return mutation('Custom skill created', { ...created, bundleSha256: published.bundleSha256 });
@@ -973,6 +997,7 @@ export class DashboardControlService {
             this.principals.getSkillSource(principalId, parsed.input.skillId),
             `Skill ${parsed.input.skillId} was not found`
           );
+          const version = resolveSkillVersion(parsed.input.instructions, parsed.input.version);
           // The package is published before the revision row is written, for the same reason a created
           // skill publishes first: a revision that pointed at missing bytes would resolve and then fail.
           let published: { bundleSha256: string };
@@ -993,9 +1018,14 @@ export class DashboardControlService {
             // execute rather than inheriting the previous revision's claim about executable assets.
             hasExecutableAssets: false,
             origin: 'edit',
-            expectedGeneration: parsed.input.expectedGeneration
+            expectedGeneration: parsed.input.expectedGeneration,
+            version
           });
-          return mutation('Skill revision created', { sourceId: source.id, revisionId });
+          const previousVersion = source.currentRevisionId
+            ? this.principals.getSkillRevision(principalId, source.id, source.currentRevisionId)?.version ?? null
+            : null;
+          const warning = skillVersionDriftWarning(previousVersion, version);
+          return mutation('Skill revision created', { sourceId: source.id, revisionId, ...(warning ? { warning } : {}) });
         }
         case 'integration_credential_list':
           return ok('Integration credentials listed', { credentials: this.integrationCredentials().list(principalId) });
