@@ -19,6 +19,7 @@ import {
   createSkillsLibraryController,
   createSkillsTabsController,
   groupBulkRequests,
+  skillsLibraryState,
   validateSkillInstructions
 } from '../dashboard/dashboard.js';
 import { FakeElement } from './dashboard-test-dom.js';
@@ -68,10 +69,46 @@ describe('skills library rendering', () => {
     expect(html).toContain('&lt;b&gt;');
   });
 
-  it('marks the wide table for hiding on a phone and ships the card list beside it', () => {
+  it('marks the wide table for hiding on a phone and ships the card list as the same rows', () => {
     const skeleton = renderSkillsSkeleton();
     expect(skeleton).toContain('id="skills-library-table" class="data-table desktop-table"');
     expect(skeleton).toContain('id="skills-library-cards"');
+  });
+
+  it('groups each library filter into its own labelled field', () => {
+    const skeleton = renderSkillsSkeleton();
+    // The dashboard's global `form` rule lays form children out as one wrapping flex row, which is what
+    // put every label and control on a single crowded line. Each filter is asserted as one wrapper that
+    // encloses both its label and its control, which is what makes the bar a labelled grid instead.
+    for (const id of [
+      'skills-library-search', 'skills-library-provider', 'skills-library-state',
+      'skills-library-tag', 'skills-library-sort'
+    ]) {
+      const label = skeleton.indexOf(`<label for="${id}">`);
+      expect(label, `${id} has a label`).toBeGreaterThan(-1);
+      const wrapperStart = skeleton.lastIndexOf('<div class="skills-field', label);
+      const wrapperEnd = skeleton.indexOf('</div>', label);
+      expect(wrapperStart, `${id} sits inside a field wrapper`).toBeGreaterThan(-1);
+      expect(wrapperEnd, `${id} has a closing wrapper`).toBeGreaterThan(label);
+      expect(skeleton.slice(wrapperStart, wrapperEnd), id).toContain(`id="${id}"`);
+    }
+  });
+
+  it('names the open skill, offers a close control, and renders the diff where the drawer is', () => {
+    const skeleton = renderSkillsSkeleton();
+    expect(skeleton).toContain('id="skill-detail-title"');
+    expect(skeleton).toContain('id="skill-detail-close"');
+    expect(skeleton).toContain('id="skill-editor-title"');
+    // The diff used to live in the Discover panel, which is hidden whenever the Library tab is open, so
+    // pressing Diff wrote the result into a container the operator could never see.
+    expect(skeleton.indexOf('id="skill-revision-diff"')).toBeLessThan(skeleton.indexOf('id="skills-panel-discover"'));
+  });
+
+  it('renders one empty block rather than a message in both the table and the card list', () => {
+    const skeleton = renderSkillsSkeleton();
+    expect(skeleton).toContain('id="skills-library-empty"');
+    expect(skeleton).toContain('id="skills-library-empty-message"');
+    expect(skeleton).toContain('id="skills-library-empty-action"');
   });
 });
 
@@ -125,6 +162,47 @@ describe('launch conflict resolution', () => {
     const html = renderSkillConflicts([{ name: '"><script>alert(1)</script>', candidates: [] }], {});
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+describe('skills library states', () => {
+  it('tells an empty library apart from a filter that matches nothing', () => {
+    const empty = skillsLibraryState({ total: 0, visible: 0 });
+    expect(empty.kind).toBe('empty');
+    expect(empty.message).toContain('No skills yet');
+    expect(empty.action).toBe('discover');
+    expect(empty.actionLabel).toBe('Discover skills');
+
+    const noMatch = skillsLibraryState({ total: 12, visible: 0 });
+    expect(noMatch.kind).toBe('no-match');
+    expect(noMatch.message).toContain('No skills match');
+    expect(noMatch.action).toBe('clear');
+    expect(noMatch.actionLabel).toBe('Clear filters');
+    expect(noMatch.count).toBe('0 of 12 skills');
+    // One shared string was what made the old page's single message ambiguous between the two facts.
+    expect(noMatch.message).not.toBe(empty.message);
+  });
+
+  it('states the count in every state, so a filter is never mistaken for an empty library', () => {
+    expect(skillsLibraryState({ total: 0, visible: 0 }).count).toBe('No skills yet');
+    expect(skillsLibraryState({ total: 1, visible: 1 }).count).toBe('1 skill');
+    expect(skillsLibraryState({ total: 12, visible: 12 }).count).toBe('12 skills');
+    expect(skillsLibraryState({ total: 12, visible: 3 }).count).toBe('3 of 12 skills');
+  });
+
+  it('keeps the rows state free of an empty message and an action', () => {
+    const rows = skillsLibraryState({ total: 2, visible: 2 });
+    expect(rows.kind).toBe('rows');
+    expect(rows.message).toBe('');
+    expect(rows.action).toBeNull();
+    expect(rows.actionLabel).toBe('');
+  });
+
+  it('treats a payload that carries no usable count as an empty library', () => {
+    expect(skillsLibraryState({}).kind).toBe('empty');
+    expect(skillsLibraryState({ total: undefined, visible: undefined }).kind).toBe('empty');
+    expect(skillsLibraryState({ total: -3, visible: -1 }).kind).toBe('empty');
+    expect(skillsLibraryState({ total: Number.NaN, visible: Number.NaN }).kind).toBe('empty');
   });
 });
 

@@ -894,60 +894,155 @@ export function renderSkillsSkeleton() {
   const panel = (name, body, selected) =>
     `<div class="skills-panel" role="tabpanel" id="skills-panel-${name}" aria-labelledby="skills-tab-${name}"${selected ? '' : ' hidden'}>${body}</div>`;
 
-  const library = `<form class="skills-toolbar" role="search" aria-label="Filter skills">
-        <label for="skills-library-search">Search</label><input id="skills-library-search" name="q" placeholder="Filter by name or provider">
-        <label for="skills-library-provider">Provider</label><select id="skills-library-provider" name="provider"><option value="">Any</option><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="custom">Custom</option><option value="git">Git</option></select>
-        <label for="skills-library-state">State</label><select id="skills-library-state" name="state"><option value="">Any</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="archived">Archived</option></select>
-        <label for="skills-library-tag">Tag</label><input id="skills-library-tag" name="tag" placeholder="Filter by tag">
-        <label for="skills-library-sort">Sort</label><select id="skills-library-sort" name="sort"><option value="name">Name</option><option value="provider">Provider</option><option value="state">State</option></select>
+  // Each filter is one `.skills-field` cell rather than a bare `<label>`/control pair, because the
+  // dashboard's global `form` rule lays form children out as one wrapping flex row and a filter bar
+  // needs labelled columns instead.
+  const library = `<div class="skills-section-head">
+        <h3 id="skills-library-heading">Installed skills</h3>
+        <p id="skills-library-count" class="skills-count" role="status" aria-live="polite"></p>
+      </div>
+      <form class="skills-toolbar" role="search" aria-label="Filter skills">
+        <div class="skills-field skills-field-search">
+          <label for="skills-library-search">Search</label>
+          <input id="skills-library-search" name="q" placeholder="Filter by name or provider">
+        </div>
+        <div class="skills-field">
+          <label for="skills-library-provider">Provider</label>
+          <select id="skills-library-provider" name="provider"><option value="">Any</option><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="custom">Custom</option><option value="git">Git</option></select>
+        </div>
+        <div class="skills-field">
+          <label for="skills-library-state">State</label>
+          <select id="skills-library-state" name="state"><option value="">Any</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="archived">Archived</option></select>
+        </div>
+        <div class="skills-field">
+          <label for="skills-library-tag">Tag</label>
+          <input id="skills-library-tag" name="tag" placeholder="Filter by tag">
+        </div>
+        <div class="skills-field">
+          <label for="skills-library-sort">Sort</label>
+          <select id="skills-library-sort" name="sort"><option value="name">Name</option><option value="provider">Provider</option><option value="state">State</option></select>
+        </div>
       </form>
-      <div id="skills-bulk-bar" class="skills-bulk-bar" hidden><span id="skills-bulk-count"></span><button type="button" id="skills-bulk-archive">Archive</button><button type="button" id="skills-bulk-disable">Disable</button></div>
+      <div id="skills-bulk-bar" class="skills-bulk-bar" hidden><span id="skills-bulk-count" class="skills-bulk-count"></span><div class="skills-bulk-actions"><button type="button" id="skills-bulk-archive">Archive</button><button type="button" id="skills-bulk-disable">Disable</button></div></div>
       <table id="skills-library-table" class="data-table desktop-table"><caption class="sr-only">Installed skills</caption><thead><tr><th scope="col">Name</th><th scope="col">Provider</th><th scope="col">Tier</th><th scope="col">State</th><th scope="col">Select</th></tr></thead><tbody></tbody></table>
       <ul id="skills-library-cards" class="card-grid"></ul>
-      <aside id="skill-detail" class="drawer" hidden>
-        <div id="skill-detail-instructions"></div>
-        <div id="skill-detail-files"></div>
-        <div id="skill-detail-revisions"></div>
-        <div id="skill-detail-usage"></div>
-        <button type="button" id="skill-detail-edit">Edit instructions</button>
+      <div id="skills-library-empty" class="empty" hidden>
+        <p id="skills-library-empty-message"></p>
+        <button type="button" id="skills-library-empty-action" class="secondary"></button>
+      </div>
+      <aside id="skill-detail" class="drawer" aria-labelledby="skill-detail-title" hidden>
+        <div class="drawer-head">
+          <div class="drawer-identity">
+            <h3 id="skill-detail-title">Skill detail</h3>
+            <p id="skill-detail-slug" class="mono"></p>
+          </div>
+          <button type="button" id="skill-detail-close" class="drawer-close">Close</button>
+        </div>
+        <section class="drawer-section">
+          <h4>Instructions</h4>
+          <div id="skill-detail-instructions"></div>
+        </section>
+        <!-- No dashboard reader exposes a revision's files, so this section stays out of the layout
+             rather than rendering a labelled box with nothing under it. The container remains because
+             the UI contract pins the id. -->
+        <section class="drawer-section" hidden>
+          <h4>Files</h4>
+          <div id="skill-detail-files"></div>
+        </section>
+        <section class="drawer-section">
+          <h4>Revisions</h4>
+          <div id="skill-detail-revisions"></div>
+        </section>
+        <section class="drawer-section">
+          <h4>Usage</h4>
+          <div id="skill-detail-usage"></div>
+        </section>
+        <pre id="skill-revision-diff" class="skills-diff" tabindex="0" aria-label="Revision diff"></pre>
+        <div class="drawer-actions">
+          <button type="button" id="skill-detail-edit">Edit instructions</button>
+        </div>
       </aside>
-      <form id="skill-editor">
-        <h3>Create a custom skill</h3>
-        <label for="skill-editor-slug">Slug</label><input id="skill-editor-slug" name="slug" placeholder="my-skill">
-        <label for="skill-editor-name">Display name</label><input id="skill-editor-name" name="displayName">
-        <label for="skill-editor-instructions">Instructions</label><textarea id="skill-editor-instructions" name="instructions"></textarea>
-        <button type="submit" id="skill-editor-save">Save skill</button><span id="skill-editor-status" role="status"></span>
+      <form id="skill-editor" class="panel skills-editor">
+        <h3 id="skill-editor-title">Create a custom skill</h3>
+        <div class="skills-form-row">
+          <div class="skills-field">
+            <label for="skill-editor-slug">Slug</label>
+            <input id="skill-editor-slug" name="slug" placeholder="my-skill">
+          </div>
+          <div class="skills-field">
+            <label for="skill-editor-name">Display name</label>
+            <input id="skill-editor-name" name="displayName">
+          </div>
+        </div>
+        <div class="skills-field">
+          <label for="skill-editor-instructions">Instructions</label>
+          <textarea id="skill-editor-instructions" name="instructions"></textarea>
+        </div>
+        <div class="skills-form-actions">
+          <button type="submit" id="skill-editor-save">Save skill</button><span id="skill-editor-status" role="status"></span>
+        </div>
       </form>`;
 
-  const discover = `<div class="skills-search"><label for="skills-search-input">Search providers</label><input id="skills-search-input" name="q"><button type="button" id="skills-search-run">Search</button></div>
-      <div id="skills-search-results"></div>
+  const discover = `<div class="skills-search panel">
+        <div class="skills-field skills-field-search">
+          <label for="skills-search-input">Search providers</label>
+          <input id="skills-search-input" name="q">
+        </div>
+        <button type="button" id="skills-search-run">Search</button>
+      </div>
+      <div id="skills-search-results" class="skills-results"></div>
       <dialog id="skill-import-dialog" aria-labelledby="skill-import-heading">
         <h2 id="skill-import-heading">Import skill</h2>
-        <label for="skill-import-source">Source</label><input id="skill-import-source" name="source" placeholder="owner/repository">
-        <label for="skill-import-ref">Ref</label><input id="skill-import-ref" name="ref" placeholder="Full commit id (optional)">
+        <div class="skills-field">
+          <label for="skill-import-source">Source</label>
+          <input id="skill-import-source" name="source" placeholder="owner/repository">
+        </div>
+        <div class="skills-field">
+          <label for="skill-import-ref">Ref</label>
+          <input id="skill-import-ref" name="ref" placeholder="Full commit id (optional)">
+        </div>
         <!-- The UI contract pins this id; the operation it feeds takes a source kind, not an install
              scope, because an imported skill always lands in the owner tier. The label says what the
              value actually is so the operator is not offered a choice the runner cannot honour. -->
-        <label for="skill-import-scope">Source kind</label><select id="skill-import-scope" name="sourceKind"><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="git">Git</option></select>
-        <div id="skill-import-review"></div>
-        <div id="skill-import-job" role="status"></div>
-        <button type="button" id="skill-import-submit">Import</button>
-        <button type="button" id="skill-import-retry">Retry</button>
-        <button type="button" id="skill-import-cancel">Cancel</button>
-      </dialog>
-      <pre id="skill-revision-diff" class="skills-diff" tabindex="0" aria-label="Revision diff"></pre>`;
+        <div class="skills-field">
+          <label for="skill-import-scope">Source kind</label>
+          <select id="skill-import-scope" name="sourceKind"><option value="skills-sh">skills.sh</option><option value="skillx">SkillX</option><option value="git">Git</option></select>
+        </div>
+        <div id="skill-import-review" class="form-status"></div>
+        <div id="skill-import-job" class="form-status" role="status"></div>
+        <div class="skills-form-actions">
+          <button type="button" id="skill-import-submit">Import</button>
+          <button type="button" id="skill-import-retry">Retry</button>
+          <button type="button" id="skill-import-cancel">Cancel</button>
+        </div>
+      </dialog>`;
 
-  const sets = `<div id="skill-set-builder">
-        <label for="skill-set-name">Name</label><input id="skill-set-name" name="name">
-        <div id="skill-set-picker" role="group" aria-label="Available skills"></div>
-        <ol id="skill-set-members"></ol>
-        <button type="button" id="skill-set-save">Save set</button><span id="skill-set-status" role="status"></span>
+  const sets = `<div id="skill-set-builder" class="panel">
+        <h3>Build a skill set</h3>
+        <div class="skills-field">
+          <label for="skill-set-name">Name</label>
+          <input id="skill-set-name" name="name">
+        </div>
+        <div class="skills-field">
+          <h4>Available skills</h4>
+          <div id="skill-set-picker" role="group" aria-label="Available skills" class="skills-picker tools-checkbox-grid"></div>
+        </div>
+        <div class="skills-field">
+          <h4>Selected members</h4>
+          <ol id="skill-set-members" class="skills-members"></ol>
+        </div>
+        <div class="skills-form-actions">
+          <button type="button" id="skill-set-save">Save set</button><span id="skill-set-status" role="status"></span>
+        </div>
       </div>`;
 
-  const registry = `<table id="skills-registry-table" class="data-table"><caption class="sr-only">Registry and toolkit inventory</caption><thead><tr><th scope="col">Name</th><th scope="col">Cache state</th><th scope="col">Pinned commit</th><th scope="col">Skills</th><th scope="col">Lock</th></tr></thead><tbody></tbody></table>
-      <h3>Suggested toolkits to install</h3>
-      <ul id="skills-registry-suggestions" class="preset-suggestions"></ul>
-      <p id="skills-registry-status" role="status" aria-live="polite"></p>`;
+  const registry = `<div class="panel">
+        <h3>Toolkit and registry cache</h3>
+        <table id="skills-registry-table" class="data-table"><caption class="sr-only">Registry and toolkit inventory</caption><thead><tr><th scope="col">Name</th><th scope="col">Cache state</th><th scope="col">Pinned commit</th><th scope="col">Skills</th><th scope="col">Lock</th></tr></thead><tbody></tbody></table>
+        <h4>Suggested toolkits to install</h4>
+        <ul id="skills-registry-suggestions" class="preset-suggestions"></ul>
+        <p id="skills-registry-status" role="status" aria-live="polite"></p>
+      </div>`;
 
   return `<section id="skills-section" aria-labelledby="skills-heading">
       <h2 id="skills-heading" class="sr-only">Skills</h2>

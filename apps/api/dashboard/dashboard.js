@@ -42,6 +42,7 @@ import {
   renderSkillConflicts,
   renderSkillSetChips, renderSkillSetOptions, renderSkillSetPicker, renderSkillRevisions,
   renderSkillsSkeleton,
+  renderImportJobGuidance, isTerminalImportState,
   renderModelsActions, renderGitHubActions, renderMcpActions,
   renderPrimaryAction,
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
@@ -326,6 +327,43 @@ export const PALETTE_SOURCE_REQUESTS = [
   { key: 'profiles', path: '/agent-model-profiles', rows: 'profiles', group: 'Models' },
   { key: 'artifacts', path: '/artifacts?limit=100', rows: 'artifacts', group: 'Artifacts' }
 ];
+
+/**
+ * Which of the library's three states the current data calls for. A library with no skills and a library
+ * whose filters match nothing are different facts with different remedies, so they never share a
+ * message, and the count is stated in every state: "0 of 12" is what tells an operator that a filter is
+ * responsible rather than the library.
+ */
+export function skillsLibraryState({ total, visible }) {
+  const all = Number.isFinite(total) && total > 0 ? total : 0;
+  const shown = Number.isFinite(visible) && visible > 0 ? visible : 0;
+  if (all === 0) {
+    return {
+      kind: 'empty',
+      count: 'No skills yet',
+      message: 'No skills yet. Import one from Discover, or create a custom skill.',
+      action: 'discover',
+      actionLabel: 'Discover skills'
+    };
+  }
+  if (shown === 0) {
+    return {
+      kind: 'no-match',
+      count: `0 of ${all} skills`,
+      message: 'No skills match the current filters.',
+      action: 'clear',
+      actionLabel: 'Clear filters'
+    };
+  }
+  const label = all === 1 ? 'skill' : 'skills';
+  return {
+    kind: 'rows',
+    count: shown === all ? `${all} ${label}` : `${shown} of ${all} skills`,
+    message: '',
+    action: null,
+    actionLabel: ''
+  };
+}
 
 /**
  * Library tab controller: debounced search, selection that drives the bulk bar, and a bulk call whose
@@ -1134,9 +1172,11 @@ export function initializeDashboard() {
           .some((entry) => String(entry).toLowerCase().includes(tag)))
         .filter((skill) => needle === '' || `${skill.displayName} ${skill.slug} ${skill.provider}`.toLowerCase().includes(needle))
         .sort((a, b) => String(a[sortField] ?? '').localeCompare(String(b[sortField] ?? '')));
+      const state = skillsLibraryState({ total: rows.length, visible: visible.length });
       insertRendered(body, renderSkillsLibraryRows(visible));
       const cards = document.querySelector('#skills-library-cards');
       if (cards) insertRendered(cards, renderSkillsLibraryCards(visible));
+      paintLibraryState(state);
       // Both renderings carry the same controls, so both are wired rather than only the visible one.
       for (const scope of [body, cards]) {
         if (!scope) continue;
@@ -1146,6 +1186,29 @@ export function initializeDashboard() {
         for (const button of scope.querySelectorAll('[data-skill-detail]')) {
           button.addEventListener('click', () => { void openSkillDetail(button.getAttribute('data-skill-detail')).catch(showError); });
         }
+      }
+    }
+
+    /**
+     * The library's states are exclusive: the table and its mobile card list carry the rows, and the
+     * empty block carries one of the two reasons there are none. The count is stated in every case.
+     */
+    function paintLibraryState(state) {
+      const showingRows = state.kind === 'rows';
+      const table = document.querySelector('#skills-library-table');
+      const cards = document.querySelector('#skills-library-cards');
+      const empty = document.querySelector('#skills-library-empty');
+      const message = document.querySelector('#skills-library-empty-message');
+      const action = document.querySelector('#skills-library-empty-action');
+      const count = document.querySelector('#skills-library-count');
+      if (table) table.hidden = !showingRows;
+      if (cards) cards.hidden = !showingRows;
+      if (empty) empty.hidden = showingRows;
+      if (message) message.textContent = state.message;
+      if (count) count.textContent = state.count;
+      if (action) {
+        action.textContent = state.actionLabel;
+        action.setAttribute('data-skills-action', state.action ?? '');
       }
     }
 
@@ -1225,6 +1288,19 @@ export function initializeDashboard() {
       const drawer = document.querySelector('#skill-detail');
       if (!drawer) return;
       drawer.hidden = false;
+      // The drawer names what is open. Without it the operator has to remember which row they clicked
+      // once the table has scrolled away, and four unlabelled containers have to speak for themselves.
+      const title = document.querySelector('#skill-detail-title');
+      const slugLine = document.querySelector('#skill-detail-slug');
+      if (title) title.textContent = skill ? skill.displayName : 'Skill detail';
+      if (slugLine) slugLine.textContent = skill ? skill.slug : '';
+      // Instructions come from the row the server already returned, so the section carries real content
+      // instead of being a labelled box the page never fills.
+      const instructionsBox = document.querySelector('#skill-detail-instructions');
+      if (instructionsBox) {
+        const instructions = skill && typeof skill.instructions === 'string' ? skill.instructions.trim() : '';
+        instructionsBox.replaceChildren(textNode('pre', instructions === '' ? 'No instructions recorded for the current revision.' : instructions));
+      }
 
       const revisions = (await api(`/skills/${encodeURIComponent(skillId)}/revisions`)).data.revisions ?? [];
       const box = document.querySelector('#skill-detail-revisions');
@@ -1359,9 +1435,13 @@ export function initializeDashboard() {
         .catch(showError);
     });
 
-    // The import dialog had a review area, a job line, and a retry, but no control that started an import,
-    // which is why the wizard could not be used at all.
-    document.querySelector('#skill-import-submit')?.addEventListener('click', () => {
+    /**
+     * Starts an import from whatever the wizard currently holds, so that the submit and the retry are one
+     * path rather than two controls that can drift. The job line reports the guidance for the state rather
+     * than the bare state token, because a line reading only "failed" leaves an operator with nothing to
+     * act on, and the cache-miss case has an exact remedy this page already knows how to state.
+     */
+    function startSkillImport() {
       const source = document.querySelector('#skill-import-source');
       const refField = document.querySelector('#skill-import-ref');
       const kindField = document.querySelector('#skill-import-scope');
@@ -1388,17 +1468,22 @@ export function initializeDashboard() {
           const poller = createImportPollingController({
             fetchJob: async () => (await api(`/skill-imports/${encodeURIComponent(jobId)}`)).data,
             onState: (job) => {
-              jobBox.textContent = String(job.state ?? 'queued');
+              jobBox.textContent = renderImportJobGuidance(job);
               // The cancel control reads the id from the line the operator is already watching, so the two
               // cannot drift apart.
               jobBox.setAttribute('data-job-id', String(job.id ?? jobId));
             },
-            isTerminal: (job) => ['succeeded', 'failed', 'cancelled'].includes(job.state)
+            isTerminal: isTerminalImportState
           });
           return poller.start();
         })
         .catch(showError);
-    });
+    }
+
+    // The retry is the same path as the submit, which is what the wizard's own guidance promises when it
+    // tells an operator to import and retry after a cache miss.
+    document.querySelector('#skill-import-submit')?.addEventListener('click', () => { startSkillImport(); });
+    document.querySelector('#skill-import-retry')?.addEventListener('click', () => { startSkillImport(); });
 
     document.querySelector('#skill-import-cancel')?.addEventListener('click', () => {
       const jobBox = document.querySelector('#skill-import-job');
@@ -1463,6 +1548,18 @@ export function initializeDashboard() {
       if (instructions) instructions.value = skill && typeof skill.instructions === 'string' ? skill.instructions : '';
       const status = document.querySelector('#skill-editor-status');
       if (status) status.textContent = `Editing ${skill ? skill.slug : 'this skill'}; saving adds a revision.`;
+      const title = document.querySelector('#skill-editor-title');
+      if (title) title.textContent = `Add a revision to ${skill ? skill.slug : 'this skill'}`;
+    });
+
+    // The drawer had no way out: `openSkillDetail` set `hidden = false` and nothing ever set it back, so
+    // the panel stayed open over the library for the rest of the session.
+    document.querySelector('#skill-detail-close')?.addEventListener('click', () => {
+      const drawer = document.querySelector('#skill-detail');
+      if (drawer) drawer.hidden = true;
+      editingSkillId = null;
+      const title = document.querySelector('#skill-editor-title');
+      if (title) title.textContent = 'Create a custom skill';
     });
     document.querySelector('#skill-editor')?.addEventListener('submit', (event) => {
       event.preventDefault();
@@ -1484,6 +1581,26 @@ export function initializeDashboard() {
       onEnter: (name) => { void enterSkillsTab(name); }
     });
     for (const tab of tabs) tab.element?.addEventListener('click', () => tabController.select(tab.name));
+
+    // One control serves both empty states, so it reads its intent from the state the last paint set
+    // rather than from a listener bound to one of them.
+    document.querySelector('#skills-library-empty-action')?.addEventListener('click', () => {
+      const action = document.querySelector('#skills-library-empty-action')?.getAttribute('data-skills-action');
+      if (action === 'discover') { tabController.select('discover'); return; }
+      // `search('')` cancels a pending debounced keystroke. Without it a timer already scheduled with the
+      // old query would fire after this reset and put the filter back.
+      library.search('');
+      query = ''; providerFilter = ''; stateFilter = ''; tagFilter = ''; sortKey = 'name';
+      for (const [selector, value] of [
+        ['#skills-library-search', ''], ['#skills-library-provider', ''], ['#skills-library-state', ''],
+        ['#skills-library-tag', ''], ['#skills-library-sort', 'name']
+      ]) {
+        const field = document.querySelector(selector);
+        if (field) field.value = value;
+      }
+      paintLibrary();
+    });
+
     tabController.select('library');
   }
   async function loadOverview() {

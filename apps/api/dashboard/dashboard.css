@@ -331,12 +331,16 @@ td time, th time { white-space: nowrap; }
 /* Status pills */
 .status { display: inline-flex; gap: var(--space-2); align-items: center; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: .1875rem var(--space-2); font-family: var(--font-mono); font-size: var(--text-11); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; line-height: 1.3; background: var(--surface); color: var(--ink-muted); }
 .status::before { content: ""; width: .4375rem; height: .4375rem; border-radius: var(--radius-pill); background: currentColor; flex: 0 0 auto; }
-.status.active { background: var(--success-soft); color: var(--success); border-color: var(--success-line); }
+.status.active, .status.enabled { background: var(--success-soft); color: var(--success); border-color: var(--success-line); }
 .status.reaping { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-line); }
 .status.expired { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-line); }
 .status.failed { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-line); }
 /* Neutral in-progress state. Emitted by MCP_STATUS.connecting in dashboard-render.js. */
 .status.info { background: var(--info-soft); color: var(--info); border-color: var(--info-line); }
+/* A library skill is on, off, or set aside. `enabled` shares the success pill and `archived` the neutral
+   info pill, so the State column of the Skills library reads at a glance; a disabled skill keeps the
+   quiet base pill, because being switched off is a deliberate state rather than a fault. */
+.status.archived { background: var(--info-soft); color: var(--info); border-color: var(--info-line); }
 
 /* Copy-to-clipboard affordance */
 .copy { position: relative; min-height: 2rem; padding: var(--space-1) var(--space-2); font-size: var(--text-11); font-weight: 600; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink-muted); }
@@ -563,6 +567,87 @@ dialog::backdrop { background: oklch(0 0 0 / .66); }
 .mcp-header-row label { font-size: var(--text-12); }
 .mcp-tool-detail pre { max-height: 18rem; overflow: auto; margin: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--code-bg); color: var(--code-ink); font-size: var(--text-12); }
 
+/* Skills page. The page owns a tab strip, a labelled filter grid, an in-flow detail drawer, and a
+   create/edit form. Each surface is a sibling framed element rather than a nested panel, so the table
+   keeps the single frame `.desktop-table` gives it and the drawer does not double it. */
+.skills-tabs { display: flex; flex-wrap: wrap; gap: var(--space-1); border-block-end: 1px solid var(--line); }
+.skills-tabs [role="tab"] { padding: var(--space-2) var(--space-4); border: 1px solid transparent; border-block-end: 2px solid transparent; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: transparent; color: var(--ink-muted); font-family: var(--font-mono); font-size: var(--text-12); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.skills-tabs [role="tab"]:hover { border-color: transparent; border-block-end-color: var(--line-strong); background: var(--surface-raised); color: var(--ink); }
+.skills-tabs [role="tab"][aria-selected="true"] { border-block-end-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+/* The selected rule above outranks the hover rule at equal specificity, so the active tab would otherwise
+   give no feedback at all. */
+.skills-tabs [role="tab"][aria-selected="true"]:hover { background: var(--surface-raised); }
+.skills-panel { display: grid; gap: var(--space-4); align-content: start; margin-block-start: var(--space-4); }
+
+/* An author `display` rule beats the UA `[hidden]` rule, so every surface this page toggles from data
+   or from its tab controller needs an explicit guard. The card list is the case that shipped broken:
+   it is `display: grid` at the mobile breakpoint and had no base rule, so it rendered beside the table
+   at every wider width and duplicated every library row. */
+#skills-library-cards { display: none; }
+#skills-library-table[hidden], #skills-library-cards[hidden], #skills-library-empty[hidden], #skill-detail[hidden], .skills-panel[hidden] { display: none; }
+
+.skills-section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.skills-section-head h3 { margin: 0; font-size: var(--text-16); }
+.skills-count { margin: 0; color: var(--ink-muted); font-family: var(--font-mono); font-size: var(--text-12); font-variant-numeric: tabular-nums; }
+
+/* The filter bar is a labelled grid, not the wrapping flex row the global `form` rule would give it. */
+.skills-toolbar { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); align-items: end; gap: var(--space-3); border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); padding: var(--space-4); }
+.skills-field { display: grid; gap: var(--space-1); min-width: 0; }
+.skills-field label, .skills-field h4 { margin: 0; font-family: var(--font-mono); font-size: var(--text-11); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-muted); }
+.skills-field-search { grid-column: span 2; }
+.skills-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: var(--space-3); }
+.skills-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+
+.skills-bulk-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--accent-line); border-radius: var(--radius-md); background: var(--accent-soft); }
+.skills-bulk-count { font-family: var(--font-mono); font-size: var(--text-12); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--ink); }
+.skills-bulk-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.skills-editor { display: grid; gap: var(--space-3); }
+.skills-editor h3 { margin: 0; }
+.skills-editor textarea { min-height: 10rem; }
+
+.skills-search { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); }
+.skills-search .skills-field { flex: 1 1 16rem; }
+.skills-results { display: grid; gap: var(--space-3); }
+.skills-results:empty { display: none; }
+/* `open` is in the selector on purpose: an author `display` rule on a `<dialog>` would otherwise beat the
+   UA rule that hides a closed one, and the import wizard would be on the page at all times. */
+#skill-import-dialog[open] { display: grid; gap: var(--space-3); }
+.skills-picker { max-height: 14rem; overflow-y: auto; }
+.skills-members { margin: 0; padding-inline-start: var(--space-4); display: grid; gap: var(--space-2); }
+.skills-members li { padding-block-end: var(--space-2); border-block-end: 1px solid var(--line); }
+.skills-members li:last-child { border-block-end: none; padding-block-end: 0; }
+
+/* A preset is a suggestion to install, so it reads as a record rather than as inventory. */
+.preset-suggestions { list-style: none; padding: 0; margin: var(--space-2) 0 0; display: grid; gap: var(--space-2); }
+.preset-suggestions li { padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); font-size: var(--text-13); color: var(--ink-muted); }
+
+/* A name is a link, not a control. Without this the base `button` rule renders every skill name as an
+   uppercase box, which reads as an action and hides the operator's own casing. */
+.link-btn { min-height: auto; padding: 0; border: none; background: none; color: var(--ink); font: inherit; font-weight: 600; letter-spacing: normal; text-transform: none; text-align: start; text-decoration: underline; text-decoration-color: var(--accent-line); text-underline-offset: .18em; }
+.link-btn:hover:not(:disabled) { border: none; background: none; color: var(--accent-strong); text-decoration-color: var(--accent); }
+.link-btn:active:not(:disabled) { background: none; transform: none; }
+
+.drawer { border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); padding: var(--space-4); }
+.drawer-head { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--space-3); border-block-end: 1px solid var(--line); padding-block-end: var(--space-3); }
+.drawer-head .drawer-close { margin-block-end: 0; }
+.drawer-identity h3 { margin: 0; font-size: var(--text-16); }
+.drawer-identity p { margin: var(--space-1) 0 0; color: var(--ink-muted); font-size: var(--text-12); }
+.drawer-section { margin-block-start: var(--space-4); }
+.drawer-section h4 { margin: 0 0 var(--space-2); font-family: var(--font-mono); font-size: var(--text-11); font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-muted); }
+.drawer-section pre { max-height: 16rem; overflow: auto; margin: 0; }
+.drawer-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-block-start: var(--space-4); padding-block-start: var(--space-3); border-block-start: 1px solid var(--line); }
+.skills-revisions { list-style: none; padding: 0; margin: 0; display: grid; }
+.skills-revisions li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding-block: var(--space-2); border-block-start: 1px solid var(--line); }
+.skills-revisions li:first-child { border-block-start: none; }
+.skills-revisions li > span:nth-child(2) { color: var(--ink-muted); font-size: var(--text-12); }
+.skills-revisions time { margin-inline-start: auto; color: var(--ink-muted); font-size: var(--text-12); }
+/* A revision action is a small control, so it keeps the 2rem box and expands its hit area to the 44px
+   floor with `::before`, the same way `.copy` does. */
+.skills-revisions button { position: relative; min-height: 2rem; padding: var(--space-1) var(--space-2); font-size: var(--text-11); }
+.skills-revisions button::before { content: ""; position: absolute; inset: -.375rem; }
+.skills-diff { max-height: 18rem; overflow: auto; margin-block-start: var(--space-4); }
+
 /* Mobile: hide the desktop tables and show the stacked MCP cards. */
 /* Tablet: collapse detail drawer to overlay, sidebar to icon rail. */
 @media (max-width: 73.6875rem) {
@@ -599,6 +684,11 @@ dialog::backdrop { background: oklch(0 0 0 / .66); }
   .overview-columns { grid-template-columns: minmax(0, 1fr); }
   .desktop-table { display: none; }
   .mcp-tools-panel .desktop-table { display: none; }
+  /* The card list is the library's mobile rendering, so it appears exactly where the table goes away
+     and never beside it. */
+  #skills-library-cards { display: grid; }
+  .skills-field-search { grid-column: auto; }
+  .skills-toolbar { grid-template-columns: minmax(0, 1fr); }
   .mcp-tools-panel .mobile-list { display: grid; }
   .mobile-list { display: grid; list-style: none; padding: 0; margin: 0; gap: var(--space-3); }
   .mobile-list li { border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--surface); padding: var(--space-4); }
