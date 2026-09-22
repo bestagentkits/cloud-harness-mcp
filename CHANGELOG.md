@@ -1,3 +1,10 @@
+# [0.56.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.4...v0.56.0) (2026-09-22)
+
+
+### Features
+
+* **dashboard:** rebuild the Skills page layout and stop duplicating library rows ([#258](https://github.com/bestagentkits/cloud-harness-mcp/issues/258)) ([4d18809](https://github.com/bestagentkits/cloud-harness-mcp/commit/4d188093cbfd07b75c5fc82bd5522eda8a2afbf7))
+
 ## [0.55.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.55.3...v0.55.4) (2026-09-21)
 
 
