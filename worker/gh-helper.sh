@@ -104,6 +104,37 @@ case "$action" in
     fi
     exec gh issue view "$issue_number" --json number,title,body,state,author,labels,comments,url
     ;;
+  commit_list)
+    limit="${1:-30}"
+    sha="${2:-}"
+    path="${3:-}"
+    since="${4:-}"
+    until="${5:-}"
+    cmd=(gh api -X GET "repos/{owner}/{repo}/commits" -f "per_page=$limit")
+    if [ -n "$sha" ]; then cmd+=(-f "sha=$sha"); fi
+    if [ -n "$path" ]; then cmd+=(-f "path=$path"); fi
+    if [ -n "$since" ]; then cmd+=(-f "since=$since"); fi
+    if [ -n "$until" ]; then cmd+=(-f "until=$until"); fi
+    exec "${cmd[@]}" --jq '[.[] | { sha, message: .commit.message, author: .commit.author.name, authorLogin: .author.login, date: .commit.author.date, url: .html_url }]'
+    ;;
+  compare)
+    base="${1:-}"
+    head="${2:-}"
+    limit="${3:-100}"
+    if [ -z "$base" ] || [ -z "$head" ]; then
+      echo "Base and head revisions required for compare" >&2
+      exit 1
+    fi
+    exec gh api "repos/{owner}/{repo}/compare/${base}...${head}" --jq "{ status, aheadBy: .ahead_by, behindBy: .behind_by, totalCommits: .total_commits, url: .html_url, commits: [.commits[:${limit}][] | { sha, message: .commit.message, author: .commit.author.name, date: .commit.author.date }], files: [(.files // [])[:${limit}][] | { filename, status, additions, deletions, changes }], filesTotal: ((.files // []) | length) }"
+    ;;
+  release_list)
+    limit="${1:-20}"
+    exec gh release list --limit "$limit" --json tagName,name,isDraft,isPrerelease,isLatest,publishedAt
+    ;;
+  tag_list)
+    limit="${1:-30}"
+    exec gh api -X GET "repos/{owner}/{repo}/tags" -f "per_page=$limit" --jq '[.[] | { name, sha: .commit.sha }]'
+    ;;
   issue_create)
     title="${1:-}"
     body="${2:-}"

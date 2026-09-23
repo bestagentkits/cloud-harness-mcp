@@ -6,6 +6,7 @@ repository_url=$1
 destination=$2
 repository_ref=${3:-}
 cache_path=${4:-}
+history_spec=${5:-}
 token=
 IFS= read -r token || true
 
@@ -33,10 +34,28 @@ arguments=(
   -c core.hooksPath=/dev/null
   -c filter.lfs.smudge=
 )
+# The history spec comes from schema-validated input: '' (one commit), full, depth:N, or since:DATE.
+case $history_spec in
+  '') history_arguments=(--depth 1) ;;
+  full) history_arguments=() ;;
+  depth:*)
+    depth=${history_spec#depth:}
+    if [[ ! $depth =~ ^[1-9][0-9]{0,5}$ ]]; then printf 'invalid clone depth\n' >&2; exit 2; fi
+    history_arguments=(--depth "$depth") ;;
+  since:*)
+    since=${history_spec#since:}
+    if [[ ! $since =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}([T][0-9:.]+(Z|[+-][0-9]{2}:[0-9]{2}))?$ ]]; then printf 'invalid clone shallow-since date\n' >&2; exit 2; fi
+    history_arguments=("--shallow-since=$since") ;;
+  *) printf 'invalid clone history spec\n' >&2; exit 2 ;;
+esac
+# A requested history clone also carries file contents, because the executor cannot lazily fetch old blobs
+# (it has no repository credentials and may have no network). The default single-commit clone stays blob-filtered.
+filter_arguments=(--filter=blob:none)
+if [[ -n $history_spec ]]; then filter_arguments=(); fi
 if [[ -n $cache_path && -d $cache_path ]]; then
-  arguments+=(clone --reference-if-able "$cache_path" --dissociate --depth 1 --no-tags --no-recurse-submodules --filter=blob:none)
+  arguments+=(clone --reference-if-able "$cache_path" --dissociate ${history_arguments[@]+"${history_arguments[@]}"} --no-tags --no-recurse-submodules ${filter_arguments[@]+"${filter_arguments[@]}"})
 else
-  arguments+=(clone --depth 1 --no-tags --no-recurse-submodules --filter=blob:none)
+  arguments+=(clone ${history_arguments[@]+"${history_arguments[@]}"} --no-tags --no-recurse-submodules ${filter_arguments[@]+"${filter_arguments[@]}"})
 fi
 if [[ -n $repository_ref ]]; then arguments+=(--branch "$repository_ref"); fi
 arguments+=(-- "$repository_url" "$destination")

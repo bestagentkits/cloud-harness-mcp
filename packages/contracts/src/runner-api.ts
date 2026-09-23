@@ -20,7 +20,7 @@ export const RunnerOperationSchema = z.enum([
   'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
   'deployments_list', 'deployments_run',
   'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
-  'github_action',
+  'github_action', 'github_read',
   'secrets_list',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
 ]);
@@ -102,6 +102,10 @@ export const RepositoryOperationsSchema = z.object({
   pullRequestList: z.boolean(),
   pullRequestView: z.boolean(),
   pullRequestCreate: z.boolean(),
+  commitList: z.boolean().optional(),
+  compare: z.boolean().optional(),
+  releaseList: z.boolean().optional(),
+  tagList: z.boolean().optional(),
   execRun: z.boolean(),
   privilegedExec: z.boolean(),
   deploymentsRun: z.boolean()
@@ -116,7 +120,12 @@ export const WorkspaceCapabilityResultSchema = z.object({
     workspace: WorkspaceCapabilitiesSchema
   }).passthrough(),
   permissions: RepositoryPermissionsSchema,
-  operations: RepositoryOperationsSchema
+  operations: RepositoryOperationsSchema,
+  githubActions: z.object({
+    readOnlyTool: z.literal('github_read'),
+    readOnly: z.array(z.string()),
+    gated: z.array(z.string())
+  }).strict().optional().describe('Which GitHub actions are read-only (callable through github_read without approval) and which stay gated on github_action')
 }).passthrough();
 
 export type RepositoryCapabilities = z.infer<typeof RepositoryCapabilitiesSchema>;
