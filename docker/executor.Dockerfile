@@ -40,6 +40,8 @@ RUN set -eu; \
       *) echo "Unsupported AgentKit CLI architecture: $arch" >&2; exit 1 ;; \
     esac; \
     curl --fail --show-error --silent --location \
+      --retry 3 --retry-connrefused --retry-max-time 120 \
+      --connect-timeout 15 --max-time 120 \
       "https://releases.agentkit.best/binaries/${version}/ak_${version}_linux_${arch}.tar.gz" \
       --output /tmp/ak.tar.gz; \
     printf '%s  %s\n' "$checksum" /tmp/ak.tar.gz | sha256sum --check --strict -; \

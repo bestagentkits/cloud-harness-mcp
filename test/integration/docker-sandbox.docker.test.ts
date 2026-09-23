@@ -16,6 +16,12 @@ let runnerConfig: RunnerConfig;
 let orphanContainer: string | undefined;
 let foreignOrphanContainer: string | undefined;
 const workspaceCeilingBytes = 64 * 1_024 * 1_024;
+const workspaceResultSchema = z.object({ workspaceId: z.string() });
+const executionResultSchema = z.object({ exitCode: z.number().int(), output: z.string() });
+const planCreateResultSchema = z.object({
+  data: z.object({ dir: z.string().regex(/^\/workspace\/plans\/[a-z0-9-]+$/) })
+});
+const fileReadResultSchema = z.object({ content: z.string() });
 
 beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), 'cloud-harness-docker-'));
@@ -173,31 +179,41 @@ describe('real Docker sandbox', () => {
     workspaceId = undefined;
   }, 120_000);
 
-  it('creates and validates AgentKit plans offline through exec_run without installing a kit', async () => {
+  it('creates, validates, and rejects invalid AgentKit plans offline through exec_run', async () => {
     const opened = await service.execute('owner', 'workspace_open', {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
       idempotencyKey: 'docker-test-agentkit-plan', networkProfile: 'network-none'
     });
     expect(opened.ok).toBe(true);
-    workspaceId = z.object({ workspaceId: z.string() }).parse(opened.data).workspaceId;
+    workspaceId = workspaceResultSchema.parse(opened.data).workspaceId;
     const created = await service.execute('owner', 'exec_run', {
       workspaceId, command: 'ak plan create executor-plan-proof --json', cwd: '.', timeoutMs: 10_000
     });
-    const executionResult = z.object({ exitCode: z.literal(0), output: z.string() });
-    const createdResult = executionResult.parse(created.data);
-    const planDirectory = z.object({
-      data: z.object({ dir: z.string().regex(/^\/workspace\/plans\/[a-z0-9-]+$/) })
-    }).parse(JSON.parse(createdResult.output)).data.dir;
+    const createdResult = executionResultSchema.parse(created.data);
+    expect(createdResult.exitCode).toBe(0);
+    const planDirectory = planCreateResultSchema.parse(JSON.parse(createdResult.output)).data.dir;
     const relativeDirectory = planDirectory.slice('/workspace/'.length);
     const planFile = await service.execute('owner', 'files_read', {
       workspaceId, path: `${relativeDirectory}/plan.md`, offset: 0, limit: 65_536
     });
-    expect(z.object({ content: z.string() }).parse(planFile.data).content).toContain('executor-plan-proof');
+    expect(fileReadResultSchema.parse(planFile.data).content).toContain('executor-plan-proof');
     const validated = await service.execute('owner', 'exec_run', {
       workspaceId, command: `ak plan validate '${relativeDirectory}' --json`, cwd: '.', timeoutMs: 10_000
     });
-    const validatedResult = executionResult.parse(validated.data);
+    const validatedResult = executionResultSchema.parse(validated.data);
+    expect(validatedResult.exitCode).toBe(0);
     expect(JSON.parse(validatedResult.output)).toMatchObject({ data: { valid: true } });
+
+    await service.execute('owner', 'files_write', {
+      workspaceId, path: `${relativeDirectory}/plan.md`, content: '# Invalid plan without required metadata\n'
+    });
+    const invalid = await service.execute('owner', 'exec_run', {
+      workspaceId, command: `ak plan validate '${relativeDirectory}' --json`, cwd: '.', timeoutMs: 10_000
+    });
+    const invalidResult = executionResultSchema.parse(invalid.data);
+    expect(invalidResult.exitCode).not.toBe(0);
+    expect(JSON.parse(invalidResult.output)).toMatchObject({ data: { valid: false } });
+
     await service.execute('owner', 'workspace_close', { workspaceId });
     workspaceId = undefined;
   }, 120_000);
