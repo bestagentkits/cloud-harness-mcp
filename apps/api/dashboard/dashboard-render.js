@@ -1056,6 +1056,22 @@ export function renderSkillsSkeleton() {
           </div>
         </form>
       </dialog>
+      <dialog id="skill-upload-dialog" aria-labelledby="skill-upload-title" aria-describedby="skill-upload-description">
+        <h2 id="skill-upload-title">Upload skills</h2>
+        <p id="skill-upload-description">A zip of skill directories. Each directory's SKILL.md becomes a skill. Up to 200 skills, 8 MB per upload.</p>
+        <form id="skill-upload" class="skills-editor">
+          <div class="skills-field">
+            <label for="skill-upload-file">Archive</label>
+            <input id="skill-upload-file" name="archive" type="file" accept=".zip,application/zip">
+          </div>
+          <p id="skill-upload-status" class="form-status" role="status"></p>
+          <ul id="skill-upload-results" class="skills-results"></ul>
+          <div class="dialog-actions">
+            <button type="button" data-dialog-close>Close</button>
+            <button type="submit" id="skill-upload-save">Upload</button>
+          </div>
+        </form>
+      </dialog>
     </section>`;
 }
 

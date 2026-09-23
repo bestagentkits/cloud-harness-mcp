@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { NextFunction, Response, Router } from 'express';
+import express, { type NextFunction, type Response, type Router } from 'express';
 import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
@@ -10,6 +10,8 @@ import type { McpGatewayService } from './mcp-gateway/service.js';
 const internalId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9_-]{20,80}$`));
 const generation = z.object({ expectedGeneration: z.number().int().positive() }).strict();
 const createName = z.object({ name: z.string().trim().min(1).max(100), expectedGeneration: z.literal(0) }).strict();
+/** Mirrors the runner's archive cap, so an oversized upload is refused before anything decodes it. */
+const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
 
 export function registerDashboardControlRoutes(
   router: Router,
@@ -74,6 +76,15 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/skill-imports/:jobId/cancel', endpoint('skill_import_cancel', (request) => ({
     jobId: internalId('skjob').parse(request.params.jobId),
     ...(request.body && typeof request.body === 'object' ? request.body : {})
+  })));
+  // A skills archive is a binary upload, so it cannot go through the JSON parser the rest of this
+  // router uses: this route takes its own raw body under an explicit limit rather than inheriting a
+  // JSON limit that would reject the request before the archive cap is ever checked. The bytes then
+  // travel to the runner as base64 inside the existing envelope, because the API is forbidden from
+  // writing into the runner's mounts.
+  router.post('/api/v1/skill-archives', express.raw({ type: () => true, limit: SKILL_ARCHIVE_MAX_BYTES }), endpoint('skill_archive_import', (request) => ({
+    archiveBase64: Buffer.isBuffer(request.body) ? request.body.toString('base64') : '',
+    expectedGeneration: 0
   })));
   router.patch('/api/v1/skills/:skillId', endpoint('skill_update', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.post('/api/v1/skills/:skillId/archive', endpoint('skill_archive', (request) => ({ skillId: internalId('sk').parse(request.params.skillId), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
