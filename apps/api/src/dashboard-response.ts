@@ -235,6 +235,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'skill_suggest', 'typesafe_status',
   'skill_revision_fork',
   'skill_revision_create',
+  'skill_archive_import',
   'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ] as const;
 
@@ -529,6 +530,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'integration_credential_delete') return pick(data, ['id', 'deleted']);
   if (operation === 'integration_credential_create' || operation === 'integration_credential_rotate') return pick(data, integrationCredentialKeys);
   if (operation === 'skill_revision_create') return pick(data, ['sourceId', 'revisionId']);
+  // The upload reports one row per skill, so the per-item results are passed through as a whole rather
+  // than flattened: the dashboard shows which entries were created and which conflicted.
+  if (operation === 'skill_archive_import') return pick(data, ['results']);
   if (operation === 'skill_revision_fork') {
     return {
       ...pick(data, ['sourceId', 'revisionId']),

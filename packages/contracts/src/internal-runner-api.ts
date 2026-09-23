@@ -140,6 +140,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'mcp_server_get_credentials', 'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list',
   'skill_list', 'skill_get', 'skill_revision_list', 'skill_revision_get', 'skill_revision_diff', 'skill_restore', 'skill_revision_fork', 'skill_revision_create',
   'skill_create_custom', 'skill_update', 'skill_archive', 'skill_bulk', 'skill_usage', 'skill_search',
+  'skill_archive_import',
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
   'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
@@ -415,6 +416,12 @@ const metadataInputs = {
     expectedGeneration: z.literal(0),
     version: skillVersion.optional()
   }).strict(),
+  skill_archive_import: z.object({
+    // Base64 of the archive. The bound is the 8 MiB decoded cap plus the 4/3 encoding overhead, so an
+    // oversized upload is refused here, before anything decodes it.
+    archiveBase64: z.string().min(1).max(11_184_816),
+    expectedGeneration: z.literal(0)
+  }).strict(),
   skill_update: z.object({
     skillId: SkillSourceIdSchema, displayName: name.optional(), description: z.string().max(2_000).optional(),
     tags: z.array(z.string().trim().min(1).max(32)).max(16).optional(), expectedGeneration: generation
@@ -500,6 +507,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('skill_revision_get'), metadataRequest('skill_revision_diff'), metadataRequest('skill_restore'),
   metadataRequest('skill_create_custom'), metadataRequest('skill_update'), metadataRequest('skill_archive'),
   metadataRequest('skill_bulk'), metadataRequest('skill_usage'), metadataRequest('skill_search'),
+  metadataRequest('skill_archive_import'),
   metadataRequest('skill_import_start'), metadataRequest('skill_import_status'), metadataRequest('skill_import_cancel'),
   metadataRequest('skill_revision_fork'),
   metadataRequest('skill_revision_create'),

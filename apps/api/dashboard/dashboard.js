@@ -45,6 +45,7 @@ import {
   renderImportJobGuidance, isTerminalImportState,
   renderModelsActions, renderGitHubActions, renderMcpActions,
   renderPrimaryAction,
+  renderSecondaryAction,
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
   renderWorkspaceArtifacts, renderWorkspaceActivity, renderFinalizeDialog,
   renderAgentsIndex, renderAgentDetail,
@@ -1132,7 +1133,7 @@ export function initializeDashboard() {
     document.querySelector('#command-surface').hidden = true;
     // Creating a skill is this page's one primary action, and it lives in the shell's action slot so it is
     // reachable from every tab. `selectNavigation` has already emptied that slot, so nothing is inherited.
-    setPageActions(renderPrimaryAction({ id: 'open-skill-editor', label: 'New skill', dialogId: 'skill-editor-dialog' }));
+    setPageActions(`${renderSecondaryAction({ id: 'open-skill-upload', label: 'Upload skills', dialogId: 'skill-upload-dialog' })}${renderPrimaryAction({ id: 'open-skill-editor', label: 'New skill', dialogId: 'skill-editor-dialog' })}`);
     insertRendered(content, renderSkillsSkeleton());
 
     let rows = [];
@@ -1604,6 +1605,46 @@ export function initializeDashboard() {
         announce(drift ? `${outcome} ${drift}` : outcome);
         // The new skill is only visible once the server agrees it exists, so the library reloads from
         // the server rather than assuming the row it just sent.
+        await enterSkillsTab('library');
+      }).catch(showError);
+    });
+
+    // An archive is uploaded as bytes, so this is the one control that does not go through the JSON
+    // helper. The per-item results are rendered rather than announced, because a partial upload has to
+    // say which entries conflicted while the dialog is still open.
+    document.querySelector('#skill-upload')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const status = document.querySelector('#skill-upload-status');
+      const results = document.querySelector('#skill-upload-results');
+      const file = document.querySelector('#skill-upload-file')?.files?.[0];
+      if (results) results.replaceChildren();
+      if (!file) { if (status) status.textContent = 'Choose a .zip archive first.'; return; }
+      if (status) status.textContent = `Uploading ${file.name}\u2026`;
+      void file.arrayBuffer().then(async (buffer) => {
+        const response = await api('/skill-archives', {
+          method: 'POST',
+          headers: { 'content-type': 'application/zip' },
+          body: buffer
+        });
+        const rows = Array.isArray(response?.data?.results) ? response.data.results : [];
+        const created = rows.filter((row) => row.ok).length;
+        if (status) {
+          status.textContent = created === rows.length
+            ? `Imported ${created} skill${created === 1 ? '' : 's'}.`
+            : `Imported ${created} of ${rows.length}. The rest were reported per entry.`;
+        }
+        // Built as nodes rather than markup: a slug and an error code both originate in the upload.
+        if (results) {
+          for (const row of rows) {
+            const item = document.createElement('li');
+            const slug = document.createElement('span');
+            slug.className = 'mono';
+            slug.textContent = String(row.slug ?? '');
+            item.append(slug, ` ${row.ok ? 'created' : String(row.error ?? 'failed')}`);
+            results.append(item);
+          }
+        }
+        // The library reloads from the runner rather than assuming the rows it just sent.
         await enterSkillsTab('library');
       }).catch(showError);
     });

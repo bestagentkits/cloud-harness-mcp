@@ -23,11 +23,13 @@ operation, surfacing the per-item results unchanged.
 
 ## Steps
 
-1. Add the route, owned by the dashboard control surface and authenticated like its neighbours.
+1. Add the route, owned by the dashboard control surface and authenticated like its neighbours. It
+   needs its own `express.raw` limit: the surrounding `express.json` parser cannot read a ZIP, and a
+   JSON limit would reject the upload before the archive cap is checked.
 2. Reject before reading the body when the declared `Content-Length` exceeds the archive cap, and
    enforce the same cap while streaming, so a missing or lying `Content-Length` cannot bypass it.
 3. Reject a body that is not an archive the runner will accept, and forward the bytes to the runner
-   operation in the encoding the contract settled on in phase 01.
+   operation as base64 inside the existing JSON envelope, the encoding the plan settled on.
 4. Return the runner's per-item results without reshaping them, so the dashboard and the runner agree
    on one vocabulary for outcomes.
 5. Confirm the route does not log the archive bytes or its decoded contents: a skill document is

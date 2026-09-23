@@ -39,6 +39,36 @@ describe('skills version surfacing', () => {
   });
 });
 
+describe('skills archive upload control', () => {
+  const skeleton = renderSkillsSkeleton();
+  const uploadScript = `${asset('dashboard.js')}\n${asset('dashboard-render.js')}`;
+
+  it('reaches the upload through a dialog rather than a permanent form under the list', () => {
+    expect(skeleton).toContain('<dialog id="skill-upload-dialog"');
+    expect(skeleton).toContain('id="skill-upload-file"');
+    expect(skeleton).toContain('type="file"');
+    // Same depth as the editor dialog: a direct child of the section, because a dialog inside a hidden
+    // tab panel would not render.
+    expect(containerDepth(skeleton, 'skills-section', 'skill-upload-dialog')).toBe(0);
+  });
+
+  it('states the caps before an upload rather than after a rejection', () => {
+    expect(squish(skeleton)).toContain('Up to 200 skills, 8 MB per upload.');
+  });
+
+  it('posts the archive as bytes to the upload route', () => {
+    expect(uploadScript).toContain("api('/skill-archives'");
+    expect(uploadScript).toContain("'content-type': 'application/zip'");
+    // The bytes must not be wrapped in JSON, which is what every other write on this page uses.
+    expect(uploadScript).toContain('body: buffer');
+  });
+
+  it('reports the outcome per entry so a conflict does not read as a failed upload', () => {
+    expect(uploadScript).toContain('The rest were reported per entry.');
+    expect(uploadScript).toContain('row.ok');
+  });
+});
+
 const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
 
 // The stylesheet is authored as compact single-line rules, but a formatter may
@@ -263,7 +293,8 @@ describe('dashboard static UI contract', () => {
   it('wires the skill editor to a page action and gives it one start path for both modes', () => {
     // Creating a skill is the page's primary action; `selectNavigation` runs first and empties the slot, so
     // no other page can inherit this button.
-    expect(script).toContain("setPageActions(renderPrimaryAction({ id: 'open-skill-editor', label: 'New skill', dialogId: 'skill-editor-dialog' }))");
+    expect(script).toContain("renderSecondaryAction({ id: 'open-skill-upload', label: 'Upload skills', dialogId: 'skill-upload-dialog' })");
+    expect(script).toContain("renderPrimaryAction({ id: 'open-skill-editor', label: 'New skill', dialogId: 'skill-editor-dialog' })");
     expect(script).toContain("selectNavigation('skills')");
     // One opener fills the dialog for both modes, so create and edit cannot drift, and the slug and name
     // are fixed while editing because a revision carries the instructions only.
