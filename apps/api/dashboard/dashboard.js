@@ -45,6 +45,7 @@ import {
   renderImportJobGuidance, isTerminalImportState,
   renderModelsActions, renderGitHubActions, renderMcpActions,
   renderPrimaryAction,
+  renderSecondaryAction,
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
   renderWorkspaceArtifacts, renderWorkspaceActivity, renderFinalizeDialog,
   renderAgentsIndex, renderAgentDetail,
