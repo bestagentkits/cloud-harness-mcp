@@ -1,3 +1,10 @@
+## [0.60.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.60.0...v0.60.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **deploy:** retry canary discovery on transient connect errors ([#269](https://github.com/bestagentkits/cloud-harness-mcp/issues/269)) ([4562236](https://github.com/bestagentkits/cloud-harness-mcp/commit/4562236c7bbab5dcf4de2743d09df03ebdb36604))
+
 # [0.60.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.59.0...v0.60.0) (2026-09-23)
 
 
