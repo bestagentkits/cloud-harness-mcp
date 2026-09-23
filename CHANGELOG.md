@@ -1,3 +1,10 @@
+# [0.58.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.57.1...v0.58.0) (2026-09-23)
+
+
+### Features
+
+* **skills:** version control via metadata.version ([#266](https://github.com/bestagentkits/cloud-harness-mcp/issues/266)) ([9e3094b](https://github.com/bestagentkits/cloud-harness-mcp/commit/9e3094b64ff8b753e9cbcb01a9d1570020c35c98))
+
 ## [0.57.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.57.0...v0.57.1) (2026-09-22)
 
 
