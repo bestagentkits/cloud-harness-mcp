@@ -66,6 +66,18 @@ instead of copying behavior, defaults, command inventories, or configuration.
   resolve exact targets first, and do not perform them from an ordinary code
   task without explicit authorization.
 
+## Deploy failure lessons
+
+- A `Deploy production` failure at `deploy-canary.mjs` with
+  `UND_ERR_CONNECT_TIMEOUT`/`ECONNREFUSED` right after `compose up` is usually
+  a transient route gap in the freshly recreated container, not a release bug.
+  Confirm from the host (`docker exec cloud-harness-mcp-ingress-1 node -e ...`
+  TCP probe to the canary host) before changing code; the canary retries only
+  its first side-effect-free `server/discover` call on transport errors. Never
+  read or print the canary credentials file while diagnosing.
+- The `curl ... port 3100` lines before the canary are the expected readiness
+  wait loop, not the failure.
+
 ## Change workflow
 
 1. Inspect the relevant document, executable owner, nearby tests, and current

@@ -40,6 +40,27 @@ async function rpc(method, params = {}) {
   return payload.result;
 }
 
+// A freshly recreated Compose container can briefly lack a working route
+// (connect timeout, refused, DNS) right after `compose up`. Only the first,
+// side-effect-free discovery call retries, and only on transport errors, so
+// an unhealthy release still fails the gate within a bounded window.
+const TRANSIENT_CONNECT_CODES = new Set([
+  'UND_ERR_CONNECT_TIMEOUT', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH'
+]);
+
+async function discoverWithRetry(attempts = 6, delayMs = 5_000) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await rpc('server/discover');
+    } catch (error) {
+      const code = error?.cause?.code ?? error?.code;
+      if (attempt >= attempts || !TRANSIENT_CONNECT_CODES.has(code)) throw error;
+      console.log(`deploy-canary-retry=${attempt}/${attempts - 1} reason=${code}`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 function toolData(result, name) {
   if (result.isError || result.structuredContent?.ok !== true) {
     throw new Error(`${name} failed: ${JSON.stringify(result).slice(0, 1_000)}`);
@@ -76,7 +97,7 @@ async function openCanaryWorkspace(suffix, networkProfile) {
 }
 
 try {
-  const discovered = await rpc('server/discover');
+  const discovered = await discoverWithRetry();
   if (!discovered.supportedVersions?.includes(protocolVersion)) throw new Error('canary modern protocol unavailable');
   const tools = await rpc('tools/list');
   if (!tools.tools?.some((tool) => tool.name === 'workspace_open')) throw new Error('canary tool surface incomplete');
