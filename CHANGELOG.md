@@ -1,3 +1,10 @@
+# [0.59.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.58.0...v0.59.0) (2026-09-23)
+
+
+### Features
+
+* **skills:** upload many skills from one archive ([#268](https://github.com/bestagentkits/cloud-harness-mcp/issues/268)) ([7ce872f](https://github.com/bestagentkits/cloud-harness-mcp/commit/7ce872fa8287f7909b01f8bce8ec87d2b0f778e0))
+
 # [0.58.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.57.1...v0.58.0) (2026-09-23)
 
 
