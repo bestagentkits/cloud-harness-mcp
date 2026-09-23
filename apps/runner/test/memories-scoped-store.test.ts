@@ -44,7 +44,7 @@ describe('Scoped SQLite Memories Store & Schema v5', () => {
   it('migrates state schema to v5 and handles guarded downgrade', async () => {
     const { store } = await createTestStore();
     const versionRow = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-    expect(versionRow.version).toBe(11);
+    expect(versionRow.version).toBe(12);
 
     // Empty downgrade to v4 succeeds
     downgradeStateSchemaToV4(store.database);
@@ -52,7 +52,7 @@ describe('Scoped SQLite Memories Store & Schema v5', () => {
     expect(v4Row.version).toBe(4);
     // Re-migrating to v10 succeeds
     migratePrincipalSchema(store.database);
-    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(11);
+    expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(12);
     store.createMemory({
       principalId: 'p_user1',
       scope: 'owner',
