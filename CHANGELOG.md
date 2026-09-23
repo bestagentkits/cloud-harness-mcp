@@ -1,3 +1,10 @@
+# [0.60.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.59.0...v0.60.0) (2026-09-23)
+
+
+### Features
+
+* **github:** add read-only history access and configurable clone depth ([#267](https://github.com/bestagentkits/cloud-harness-mcp/issues/267)) ([43d3993](https://github.com/bestagentkits/cloud-harness-mcp/commit/43d39935d3e578480416612572316c324bf8ede7)), closes [#264](https://github.com/bestagentkits/cloud-harness-mcp/issues/264)
+
 # [0.59.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.58.0...v0.59.0) (2026-09-23)
 
 
