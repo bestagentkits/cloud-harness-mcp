@@ -1211,7 +1211,17 @@ const handlers = {
     return result.exitCode === 0 ? ok('Git commit created', { output: result.output, authorName, authorEmail }) : fail('CONFLICT', result.output || 'Git commit failed');
   },
   async git_fetch(input) {
-    const result = await git(['fetch', '--no-tags', input.remote ?? 'origin', ...(input.refspec ? [input.refspec] : [])], { timeoutMs: 120_000 });
+    // History options only deepen a shallow checkout; a complete checkout is never cut back.
+    const history = [];
+    if (input.depth || input.shallowSince || input.unshallow) {
+      const shallow = await git(['rev-parse', '--is-shallow-repository']);
+      if (shallow.output.trim() === 'true') {
+        if (input.unshallow) history.push('--unshallow');
+        else if (input.depth) history.push(`--depth=${Number(input.depth)}`);
+        else history.push(`--shallow-since=${input.shallowSince}`);
+      }
+    }
+    const result = await git(['fetch', '--no-tags', ...history, input.remote ?? 'origin', ...(input.refspec ? [input.refspec] : [])], { timeoutMs: 120_000 });
     return result.exitCode === 0 ? ok('Git fetch complete', { output: result.output }) : fail('UNAVAILABLE', result.output || 'Git fetch failed', true);
   },
   async git_merge(input) {

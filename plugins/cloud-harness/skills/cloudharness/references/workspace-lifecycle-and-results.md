@@ -78,7 +78,12 @@ returns `CONFLICT`.
 Clone an approved repository and start its bounded executor.
 
 - Required: `repositoryUrl` (credential-free HTTPS URL), `idempotencyKey`.
-- Optional: `ref` (1–255 characters, cannot start with `-`), `networkProfile`
+- Optional: `ref` (1–255 characters, cannot start with `-`), `fetchDepth`
+  (0–100000; 0 clones full history), `shallowSince` (ISO date/datetime) —
+  mutually exclusive, and omitting both keeps the default single-commit
+  shallow clone. Use these when the agent needs `git_log` history right after
+  opening; otherwise prefer `github_read`'s `commit_list`/`compare` actions,
+  which read GitHub history without changing clone cost. `networkProfile`
   (`dependency-access` or `network-none`). Omit `networkProfile` to use the
   instance default, which already grants GitHub-capable egress (public DNS and
   TCP 80/443 through an attested host firewall). Pass
@@ -125,7 +130,7 @@ Read one workspace record by opaque ID.
 Inspect workspace and bound repository authorization capabilities without modifying state or minting tokens.
 
 - Optional: `workspaceId`.
-- Returns high-level capabilities (`repository`, `workspace`), fine-grained permissions (`contents`, `issues`, `pullRequests`), and direct operation authorizations (`gitPush`, `issueCreate`, `pullRequestCreate`, etc.). `workspace.defaultNetworkProfile` reports the effective profile applied when `workspace_open` omits `networkProfile`, and the `repository` issue/pull-request flags reflect the permissions the verified installation actually grants.
+- Returns high-level capabilities (`repository`, `workspace`), fine-grained permissions (`contents`, `issues`, `pullRequests`), and direct operation authorizations (`gitPush`, `issueCreate`, `pullRequestCreate`, `commitList`, `compare`, `releaseList`, `tagList`, etc.). `workspace.defaultNetworkProfile` reports the effective profile applied when `workspace_open` omits `networkProfile`, and the `repository` issue/pull-request flags reflect the permissions the verified installation actually grants. `githubActions.readOnly` lists actions callable on `github_read` without approval prompts; `githubActions.gated` lists actions that stay on the destructive-annotated `github_action`.
 - Read-only and safe to repeat.
 
 <!-- cloudharness-example:workspace_capabilities

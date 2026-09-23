@@ -26,7 +26,11 @@ const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
   pr_view: { scope: 'pull_requests', write: false },
   pr_create: { scope: 'pull_requests', write: true },
   pr_update: { scope: 'pull_requests', write: true },
-  pr_comment: { scope: 'pull_requests', write: true }
+  pr_comment: { scope: 'pull_requests', write: true },
+  commit_list: { scope: 'contents', write: false },
+  compare: { scope: 'contents', write: false },
+  release_list: { scope: 'contents', write: false },
+  tag_list: { scope: 'contents', write: false }
 };
 
 export function requiredGitHubPermissions(

@@ -280,6 +280,63 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     expect(viewRes.ok).toBe(true);
   });
 
+  it('serves read-only actions through github_read with contents:read for history and without write audit', async () => {
+    const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, metadata, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('contents-read-token', { contents: 'read' }));
+
+    const commits = await service.execute(principalSelector, 'github_read', {
+      workspaceId,
+      action: 'commit_list',
+      limit: 50,
+      sha: 'main',
+      path: 'apps/runner',
+      since: '2026-09-01'
+    });
+    expect(commits.ok).toBe(true);
+    expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({
+      permissionScope: 'contents',
+      requiredPermission: 'read'
+    }));
+    const commitCall = docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'))?.[0] as string[];
+    expect(commitCall.slice(commitCall.indexOf('commit_list'))).toEqual(['commit_list', '50', 'main', 'apps/runner', '2026-09-01', '']);
+
+    docker.runDocker.mockClear();
+    const compared = await service.execute(principalSelector, 'github_read', {
+      workspaceId,
+      action: 'compare',
+      base: 'v0.56.0',
+      head: 'main'
+    });
+    expect(compared.ok).toBe(true);
+    const compareCall = docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'))?.[0] as string[];
+    expect(compareCall.slice(compareCall.indexOf('compare'))).toEqual(['compare', 'v0.56.0', 'main', '100']);
+
+    expect(metadata.listAudit(principalId).filter((event) => event.action.startsWith('github_action.'))).toHaveLength(0);
+  });
+
+  it('rejects mutating actions on github_read before any credential is minted', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    await expect(service.execute(principalSelector, 'github_read', {
+      workspaceId,
+      action: 'pr_create',
+      title: 'nope',
+      head: 'feature'
+    })).rejects.toThrow();
+    expect(broker.mintPrincipalRepositoryScopedToken).not.toHaveBeenCalled();
+  });
+
+  it('keeps accepting the new history actions on github_action for compatibility', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValue(mintedToken('contents-read-token', { contents: 'read' }));
+    const tags = await service.execute(principalSelector, 'github_action', { workspaceId, action: 'tag_list', limit: 5 });
+    expect(tags.ok).toBe(true);
+    const releases = await service.execute(principalSelector, 'github_action', { workspaceId, action: 'release_list' });
+    expect(releases.ok).toBe(true);
+  });
+
   it('executes issue_create with labels and assignees using issues:write token scope', async () => {
     const { config, store, installations, workspaceId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, undefined, installations);

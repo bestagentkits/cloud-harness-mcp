@@ -5,6 +5,8 @@ import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
+  GITHUB_READ_ACTIONS,
+  GITHUB_WRITE_ACTIONS,
   HarnessError,
   InternalRunnerRequestSchema,
   RunnerOperationSchema,
@@ -29,6 +31,7 @@ import type { GitHubInstallationRecord, GitHubInstallationStore } from './github
 import type { MetadataStore } from './metadata-store.js';
 import { OperationManager } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
+import { cloneHistorySpec, fetchHistorySpec } from './git-history-spec.js';
 import {
   ActiveWorkspaceLimitReachedError,
   COUNTED_WORKSPACE_STATUSES,
@@ -84,6 +87,8 @@ export function computeWorkspaceOpenFingerprint(input: {
   networkProfile?: string | undefined;
   toolkits?: ToolkitSelection[] | undefined;
   allowToolkitWorkspaceChanges?: boolean | undefined;
+  fetchDepth?: number | undefined;
+  shallowSince?: string | undefined;
 }): string {
   const canonicalToolkits = [...(input.toolkits ?? [])].sort((a, b) =>
     toolkitSelectionIdentity(a).localeCompare(toolkitSelectionIdentity(b)));
@@ -93,7 +98,10 @@ export function computeWorkspaceOpenFingerprint(input: {
     environmentId: input.environmentId ?? null,
     networkProfile: input.networkProfile ?? 'network-none',
     toolkits: canonicalToolkits,
-    allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false
+    allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false,
+    // History options join the fingerprint only when set, so replays of earlier requests keep matching.
+    ...(input.fetchDepth !== undefined ? { fetchDepth: input.fetchDepth } : {}),
+    ...(input.shallowSince !== undefined ? { shallowSince: input.shallowSince } : {})
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
@@ -566,7 +574,7 @@ export class WorkspaceService {
     return Math.min(createdAt + this.config.wallTtlSeconds * 1_000, activityAt + this.config.idleTtlSeconds * 1_000);
   }
 
-  private async clone(record: WorkspaceRecord, repositoryUrl: URL, ref?: string): Promise<string> {
+  private async clone(record: WorkspaceRecord, repositoryUrl: URL, ref?: string, historySpec = ''): Promise<string> {
     const jobPath = record.workspacePath;
     const repositoryPath = join(jobPath, 'repo');
     const helperName = `chm-clone-${record.id.slice(3, 15)}`;
@@ -595,8 +603,7 @@ export class WorkspaceService {
       '--volume', `${jobPath}:/job`,
       ...(cachePath ? ['--volume', `${cachePath}:/job/cache:ro`] : []),
       '--entrypoint', '/opt/harness/clone-helper.sh', this.config.executorImage,
-      record.repositoryUrl, '/job/repo', ref ?? '',
-      ...(cachePath ? ['/job/cache'] : [])
+      record.repositoryUrl, '/job/repo', ref ?? '', cachePath ? '/job/cache' : '', historySpec
     ];
 
     const runClone = async (token: string | undefined, cachePath?: string) => {
@@ -907,7 +914,7 @@ export class WorkspaceService {
 
       await this.composeOwnerToolkitProjection(record, ownerBundles, parsed.skillOverrides);
 
-      const repositoryPath = await this.clone(record, url, parsed.ref);
+      const repositoryPath = await this.clone(record, url, parsed.ref, cloneHistorySpec(parsed.fetchDepth, parsed.shallowSince));
       if (workspaceBundles.length > 0) {
         await this.applyWorkspaceToolkitPatches(record, workspaceBundles, repositoryPath);
       }
@@ -1235,9 +1242,18 @@ export class WorkspaceService {
         pullRequestList: pullRequestsRead,
         pullRequestView: pullRequestsRead,
         pullRequestCreate: pullRequestsWrite,
+        commitList: isGitHub && contentsRead,
+        compare: isGitHub && contentsRead,
+        releaseList: isGitHub && contentsRead,
+        tagList: isGitHub && contentsRead,
         execRun: true,
         privilegedExec: privileged,
         deploymentsRun: true
+      },
+      githubActions: {
+        readOnlyTool: 'github_read',
+        readOnly: [...GITHUB_READ_ACTIONS],
+        gated: [...GITHUB_WRITE_ACTIONS]
       }
     };
   }
@@ -1548,7 +1564,8 @@ export class WorkspaceService {
     argument: string,
     token: string | undefined,
     expectedRemoteOid: string | undefined,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    historySpec = ''
   ) {
     const helperName = `chm-git-${mode.replaceAll('-', '').slice(0, 5)}-${randomBytes(6).toString('hex')}`;
     const network = mode === 'fetch' || mode === 'push' ? 'bridge' : 'none';
@@ -1562,7 +1579,7 @@ export class WorkspaceService {
         '--pids-limit', '128', '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
         '--env', 'HOME=/tmp/cloud-harness-home', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_TERMINAL_PROMPT=0',
         '--volume', `${record.workspacePath}:/job:rw`, '--entrypoint', '/opt/harness/git-transfer-helper.sh',
-        this.config.executorImage, mode, record.repositoryUrl, '/job/repo', `/job/${transferName}`, argument, expectedRemoteOid ?? ''
+        this.config.executorImage, mode, record.repositoryUrl, '/job/repo', `/job/${transferName}`, argument, expectedRemoteOid ?? '', historySpec
       ], {
         stdin: `${token ?? ''}\n`, timeoutMs: 120_000, maxBytes: this.config.maxOutputBytes,
         ...(signal ? { signal } : {})
@@ -1707,17 +1724,17 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
-  private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal) {
+  private async remoteFetch(record: WorkspaceRecord, remoteRef: string | undefined, signal?: AbortSignal, historySpec = '') {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
     const token = await this.repositoryToken(record.ownerId, repositoryUrl, 'read');
     const transferName = `git-transfer-${randomBytes(12).toString('hex')}`;
     try {
-      const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal);
+      const fetched = await this.runGitTransferHelper(record, 'fetch', transferName, remoteRef ?? '', token, undefined, signal, historySpec);
       const imported = record.containerName
         ? await this.withPausedExecutor(record, async () =>
-            await this.runGitTransferHelper(record, 'import', transferName, remoteRef ?? '', undefined, undefined, signal)
+            await this.runGitTransferHelper(record, 'import', transferName, remoteRef ?? '', undefined, undefined, signal, historySpec)
           )
-        : await this.runGitTransferHelper(record, 'import', transferName, remoteRef ?? '', undefined, undefined, signal);
+        : await this.runGitTransferHelper(record, 'import', transferName, remoteRef ?? '', undefined, undefined, signal, historySpec);
       return { fetched, imported };
     } finally {
       await this.safeRemovePath(join(record.workspacePath, transferName));
@@ -2053,9 +2070,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (!requirement) throw new HarnessError('INVALID_INPUT', `unsupported github_action: ${action}`);
     const isWrite = requirement.write;
     const permissionScope = requirement.scope;
-    const requiredCapability = permissionScope === 'pull_requests'
-      ? (isWrite ? 'repository.pullRequestsWrite' : 'repository.pullRequestsRead')
-      : (isWrite ? 'repository.issuesWrite' : 'repository.issuesRead');
+    const requiredCapability = permissionScope === 'contents'
+      ? (isWrite ? 'repository.push' : 'repository.read')
+      : permissionScope === 'pull_requests'
+        ? (isWrite ? 'repository.pullRequestsWrite' : 'repository.pullRequestsRead')
+        : (isWrite ? 'repository.issuesWrite' : 'repository.issuesRead');
     let repoUrl: URL;
     try {
       repoUrl = new URL(record.repositoryUrl);
@@ -3439,8 +3458,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       await this.enforceActiveLimits(record);
       return result;
     }
-    if (operation === 'github_action') {
+    if (operation === 'github_action' || operation === 'github_read') {
       const action = validated.action as string;
+      if (operation === 'github_read' && requiredGitHubPermissions(action)?.write !== false) {
+        throw new HarnessError('INVALID_INPUT', `github_read accepts read-only actions only; use github_action for ${action}`);
+      }
       let fingerprint: string | undefined;
       if (validated.idempotencyKey) {
         fingerprint = createHash('sha256').update(JSON.stringify({ action, workspaceId: record.id, repo: record.repositoryUrl, validated })).digest('hex');
@@ -3474,6 +3496,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         case 'pr_comment': args = [String(validated.prNumber), validated.body as string]; break;
         case 'issue_list': args = [String(validated.limit ?? 20), (validated.state as string) ?? 'open']; break;
         case 'issue_view': args = [String(validated.issueNumber)]; break;
+        case 'commit_list': args = [
+          String(validated.limit ?? 30),
+          (validated.sha as string) ?? '',
+          (validated.path as string) ?? '',
+          (validated.since as string) ?? '',
+          (validated.until as string) ?? ''
+        ]; break;
+        case 'compare': args = [validated.base as string, validated.head as string, String(validated.limit ?? 100)]; break;
+        case 'release_list': args = [String(validated.limit ?? 20)]; break;
+        case 'tag_list': args = [String(validated.limit ?? 30)]; break;
         case 'issue_create': args = [
           validated.title as string,
           (validated.body as string) ?? '',
@@ -3626,7 +3658,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'tasks_cancel') return { ok: true, message: 'Task cancelled', data: this.operations.view(await this.operations.cancelTask(record.id, validated.taskId as string, ownerId)), truncated: false };
     if (operation === 'tasks_graph') return { ok: true, message: 'Task dependency graph', data: this.operations.taskGraph(record.id, ownerId), truncated: false };
     if (operation === 'git_fetch') {
-      const transfer = await this.remoteFetch(record, validated.refspec as string | undefined, signal);
+      const transfer = await this.remoteFetch(
+        record,
+        validated.refspec as string | undefined,
+        signal,
+        fetchHistorySpec(validated.depth as number | undefined, validated.unshallow as boolean | undefined, validated.shallowSince as string | undefined)
+      );
       await this.enforceActiveLimits(record);
       return { ok: true, message: 'Git fetch complete', data: { output: transfer.imported.stdout || transfer.imported.stderr }, truncated: transfer.fetched.truncated || transfer.imported.truncated };
     }

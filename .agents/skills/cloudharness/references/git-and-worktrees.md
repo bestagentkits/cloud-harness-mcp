@@ -116,6 +116,11 @@ URL. Network access for these tools is separate from executor egress.
 
 - Required: `workspaceId`; `remote` is fixed to `origin`; optional `refspec`
   is a source ref only and cannot contain a destination (`:`).
+- Optional, mutually exclusive history controls: `depth` (1–100000), `unshallow`
+  (fetch complete history), `shallowSince` (ISO date/datetime). Use these to
+  deepen a shallow clone when `git_log` needs more history than the workspace
+  currently has. They only deepen a shallow checkout and never truncate a
+  complete one; a `shallowSince` date with no newer commits fails the fetch.
 - Contacts the repository host and updates remote-tracking refs.
 
 <!-- cloudharness-tool:git_pull -->
@@ -190,16 +195,46 @@ List managed worktrees and their branch/HEAD state for `workspaceId`.
 
 ## Brokered GitHub operations
 
+Prefer `github_read` for any read-only GitHub call. `github_action` is
+annotated destructive as a whole tool (there is no per-action server approval
+gate), so MCP clients may prompt for approval on every call, including reads;
+`github_read` is annotated read-only/idempotent/non-destructive instead.
+
+<!-- cloudharness-tool:github_read -->
+### `github_read`
+
+Read-only GitHub access with no approval prompts, sharing `github_action`'s broker and helper.
+
+- Required: `workspaceId`, `action` — one of `pr_list`, `pr_view`, `issue_list`,
+  `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`. Mutating
+  actions are rejected.
+- `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state`
+  (`open`, `closed`, or `all`).
+- `pr_view`: required `prNumber`. `issue_view`: required `issueNumber`.
+- `commit_list`: optional `limit` (default 30, max 100), `sha` (branch, tag, or
+  commit), `path` (workspace-relative), `since`/`until` (ISO date or datetime).
+- `compare`: required `base`, `head` (branch, tag, or commit; no range syntax);
+  optional `limit` (default 100, max 250). Returns commits and a changed-file
+  summary between the two revisions.
+- `release_list` / `tag_list`: optional `limit` (default 20/30, max 100).
+- Mints a `contents: read`-scoped token via the same broker as `github_action`;
+  tokens are never exposed to workspace files.
+
+<!-- cloudharness-example:github_read
+{"workspaceId":"ws_abcdefghijklmnopqrstuvwxyz012345","action":"commit_list","limit":10}
+-->
+
 <!-- cloudharness-tool:github_action -->
 ### `github_action`
 
 - Required: `workspaceId`, `action`.
 - Uses trusted GitHub App broker tokens passed via stdin to an ephemeral helper container. Tokens are never exposed to workspace files.
 - When no GitHub App repository token can be minted, the runner falls back to an operator-supplied credential: `GH_TOKEN` then `GITHUB_TOKEN` from the runner environment (owner-bearer mode only), then the requesting principal's global runtime secret of the same name. The credential still travels over stdin only and never enters a result, log, or audit payload.
-- Read actions:
+- Read actions (also available on `github_read`, which avoids approval prompts):
   - `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state` (`open`, `closed`, or `all`).
   - `pr_view`: required `prNumber`.
   - `issue_view`: required `issueNumber`.
+  - `commit_list`, `compare`, `release_list`, `tag_list`: same inputs as documented under `github_read`.
 - PR mutations:
   - `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`), `draft` (default false), `labels` array (max 50).
   - `pr_update`: required `prNumber`; optional `title`, `body`, `base`, `state` (`open` | `closed`).

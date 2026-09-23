@@ -149,7 +149,25 @@ export const LicensedKitCatalogEntrySchema = z.object({
 
 export type LicensedKitCatalogEntry = z.infer<typeof LicensedKitCatalogEntrySchema>;
 
-const githubActionUnion = z.discriminatedUnion('action', [
+// A ref or revision GitHub resolves server-side: branch, tag, or commit SHA. It is placed in a REST path,
+// so traversal, range syntax, and option-like values are refused up front.
+const githubRevision = z.string().min(1).max(255).refine((value) =>
+  /^[A-Za-z0-9._/-]+$/.test(value) && !value.startsWith('-') && !value.startsWith('/') && !value.includes('..') && !value.endsWith('/'),
+'revision must be a branch, tag, or commit SHA without range syntax');
+const githubHistoryPath = relativePath.refine((value) => !value.includes('?') && !value.includes('#'), 'path cannot contain query or fragment characters');
+const isoInstant = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);
+
+/** Read-only GitHub actions: they never mutate the repository or its issues and pull requests. */
+export const GITHUB_READ_ACTIONS = [
+  'pr_list', 'pr_view', 'issue_list', 'issue_view', 'commit_list', 'compare', 'release_list', 'tag_list'
+] as const;
+/** Mutating GitHub actions that stay on the destructive-annotated github_action tool. */
+export const GITHUB_WRITE_ACTIONS = [
+  'pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update',
+  'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'
+] as const;
+
+const githubReadActionSchemas = [
   z.object({
     ...workspace,
     action: z.literal('pr_list'),
@@ -161,6 +179,47 @@ const githubActionUnion = z.discriminatedUnion('action', [
     action: z.literal('pr_view'),
     prNumber: z.number().int().positive()
   }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_list'),
+    limit: z.number().int().min(1).max(100).default(20),
+    state: z.enum(['open', 'closed', 'all']).default('open')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_view'),
+    issueNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('commit_list'),
+    limit: z.number().int().min(1).max(100).default(30),
+    sha: githubRevision.optional(),
+    path: githubHistoryPath.optional(),
+    since: isoInstant.optional(),
+    until: isoInstant.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('compare'),
+    base: githubRevision,
+    head: githubRevision,
+    limit: z.number().int().min(1).max(250).default(100)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('release_list'),
+    limit: z.number().int().min(1).max(100).default(20)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('tag_list'),
+    limit: z.number().int().min(1).max(100).default(30)
+  })
+] as const;
+
+const githubActionUnion = z.discriminatedUnion('action', [
+  ...githubReadActionSchemas,
   z.object({
     ...workspace,
     action: z.literal('pr_create'),
@@ -190,17 +249,6 @@ const githubActionUnion = z.discriminatedUnion('action', [
     prNumber: z.number().int().positive(),
     body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
     idempotencyKey: IdempotencyKeySchema.optional()
-  }),
-  z.object({
-    ...workspace,
-    action: z.literal('issue_list'),
-    limit: z.number().int().min(1).max(100).default(20),
-    state: z.enum(['open', 'closed', 'all']).default('open')
-  }),
-  z.object({
-    ...workspace,
-    action: z.literal('issue_view'),
-    issueNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
@@ -296,15 +344,27 @@ const githubActionUnion = z.discriminatedUnion('action', [
   })
 ]);
 
+const githubReadUnion = z.discriminatedUnion('action', [...githubReadActionSchemas]);
+
+const githubReadInput = z.object({
+  ...workspace,
+  action: z.enum(GITHUB_READ_ACTIONS),
+  limit: z.number().int().min(1).max(250).optional(),
+  state: z.enum(['open', 'closed', 'all']).optional(),
+  prNumber: z.number().int().positive().optional(),
+  issueNumber: z.number().int().positive().optional(),
+  sha: githubRevision.optional(),
+  path: githubHistoryPath.optional(),
+  since: isoInstant.optional(),
+  until: isoInstant.optional(),
+  base: githubRevision.optional(),
+  head: githubRevision.optional()
+});
+
 const githubActionInput = z.object({
   ...workspace,
-  action: z.enum([
-    'pr_list', 'pr_view', 'pr_create', 'pr_update', 'pr_comment',
-    'issue_list', 'issue_view', 'issue_create', 'issue_comment',
-    'issue_comment_update', 'label_create', 'issue_labels_add',
-    'issue_labels_remove', 'issue_update', 'issue_publish'
-  ]),
-  limit: z.number().int().min(1).max(100).optional(),
+  action: z.enum([...GITHUB_READ_ACTIONS, ...GITHUB_WRITE_ACTIONS]),
+  limit: z.number().int().min(1).max(250).optional(),
   state: z.enum(['open', 'closed', 'all']).optional(),
   prNumber: z.number().int().positive().optional(),
   issueNumber: z.number().int().positive().optional(),
@@ -326,6 +386,10 @@ const githubActionInput = z.object({
   comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
   addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
   removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+  sha: githubRevision.optional(),
+  path: githubHistoryPath.optional(),
+  since: isoInstant.optional(),
+  until: isoInstant.optional(),
   idempotencyKey: IdempotencyKeySchema.optional()
 });
 
@@ -356,6 +420,9 @@ const agentLookup = z.object({
 const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
+    fetchDepth: z.number().int().min(0).max(100_000).optional()
+      .describe('Commits of history to clone; 0 clones full history. Omitted keeps the default single-commit clone.'),
+    shallowSince: isoInstant.optional().describe('Clone history newer than this ISO date or datetime instead of a commit count.'),
     networkProfile: ExecutorNetworkProfileSchema.optional(),
     networkMode: z.unknown().optional().meta({
       deprecated: true,
@@ -374,6 +441,9 @@ const schemas = {
         path: ['networkMode'],
         message: "networkMode was replaced by networkProfile; choose 'network-none' or 'dependency-access'"
       });
+    }
+    if (input.fetchDepth !== undefined && input.shallowSince !== undefined) {
+      context.addIssue({ code: 'custom', path: ['shallowSince'], message: 'choose either fetchDepth or shallowSince, not both' });
     }
     if (Boolean(input.environmentId) !== Boolean(input.confirmEnvironmentInjection)) {
       context.addIssue({ code: 'custom', path: ['confirmEnvironmentInjection'], message: 'environment injection requires an explicit environment selection and confirmation' });
@@ -501,7 +571,19 @@ const schemas = {
   git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200).optional(), authorEmail: z.email().optional(), all: z.boolean().default(false), expectedHeadOid: gitObjectId.optional(), idempotencyKey: z.string().min(1).max(256).optional() }),
   git_identity_status: z.object(workspace),
   git_identity_set: z.object({ ...workspace, name: z.string().min(1).max(200), email: z.email() }),
-  git_fetch: z.object({ ...workspace, remote: z.literal('origin').default('origin'), refspec: gitFetchRef.optional() }),
+  git_fetch: z.object({
+    ...workspace,
+    remote: z.literal('origin').default('origin'),
+    refspec: gitFetchRef.optional(),
+    depth: z.number().int().min(1).max(100_000).optional().describe('Deepen history to this many commits from each fetched tip.'),
+    unshallow: z.boolean().optional().describe('Fetch the complete history of a shallow workspace.'),
+    shallowSince: isoInstant.optional().describe('Deepen history back to this ISO date or datetime.')
+  }).superRefine((input, context) => {
+    const selected = [input.depth !== undefined, input.unshallow === true, input.shallowSince !== undefined].filter(Boolean).length;
+    if (selected > 1) {
+      context.addIssue({ code: 'custom', path: ['depth'], message: 'choose at most one of depth, unshallow, or shallowSince' });
+    }
+  }),
   git_pull: z.object({ ...workspace, remote: z.literal('origin').default('origin'), branch: gitArgument.optional(), strategy: z.enum(['ff-only', 'merge', 'rebase']).default('ff-only') }),
   git_push: z.object({
     ...workspace,
@@ -719,6 +801,7 @@ const schemas = {
   // SAFETY: `pipe` takes the output of the left schema as the input of the right one, and the union's
   // own input type is already narrowed by `githubActionInput`, which TypeScript cannot express here.
   github_action: githubActionInput.pipe(githubActionUnion as unknown as z.ZodType<unknown, z.output<typeof githubActionInput>>),
+  github_read: githubReadInput.pipe(githubReadUnion as unknown as z.ZodType<unknown, z.output<typeof githubReadInput>>),
   secrets_list: z.object({
     ...workspace,
     environmentId: EnvironmentIdSchema.optional(),
@@ -793,6 +876,7 @@ const titles: Record<RunnerOperation, string> = {
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
   github_action: 'Create and manage GitHub issues, pull requests, and labels',
+  github_read: 'Read GitHub pull requests, issues, commits, comparisons, releases, and tags',
   secrets_list: 'List available secrets',
   agent_spawn: 'Spawn coding agent',
   agent_status: 'Read coding agent status',
@@ -886,7 +970,8 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
   artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
-  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, and comment on pull requests in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, and pullRequestCreate. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_create, pr_update, pr_comment. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, and comment on pull requests in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, and pullRequestCreate. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_create, pr_update, pr_comment, commit_list, compare, release_list, tag_list. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list. Maps to operations.pullRequestList, pullRequestView, issueList, issueView, commitList, compare, releaseList, and tagList. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
   agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
   agent_status: 'Read the execution state, budgets, and terminal summary of one coding agent.',
@@ -904,7 +989,7 @@ const readOnly = new Set<RunnerOperation>([
   'git_status', 'git_diff', 'git_log', 'git_identity_status',
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search',
   'knowledge_read', 'knowledge_list', 'knowledge_search', 'knowledge_graph', 'deployments_list',
-  'artifacts_list', 'artifacts_read', 'secrets_list',
+  'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
   'agent_status', 'agent_logs', 'agent_list'
 ]);
 const destructive = new Set<RunnerOperation>([
@@ -928,12 +1013,12 @@ const idempotent = new Set<RunnerOperation>([
   'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'memories_write',
   'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
   'deployments_list',
-  'artifacts_list', 'artifacts_read', 'secrets_list',
+  'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
 ]);
 const openWorld = new Set<RunnerOperation>([
   'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',
-  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action',
+  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read',
   'agent_spawn', 'agent_message'
 ]);
 

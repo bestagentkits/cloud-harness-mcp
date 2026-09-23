@@ -109,6 +109,10 @@ export class LocalWorkspaceBackend implements OperationBackend {
         pullRequestList: false,
         pullRequestView: false,
         pullRequestCreate: false,
+        commitList: false,
+        compare: false,
+        releaseList: false,
+        tagList: false,
         execRun: true,
         privilegedExec: false,
         deploymentsRun: true
@@ -499,17 +503,19 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
-    if (operation === 'github_action') {
+    if (operation === 'github_action' || operation === 'github_read') {
       const action = typeof input.action === 'string' ? input.action : '';
-      const requiredCapability = action.startsWith('pr_') ? 'repository.pullRequestsWrite' : 'repository.issuesWrite';
+      const requiredCapability = operation === 'github_read'
+        ? (action.startsWith('pr_') ? 'repository.pullRequestsRead' : action.startsWith('issue_') ? 'repository.issuesRead' : 'repository.read')
+        : action.startsWith('pr_') ? 'repository.pullRequestsWrite' : 'repository.issuesWrite';
       return {
         ok: false,
-        message: 'github_action is unsupported in local mode',
+        message: `${operation} is unsupported in local mode`,
         error: {
           code: 'REPOSITORY_OPERATION_NOT_AUTHORIZED',
-          message: 'github_action is unsupported in local mode',
+          message: `${operation} is unsupported in local mode`,
           retryable: false,
-          operation: 'github_action',
+          operation,
           repository: `local://${this.canonicalRoot}`,
           requiredCapability
         },

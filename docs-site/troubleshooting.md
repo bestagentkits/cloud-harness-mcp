@@ -148,3 +148,9 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 4. Remember the tier outranks project skills: a same-named `.agents/skills` or `.cloud-harness/skills` entry appears under `shadowed`, not as the selected skill.
 5. Only changes to already-open workspaces need a reopen; a new workspace sees an updated upload immediately.
 6. `BUILTIN_SKILLS_ROOT` is reserved and is now the single name the worker reads. If the runner rejects a stored secret or environment record with that name (`INVALID_INPUT`), remove it with `secret_delete` (deletion of a reserved name stays allowed) and reopen. The removed `CH_BUILTIN_SKILLS_ROOT` override is no longer read: rename it to `BUILTIN_SKILLS_ROOT`. A container created before this change keeps its old environment until it is closed or rebuilt.
+
+### 16. `git_log` only shows one commit, or read-only GitHub calls prompt for approval every time
+**Cause:** `workspace_open` clones a single commit by default, so a fresh workspace's history is one commit deep until deepened. Separately, MCP client approval prompts key off tool-level annotations: `github_action` is annotated destructive as a whole tool because it also performs mutations, so a client can prompt even for a read action like `pr_list` since there is no per-action server approval gate.
+**Fix:**
+1. For history depth, pass `fetchDepth` (0 for full history, or a commit count) or `shallowSince` (an ISO date/datetime) to `workspace_open`, or call `git_fetch` afterward with `depth`, `unshallow`, or `shallowSince`.
+2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.

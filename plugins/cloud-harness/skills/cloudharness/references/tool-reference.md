@@ -36,7 +36,7 @@ See [Git and worktrees](git-and-worktrees.md).
 `git_status` `git_diff` `git_log` `git_branch` `git_checkout` `git_add`
 `git_commit` `git_identity_status` `git_identity_set` `workspace_finalize`
 `git_fetch` `git_pull` `git_push` `git_merge` `git_rebase` `worktrees_list`
-`worktrees_create` `worktrees_remove` `github_action`
+`worktrees_create` `worktrees_remove` `github_action` `github_read`
 
 ## Repository automation and memory
 

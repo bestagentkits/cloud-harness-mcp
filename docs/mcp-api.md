@@ -52,6 +52,14 @@ permissions, traces, transports, and the managed API-key lane limitation.
    optional ref, and a fresh idempotency key. To inject a retained dashboard
    environment, select its opaque ID and explicitly confirm the injection in
    the same request; omitting either injects nothing.
+   The default clone is a single-commit shallow checkout. When an agent needs
+   `git_log` history on a freshly opened workspace, pass `fetchDepth` (0 for
+   full history, otherwise a commit count) or `shallowSince` (an ISO date or
+   datetime); the two are mutually exclusive. A history clone also carries
+   file contents (the default clone is blob-filtered), so `git log -p`,
+   `git blame`, and old-revision diffs work without network access. Prefer `github_read`'s
+   `commit_list`/`compare` actions instead when only GitHub-hosted history is
+   needed, since those do not change clone cost.
    To pre-install agent toolkits (e.g. `mattpocock/skills`, `obra/superpowers`,
    or custom Git repos), provide the `toolkits` parameter. Default `owner`
    scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills` without
@@ -166,10 +174,23 @@ lease is revoked, its container is removed, and its status transitions to
   If its API request disconnects or reaches the API deadline, the
   runner terminates and verifies the operation's process groups; the workspace
   remains active for later calls.
+- `github_read` is a read-only, non-destructive tool sharing the same broker
+  and handler as `github_action`, restricted to `pr_list`, `pr_view`,
+  `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, and
+  `tag_list`. It exists because MCP client approval prompts key off tool-level
+  annotations: `github_action` is annotated destructive as a whole (there is no
+  per-action server approval gate), so every action on it — including reads —
+  could trigger an approval prompt. Prefer `github_read` for any read so
+  clients do not prompt on every call; `github_action` still accepts the same
+  read actions for backward compatibility. `commit_list` supports `limit`,
+  `sha`, `path`, `since`, and `until` filters; `compare` returns commits and a
+  changed-file summary between `base` and `head`. `workspace_capabilities`
+  reports the current read/gated split under `githubActions`.
 - `github_action` executes authenticated GitHub CLI actions (`pr_list`, `pr_view`,
   `pr_create`, `pr_update`, `pr_comment`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
   `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
-  `issue_update`, `issue_publish`) through an ephemeral helper container using short-lived tokens
+  `issue_update`, `issue_publish`, `commit_list`, `compare`, `release_list`, `tag_list`) through an
+  ephemeral helper container using short-lived tokens
   minted from the configured GitHub App. `pr_create` supports draft PRs and labels; `pr_update` supports
   updating title, body, base branch, and closing or reopening PRs; `pr_comment` adds comments with
   idempotency support. `issue_publish` provides a single brokered request
@@ -322,7 +343,13 @@ lease is revoked, its container is removed, and its status transitions to
 - `git_fetch` without a ref imports remote branches into `refs/remotes/origin/*`;
   an explicit branch ref also updates its corresponding tracking ref and
   `FETCH_HEAD`. Tags and arbitrary destination refspecs are intentionally not
-  part of this origin-only surface.
+  part of this origin-only surface. `depth`, `unshallow`, and `shallowSince` are
+  mutually exclusive history controls routed through the same credential-free
+  transfer helper: the networked fetch applies the requested depth/date, and
+  the offline import applies it with `--update-shallow` only while the checkout
+  is still shallow, so these options deepen history and never truncate a
+  complete checkout. A `shallowSince` date that selects no commits on a fetched
+  branch makes Git reject the whole fetch; pick an earlier date or a `refspec`.
 - Skills resolve deterministically with 4-source precedence: `built-in > owner > workspace > repository`
   (and repository sub-roots `.agents/skills > .codex/skills > .claude/skills`). Each result includes
   immutable provenance, selected candidate, and shadowed alternatives. Execution requires matching
