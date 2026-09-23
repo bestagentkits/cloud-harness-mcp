@@ -1,3 +1,14 @@
+---
+title: "Version control for skills via metadata.version"
+description: "Give every skill revision a declared version read from metadata.version in the SKILL.md frontmatter: validate it as semver, store it on the revision, warn on drift without ever blocking a revision, and surface it in the dashboard."
+status: completed
+priority: P2
+effort: "1d, single PR"
+tags: [runner, skills, dashboard, contracts, schema]
+created: 2026-09-22
+branch: skill-metadata-version
+---
+
 # PR B — version control for skills via `metadata.version`
 
 ## Goal

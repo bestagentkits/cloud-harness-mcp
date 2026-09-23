@@ -11,8 +11,8 @@ them: the library, provider discovery, skill sets, and the toolkit registry.
 
 ## The library
 
-The Library tab lists the skills this owner can use, with the provider and tier each came from and the
-current state. Narrow the list with the search field, the provider and state selectors, a tag filter,
+The Library tab lists the skills this owner can use, with the provider and tier each came from, the
+version its current revision declares, and the current state. Narrow the list with the search field, the provider and state selectors, a tag filter,
 and a sort order; the filters run locally, so typing does not send the text anywhere. The heading states
 how many of how many rows you are looking at, so a filter that matches nothing is never mistaken for an
 empty library: a library with no skills and a library whose filters exclude everything state different
@@ -25,7 +25,8 @@ from the runner afterwards rather than patching the row locally, because the run
 about what actually changed.
 
 Opening a skill opens a detail panel that names the skill and its slug, and **Close** dismisses it.
-Each revision is labelled with the origin that produced it. **Restore** publishes the chosen revision
+Each revision is labelled with the origin that produced it and the version it declared, if any.
+**Restore** publishes the chosen revision
 as a *new* revision pointing at the same content: existing revision rows are immutable, so history is
 append-only and a restore never rewrites what happened. **Diff** compares a revision against the
 current one and prints the result inside that panel. **Fork** starts a new source from the bytes a
@@ -40,6 +41,19 @@ the page's one primary action and the library is what the page is for. The dialo
 instructions into the runner's package cache first and records the source second. That order matters: a
 source row written first would resolve and then fail at launch, because the bytes it names would not
 exist.
+
+### Declared versions
+
+A skill's `SKILL.md` may declare a `metadata.version` in its YAML frontmatter. The library shows that
+value in the Version column, and each revision row shows the version that revision declared, so a
+revision records what it claimed at the moment it was written rather than only its content.
+
+The version is advisory. Saving instructions that declare no version, or the same version, or an older
+one all succeed: a revision is a record of what happened, so refusing it would lose the change instead
+of recording it. When the new revision's version does not advance past the one it replaces, the save
+still succeeds and reports a drift warning alongside the outcome. A declaration that is not a valid
+semantic version is different, and is refused, because a value that cannot be parsed cannot be
+compared against anything.
 
 ### Editing existing instructions
 

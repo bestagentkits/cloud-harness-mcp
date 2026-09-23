@@ -1,3 +1,12 @@
+---
+phase: 4
+title: "Dashboard surfacing"
+status: completed
+priority: P2
+effort: "2-3h"
+dependencies: [3]
+---
+
 # Phase 04 — Dashboard surfacing
 
 ## Owners

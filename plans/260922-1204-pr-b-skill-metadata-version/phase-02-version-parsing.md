@@ -1,3 +1,12 @@
+---
+phase: 2
+title: "Nested frontmatter extraction and semver validation"
+status: completed
+priority: P1
+effort: "2-3h"
+dependencies: [1]
+---
+
 # Phase 02 — Nested frontmatter extraction and semver validation
 
 ## Problem

@@ -1,3 +1,12 @@
+---
+phase: 1
+title: "Principal schema migration v11 → v12"
+status: completed
+priority: P1
+effort: "2-3h"
+dependencies: []
+---
+
 # Phase 01 — Principal schema migration v11 → v12
 
 ## Owner

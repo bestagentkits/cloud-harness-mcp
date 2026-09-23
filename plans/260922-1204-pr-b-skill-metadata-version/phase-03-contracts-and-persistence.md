@@ -1,3 +1,12 @@
+---
+phase: 3
+title: "Contracts and persistence"
+status: completed
+priority: P1
+effort: "3-4h"
+dependencies: [2]
+---
+
 # Phase 03 — Contracts and persistence
 
 ## Contract changes

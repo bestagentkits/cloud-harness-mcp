@@ -1,3 +1,12 @@
+---
+phase: 5
+title: "Verification, docs and ship"
+status: in_progress
+priority: P1
+effort: "2-3h"
+dependencies: [4]
+---
+
 # Phase 05 — Verification, docs and ship
 
 ## Tests
