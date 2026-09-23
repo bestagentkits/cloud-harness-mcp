@@ -134,6 +134,25 @@ that signed manifest before projecting any skill, and refuses to unpack a
 package that is not a single kit root. Skills then appear through `skills_list`,
 `skills_read`, and `skills_run` exactly like any other toolkit.
 
+### AgentKit CLI in the executor
+
+The shipped executor includes a pinned beta of the `ak` CLI separately from
+the kit's read-only skill files. Reading `ak-plan` provides instructions;
+run its CLI commands through `exec_run` with the project working directory.
+Start with `ak --version` and `ak plan --help`. Local plan creation and
+validation do not require an AgentKit login, a kit install, or executor egress.
+
+The CLI version and archive checksums are maintained in
+[`docker/executor.Dockerfile`](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docker/executor.Dockerfile);
+the skill's version is not the CLI's version. AgentKit's own licence applies to
+the binary. The harness never copies the kit registry credential into the
+executor.
+
+After an operator upgrades the executor image, open a new workspace to use it.
+If an older workspace reports `ak: command not found`, preserve its work before
+closing it; reconnecting ChatGPT alone does not replace its container. Custom
+executor images and local stdio installations must supply `ak` separately.
+
 ## Operator-Provided Skills (`built-in` tier)
 
 An operator can make skills available to **every** workspace on an instance

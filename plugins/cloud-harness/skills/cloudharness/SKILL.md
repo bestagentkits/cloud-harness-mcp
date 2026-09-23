@@ -96,6 +96,11 @@ servers, and HTTP redirects are unsupported.
    - On `CONFLICT`, re-read the target file hash and rebuild the edit.
 6. **Execute deliberately and safely.**
    - Use `exec_run` for synchronous, bounded single commands.
+   - The shipped executor includes `ak` separately from mounted AgentKit skills.
+     Before following a skill's CLI steps, inspect `ak --version` and
+     `ak plan --help` through `exec_run`. Do not run `ak init` or inject the
+     registry credential just to use local plan commands. Older/custom images
+     and local stdio mode may not include the CLI.
    - Use `tasks_run` with `dependsOn` for background builds, tests, or multi-step
      task graphs. Monitor progress via `tasks_status` or `operation_wait`.
    - Task records and output survive a runner restart (`tasks_list` /

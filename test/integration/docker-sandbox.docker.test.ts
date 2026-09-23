@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { RunnerConfig } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker } from '../../apps/runner/src/docker-engine.js';
 import { StateStore } from '../../apps/runner/src/state-store.js';
@@ -168,6 +169,35 @@ describe('real Docker sandbox', () => {
     expect(store.byId(workspaceId)?.status).toBe('ACTIVE');
     expect(existsSync(cancellableRecord.workspacePath)).toBe(true);
     expect(JSON.stringify((await service.execute('owner', 'files_list', { workspaceId, path: '.', limit: 100 })).data)).not.toContain('aborted-command.txt');
+    await service.execute('owner', 'workspace_close', { workspaceId });
+    workspaceId = undefined;
+  }, 120_000);
+
+  it('creates and validates AgentKit plans offline through exec_run without installing a kit', async () => {
+    const opened = await service.execute('owner', 'workspace_open', {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: 'docker-test-agentkit-plan', networkProfile: 'network-none'
+    });
+    expect(opened.ok).toBe(true);
+    workspaceId = z.object({ workspaceId: z.string() }).parse(opened.data).workspaceId;
+    const created = await service.execute('owner', 'exec_run', {
+      workspaceId, command: 'ak plan create executor-plan-proof --json', cwd: '.', timeoutMs: 10_000
+    });
+    const executionResult = z.object({ exitCode: z.literal(0), output: z.string() });
+    const createdResult = executionResult.parse(created.data);
+    const planDirectory = z.object({
+      data: z.object({ dir: z.string().regex(/^\/workspace\/plans\/[a-z0-9-]+$/) })
+    }).parse(JSON.parse(createdResult.output)).data.dir;
+    const relativeDirectory = planDirectory.slice('/workspace/'.length);
+    const planFile = await service.execute('owner', 'files_read', {
+      workspaceId, path: `${relativeDirectory}/plan.md`, offset: 0, limit: 65_536
+    });
+    expect(z.object({ content: z.string() }).parse(planFile.data).content).toContain('executor-plan-proof');
+    const validated = await service.execute('owner', 'exec_run', {
+      workspaceId, command: `ak plan validate '${relativeDirectory}' --json`, cwd: '.', timeoutMs: 10_000
+    });
+    const validatedResult = executionResult.parse(validated.data);
+    expect(JSON.parse(validatedResult.output)).toMatchObject({ data: { valid: true } });
     await service.execute('owner', 'workspace_close', { workspaceId });
     workspaceId = undefined;
   }, 120_000);

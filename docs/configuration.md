@@ -193,6 +193,17 @@ while keeping writable checkouts strictly isolated.
 
 `EXECUTOR_IMAGE` is chosen by the trusted operator; callers cannot select an
 image.
+
+The shipped executor includes the AgentKit `ak` CLI independently of mounted
+kit skills. [`docker/executor.Dockerfile`](../docker/executor.Dockerfile) owns
+the exact beta version and Linux architecture-specific archive checksums; builds
+fail if the artifact changes. The CLI is proprietary and retains its licence
+under `/usr/local/share/licenses/agentkit/`; operators need an AgentKit licence
+or permission to use it. No AgentKit login, kit installation, or provisioning
+credential is baked into the image. Upgrade the image through the normal release
+path and open a new workspace to receive the binary; existing containers retain
+their image. Custom images and local stdio mode must provide their own CLI.
+
 `TOOLKIT_CACHE_ROOT` configures the runner's content-addressed storage volume for pre-cached agent toolkits (`/var/lib/cloud-harness/cache/toolkits`), and `TOOLKIT_NETWORK_POLICY` (`cache-only` vs `runner-fetch`) controls whether uncached toolkits can be fetched dynamically at workspace open.
 
 Skill registry imports follow the same policy. With `cache-only` an uncached `skills.sh` or `SkillX` import fails closed with `NOT_FOUND` and import guidance instead of opening a network channel; importing a new registry skill therefore requires `runner-fetch`. When fetching is enabled, acquisition runs in the runner provisioning containers behind `provisioning-proxy`, whose `ALLOWED_HOSTS` allowlist is the only egress authority: `skills.sh` references resolve to GitHub repositories and need no additional host, while `SkillX` imports call `skillx.sh`, which is on that allowlist.

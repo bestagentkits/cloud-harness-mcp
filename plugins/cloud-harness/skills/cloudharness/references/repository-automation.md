@@ -10,6 +10,21 @@ Cloud Harness discovers skill bundles from conventional agent skill locations
 inside the workspace. A skill's prose can guide work, while a named script can
 execute repository-controlled code.
 
+### AgentKit CLI versus skill content
+
+The shipped remote executor supplies a pinned beta `ak` binary independently
+of skill discovery. `skills_read` only returns instructions; use `exec_run`
+for `ak` commands from the intended project directory, not `skills_run`.
+Inspect `ak --version` and the relevant subcommand's `--help` first. Local
+`ak plan` creation and validation work without login or network access and
+write project plan files; they do not require reinstalling the mounted kit.
+Never copy the provisioning-only registry credential into the executor.
+
+An existing container retains its original CLI after an image upgrade. If it
+has no `ak`, preserve the workspace's work and open a new workspace after the
+operator upgrades the image. Custom images and local stdio environments are
+responsible for supplying their own binary.
+
 <!-- cloudharness-tool:skills_list -->
 ### `skills_list`
 
