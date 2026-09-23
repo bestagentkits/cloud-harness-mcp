@@ -10,8 +10,9 @@ import type { GitHubBindingService } from './github-binding-service.js';
 import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import type { MetadataStore } from './metadata-store.js';
+import { readSkillArchive } from './skill-archive.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
-import { compareSemver, isSemver, parseSkillVersion } from './skill-version.js';
+import { compareSemver, isSemver, parseSkillVersion, trustedSkillVersion } from './skill-version.js';
 import { IntegrationCredentialRepository } from './integration-credential-repository.js';
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
@@ -823,6 +824,48 @@ export class DashboardControlService {
             }
           });
           return mutation('Custom skill created', { ...created, bundleSha256: published.bundleSha256 });
+        }
+        case 'skill_archive_import': {
+          // The whole archive is validated before anything is written, so a malformed archive cannot
+          // leave a half-created library.
+          const skills = readSkillArchive(Buffer.from(parsed.input.archiveBase64, 'base64'));
+
+          const results: { slug: string; ok: boolean; skillId?: string; error?: string }[] = [];
+          for (const entry of skills) {
+            try {
+              // The package is published before the source row, the order the single-skill path uses:
+              // a row naming bytes that do not exist would resolve and then fail at launch.
+              const published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, {
+                [`skills/${entry.slug}/SKILL.md`]: entry.instructions
+              });
+              const created = this.principals.createSkillSource({
+                ownerId: principalId,
+                slug: entry.slug,
+                displayName: entry.displayName,
+                kind: 'owner',
+                provider: 'custom',
+                description: '',
+                tags: [],
+                revision: {
+                  bundleSha256: published.bundleSha256,
+                  contentSha256: createHash('sha256').update(entry.instructions).digest('hex'),
+                  hasExecutableAssets: false,
+                  origin: 'edit',
+                  version: trustedSkillVersion(entry.instructions) ?? null
+                }
+              });
+              results.push({ slug: entry.slug, ok: true, skillId: created.sourceId });
+            } catch (error) {
+              // A slug that already exists is a per-item conflict, not a failure of the whole upload,
+              // so the entries that could be created stay created.
+              results.push({
+                slug: entry.slug,
+                ok: false,
+                error: error instanceof SkillRegistryError ? error.code : 'INTERNAL_ERROR'
+              });
+            }
+          }
+          return mutation('Skills imported from the archive', { results });
         }
         case 'skill_set_preview': {
           const sources = this.principals.listSkillSources(principalId, { limit: 200 })
