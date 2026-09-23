@@ -147,6 +147,13 @@ export const MetadataRunnerOperationSchema = z.enum([
   'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ]);
 
+// A skill declares its version under the document's nested `metadata.version`. Validated here as
+// well as in the runner so a malformed value is refused at the boundary instead of reaching storage.
+const skillVersion = z.string().max(64).regex(
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/,
+  'must be a semantic version'
+);
+
 const metadataInputs = {
   skill_suggest: SkillSuggestInputSchema,
   typesafe_status: z.object({}).strict(),
@@ -395,7 +402,8 @@ const metadataInputs = {
     // Unlike a metadata update, this targets a source that may never have been edited, and a source that
     // has never been edited sits at generation 0. Requiring a positive generation here would make the
     // first edit of every newly created skill impossible.
-    expectedGeneration: z.number().int().min(0)
+    expectedGeneration: z.number().int().min(0),
+    version: skillVersion.optional()
   }).strict(),
   skill_create_custom: z.object({
     slug: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
@@ -404,7 +412,8 @@ const metadataInputs = {
     tags: z.array(z.string().trim().min(1).max(32)).max(16).default([]),
     instructions: z.string().min(1).max(65_536).refine((value) => !value.includes('\0'), 'instructions cannot contain null bytes'),
     hasExecutableAssets: z.boolean().default(false),
-    expectedGeneration: z.literal(0)
+    expectedGeneration: z.literal(0),
+    version: skillVersion.optional()
   }).strict(),
   skill_update: z.object({
     skillId: SkillSourceIdSchema, displayName: name.optional(), description: z.string().max(2_000).optional(),

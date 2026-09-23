@@ -58,6 +58,26 @@ describe('skills dashboard mapping', () => {
     expect(mapped.internalPath).toBeUndefined();
   });
 
+  it('passes a declared skill version through and never invents one', () => {
+    // The version lives on the revision and is joined into the source projection, so it has to survive
+    // the allowlist. A dropped key would render an empty Version column rather than an error.
+    const declared = mapDashboardData('skill_get', { id: 'sk_1', slug: 'tdd', version: '1.2.3' }) as Record<string, unknown>;
+    expect(declared.version).toBe('1.2.3');
+
+    // A skill that declares nothing must stay absent, so the UI shows its own empty state.
+    const undeclared = mapDashboardData('skill_get', { id: 'sk_2', slug: 'plain' }) as Record<string, unknown>;
+    expect(undeclared.version).toBeUndefined();
+
+    const revisions = mapDashboardData('skill_revision_list', {
+      revisions: [
+        { id: 'skrev_one', origin: 'edit', version: '2.0.0' },
+        { id: 'skrev_two', origin: 'import' }
+      ]
+    }) as { revisions?: Record<string, unknown>[] };
+    expect(revisions.revisions?.[0]?.version).toBe('2.0.0');
+    expect(revisions.revisions?.[1]?.version).toBeUndefined();
+  });
+
   it('carries the registry fields a row is read for instead of dropping them at the API boundary', () => {
     const mapped = mapDashboardData('toolkit_registry_list', {
       entries: [{

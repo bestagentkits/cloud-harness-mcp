@@ -190,7 +190,12 @@ wired, so the visible one is never the only working one. Owners:
   The library has three exclusive states — rows, empty, and filtered to
   nothing — and only the two empty states state a reason and offer the single action
   that resolves them; the count is stated in every state, so a filter is never
-  mistaken for an empty library. Owners: `renderSkillsSkeleton`,
+  mistaken for an empty library. The library and each revision row state the version
+  the revision declares, and a revision that declares none shows an explicit empty
+  state rather than a blank cell, because a blank cell reads as a rendering fault
+  rather than as an absent declaration; a save whose version does not advance reports
+  a drift warning alongside the success announcement instead of refusing the revision,
+  since a revision records what happened. Owners: `renderSkillsSkeleton`,
   `renderSkillsLibraryRows`, `renderSkillsLibraryCards`, `renderSkillRevisions`,
   `renderSkillsRegistryRows`, `renderImportJobGuidance` and
   `isTerminalImportState` in

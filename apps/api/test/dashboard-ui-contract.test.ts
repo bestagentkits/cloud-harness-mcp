@@ -9,6 +9,35 @@ import {
 
 import { renderSkillsSkeleton, renderTypesafeSkeleton } from '../dashboard/dashboard-render.js';
 import { DASHBOARD_PAGES } from '../dashboard/dashboard-pages.js';
+import { renderSkillRevisions, renderSkillsLibraryRows } from '../dashboard/dashboard-render.js';
+
+describe('skills version surfacing', () => {
+  const skill = (overrides = {}) => ({
+    id: 'sk_test', slug: 'example', displayName: 'Example', provider: 'custom',
+    kind: 'owner', state: 'enabled', version: null, ...overrides
+  });
+
+  it('pins a Version column in the library table', () => {
+    expect(renderSkillsSkeleton()).toContain('<th scope="col">Version</th>');
+  });
+
+  it('shows a declared version and an explicit empty state when none is declared', () => {
+    expect(renderSkillsLibraryRows([skill({ version: '1.2.3' })])).toContain('1.2.3');
+    // A skill that declares nothing must render an empty state, not a blank cell.
+    expect(renderSkillsLibraryRows([skill({ version: null })])).toContain('—');
+    // The empty table still spans every column, including the new one.
+    expect(renderSkillsLibraryRows([])).toContain('colspan="6"');
+  });
+
+  it('shows each revision version with an empty state', () => {
+    const list = renderSkillRevisions([
+      { id: 'skrev_one', origin: 'edit', createdAt: 0, version: '2.0.0' },
+      { id: 'skrev_two', origin: 'import', createdAt: 0, version: null }
+    ], 'skrev_one');
+    expect(list).toContain('2.0.0');
+    expect(list).toContain('—');
+  });
+});
 
 const asset = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
 
@@ -243,7 +272,8 @@ describe('dashboard static UI contract', () => {
     // A successful save closes the dialog and announces the outcome where the operator still is; a failure
     // keeps the dialog open with the draft intact.
     expect(script).toContain("document.querySelector('#skill-editor-dialog')?.close()");
-    expect(script).toContain("announce(wasEditing ? 'Revision added.' : 'Skill created.')");
+    expect(script).toContain("const outcome = wasEditing ? 'Revision added.' : 'Skill created.';");
+    expect(script).toContain('announce(drift ? `${outcome} ${drift}` : outcome)');
     expect(script).toContain('if (!result.ok) { if (status) status.textContent = result.message; return; }');
   });
 

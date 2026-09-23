@@ -1024,11 +1024,83 @@ export function migratePrincipalSchema(database: DatabaseSync): void {
     });
     version = 11;
   }
-  if (version !== 11) throw new Error(`unsupported state schema version ${version}`);
+  if (version === 11) {
+    transaction(database, () => {
+      database.exec(`
+        -- Additive and nullable: a database at v12 still serves a release that predates this column,
+        -- so a code-only rollback needs no data change.
+        ALTER TABLE skill_revisions ADD COLUMN version TEXT;
+
+        -- SQLite cannot ALTER a trigger, so it is recreated with the new column added to the guard.
+        -- Without this, a revision's declared version would be the one field on an otherwise
+        -- append-only row that could be silently rewritten.
+        DROP TRIGGER IF EXISTS skill_revisions_immutable;
+        CREATE TRIGGER skill_revisions_immutable
+        BEFORE UPDATE ON skill_revisions
+        FOR EACH ROW
+        WHEN (
+          OLD.owner_id IS NOT NEW.owner_id OR
+          OLD.id IS NOT NEW.id OR
+          OLD.skill_source_id IS NOT NEW.skill_source_id OR
+          OLD.parent_revision_id IS NOT NEW.parent_revision_id OR
+          OLD.origin IS NOT NEW.origin OR
+          OLD.bundle_sha256 IS NOT NEW.bundle_sha256 OR
+          OLD.content_sha256 IS NOT NEW.content_sha256 OR
+          OLD.has_executable_assets IS NOT NEW.has_executable_assets OR
+          OLD.version IS NOT NEW.version
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'skill revisions are immutable; create a new revision');
+        END;
+      `);
+      database.exec('UPDATE schema_meta SET version = 12;');
+    });
+    version = 12;
+  }
+  if (version !== 12) throw new Error(`unsupported state schema version ${version}`);
+}
+
+export function downgradeStateSchemaToV11(database: DatabaseSync, allowDataLoss = false): void {
+  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  if (version !== 12) throw new Error(`state schema must be version 12 before downgrade, got ${version}`);
+  if (!allowDataLoss) {
+    const versioned = (database.prepare('SELECT count(*) as count FROM skill_revisions WHERE version IS NOT NULL').get() as { count: number }).count;
+    if (versioned > 0) {
+      throw new Error('cannot downgrade state schema to v11: skill revisions carry a declared version (allowDataLoss required)');
+    }
+  }
+  transaction(database, () => {
+    database.exec(`
+      DROP TRIGGER IF EXISTS skill_revisions_immutable;
+      CREATE TRIGGER skill_revisions_immutable
+      BEFORE UPDATE ON skill_revisions
+      FOR EACH ROW
+      WHEN (
+        OLD.owner_id IS NOT NEW.owner_id OR
+        OLD.id IS NOT NEW.id OR
+        OLD.skill_source_id IS NOT NEW.skill_source_id OR
+        OLD.parent_revision_id IS NOT NEW.parent_revision_id OR
+        OLD.origin IS NOT NEW.origin OR
+        OLD.bundle_sha256 IS NOT NEW.bundle_sha256 OR
+        OLD.content_sha256 IS NOT NEW.content_sha256 OR
+        OLD.has_executable_assets IS NOT NEW.has_executable_assets
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'skill revisions are immutable; create a new revision');
+      END;
+      ALTER TABLE skill_revisions DROP COLUMN version;
+      UPDATE schema_meta SET version = 11;
+    `);
+  });
 }
 
 export function downgradeStateSchemaToV10(database: DatabaseSync, allowDataLoss = false): void {
-  const version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The head schema moves on, so a downgrade from it steps through the newer helpers first.
+  if (version === 12) {
+    downgradeStateSchemaToV11(database, allowDataLoss);
+    version = 11;
+  }
   if (version !== 11) throw new Error(`state schema must be version 11 before downgrade, got ${version}`);
   if (!allowDataLoss) {
     const sourceCount = (database.prepare('SELECT count(*) as count FROM skill_sources').get() as { count: number }).count;
@@ -1061,6 +1133,11 @@ export function downgradeStateSchemaToV10(database: DatabaseSync, allowDataLoss 
 
 export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The head schema moves on, so a downgrade from it steps through the newer helpers first.
+  if (version === 12) {
+    downgradeStateSchemaToV11(database, allowDataLoss);
+    version = 11;
+  }
   if (version === 11) {
     downgradeStateSchemaToV10(database, allowDataLoss);
     version = 10;
@@ -1098,6 +1175,11 @@ export function downgradeStateSchemaToV9(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The head schema moves on, so a downgrade from it steps through the newer helpers first.
+  if (version === 12) {
+    downgradeStateSchemaToV11(database, allowDataLoss);
+    version = 11;
+  }
   if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
@@ -1126,6 +1208,11 @@ export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The head schema moves on, so a downgrade from it steps through the newer helpers first.
+  if (version === 12) {
+    downgradeStateSchemaToV11(database, allowDataLoss);
+    version = 11;
+  }
   if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
@@ -1154,6 +1241,11 @@ export function downgradeStateSchemaToV7(database: DatabaseSync, allowDataLoss =
 }
 export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The head schema moves on, so a downgrade from it steps through the newer helpers first.
+  if (version === 12) {
+    downgradeStateSchemaToV11(database, allowDataLoss);
+    version = 11;
+  }
   if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
@@ -1186,6 +1278,11 @@ export function downgradeStateSchemaToV6(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The head schema moves on, so a downgrade from it steps through the newer helpers first.
+  if (version === 12) {
+    downgradeStateSchemaToV11(database, allowDataLoss);
+    version = 11;
+  }
   if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
@@ -1262,6 +1359,11 @@ export function downgradeStateSchemaToV5(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss = false): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The head schema moves on, so a downgrade from it steps through the newer helpers first.
+  if (version === 12) {
+    downgradeStateSchemaToV11(database, allowDataLoss);
+    version = 11;
+  }
   if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, allowDataLoss);
     version = 9;
@@ -1307,6 +1409,11 @@ export function downgradeStateSchemaToV4(database: DatabaseSync, allowDataLoss =
 
 export function downgradeStateSchemaToV3(database: DatabaseSync): void {
   let version = (database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
+  // The head schema moves on, so a downgrade from it steps through the newer helpers first.
+  if (version === 12) {
+    downgradeStateSchemaToV11(database, true);
+    version = 11;
+  }
   if (version === 11 || version === 10) {
     downgradeStateSchemaToV9(database, true);
     version = 9;

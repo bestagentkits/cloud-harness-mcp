@@ -261,8 +261,8 @@ const mcpCredentialKeys = ['allowed', 'reason'] as const;
 const mcpConnectionKeys = ['status', 'toolCount', 'error'] as const;
 
 /** Projected from the `skill_sources` and `skill_revisions` columns Phase 1 created. */
-const skillKeys = ['id', 'slug', 'displayName', 'description', 'kind', 'provider', 'sourceRef', 'currentRevisionId', 'state', 'tags', 'generation', 'createdAt', 'updatedAt'] as const;
-const skillRevisionKeys = ['id', 'skillSourceId', 'parentRevisionId', 'origin', 'hasExecutableAssets', 'createdAt'] as const;
+const skillKeys = ['id', 'slug', 'displayName', 'description', 'kind', 'provider', 'sourceRef', 'currentRevisionId', 'state', 'tags', 'generation', 'createdAt', 'updatedAt', 'version'] as const;
+const skillRevisionKeys = ['id', 'skillSourceId', 'parentRevisionId', 'origin', 'hasExecutableAssets', 'createdAt', 'version'] as const;
 const skillSetKeys = ['id', 'name', 'description', 'generation', 'createdAt', 'updatedAt'] as const;
 const skillSetItemKeys = ['skillSetId', 'ordinal', 'skillSourceId', 'revisionId', 'name'] as const;
 const skillUsageSetKeys = ['skillSetId', 'name'] as const;

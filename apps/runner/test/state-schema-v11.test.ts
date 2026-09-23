@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { migratePrincipalSchema } from '../src/principal-store.js';
-import { StateStore, downgradeStateSchemaToV10, downgradeStateSchemaToV9 } from '../src/state-store.js';
+import { StateStore, downgradeStateSchemaToV10, downgradeStateSchemaToV11, downgradeStateSchemaToV9 } from '../src/state-store.js';
 
 const tempDbPath = () => join(tmpdir(), `test-state-v11-${randomBytes(8).toString('hex')}.sqlite`);
 const STAMP = 1_700_000_000_000;
@@ -86,7 +86,7 @@ describe('StateStore schema version 11 migration and skill registry', () => {
     const store = new StateStore(tempDbPath());
     try {
       const version = (store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version;
-      expect(version).toBe(11);
+      expect(version).toBe(12);
       const tables = tableNames(store.database);
       for (const table of SKILL_TABLES) expect(tables.has(table)).toBe(true);
     } finally {
@@ -120,6 +120,8 @@ describe('StateStore schema version 11 migration and skill registry', () => {
     const store = new StateStore(tempDbPath());
     try {
       store.database.exec('PRAGMA foreign_keys = ON');
+      // The head schema is v12, so step down to v11 before exercising the v11 -> v10 downgrade.
+      downgradeStateSchemaToV11(store.database);
       downgradeStateSchemaToV10(store.database);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
       expect(tableNames(store.database).has('skill_sources')).toBe(false);
@@ -133,7 +135,7 @@ describe('StateStore schema version 11 migration and skill registry', () => {
 
       migratePrincipalSchema(store.database);
 
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(11);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(12);
       expect((store.database.prepare("SELECT title FROM knowledge_items WHERE id = 'kn_keep'").get() as { title: string }).title).toBe('keep-me');
       expect(store.database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
       for (const table of SKILL_TABLES) expect(tableNames(store.database).has(table)).toBe(true);
@@ -248,6 +250,7 @@ describe('StateStore schema version 11 migration and skill registry', () => {
     try {
       addSource(store.database, { owner: OWNER, sourceId: SOURCE_A, revisionId: REVISION_A, slug: 'tdd' });
 
+      downgradeStateSchemaToV11(store.database);
       expect(() => downgradeStateSchemaToV10(store.database)).toThrow(/skill tables contain records/i);
       downgradeStateSchemaToV10(store.database, true);
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(10);
@@ -256,7 +259,7 @@ describe('StateStore schema version 11 migration and skill registry', () => {
       expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(9);
 
       migratePrincipalSchema(store.database);
-      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(11);
+      expect((store.database.prepare('SELECT version FROM schema_meta').get() as { version: number }).version).toBe(12);
       expect(tableNames(store.database).has('skill_sources')).toBe(true);
       expect(tableNames(store.database).has('knowledge_items')).toBe(true);
     } finally {

@@ -189,6 +189,22 @@ quiesced database/artifact state, the last healthy runtime configuration and
 runner-only key files, and rebuilt service images when a prior release exists.
 The deploy script records the active configuration only after readiness,
 image-identity, and canary checks succeed.
+
+That automatic recovery has two limits worth knowing before you rely on it.
+
+It is fail-closed. If the restore itself fails, `contain_failed_release` in
+`deploy/scripts/release-runtime.sh` runs
+`systemctl disable --now cloud-harness-mcp.service` and
+`compose down --remove-orphans`, deliberately leaving the release **stopped**
+rather than serving a half-promoted one.
+
+It does not run when the deploy is interrupted. The automatic path is
+`trap rollback ERR` in `deploy/scripts/deploy-release.sh`, and `ERR` does not
+fire on a signal, so a deploy cut short by a dropped SSH connection (`SIGHUP`)
+stops without restoring anything. The deploy stops the running release before it
+compiles the new images and promotes them only after the canary passes, so an
+interrupted run can leave the release stopped with no automatic recovery. Check
+the state and use the manual rollback below.
 A manual:
 
 ```bash

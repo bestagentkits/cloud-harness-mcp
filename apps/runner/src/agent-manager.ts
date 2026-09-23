@@ -167,10 +167,14 @@ export class AgentManager {
   async stop(): Promise<void> {
     this.fence();
     clearInterval(this.reaper);
-    await Promise.allSettled(this.store.active().map(async (workspace) => {
-      this.repository.closeWorkspaceAdmission(workspace.ownerId, workspace.id, this.now());
-      await this.stopWorkspace(workspace.ownerId, workspace.id, 'runner stopping');
-    }));
+    // Promise.allSettled keeps teardown non-throwing: one workspace failing to stop must not abort
+    // the rest. The callback returns the promise explicitly so that intent is unambiguous.
+    await Promise.allSettled(this.store.active().map((workspace) => this.stopWorkspaceForShutdown(workspace)));
+  }
+
+  private async stopWorkspaceForShutdown(workspace: WorkspaceRecord): Promise<void> {
+    this.repository.closeWorkspaceAdmission(workspace.ownerId, workspace.id, this.now());
+    await this.stopWorkspace(workspace.ownerId, workspace.id, 'runner stopping');
   }
 
   async dispatch(

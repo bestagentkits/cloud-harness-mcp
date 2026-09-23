@@ -10,7 +10,9 @@ import {
   downgradeStateSchemaToV6,
   downgradeStateSchemaToV7,
   downgradeStateSchemaToV8,
-  downgradeStateSchemaToV9
+  downgradeStateSchemaToV9,
+  downgradeStateSchemaToV10,
+  downgradeStateSchemaToV11
 } from '../src/state-store.js';
 import { migratePrincipalSchema } from '../src/principal-store.js';
 
@@ -22,7 +24,7 @@ describe('StateStore Schema Version 9 Migration & Model Profile Tables', () => {
     const store = new StateStore(dbPath);
     try {
       const row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(row.version).toBe(11);
+      expect(row.version).toBe(12);
 
       // Verify model tables exist
       const tableRows = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
@@ -46,8 +48,11 @@ describe('StateStore Schema Version 9 Migration & Model Profile Tables', () => {
     try {
       store.database.exec('PRAGMA foreign_keys = ON');
       const initial = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(initial.version).toBe(11);
+      expect(initial.version).toBe(12);
 
+      // Head is v12, so step down through v11 and v10 to reach v9.
+      downgradeStateSchemaToV11(store.database);
+      downgradeStateSchemaToV10(store.database);
       // Downgrade to exact version 9
       downgradeStateSchemaToV9(store.database);
       const v9Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
@@ -71,7 +76,7 @@ describe('StateStore Schema Version 9 Migration & Model Profile Tables', () => {
       // Re-upgrade to exact version 9
       migratePrincipalSchema(store.database);
       const v10Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
-      expect(v10Row.version).toBe(11);
+      expect(v10Row.version).toBe(12);
 
       const tableRowsV9 = store.database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
       const tablesV9 = new Set(tableRowsV9.map((r) => r.name));
@@ -79,6 +84,11 @@ describe('StateStore Schema Version 9 Migration & Model Profile Tables', () => {
       expect(tablesV9.has('agent_model_profiles')).toBe(true);
 
       // Full downgrade chain to v3
+      downgradeStateSchemaToV11(store.database);
+      downgradeStateSchemaToV10(store.database);
+      downgradeStateSchemaToV9(store.database);
+      downgradeStateSchemaToV8(store.database);
+      downgradeStateSchemaToV7(store.database);
       downgradeStateSchemaToV6(store.database, true);
       const v6Row = store.database.prepare('SELECT version FROM schema_meta').get() as { version: number };
       expect(v6Row.version).toBe(6);

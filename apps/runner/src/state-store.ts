@@ -51,7 +51,8 @@ export {
   downgradeStateSchemaToV7,
   downgradeStateSchemaToV8,
   downgradeStateSchemaToV9,
-  downgradeStateSchemaToV10
+  downgradeStateSchemaToV10,
+  downgradeStateSchemaToV11
 } from './principal-store.js';
 
 export type MemoryRecord = {
@@ -2361,7 +2362,14 @@ export class StateStore {
     provider?: SkillProvider;
     sourceRef?: string;
     tags?: string[];
-    revision: { bundleSha256: string; contentSha256: string; hasExecutableAssets: boolean; origin?: SkillRevisionOrigin };
+    revision: {
+      bundleSha256: string;
+      contentSha256: string;
+      hasExecutableAssets: boolean;
+      origin?: SkillRevisionOrigin;
+      /** The version the document declares. Absent or null means the skill declares none. */
+      version?: string | null;
+    };
   }): { sourceId: string; revisionId: string } {
     const now = Date.now();
     const sourceId = `sk_${randomBytes(16).toString('hex')}`;
@@ -2375,10 +2383,10 @@ export class StateStore {
         .run(input.ownerId, sourceId, input.slug, input.displayName, input.description ?? '', input.kind,
           input.provider ?? null, input.sourceRef ?? null, tags, now, now);
       this.database.prepare(`INSERT INTO skill_revisions
-        (owner_id, skill_source_id, id, parent_revision_id, origin, bundle_sha256, content_sha256, has_executable_assets, created_at)
-        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`)
+        (owner_id, skill_source_id, id, parent_revision_id, origin, bundle_sha256, content_sha256, has_executable_assets, created_at, version)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`)
         .run(input.ownerId, sourceId, revisionId, input.revision.origin ?? 'import', input.revision.bundleSha256,
-          input.revision.contentSha256, input.revision.hasExecutableAssets ? 1 : 0, now);
+          input.revision.contentSha256, input.revision.hasExecutableAssets ? 1 : 0, now, input.revision.version ?? null);
       this.database.prepare('UPDATE skill_sources SET current_revision_id = ? WHERE owner_id = ? AND id = ?')
         .run(revisionId, input.ownerId, sourceId);
       this.database.exec('COMMIT');
@@ -2398,6 +2406,8 @@ export class StateStore {
     origin: SkillRevisionOrigin;
     parentRevisionId?: string;
     expectedGeneration?: number;
+    /** The version the document declares. Absent or null means the skill declares none. */
+    version?: string | null;
   }): string {
     const now = Date.now();
     const revisionId = `skrev_${randomBytes(16).toString('hex')}`;
@@ -2407,10 +2417,10 @@ export class StateStore {
         this.requireSkillGeneration('skill_sources', input.ownerId, input.skillSourceId, input.expectedGeneration);
       }
       this.database.prepare(`INSERT INTO skill_revisions
-        (owner_id, skill_source_id, id, parent_revision_id, origin, bundle_sha256, content_sha256, has_executable_assets, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (owner_id, skill_source_id, id, parent_revision_id, origin, bundle_sha256, content_sha256, has_executable_assets, created_at, version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(input.ownerId, input.skillSourceId, revisionId, input.parentRevisionId ?? null, input.origin,
-          input.bundleSha256, input.contentSha256, input.hasExecutableAssets ? 1 : 0, now);
+          input.bundleSha256, input.contentSha256, input.hasExecutableAssets ? 1 : 0, now, input.version ?? null);
       this.database.prepare(`UPDATE skill_sources
         SET current_revision_id = ?, generation = generation + 1, updated_at = ?
         WHERE owner_id = ? AND id = ?`)
@@ -2427,9 +2437,19 @@ export class StateStore {
     id: string; slug: string; displayName: string; description: string; kind: SkillSourceKind;
     provider: SkillProvider | null; sourceRef: string | null; currentRevisionId: string | null;
     state: SkillSourceState; tags: string[]; generation: number; updatedAt: number;
+    /** The version the current revision declares, or null when it declares none. */
+    version: string | null;
   } | undefined {
-    const row = this.database.prepare(`SELECT id, slug, display_name, description, kind, provider, source_ref,
-      current_revision_id, state, tags, generation, updated_at FROM skill_sources WHERE owner_id = ? AND id = ?`)
+    // The version lives on the revision, so the library list needs it joined from the current one.
+    const row = this.database.prepare(`SELECT skill_sources.id, skill_sources.slug, skill_sources.display_name,
+      skill_sources.description, skill_sources.kind, skill_sources.provider, skill_sources.source_ref,
+      skill_sources.current_revision_id, skill_sources.state, skill_sources.tags, skill_sources.generation,
+      skill_sources.updated_at, skill_revisions.version AS revision_version
+      FROM skill_sources
+      LEFT JOIN skill_revisions
+        ON skill_revisions.owner_id = skill_sources.owner_id
+       AND skill_revisions.id = skill_sources.current_revision_id
+      WHERE skill_sources.owner_id = ? AND skill_sources.id = ?`)
       .get(ownerId, id) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return {
@@ -2439,7 +2459,8 @@ export class StateStore {
       sourceRef: (row.source_ref as string | null) ?? null,
       currentRevisionId: (row.current_revision_id as string | null) ?? null,
       state: row.state as SkillSourceState, tags: parseSkillTags(String(row.tags)),
-      generation: Number(row.generation), updatedAt: Number(row.updated_at)
+      generation: Number(row.generation), updatedAt: Number(row.updated_at),
+      version: (row.revision_version as string | null) ?? null
     };
   }
 
@@ -2460,16 +2481,17 @@ export class StateStore {
 
   listSkillRevisions(ownerId: string, skillSourceId: string, limit = 100): {
     id: string; origin: SkillRevisionOrigin; parentRevisionId: string | null; contentSha256: string;
-    hasExecutableAssets: boolean; createdAt: number;
+    hasExecutableAssets: boolean; createdAt: number; version: string | null;
   }[] {
-    const rows = this.database.prepare(`SELECT id, origin, parent_revision_id, content_sha256, has_executable_assets, created_at
+    const rows = this.database.prepare(`SELECT id, origin, parent_revision_id, content_sha256, has_executable_assets, created_at, version
       FROM skill_revisions WHERE owner_id = ? AND skill_source_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`)
       .all(ownerId, skillSourceId, Math.min(limit, 500)) as Record<string, unknown>[];
     return rows.map((row) => ({
       id: String(row.id), origin: row.origin as SkillRevisionOrigin,
       parentRevisionId: (row.parent_revision_id as string | null) ?? null,
       contentSha256: String(row.content_sha256),
-      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at)
+      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at),
+      version: (row.version as string | null) ?? null
     }));
   }
 
@@ -2480,8 +2502,9 @@ export class StateStore {
   getSkillRevision(ownerId: string, skillSourceId: string, id: string): {
     id: string; skillSourceId: string; origin: SkillRevisionOrigin; parentRevisionId: string | null;
     bundleSha256: string; contentSha256: string; hasExecutableAssets: boolean; createdAt: number;
+    version: string | null;
   } | undefined {
-    const row = this.database.prepare(`SELECT id, skill_source_id, origin, parent_revision_id, bundle_sha256, content_sha256, has_executable_assets, created_at
+    const row = this.database.prepare(`SELECT id, skill_source_id, origin, parent_revision_id, bundle_sha256, content_sha256, has_executable_assets, created_at, version
       FROM skill_revisions WHERE owner_id = ? AND skill_source_id = ? AND id = ?`)
       .get(ownerId, skillSourceId, id) as Record<string, unknown> | undefined;
     if (!row) return undefined;
@@ -2489,7 +2512,8 @@ export class StateStore {
       id: String(row.id), skillSourceId: String(row.skill_source_id), origin: row.origin as SkillRevisionOrigin,
       parentRevisionId: (row.parent_revision_id as string | null) ?? null,
       bundleSha256: String(row.bundle_sha256), contentSha256: String(row.content_sha256),
-      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at)
+      hasExecutableAssets: Number(row.has_executable_assets) === 1, createdAt: Number(row.created_at),
+      version: (row.version as string | null) ?? null
     };
   }
 
