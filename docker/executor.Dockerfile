@@ -29,6 +29,28 @@ COPY --from=uv-source /uv /uvx /usr/local/bin/
 
 RUN npm install -g pnpm@latest wrangler@latest
 
+# Pin the CLI separately from mounted skills. Checksums come from the release's
+# https://releases.agentkit.best/binaries/2.18.0-beta.7/binary-update.json.
+RUN set -eu; \
+    version='2.18.0-beta.7'; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) checksum='bd724a56807fca9ce39a54b32a4964cf11a4026797fac53a5c105b74467343b9' ;; \
+      arm64) checksum='7acfd1c591f91d845129983fd534840a9f064aeee997b5d34ee976f761bbeb0e' ;; \
+      *) echo "Unsupported AgentKit CLI architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl --fail --show-error --silent --location \
+      --retry 3 --retry-connrefused --retry-max-time 120 \
+      --connect-timeout 15 --max-time 120 \
+      "https://releases.agentkit.best/binaries/${version}/ak_${version}_linux_${arch}.tar.gz" \
+      --output /tmp/ak.tar.gz; \
+    printf '%s  %s\n' "$checksum" /tmp/ak.tar.gz | sha256sum --check --strict -; \
+    mkdir /tmp/ak-extract; \
+    tar -xzf /tmp/ak.tar.gz -C /tmp/ak-extract --no-same-owner --no-same-permissions ak LICENSE; \
+    install -m 0555 /tmp/ak-extract/ak /usr/local/bin/ak; \
+    install -D -m 0444 /tmp/ak-extract/LICENSE /usr/local/share/licenses/agentkit/LICENSE; \
+    rm -rf /tmp/ak.tar.gz /tmp/ak-extract
+
 RUN useradd --uid 10001 --create-home --shell /bin/bash harness \
   && echo "harness ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/harness \
   && chmod 0440 /etc/sudoers.d/harness

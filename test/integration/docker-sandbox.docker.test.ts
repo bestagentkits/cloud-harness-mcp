@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { RunnerConfig } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker } from '../../apps/runner/src/docker-engine.js';
 import { StateStore } from '../../apps/runner/src/state-store.js';
@@ -15,6 +16,12 @@ let runnerConfig: RunnerConfig;
 let orphanContainer: string | undefined;
 let foreignOrphanContainer: string | undefined;
 const workspaceCeilingBytes = 64 * 1_024 * 1_024;
+const workspaceResultSchema = z.object({ workspaceId: z.string() });
+const executionResultSchema = z.object({ exitCode: z.number().int(), output: z.string() });
+const planCreateResultSchema = z.object({
+  data: z.object({ dir: z.string().regex(/^\/workspace\/plans\/[a-z0-9-]+$/) })
+});
+const fileReadResultSchema = z.object({ content: z.string() });
 
 beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), 'cloud-harness-docker-'));
@@ -168,6 +175,45 @@ describe('real Docker sandbox', () => {
     expect(store.byId(workspaceId)?.status).toBe('ACTIVE');
     expect(existsSync(cancellableRecord.workspacePath)).toBe(true);
     expect(JSON.stringify((await service.execute('owner', 'files_list', { workspaceId, path: '.', limit: 100 })).data)).not.toContain('aborted-command.txt');
+    await service.execute('owner', 'workspace_close', { workspaceId });
+    workspaceId = undefined;
+  }, 120_000);
+
+  it('creates, validates, and rejects invalid AgentKit plans offline through exec_run', async () => {
+    const opened = await service.execute('owner', 'workspace_open', {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: 'docker-test-agentkit-plan', networkProfile: 'network-none'
+    });
+    expect(opened.ok).toBe(true);
+    workspaceId = workspaceResultSchema.parse(opened.data).workspaceId;
+    const created = await service.execute('owner', 'exec_run', {
+      workspaceId, command: 'ak plan create executor-plan-proof --json', cwd: '.', timeoutMs: 10_000
+    });
+    const createdResult = executionResultSchema.parse(created.data);
+    expect(createdResult.exitCode).toBe(0);
+    const planDirectory = planCreateResultSchema.parse(JSON.parse(createdResult.output)).data.dir;
+    const relativeDirectory = planDirectory.slice('/workspace/'.length);
+    const planFile = await service.execute('owner', 'files_read', {
+      workspaceId, path: `${relativeDirectory}/plan.md`, offset: 0, limit: 65_536
+    });
+    expect(fileReadResultSchema.parse(planFile.data).content).toContain('executor-plan-proof');
+    const validated = await service.execute('owner', 'exec_run', {
+      workspaceId, command: `ak plan validate '${relativeDirectory}' --json`, cwd: '.', timeoutMs: 10_000
+    });
+    const validatedResult = executionResultSchema.parse(validated.data);
+    expect(validatedResult.exitCode).toBe(0);
+    expect(JSON.parse(validatedResult.output)).toMatchObject({ data: { valid: true } });
+
+    await service.execute('owner', 'files_write', {
+      workspaceId, path: `${relativeDirectory}/plan.md`, content: '# Invalid plan without required metadata\n'
+    });
+    const invalid = await service.execute('owner', 'exec_run', {
+      workspaceId, command: `ak plan validate '${relativeDirectory}' --json`, cwd: '.', timeoutMs: 10_000
+    });
+    const invalidResult = executionResultSchema.parse(invalid.data);
+    expect(invalidResult.exitCode).not.toBe(0);
+    expect(JSON.parse(invalidResult.output)).toMatchObject({ data: { valid: false } });
+
     await service.execute('owner', 'workspace_close', { workspaceId });
     workspaceId = undefined;
   }, 120_000);
