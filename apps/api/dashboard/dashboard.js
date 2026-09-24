@@ -53,7 +53,7 @@ import {
   renderAutomationPanel, renderDeployPanel,
   renderActivityCenter, renderApprovals
 } from './dashboard-render.js';
-import { navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
+import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -445,8 +445,12 @@ export function validateSkillInstructions(text) {
 function insertRendered(element, html) {
   if (!element) return;
   const markup = String(html ?? '');
-  const parsed = new globalThis.DOMParser().parseFromString(markup, 'text/html');
-  element.replaceChildren(...parsed.body.childNodes);
+  // Row markup parsed on its own loses its <tr>/<td> tags (the HTML parser drops them
+  // outside a table), so a table section is parsed inside a table and its rows adopted.
+  const section = /^(TBODY|THEAD|TFOOT)$/.test(String(element.tagName ?? '')) ? String(element.tagName).toLowerCase() : '';
+  const parsed = new globalThis.DOMParser().parseFromString(section ? `<table><${section}>${markup}</${section}></table>` : markup, 'text/html');
+  const source = section ? parsed.body.querySelector(section) : parsed.body;
+  element.replaceChildren(...(source ?? parsed.body).childNodes);
 }
 
 /**
@@ -1032,7 +1036,12 @@ export function initializeDashboard() {
     // The action slot follows the page, so a page without a primary action cannot
     // inherit the previous page's button.
     insertRendered(document.querySelector('#page-actions'), '');
-    if (page) setTitle(page.title, page.help);
+    if (page) {
+      setTitle(page.title, page.help);
+      // The eyebrow names the sidebar group the page lives in, so the heading also says where you are.
+      const group = DASHBOARD_GROUPS.find((entry) => entry.id === page.group && entry.id !== 'home');
+      document.querySelector('#page-eyebrow').textContent = group ? group.label : page.group === 'account' ? 'Account' : 'Control plane';
+    }
   }
   /**
    * The page's single primary action (plus at most one secondary action) lives in
@@ -3528,6 +3537,23 @@ export function initializeDashboard() {
     event.preventDefault();
     if (paletteDialog.open) { closePalette(); return; }
     openPalette(openPaletteButton);
+  });
+  // The cockpit's "More actions" disclosure floats over the page as a menu, so it closes like one:
+  // Escape returns focus to its summary, and a click or focus move outside dismisses it.
+  const openActionMenu = () => document.querySelector('.cockpit-actions details.row-edit[open]');
+  document.addEventListener('keydown', (event) => {
+    const menu = event.key === 'Escape' ? openActionMenu() : null;
+    if (!menu) return;
+    menu.open = false;
+    menu.querySelector('summary')?.focus();
+  });
+  document.addEventListener('click', (event) => {
+    const menu = openActionMenu();
+    if (menu && !menu.contains(event.target)) menu.open = false;
+  });
+  document.addEventListener('focusin', (event) => {
+    const menu = openActionMenu();
+    if (menu && !menu.contains(event.target)) menu.open = false;
   });
   // Header identity: the editable display name wins, then the verified assertion.
   function applyIdentity(data) {

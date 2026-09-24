@@ -27,7 +27,7 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 
 ## Search and Version
 
-- **Search:** press `CMD+K` or `CTRL+K` (or use the search button in the top bar) to jump to any dashboard page or find a workspace, project, secret, API key, model credential or profile, or artifact. Results cover the first page of each resource type. Memories and journals are searched on the Knowledge page, which has its own search. Press `Escape` or tap/click outside the palette to close it.
+- **Search:** press `CMD+K` or `CTRL+K` (or click the "Search or jump to…" field in the top bar) to jump to any dashboard page or find a workspace, project, secret, API key, model credential or profile, or artifact. Results cover the first page of each resource type. Memories and journals are searched on the Knowledge page, which has its own search. Press `Escape` or tap/click outside the palette to close it.
 - **Server version:** the left rail shows the version of the running MCP server, so you can confirm which build answered a request. The rail stays fixed beside the page and scrolls on its own when the navigation is taller than the window.
 - **Account controls:** the top-bar chip shows your display name and opens the Profile page; the adjacent icon signs you out.
 

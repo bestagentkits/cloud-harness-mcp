@@ -615,7 +615,7 @@ export function renderBarChart({ label, unit = '', points = [], emptyNote = 'Not
     const value = Number(point.value) || 0;
     const barHeight = Math.round((value / ceiling) * (height - 34));
     const x = index * 28 + 6;
-    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}`)}"><rect x="${x}" y="${height - 22 - barHeight}" width="18" height="${Math.max(barHeight, 1)}" rx="2"/><text x="${x + 9}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}`)}"><title>${escape(`${point.label}: ${value}${unit}`)}</title><rect x="${x}" y="${height - 22 - barHeight}" width="18" height="${Math.max(barHeight, 1)}" rx="2"/><text x="${x + 9}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
   }).join('');
   return renderChartFigure({ label, legend: 'Item', unit, points, svg: bars, width, height, className: 'chart-bars' });
 }
@@ -629,7 +629,7 @@ export function renderBarRows({ label, unit = '', points = [], emptyNote = 'Noth
     const barWidth = Math.round((value / ceiling) * 200);
     const y = index * 30;
     const note = point.note ? `, ${point.note}` : '';
-    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}${note}`)}"><text x="0" y="${y + 14}" class="bar-label">${escape(String(point.label))}</text><rect x="150" y="${y + 3}" width="${Math.max(barWidth, 1)}" height="12" rx="2" class="bar-fill"/><text x="360" y="${y + 14}" class="bar-value">${escape(String(value))}${escape(unit)}</text></g>`;
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}${note}`)}"><title>${escape(`${point.label}: ${value}${unit}${note}`)}</title><text x="0" y="${y + 14}" class="bar-label">${escape(String(point.label))}</text><rect x="150" y="${y + 3}" width="${Math.max(barWidth, 1)}" height="12" rx="2" class="bar-fill"/><text x="360" y="${y + 14}" class="bar-value">${escape(String(value))}${escape(unit)}</text></g>`;
   }).join('');
   return renderChartFigure({ label, legend: 'Item', unit, points, svg: rows, width: 420, height: points.length * 30, className: 'chart-rows' });
 }
@@ -637,7 +637,7 @@ export function renderBarRows({ label, unit = '', points = [], emptyNote = 'Noth
 function renderChartFigure({ label, legend, unit, points, svg, width, height, className }) {
   const columns = points.some((point) => point.note) ? `<th>Note</th>` : '';
   const rows = points.map((point) => `<tr><th scope="row">${escape(String(point.label))}</th><td>${escape(String(point.value ?? 0))}${escape(unit)}</td>${point.note ? `<td>${escape(String(point.note))}</td>` : ''}</tr>`).join('');
-  return `<figure class="chart-figure"><figcaption>${escape(label)}</figcaption><svg class="chart ${escape(className)}" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="${escape(label)}">${svg}</svg><table class="chart-fallback"><caption>${escape(label)} (numbers)</caption><thead><tr><th>${escape(legend)}</th><th>Value</th>${columns}</tr></thead><tbody>${rows}</tbody></table></figure>`;
+  return `<figure class="chart-figure"><figcaption>${escape(label)}</figcaption><svg class="chart ${escape(className)}" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="${escape(label)}">${svg}</svg><details class="chart-data"><summary>Show numbers</summary><table class="chart-fallback"><caption>${escape(label)} (numbers)</caption><thead><tr><th>${escape(legend)}</th><th>Value</th>${columns}</tr></thead><tbody>${rows}</tbody></table></details></figure>`;
 }
 
 /**
@@ -662,12 +662,12 @@ export function renderStackedBars({ label, categories = [], points = [], emptyNo
       return `<rect x="${index * 34 + 6}" y="${y}" width="22" height="${segmentHeight}" class="bar-segment segment-${escape(category.key)}"/>`;
     }).join('');
     const description = `${point.label}: ${categories.map((category) => `${category.label} ${Number(point.segments?.[category.key]) || 0}`).join(', ')}`;
-    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(description)}">${segments}<text x="${index * 34 + 17}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(description)}"><title>${escape(description)}</title>${segments}<text x="${index * 34 + 17}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
   }).join('');
   const legend = `<ul class="chart-legend">${categories.map((category) => `<li><span class="legend-swatch legend-${escape(category.key)}" aria-hidden="true"></span>${escape(category.label)}</li>`).join('')}</ul>`;
   const header = categories.map((category) => `<th>${escape(category.label)}</th>`).join('');
   const rows = points.map((point) => `<tr><th scope="row">${escape(String(point.label))}</th>${categories.map((category) => `<td>${escape(String(Number(point.segments?.[category.key]) || 0))}</td>`).join('')}</tr>`).join('');
-  return `<figure class="chart-figure"><figcaption>${escape(label)}</figcaption>${legend}<svg class="chart chart-stacked" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="${escape(label)}">${bars}</svg><table class="chart-fallback"><caption>${escape(label)} (numbers)</caption><thead><tr><th>Bucket</th>${header}</tr></thead><tbody>${rows}</tbody></table></figure>`;
+  return `<figure class="chart-figure"><figcaption>${escape(label)}</figcaption>${legend}<svg class="chart chart-stacked" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="list" aria-label="${escape(label)}">${bars}</svg><details class="chart-data"><summary>Show numbers</summary><table class="chart-fallback"><caption>${escape(label)} (numbers)</caption><thead><tr><th>Bucket</th>${header}</tr></thead><tbody>${rows}</tbody></table></details></figure>`;
 }
 
 /**
@@ -1283,12 +1283,12 @@ export function renderOverview({ overview = {}, access = {}, server, metrics = {
   const costMicros = Number(cost.costMicros);
   const inAnHour = expiring.find((bucket) => bucket.windowMinutes === 60) ?? {};
   const tiles = [
-    { id: 'attention', label: 'Needs attention', value: String(attention.length), note: attention.length ? 'Open the agents needing attention; the list below also covers workspaces and approvals.' : 'Nothing needs action right now.', href: '/dashboard/agents?attention=needs-attention' },
+    { id: 'attention', label: 'Needs attention', value: String(attention.length), note: attention.length ? 'Open the agents needing attention; the list below also covers workspaces and approvals.' : 'Nothing needs action right now.', href: '/dashboard/agents?attention=needs-attention', alert: attention.length > 0 },
     { id: 'running', label: 'Running now', value: String(running.agents ?? 0), note: `${String(running.workspaces ?? 0)} active workspace(s)`, href: '/dashboard/agents?status=RUNNING' },
     { id: 'cost', label: 'Cost', value: Number.isFinite(costMicros) ? `$${(costMicros / 1_000_000).toFixed(4)}` : 'Not reported', note: `scope: ${String(cost.scope ?? 'not reported')}`, href: '/dashboard/agents?status=RUNNING' },
-    { id: 'expiry', label: 'Expiring soon', value: String(inAnHour.count ?? 0), note: 'lease(s) within the hour', href: '/dashboard/workspaces?expiring=60' }
+    { id: 'expiry', label: 'Expiring soon', value: String(inAnHour.count ?? 0), note: 'lease(s) within the hour', href: '/dashboard/workspaces?expiring=60', alert: Number(inAnHour.count ?? 0) > 0 }
   ];
-  const metricTiles = `<ul class="metric-grid decision-grid">${tiles.map((tile) => `<li class="metric decision-${escape(tile.id)}"><a href="${escape(tile.href)}"><span class="metric-label">${escape(tile.label)}</span><span class="metric-value">${escape(tile.value)}</span><span class="metric-note">${escape(tile.note)}</span></a></li>`).join('')}</ul>`;
+  const metricTiles = `<ul class="metric-grid decision-grid">${tiles.map((tile) => `<li class="metric decision-${escape(tile.id)}${tile.alert ? ' has-alert' : ''}"><a href="${escape(tile.href)}"><span class="metric-label">${escape(tile.label)}</span><span class="metric-value">${escape(tile.value)}</span><span class="metric-note">${escape(tile.note)}</span></a></li>`).join('')}</ul>`;
   const attentionList = attention.length
     ? `<ul class="attention-list">${attention.map((item) => `<li class="attention-item"><a href="${escape(String(item.href ?? '/dashboard'))}">${escape(String(item.label ?? 'Attention'))}</a><span>${escape(String(item.detail ?? ''))}</span></li>`).join('')}</ul>`
     : '<p class="empty-note">Nothing needs attention right now.</p>';
@@ -1296,7 +1296,7 @@ export function renderOverview({ overview = {}, access = {}, server, metrics = {
     ? `<ul class="record-list">${expiring.map((bucket) => `<li><a href="/dashboard/workspaces">${escape(String(bucket.label ?? ''))}</a><span>${escape(String(bucket.count ?? 0))} workspace(s)</span></li>`).join('')}</ul>`
     : '<p class="empty-note">No workspaces are close to expiry.</p>';
   const endpoint = access.endpoint ? `<dt>Static endpoint</dt><dd class="wrap"><span class="mono wrap">${escape(access.endpoint)}</span> <button type="button" class="copy" data-copy="${escape(access.endpoint)}">Copy</button></dd>` : '';
-  return `<div class="overview">${metricTiles}<div class="overview-columns"><section class="panel" aria-labelledby="overview-attention-heading"><h2 id="overview-attention-heading">Needs attention</h2>${attentionList}</section><section class="panel" aria-labelledby="overview-expiry-heading"><h2 id="overview-expiry-heading">Expiring soon</h2>${expiryBuckets}</section></div>${renderAnalyticsSection({ overview, metrics, reliability })}<section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name ?? 'Not provided')}</dd><dt>Email</dt><dd class="wrap">${escape(access.email ?? 'Not provided')}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section>${renderServerPanel(server)}</div>`;
+  return `<div class="overview">${metricTiles}<div class="overview-columns"><section class="panel" aria-labelledby="overview-attention-heading"><h2 id="overview-attention-heading">Needs attention</h2>${attentionList}</section><section class="panel" aria-labelledby="overview-expiry-heading"><h2 id="overview-expiry-heading">Expiring soon</h2>${expiryBuckets}</section></div>${renderAnalyticsSection({ overview, metrics, reliability })}<div class="overview-columns overview-meta"><section class="panel" aria-labelledby="overview-access-heading"><h2 id="overview-access-heading">Access</h2><dl class="facts"><dt>Signed in as</dt><dd class="wrap">${escape(access.name ?? 'Not provided')}</dd><dt>Email</dt><dd class="wrap">${escape(access.email ?? 'Not provided')}</dd><dt>Session expires</dt><dd>${optionalTime(access.sessionExpiresAt)}</dd>${endpoint}</dl></section>${renderServerPanel(server)}</div></div>`;
 }
 
 export function renderModelsPage(profiles = [], credentials = [], status = null) {

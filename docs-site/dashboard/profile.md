@@ -37,8 +37,8 @@ The Profile panel displays your authenticated Cloudflare Access principal inform
 Cloud Harness MCP supports three theme modes:
 
 - **System:** Automatically tracks your operating system `prefers-color-scheme`.
-- **Light:** The HUD's light companion, with light surfaces and darkened cyan and status accents.
-- **Dark:** The HUD's default base — a near-black canvas with the cyan accent.
+- **Light:** The light companion, with white surfaces and darkened blue and status accents.
+- **Dark:** The default base — a graphite canvas with the cyan accent.
 
 Dark is the base theme, so a machine whose OS expresses no preference renders
 dark. `System` still follows your OS when it does express one.

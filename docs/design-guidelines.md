@@ -7,46 +7,42 @@ owns the **what** (every token and rule). The static UI contract is enforced by
 
 ## Direction
 
-The dashboard shares the **marketing site's design system**: the
-"Cyber-Engineering HUD" declared by `site/index.html` and `site/haas.html`. Those
-two pages are the palette source of truth. `site/styles.css` is **not** part of
-it — only the policy pages link it — and nothing here derives from it.
+The dashboard is a **precision instrument**: a calm graphite operator console in
+the register of mature developer tooling, not a themed "mission control" skin. It
+replaced the earlier Cyber-Engineering HUD (corner brackets, uppercase on every
+label, monospace figures) because that grammar made every surface shout equally,
+and an operator scanning for the one thing that needs action could not find it.
 
-- **Register:** product (a tool an operator must trust), rendered in the HUD's
-  visual language. Bar is earned familiarity and legibility, not novelty.
-- **Voice:** industrial / utilitarian "mission control" console. Calm, dense,
-  instrument-grade.
-- **Dials:** variance 3, motion 2, density 7. State-conveying motion only
-  (150-250ms); no page-load choreography.
-- **Memorable element:** cyan corner-bracket frames on the framed surfaces
-  (metric tiles, command toolbar), echoed by the cyan active-rail on the
-  navigation. The brackets were amber before this became a HUD system; only the
-  hue changed, not the grammar.
+- **Register:** product (a tool an operator must trust). The bar is legibility and
+  earned familiarity, not novelty.
+- **Voice:** quiet, precise, sentence case. Colour is spent only on **state**: the
+  accent marks the one next action and where you are; semantic hues mark status.
+  Everything else is graphite.
+- **Dials:** variance 3, motion 3, density 7. Motion confirms an arrival or a
+  state change (140-220ms); nothing decorative, nothing looping but the skeleton.
+- **Memorable element:** a 2px **instrument rule** along the top edge of each
+  Overview decision tile, tinted by what the tile measures (attention, running,
+  cost, expiry). Attention and expiry turn loud (`.has-alert`) only when they hold
+  something to act on, so a quiet console reads as quiet.
+- **Hierarchy of a page:** the eyebrow names the sidebar group the page lives in
+  (set from the page registry by `selectNavigation`), the `h1` names the page, and
+  the page's single primary action sits on the right of the same header row.
 
-## Deviations from the marketing source
+## Relationship to the marketing site
 
-The HUD is shared, but four things cannot be copied literally. Each is a
-constraint, not a preference:
+The dashboard keeps the marketing site's **cyan accent hue** in dark and a blue
+companion in light, so the product still reads as the same family. It no longer
+copies the HUD's grammar. Constraints that shape what is possible:
 
-- **No grid or glow backdrop.** The landing page builds its grid and radial glow
-  from `linear-gradient` / `radial-gradient`, and the UI contract test rejects
-  `gradient(`. The HUD reads instead through hairlines, cyan corner brackets, and
-  monospace type.
-- **No web fonts.** Marketing uses JetBrains Mono and Plus Jakarta Sans; the CSP
-  has no `font-src`. The native `--font-sans` and `--font-mono` stacks carry the
-  same treatment: 700-800 display weight with tight tracking on headings, and wide
-  tracking with uppercase on labels, table headers, and status pills.
-- **Light-theme accent and semantic values are darker than the marketing hexes.**
-  The marketing light accents fail AA as pill and button text (measured: green
-  3.06:1, red 4.01:1, amber 4.27:1, white-on-cyan 4.09:1). The dashboard keeps the
-  same hues, darkened and chroma-clamped into the sRGB gamut, and the numbers are
-  asserted by the contrast test.
-- **Light surfaces keep a three-step ramp** (white / near-white / muted) rather
-  than marketing's flat white for both panel and card, because dense tables need a
-  visible header and hover surface.
-
-One more consequence worth stating: the `-line` family is opaque here, while
-marketing tints its borders. See the `-soft` / `-line` split under Color.
+- **No grid or glow backdrop.** The UI contract test rejects `gradient(`. Depth
+  comes from a three-step surface ramp, hairlines, and one inset highlight.
+- **No web fonts.** The CSP has no `font-src`, so the native `--font-sans` and
+  `--font-mono` stacks carry everything.
+- **Light-theme accent and semantic values are darker than the marketing hexes**,
+  because the marketing light accents fail AA as pill and button text. The
+  numbers are asserted by the contrast test.
+- **The `-line` family is opaque**, while marketing tints its borders. See the
+  `-soft` / `-line` split under Color.
 
 ## Hard constraints (do not violate)
 
@@ -66,28 +62,27 @@ marketing tints its borders. See the `-soft` / `-line` split under Color.
 - **DOM is a contract.** Preserve the landmarks, single `<h1>`, dialogs, nav
   labels, and required CSS tokens/rules the contract test asserts.
 
-## Typography (native stack, stated exception)
+## Typography (native stack)
 
-The industrial reference uses Barlow Condensed and IBM Plex, which are web
-fonts the CSP forbids. We carry the same voice with a native stack instead:
-
-- `--font-sans` system UI stack for body and headings.
-- **Uppercase + letter-spacing** on the wordmark, page `h1`, nav groups, table
-  headers, status pills, metric labels, and buttons - this is what reads
-  "utilitarian", not a specific typeface.
-- `--font-mono` (`ui-monospace` stack) for all data: IDs, timestamps, counts,
-  metric values, code. `font-variant-numeric: tabular-nums` on every figure.
+- `--font-sans` system UI stack for body, headings, **and figures**. Metric values
+  are sans at 650 weight with tight tracking and `tabular-nums`: a large figure
+  reads faster in the UI face than in a monospace one.
+- `--font-mono` only for identifiers and machine text: IDs, digests, versions,
+  paths, code, and the `Updated` stamp.
+- **Sentence case** for headings, buttons, tabs, and status pills. Uppercase with
+  letter-spacing is reserved for three small-label roles — the eyebrow, nav group
+  labels, and table / fact headers — so it works as a signal instead of a texture.
 - Fixed `rem` type scale (dense UI). Body 14px desktop, 16px on mobile (avoids
   input zoom). One family in multiple weights - no second display face.
 
 ## Color
 
-- **Strategy:** dark-first HUD. The `:root` base is the marketing ramp — a
-  near-black canvas, a blue-tinted panel and card ramp, and the HUD accent. The
-  accent is used only for the primary action, active nav, selection, focus, and
-  the corner brackets, and stays under ~10% of any surface.
+- **Strategy:** dark-first graphite. The `:root` base is a near-neutral, faintly
+  cool ramp (canvas, surface, raised, muted). The accent is used only for the
+  primary action, the active nav rail and tab underline, selection, and focus,
+  and stays under ~10% of any surface.
 - **Cyan is the single accent.** `--accent` is the **fill** token: button and tab
-  backgrounds, brackets, borders, the focus ring. `--accent-strong` is the
+  backgrounds, the active rail, borders, the focus ring. `--accent-strong` is the
   **text** token for links and emphasis. The bare `--accent` must never be used as
   a `color`, because as text it cannot reach AA on the light surfaces; the
   contrast test asserts that no `color: var(--accent)` exists at all.
@@ -97,15 +92,15 @@ fonts the CSP forbids. We carry the same voice with a native stack instead:
   no longer the accent.
 - **`-soft` is a translucent fill; `-line` is an opaque border.** This split is
   load-bearing. `-soft` tints sit behind text and always pair with an opaque text
-  colour or border. `-line` draws brackets, borders, and underlines, and must stay
-  opaque: a translucent cyan line measures about 1.5:1 over the canvas and the
-  brackets would effectively disappear. The contrast test asserts the whole
+  colour or border. `-line` draws borders, instrument rules, and underlines, and
+  must stay opaque: a translucent cyan line measures about 1.5:1 over the canvas
+  and would effectively disappear. The contrast test asserts the whole
   `-line` family has no alpha component.
 - **One gray family**, brand-tinted toward the console's cool blue.
 
 ### Adaptive dark theme
 
-Dark is the **authoring base**: `:root` holds the dark HUD palette, mirroring
+Dark is the **authoring base**: `:root` holds the dark graphite palette, mirroring
 `site/index.html`'s `<html data-theme="dark">` foundation. Light is a companion
 declared **twice**, because CSS cannot share one token set across a media query:
 `:root[data-theme="light"]` for the forced choice and
@@ -151,13 +146,24 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
 
 ## Depth, shape, motion
 
-- **One depth strategy:** hairline borders (`--line`, `--line-strong`). Floating
-  layers only (dialogs, mobile drawer, toasts) carry a tinted shadow. No
-  ghost-card border+shadow combos.
-- **One radius scale:** `--radius-sm/-md/-lg`; tight, never over-rounded.
+- **One depth strategy:** hairline borders (`--line`, `--line-strong`) plus a
+  one-pixel inset highlight (`--highlight`) on framed surfaces. Floating layers
+  only (dialogs, menus, mobile drawer, toasts) carry `--shadow-overlay`.
+- **One radius scale:** `--radius-sm/-md/-lg` (6/8/12px) plus `--radius-pill` for
+  status pills and badges.
+- **Density follows the pointer.** Controls declare the 44px floor
+  (`min-height: 2.75rem` at the 16px mobile root) and `@media (pointer: fine)`
+  tightens buttons, inputs, nav items, tabs, and table rows to a working desktop
+  density; `--control-h` carries the same value for components that size to it.
+- **One tab grammar.** Workspace cockpit tabs, Activity filters, Knowledge, MCP,
+  and Skills tabs share one underline strip that scrolls sideways on narrow
+  screens instead of wrapping.
 - **Motion:** transition only `color`, `background-color`, `border-color`,
-  `transform`, `box-shadow`; never `transition: all`; every animation has a
-  `prefers-reduced-motion` off-ramp. Skeletons over spinners.
+  `transform`, `box-shadow`, `opacity`; never `transition: all`. A route arrival
+  rises into place (`#content > *`, decision tiles staggered by 30ms), dialogs
+  scale in over a fading scrim, toasts slide in from the edge, and the badge pops.
+  Every animation has the global `prefers-reduced-motion` off-ramp. Skeletons over
+  spinners.
 
 ## Components
 
@@ -260,8 +266,10 @@ wired, so the visible one is never the only working one. Owners:
   `/dashboard/projects/:id`, `/dashboard/knowledge/:id`,
   `/dashboard/mcp-servers/:id`) stay owned by the page whose rail entry must
   remain current.
-- **Overview:** monospace metric tiles (corner-bracketed) capped at four above
-  the fold, a recent-activity feed, an Access panel, and a Server panel. The tiles
+- **Overview:** four decision tiles (instrument-ruled) above the fold, then
+  Needs attention beside Expiring soon, the analytics grid, and Access beside Server.
+  Each chart keeps its numbers table behind a `Show numbers` disclosure, and every
+  bar carries a native `<title>` tooltip. The tiles
   and the feed read server-side read-only projections instead of fanning out in the
   browser: `GET /api/v1/overview` composes the decision buckets, `GET /api/v1/metrics`
   counts retained audit events inside a validated window, and `GET /api/v1/activity`
@@ -460,7 +468,7 @@ wired, so the visible one is never the only working one. Owners:
   `@media (prefers-reduced-motion: reduce)` block collapses every animation and
   transition to 0.01ms with `animation-iteration-count: 1`, so the preference is
   honoured everywhere by construction rather than per rule.
-- **Tables:** rounded hairline container, uppercase column headers, row hover,
+- **Tables:** rounded hairline container, small uppercase column headers, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with
   transport, status, cached tool count, last connected, and enabled state, and
