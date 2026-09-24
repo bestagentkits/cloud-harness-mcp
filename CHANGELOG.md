@@ -1,3 +1,11 @@
+## [0.61.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.61.0...v0.61.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **dashboard:** give GitHub operations their own failure messages ([#261](https://github.com/bestagentkits/cloud-harness-mcp/issues/261)) ([2736e9e](https://github.com/bestagentkits/cloud-harness-mcp/commit/2736e9e78f453691fb89977af0aec457e1838f62))
+* **executor:** bundle pinned AgentKit beta CLI ([#265](https://github.com/bestagentkits/cloud-harness-mcp/issues/265)) ([4613733](https://github.com/bestagentkits/cloud-harness-mcp/commit/4613733379813c5a7b612aca166deceea739748a))
+
 # [0.61.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.60.1...v0.61.0) (2026-09-24)
 
 
