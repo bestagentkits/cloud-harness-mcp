@@ -556,21 +556,23 @@ const descriptiveOperations = new Set<string>([
   'skill_suggest'
 ]);
 
+const githubUnavailable = 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.';
+
 /** Gateway operations need gateway wording; the shared table is workspace-oriented. */
 const operationMessages: Partial<Record<DashboardResponseOperation, Record<string, string>>> = {
   // GitHub operations talk to GitHub, not to a workspace, so the shared workspace wording
   // ("The workspace service is temporarily unavailable.") misleads the operator. Keep static
   // wording here instead of passing runner text through: the runner's own message can embed
   // raw provider/TypeError detail.
-  github_status: { UNAVAILABLE: 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.' },
-  github_setup_begin: { UNAVAILABLE: 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.' },
+  github_status: { UNAVAILABLE: githubUnavailable },
+  github_setup_begin: { UNAVAILABLE: githubUnavailable },
   github_setup_complete: {
-    UNAVAILABLE: 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.',
+    UNAVAILABLE: githubUnavailable,
     INVALID_INPUT: 'The GitHub App connection could not be completed. Start the connection again.',
     NOT_FOUND: 'GitHub installation not found.'
   },
   github_reconcile: {
-    UNAVAILABLE: 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.',
+    UNAVAILABLE: githubUnavailable,
     NOT_FOUND: 'GitHub installation not found.'
   },
   github_disconnect: { NOT_FOUND: 'GitHub installation not found.' },
