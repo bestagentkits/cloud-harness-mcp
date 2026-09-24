@@ -629,7 +629,7 @@ export function renderBarRows({ label, unit = '', points = [], emptyNote = 'Noth
     const barWidth = Math.round((value / ceiling) * 200);
     const y = index * 30;
     const note = point.note ? `, ${point.note}` : '';
-    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}${note}`)}"><text x="0" y="${y + 14}" class="bar-label">${escape(String(point.label))}</text><rect x="150" y="${y + 3}" width="${Math.max(barWidth, 1)}" height="12" rx="2" class="bar-fill"/><text x="360" y="${y + 14}" class="bar-value">${escape(String(value))}${escape(unit)}</text></g>`;
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(`${point.label}: ${value}${unit}${note}`)}"><title>${escape(`${point.label}: ${value}${unit}${note}`)}</title><text x="0" y="${y + 14}" class="bar-label">${escape(String(point.label))}</text><rect x="150" y="${y + 3}" width="${Math.max(barWidth, 1)}" height="12" rx="2" class="bar-fill"/><text x="360" y="${y + 14}" class="bar-value">${escape(String(value))}${escape(unit)}</text></g>`;
   }).join('');
   return renderChartFigure({ label, legend: 'Item', unit, points, svg: rows, width: 420, height: points.length * 30, className: 'chart-rows' });
 }
@@ -662,7 +662,7 @@ export function renderStackedBars({ label, categories = [], points = [], emptyNo
       return `<rect x="${index * 34 + 6}" y="${y}" width="22" height="${segmentHeight}" class="bar-segment segment-${escape(category.key)}"/>`;
     }).join('');
     const description = `${point.label}: ${categories.map((category) => `${category.label} ${Number(point.segments?.[category.key]) || 0}`).join(', ')}`;
-    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(description)}">${segments}<text x="${index * 34 + 17}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
+    return `<g class="chart-bar" tabindex="0" role="listitem" aria-label="${escape(description)}"><title>${escape(description)}</title>${segments}<text x="${index * 34 + 17}" y="${height - 8}" text-anchor="middle" class="chart-tick">${escape(String(point.tick ?? ''))}</text></g>`;
   }).join('');
   const legend = `<ul class="chart-legend">${categories.map((category) => `<li><span class="legend-swatch legend-${escape(category.key)}" aria-hidden="true"></span>${escape(category.label)}</li>`).join('')}</ul>`;
   const header = categories.map((category) => `<th>${escape(category.label)}</th>`).join('');

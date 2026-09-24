@@ -1040,7 +1040,7 @@ export function initializeDashboard() {
       setTitle(page.title, page.help);
       // The eyebrow names the sidebar group the page lives in, so the heading also says where you are.
       const group = DASHBOARD_GROUPS.find((entry) => entry.id === page.group && entry.id !== 'home');
-      document.querySelector('#page-eyebrow').textContent = group ? group.label : 'Control plane';
+      document.querySelector('#page-eyebrow').textContent = group ? group.label : page.group === 'account' ? 'Account' : 'Control plane';
     }
   }
   /**
@@ -3537,6 +3537,23 @@ export function initializeDashboard() {
     event.preventDefault();
     if (paletteDialog.open) { closePalette(); return; }
     openPalette(openPaletteButton);
+  });
+  // The cockpit's "More actions" disclosure floats over the page as a menu, so it closes like one:
+  // Escape returns focus to its summary, and a click or focus move outside dismisses it.
+  const openActionMenu = () => document.querySelector('.cockpit-actions details.row-edit[open]');
+  document.addEventListener('keydown', (event) => {
+    const menu = event.key === 'Escape' ? openActionMenu() : null;
+    if (!menu) return;
+    menu.open = false;
+    menu.querySelector('summary')?.focus();
+  });
+  document.addEventListener('click', (event) => {
+    const menu = openActionMenu();
+    if (menu && !menu.contains(event.target)) menu.open = false;
+  });
+  document.addEventListener('focusin', (event) => {
+    const menu = openActionMenu();
+    if (menu && !menu.contains(event.target)) menu.open = false;
   });
   // Header identity: the editable display name wins, then the verified assertion.
   function applyIdentity(data) {

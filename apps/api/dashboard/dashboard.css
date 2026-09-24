@@ -1127,6 +1127,9 @@ dialog .stack-form { margin-block: 0; max-width: none; }
   .toasts { inset-inline: var(--space-4); max-width: none; }
   .cockpit-header { grid-template-columns: minmax(0, 1fr); padding: var(--space-4); }
   .cockpit-actions { grid-column: 1; grid-row: auto; justify-content: flex-start; }
+  /* Left-aligned actions can wrap "More actions" to the start edge, so the menu opens toward the content. */
+  .cockpit-actions details.row-edit[open]::after { inset-inline-start: 0; inset-inline-end: auto; }
+  .cockpit-actions details.row-edit[open] > button { inset-inline-start: var(--space-1); inset-inline-end: auto; }
   .cockpit-header > .facts { grid-row: auto; }
   .knowledge-split-container, .conflict-3way-grid { grid-template-columns: minmax(0, 1fr); }
   .analytics-grid { grid-template-columns: minmax(0, 1fr); }
