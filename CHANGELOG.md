@@ -1,3 +1,10 @@
+# [0.61.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.60.1...v0.61.0) (2026-09-24)
+
+
+### Features
+
+* **dashboard:** redesign operator console art direction and layout ([#270](https://github.com/bestagentkits/cloud-harness-mcp/issues/270)) ([e927b0b](https://github.com/bestagentkits/cloud-harness-mcp/commit/e927b0bfe8dccffecc667ee2f460a58bd7aeb1be))
+
 ## [0.60.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.60.0...v0.60.1) (2026-09-23)
 
 
