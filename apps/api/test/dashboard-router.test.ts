@@ -369,6 +369,30 @@ describe('dashboard BFF', () => {
     expect(rejected.status).toBe(400);
   });
 
+  it('lists agents globally by fanning out over the principal workspaces, never unscoped', async () => {
+    for (const path of ['/api/v1/agents', '/api/v1/overview', '/api/v1/activity']) {
+      calls = [];
+      const response = await send(path);
+      expect(response.status, path).toBe(200);
+      const agentCalls = calls.filter((call) => call.operation === 'agent_list');
+      // An unscoped agent_list resolves to the single active workspace in the runner and
+      // fails once it is closed, so every global call must name a listed workspace.
+      expect(agentCalls.length, path).toBeGreaterThan(0);
+      for (const call of agentCalls) expect(call.input, path).toMatchObject({ workspaceId });
+    }
+    const list = await send('/api/v1/agents');
+    expect(list.json.data.agents).toHaveLength(1);
+  });
+
+  it('keeps internal audit and trace reads within the runner contract page size', async () => {
+    for (const path of ['/api/v1/metrics', '/api/v1/activity', `/api/v1/workspaces/${workspaceId}/activity`]) {
+      calls = [];
+      expect((await send(path)).status, path).toBe(200);
+      const audit = calls.find((call) => call.operation === 'audit_list');
+      expect(audit?.input.limit, path).toBeLessThanOrEqual(100);
+    }
+  });
+
   it('accepts an allowlisted hostname when the request host includes its HTTPS port', async () => {
     const response = await send('/api/v1/workspaces', { headers: { host: 'dashboard.example:443' } });
     expect(response.status).toBe(200);
