@@ -1,3 +1,10 @@
+## [0.62.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.1...v0.62.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* **dashboard:** surface MCP Servers at every width; make public sites discoverable ([#273](https://github.com/bestagentkits/cloud-harness-mcp/issues/273)) ([e2d20ab](https://github.com/bestagentkits/cloud-harness-mcp/commit/e2d20ab656e5f032c0050d85ff0195e8d70b8823))
+
 ## [0.62.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.0...v0.62.1) (2026-09-26)
 
 
