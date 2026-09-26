@@ -1630,6 +1630,7 @@ export function renderKnowledgeIndex(data, query = {}, activeTab = 'all') {
     <div class="record-heading">
       <div><h2>Knowledge Plane</h2><p>Durable memories, engineering journals, and interconnected graph relations.</p></div>
       <button id="open-create-knowledge-btn" class="accent-btn" type="button">+ Create item</button>
+    </div>
     ${tabNav}
     ${searchHint}
     <section aria-labelledby="knowledge-list-heading">
