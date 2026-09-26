@@ -1848,7 +1848,7 @@ export function renderMcpServersIndex(data) {
   const gateway = data?.gateway ?? data ?? {};
   const rows = servers.length ? servers.map((server) => `<tr>
         <th scope="row"><a href="/dashboard/mcp-servers/${encodeURIComponent(server.id)}">${escape(server.name)}</a><small class="mono wrap">${escape(server.id)}</small></th>
-        <td class="mono">${escape(server.transport)}</td>
+        <td class="mono nowrap">${escape(server.transport)}</td>
         <td>${renderMcpStatusPill(server.status)}</td>
         <td class="mono">${escape(count(server.toolCount))}</td>
         <td>${optionalTime(server.lastConnectedAt)}</td>
@@ -1859,14 +1859,13 @@ export function renderMcpServersIndex(data) {
     const details = `<dl><dt>Transport</dt><dd class="mono">${escape(server.transport)}</dd><dt>Status</dt><dd>${renderMcpStatusPill(server.status)}</dd><dt>Tools</dt><dd class="mono">${escape(count(server.toolCount))}</dd><dt>Last connected</dt><dd>${optionalTime(server.lastConnectedAt)}</dd><dt>Enabled</dt><dd>${server.enabled ? 'Enabled' : 'Disabled'}</dd></dl>`;
     return `<li><h3><a href="/dashboard/mcp-servers/${encodeURIComponent(server.id)}">${escape(server.name)}</a></h3>${details}${mcpServerActions(server)}</li>`;
   }).join('') : '<li class="empty"><h3>No MCP servers configured.</h3><p>Add a downstream MCP server to discover and execute its tools through Cloud Harness.</p></li>';
+  // The registered servers are what this page is for, so they lead; the gateway card
+  // is the one-time client setup and follows them.
   return `
-    ${renderMcpGatewayCard(gateway)}
-    <div class="record-heading">
-      <div><h2>MCP servers</h2><p>Downstream MCP integrations available to your signed-in identity.</p></div>
-      <div class="row-actions"></div>
-    </div>
-    <section aria-labelledby="mcp-server-list-heading">
-      <h2 id="mcp-server-list-heading" class="sr-only">MCP servers</h2>
+    <section class="mcp-server-list" aria-labelledby="mcp-server-list-heading">
+      <div class="record-heading">
+        <div><h2 id="mcp-server-list-heading">MCP servers</h2><p>Downstream MCP integrations available to your signed-in identity.</p></div>
+      </div>
       <div class="desktop-table">
         <table>
           <caption>${escape(servers.length)} MCP servers</caption>
@@ -1876,6 +1875,7 @@ export function renderMcpServersIndex(data) {
       </div>
       <ul class="mobile-list">${cards}</ul>
     </section>
+    ${renderMcpGatewayCard(gateway)}
   `;
 }
 
@@ -2003,10 +2003,10 @@ export function renderMcpServerDetail(server, tools, traces, activeTab = 'overvi
   const toolCount = Array.isArray(tools) ? tools.length : count(server.toolCount);
   const panels = { overview: renderMcpOverviewPanel(server, gateway), tools: renderMcpToolsPanel(tools), permissions: renderMcpPermissionsPanel(server, tools), logs: renderMcpLogsPanel(traces, cursor) };
   return `
-    <nav aria-label="Breadcrumb"><a href="/dashboard/mcp-servers">MCP servers</a><span>${escape(server.name)}</span></nav>
+    <nav aria-label="Breadcrumb"><a href="/dashboard/integrations/mcp-servers">MCP servers</a><span>${escape(server.name)}</span></nav>
     <div class="record-heading">
       <div>
-        <h2>${escape(server.name)}</h2>
+        <h2 class="sr-only">${escape(server.name)}</h2>
         <div class="mcp-meta-bar">
           <span class="mono wrap">${escape(server.id)}</span>
           ${renderMcpStatusPill(server.status)}

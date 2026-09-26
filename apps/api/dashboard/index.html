@@ -30,7 +30,6 @@
         <!-- Rendered from the page registry (dashboard-pages.js); no page label, route or icon is
              authored here, so navigation cannot drift from routing again. -->
         <div id="sidebar-nav"></div>
-        <div id="context-nav"></div>
       </nav>
       <p class="sidebar-version"><span class="sr-only">Server version</span><span class="mono">v__CH_VERSION__</span></p>
     </aside>
@@ -45,6 +44,7 @@
         <button id="open-workspace-btn" type="button" class="accent-btn">Open workspace</button>
         <button id="refresh" type="button">Refresh</button><span id="last-updated"></span>
       </div>
+      <nav id="context-nav" aria-label="Page sections"></nav>
       <section id="content" aria-labelledby="page-title" aria-busy="true"><p>Loading…</p></section>
       <div id="alert" role="alert" hidden></div>
     </main>
@@ -284,7 +284,8 @@
       <input type="hidden" name="serverId">
       <input type="hidden" name="expectedGeneration" value="0">
       <label for="mcp-server-name">Name</label>
-      <input id="mcp-server-name" name="name" required maxlength="63" pattern="^[a-z0-9][a-z0-9-]{0,62}$" autocomplete="off" spellcheck="false" placeholder="e.g. linear">
+      <input id="mcp-server-name" name="name" required maxlength="63" pattern="^[a-z0-9][a-z0-9-]{0,62}$" autocomplete="off" spellcheck="false" placeholder="e.g. linear" aria-describedby="mcp-server-name-hint">
+      <p id="mcp-server-name-hint">Lowercase letters, numbers, and hyphens, up to 63 characters.</p>
       <label for="mcp-server-description-input">Description <span class="optional">Optional</span></label>
       <input id="mcp-server-description-input" name="description" maxlength="500" autocomplete="off">
       <label for="mcp-server-transport">Transport</label>

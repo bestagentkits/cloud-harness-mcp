@@ -6,7 +6,8 @@ description: One page for GitHub authorization and downstream MCP server connect
 # Integrations
 
 `/dashboard/integrations` is where external connections live, so each new integration
-does not become another rail entry. It has two tabs:
+does not become another rail entry. Select **Integrations** in the rail, then pick a
+tab from the strip above the page content:
 
 - **GitHub** (`/dashboard/integrations/github`) — GitHub App installation bindings for
   private repository cloning and push access. See [GitHub Bindings](/dashboard/github)

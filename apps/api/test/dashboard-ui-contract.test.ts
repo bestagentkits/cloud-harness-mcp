@@ -397,6 +397,16 @@ describe('dashboard static UI contract', () => {
     expect(css).toContain('.app-shell.nav-collapsed .sidebar-version');
   });
 
+  it('renders page section tabs above the content so they stay reachable at every width', () => {
+    const main = html.slice(html.indexOf('<main'), html.indexOf('</main>'));
+    expect(main).toContain('<nav id="context-nav" aria-label="Page sections"></nav>');
+    expect(main.indexOf('id="context-nav"')).toBeLessThan(main.indexOf('id="content"'));
+    const sidebar = html.slice(html.indexOf('class="sidebar"'), html.indexOf('<main'));
+    expect(sidebar).not.toContain('context-nav');
+    expect(script).toContain('href="/dashboard/integrations/mcp-servers"');
+    expect(css).toContain('#context-nav:empty { display: none; }');
+  });
+
   it('exposes a bounded keyboard command palette without a second search landmark', () => {
     expect(html).toContain('<dialog id="command-palette"');
     expect(html).toContain('id="palette-input"');
