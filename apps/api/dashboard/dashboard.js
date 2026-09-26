@@ -1012,11 +1012,12 @@ export function initializeDashboard() {
     globalThis.setTimeout(() => node.remove(), 4200);
   }
   let apiKeyPageData;
+  const errorText = (error) => (error.status === 401 ? 'Your dashboard session ended. Sign in again.'
+    : error.status === 409 ? 'This item changed after you opened it. Review the latest version before trying again.' : error.message);
   function showError(error) {
     document.querySelector('.page-header').removeAttribute('data-shell-pending');
     alertBox.hidden = false;
-    alertBox.textContent = error.status === 401 ? 'Your dashboard session ended. Sign in again.'
-      : error.status === 409 ? 'This item changed after you opened it. Review the latest version before trying again.' : error.message;
+    alertBox.textContent = errorText(error);
     setBusy(false);
   }
   const requestBody = (value) => JSON.stringify(value);
@@ -1139,7 +1140,13 @@ export function initializeDashboard() {
       // Focus moves for screen readers; the ring is suppressed because a mouse
       // navigation should not frame the whole column. The skip link still shows it.
       setBusy(false); main.focus({ preventScroll: true, focusVisible: false });
-    } catch (error) { showError(error); }
+    } catch (error) {
+      showError(error);
+      // A failed page load must not leave the "Loading…" placeholder (or the previous
+      // page) standing under the alert: the content says it failed and offers a retry.
+      insertRendered(content, '<div class="empty"><h3>This page could not load.</h3><p>The reason is shown above.</p><button id="retry-load" type="button">Try again</button></div>');
+      content.querySelector('#retry-load')?.addEventListener('click', () => { load(); });
+    }
   }
   async function loadSkills() {
     selectNavigation('skills');
@@ -1732,7 +1739,16 @@ export function initializeDashboard() {
     const button = form.querySelector('button[type="submit"]'); const status = form.querySelector('.form-status'); const original = button.textContent;
     form.setAttribute('aria-busy', 'true'); button.disabled = true; button.textContent = pendingLabel; if (status) { status.textContent = pendingLabel; status.dataset.saveState = 'saving'; }
     try { await action(); if (status) { status.textContent = ''; status.dataset.saveState = 'saved'; } await onSuccess(); flashUpdated(); }
-    catch (error) { if (status) delete status.dataset.saveState; showError(error); }
+    catch (error) {
+      // The page alert sits behind a modal's backdrop, so a form inside an open dialog
+      // reports the failure in its own status line instead of leaving "Saving…" standing.
+      const inDialog = Boolean(status && form.closest('dialog[open]'));
+      if (status) {
+        if (inDialog) status.dataset.saveState = 'error'; else delete status.dataset.saveState;
+        status.textContent = inDialog ? errorText(error) : '';
+      }
+      if (!inDialog) showError(error);
+    }
     finally { form.removeAttribute('aria-busy'); button.disabled = false; button.textContent = original; }
   }
   /**
@@ -2710,9 +2726,11 @@ export function initializeDashboard() {
     document.querySelector('#command-surface').hidden = true;
     setBusy(true);
     try {
-      const [serversResult, gatewayResult] = await Promise.all([listMcpServers(), getMcpGatewayEndpoint()]);
+      // The gateway card is secondary: like the detail view, a failed endpoint read
+      // must not hide the registered servers.
+      const [serversResult, gatewayResult] = await Promise.all([listMcpServers(), getMcpGatewayEndpoint().catch(() => undefined)]);
       currentMcpServers = Array.isArray(serversResult.data?.servers) ? serversResult.data.servers : [];
-      currentMcpGateway = gatewayResult.data;
+      currentMcpGateway = gatewayResult?.data;
       insertRendered(content, renderMcpServersIndex({ servers: currentMcpServers, gateway: currentMcpGateway }));
       setPageActions(renderMcpActions());
       bindMcpServersControls();
@@ -2787,13 +2805,22 @@ export function initializeDashboard() {
       option.textContent = secret.name;
       secretSelect.appendChild(option);
     }
+    // A saved reference whose secret is not in the listed page stays selectable, so
+    // saving an unrelated edit cannot silently drop the header's credential.
+    if (header.secretRef && !secrets.some((secret) => secret.name === header.secretRef)) {
+      const saved = document.createElement('option');
+      saved.value = header.secretRef;
+      saved.textContent = header.secretRef;
+      secretSelect.appendChild(saved);
+    }
     if (header.secretRef) secretSelect.value = header.secretRef;
     reference.appendChild(secretSelect);
     node.append(name, mode, value, reference);
     const applyMode = () => {
       const secretMode = modeSelect.value === 'secret';
-      valueInput.hidden = secretMode;
-      secretSelect.hidden = !secretMode;
+      // The whole field hides, label included, so no caption is left without its control.
+      value.hidden = secretMode;
+      reference.hidden = !secretMode;
       if (secretMode) valueInput.value = '';
     };
     modeSelect.addEventListener('change', applyMode);
@@ -3393,8 +3420,10 @@ export function initializeDashboard() {
     await loadWorkspace(id, 'runtime', io);
   }
   // Secondary navigation for the single Integrations page: GitHub and MCP Servers
-  // are tabs of one destination instead of two top-level subsystems.
+  // are tabs of one destination instead of two top-level subsystems. The strip sits
+  // above the page content, not in the rail, so it stays reachable at every width.
   function integrationLinks(current) {
+    document.querySelector('#context-nav').setAttribute('aria-label', 'Integrations sections');
     insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/integrations/github" ${current === 'github' ? 'aria-current="page"' : ''}>GitHub</a><a href="/dashboard/integrations/mcp-servers" ${current === 'mcp-servers' ? 'aria-current="page"' : ''}>MCP Servers</a>`);
   }
   function openFileConflict(id, localContent, invoker) {

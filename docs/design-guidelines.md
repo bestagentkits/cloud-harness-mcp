@@ -265,7 +265,10 @@ wired, so the visible one is never the only working one. Owners:
   entries either — they are tabs of the single **Integrations** page at
   `/dashboard/integrations`, with `/dashboard/github` and `/dashboard/mcp-servers`
   kept as redirects and `/dashboard/mcp-servers/:serverId` still serving a
-  server's detail view. The rail is **fixed to the viewport below the top
+  server's detail view. Page section tabs such as these render in `#context-nav`,
+  an underline tab strip directly above the page content, never in the rail: the
+  collapsed tablet rail hides labels, so a rail-hosted tab was unreachable there.
+  The rail is **fixed to the viewport below the top
   bar and scrolls internally**, so a long navigation list never pushes the page
   or hides entries; the rail foot carries the running **server version** outside
   that scroll and hides it when the rail collapses to icons. A chevron control

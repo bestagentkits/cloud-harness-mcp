@@ -154,6 +154,14 @@ describe('MCP servers dashboard renderers', () => {
     expectCspSafe(html);
   });
 
+  it('leads with the server list and keeps the gateway setup card after it', () => {
+    const html = renderMcpServersIndex({ servers: [connected], gateway });
+    expect(html.indexOf('id="mcp-server-list-heading"')).toBeLessThan(html.indexOf('id="mcp-gateway-heading"'));
+    expect(html).toContain('class="mcp-server-list"');
+    const detail = renderMcpServerDetail(connected, [], [], 'overview', undefined, gateway);
+    expect(detail).toContain('<nav aria-label="Breadcrumb"><a href="/dashboard/integrations/mcp-servers">');
+  });
+
   it('renders the empty state for a principal with no servers', () => {
     const html = renderMcpServersIndex({ servers: [], gateway });
     expect(html).toContain('<tr><td colspan="7">No MCP servers configured.</td></tr>');
