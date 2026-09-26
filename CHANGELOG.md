@@ -1,3 +1,10 @@
+# [0.62.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.61.1...v0.62.0) (2026-09-26)
+
+
+### Features
+
+* **dashboard:** ops ledger redesign and agents/audit fixes ([#271](https://github.com/bestagentkits/cloud-harness-mcp/issues/271)) ([42520eb](https://github.com/bestagentkits/cloud-harness-mcp/commit/42520ebc0190f2c131ef54daadaa088d889a2f2a))
+
 ## [0.61.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.61.0...v0.61.1) (2026-09-24)
 
 
