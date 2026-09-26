@@ -319,4 +319,32 @@ describe("dashboard design tokens", () => {
       }
     }
   });
+
+  it("keeps the dark spine readable in both themes", () => {
+    // The top bar and rail stay dark in the light theme too, so their tokens are
+    // declared once on `:root` and must never be redefined by a light block, where
+    // a light value would put light ink on a light spine.
+    for (const name of [...rootTokens.keys()].filter((key) => key.startsWith("--rail-"))) {
+      expect(lightForced.has(name), `${name} redefined in the light theme`).toBe(false);
+    }
+    for (const [label, theme] of themes) {
+      for (const background of ["--rail-bg", "--rail-raised", "--rail-hover"]) {
+        for (const ink of ["--rail-ink", "--rail-ink-muted"]) {
+          expect(
+            contrast(token(ink, theme), token(background, theme)),
+            `${label}: ${ink} on ${background}`,
+          ).toBeGreaterThanOrEqual(TEXT_FLOOR);
+        }
+        expect(
+          contrast(token("--rail-accent", theme), token(background, theme)),
+          `${label}: --rail-accent (focus ring, current marker) on ${background}`,
+        ).toBeGreaterThanOrEqual(NON_TEXT_FLOOR);
+      }
+      // Group labels and the version line sit directly on the rail background.
+      expect(
+        contrast(token("--rail-ink-faint", theme), token("--rail-bg", theme)),
+        `${label}: --rail-ink-faint on --rail-bg`,
+      ).toBeGreaterThanOrEqual(TEXT_FLOOR);
+    }
+  });
 });

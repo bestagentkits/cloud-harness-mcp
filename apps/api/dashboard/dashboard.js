@@ -1013,6 +1013,7 @@ export function initializeDashboard() {
   }
   let apiKeyPageData;
   function showError(error) {
+    document.querySelector('.page-header').removeAttribute('data-shell-pending');
     alertBox.hidden = false;
     alertBox.textContent = error.status === 401 ? 'Your dashboard session ended. Sign in again.'
       : error.status === 409 ? 'This item changed after you opened it. Review the latest version before trying again.' : error.message;
@@ -1021,6 +1022,7 @@ export function initializeDashboard() {
   const requestBody = (value) => JSON.stringify(value);
   function setTitle(title, help) {
     document.querySelector('#page-title').textContent = title; document.querySelector('#page-help').textContent = help;
+    document.querySelector('.page-header').removeAttribute('data-shell-pending');
     document.title = `${title} | Cloud Harness`;
   }
   function selectNavigation(section) {
@@ -1040,7 +1042,7 @@ export function initializeDashboard() {
       setTitle(page.title, page.help);
       // The eyebrow names the sidebar group the page lives in, so the heading also says where you are.
       const group = DASHBOARD_GROUPS.find((entry) => entry.id === page.group && entry.id !== 'home');
-      document.querySelector('#page-eyebrow').textContent = group ? group.label : page.group === 'account' ? 'Account' : 'Control plane';
+      document.querySelector('#page-eyebrow').textContent = group ? group.label : page.group === 'account' ? 'Account' : 'Console';
     }
   }
   /**
@@ -1134,7 +1136,9 @@ export function initializeDashboard() {
       // the content and the shell's action slot.
       bindDialogDismissal(content);
       bindCopyAffordances(content); bindCopyAffordances(document.querySelector('#page-actions'));
-      setBusy(false); main.focus({ preventScroll: true });
+      // Focus moves for screen readers; the ring is suppressed because a mouse
+      // navigation should not frame the whole column. The skip link still shows it.
+      setBusy(false); main.focus({ preventScroll: true, focusVisible: false });
     } catch (error) { showError(error); }
   }
   async function loadSkills() {

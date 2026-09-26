@@ -1131,7 +1131,7 @@ export function launchBlockedByConflicts(conflicts, overrides = {}) {
  * belongs on this page.
  */
 export function renderTypesafeSkeleton() {
-  return `<section id="typesafe-panel" aria-labelledby="typesafe-heading">
+  return `<section id="typesafe-panel" class="panel" aria-labelledby="typesafe-heading">
       <h2 id="typesafe-heading">TypeSafe skill suggestions</h2>
       <p id="typesafe-egress" role="status" aria-live="polite"></p>
       <form class="stack-form" id="typesafe-form">
@@ -1148,8 +1148,7 @@ export function renderTypesafeSkeleton() {
         <label for="typesafe-cache-ttl">Cache lifetime (minutes)</label>
         <input id="typesafe-cache-ttl" name="cacheTtlMinutes" type="number" min="1" max="1440">
         <label for="typesafe-enabled"><input id="typesafe-enabled" name="enabled" type="checkbox"> Send suggestions</label>
-        <button type="button" id="typesafe-test">Test connection</button>
-        <button type="submit" id="typesafe-save">Save</button>
+        <div class="form-row-actions"><button type="submit" id="typesafe-save" class="accent-btn">Save</button><button type="button" id="typesafe-test">Test connection</button></div>
         <span id="typesafe-status" role="status" aria-live="polite"></span>
       </form>
       <table id="typesafe-usage" class="data-table desktop-table"><caption class="sr-only">Recent suggestions</caption><thead><tr><th scope="col">Skill</th><th scope="col">Gate</th><th scope="col">Fit</th><th scope="col">Latency</th><th scope="col">Redactions</th><th scope="col">Cached</th></tr></thead><tbody></tbody></table>
