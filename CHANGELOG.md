@@ -1,3 +1,10 @@
+## [0.62.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.0...v0.62.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **dashboard:** close the Knowledge heading and centre empty-state notes ([#272](https://github.com/bestagentkits/cloud-harness-mcp/issues/272)) ([f78ba3e](https://github.com/bestagentkits/cloud-harness-mcp/commit/f78ba3ec9b577147bf7266fb3ae0bee34e3137f6))
+
 # [0.62.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.61.1...v0.62.0) (2026-09-26)
 
 
