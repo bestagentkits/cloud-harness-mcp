@@ -7,26 +7,36 @@ owns the **what** (every token and rule). The static UI contract is enforced by
 
 ## Direction
 
-The dashboard is a **precision instrument**: a calm graphite operator console in
-the register of mature developer tooling, not a themed "mission control" skin. It
-replaced the earlier Cyber-Engineering HUD (corner brackets, uppercase on every
-label, monospace figures) because that grammar made every surface shout equally,
-and an operator scanning for the one thing that needs action could not find it.
+The dashboard is an **ops ledger**: a dark instrument **spine** (top bar and rail,
+dark in both themes) framing a quiet ledger work surface. The content is ids,
+leases, logs and states, which read best as ruled rows and monospace stamps, so
+the spine carries identity and navigation and the work surface stays calm. It
+replaced a graphite-on-graphite console whose rail, top bar, canvas and panels
+sat within a few lightness steps of each other, so structure depended on
+hairlines alone and nothing read first; and before that, the Cyber-Engineering
+HUD, whose uppercase-everywhere grammar made every surface shout equally.
 
 - **Register:** product (a tool an operator must trust). The bar is legibility and
   earned familiarity, not novelty.
 - **Voice:** quiet, precise, sentence case. Colour is spent only on **state**: the
   accent marks the one next action and where you are; semantic hues mark status.
   Everything else is graphite.
-- **Dials:** variance 3, motion 3, density 7. Motion confirms an arrival or a
+- **Dials:** variance 3, motion 3, density 6. Motion confirms an arrival or a
   state change (140-220ms); nothing decorative, nothing looping but the skeleton.
-- **Memorable element:** a 2px **instrument rule** along the top edge of each
-  Overview decision tile, tinted by what the tile measures (attention, running,
-  cost, expiry). Attention and expiry turn loud (`.has-alert`) only when they hold
-  something to act on, so a quiet console reads as quiet.
+- **Signature:** the spine frame, a monospace **path eyebrow** (`~/operate`,
+  `~/admin`) above every page title, and the Overview **status strip**: the four
+  decision tiles joined into one segmented strip whose 3px top rule is tinted by
+  what each segment measures (attention, running, cost, expiry). Attention and
+  expiry turn loud (`.has-alert`) only when they hold something to act on, so a
+  quiet console reads as quiet.
 - **Hierarchy of a page:** the eyebrow names the sidebar group the page lives in
   (set from the page registry by `selectNavigation`), the `h1` names the page, and
-  the page's single primary action sits on the right of the same header row.
+  the page's single primary action sits on the right of the same header row. A
+  panel's leading `h2`/`h3` becomes a ruled header band, so each panel reads as a
+  ledger section with its title on the rule.
+- **No shell flash:** the header carries `data-shell-pending` and the command
+  surface starts `hidden`, so the shell never paints a default "Overview" title or
+  a workspace filter bar before the page registry sets the real ones.
 
 ## Relationship to the marketing site
 
@@ -69,9 +79,10 @@ copies the HUD's grammar. Constraints that shape what is possible:
   reads faster in the UI face than in a monospace one.
 - `--font-mono` only for identifiers and machine text: IDs, digests, versions,
   paths, code, and the `Updated` stamp.
-- **Sentence case** for headings, buttons, tabs, and status pills. Uppercase with
-  letter-spacing is reserved for three small-label roles — the eyebrow, nav group
-  labels, and table / fact headers — so it works as a signal instead of a texture.
+- **Sentence case** for headings, buttons and tabs. Small labels — the path
+  eyebrow, nav group labels (`/operate`), table heads, metric labels and status
+  stamps — are **lowercase monospace**, so machine vocabulary reads as one
+  register distinct from the prose, without shouting in uppercase.
 - Fixed `rem` type scale (dense UI). Body 14px desktop, 16px on mobile (avoids
   input zoom). One family in multiple weights - no second display face.
 
@@ -97,6 +108,18 @@ copies the HUD's grammar. Constraints that shape what is possible:
   and would effectively disappear. The contrast test asserts the whole
   `-line` family has no alpha component.
 - **One gray family**, brand-tinted toward the console's cool blue.
+
+### The spine
+
+The top bar, rail and mobile drawer paint from a separate `--rail-*` token set
+declared **only** in `:root`, so the spine stays dark in the light theme too. The
+light work surface then reads as a sheet laid inside a dark frame, and the frame
+never competes with content for attention. Spine text, the active-item marker and
+the focus ring use the rail tokens rather than the page tokens, because page ink
+is dark in light mode and would vanish on the spine.
+[`apps/api/test/dashboard-design-tokens.test.ts`](../apps/api/test/dashboard-design-tokens.test.ts)
+asserts that no light block redefines a `--rail-*` token and that spine text and
+the accent clear AA on every spine surface.
 
 ### Adaptive dark theme
 
@@ -149,8 +172,8 @@ value. Owner: [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-rou
 - **One depth strategy:** hairline borders (`--line`, `--line-strong`) plus a
   one-pixel inset highlight (`--highlight`) on framed surfaces. Floating layers
   only (dialogs, menus, mobile drawer, toasts) carry `--shadow-overlay`.
-- **One radius scale:** `--radius-sm/-md/-lg` (6/8/12px) plus `--radius-pill` for
-  status pills and badges.
+- **One radius scale:** `--radius-sm/-md/-lg` (4/6/10px) plus `--radius-pill` for
+  badges. Status pills are squared `--radius-sm` stamps, matching the ledger.
 - **Density follows the pointer.** Controls declare the 44px floor
   (`min-height: 2.75rem` at the 16px mobile root) and `@media (pointer: fine)`
   tightens buttons, inputs, nav items, tabs, and table rows to a working desktop
@@ -234,8 +257,8 @@ wired, so the visible one is never the only working one. Owners:
 - **Navigation:** left icon+label rail, grouped by operator intent — **Home**
   (Overview), **Operate** (Workspaces, Agents, Activity, Approvals), **Configure**
   (Projects, Secrets, Models & Budgets, Skills, Integrations), **Data** (Knowledge,
-  Artifacts), and **Admin** (API Access, Settings). Active item gets the cyan rail +
-  soft fill. Audit history has no rail slot: it is the Activity Center's Audit filter,
+  Artifacts), and **Admin** (API Access, Settings). Active item gets a raised spine
+  fill and the cyan marker. Audit history has no rail slot: it is the Activity Center's Audit filter,
   a command-palette destination, and its own `/dashboard/audit` route. Profile
   deliberately has **no** rail slot: the top-bar profile chip and the
   command palette are its entry points. GitHub and MCP Servers are not rail
@@ -266,7 +289,8 @@ wired, so the visible one is never the only working one. Owners:
   `/dashboard/projects/:id`, `/dashboard/knowledge/:id`,
   `/dashboard/mcp-servers/:id`) stay owned by the page whose rail entry must
   remain current.
-- **Overview:** four decision tiles (instrument-ruled) above the fold, then
+- **Overview:** the four-segment status strip above the fold (two by two below
+  the tablet breakpoint), then
   Needs attention beside Expiring soon, the analytics grid, and Access beside Server.
   Each chart keeps its numbers table behind a `Show numbers` disclosure, and every
   bar carries a native `<title>` tooltip. The tiles
@@ -468,7 +492,7 @@ wired, so the visible one is never the only working one. Owners:
   `@media (prefers-reduced-motion: reduce)` block collapses every animation and
   transition to 0.01ms with `animation-iteration-count: 1`, so the preference is
   honoured everywhere by construction rather than per rule.
-- **Tables:** rounded hairline container, small uppercase column headers, row hover,
+- **Tables:** rounded hairline container, lowercase monospace column heads, row hover,
   tabular numerals, `nowrap` timestamps; collapse to stacked cards on mobile.
 - **MCP Servers:** the section lists a principal's downstream MCP servers with
   transport, status, cached tool count, last connected, and enabled state, and

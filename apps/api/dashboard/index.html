@@ -35,8 +35,8 @@
       <p class="sidebar-version"><span class="sr-only">Server version</span><span class="mono">v__CH_VERSION__</span></p>
     </aside>
     <main id="main" tabindex="-1">
-      <header class="page-header"><div class="page-heading"><p class="eyebrow" id="page-eyebrow">Control plane</p><h1 id="page-title">Overview</h1><p id="page-help">Attention, running work, usage, and workspace expiry for your signed-in identity.</p></div><div id="page-actions" class="page-actions"></div></header>
-      <div id="command-surface" class="command-surface">
+      <header class="page-header" data-shell-pending><div class="page-heading"><p class="eyebrow" id="page-eyebrow">Console</p><h1 id="page-title">Overview</h1><p id="page-help">Attention, running work, usage, and workspace expiry for your signed-in identity.</p></div><div id="page-actions" class="page-actions"></div></header>
+      <div id="command-surface" class="command-surface" hidden>
         <form role="search" aria-label="Filter workspaces" id="workspace-filter">
           <label for="search">Search</label><input id="search" name="q" placeholder="Filter by repository or workspace ID">
           <label for="status">State</label><select id="status" name="status"><option value="">All</option><option>CREATING</option><option>ACTIVE</option><option>REAPING</option><option>CLOSED</option><option>FAILED</option></select>

@@ -68,6 +68,40 @@ function input(operation: RunnerOperation, value: unknown): Record<string, unkno
   return TOOL_SCHEMA_BY_NAME[operation].parse(value) as Record<string, unknown>;
 }
 
+const AGENT_FAN_OUT_CONCURRENCY = 8;
+
+// The runner resolves an agent operation without a workspaceId to the principal's
+// single active workspace, so a global view fails once that workspace is gone or
+// several are open. A global list therefore fans out over the principal's listed
+// workspaces (bounded by `workspace_list`'s own page) and merges newest first. A
+// workspace that fails to list is skipped rather than failing the whole view.
+async function listAgentsAcrossWorkspaces(
+  runner: DashboardRunnerClient,
+  selected: RunnerPrincipalSelector,
+  filters: { parentAgentId?: string; status?: string; limit?: number }
+): Promise<RunnerResponse> {
+  const workspaces = await runner.call('workspace_list', input('workspace_list', { limit: 100 }), selected);
+  if (!workspaces.ok) return workspaces;
+  const ids = ((workspaces.data as { workspaces?: Array<{ workspaceId?: unknown }> } | undefined)?.workspaces ?? [])
+    .map((workspace) => workspace.workspaceId)
+    .filter((id): id is string => typeof id === 'string' && workspaceId.safeParse(id).success);
+  const limit = filters.limit ?? 100;
+  const agents: Record<string, unknown>[] = [];
+  let truncated = workspaces.truncated;
+  for (let index = 0; index < ids.length; index += AGENT_FAN_OUT_CONCURRENCY) {
+    const results = await Promise.all(ids.slice(index, index + AGENT_FAN_OUT_CONCURRENCY).map(async (id) => (
+      await runner.call('agent_list', input('agent_list', { ...filters, workspaceId: id, limit }), selected).catch(() => undefined)
+    )));
+    for (const result of results) {
+      if (!result?.ok) continue;
+      truncated ||= result.truncated;
+      agents.push(...((result.data as { agents?: Record<string, unknown>[] } | undefined)?.agents ?? []));
+    }
+  }
+  agents.sort((left, right) => String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')));
+  return { ok: true, message: 'agents', truncated: truncated || agents.length > limit, data: { agents: agents.slice(0, limit) } };
+}
+
 export function createDashboardRouter(config: ApiConfig, runner: DashboardRunnerClient, gateway?: McpGatewayService): Router {
   const router = Router();
   const sessions = createDashboardSessions();
@@ -362,20 +396,25 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     });
   });
 
-  // Agent Control Center. Agent operations are workspace-scoped in the runner
-  // contract; the workspace id is optional there, so a global view lists across the
-  // principal's workspaces and a scoped view passes it through.
+  // Agent Control Center. Agent operations are workspace-scoped in the runner, so a
+  // global view fans out across the principal's workspaces and a scoped view passes
+  // the workspace id (and its cursor) through.
   router.get('/api/v1/agents', async (request: DashboardRequest, response, next) => {
     try {
       const selected = principal(request, response);
       if (!selected) return;
-      const result = await runner.call('agent_list', input('agent_list', {
-        ...(typeof request.query.workspaceId === 'string' ? { workspaceId: workspaceId.parse(request.query.workspaceId) } : {}),
+      const filters = {
         ...(typeof request.query.parentAgentId === 'string' ? { parentAgentId: agentId.parse(request.query.parentAgentId) } : {}),
         ...(typeof request.query.status === 'string' ? { status: agentStatus.parse(request.query.status) } : {}),
-        ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {}),
         ...(typeof request.query.limit === 'string' ? { limit: z.coerce.number().int().min(1).max(100).parse(request.query.limit) } : {})
-      }), selected);
+      };
+      const result = typeof request.query.workspaceId === 'string'
+        ? await runner.call('agent_list', input('agent_list', {
+          ...filters,
+          workspaceId: workspaceId.parse(request.query.workspaceId),
+          ...(typeof request.query.cursor === 'string' ? { cursor: request.query.cursor } : {})
+        }), selected)
+        : await listAgentsAcrossWorkspaces(runner, selected, filters);
       if (!result.ok) { sendRunnerResponse(response, 'agent_list', result); return; }
       const mapped = mapDashboardData('agent_list', result.data) as { agents?: Record<string, unknown>[] };
       // The runner contract filters by workspace, parent and status. Profile and
@@ -422,7 +461,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       if (!selected) return;
       const id = workspaceId.parse(request.params.workspaceId);
       const [audit, agentsResult] = await Promise.all([
-        runner.callInternal ? runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] }),
+        runner.callInternal ? runner.callInternal('audit_list', { limit: 100 }, selected) : unavailable({ events: [] }),
         runner.call('agent_list', input('agent_list', { workspaceId: id, limit: 100 }), selected)
       ]);
       const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
@@ -516,7 +555,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       if (!selected) return;
       const [workspacesResult, agentsResult, grantsResult] = await Promise.all([
         runner.call('workspace_list', input('workspace_list', { limit: 100 }), selected),
-        runner.call('agent_list', input('agent_list', { limit: 100 }), selected),
+        listAgentsAcrossWorkspaces(runner, selected, {}),
         runner.callInternal ? runner.callInternal('privilege_grant_list', {}, selected) : Promise.resolve(unavailable({ grants: [] }))
       ]);
       const workspaces = workspacesResult.ok ? (mapDashboardData('workspace_list', workspacesResult.data) as { workspaces?: Record<string, unknown>[] }).workspaces : [];
@@ -535,7 +574,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
         response.status(400).json({ error: 'invalid_request', message: `window must be one of ${Object.keys(METRIC_WINDOWS).join(', ')}` });
         return;
       }
-      const audit = runner.callInternal ? await runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] });
+      const audit = runner.callInternal ? await runner.callInternal('audit_list', { limit: 100 }, selected) : unavailable({ events: [] });
       const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
       response.json({ data: buildMetricsProjection({ events: events ?? [], window }) });
     } catch (error) { next(error); }
@@ -548,12 +587,12 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       if (!runner.callInternal) { response.json({ data: { servers: [], totalCalls: 0 } }); return; }
       const serversResult = await runner.callInternal('mcp_server_list', {}, selected);
       const servers = serversResult.ok ? (mapDashboardData('mcp_server_list', serversResult.data) as { servers?: Record<string, unknown>[] }).servers ?? [] : [];
-      // Bounded server-side fan-out: the five most recently listed servers, 200 traces each.
+      // Bounded server-side fan-out: the five most recently listed servers, 100 traces each (the contract maximum).
       const traces: Record<string, unknown>[] = [];
       for (const server of servers.slice(0, 5)) {
         const serverId = String(server.id ?? '');
         if (!serverId) continue;
-        const result = await runner.callInternal('mcp_gateway_trace_list', { serverId, limit: 200 }, selected);
+        const result = await runner.callInternal('mcp_gateway_trace_list', { serverId, limit: 100 }, selected);
         if (result.ok) traces.push(...(mapDashboardData('mcp_gateway_trace_list', result.data) as { traces?: Record<string, unknown>[] }).traces ?? []);
       }
       response.json({ data: buildReliabilityProjection({ traces }) });
@@ -565,8 +604,8 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
       const selected = principal(request, response);
       if (!selected) return;
       const [audit, agentsResult] = await Promise.all([
-        runner.callInternal ? runner.callInternal('audit_list', { limit: 200 }, selected) : unavailable({ events: [] }),
-        runner.call('agent_list', input('agent_list', { limit: 100 }), selected)
+        runner.callInternal ? runner.callInternal('audit_list', { limit: 100 }, selected) : unavailable({ events: [] }),
+        listAgentsAcrossWorkspaces(runner, selected, {})
       ]);
       const events = audit.ok ? (mapDashboardData('audit_list', audit.data) as { events?: Record<string, unknown>[] }).events : [];
       const agents = agentsResult.ok ? (mapDashboardData('agent_list', agentsResult.data) as { agents?: Record<string, unknown>[] }).agents : [];
