@@ -87,6 +87,14 @@ graph TD
     expect(html).not.toContain('<style>');
   });
 
+  it('closes the Knowledge heading before the tabs and list', () => {
+    const html = renderKnowledgeIndex({ items: [] }, {}, 'all');
+    const heading = html.slice(html.indexOf('<div class="record-heading">'), html.indexOf('<div class="knowledge-nav-tabs"'));
+    const opened = (heading.match(/<div\b/g) ?? []).length;
+    const closed = (heading.match(/<\/div>/g) ?? []).length;
+    expect(closed).toBe(opened);
+  });
+
   it('renders Knowledge detail with split editor/preview and backlinks', () => {
     const item = {
       id: 'kn_mem1234567890',
