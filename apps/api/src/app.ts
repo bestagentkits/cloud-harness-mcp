@@ -73,7 +73,12 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     });
   }
   if (config.authMode === 'cloudflare-access') {
-    app.use('/dashboard', requestSecurity(config), preAuthRequestLimits(), accessAssertionAuth(config), principalRequestLimits());
+    // Authentication and broad pre-auth DoS protection cover the whole Dashboard,
+    // while the tighter per-principal budget is reserved for BFF/API operations.
+    // Static shell/assets are browser transport overhead and must not consume the
+    // same 120-request/minute budget as user-initiated control-plane requests.
+    app.use('/dashboard', requestSecurity(config), preAuthRequestLimits(), accessAssertionAuth(config));
+    app.use('/dashboard/api/v1', principalRequestLimits());
     app.use('/dashboard', createDashboardRouter(config, runnerClient, gateway.service));
     app.use('/dashboard', createDashboardAssetsRouter());
   }

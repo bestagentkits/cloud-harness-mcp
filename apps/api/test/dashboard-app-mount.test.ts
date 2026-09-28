@@ -69,17 +69,29 @@ describe('dashboard application mount', () => {
     }
   });
 
-  it('serves the page registry module the shell imports', async () => {
+  it('serves release-versioned immutable assets and keeps legacy paths revalidating', async () => {
     const app = express();
+    // Simulate the security middleware's default no-store header: sendFile must
+    // deliberately override it for versioned static assets.
+    app.use('/dashboard', (_request, response, next) => { response.setHeader('Cache-Control', 'no-store'); next(); });
     app.use('/dashboard', createDashboardAssetsRouter());
     server = createServer(app);
     await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('test server failed');
-    const response = await fetch(`http://127.0.0.1:${address.port}/dashboard/assets/dashboard-pages.js`);
-    expect(response.status).toBe(200);
-    expect(response.headers.get('content-type')).toContain('javascript');
-    expect(await response.text()).toContain('DASHBOARD_PAGES');
+    const root = `http://127.0.0.1:${address.port}/dashboard/assets`;
+    const versioned = await fetch(`${root}/${encodeURIComponent(manifestVersion)}/dashboard-pages.js`);
+    expect(versioned.status).toBe(200);
+    expect(versioned.headers.get('content-type')).toContain('javascript');
+    expect(versioned.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+    expect(await versioned.text()).toContain('DASHBOARD_PAGES');
+
+    const legacy = await fetch(`${root}/dashboard-pages.js`);
+    expect(legacy.status).toBe(200);
+    expect(legacy.headers.get('cache-control')).toBe('private, no-cache');
+
+    expect((await fetch(`${root}/not-${encodeURIComponent(manifestVersion)}/dashboard-pages.js`)).status).toBe(404);
+    expect((await fetch(`${root}/${encodeURIComponent(manifestVersion)}/package.json`)).status).toBe(404);
   });
 
   it('injects the forced theme from the preference cookie into the shell', async () => {
@@ -105,7 +117,10 @@ describe('dashboard application mount', () => {
     const base = `http://127.0.0.1:${address.port}/dashboard/overview`;
     const plain = await (await fetch(base)).text();
     expect(plain).toContain(`v${manifestVersion}`);
+    expect(plain).toContain(`/dashboard/assets/${encodeURIComponent(manifestVersion)}/dashboard.css`);
+    expect(plain).toContain(`/dashboard/assets/${encodeURIComponent(manifestVersion)}/dashboard.js`);
     expect(plain).not.toContain('__CH_VERSION__');
+    expect(plain).not.toContain('__CH_ASSET_VERSION__');
     const forced = await (await fetch(base, { headers: { cookie: 'ch-dashboard-theme=dark' } })).text();
     expect(forced).toContain('<html lang="en" data-theme="dark">');
     expect(forced).toContain(`v${manifestVersion}`);
@@ -118,6 +133,13 @@ describe('dashboard application mount', () => {
     for (const rejected of ['</script>', '0.39.0" onload="x', '', ' ', '1.0.0 ', '1.0.0/../x', '<b>', 42, null, undefined]) {
       expect(normalizeServerVersion(rejected), String(rejected)).toBe('unknown');
     }
+  });
+
+  it('reserves the principal request budget for Dashboard API operations', () => {
+    const appSource = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8');
+    expect(appSource).toContain("app.use('/dashboard', requestSecurity(config), preAuthRequestLimits(), accessAssertionAuth(config));");
+    expect(appSource).toContain("app.use('/dashboard/api/v1', principalRequestLimits());");
+    expect(appSource).not.toContain('accessAssertionAuth(config), principalRequestLimits()');
   });
 
   it('does not expose dashboard routes in owner-bearer mode', async () => {

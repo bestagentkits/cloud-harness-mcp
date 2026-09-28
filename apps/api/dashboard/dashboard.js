@@ -1,5 +1,6 @@
 import {
   api,
+  setNavigationSignal,
   listModelCredentials,
   createModelCredential,
   rotateModelCredential,
@@ -463,8 +464,25 @@ export function dashboardNavigationPath(target) {
   return /^\/dashboard(?:[/?#]|$)/.test(value) ? value : '/dashboard';
 }
 
+export function dashboardLinkPath(href, currentHref) {
+  try {
+    const current = new URL(String(currentHref));
+    const target = new URL(String(href), current);
+    if (target.origin !== current.origin) return undefined;
+    const path = `${target.pathname}${target.search}${target.hash}`;
+    return /^\/dashboard(?:[/?#]|$)/.test(path) ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const DASHBOARD_NAVIGATION_EVENT = 'cloud-harness:navigate';
+
 function navigateTo(target) {
-  globalThis.location.href = dashboardNavigationPath(target);
+  const path = dashboardNavigationPath(target);
+  const current = `${globalThis.location.pathname}${globalThis.location.search}${globalThis.location.hash}`;
+  if (path !== current) globalThis.history.pushState({}, '', path);
+  globalThis.dispatchEvent(new globalThis.Event(DASHBOARD_NAVIGATION_EVENT));
 }
 
 /**
@@ -872,11 +890,6 @@ export function initializeDashboard() {
   insertRendered(document.querySelector('#sidebar-nav'), renderSidebarNavMarkup());
   const dialog = document.querySelector('#confirm-dialog'); const menuButton = document.querySelector('#menu-button');
   const revealDialog = document.querySelector('#api-key-reveal-dialog');
-  const pathMatch = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|files|git|automation|deploy|artifacts|activity))?$/);
-  const projectMatch = location.pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
-  const knowledgeMatch = location.pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
-  const mcpServerMatch = location.pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
-  const agentMatch = location.pathname.match(/^\/dashboard\/agents\/(agent_[A-Za-z0-9_-]{20,80})$/);
   const confirm = createAsyncDialogController({ dialog, cancelButton: dialog.querySelector('[data-cancel]'), actionButton: document.querySelector('#confirm-action'), status: document.querySelector('#confirm-status'), reportError: showError });
   const apiKeyReveal = createApiKeyRevealController({
     dialog: revealDialog, secretField: document.querySelector('#api-key-secret'), copyButton: document.querySelector('#copy-api-key'),
@@ -1120,10 +1133,30 @@ export function initializeDashboard() {
     settings: loadSettings,
     profile: loadProfile
   };
-  async function load() {
+  let loadQueue = Promise.resolve();
+  let loadController;
+  function load() {
+    loadController?.abort();
+    const controller = new globalThis.AbortController();
+    loadController = controller;
+    const queued = loadQueue.catch(() => undefined).then(async () => {
+      if (controller.signal.aborted) return;
+      setNavigationSignal(controller.signal);
+      await performLoad(controller.signal);
+    });
+    loadQueue = queued;
+    return queued;
+  }
+  async function performLoad(signal) {
     alertBox.hidden = true; setBusy(true);
     try {
-      const page = pageForPath(location.pathname);
+      const pathname = location.pathname;
+      const pathMatch = pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|files|git|automation|deploy|artifacts|activity))?$/);
+      const projectMatch = pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
+      const knowledgeMatch = pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
+      const mcpServerMatch = pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
+      const agentMatch = pathname.match(/^\/dashboard\/agents\/(agent_[A-Za-z0-9_-]{20,80})$/);
+      const page = pageForPath(pathname);
       if (pathMatch?.[2] === 'files') await loadFiles(pathMatch[1]);
       else if (pathMatch?.[2] === 'runtime') await loadRuntime(pathMatch[1]);
       else if (pathMatch) await loadWorkspace(pathMatch[1], pathMatch[2] ?? 'summary');
@@ -1133,6 +1166,7 @@ export function initializeDashboard() {
       else if (agentMatch) await loadAgentDetail(agentMatch[1]);
       else if (page && PAGE_LOADERS[page.id]) await PAGE_LOADERS[page.id]();
       else throw Object.assign(new Error('Dashboard page not found.'), { status: 404 });
+      if (signal.aborted) return;
       // Shared resource-page behavior is wired once per render rather than in every
       // loader: dialog dismissal with focus restore, and copy affordances in both
       // the content and the shell's action slot.
@@ -1142,11 +1176,12 @@ export function initializeDashboard() {
       // navigation should not frame the whole column. The skip link still shows it.
       setBusy(false); main.focus({ preventScroll: true, focusVisible: false });
     } catch (error) {
+      if (signal.aborted || error?.name === 'AbortError') return;
       showError(error);
       // A failed page load must not leave the "Loading…" placeholder (or the previous
       // page) standing under the alert: the content says it failed and offers a retry.
       insertRendered(content, '<div class="empty"><h3>This page could not load.</h3><p>The reason is shown above.</p><button id="retry-load" type="button">Try again</button></div>');
-      content.querySelector('#retry-load')?.addEventListener('click', () => { load(); });
+      content.querySelector('#retry-load')?.addEventListener('click', () => { void load(); });
     }
   }
   async function loadSkills() {
@@ -2693,12 +2728,13 @@ export function initializeDashboard() {
     for (const link of content.querySelectorAll('a[href^="/dashboard/workspaces/"]')) link.addEventListener('click', async (event) => {
       if (!matchMedia('(min-width: 48rem)').matches) return;
       event.preventDefault(); const trigger = event.currentTarget;
+      const returnPath = `${location.pathname}${location.search}${location.hash}`;
       try {
         const modal = !matchMedia('(min-width: 73.75rem)').matches;
         const { id, item, heading } = await renderWorkspaceDrawer({ trigger, detail, content, fetchWorkspace: workspace, modal });
-        document.querySelector('.app-shell').classList.add('has-detail'); history.pushState({ drawer: id }, '', trigger.href); bindClose(item); invalidatePalette();
+        document.querySelector('.app-shell').classList.add('has-detail'); history.pushState({ drawer: id, returnPath }, '', trigger.href); bindClose(item); invalidatePalette();
         if (modal) {
-          const controller = createModalController({ panel: detail, backgrounds: [main, sidebar], trigger, initialFocus: () => heading, onClose: () => { document.querySelector('.app-shell').classList.remove('has-detail'); history.pushState({}, '', '/dashboard'); } });
+          const controller = createModalController({ panel: detail, backgrounds: [main, sidebar], trigger, initialFocus: () => heading, onClose: () => { document.querySelector('.app-shell').classList.remove('has-detail'); history.replaceState({}, '', returnPath); } });
           detail.querySelector('#close-detail').addEventListener('click', controller.close); controller.open();
         } else { detail.hidden = false; heading.focus({ preventScroll: true }); }
       } catch (error) { showError(error); }
@@ -3654,7 +3690,33 @@ export function initializeDashboard() {
     });
   }
 
-  addEventListener('popstate', () => location.reload());
+  // Same-origin Dashboard links stay inside the live shell. Modified clicks,
+  // downloads, hash jumps and links outside /dashboard keep normal browser behavior.
+  document.addEventListener('click', (event) => {
+    if (event.defaultPrevented || (event.button !== undefined && event.button !== 0) || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target.closest?.('a[href]');
+    if (!anchor || anchor.hasAttribute('download')) return;
+    const target = anchor.getAttribute('target');
+    if (target && target !== '_self') return;
+    const href = anchor.getAttribute('href');
+    if (!href || href.startsWith('#')) return;
+    const path = dashboardLinkPath(href, location.href);
+    if (!path) return;
+    event.preventDefault();
+    navigateTo(path);
+  });
+  addEventListener(DASHBOARD_NAVIGATION_EVENT, () => {
+    if (paletteDialog.open) closePalette();
+    if (menu.active) menu.close();
+    detail.hidden = true;
+    document.querySelector('.app-shell').classList.remove('has-detail');
+    void load();
+  });
+  addEventListener('popstate', () => {
+    detail.hidden = true;
+    document.querySelector('.app-shell').classList.remove('has-detail');
+    void load();
+  });
   wireOpenWorkspaceSkillSets();
   void load();
 }

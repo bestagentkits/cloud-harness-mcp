@@ -1,4 +1,9 @@
 let csrfToken;
+let navigationSignal;
+
+export function setNavigationSignal(signal) {
+  navigationSignal = signal;
+}
 
 export async function bootstrapSession() {
   const response = await fetch('/dashboard/api/v1/session', { credentials: 'same-origin' });
@@ -10,8 +15,10 @@ export async function api(path, options = {}) {
   const method = options.method ?? 'GET';
   const mutation = !['GET', 'HEAD'].includes(method);
   if (mutation && !csrfToken) await bootstrapSession();
+  const signal = options.signal ?? (mutation ? undefined : navigationSignal);
   const response = await fetch(`/dashboard/api/v1${path}`, {
     ...options,
+    ...(signal ? { signal } : {}),
     credentials: 'same-origin',
     headers: {
       ...(mutation ? { 'content-type': 'application/json', 'x-csrf-token': csrfToken } : {}),

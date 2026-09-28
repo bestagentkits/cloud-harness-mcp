@@ -5,14 +5,24 @@ import { serverVersion } from './version.js';
 
 const directory = fileURLToPath(new URL('../dashboard/', import.meta.url));
 const shellHtml = readFileSync(new URL('../dashboard/index.html', import.meta.url), 'utf8');
+const assetVersion = encodeURIComponent(serverVersion);
+const DASHBOARD_ASSETS = new Set([
+  'dashboard.css',
+  'dashboard-api.js',
+  'dashboard-render.js',
+  'dashboard-pages.js',
+  'dashboard.js'
+]);
 
 /**
- * The server version and the three theme variants are constant for the process,
- * so every shell is built once here and the request path is a map lookup with no
- * string work. `light` and `dark` both derive from `versionedShell`, so neither
- * mutates the other and the map is concurrency-safe.
+ * The server version, immutable asset namespace and the three theme variants are
+ * constant for the process, so every shell is built once here and the request
+ * path is a map lookup with no string work. `light` and `dark` both derive from
+ * `versionedShell`, so neither mutates the other and the map is concurrency-safe.
  */
-const versionedShell = shellHtml.replaceAll('__CH_VERSION__', serverVersion);
+const versionedShell = shellHtml
+  .replaceAll('__CH_VERSION__', serverVersion)
+  .replaceAll('__CH_ASSET_VERSION__', assetVersion);
 const shells = {
   system: versionedShell,
   light: versionedShell.replace('<html lang="en">', '<html lang="en" data-theme="light">'),
@@ -89,12 +99,27 @@ export const DASHBOARD_COMPAT_REDIRECTS = {
 
 export function createDashboardAssetsRouter(): Router {
   const router = Router();
-  const options = { root: directory, headers: { 'Cache-Control': 'no-store' } };
-  router.get('/assets/dashboard.css', (_request, response) => response.sendFile('dashboard.css', options));
-  router.get('/assets/dashboard-api.js', (_request, response) => response.sendFile('dashboard-api.js', options));
-  router.get('/assets/dashboard-render.js', (_request, response) => response.sendFile('dashboard-render.js', options));
-  router.get('/assets/dashboard-pages.js', (_request, response) => response.sendFile('dashboard-pages.js', options));
-  router.get('/assets/dashboard.js', (_request, response) => response.sendFile('dashboard.js', options));
+  const legacyOptions = { root: directory, headers: { 'Cache-Control': 'private, no-cache' } };
+  const immutableOptions = { root: directory, headers: { 'Cache-Control': 'private, max-age=31536000, immutable' } };
+
+  // The shell references assets through a release-version namespace. Relative ESM
+  // imports inherit that namespace, so every module in a release can be cached
+  // indefinitely without serving stale code after the next deploy.
+  router.get('/assets/:version/:asset', (request, response) => {
+    if (request.params.version !== serverVersion || !DASHBOARD_ASSETS.has(request.params.asset)) {
+      response.sendStatus(404);
+      return;
+    }
+    response.sendFile(request.params.asset, immutableOptions);
+  });
+
+  // Keep the old unversioned paths as a revalidating compatibility surface for a
+  // shell that was already open during a rolling deploy. New shells never use it.
+  router.get('/assets/dashboard.css', (_request, response) => response.sendFile('dashboard.css', legacyOptions));
+  router.get('/assets/dashboard-api.js', (_request, response) => response.sendFile('dashboard-api.js', legacyOptions));
+  router.get('/assets/dashboard-render.js', (_request, response) => response.sendFile('dashboard-render.js', legacyOptions));
+  router.get('/assets/dashboard-pages.js', (_request, response) => response.sendFile('dashboard-pages.js', legacyOptions));
+  router.get('/assets/dashboard.js', (_request, response) => response.sendFile('dashboard.js', legacyOptions));
   // Each redirect is registered with a literal destination rather than by looping
   // over the exported table: no request value can reach the destination, and
   // `dashboard-app-mount.test.ts` asserts the behaviour of every table entry, so a

@@ -144,7 +144,7 @@ describe('dashboard page registry', () => {
   });
 
   it('routes the client through the registry rather than a pathname chain', () => {
-    expect(script).toContain('const page = pageForPath(location.pathname);');
+    expect(script).toContain('const page = pageForPath(pathname);');
     expect(script).toContain('PAGE_LOADERS[page.id]');
     expect(script).not.toContain("location.pathname === '/dashboard/models'");
     expect(script).not.toContain("location.pathname === '/dashboard/settings'");

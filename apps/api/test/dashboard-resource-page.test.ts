@@ -5,7 +5,7 @@ import {
   renderGlobalSecrets, renderMcpActions, renderModelsActions, renderPrimaryAction, renderProjectIndex,
   renderResourcePage, renderSecondaryAction
 } from '../dashboard/dashboard-render.js';
-import { dashboardNavigationPath } from '../dashboard/dashboard.js';
+import { dashboardLinkPath, dashboardNavigationPath } from '../dashboard/dashboard.js';
 
 describe('shared resource-page layout', () => {
   it('states one primary action and at most one secondary action per page', () => {
@@ -68,6 +68,25 @@ describe('shared resource-page layout', () => {
     for (const refused of ['https://evil.example/x', '//evil.example', 'javascript:alert(1)', '/other', '', undefined, null]) {
       expect(dashboardNavigationPath(refused), String(refused)).toBe('/dashboard');
     }
+  });
+
+  it('keeps delegated SPA links on the same origin and inside the Dashboard', () => {
+    const current = 'https://harness.example/dashboard/workspaces?q=active';
+    expect(dashboardLinkPath('/dashboard/settings', current)).toBe('/dashboard/settings');
+    expect(dashboardLinkPath('./agents?status=RUNNING', current)).toBe('/dashboard/agents?status=RUNNING');
+    expect(dashboardLinkPath('https://harness.example/dashboard/profile#identity', current)).toBe('/dashboard/profile#identity');
+    for (const refused of ['https://evil.example/dashboard/settings', '/cdn-cgi/access/logout', 'mailto:ops@example.com', 'javascript:alert(1)']) {
+      expect(dashboardLinkPath(refused, current), refused).toBeUndefined();
+    }
+  });
+
+  it('uses same-document history navigation instead of full page reloads', () => {
+    const script = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+    expect(script).toContain("globalThis.history.pushState({}, '', path)");
+    expect(script).toContain("addEventListener('popstate'");
+    expect(script).toContain('setNavigationSignal(controller.signal)');
+    expect(script).not.toContain('location.reload()');
+    expect(script).not.toContain('globalThis.location.href =');
   });
 
   it('binds dialog opening by delegation so the shell action slot is covered', () => {
