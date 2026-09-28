@@ -285,7 +285,15 @@ wired, so the visible one is never the only working one. Owners:
   `index.html`; [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
   owns the shell path allowlist, the legacy redirects and the version injection,
   and `apps/api/test/dashboard-pages.test.ts` asserts the two lists stay in
-  parity.
+  parity. Internal `/dashboard` links use same-document History API navigation;
+  Back/Forward re-runs the route loader without reloading the shell. In-flight GET
+  work from the previous route is aborted and page loads are serialized so rapid
+  navigation cannot render stale data over the newest route. The authenticated
+  shell and assets remain behind the broad pre-auth guard, while the tighter
+  per-principal request budget applies only to `/dashboard/api/v1`. The shell is
+  `no-store`; static assets are served from a server-version path with immutable
+  private caching, with unversioned paths retained only as revalidating rollout
+  compatibility.
 - **Overview and route ownership:** `/dashboard` **is** the Overview, and the
   workspace index lives at `/dashboard/workspaces`; `/dashboard/overview`
   redirects to `/dashboard`. Every other page keeps its existing path so links

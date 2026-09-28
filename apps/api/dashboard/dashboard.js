@@ -2724,6 +2724,8 @@ export function initializeDashboard() {
       });
     }
   }
+  let workspaceDrawerController;
+  let suppressWorkspaceDrawerHistory = false;
   function bindWorkspaceDrawerLinks() {
     for (const link of content.querySelectorAll('a[href^="/dashboard/workspaces/"]')) link.addEventListener('click', async (event) => {
       if (!matchMedia('(min-width: 48rem)').matches) return;
@@ -2734,7 +2736,15 @@ export function initializeDashboard() {
         const { id, item, heading } = await renderWorkspaceDrawer({ trigger, detail, content, fetchWorkspace: workspace, modal });
         document.querySelector('.app-shell').classList.add('has-detail'); history.pushState({ drawer: id, returnPath }, '', trigger.href); bindClose(item); invalidatePalette();
         if (modal) {
-          const controller = createModalController({ panel: detail, backgrounds: [main, sidebar], trigger, initialFocus: () => heading, onClose: () => { document.querySelector('.app-shell').classList.remove('has-detail'); history.replaceState({}, '', returnPath); } });
+          const controller = createModalController({
+            panel: detail, backgrounds: [main, sidebar], trigger, initialFocus: () => heading,
+            onClose: () => {
+              document.querySelector('.app-shell').classList.remove('has-detail');
+              workspaceDrawerController = undefined;
+              if (!suppressWorkspaceDrawerHistory) history.back();
+            }
+          });
+          workspaceDrawerController = controller;
           detail.querySelector('#close-detail').addEventListener('click', controller.close); controller.open();
         } else { detail.hidden = false; heading.focus({ preventScroll: true }); }
       } catch (error) { showError(error); }
@@ -3705,16 +3715,25 @@ export function initializeDashboard() {
     event.preventDefault();
     navigateTo(path);
   });
-  addEventListener(DASHBOARD_NAVIGATION_EVENT, () => {
+  function closeWorkspaceDrawerForNavigation() {
+    if (!workspaceDrawerController?.active) return;
+    suppressWorkspaceDrawerHistory = true;
+    workspaceDrawerController.close();
+    suppressWorkspaceDrawerHistory = false;
+  }
+  function prepareSameDocumentNavigation() {
     if (paletteDialog.open) closePalette();
     if (menu.active) menu.close();
+    closeWorkspaceDrawerForNavigation();
     detail.hidden = true;
     document.querySelector('.app-shell').classList.remove('has-detail');
+  }
+  addEventListener(DASHBOARD_NAVIGATION_EVENT, () => {
+    prepareSameDocumentNavigation();
     void load();
   });
   addEventListener('popstate', () => {
-    detail.hidden = true;
-    document.querySelector('.app-shell').classList.remove('has-detail');
+    prepareSameDocumentNavigation();
     void load();
   });
   wireOpenWorkspaceSkillSets();
