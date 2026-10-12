@@ -1,3 +1,10 @@
+## [0.63.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.0...v0.63.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* **deploy:** build release images before stopping the serving release ([#292](https://github.com/bestagentkits/cloud-harness-mcp/issues/292)) ([639a924](https://github.com/bestagentkits/cloud-harness-mcp/commit/639a9248b14ef7059ce1c9ad2ef38ed308f0a00c))
+
 # [0.63.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.8...v0.63.0) (2026-10-12)
 
 
