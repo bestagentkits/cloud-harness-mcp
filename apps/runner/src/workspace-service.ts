@@ -1259,10 +1259,6 @@ export class WorkspaceService {
   }
 
   /**
-   * The roster the suggestion engine ranks against. It runs in the workspace's own executor, which is
-   * where the skills are, so the control plane reads the inventory instead of guessing at it.
-   */
-  /**
    * The canonical host path of one workspace's checkout, for serving its files without the executor.
    * The workspace is looked up by explicit id within the owner's records only, never as an implicit
    * "active" workspace, and must be ACTIVE with an unexpired lease. A missing, foreign, closing, closed,
@@ -1281,6 +1277,10 @@ export class WorkspaceService {
     }
   }
 
+  /**
+   * The roster the suggestion engine ranks against. It runs in the workspace's own executor, which is
+   * where the skills are, so the control plane reads the inventory instead of guessing at it.
+   */
   async skillRoster(
     principal: PrincipalSelector,
     workspaceId: string
