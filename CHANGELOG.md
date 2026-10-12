@@ -1,3 +1,15 @@
+# [0.63.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.8...v0.63.0) (2026-10-12)
+
+
+### Bug Fixes
+
+* **deploy:** roll back an interrupted deploy on HUP, INT, TERM and PIPE ([#289](https://github.com/bestagentkits/cloud-harness-mcp/issues/289)) ([4c87277](https://github.com/bestagentkits/cloud-harness-mcp/commit/4c87277712c55dbeec9c1d2c5e48e7c5050bd05a)), closes [#262](https://github.com/bestagentkits/cloud-harness-mcp/issues/262)
+
+
+### Features
+
+* **mcp:** serve skills over the SEP-2640 Skills extension, including workspace-bound skills ([#288](https://github.com/bestagentkits/cloud-harness-mcp/issues/288)) ([c972f39](https://github.com/bestagentkits/cloud-harness-mcp/commit/c972f393e7f1fc47bc3531a34641ac1d6f56a732))
+
 ## [0.62.8](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.7...v0.62.8) (2026-09-29)
 
 
