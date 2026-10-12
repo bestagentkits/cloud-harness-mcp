@@ -265,15 +265,20 @@ export function readSkillArchive(archive: Buffer): SkillArchiveEntry[] {
     return data;
   };
 
-  const entries: SkillArchiveEntry[] = [];
+  // Every document is inflated before any is judged, so the archive-wide caps are what an oversized
+  // set of documents reports, whatever order they appear in.
   for (const document of documents) {
-    let documentBytes: Buffer;
     try {
-      documentBytes = inflate(document, SKILL_ARCHIVE_MAX_ENTRY_BYTES);
+      inflate(document, SKILL_ARCHIVE_MAX_ENTRY_BYTES);
     } catch (error) {
       if (error instanceof EntryTooLarge) invalid(`the archive entry ${document.name} is larger than the per-entry limit`);
       throw error;
     }
+  }
+
+  const entries: SkillArchiveEntry[] = [];
+  for (const document of documents) {
+    const documentBytes = inflated.get(document.name) ?? Buffer.alloc(0);
     const instructions = documentBytes.toString('utf8');
     if (instructions.trim() === '') invalid(`the archive entry ${document.name} is empty`);
     if (instructions.length > SKILL_INSTRUCTIONS_MAX_LENGTH) {

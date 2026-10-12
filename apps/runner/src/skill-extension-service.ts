@@ -60,7 +60,8 @@ const MAX_FRONTMATTER_BYTES = 65_536;
 const MAX_TREE_DEPTH = 32;
 const MAX_JSON_DEPTH = 64;
 const BUNDLE_SHA256 = /^[0-9a-f]{64}$/;
-const UTF8 = new TextDecoder('utf-8', { fatal: true });
+// A BOM is kept so returned text re-encodes to exactly the bytes its digest covers.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 const MIME_TYPES: Record<string, string> = {
   '.md': 'text/markdown', '.markdown': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json',
@@ -202,8 +203,8 @@ type ParsedSkillUri = { tier: SkillExtensionTier; name: string; filePath: string
 
 /**
  * Parses a URI this service could have issued, and nothing else. Every file segment must be in the
- * canonical encoding `fileUri` produces, so `%2e%2e`, `..`, empty segments, and alternative spellings of
- * a served file are refused here; the file must then also appear in a freshly built manifest.
+ * canonical encoding `fileUri` produces, so `%2e%2e`, `..`, an encoded `/`, empty segments, and
+ * alternative spellings of a served file are refused here; the file must then also appear in a freshly built manifest.
  */
 function parseSkillUri(uri: string): ParsedSkillUri {
   if (!uri.startsWith(SKILLS_EXTENSION_URI_PREFIX)) return invalid('the URI is not a skill URI this server issues');
@@ -221,7 +222,7 @@ function parseSkillUri(uri: string): ParsedSkillUri {
     } catch {
       return invalid('the skill URI is not correctly encoded');
     }
-    if (value === '' || value === '.' || value === '..' || value.includes('\0') || encodeURIComponent(value) !== segment) {
+    if (value === '' || value === '.' || value === '..' || value.includes('/') || value.includes('\0') || encodeURIComponent(value) !== segment) {
       return invalid('the skill URI does not name a file inside the skill');
     }
     decoded.push(value);
