@@ -198,14 +198,22 @@ It is fail-closed. If the restore itself fails, `contain_failed_release` in
 `compose down --remove-orphans`, deliberately leaving the release **stopped**
 rather than serving a half-promoted one.
 
-It cannot run when the deploy process is killed outright. `deploy-release.sh`
-traps `ERR` plus `HUP`, `INT`, `TERM` and `PIPE`, so a dropped SSH
-connection restores the prior release the same way a failing step does
-(`SIGHUP` on an interactive session, `SIGPIPE` on the first write to the dead
-connection from the non-pty CI session); after a signal the output goes to
-`/var/lib/cloud-harness/deploy-interrupt.log` because the session is gone. A
-`SIGKILL`, host reboot, or killed service still bypasses every in-process trap,
-so check the state and use the manual rollback below after one of those.
+It cannot run when the deploy process is killed outright. The deploy therefore
+never runs inside the caller's session: `cloud-harness-deploy` starts it as the
+transient unit `cloud-harness-deploy-<sha>` and only follows its journal. A
+dropped SSH connection used to stop the release and then lose the deploy,
+because `sudo` (with `use_pty`) answers a dead connection by sending the
+command's process group `SIGHUP`, `SIGTERM` and, two seconds later, `SIGKILL`,
+before the signal trap could start the rollback. Inside the unit the deploy also
+traps `ERR` plus `HUP`, `INT`, `TERM` and `PIPE`, and writes signal-path output
+to `/var/lib/cloud-harness/deploy-interrupt.log`. A `SIGKILL`, host reboot, or
+`systemctl kill` of the deploy unit still bypasses every in-process trap, so
+check the state and use the manual rollback below after one of those.
+
+The deploy script installs itself into `/usr/local/sbin` only after a
+successful promotion, so every deploy runs the script of the release it
+replaces. A change to `deploy-release.sh` takes effect from the deploy after
+the one that ships it.
 
 The deploy compiles the target images while the current release keeps serving,
 then stops it, so the outage lasts for the backup and the cached rebuild and

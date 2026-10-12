@@ -278,6 +278,12 @@ release_sha="$(git rev-parse HEAD)"
 sudo /usr/local/sbin/cloud-harness-deploy "$release_sha"
 ```
 
+The command starts the deploy as the transient systemd unit
+`cloud-harness-deploy-<sha>` and streams its journal, so closing the terminal or
+losing the SSH connection never interrupts a deploy or its rollback. Running the
+same command again while that unit is active re-attaches to it; read a finished
+deploy with `journalctl -u cloud-harness-deploy-<sha>`.
+
 [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
 checks the hardcoded public origin, stops writes, snapshots the state database,
 artifact store, and root-owned configuration/key files as one recovery set,
