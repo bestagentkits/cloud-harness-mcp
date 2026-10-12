@@ -168,21 +168,31 @@ mode and `/mcp-gateway` do not advertise it.
 
 Decisions that are easy to misread:
 
-- **Scope.** Only `built-in` skills and the authenticated principal's own
-  enabled library skills (the `owner` tier) are served, because a caller of
-  this surface is a principal, not a workspace. Workspace and repository skills
-  are not yet supported; reach them through `skills_list`/`skills_read` on an
-  open workspace. The same name in both tiers is served at both tier-qualified
-  URIs; a same-tier conflict is served under neither, as a launch would refuse
+- **Scope.** The `/mcp` root serves only `built-in` skills and the
+  authenticated principal's own enabled library skills (the `owner` tier),
+  because its caller is a principal, not a workspace. The workspace-bound
+  endpoint `/mcp/workspaces/<workspaceId>` additionally serves that one
+  workspace's `workspace` tier (`.cloud-harness/skills`, where workspace
+  toolkits are applied) and `repository` tier (`.agents/skills`,
+  `.codex/skills`, `.claude/skills`), read from its checkout. Every call there
+  re-checks that the workspace belongs to the caller and is `ACTIVE` with an
+  unexpired lease; a missing, foreign, closed, failed, or expired workspace is
+  the same `-32602` "workspace is not available", and reading does not extend
+  the lease. Workspace-tier URIs are refused (`-32602`) on the root endpoint
+  and on any other workspace's endpoint. Precedence follows the executor's
+  resolver: a name present in several tiers is served at each tier-qualified
+  URI, while within a tier a higher-ranked repository root shadows a lower one
+  and a conflict at one rank is served under neither, as a launch would refuse
   it.
 - **Methods.** `skills/list`, `skills/get`, and `resources/read`. Skills are
   discovered only through `skills/list`: `resources/list` and
   `resources/templates/list` answer empty so the declared `resources`
   capability is complete. The optional `resources/directory/read` is not
   implemented, so `directoryRead` is not declared.
-- **Addressing.** `skill://cloud-harness/<tier>/<name>/<file>`; a skill is
-  addressed by its `SKILL.md` URI, and only the canonical encoding of a file
-  this server listed is accepted.
+- **Addressing.** `skill://cloud-harness/<tier>/<name>/<file>` for `built-in`
+  and `owner`, `skill://cloud-harness/<tier>/<workspaceId>/<name>/<file>` for
+  `workspace` and `repository`; a skill is addressed by its `SKILL.md` URI,
+  and only the canonical encoding of a file this server listed is accepted.
 - **Manifests.** Every entry carries the verbatim frontmatter and a complete
   per-file manifest (`uri`, `sha256:<hex>` digest, byte size) computed from the
   bytes on disk. Manifests are cached: an owner skill's for as long as its
@@ -190,8 +200,11 @@ Decisions that are easy to misread:
   are unchanged and for a few seconds at most, so a listing can briefly lag an
   in-place edit of a nested built-in file. A read checks the bytes it returns
   against the manifest and rebuilds the manifest from disk on a mismatch; it
-  never returns bytes that disagree with it. A skill with a symlink, a special
-  file, a file name that is not UTF-8, unusable frontmatter, more than 512
+  never returns bytes that disagree with it. Workspace and repository content
+  is mutable and repository-controlled, so it is never cached: each call
+  hashes it afresh, and a read whose bytes differ from the manifest built in
+  the same call fails as changed rather than returning them. A skill with a
+  symlink, a special file, a file name that is not UTF-8, unusable frontmatter, more than 512
   files or 16 MiB, directories nested deeper than 32 levels, or a resource URI
   longer than 1024 characters is omitted rather than served partially.
 - **Pages.** A `skills/list` page ends early, with a `nextCursor`, before its
@@ -199,8 +212,10 @@ Decisions that are easy to misread:
   is split rather than refused.
 - **Caching.** Results carry `ttlMs: 30000` and `cacheScope: "private"`,
   because the data is per-principal.
-- **Errors.** An invalid, unknown, or unserved URI or cursor is `-32602`;
-  runner or verification failures are `-32603` with a generic message.
+- **Errors.** An invalid, unknown, or unserved URI or cursor, and an
+  unavailable bound workspace, are `-32602`; a file that changed since its
+  manifest was computed is `-32603` asking the client to re-run `skills/get`;
+  other runner or verification failures are `-32603` with a generic message.
 - **Reading is not activation.** These methods reach only read-only runner
   operations. Loading, approving, and activating a skill is the host's
   decision, and running a script still goes through `skills_run` with its

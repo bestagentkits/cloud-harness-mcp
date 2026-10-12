@@ -265,12 +265,22 @@ What is served:
 
 - `built-in` skills and **your own** enabled library skills (the `owner` tier).
   Another user's skills are never visible.
-- Workspace and repository skills, and toolkits passed to `workspace_open`, are
-  not yet served this way. Use `skills_list` / `skills_read` on an open
-  workspace for those.
+- Workspace and repository skills are served only when the client connects to
+  the workspace-bound endpoint `/mcp/workspaces/<workspaceId>` for one of your
+  open workspaces. It adds that workspace's `workspace` tier
+  (`.cloud-harness/skills`, where workspace toolkits passed to `workspace_open`
+  are applied) and `repository` tier (`.agents/skills`, `.codex/skills`,
+  `.claude/skills`), read from its checkout. Repository skills are whatever the
+  repository contains: treat them as untrusted. Once the workspace is closed or
+  its lease expires, the endpoint stops serving it. Owner-scope toolkits
+  passed to `workspace_open` are not served over the extension; use
+  `skills_list` / `skills_read` on the open workspace for those.
 - Each file has a URI of the form
-  `skill://cloud-harness/<tier>/<name>/<file>`. A skill is limited to 512 files
-  and 16 MiB; larger skills are omitted, never served partially.
+  `skill://cloud-harness/<tier>/<name>/<file>`, or
+  `skill://cloud-harness/<tier>/<workspaceId>/<name>/<file>` for the
+  `workspace` and `repository` tiers. A skill is limited to 512 files and
+  16 MiB; larger skills, and any skill containing a symbolic link, are
+  omitted, never served partially.
 - Directory reads (`resources/directory/read`) are not supported; the per-skill
   file manifest lists every file instead. `resources/list` is intentionally
   empty, so discover skills with `skills/list`.

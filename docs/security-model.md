@@ -281,9 +281,27 @@ read-only distribution channel, not an execution or approval path:
   another principal's library is never a candidate. Unauthenticated requests
   are refused before reaching the runner. Built-in skills are served to every
   authenticated principal, as they are mounted into every executor.
+- **Workspace binding.** Workspace and repository skills are served only on
+  the workspace-bound endpoint, and only from the one workspace it names. The
+  runner re-authorizes that workspace on every call by an owner-scoped lookup
+  of its explicit id, never the caller's implicit "active" workspace, and
+  requires it to be `ACTIVE` with an unexpired lease. Missing, foreign, and
+  ended workspaces get one identical error, so the endpoint does not reveal
+  whether another principal's workspace exists, and serving stops on the next
+  call after a close or expiry. A URI naming another workspace is refused.
+- **Repository-controlled bytes.** Workspace and repository skills are read
+  from a checkout the executor can rewrite at any moment, so they are treated
+  as hostile input: a skill root or skill reached through a symlink is
+  ignored, every directory and file must resolve to its own canonical path
+  inside the checkout, each opened file must still be the inode at that path
+  after it is opened, and the same file-count, size, depth, and URI bounds
+  apply. These manifests are never cached, and a read whose bytes differ from
+  a manifest built in the same call, or from a digest the caller pinned, is
+  refused as stale instead of answered.
 - **Untrusted content.** Served frontmatter and files are passed through
   verbatim. Owner and imported skills are owner- or third-party-authored text,
-  so hosts and agents must treat them as untrusted input. Digests prove
+  and repository skills are whatever the checked-out repository contains, so
+  hosts and agents must treat them as untrusted input. Digests prove
   consistency with the manifest, not trust in the content.
 - **Verified reads.** Manifests are hashed from the bytes on disk on every
   call, files are opened without following symlinks, and a read whose bytes no

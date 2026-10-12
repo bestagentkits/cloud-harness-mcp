@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,7 +14,7 @@ import {
 // Lets a test change a file at the exact moment the service opens it, to stage a race deterministically.
 const fsHook = vi.hoisted(() => ({ onOpen: undefined as ((path: string) => void) | undefined }));
 vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const actual = await importOriginal<typeof FsPromises>();
   return {
     ...actual,
     open: async (...args: Parameters<typeof actual.open>) => {
@@ -113,18 +114,19 @@ function setup() {
     return dir;
   };
 
-  const call = async (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, principal = owner) => {
-    const response = await controls.execute(request(operation, input, principal));
-    return response;
+  const call = async (operation: MetadataRunnerRequest['operation'], input: Record<string, unknown>, principal = owner) =>
+    await controls.execute(request(operation, input, principal));
+  const listPage = async (input: Record<string, unknown> = {}, principal = owner) => {
+    const response = await call('skills_ext_list', input, principal);
+    return { skills: (response.data as { skills: SkillEntry[] }).skills, cursor: response.cursor };
   };
-  const list = async (input: Record<string, unknown> = {}, principal = owner) =>
-    ((await call('skills_ext_list', input, principal)).data as { skills: SkillEntry[] }).skills;
+  const list = async (input: Record<string, unknown> = {}, principal = owner) => (await listPage(input, principal)).skills;
   const get = async (uri: string, workspaceId?: string, principal = owner) =>
     ((await call('skills_ext_get', { uri, ...(workspaceId ? { workspaceId } : {}) }, principal)).data as { skill: SkillEntry }).skill;
   const read = async (uri: string, input: { workspaceId?: string; expectedDigest?: string } = {}, principal = owner) =>
     SkillsExtReadDataSchema.parse((await call('skills_ext_read', { uri, ...input }, principal)).data).contents[0];
 
-  return { builtinRoot, openWorkspace, setWorkspace, write, list, get, read };
+  return { builtinRoot, openWorkspace, setWorkspace, write, list, listPage, get, read };
 }
 
 const uris = (skills: SkillEntry[]) => skills.map((skill) => skill.uri);
@@ -317,11 +319,11 @@ describe('skills extension workspace tiers and precedence', () => {
 
     const skills = await list({ workspaceId: WS_A });
     // The conflict at the top rank is not settled by falling back to a lower-ranked root.
-    expect(skills.map((skill) => skill.frontmatter.description)).toEqual(['codex', 'same skill']);
+    expect(skills.map((skill) => skill.frontmatter.description)).toEqual(['same skill']);
   });
 
   it('pages a bound listing across all four tiers', async () => {
-    const { builtinRoot, openWorkspace, write, list } = setup();
+    const { builtinRoot, openWorkspace, write, listPage } = setup();
     const repo = openWorkspace(WS_A);
     write(join(builtinRoot, 'a'), { 'SKILL.md': document('a') });
     write(join(repo, '.cloud-harness/skills/b'), { 'SKILL.md': document('b') });
@@ -330,13 +332,9 @@ describe('skills extension workspace tiers and precedence', () => {
     const seen: string[] = [];
     let cursor: string | undefined;
     do {
-      const response = await (async () => {
-        const skills = await list({ workspaceId: WS_A, limit: 1, ...(cursor ? { cursor } : {}) });
-        return skills;
-      })();
-      seen.push(...uris(response));
-      cursor = undefined;
-      if (seen.length < 3 && response.length > 0) cursor = `${response[0]!.uri.split('/')[3]}:${response[0]!.frontmatter.name}`;
+      const page = await listPage({ workspaceId: WS_A, limit: 1, ...(cursor ? { cursor } : {}) });
+      seen.push(...uris(page.skills));
+      cursor = page.cursor;
     } while (cursor);
     expect(seen).toEqual([
       'skill://cloud-harness/built-in/a/SKILL.md',
