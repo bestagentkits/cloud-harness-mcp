@@ -42,7 +42,22 @@ source deploy/scripts/release-runtime.sh
 
 previous_sha=$(cat "$state/release-current" 2>/dev/null || true)
 backup_dir=
+# `trap ... ERR` never sees a signal, and a dropped SSH session sends SIGHUP, so
+# an interrupted deploy would leave the stopped release down. Signals take the
+# same rollback path; output moves to a host log because the session is gone,
+# and rollback ignores further signals. Defined here (not in the sourced
+# runtime) so the first deploy after this change does not need a newer runtime.
+rollback_on_signal() {
+  local signal_name=$1 exit_code=$2
+  trap '' HUP INT TERM PIPE
+  exec >>"$state/deploy-interrupt.log" 2>&1 || true
+  echo "deployment interrupted by SIG$signal_name; rolling back" >&2
+  rollback "$exit_code"
+}
 trap rollback ERR
+trap 'rollback_on_signal HUP 129' HUP
+trap 'rollback_on_signal INT 130' INT
+trap 'rollback_on_signal TERM 143' TERM
 
 stop_release
 backup_dir="$state/backups/cloud-harness-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -126,5 +141,5 @@ install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-d
 install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
 install -m 0755 deploy/scripts/upgrade-nginx-dashboard.sh /usr/local/sbin/cloud-harness-upgrade-nginx
 printf '%s\n' "$release_sha" > "$state/release-current"
-trap - ERR
+trap - ERR HUP INT TERM
 echo "deployed $release_sha"

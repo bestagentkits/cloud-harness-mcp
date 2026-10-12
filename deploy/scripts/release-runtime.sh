@@ -144,9 +144,10 @@ record_release_config() {
 }
 
 rollback() {
-  local exit_code=$?
+  local exit_code=${1:-$?}
   local rollback_failed=0
   trap - ERR
+  trap '' HUP INT TERM PIPE
   set +e
   stop_release || rollback_failed=1
   if [[ $rollback_failed -eq 0 && -n $previous_sha && $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
