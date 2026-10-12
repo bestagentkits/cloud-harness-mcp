@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -114,6 +114,68 @@ cat "$state/release-config-current/mode"
 `;
   return spawnSync('bash', ['-c', script, 'bash', runtime, directory], { encoding: 'utf8' });
 }
+
+function runLauncher(releaseSha: string, unitStates: string[], unitExit = 0) {
+  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-launcher-'));
+  const trace = join(directory, 'trace');
+  writeFileSync(join(directory, 'states'), unitStates.join('\n') + '\n');
+  const stubs: Record<string, string> = {
+    systemctl: `if [[ $1 == is-active ]]; then
+  state=$(head -n 1 "$STUB_DIR/states"); sed -i 1d "$STUB_DIR/states"; echo "\${state:-inactive}"
+  [[ \${state:-inactive} == active ]]; exit
+fi
+echo "systemctl:$*" >> "$STUB_DIR/trace"`,
+    journalctl: 'echo "journalctl:$*" >> "$STUB_DIR/trace"; exec sleep 30',
+    'systemd-run': `echo "systemd-run:$*" >> "$STUB_DIR/trace"; exit ${unitExit}`,
+    sleep: '[[ $1 == 30 ]] && exec /bin/sleep 30; exit 0'
+  };
+  for (const [name, body] of Object.entries(stubs)) {
+    const path = join(directory, name);
+    writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`);
+    chmodSync(path, 0o755);
+  }
+  const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, STUB_DIR: directory };
+  delete env.CLOUD_HARNESS_DEPLOY_DETACHED;
+  const result = spawnSync('bash', [deployScript, releaseSha], { encoding: 'utf8', env });
+  return { ...result, trace: existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n') : [] };
+}
+
+describe.skipIf(process.platform === 'win32')('detached deployment launcher', () => {
+  const releaseSha = 'b'.repeat(40);
+
+  it('runs the deploy as a transient systemd unit and returns its exit code', () => {
+    const result = runLauncher(releaseSha, ['inactive'], 75);
+    expect(result.status).toBe(75);
+    const run = result.trace.find((line) => line.startsWith('systemd-run:')) ?? '';
+    expect(run).toContain(`--unit=cloud-harness-deploy-${releaseSha}`);
+    expect(run).toContain('--wait');
+    expect(run).toContain('--setenv=CLOUD_HARNESS_DEPLOY_DETACHED=1');
+    expect(run).toMatch(new RegExp(`deploy-release\\.sh ${releaseSha}$`));
+    expect(result.trace).toContain(`systemctl:reset-failed cloud-harness-deploy-${releaseSha}`);
+  });
+
+  it('attaches to a running deploy of the same release instead of starting another', () => {
+    const result = runLauncher(releaseSha, ['active', 'active', 'inactive']);
+    expect(result.trace.some((line) => line.startsWith('systemd-run:'))).toBe(false);
+    expect(result.trace.some((line) => line.startsWith(`journalctl:--unit=cloud-harness-deploy-${releaseSha}`))).toBe(true);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('finished without promoting');
+  });
+
+  it('rejects anything but an exact commit SHA before starting a unit', () => {
+    const result = runLauncher('main', []);
+    expect(result.status).toBe(2);
+    expect(result.trace).toEqual([]);
+  });
+
+  it('keeps every host mutation behind the detached guard', () => {
+    const source = readFileSync(deployScript, 'utf8');
+    const guardEnd = source.indexOf('\nfi\n', source.indexOf('CLOUD_HARNESS_DEPLOY_DETACHED:-} != 1'));
+    expect(guardEnd).toBeGreaterThan(0);
+    expect(source.indexOf('install -d -o root -g root -m 0700 "$state"')).toBeGreaterThan(guardEnd);
+    expect(source.indexOf('flock -n 9')).toBeGreaterThan(guardEnd);
+  });
+});
 
 describe.skipIf(process.platform === 'win32')('release rollback orchestration', () => {
   it('takes a nonblocking host lock before touching the shared deployment checkout', () => {

@@ -27,5 +27,5 @@ curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/mai
 For custom infrastructure with existing NGINX setups:
 
 1. **Bootstrap VPS:** Run `deploy/scripts/bootstrap-vps.sh` to install Docker, systemd unit, and permissions.
-2. **Deploy Release:** Run `deploy/scripts/deploy-release.sh <git-sha>` to build and start production containers.
+2. **Deploy Release:** Run `deploy/scripts/deploy-release.sh <git-sha>` to build and start production containers. The deploy runs as a host systemd unit (`cloud-harness-deploy-<sha>`), so a dropped SSH session does not interrupt it; follow it with `journalctl -fu cloud-harness-deploy-<sha>`.
 3. **Canary Verification:** Run `scripts/deploy-canary.mjs` to execute an automated end-to-end workspace test against the newly deployed instance.

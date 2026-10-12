@@ -2,6 +2,50 @@
 set -euo pipefail
 umask 077
 
+# The deploy runs as a transient systemd service, never inside the caller's
+# session. Under `sudo` (use_pty) a dropped SSH connection makes sudo SIGHUP,
+# SIGTERM and then SIGKILL the whole process group two seconds later, which
+# lands while the signal trap is still waiting for `docker compose` to exit, so
+# the stopped release was never rolled back. The caller now only starts and
+# follows the unit; losing the caller leaves the deploy and its rollback running.
+# A second call for the same SHA attaches to the running unit instead of racing it.
+if [[ ${CLOUD_HARNESS_DEPLOY_DETACHED:-} != 1 ]]; then
+  release_sha=${1:-}
+  if [[ ! $release_sha =~ ^[0-9a-f]{40}$ ]]; then
+    echo "release must be an exact 40-character commit SHA" >&2
+    exit 2
+  fi
+  unit="cloud-harness-deploy-$release_sha"
+  case $(systemctl is-active "$unit" 2>/dev/null || true) in
+    active|activating|deactivating|reloading)
+      echo "attaching to the running deployment $unit" >&2
+      journalctl --unit="$unit" --lines=100 --follow --output=cat &
+      follower=$!
+      while [[ $(systemctl is-active "$unit" 2>/dev/null || true) =~ ^(active|activating|deactivating|reloading)$ ]]; do
+        sleep 2
+      done
+      kill "$follower" 2>/dev/null || true
+      if [[ $(cat /var/lib/cloud-harness/release-current 2>/dev/null || true) == "$release_sha" ]]; then
+        exit 0
+      fi
+      echo "deployment $unit finished without promoting $release_sha" >&2
+      exit 1
+      ;;
+  esac
+  systemctl reset-failed "$unit" 2>/dev/null || true
+  journalctl --unit="$unit" --since="@$(date +%s)" --follow --output=cat &
+  follower=$!
+  status=0
+  systemd-run --quiet --wait --collect --unit="$unit" \
+    --description="Cloud Harness deploy $release_sha" \
+    --setenv=CLOUD_HARNESS_DEPLOY_DETACHED=1 --setenv=HOME=/root \
+    --property=KillMode=mixed --property=TimeoutStopSec=30min \
+    "$(readlink -f "${BASH_SOURCE[0]}")" "$release_sha" || status=$?
+  sleep 1
+  kill "$follower" 2>/dev/null || true
+  exit "$status"
+fi
+
 state=/var/lib/cloud-harness
 install -d -o root -g root -m 0700 "$state"
 deploy_lock="$state/deploy.lock"

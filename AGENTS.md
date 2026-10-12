@@ -77,6 +77,14 @@ instead of copying behavior, defaults, command inventories, or configuration.
   read or print the canary credentials file while diagnosing.
 - The `curl ... port 3100` lines before the canary are the expected readiness
   wait loop, not the failure.
+- `client_loop: send disconnect: Broken pipe` mid-build means the CI session
+  dropped. Check the host with `systemctl status cloud-harness-deploy-<sha>`
+  and its journal, not the CI log: the deploy runs as that systemd unit and
+  keeps going. Never move the deploy back into the SSH/sudo session; sudo kills
+  the process group before any rollback trap can run.
+- The installed `/usr/local/sbin/cloud-harness-deploy` is the previous
+  release's script, so a fix to `deploy-release.sh` protects only later
+  deploys.
 
 ## Change workflow
 
