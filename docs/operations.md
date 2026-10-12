@@ -198,13 +198,15 @@ It is fail-closed. If the restore itself fails, `contain_failed_release` in
 `compose down --remove-orphans`, deliberately leaving the release **stopped**
 rather than serving a half-promoted one.
 
-It does not run when the deploy is interrupted. The automatic path is
-`trap rollback ERR` in `deploy/scripts/deploy-release.sh`, and `ERR` does not
-fire on a signal, so a deploy cut short by a dropped SSH connection (`SIGHUP`)
-stops without restoring anything. The deploy stops the running release before it
-compiles the new images and promotes them only after the canary passes, so an
-interrupted run can leave the release stopped with no automatic recovery. Check
-the state and use the manual rollback below.
+It cannot run when the deploy process is killed outright. `deploy-release.sh`
+traps `ERR` plus `HUP`, `INT`, `TERM` and `PIPE`, so a dropped SSH
+connection restores the prior release the same way a failing step does
+(`SIGHUP` on an interactive session, `SIGPIPE` on the first write to the dead
+connection from the non-pty CI session); after a signal the output goes to
+`/var/lib/cloud-harness/deploy-interrupt.log` because the session is gone. A
+`SIGKILL`, host reboot, or killed service still bypasses every in-process trap,
+and the deploy stops the running release before it compiles the new images, so
+check the state and use the manual rollback below after one of those.
 A manual:
 
 ```bash

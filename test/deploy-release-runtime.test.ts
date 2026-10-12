@@ -39,6 +39,44 @@ exit $?
   return { ...result, trace: readFileSync(trace, 'utf8').trim().split('\n') };
 }
 
+function runSignalRollback(signal: 'HUP' | 'INT' | 'TERM' | 'PIPE', legacyRollback = false) {
+  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-signal-'));
+  const trace = join(directory, 'trace');
+  const source = readFileSync(deployScript, 'utf8');
+  const handler = /^rollback_on_signal\(\) \{\n[\s\S]*?\n\}\n/m.exec(source)?.[0] ?? '';
+  const traps = source.split('\n').filter((line) => /^trap '.+' (ERR|HUP|INT|TERM|PIPE)$/.test(line)).join('\n');
+  const script = `
+set -euo pipefail
+source "$1"
+state="$2"
+previous_sha="$3"
+backup_dir=
+trace_path="$4"
+stop_release() { echo stop >> "$trace_path"; }
+contain_failed_release() { echo contain >> "$trace_path"; }
+git() { echo "git:$*" >> "$trace_path"; }
+install_release_service_files() { :; }
+compose() { echo "compose:$*" >> "$trace_path"; }
+systemctl() { :; }
+wait_ready() { :; }
+verify_running_images() { :; }
+record_images() { :; }
+record_release_config() { :; }
+${legacyRollback ? 'rollback() { local exit_code=$?; trap - ERR; echo legacy-rollback >> "$trace_path"; exit "$exit_code"; }' : ''}
+${handler}
+${traps}
+kill -${signal} $$
+sleep 1
+echo reached-after-signal >> "$trace_path"
+`;
+  const result = spawnSync('bash', ['-c', script, 'bash', runtime, directory, previousSha, trace], { encoding: 'utf8' });
+  return {
+    ...result,
+    trace: readFileSync(trace, 'utf8').trim().split('\n'),
+    log: readFileSync(join(directory, 'deploy-interrupt.log'), 'utf8')
+  };
+}
+
 function runQuiescence(functionName: 'stop_release' | 'contain_failed_release', options: {
   stop?: boolean; down?: boolean; active?: boolean; activeError?: boolean; containers?: boolean; psError?: boolean
 }) {
@@ -86,6 +124,50 @@ describe.skipIf(process.platform === 'win32')('release rollback orchestration', 
     expect(lock).toBeGreaterThan(source.indexOf('exec 9>"$deploy_lock"'));
     expect(source.indexOf('exit 75', lock)).toBeGreaterThan(lock);
     expect(lock).toBeLessThan(source.indexOf('git fetch --force --prune origin main'));
+  });
+
+  it.each([
+    ['HUP', 129],
+    ['INT', 130],
+    ['TERM', 143],
+    ['PIPE', 141]
+  ] as const)('rolls back an interrupted deploy on SIG%s and keeps the signal exit code', (signal, code) => {
+    const result = runSignalRollback(signal);
+    expect(result.status).toBe(code);
+    expect(result.trace[0]).toBe('stop');
+    expect(result.trace).toContain(`git:checkout --detach --force ${previousSha}`);
+    expect(result.trace).not.toContain('reached-after-signal');
+    expect(result.log).toContain(`deployment interrupted by SIG${signal}`);
+  });
+
+  it('keeps the signal exit code and rolls back once with an older runtime', () => {
+    const result = runSignalRollback('HUP', true);
+    expect(result.status).toBe(129);
+    expect(result.trace).toEqual(['legacy-rollback']);
+  });
+
+  it('does not start a second rollback when a signal arrives during an ERR rollback', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-nested-'));
+    const trace = join(directory, 'trace');
+    const source = readFileSync(deployScript, 'utf8');
+    const handler = /^rollback_on_signal\(\) \{\n[\s\S]*?\n\}\n/m.exec(source)?.[0] ?? '';
+    const traps = source.split('\n').filter((line) => /^trap '.+' (ERR|HUP|INT|TERM|PIPE)$/.test(line)).join('\n');
+    const script = `
+set -euo pipefail
+state="$1"; trace_path="$2"
+rollback() { echo rollback >> "$trace_path"; kill -TERM $$; echo after-kill >> "$trace_path"; exit 1; }
+${handler}
+${traps}
+false
+`;
+    const result = spawnSync('bash', ['-c', script, 'bash', directory, trace], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(['rollback', 'after-kill']);
+  });
+
+  it('clears the signal traps only after the release is promoted', () => {
+    const source = readFileSync(deployScript, 'utf8');
+    expect(source.lastIndexOf('trap - ERR HUP INT TERM PIPE')).toBeGreaterThan(source.indexOf('> "$state/release-current"'));
   });
 
   it('moves all promoted image records including network-guard', () => {
