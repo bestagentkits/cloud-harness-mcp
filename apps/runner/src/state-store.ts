@@ -2464,18 +2464,22 @@ export class StateStore {
     };
   }
 
-  listSkillSources(ownerId: string, options: { state?: SkillSourceState; kind?: SkillSourceKind; provider?: SkillProvider; limit?: number } = {}): ReturnType<StateStore['getSkillSource']>[] {
+  /**
+   * `offset` pages the listing; a caller that needs every source reads all pages in one synchronous
+   * pass, so no write can reorder rows between pages. `id` breaks `updated_at` ties so pages never overlap.
+   */
+  listSkillSources(ownerId: string, options: { state?: SkillSourceState; kind?: SkillSourceKind; provider?: SkillProvider; limit?: number; offset?: number } = {}): ReturnType<StateStore['getSkillSource']>[] {
     const rows = this.database.prepare(`SELECT id FROM skill_sources
       WHERE owner_id = ?
         AND (? IS NULL OR state = ?)
         AND (? IS NULL OR kind = ?)
         AND (? IS NULL OR provider = ?)
-      ORDER BY updated_at DESC LIMIT ?`)
+      ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?`)
       .all(ownerId,
         options.state ?? null, options.state ?? null,
         options.kind ?? null, options.kind ?? null,
         options.provider ?? null, options.provider ?? null,
-        Math.min(options.limit ?? 100, 500)) as { id: string }[];
+        Math.min(options.limit ?? 100, 500), Math.max(0, Math.trunc(options.offset ?? 0))) as { id: string }[];
     return rows.map((row) => this.getSkillSource(ownerId, row.id)!).filter(Boolean);
   }
 

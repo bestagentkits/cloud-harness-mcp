@@ -79,11 +79,19 @@ This command reads the configured `API_PUBLIC_HOSTS` allowlist without sourcing
 the runtime file, selects the unique matching TLS server block, and refuses
 ambiguous or pre-existing nonstandard application routing. It backs up the live
 site under `/etc/cloud-harness-mcp/nginx-backups/`, installs the two
-`/dashboard` locations and the exact streaming `/mcp-gateway` and
-`/mcp-api-key` locations when they are missing, validates with `nginx -t`, and
-reloads nginx. Existing routes
+`/dashboard` locations, the exact streaming `/mcp-gateway` and
+`/mcp-api-key` locations, and the streaming `^~ /mcp/workspaces/` prefix
+location for the workspace-bound MCP endpoint when they are missing, validates
+with `nginx -t`, and reloads nginx. Existing routes
 must match the managed blocks exactly after comments and blank lines are
-removed; otherwise the command fails closed without changing the site. A
+removed; otherwise the command fails closed without changing the site, with a
+message naming the route and a route-specific exit status owned by
+[`deploy/scripts/upgrade-nginx-dashboard.sh`](../deploy/scripts/upgrade-nginx-dashboard.sh).
+Exit status `9` means the server block already routes something under `/mcp/`
+(a location or a `proxy_pass` to `127.0.0.1:3100/mcp/`) that is not the managed
+workspace-bound block; reconcile it with
+[`deploy/nginx/cloud-harness-mcp.conf`](../deploy/nginx/cloud-harness-mcp.conf)
+by hand, then rerun the command. A
 failed validation or reload restores the exact backup and attempts to reload
 it. The operation is idempotent. Do not use bootstrap for this upgrade.
 
@@ -155,7 +163,8 @@ and
 [Google](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/google/).
 Then use **Zero Trust → Access controls → Applications → Create new
 application → Self-hosted and private**. Add the selected public hostname
-without a path so the same application protects `/mcp`, `/mcp-gateway`, and
+without a path so the same application protects `/mcp`, the workspace-bound
+`/mcp/workspaces/<workspaceId>` endpoints, `/mcp-gateway`, and
 `/dashboard`, add
 the trusted-operator Allow policy, and select both IdPs under Authentication.
 Edit the application, then enable **Advanced settings → Managed OAuth** as
@@ -298,7 +307,10 @@ that only a newer deploy script installs.
 
 Release deployment installs the fixed `cloud-harness-upgrade-nginx` command.
 In Access mode it invokes the same fail-closed operation before the public
-canary; owner-bearer deployments do not change nginx. If a later manual
+canary; owner-bearer deployments do not change nginx, so an owner-bearer host
+bootstrapped before a route existed (for example the workspace-bound
+`/mcp/workspaces/` prefix) gets it only by running
+`sudo /usr/local/sbin/cloud-harness-upgrade-nginx` after the deploy. If a later manual
 rollback must remove those routes, restore the printed backup path to
 `/etc/nginx/sites-available/cloud-harness-mcp.conf`, run `nginx -t`, and reload
 nginx; normal application rollback can leave the backward-compatible routes in

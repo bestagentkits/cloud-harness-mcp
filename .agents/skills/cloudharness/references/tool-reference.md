@@ -49,6 +49,9 @@ See [repository automation](repository-automation.md).
 `knowledge_list` `knowledge_search` `knowledge_link` `knowledge_unlink` `knowledge_graph`
 `deployments_list` `deployments_run`
 
+Not tools: `skills/list`, `skills/get`, and `resources/read` belong to the
+MCP Skills extension; see [native MCP skills](../SKILL.md#native-mcp-skills).
+
 ## Retained artifacts
 
 See [retained artifacts](artifacts.md).

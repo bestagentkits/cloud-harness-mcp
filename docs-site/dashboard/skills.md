@@ -64,6 +64,24 @@ save path silently drops. Saving publishes a new revision rather than rewriting 
 and a successful save closes the dialog and reports the outcome as a notification. A failure keeps the
 dialog open with your draft intact.
 
+### Uploading a ZIP of skills
+
+**Upload skills** accepts a ZIP archive of skill directories. Every directory that holds a `SKILL.md`
+becomes one skill, and the **whole directory** is imported with it — `references/`, `scripts/`, and
+assets included — so an imported skill is the same skill you zipped. A skill that ships `scripts/` or
+executable files is recorded as carrying executable assets; its scripts still run only through
+`skills_run` with a pinned digest and an owner privilege grant.
+
+- `__MACOSX/` folders, `.DS_Store` files, and files outside any skill directory are ignored.
+- An archive containing a symbolic link or other special entry is refused as a whole, because that
+  entry could not be imported as the bytes it carries.
+- A skill with more than 512 files, more than 16 MiB of content, or directories nested deeper than 32
+  levels is reported as `LIMIT_EXCEEDED` on its own row (the result's `message` names the limit) and
+  not imported; the other skills in the archive are still imported.
+
+The dialog lists one result per skill. Archive-wide limits are covered in
+[Troubleshooting](/troubleshooting).
+
 ## Discovery and imports
 
 The Discover tab searches the local registry and prepares provider imports: the source, the source

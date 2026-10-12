@@ -22,6 +22,16 @@ Cloud Harness MCP is compatible with all leading AI agent environments, IDEs, an
 
 ---
 
+## Native Skills Support
+
+Clients that implement the MCP Skills extension (`io.modelcontextprotocol/skills`, protocol revision
+`2026-07-28`) can discover and read your built-in and owner skills directly from the HTTP `/mcp`
+endpoint. Serving a skill does not activate it: the client decides whether to load it, and any script
+still runs only through `skills_run`. Other clients keep using the `skills_list`, `skills_read`, and
+`skills_run` tools. See [Skills over MCP](/agent-toolkits#skills-over-mcp-native-client-skills).
+
+---
+
 ## Security Best Practices for Clients
 
 1. **Keep Secrets Local:** Never paste API keys into prompts, git commits, or shared project configs.
