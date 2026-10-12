@@ -10,15 +10,24 @@ import { DASHBOARD_RESPONSE_OPERATIONS } from '../src/dashboard-response.js';
 // Every metadata operation now has a mapping branch, so this list is empty on purpose: the totality test
 // below fails if a future operation is added without one, which is the failure mode it exists to close.
 const PENDING_DASHBOARD_MAPPING: readonly string[] = [];
+// Metadata operations that back the Skills over MCP extension; the MCP endpoint serves them, never the dashboard.
+const MCP_ONLY_OPERATIONS: readonly string[] = ['skills_ext_list', 'skills_ext_get', 'skills_ext_read'];
 
 describe('dashboard response totality', () => {
   it('accounts for every metadata operation, either mapped or explicitly pending', () => {
     const mapped = new Set<string>(DASHBOARD_RESPONSE_OPERATIONS);
     const pending = new Set(PENDING_DASHBOARD_MAPPING);
+    const mcpOnly = new Set(MCP_ONLY_OPERATIONS);
     const unaccounted = MetadataRunnerOperationSchema.options.filter(
-      (operation) => !mapped.has(operation) && !pending.has(operation)
+      (operation) => !mapped.has(operation) && !pending.has(operation) && !mcpOnly.has(operation)
     );
     expect(unaccounted).toEqual([]);
+  });
+
+  it('keeps MCP-only operations real and out of the dashboard mapping', () => {
+    const real = new Set<string>(MetadataRunnerOperationSchema.options);
+    const mapped = new Set<string>(DASHBOARD_RESPONSE_OPERATIONS);
+    expect(MCP_ONLY_OPERATIONS.filter((operation) => !real.has(operation) || mapped.has(operation))).toEqual([]);
   });
 
   it('never lists a pending operation that is already mapped', () => {

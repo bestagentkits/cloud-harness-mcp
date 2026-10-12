@@ -9,8 +9,9 @@ import {
 } from '@cloud-harness/contracts';
 import { principalFromAuthInfo } from './auth.js';
 import { RunnerClient } from './runner-client.js';
-import type { OperationBackend } from './operation-backend.js';
+import type { OperationBackend, SkillsExtensionOperation } from './operation-backend.js';
 import { formatToolResultText } from './mcp-response-text.js';
+import { registerSkillsExtension, supportsSkillsExtension } from './skills-extension.js';
 
 export function resultToMcp(result: ToolResult): CallToolResult {
   return {
@@ -27,16 +28,23 @@ export class RunnerOperationBackend implements OperationBackend {
   ) {}
 
   async call(operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
-    if (!this.principal) {
-      return {
-        ok: false,
-        message: 'Authentication context unavailable',
-        error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication context unavailable', retryable: false },
-        truncated: false
-      };
-    }
+    if (!this.principal) return unauthenticated();
     return await this.client.call(operation, input, this.principal, signal);
   }
+
+  async callSkillsExtension(operation: SkillsExtensionOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    if (!this.principal) return unauthenticated();
+    return await this.client.callInternal(operation, input, this.principal, signal);
+  }
+}
+
+function unauthenticated(): RunnerResponse {
+  return {
+    ok: false,
+    message: 'Authentication context unavailable',
+    error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication context unavailable', retryable: false },
+    truncated: false
+  };
 }
 
 const DEFAULT_INSTRUCTIONS = 'Open an owner-bound workspace first, pass its opaque workspaceId to later tools, and close it when finished. '
@@ -84,6 +92,7 @@ export function createCloudHarnessServer(
       }
     );
   }
+  if (supportsSkillsExtension(backend)) registerSkillsExtension(server, backend);
   return server;
 }
 

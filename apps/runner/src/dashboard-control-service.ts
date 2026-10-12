@@ -11,6 +11,7 @@ import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { readSkillArchive } from './skill-archive.js';
+import { SkillExtensionService } from './skill-extension-service.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
 import { compareSemver, isSemver, parseSkillVersion, trustedSkillVersion } from './skill-version.js';
 import { IntegrationCredentialRepository } from './integration-credential-repository.js';
@@ -243,6 +244,17 @@ export class DashboardControlService {
   }
 
   private integrationCredentialRepository?: IntegrationCredentialRepository;
+  private skillExtensionService?: SkillExtensionService;
+
+  /** Serves built-in skills and the calling principal's own owner skills through the skills extension. */
+  private skillExtension(): SkillExtensionService {
+    this.skillExtensionService ??= new SkillExtensionService({
+      builtinSkillsRoot: this.config.builtinSkillsRoot,
+      store: this.principals,
+      bundlePath: (ownerId, bundleSha256) => this.workspaces.toolkitCacheManager.bundlePath(ownerId, bundleSha256)
+    });
+    return this.skillExtensionService;
+  }
 
   /**
    * Integration credentials are stored with the same keyring the provider credentials use, so a runner
@@ -684,6 +696,12 @@ export class DashboardControlService {
           return ok('MCP traces listed', { traces: page.traces }, page.cursor);
         }
         case 'skill_list': return ok('Skills listed', { skills: this.principals.listSkillSources(principalId) });
+        case 'skills_ext_list': {
+          const page = this.skillExtension().list(principalId, parsed.input);
+          return ok('Skills listed', { skills: page.skills }, page.nextCursor);
+        }
+        case 'skills_ext_get': return ok('Skill read', this.skillExtension().get(principalId, parsed.input.uri));
+        case 'skills_ext_read': return ok('Skill resource read', this.skillExtension().read(principalId, parsed.input.uri));
         case 'skill_get': return ok('Skill read', required(this.principals.getSkillSource(principalId, parsed.input.skillId), `Skill ${parsed.input.skillId} was not found`));
         case 'skill_revision_list': return ok('Skill revisions listed', { revisions: this.principals.listSkillRevisions(principalId, parsed.input.skillId, parsed.input.limit) });
         case 'skill_revision_get': return ok('Skill revision read', required(
@@ -832,12 +850,19 @@ export class DashboardControlService {
 
           const results: { slug: string; ok: boolean; skillId?: string; error?: string }[] = [];
           for (const entry of skills) {
+            // A skill over a per-skill bound is refused on its own rather than published without the
+            // files that did not fit.
+            if (entry.rejection !== undefined) {
+              results.push({ slug: entry.slug, ok: false, error: 'LIMIT_EXCEEDED' });
+              continue;
+            }
             try {
               // The package is published before the source row, the order the single-skill path uses:
-              // a row naming bytes that do not exist would resolve and then fail at launch.
-              const published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, {
-                [`skills/${entry.slug}/SKILL.md`]: entry.instructions
-              });
+              // a row naming bytes that do not exist would resolve and then fail at launch. The whole
+              // skill directory is published, so references, scripts, and assets survive the import.
+              const published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, Object.fromEntries(
+                Object.entries(entry.files).map(([relative, bytes]) => [`skills/${entry.slug}/${relative}`, bytes])
+              ));
               const created = this.principals.createSkillSource({
                 ownerId: principalId,
                 slug: entry.slug,
@@ -849,7 +874,7 @@ export class DashboardControlService {
                 revision: {
                   bundleSha256: published.bundleSha256,
                   contentSha256: createHash('sha256').update(entry.instructions).digest('hex'),
-                  hasExecutableAssets: false,
+                  hasExecutableAssets: entry.hasExecutableAssets,
                   origin: 'edit',
                   version: trustedSkillVersion(entry.instructions) ?? null
                 }
