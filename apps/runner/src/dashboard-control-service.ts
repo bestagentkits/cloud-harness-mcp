@@ -669,8 +669,9 @@ export class DashboardControlService {
           return ok('MCP OAuth flow started', begun);
         }
         case 'mcp_oauth_flow_consume': {
-          this.requireMcpOAuthServer(principalId, parsed.input.serverId);
-          const flow = this.mcpOAuthCall(() => this.oauthStore().consumeFlow(principalId, parsed.input.serverId, parsed.input.stateHash));
+          const flow = this.mcpOAuthCall(() => this.oauthStore().consumeFlow(principalId, parsed.input.stateHash));
+          // The server may have been deleted or OAuth disabled while the browser was away.
+          this.requireMcpOAuthServer(principalId, flow.serverId);
           return ok('MCP OAuth flow consumed', flow);
         }
         case 'mcp_oauth_grant_load': {
@@ -691,6 +692,8 @@ export class DashboardControlService {
         }
         case 'mcp_oauth_disconnect': {
           this.requireMcpOAuthServer(principalId, parsed.input.serverId);
+          const grant = this.oauthStore().loadGrantIssuer(principalId, parsed.input.serverId);
+          if (grant && parsed.input.revocation) this.oauthStore().recordRevocationAttempt(principalId, parsed.input.serverId, grant, parsed.input.revocation);
           return ok('MCP OAuth disconnected', { disconnected: this.oauthStore().disconnect(principalId, parsed.input.serverId) });
         }
         case 'mcp_gateway_catalog': return ok('MCP gateway catalog', this.mcp().catalog(principalId, {

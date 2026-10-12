@@ -366,8 +366,8 @@ const metadataInputs = {
     scopes: McpGatewayOAuthScopesSchema.nullable().default(null),
     blob: z.string().min(2).max(131_072)
   }).strict(),
+  // The flow row, not the browser, names the server: the callback only carries `state`.
   mcp_oauth_flow_consume: z.object({
-    serverId: internalId('mcps'),
     stateHash: z.string().regex(/^[0-9a-f]{64}$/)
   }).strict(),
   mcp_oauth_grant_load: z.object({ serverId: internalId('mcps') }).strict(),
@@ -387,7 +387,10 @@ const metadataInputs = {
     state: z.enum(['authorizing', 'reauthorization_required', 'error']),
     error: z.string().max(2_000).nullable().default(null)
   }).strict(),
-  mcp_oauth_disconnect: z.object({ serverId: internalId('mcps') }).strict(),
+  mcp_oauth_disconnect: z.object({
+    serverId: internalId('mcps'),
+    revocation: z.enum(['attempted', 'unsupported', 'failed']).nullable().default(null)
+  }).strict(),
   mcp_gateway_trace_append: z.object({
     serverId: internalId('mcps').nullable().default(null),
     serverName: McpGatewayServerNameSchema,

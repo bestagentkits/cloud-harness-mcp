@@ -75,13 +75,13 @@ describe('McpOAuthStore', () => {
   it('consumes a flow exactly once and treats foreign principals or servers as unknown', () => {
     const { store, a, b, server } = setup();
     store.beginFlow(a, server.id, { stateHash: hash('a'), expectedIssuer: 'https://as.example.com', scopes: null, blob: '{"verifier":"v"}' });
-    expect(() => store.consumeFlow(b, server.id, hash('a'))).toThrow(/unknown/);
-    expect(() => store.consumeFlow(a, 'srv_other', hash('a'))).toThrow(/unknown/);
-    expect(() => store.consumeFlow(a, server.id, hash('z'))).toThrow(/unknown/);
+    expect(() => store.consumeFlow(b, hash('a'))).toThrow(/unknown/);
+    expect(() => store.consumeFlow(a, hash('z'))).toThrow(/unknown/);
+    expect(() => store.consumeFlow(a, hash('a'))).not.toThrow();
 
     store.beginFlow(a, server.id, { stateHash: hash('c'), expectedIssuer: 'https://as.example.com', scopes: 'read', blob: '{"verifier":"v3"}' });
-    expect(store.consumeFlow(a, server.id, hash('c'))).toEqual({ blob: '{"verifier":"v3"}', expectedIssuer: 'https://as.example.com', scopes: 'read' });
-    expect(() => store.consumeFlow(a, server.id, hash('c'))).toThrow(McpOAuthStoreError);
+    expect(store.consumeFlow(a, hash('c'))).toEqual({ serverId: server.id, blob: '{"verifier":"v3"}', expectedIssuer: 'https://as.example.com', scopes: 'read' });
+    expect(() => store.consumeFlow(a, hash('c'))).toThrow(McpOAuthStoreError);
   });
 
   it('expires flows, supersedes an earlier flow, and reports authorizing only while pending', () => {
@@ -91,10 +91,10 @@ describe('McpOAuthStore', () => {
     store.beginFlow(a, server.id, { stateHash: hash('a'), expectedIssuer: 'https://as.example.com', scopes: null, blob: '{}' });
     store.beginFlow(a, server.id, { stateHash: hash('b'), expectedIssuer: 'https://as.example.com', scopes: null, blob: '{}' });
     expect(store.status(a, server.id, options).state).toBe('authorizing');
-    expect(() => store.consumeFlow(a, server.id, hash('a'))).toThrow(/unknown/);
+    expect(() => store.consumeFlow(a, hash('a'))).toThrow(/unknown/);
     advance(MCP_OAUTH_FLOW_TTL_MS);
     expect(store.status(a, server.id, options).state).toBe('authorization_required');
-    expect(() => store.consumeFlow(a, server.id, hash('b'))).toThrow(/expired/);
+    expect(() => store.consumeFlow(a, hash('b'))).toThrow(/expired/);
     expect(store.status(a, server.id, { ...options, configured: false }).state).toBe('not_configured');
   });
 

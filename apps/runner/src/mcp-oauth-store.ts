@@ -80,6 +80,7 @@ export type McpOAuthGrantRecord = {
 };
 
 export type McpOAuthFlowRecord = {
+  serverId: string;
   blob: string;
   expectedIssuer: string;
   scopes: string | null;
@@ -196,27 +197,32 @@ export class McpOAuthStore {
   }
 
   /**
-   * Single use: the row is deleted in the same transaction that reads it. A `state` that
-   * does not match this principal and server is indistinguishable from an unknown one and
-   * leaves the owner's flow untouched, so another principal cannot burn it. Expired
-   * flows are swept on the next begin.
+   * Single use: the row is deleted in the same transaction that reads it. The flow, not the
+   * browser, names the server. A `state` that belongs to another principal is
+   * indistinguishable from an unknown one and leaves the owner's flow untouched, so another
+   * principal cannot burn it. Expired flows are swept on the next begin.
    */
-  consumeFlow(principalId: string, serverId: string, stateHash: string): McpOAuthFlowRecord {
+  consumeFlow(principalId: string, stateHash: string): McpOAuthFlowRecord {
     return transaction(this.database, () => {
       const now = this.now();
       const row = this.database.prepare('SELECT * FROM mcp_oauth_flows WHERE state_hash = ?').get(stateHash) as FlowRow | undefined;
-      if (!row) throw new McpOAuthStoreError('NOT_FOUND', 'authorization flow is unknown or already used');
-      this.database.prepare('DELETE FROM mcp_oauth_flows WHERE id = ?').run(row.id);
-      if (row.principal_id !== principalId || row.server_id !== serverId) {
+      if (!row || row.principal_id !== principalId) {
         throw new McpOAuthStoreError('NOT_FOUND', 'authorization flow is unknown or already used');
       }
+      this.database.prepare('DELETE FROM mcp_oauth_flows WHERE id = ?').run(row.id);
       if (row.expires_at <= now) throw new McpOAuthStoreError('EXPIRED', 'authorization flow expired');
       return {
+        serverId: row.server_id,
         blob: this.open(MCP_OAUTH_FLOW_CONTEXT, principalId, row.id, 1, row),
         expectedIssuer: row.expected_issuer,
         scopes: row.scopes
       };
     });
+  }
+
+  /** Issuer of the stored grant without decrypting it, for audit records. */
+  loadGrantIssuer(principalId: string, serverId: string): string | undefined {
+    return this.grantRow(principalId, serverId)?.issuer;
   }
 
   loadGrant(principalId: string, serverId: string): McpOAuthGrantRecord | undefined {

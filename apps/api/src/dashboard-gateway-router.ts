@@ -1,6 +1,7 @@
 import type { NextFunction, Response, Router } from 'express';
 import { z } from 'zod';
-import type { ApiConfig, RunnerPrincipalSelector, ToolResult } from '@cloud-harness/contracts';
+import { HarnessError, type ApiConfig, type RunnerPrincipalSelector, type ToolResult } from '@cloud-harness/contracts';
+import { principalFromAuthInfo } from './auth.js';
 import type { DashboardRequest } from './dashboard-types.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
 
@@ -29,6 +30,8 @@ function gatewayPublicUrl(request: DashboardRequest, config: ApiConfig): string 
 function probeFailureStatus(code: string): number {
   if (code === 'NOT_FOUND' || code === 'FORBIDDEN') return 404;
   if (code === 'INVALID_INPUT') return 400;
+  // Not 401: the dashboard treats 401 as an ended session.
+  if (code === 'AUTHORIZATION_REQUIRED') return 409;
   if (code === 'TIMEOUT') return 504;
   return 503;
 }
@@ -66,6 +69,76 @@ export function registerDashboardGatewayRoutes(
         authMode: config.authMode ?? 'owner-bearer'
       }
     });
+  });
+
+  const oauth = gateway.oauth;
+  const oauthFailure = (error: unknown, response: Response): boolean => {
+    if (!(error instanceof HarnessError)) return false;
+    response.status(error.code === 'UNAVAILABLE' ? 503 : probeFailureStatus(error.code)).json({ error: error.code.toLowerCase(), message: error.message });
+    return true;
+  };
+  const unavailable = (response: Response): void => {
+    response.status(503).json({ error: 'unavailable', message: 'MCP OAuth is not available on this deployment.' });
+  };
+
+  router.get('/api/v1/mcp-servers/:serverId/oauth', async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!oauth) return unavailable(response);
+      response.json({ data: { status: await oauth.status(selected, mcpServerId.parse(request.params.serverId)) } });
+    } catch (error) { if (!oauthFailure(error, response)) next(error); }
+  });
+
+  router.post('/api/v1/mcp-servers/:serverId/oauth/start', async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!oauth) return unavailable(response);
+      const started = await oauth.start(selected, mcpServerId.parse(request.params.serverId));
+      gateway.invalidateCatalog(selected);
+      response.json({ data: { authorizationUrl: started.authorizationUrl } });
+    } catch (error) { if (!oauthFailure(error, response)) next(error); }
+  });
+
+  router.post('/api/v1/mcp-servers/:serverId/oauth/disconnect', async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+    try {
+      const selected = principal(request, response);
+      if (!selected) return;
+      if (!oauth) return unavailable(response);
+      const result = await oauth.disconnect(selected, mcpServerId.parse(request.params.serverId));
+      gateway.invalidateCatalog(selected);
+      response.json({ data: result });
+    } catch (error) { if (!oauthFailure(error, response)) next(error); }
+  });
+
+  /**
+   * Browser callback. The only trusted input is the one-time `state`; the redirect target is
+   * built here from the server id the stored flow named, never from a query parameter.
+   */
+  router.get('/mcp-oauth/callback', async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+    try {
+      const selected = principalFromAuthInfo(request.auth);
+      if (!selected || selected.kind !== 'external') {
+        response.redirect(303, '/dashboard/mcp-servers');
+        return;
+      }
+      const text = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
+      const outcome = oauth
+        ? await oauth.complete(selected, {
+          ...(text(request.query.code) ? { code: text(request.query.code)! } : {}),
+          ...(text(request.query.state) ? { state: text(request.query.state)! } : {}),
+          ...(text(request.query.iss) ? { iss: text(request.query.iss)! } : {}),
+          ...(text(request.query.error) ? { error: text(request.query.error)! } : {})
+        })
+        : { serverId: null, outcome: 'error' as const, reason: 'unavailable' as const };
+      if (outcome.outcome === 'connected') gateway.invalidateCatalog(selected);
+      const base = outcome.serverId && mcpServerId.safeParse(outcome.serverId).success
+        ? `/dashboard/mcp-servers/${outcome.serverId}`
+        : '/dashboard/mcp-servers';
+      const status = outcome.outcome === 'connected' ? 'oauth=connected' : `oauth=error&reason=${outcome.reason}`;
+      response.redirect(303, `${base}?${status}`);
+    } catch (error) { next(error); }
   });
 
   function probe(kind: 'test' | 'refresh') {

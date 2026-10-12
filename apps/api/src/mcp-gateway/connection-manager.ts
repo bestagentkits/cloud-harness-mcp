@@ -12,10 +12,17 @@ import {
 } from '@modelcontextprotocol/client';
 import { HarnessError, type McpGatewayServerView, type McpGatewayTransport } from '@cloud-harness/contracts';
 import { serverVersion } from '../version.js';
+import { createOAuthFetch } from './oauth-fetch.js';
+import {
+  guardBackgroundFetch,
+  isAuthorizationRequired,
+  type DownstreamOAuthProvider
+} from './oauth-provider.js';
 import {
   collectErrorMessages,
   guardedFetchOptions,
   headerFingerprint,
+  isConfiguredEndpoint,
   type GatewayFetchLike
 } from './redaction.js';
 import {
@@ -38,6 +45,9 @@ import {
  *   must not make `execute` depend on whether the connection is warm.
  */
 
+export const AUTHORIZATION_REQUIRED_MESSAGE =
+  'the downstream MCP server requires OAuth authorization; connect it from the dashboard';
+
 export const REDIRECT_ERROR_MESSAGE =
   'downstream MCP endpoint returned an HTTP redirect; HTTP redirects are refused, configure the final URL';
 
@@ -58,6 +68,7 @@ type ConnectionEntry = {
   agent: Agent;
   generation: number;
   headersFingerprint: string;
+  oauth: DownstreamOAuthProvider | undefined;
   connectedAt: number;
   lastUsedAt: number;
   state: 'connected' | 'disconnected';
@@ -208,10 +219,11 @@ export class GatewayConnectionManager {
     server: McpGatewayServerView,
     headers: Record<string, string>,
     fn: (client: Client) => Promise<T>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    oauth?: DownstreamOAuthProvider
   ): Promise<T> {
     if (this.closed) throw this.closedError;
-    const fingerprint = headerFingerprint(headers);
+    const fingerprint = `${headerFingerprint(headers)}${oauth ? ':oauth' : ''}`;
     const release = await this.acquireSlot(server.id);
     try {
       const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
@@ -221,7 +233,7 @@ export class GatewayConnectionManager {
 
       let entry: ConnectionEntry;
       try {
-        entry = await this.raceAbort(this.ensureEntry(server, headers, fingerprint, combined), combined, timeoutSignal, signal);
+        entry = await this.raceAbort(this.ensureEntry(server, headers, fingerprint, combined, oauth), combined, timeoutSignal, signal);
       } catch (error) {
         throw this.classifyFailure(server.id, error, timeoutSignal, signal);
       }
@@ -320,6 +332,10 @@ export class GatewayConnectionManager {
       // The caller's cancellation must not disturb a shared, healthy connection.
       return new HarnessError('CANCELLED', 'the downstream MCP call was cancelled', 499, false);
     }
+    if (isAuthorizationRequired(error)) {
+      this.markFailed(serverId);
+      return new HarnessError('AUTHORIZATION_REQUIRED', AUTHORIZATION_REQUIRED_MESSAGE, 401, false);
+    }
     const redirect = redirectFailure(error);
     if (redirect) {
       this.markFailed(serverId);
@@ -363,7 +379,8 @@ export class GatewayConnectionManager {
     server: McpGatewayServerView,
     headers: Record<string, string>,
     fingerprint: string,
-    signal: AbortSignal
+    signal: AbortSignal,
+    oauth?: DownstreamOAuthProvider
   ): Promise<ConnectionEntry> {
     const existing = this.entries.get(server.id);
     if (
@@ -383,7 +400,7 @@ export class GatewayConnectionManager {
       await delay(BACKOFF_BASE_MS + Math.floor(Math.random() * BACKOFF_JITTER_MS));
     }
     this.attempted.add(server.id);
-    const entry = await this.openConnection(server, headers, fingerprint, signal);
+    const entry = await this.openConnection(server, headers, fingerprint, signal, oauth);
     // The manager may have shut down while the connect was in flight. `closeAll`
     // only closes entries that were already registered, so a late entry must be
     // discarded here or it would outlive the shutdown.
@@ -400,12 +417,18 @@ export class GatewayConnectionManager {
     server: McpGatewayServerView,
     headers: Record<string, string>,
     fingerprint: string,
-    signal: AbortSignal
+    signal: AbortSignal,
+    oauth?: DownstreamOAuthProvider
   ): Promise<ConnectionEntry> {
+    if (oauth && server.transport !== 'streamable-http') {
+      throw new HarnessError('INVALID_INPUT', 'OAuth is supported only for streamable-http MCP servers', 400, false);
+    }
     const endpoint = await assertGatewayEndpoint(server.endpoint, this.policy);
     const agent = new Agent({ connect: { lookup: createPinnedLookup(endpoint.addresses) } });
     const fetcher = this.createFetcher(endpoint.url, headers, agent);
-    const transport = this.createTransport(server.transport, endpoint.url, fetcher);
+    const transport = oauth
+      ? this.createOAuthTransport(endpoint.url, fetcher, oauth)
+      : this.createTransport(server.transport, endpoint.url, fetcher);
     const client = new Client(
       { name: 'cloud-harness-mcp-gateway', version: serverVersion },
       {
@@ -437,6 +460,7 @@ export class GatewayConnectionManager {
       agent,
       generation: server.generation,
       headersFingerprint: fingerprint,
+      oauth,
       connectedAt: now,
       lastUsedAt: now,
       state: 'connected'
@@ -444,11 +468,11 @@ export class GatewayConnectionManager {
   }
 
   /**
-   * Invariant: a transport option must never carry `requestInit` or `authProvider`.
-   * `guardedFetchOptions` is the only credential attachment point, and a request
-   * URL must equal the configured endpoint's origin+pathname to receive headers.
-   * An auth provider or a request init here would let the SDK attach or replay
-   * credentials outside that guard.
+   * Invariant: a transport option must never carry `requestInit`, and the only
+   * `authProvider` allowed is the audited downstream OAuth provider handed to
+   * `createOAuthTransport`. `guardedFetchOptions` remains the only attachment point for
+   * static header credentials: a request URL must equal the configured endpoint's
+   * origin+pathname to receive them.
    */
   private createTransport(transport: McpGatewayTransport, url: URL, fetcher: GatewayFetchLike): Transport {
     const value = fetcher as unknown as FetchLike;
@@ -459,6 +483,25 @@ export class GatewayConnectionManager {
       });
     }
     return new StreamableHTTPClientTransport(url, { fetch: value });
+  }
+
+  /**
+   * Streamable HTTP with the Cloud Harness OAuth provider. A fetch router sends the
+   * configured MCP endpoint through the guarded, pinned fetcher (static headers plus the
+   * SDK's bearer token) and every other request (discovery, registration, token,
+   * revocation) through the per-request validated OAuth fetch, which carries no custom
+   * header. The SDK attaches the bearer token only to requests for the transport URL.
+   */
+  private createOAuthTransport(url: URL, mcpFetcher: GatewayFetchLike, oauth: DownstreamOAuthProvider): Transport {
+    const oauthFetch = guardBackgroundFetch(oauth, createOAuthFetch({
+      timeoutMs: this.timeoutMs,
+      maxResponseBytes: this.maxResponseBytes,
+      allowInsecureHttp: this.policy.allowInsecureHttp,
+      allowPrivateEndpoints: this.policy.allowPrivateEndpoints,
+      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {})
+    }));
+    const router: GatewayFetchLike = (input, init) => (isConfiguredEndpoint(input, url) ? mcpFetcher(input, init) : oauthFetch(input, init));
+    return new StreamableHTTPClientTransport(url, { fetch: router as unknown as FetchLike, authProvider: oauth });
   }
 
   private createFetcher(endpoint: URL, headers: Record<string, string>, agent: Agent): GatewayFetchLike {

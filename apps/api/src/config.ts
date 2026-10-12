@@ -35,7 +35,9 @@ export function loadApiConfig(): ApiConfig {
     mcpGatewayMaxTraceRows: environment('MCP_GATEWAY_MAX_TRACE_ROWS'),
     mcpGatewayMaxConnections: environment('MCP_GATEWAY_MAX_CONNECTIONS'),
     mcpGatewayAllowInsecureHttp: environment('MCP_GATEWAY_ALLOW_INSECURE_HTTP'),
-    mcpGatewayAllowPrivateEndpoints: environment('MCP_GATEWAY_ALLOW_PRIVATE_ENDPOINTS')
+    mcpGatewayAllowPrivateEndpoints: environment('MCP_GATEWAY_ALLOW_PRIVATE_ENDPOINTS'),
+    mcpDownstreamOauthClientMetadataUrl: environment('MCP_DOWNSTREAM_OAUTH_CLIENT_METADATA_URL'),
+    mcpDownstreamOauthRedirectUrl: environment('MCP_DOWNSTREAM_OAUTH_REDIRECT_URL')
     ,apiKeyAuthEnabled: environment('API_KEY_AUTH_ENABLED'),
     apiKeyGatewayAccessAudience: environment('API_KEY_GATEWAY_ACCESS_AUDIENCE'),
     apiKeyGatewayServiceSubject: environment('API_KEY_GATEWAY_SERVICE_SUBJECT'),
