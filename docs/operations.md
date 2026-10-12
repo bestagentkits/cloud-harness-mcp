@@ -199,9 +199,10 @@ It is fail-closed. If the restore itself fails, `contain_failed_release` in
 rather than serving a half-promoted one.
 
 It cannot run when the deploy process is killed outright. `deploy-release.sh`
-traps `ERR` plus `HUP`, `INT` and `TERM`, so a dropped SSH connection
-(`SIGHUP`) or a cancelled run restores the prior release the same way a failing
-step does; after a signal the output goes to
+traps `ERR` plus `HUP`, `INT`, `TERM` and `PIPE`, so a dropped SSH
+connection restores the prior release the same way a failing step does
+(`SIGHUP` on an interactive session, `SIGPIPE` on the first write to the dead
+connection from the non-pty CI session); after a signal the output goes to
 `/var/lib/cloud-harness/deploy-interrupt.log` because the session is gone. A
 `SIGKILL`, host reboot, or killed service still bypasses every in-process trap,
 and the deploy stops the running release before it compiles the new images, so

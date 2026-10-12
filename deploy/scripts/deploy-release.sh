@@ -45,19 +45,23 @@ backup_dir=
 # `trap ... ERR` never sees a signal, and a dropped SSH session sends SIGHUP, so
 # an interrupted deploy would leave the stopped release down. Signals take the
 # same rollback path; output moves to a host log because the session is gone,
-# and rollback ignores further signals. Defined here (not in the sourced
-# runtime) so the first deploy after this change does not need a newer runtime.
+# and rollback ignores further signals. Defined here, and masking signals
+# itself, because rollback-release.sh and a deploy of an older SHA source an
+# older runtime whose rollback() neither takes an exit code nor masks signals.
+# A non-pty SSH session (the CI deploy path) gets no SIGHUP; the first write to
+# the dead connection raises SIGPIPE, which takes the same path.
 rollback_on_signal() {
   local signal_name=$1 exit_code=$2
   trap '' HUP INT TERM PIPE
   exec >>"$state/deploy-interrupt.log" 2>&1 || true
   echo "deployment interrupted by SIG$signal_name; rolling back" >&2
-  rollback "$exit_code"
+  (exit "$exit_code") || rollback "$exit_code"
 }
-trap rollback ERR
+trap 'rc=$?; trap "" HUP INT TERM PIPE; (exit "$rc") || rollback' ERR
 trap 'rollback_on_signal HUP 129' HUP
 trap 'rollback_on_signal INT 130' INT
 trap 'rollback_on_signal TERM 143' TERM
+trap 'rollback_on_signal PIPE 141' PIPE
 
 stop_release
 backup_dir="$state/backups/cloud-harness-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -141,5 +145,5 @@ install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-d
 install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
 install -m 0755 deploy/scripts/upgrade-nginx-dashboard.sh /usr/local/sbin/cloud-harness-upgrade-nginx
 printf '%s\n' "$release_sha" > "$state/release-current"
-trap - ERR HUP INT TERM
+trap - ERR HUP INT TERM PIPE
 echo "deployed $release_sha"

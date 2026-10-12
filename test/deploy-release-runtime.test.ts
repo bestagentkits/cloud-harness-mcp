@@ -39,12 +39,12 @@ exit $?
   return { ...result, trace: readFileSync(trace, 'utf8').trim().split('\n') };
 }
 
-function runSignalRollback(signal: 'HUP' | 'INT' | 'TERM') {
+function runSignalRollback(signal: 'HUP' | 'INT' | 'TERM' | 'PIPE', legacyRollback = false) {
   const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-signal-'));
   const trace = join(directory, 'trace');
   const source = readFileSync(deployScript, 'utf8');
   const handler = /^rollback_on_signal\(\) \{\n[\s\S]*?\n\}\n/m.exec(source)?.[0] ?? '';
-  const traps = source.split('\n').filter((line) => /^trap (rollback ERR|'rollback_on_signal )/.test(line)).join('\n');
+  const traps = source.split('\n').filter((line) => /^trap '.+' (ERR|HUP|INT|TERM|PIPE)$/.test(line)).join('\n');
   const script = `
 set -euo pipefail
 source "$1"
@@ -62,6 +62,7 @@ wait_ready() { :; }
 verify_running_images() { :; }
 record_images() { :; }
 record_release_config() { :; }
+${legacyRollback ? 'rollback() { local exit_code=$?; trap - ERR; echo legacy-rollback >> "$trace_path"; exit "$exit_code"; }' : ''}
 ${handler}
 ${traps}
 kill -${signal} $$
@@ -128,7 +129,8 @@ describe.skipIf(process.platform === 'win32')('release rollback orchestration', 
   it.each([
     ['HUP', 129],
     ['INT', 130],
-    ['TERM', 143]
+    ['TERM', 143],
+    ['PIPE', 141]
   ] as const)('rolls back an interrupted deploy on SIG%s and keeps the signal exit code', (signal, code) => {
     const result = runSignalRollback(signal);
     expect(result.status).toBe(code);
@@ -138,9 +140,34 @@ describe.skipIf(process.platform === 'win32')('release rollback orchestration', 
     expect(result.log).toContain(`deployment interrupted by SIG${signal}`);
   });
 
+  it('keeps the signal exit code and rolls back once with an older runtime', () => {
+    const result = runSignalRollback('HUP', true);
+    expect(result.status).toBe(129);
+    expect(result.trace).toEqual(['legacy-rollback']);
+  });
+
+  it('does not start a second rollback when a signal arrives during an ERR rollback', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-nested-'));
+    const trace = join(directory, 'trace');
+    const source = readFileSync(deployScript, 'utf8');
+    const handler = /^rollback_on_signal\(\) \{\n[\s\S]*?\n\}\n/m.exec(source)?.[0] ?? '';
+    const traps = source.split('\n').filter((line) => /^trap '.+' (ERR|HUP|INT|TERM|PIPE)$/.test(line)).join('\n');
+    const script = `
+set -euo pipefail
+state="$1"; trace_path="$2"
+rollback() { echo rollback >> "$trace_path"; kill -TERM $$; echo after-kill >> "$trace_path"; exit 1; }
+${handler}
+${traps}
+false
+`;
+    const result = spawnSync('bash', ['-c', script, 'bash', directory, trace], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(['rollback', 'after-kill']);
+  });
+
   it('clears the signal traps only after the release is promoted', () => {
     const source = readFileSync(deployScript, 'utf8');
-    expect(source.lastIndexOf('trap - ERR HUP INT TERM')).toBeGreaterThan(source.indexOf('> "$state/release-current"'));
+    expect(source.lastIndexOf('trap - ERR HUP INT TERM PIPE')).toBeGreaterThan(source.indexOf('> "$state/release-current"'));
   });
 
   it('moves all promoted image records including network-guard', () => {
