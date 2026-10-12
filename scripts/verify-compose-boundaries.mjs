@@ -110,13 +110,16 @@ const dashboardPrefix = locationBlock(/location \^~ \/dashboard\/ \{[^}]+\}/s);
 const mcp = locationBlock(/location = \/mcp \{[^}]+\}/s);
 const gatewayMcp = locationBlock(/location = \/mcp-gateway \{[^}]+\}/s);
 const apiKeyMcp = locationBlock(/location = \/mcp-api-key \{[^}]+\}/s);
+const workspaceMcp = locationBlock(/location \^~ \/mcp\/workspaces\/ \{[^}]+\}/s);
 requireBoundary(dashboardEntry.includes('proxy_pass http://127.0.0.1:3100/dashboard;'), 'nginx dashboard entry point must preserve its upstream path');
 requireBoundary(dashboardPrefix.includes('proxy_pass http://127.0.0.1:3100/dashboard/;'), 'nginx dashboard prefix must preserve asset and BFF paths');
 for (const directive of ['proxy_http_version 1.1;', 'proxy_buffering off;', 'proxy_request_buffering off;', 'proxy_read_timeout 3600s;']) {
   requireBoundary(mcp.includes(directive), `nginx MCP streaming directive is missing: ${directive}`);
   requireBoundary(gatewayMcp.includes(directive), `nginx MCP gateway streaming directive is missing: ${directive}`);
   requireBoundary(apiKeyMcp.includes(directive), `nginx API-key MCP streaming directive is missing: ${directive}`);
+  requireBoundary(workspaceMcp.includes(directive), `nginx workspace MCP streaming directive is missing: ${directive}`);
 }
+requireBoundary(workspaceMcp.includes('proxy_pass http://127.0.0.1:3100/mcp/workspaces/;'), 'nginx workspace MCP route must preserve its upstream path');
 requireBoundary(gatewayMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-gateway;'), 'nginx MCP gateway route must preserve its upstream path');
 requireBoundary(apiKeyMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key;'), 'nginx API-key MCP route must preserve its hidden upstream path');
 
@@ -137,5 +140,12 @@ requireBoundary(
     nginxUpgrade.includes('add_gateway="$((1 - gateway_installed))"') &&
     nginxUpgrade.includes('gateway_installed -eq 0'),
   'nginx upgrade must install the MCP gateway route when it is absent'
+);
+requireBoundary(
+  nginxUpgrade.includes('location ^~ /mcp/workspaces/ {') &&
+    nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp/workspaces/;') &&
+    nginxUpgrade.includes('add_workspace="$((1 - workspace_installed))"') &&
+    nginxUpgrade.includes('$gateway_installed -eq 1 && $workspace_installed -eq 1'),
+  'nginx upgrade must install the workspace MCP route when it is absent'
 );
 console.log('compose-boundaries=pass');

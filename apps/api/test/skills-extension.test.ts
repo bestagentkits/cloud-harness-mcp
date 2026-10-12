@@ -3,8 +3,16 @@ import { Client, ProtocolError } from '@modelcontextprotocol/client';
 import { InMemoryTransport, type AuthInfo } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { SKILLS_EXTENSION_ID, SKILLS_EXTENSION_MAX_BYTES, TOOL_SPECS, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
-import { createCloudHarnessServer, createCloudHarnessServerFactory } from '../src/mcp-server.js';
+import {
+  SKILLS_EXTENSION_ID,
+  SKILLS_EXTENSION_MAX_BYTES,
+  TOOL_SPECS,
+  WorkspaceIdSchema,
+  type RunnerPrincipalSelector,
+  type RunnerResponse,
+  type WorkspaceId
+} from '@cloud-harness/contracts';
+import { bindWorkspace, createCloudHarnessServer, createCloudHarnessServerFactory, createWorkspaceBoundServerFactory } from '../src/mcp-server.js';
 import type { OperationBackend } from '../src/operation-backend.js';
 import type { RunnerClient } from '../src/runner-client.js';
 
@@ -27,7 +35,7 @@ type Call = { operation: string; input: Record<string, unknown>; principal: Runn
 type Responder = (call: Call, signal?: AbortSignal) => Promise<RunnerResponse> | RunnerResponse;
 
 const ok = (data: unknown, cursor?: string): RunnerResponse => ({ ok: true, message: 'ok', data, truncated: false, ...(cursor ? { cursor } : {}) });
-const fail = (code: 'INVALID_INPUT' | 'NOT_FOUND' | 'UNAVAILABLE' | 'TIMEOUT' | 'INTERNAL_ERROR', message = 'runner says no'): RunnerResponse =>
+const fail = (code: 'INVALID_INPUT' | 'NOT_FOUND' | 'CONFLICT' | 'UNAVAILABLE' | 'TIMEOUT' | 'INTERNAL_ERROR', message = 'runner says no'): RunnerResponse =>
   ({ ok: false, message, error: { code, message, retryable: false }, truncated: false });
 
 function defaultResponder(call: Call): RunnerResponse {
@@ -253,6 +261,16 @@ describe('Skills over MCP extension', () => {
     await expect.poll(() => runnerSignal?.aborted).toBe(true);
   });
 
+  it('never sends a workspace on the unbound endpoint, even when a client supplies one', async () => {
+    const { client: runner, internalCalls } = fakeRunner();
+    const client = await connect(runner);
+    await client.request({ method: 'skills/list', params: { workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaaaaaa' } }, ListResult);
+    await client.request({ method: 'skills/get', params: { uri: skillUri, workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaaaaaa' } }, GetResult);
+    await client.request({ method: 'resources/read', params: { uri: skillUri, workspaceId: 'ws_aaaaaaaaaaaaaaaaaaaaaaaa' } }, z.unknown());
+    expect(internalCalls).toHaveLength(3);
+    for (const call of internalCalls) expect(call.input).not.toHaveProperty('workspaceId');
+  });
+
   it('is not advertised by backends without skills support', async () => {
     const backend: OperationBackend = { call: async () => ok({}) };
     const server = createCloudHarnessServer(backend);
@@ -264,5 +282,93 @@ describe('Skills over MCP extension', () => {
     expect(client.getServerCapabilities()?.resources).toBeUndefined();
     await expectProtocolError(client.request({ method: 'skills/list', params: {} }, ListResult), -32601);
     await expectProtocolError(client.request({ method: 'resources/list', params: {} }, z.unknown()), -32601);
+  });
+});
+
+describe('workspace-bound Skills over MCP extension', () => {
+  const workspaceA = WorkspaceIdSchema.parse('ws_AAAAAAAAAAAAAAAAAAAAAAAA');
+  const workspaceB = WorkspaceIdSchema.parse('ws_BBBBBBBBBBBBBBBBBBBBBBBB');
+
+  async function connectBound(runnerClient: RunnerClient, workspaceId: WorkspaceId, subject = 'owner-subject'): Promise<Client> {
+    const server = createWorkspaceBoundServerFactory(runnerClient)({ era: 'modern', authInfo: bindWorkspace(authInfo(subject), workspaceId) });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'skills-bound-test', version: '1.0.0' });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    closers.push(async () => { await client.close(); await server.close(); });
+    return client;
+  }
+
+  it('advertises the extension and keeps the tool surface identical to the unbound endpoint', async () => {
+    const { client: runner } = fakeRunner();
+    const bound = await connectBound(runner, workspaceA);
+    const unbound = await connect(runner);
+    expect(bound.getServerCapabilities()?.extensions?.[SKILLS_EXTENSION_ID]).toEqual({});
+    expect((await bound.listTools()).tools).toEqual((await unbound.listTools()).tools);
+  });
+
+  it('sends the bound workspace on every extension call', async () => {
+    const { client: runner, internalCalls, toolCalls } = fakeRunner();
+    const client = await connectBound(runner, workspaceA);
+    await client.request({ method: 'skills/list', params: {} }, ListResult);
+    await client.request({ method: 'skills/list', params: { cursor: 'page-2' } }, ListResult);
+    await client.request({ method: 'skills/get', params: { uri: skillUri } }, GetResult);
+    await client.readResource({ uri: skillUri });
+    expect(toolCalls).toEqual([]);
+    expect(internalCalls.map((call) => call.input)).toEqual([
+      { limit: 100, workspaceId: workspaceA },
+      { limit: 100, cursor: 'page-2', workspaceId: workspaceA },
+      { uri: skillUri, workspaceId: workspaceA },
+      { uri: skillUri, workspaceId: workspaceA }
+    ]);
+  });
+
+  it('does not let request params override the bound workspace', async () => {
+    const { client: runner, internalCalls } = fakeRunner();
+    const client = await connectBound(runner, workspaceA);
+    await client.request({ method: 'skills/list', params: { workspaceId: workspaceB } }, ListResult);
+    await client.request({ method: 'skills/get', params: { uri: skillUri, workspaceId: workspaceB } }, GetResult);
+    await client.request({ method: 'resources/read', params: { uri: skillUri, workspaceId: workspaceB } }, z.unknown());
+    expect(internalCalls.map((call) => call.input.workspaceId)).toEqual([workspaceA, workspaceA, workspaceA]);
+  });
+
+  it('keeps concurrent requests bound to their own workspaces', async () => {
+    const { client: runner, internalCalls } = fakeRunner(async (call) => {
+      // Interleave the two workspaces' calls so a shared binding would surface as a crossed result.
+      await new Promise((resolve) => setTimeout(resolve, call.input.workspaceId === workspaceA ? 15 : 1));
+      return ok({ skills: [{ ...builtinSkill, frontmatter: { name: 'other', description: String(call.input.workspaceId) } }] });
+    });
+    const first = await connectBound(runner, workspaceA, 'first');
+    const second = await connectBound(runner, workspaceB, 'second');
+    const results = await Promise.all(Array.from({ length: 6 }, (_, index) => (index % 2 === 0 ? first : second)
+      .request({ method: 'skills/list', params: {} }, ListResult)));
+    results.forEach((result, index) => expect(result.skills[0]!.frontmatter.description).toBe(index % 2 === 0 ? workspaceA : workspaceB));
+    for (const call of internalCalls) {
+      const subject = call.principal.kind === 'external' ? call.principal.subject : undefined;
+      expect(call.input.workspaceId).toBe(subject === 'first' ? workspaceA : workspaceB);
+    }
+  });
+
+  it('maps an unavailable workspace to invalid params', async () => {
+    const { client: runner } = fakeRunner(() => fail('NOT_FOUND', 'Workspace not available'));
+    const client = await connectBound(runner, workspaceA);
+    const error = await expectProtocolError(client.request({ method: 'skills/list', params: {} }, ListResult), -32602);
+    expect(error.message).toContain('Workspace not available');
+  });
+
+  it('maps a skill that changed under a read to a refresh hint without echoing runner detail', async () => {
+    const { client: runner } = fakeRunner(() => fail('CONFLICT', 'skill://cloud-harness/workspace/x changed at /srv/jobs/abc'));
+    const client = await connectBound(runner, workspaceA);
+    const error = await expectProtocolError(client.readResource({ uri: skillUri }), -32603);
+    expect(error.message).toContain('Skill changed; refresh it with skills/get');
+    expect(error.message).not.toContain('/srv/jobs');
+  });
+
+  it('fails closed when the binding is missing or malformed', () => {
+    const { client: runner } = fakeRunner();
+    const factory = createWorkspaceBoundServerFactory(runner);
+    expect(() => factory({ era: 'modern', authInfo: authInfo('owner-subject') })).toThrow();
+    const malformed = authInfo('owner-subject');
+    malformed.extra = { ...malformed.extra, cloudHarnessSkillsWorkspace: 'ws_short' };
+    expect(() => factory({ era: 'modern', authInfo: malformed })).toThrow();
   });
 });

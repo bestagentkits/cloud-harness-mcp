@@ -1,11 +1,13 @@
-import { McpServer, type CallToolResult, type McpRequestContext } from '@modelcontextprotocol/server';
+import { McpServer, type AuthInfo, type CallToolResult, type McpRequestContext } from '@modelcontextprotocol/server';
 import {
   TOOL_SPECS,
   ToolResultSchema,
+  WorkspaceIdSchema,
   type RunnerOperation,
   type RunnerPrincipalSelector,
   type RunnerResponse,
-  type ToolResult
+  type ToolResult,
+  type WorkspaceId
 } from '@cloud-harness/contracts';
 import { principalFromAuthInfo } from './auth.js';
 import { RunnerClient } from './runner-client.js';
@@ -22,9 +24,15 @@ export function resultToMcp(result: ToolResult): CallToolResult {
 }
 
 export class RunnerOperationBackend implements OperationBackend {
+  /**
+   * `skillsWorkspaceId` binds the Skills extension to one workspace. It comes only from the
+   * workspace-bound endpoint's URL path and is applied after the request input, so no client
+   * parameter can override it. The runner reauthorizes the binding on every call.
+   */
   constructor(
     private readonly client: RunnerClient,
-    private readonly principal?: RunnerPrincipalSelector
+    private readonly principal?: RunnerPrincipalSelector,
+    private readonly skillsWorkspaceId?: WorkspaceId
   ) {}
 
   async call(operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
@@ -34,7 +42,10 @@ export class RunnerOperationBackend implements OperationBackend {
 
   async callSkillsExtension(operation: SkillsExtensionOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     if (!this.principal) return unauthenticated();
-    return await this.client.callInternal(operation, input, this.principal, signal);
+    const scoped: Record<string, unknown> = { ...input };
+    delete scoped.workspaceId;
+    if (this.skillsWorkspaceId !== undefined) scoped.workspaceId = this.skillsWorkspaceId;
+    return await this.client.callInternal(operation, scoped, this.principal, signal);
   }
 }
 
@@ -98,4 +109,28 @@ export function createCloudHarnessServer(
 
 export function createCloudHarnessServerFactory(client: RunnerClient): (context: McpRequestContext) => McpServer {
   return (context) => createCloudHarnessServer(new RunnerOperationBackend(client, principalFromAuthInfo(context.authInfo)));
+}
+
+/**
+ * The workspace binding travels with the request's server-side authentication context: the API
+ * sets it from the validated URL path after authentication, and clients cannot reach `authInfo`.
+ * Each request carries its own copy, so concurrent requests never share a binding.
+ */
+const WORKSPACE_BINDING_KEY = 'cloudHarnessSkillsWorkspace';
+
+export function bindWorkspace(authInfo: AuthInfo, workspaceId: WorkspaceId): AuthInfo {
+  return { ...authInfo, extra: { ...authInfo.extra, [WORKSPACE_BINDING_KEY]: workspaceId } };
+}
+
+/**
+ * Serves the same tools as the unbound endpoint, with the Skills extension bound to the workspace
+ * named by the endpoint path. A request without a valid binding fails closed instead of falling
+ * back to the unbound skill set.
+ */
+export function createWorkspaceBoundServerFactory(client: RunnerClient): (context: McpRequestContext) => McpServer {
+  return (context) => {
+    const workspaceId = WorkspaceIdSchema.safeParse(context.authInfo?.extra?.[WORKSPACE_BINDING_KEY]);
+    if (!workspaceId.success) throw new Error('Workspace binding unavailable');
+    return createCloudHarnessServer(new RunnerOperationBackend(client, principalFromAuthInfo(context.authInfo), workspaceId.data));
+  };
 }

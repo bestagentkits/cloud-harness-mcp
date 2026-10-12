@@ -246,12 +246,17 @@ export class DashboardControlService {
   private integrationCredentialRepository?: IntegrationCredentialRepository;
   private skillExtensionService?: SkillExtensionService;
 
-  /** Serves built-in skills and the calling principal's own owner skills through the skills extension. */
+  /**
+   * Serves built-in skills and the calling principal's own owner skills through the skills extension,
+   * plus, for a request bound to one of the principal's open workspaces, that workspace's workspace and
+   * repository skills read from its checkout.
+   */
   private skillExtension(): SkillExtensionService {
     this.skillExtensionService ??= new SkillExtensionService({
       builtinSkillsRoot: this.config.builtinSkillsRoot,
       store: this.principals,
-      bundlePath: (ownerId, bundleSha256) => this.workspaces.toolkitCacheManager.bundlePath(ownerId, bundleSha256)
+      bundlePath: (ownerId, bundleSha256) => this.workspaces.toolkitCacheManager.bundlePath(ownerId, bundleSha256),
+      checkoutRoot: (ownerId, workspaceId) => this.workspaces.readableCheckoutRoot(ownerId, workspaceId)
     });
     return this.skillExtensionService;
   }
@@ -700,8 +705,8 @@ export class DashboardControlService {
           const page = await this.skillExtension().list(principalId, parsed.input);
           return ok('Skills listed', { skills: page.skills }, page.nextCursor);
         }
-        case 'skills_ext_get': return ok('Skill read', await this.skillExtension().get(principalId, parsed.input.uri));
-        case 'skills_ext_read': return ok('Skill resource read', await this.skillExtension().read(principalId, parsed.input.uri));
+        case 'skills_ext_get': return ok('Skill read', await this.skillExtension().get(principalId, parsed.input));
+        case 'skills_ext_read': return ok('Skill resource read', await this.skillExtension().read(principalId, parsed.input));
         case 'skill_get': return ok('Skill read', required(this.principals.getSkillSource(principalId, parsed.input.skillId), `Skill ${parsed.input.skillId} was not found`));
         case 'skill_revision_list': return ok('Skill revisions listed', { revisions: this.principals.listSkillRevisions(principalId, parsed.input.skillId, parsed.input.limit) });
         case 'skill_revision_get': return ok('Skill revision read', required(

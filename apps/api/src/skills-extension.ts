@@ -99,6 +99,9 @@ async function invoke<T>(
     if (code === 'INVALID_INPUT' || code === 'NOT_FOUND') {
       throw new ProtocolError(ProtocolErrorCode.InvalidParams, response.error?.message ?? 'Unknown skill URI');
     }
+    // The runner re-verifies served bytes against a manifest built in the same call; a mismatch
+    // means the skill changed since the client's skills/get, which a fresh skills/get resolves.
+    if (code === 'CONFLICT') throw new ProtocolError(ProtocolErrorCode.InternalError, 'Skill changed; refresh it with skills/get');
     throw internalError();
   }
   const parsed = schema.safeParse(response.data);
