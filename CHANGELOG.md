@@ -1,3 +1,10 @@
+## [0.63.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.1...v0.63.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* **deploy:** run deploys as a detached systemd unit so a dropped SSH session cannot strand a stopped release ([#293](https://github.com/bestagentkits/cloud-harness-mcp/issues/293)) ([9be6315](https://github.com/bestagentkits/cloud-harness-mcp/commit/9be63152544f0793dda8928f7d8e87c4fe880636))
+
 ## [0.63.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.0...v0.63.1) (2026-10-12)
 
 
