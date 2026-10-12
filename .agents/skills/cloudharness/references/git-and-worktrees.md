@@ -205,12 +205,12 @@ gate), so MCP clients may prompt for approval on every call, including reads;
 
 Read-only GitHub access with no approval prompts, sharing `github_action`'s broker and helper.
 
-- Required: `workspaceId`, `action` — one of `pr_list`, `pr_view`, `issue_list`,
-  `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`. Mutating
+- Required: `workspaceId`, `action` — one of `pr_list`, `pr_view`,
+  `pr_review_threads`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`. Mutating
   actions are rejected.
 - `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state`
   (`open`, `closed`, or `all`).
-- `pr_view`: required `prNumber`. `issue_view`: required `issueNumber`.
+- `pr_view`: required `prNumber`. `pr_review_threads`: required `prNumber`, optional `limit` (default 50, max 100). `issue_view`: required `issueNumber`.
 - `commit_list`: optional `limit` (default 30, max 100), `sha` (branch, tag, or
   commit), `path` (workspace-relative), `since`/`until` (ISO date or datetime).
 - `compare`: required `base`, `head` (branch, tag, or commit; no range syntax);
@@ -232,13 +232,22 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
 - When no GitHub App repository token can be minted, the runner falls back to an operator-supplied credential: `GH_TOKEN` then `GITHUB_TOKEN` from the runner environment (owner-bearer mode only), then the requesting principal's global runtime secret of the same name. The credential still travels over stdin only and never enters a result, log, or audit payload.
 - Read actions (also available on `github_read`, which avoids approval prompts):
   - `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state` (`open`, `closed`, or `all`).
-  - `pr_view`: required `prNumber`.
+  - `pr_view`: required `prNumber`; also returns `isDraft`, `reviewDecision`, `reviewRequests`, `mergeable`, `mergeStateStatus`, `headRefOid`, and `autoMergeRequest`.
+  - `pr_review_threads`: required `prNumber`; optional `limit` (default 50, max 100). Returns each thread's `id` (the `threadId` for the thread actions), `isResolved`, `isOutdated`, `path`, `line`, and its comments.
   - `issue_view`: required `issueNumber`.
   - `commit_list`, `compare`, `release_list`, `tag_list`: same inputs as documented under `github_read`.
 - PR mutations:
   - `pr_create`: required `title`, `head`; optional `body`, `base` (default `main`), `draft` (default false), `labels` array (max 50).
   - `pr_update`: required `prNumber`; optional `title`, `body`, `base`, `state` (`open` | `closed`).
-  - `pr_comment`: required `prNumber`, `body`; optional `idempotencyKey`.
+  - `pr_comment`: required `prNumber`, `body`; optional `idempotencyKey`. This is a conversation comment, not a review.
+  - `pr_review`: required `prNumber`, `event` (`COMMENT` | `APPROVE` | `REQUEST_CHANGES`); `body` is required except for `APPROVE`; optional `idempotencyKey`. GitHub rejects approving or requesting changes on your own PR (`GITHUB_REVIEW_NOT_ALLOWED`).
+  - `pr_review_comment`: required `prNumber`, `body`, `path`, `line`; optional `startLine` (a range ending at `line`), `side` (`RIGHT` default | `LEFT`), `startSide`, `commitId` (full SHA; defaults to the PR head), `idempotencyKey`. A line outside the diff returns `GITHUB_REVIEW_COMMENT_INVALID`.
+  - `pr_review_reply`: required `threadId`, `body`; optional `idempotencyKey`. `pr_review_thread_resolve` / `pr_review_thread_unresolve`: required `threadId`. Get the `threadId` from `pr_review_threads`.
+  - `pr_reviewers_request` / `pr_reviewers_remove`: required `prNumber` and at least one of `reviewers` (logins) or `teamReviewers` (team slugs in the repository's organization); `pr_reviewers_request` accepts `idempotencyKey`. Failures return `GITHUB_REVIEWER_UNASSIGNABLE`.
+  - `pr_ready` / `pr_convert_to_draft`: required `prNumber`.
+  - `pr_merge`: required `prNumber`, `method` (`merge` | `squash` | `rebase`); optional `commitTitle`, `commitBody` (not for `rebase`), `matchHeadCommit` (full SHA; refuses to merge if the head moved), `idempotencyKey`. Needs `contents: write` as well as `pull_requests: write`. Blocked merges return `GITHUB_MERGE_BLOCKED` (checks, approvals, branch protection) or `GITHUB_MERGE_CONFLICT`; inspect `pr_view` (`mergeStateStatus`, `reviewDecision`) first.
+  - `pr_auto_merge_enable`: same `prNumber`, `method`, `commitTitle`, `commitBody`, `idempotencyKey` as `pr_merge`; `pr_auto_merge_disable`: required `prNumber`. Unsupported repositories return `GITHUB_AUTO_MERGE_UNAVAILABLE`.
+  - Review workflow: `pr_view` → `pr_review` `REQUEST_CHANGES` → author pushes fixes → `pr_view` → `pr_review` `APPROVE` → `pr_merge` `squash`. Check `workspace_capabilities` (`operations.pullRequestReview`, `pullRequestMerge`, and `githubActions`) before relying on an action.
 - Issue and label mutations:
   - `issue_create`: required `title`; optional `body`, `labels` array (max 50), `assignees` array (max 10).
   - `issue_update`: required `issueNumber`; optional `title`, `body`, `state` (`open` | `closed`), `stateReason` (`completed` | `not_planned` | `reopened`).
@@ -248,7 +257,7 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
   - `issue_labels_remove`: required `issueNumber`, `label`.
   - `label_create`: required `name`; optional `color` (6-hex), `description`.
   - `issue_publish`: required `issueNumber`; optional `comment`, `addLabels` array (max 50), `removeLabels` array (max 50), `createMissingLabels` (default true), `idempotencyKey`.
-- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, and `issue_publish` cache their successful result and replay it on a same-key retry with identical payload within a 24-hour retention window; reusing the key with a different request payload is rejected with `CONFLICT`. After 24 hours the record expires and the request executes anew.
+- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`, `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`, and `pr_auto_merge_enable` cache their successful result and replay it on a same-key retry with identical payload within a 24-hour retention window; reusing the key with a different request payload is rejected with `CONFLICT`. After 24 hours the record expires and the request executes anew.
 <!-- cloudharness-example:github_action
 {
   "workspaceId": "ws_abcdefghijklmnopqrstuvwxyz012345",

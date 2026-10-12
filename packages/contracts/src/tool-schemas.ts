@@ -159,13 +159,26 @@ const isoInstant = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);
 
 /** Read-only GitHub actions: they never mutate the repository or its issues and pull requests. */
 export const GITHUB_READ_ACTIONS = [
-  'pr_list', 'pr_view', 'issue_list', 'issue_view', 'commit_list', 'compare', 'release_list', 'tag_list'
+  'pr_list', 'pr_view', 'pr_review_threads', 'issue_list', 'issue_view', 'commit_list', 'compare', 'release_list', 'tag_list'
 ] as const;
 /** Mutating GitHub actions that stay on the destructive-annotated github_action tool. */
 export const GITHUB_WRITE_ACTIONS = [
   'pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update',
-  'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'
+  'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish',
+  'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_review_thread_resolve', 'pr_review_thread_unresolve',
+  'pr_reviewers_request', 'pr_reviewers_remove', 'pr_ready', 'pr_convert_to_draft',
+  'pr_merge', 'pr_auto_merge_enable', 'pr_auto_merge_disable'
 ] as const;
+
+const reviewBody = z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes');
+const githubLogin = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username');
+// A team is addressed by its slug inside the organization that owns the repository.
+const githubTeamSlug = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/, 'invalid GitHub team slug');
+// GraphQL node IDs of review threads (`PRRT_...`) come from pr_review_threads.
+const reviewThreadId = z.string().regex(/^PRRT_[A-Za-z0-9_-]{4,200}$/, 'threadId must be a review thread node id from pr_review_threads');
+const reviewSide = z.enum(['LEFT', 'RIGHT']);
+const mergeMethod = z.enum(['merge', 'squash', 'rebase']);
+const reviewerList = <T extends z.ZodType<string>>(item: T) => z.array(item).max(15);
 
 const githubReadActionSchemas = [
   z.object({
@@ -178,6 +191,12 @@ const githubReadActionSchemas = [
     ...workspace,
     action: z.literal('pr_view'),
     prNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_threads'),
+    prNumber: z.number().int().positive(),
+    limit: z.number().int().min(1).max(100).default(50)
   }),
   z.object({
     ...workspace,
@@ -249,6 +268,120 @@ const githubActionUnion = z.discriminatedUnion('action', [
     prNumber: z.number().int().positive(),
     body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
     idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review'),
+    prNumber: z.number().int().positive(),
+    event: z.enum(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (input.event !== 'APPROVE' && !input.body?.trim()) {
+      context.addIssue({ code: 'custom', path: ['body'], message: 'body is required for COMMENT and REQUEST_CHANGES reviews' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_comment'),
+    prNumber: z.number().int().positive(),
+    body: reviewBody,
+    path: githubHistoryPath,
+    line: z.number().int().positive(),
+    startLine: z.number().int().positive().optional(),
+    side: reviewSide.default('RIGHT'),
+    startSide: reviewSide.optional(),
+    commitId: gitObjectId.optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (input.startLine !== undefined && input.startLine >= input.line) {
+      context.addIssue({ code: 'custom', path: ['startLine'], message: 'startLine must be lower than line' });
+    }
+    if (input.startSide !== undefined && input.startLine === undefined) {
+      context.addIssue({ code: 'custom', path: ['startSide'], message: 'startSide requires startLine' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_reply'),
+    threadId: reviewThreadId,
+    body: reviewBody,
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_thread_resolve'),
+    threadId: reviewThreadId
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_thread_unresolve'),
+    threadId: reviewThreadId
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_reviewers_request'),
+    prNumber: z.number().int().positive(),
+    reviewers: reviewerList(githubLogin).optional(),
+    teamReviewers: reviewerList(githubTeamSlug).optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (!input.reviewers?.length && !input.teamReviewers?.length) {
+      context.addIssue({ code: 'custom', path: ['reviewers'], message: 'at least one of reviewers or teamReviewers is required' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_reviewers_remove'),
+    prNumber: z.number().int().positive(),
+    reviewers: reviewerList(githubLogin).optional(),
+    teamReviewers: reviewerList(githubTeamSlug).optional()
+  }).superRefine((input, context) => {
+    if (!input.reviewers?.length && !input.teamReviewers?.length) {
+      context.addIssue({ code: 'custom', path: ['reviewers'], message: 'at least one of reviewers or teamReviewers is required' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_ready'),
+    prNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_convert_to_draft'),
+    prNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_merge'),
+    prNumber: z.number().int().positive(),
+    method: mergeMethod,
+    commitTitle: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'commitTitle cannot contain null bytes').optional(),
+    commitBody: z.string().max(65_536).refine((val) => !val.includes('\0'), 'commitBody cannot contain null bytes').optional(),
+    matchHeadCommit: gitObjectId.optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (input.method === 'rebase' && (input.commitTitle || input.commitBody)) {
+      context.addIssue({ code: 'custom', path: ['commitTitle'], message: 'GitHub does not accept a commit message for rebase merges' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_auto_merge_enable'),
+    prNumber: z.number().int().positive(),
+    method: mergeMethod,
+    commitTitle: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'commitTitle cannot contain null bytes').optional(),
+    commitBody: z.string().max(65_536).refine((val) => !val.includes('\0'), 'commitBody cannot contain null bytes').optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (input.method === 'rebase' && (input.commitTitle || input.commitBody)) {
+      context.addIssue({ code: 'custom', path: ['commitTitle'], message: 'GitHub does not accept a commit message for rebase merges' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_auto_merge_disable'),
+    prNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
@@ -390,6 +523,19 @@ const githubActionInput = z.object({
   path: githubHistoryPath.optional(),
   since: isoInstant.optional(),
   until: isoInstant.optional(),
+  event: z.enum(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']).optional(),
+  line: z.number().int().positive().optional(),
+  startLine: z.number().int().positive().optional(),
+  side: reviewSide.optional(),
+  startSide: reviewSide.optional(),
+  commitId: gitObjectId.optional(),
+  threadId: reviewThreadId.optional(),
+  reviewers: reviewerList(githubLogin).optional(),
+  teamReviewers: reviewerList(githubTeamSlug).optional(),
+  method: mergeMethod.optional(),
+  commitTitle: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'commitTitle cannot contain null bytes').optional(),
+  commitBody: z.string().max(65_536).refine((val) => !val.includes('\0'), 'commitBody cannot contain null bytes').optional(),
+  matchHeadCommit: gitObjectId.optional(),
   idempotencyKey: IdempotencyKeySchema.optional()
 });
 
@@ -875,8 +1021,8 @@ const titles: Record<RunnerOperation, string> = {
   knowledge_create: 'Create knowledge note or journal', knowledge_read: 'Read knowledge item', knowledge_update: 'Update knowledge item', knowledge_delete: 'Delete knowledge item', knowledge_list: 'List knowledge items', knowledge_search: 'Hybrid search knowledge items', knowledge_link: 'Link knowledge items', knowledge_unlink: 'Unlink knowledge items', knowledge_graph: 'Query knowledge neighborhood graph',
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
-  github_action: 'Create and manage GitHub issues, pull requests, and labels',
-  github_read: 'Read GitHub pull requests, issues, commits, comparisons, releases, and tags',
+  github_action: 'Create and manage GitHub issues, pull requests, native PR reviews, review threads, reviewers, and merges',
+  github_read: 'Read GitHub pull requests, review threads, issues, commits, comparisons, releases, and tags',
   secrets_list: 'List available secrets',
   agent_spawn: 'Spawn coding agent',
   agent_status: 'Read coding agent status',
@@ -970,8 +1116,8 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
   artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
-  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, and comment on pull requests in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, and pullRequestCreate. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_create, pr_update, pr_comment, commit_list, compare, release_list, tag_list. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
-  github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list. Maps to operations.pullRequestList, pullRequestView, issueList, issueView, commitList, compare, releaseList, and tagList. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, and pullRequestMerge; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_list, compare, release_list, tag_list. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list. Maps to operations.pullRequestList, pullRequestView, issueList, issueView, commitList, compare, releaseList, and tagList. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
   agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
   agent_status: 'Read the execution state, budgets, and terminal summary of one coding agent.',

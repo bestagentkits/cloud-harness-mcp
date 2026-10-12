@@ -44,7 +44,85 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
       /token (is )?expired/i
     ]
   },
-  // 3. Permission errors
+  // 3. Review and merge failures. They precede the generic permission rule because GitHub reports
+  // several of them as HTTP 403/405/422, and the remedy differs from a missing App permission.
+  {
+    code: 'GITHUB_MERGE_CONFLICT',
+    retryable: false,
+    actions: ['pr_merge', 'pr_auto_merge_enable'],
+    patterns: [
+      /merge conflict/i,
+      /conflicting files/i,
+      /cannot be cleanly created/i,
+      /not mergeable:? .*conflict/i
+    ]
+  },
+  {
+    code: 'GITHUB_MERGE_BLOCKED',
+    retryable: false,
+    actions: ['pr_merge'],
+    patterns: [
+      /not mergeable/i,
+      /base branch policy prohibits the merge/i,
+      /required status checks?/i,
+      /status checks? (?:are|is) (?:expected|failing|pending)/i,
+      /at least \d+ (?:approving )?reviews? (?:is|are) required/i,
+      /review is required/i,
+      /changes requested/i,
+      /branch protection/i,
+      /protected branch/i,
+      /head branch was modified/i,
+      /merge queue/i
+    ]
+  },
+  {
+    code: 'GITHUB_AUTO_MERGE_UNAVAILABLE',
+    retryable: false,
+    actions: ['pr_auto_merge_enable', 'pr_auto_merge_disable'],
+    patterns: [
+      /auto[- ]?merge (?:is )?not allowed/i,
+      /auto[- ]?merge is not (?:enabled|available)/i,
+      /in clean status/i,
+      /auto[- ]?merge[^\n]*(?:is not|isn't) (?:enabled|set|active)/i,
+      /protected branch rules not configured/i
+    ]
+  },
+  {
+    code: 'GITHUB_REVIEW_NOT_ALLOWED',
+    retryable: false,
+    actions: ['pr_review'],
+    patterns: [
+      /can ?not (?:approve|request changes on) your own pull request/i,
+      /own pull request/i,
+      /review cannot be (?:submitted|created)/i,
+      /pending review/i
+    ]
+  },
+  {
+    code: 'GITHUB_REVIEW_COMMENT_INVALID',
+    retryable: false,
+    actions: ['pr_review_comment', 'pr_review_reply'],
+    patterns: [
+      /must be part of the diff/i,
+      /(?:line|position|start_line|path|start_side|commit_id|side)[^\n]*(?:could not be resolved|is not part of|is invalid|must precede|is outdated|wasn't found)/i,
+      /diff hunk/i,
+      /outdated/i,
+      /unprocessable entity/i
+    ]
+  },
+  {
+    code: 'GITHUB_REVIEWER_UNASSIGNABLE',
+    retryable: false,
+    actions: ['pr_reviewers_request', 'pr_reviewers_remove'],
+    patterns: [
+      /reviews? may only be requested from collaborators/i,
+      /review cannot be requested from pull request author/i,
+      /not a collaborator/i,
+      /could not (?:add|remove) reviewers?/i,
+      /unprocessable entity/i
+    ]
+  },
+  // 4. Permission errors
   {
     code: 'GITHUB_PERMISSION_MISSING',
     retryable: false,
@@ -59,7 +137,7 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
       /not permitted/i
     ]
   },
-  // 4. Invalid PR base branch (applicable to PR creation and update)
+  // 5. Invalid PR base branch (applicable to PR creation and update)
   {
     code: 'INVALID_PULL_REQUEST_BASE',
     retryable: false,
@@ -72,7 +150,7 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
       /invalid base/i
     ]
   },
-  // 5. Invalid input (e.g. invalid HEAD branch or missing required fields)
+  // 6. Invalid input (e.g. invalid HEAD branch or missing required fields)
   {
     code: 'INVALID_INPUT',
     retryable: false,
@@ -85,7 +163,7 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
       /Issue number required/i
     ]
   },
-  // 6. Conflicts / already exists
+  // 7. Conflicts / already exists
   {
     code: 'CONFLICT',
     retryable: false,
@@ -94,7 +172,7 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
       /A pull request already exists/i
     ]
   },
-  // 7. Not found
+  // 8. Not found
   {
     code: 'NOT_FOUND',
     retryable: false,
@@ -107,7 +185,7 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
       /not found/i
     ]
   },
-  // 8. Infrastructure / Docker / 5xx unavailable
+  // 9. Infrastructure / Docker / 5xx unavailable
   {
     code: 'UNAVAILABLE',
     retryable: true,

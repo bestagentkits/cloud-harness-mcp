@@ -1242,6 +1242,15 @@ export class WorkspaceService {
         pullRequestList: pullRequestsRead,
         pullRequestView: pullRequestsRead,
         pullRequestCreate: pullRequestsWrite,
+        pullRequestUpdate: pullRequestsWrite,
+        pullRequestComment: pullRequestsWrite,
+        pullRequestReview: pullRequestsWrite,
+        pullRequestReviewComment: pullRequestsWrite,
+        pullRequestReviewThread: pullRequestsWrite,
+        pullRequestReviewerManage: pullRequestsWrite,
+        pullRequestReady: pullRequestsWrite,
+        pullRequestMerge: pullRequestsWrite && contentsWrite,
+        pullRequestAutoMerge: pullRequestsWrite && contentsWrite,
         commitList: isGitHub && contentsRead,
         compare: isGitHub && contentsRead,
         releaseList: isGitHub && contentsRead,
@@ -2093,7 +2102,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         repositoryUrl: repoUrl,
         installations: this.githubInstallations,
         permissionScope,
-        requiredPermission: isWrite ? 'write' : 'read'
+        requiredPermission: isWrite ? 'write' : 'read',
+        ...(requirement.alsoWrite?.includes('contents') ? { contentsPermission: 'write' as const } : {})
       });
       appToken = minted?.token;
       appPermissions = minted?.permissions;
@@ -2103,8 +2113,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     // A minted token can still be short of the requirement, so acceptance is decided
     // by the permission GitHub reports for the token, never by the mint alone.
     const grantedLevel = appPermissions?.[permissionScope];
+    const alsoWrite = requirement.alsoWrite ?? [];
     const appSatisfies = appToken !== undefined
-      && (grantedLevel === 'write' || (!isWrite && grantedLevel === 'read'));
+      && (grantedLevel === 'write' || (!isWrite && grantedLevel === 'read'))
+      && alsoWrite.every((scope) => appPermissions?.[scope] === 'write');
     const authorizationReason = appAuthorizationError instanceof HarnessError
       ? (appAuthorizationError.details as { reason?: string } | undefined)?.reason
       : undefined;
@@ -2144,7 +2156,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       };
       if (propagateMintFailure) throw appAuthorizationError;
       if (authorizationReason === 'permission_not_granted' || appToken !== undefined) {
-        const requiredLabel = `${permissionScope}:${isWrite ? 'write' : 'read'}`;
+        const requiredLabel = [`${permissionScope}:${isWrite ? 'write' : 'read'}`, ...alsoWrite.map((scope) => `${scope}:write`)].join(' and ');
         auditFailure('GITHUB_PERMISSION_MISSING');
         throw new HarnessError(
           'GITHUB_PERMISSION_MISSING',
@@ -3494,6 +3506,43 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           (validated.state as string) ?? ''
         ]; break;
         case 'pr_comment': args = [String(validated.prNumber), validated.body as string]; break;
+        case 'pr_review_threads': args = [String(validated.prNumber), String(validated.limit ?? 50)]; break;
+        case 'pr_review': args = [String(validated.prNumber), validated.event as string, (validated.body as string) ?? '']; break;
+        case 'pr_review_comment': args = [
+          String(validated.prNumber),
+          validated.body as string,
+          validated.path as string,
+          String(validated.line),
+          validated.startLine === undefined ? '' : String(validated.startLine),
+          (validated.side as string) ?? 'RIGHT',
+          (validated.startSide as string) ?? '',
+          (validated.commitId as string) ?? ''
+        ]; break;
+        case 'pr_review_reply': args = [validated.threadId as string, validated.body as string]; break;
+        case 'pr_review_thread_resolve':
+        case 'pr_review_thread_unresolve': args = [validated.threadId as string]; break;
+        case 'pr_reviewers_request':
+        case 'pr_reviewers_remove': args = [
+          String(validated.prNumber),
+          ((validated.reviewers as string[]) ?? []).join(','),
+          ((validated.teamReviewers as string[]) ?? []).join(',')
+        ]; break;
+        case 'pr_ready':
+        case 'pr_convert_to_draft':
+        case 'pr_auto_merge_disable': args = [String(validated.prNumber)]; break;
+        case 'pr_merge': args = [
+          String(validated.prNumber),
+          validated.method as string,
+          (validated.commitTitle as string) ?? '',
+          (validated.commitBody as string) ?? '',
+          (validated.matchHeadCommit as string) ?? ''
+        ]; break;
+        case 'pr_auto_merge_enable': args = [
+          String(validated.prNumber),
+          validated.method as string,
+          (validated.commitTitle as string) ?? '',
+          (validated.commitBody as string) ?? ''
+        ]; break;
         case 'issue_list': args = [String(validated.limit ?? 20), (validated.state as string) ?? 'open']; break;
         case 'issue_view': args = [String(validated.issueNumber)]; break;
         case 'commit_list': args = [
@@ -3540,6 +3589,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (typeof validated.issueNumber === 'number') details.issueNumber = validated.issueNumber;
         if (typeof validated.commentId === 'number') details.commentId = validated.commentId;
         if (typeof validated.draft === 'boolean') details.draft = validated.draft;
+        if (typeof validated.event === 'string') details.reviewEvent = validated.event;
+        if (typeof validated.method === 'string') details.mergeMethod = validated.method;
+        if (typeof validated.threadId === 'string') details.threadId = validated.threadId;
+        if (typeof validated.path === 'string' && action === 'pr_review_comment') details.path = validated.path;
+        if (Array.isArray(validated.reviewers)) details.reviewerCount = validated.reviewers.length;
+        if (Array.isArray(validated.teamReviewers)) details.teamReviewerCount = validated.teamReviewers.length;
         if (typeof validated.state === 'string') details.state = validated.state;
         if (typeof validated.idempotencyKey === 'string') details.idempotencyKey = validated.idempotencyKey;
         if (typeof validated.name === 'string' && action === 'label_create') details.labelName = validated.name;
@@ -3555,7 +3610,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
         this.auditWorkspaceOutcome(ownerId, `github_action.${action}`, record, details);
       }
-      if ((action === 'pr_comment' || action === 'issue_comment' || action === 'issue_labels_add' || action === 'issue_publish') && validated.idempotencyKey && result.ok) {
+      if (GITHUB_IDEMPOTENT_ACTIONS.has(action) && validated.idempotencyKey && result.ok) {
         this.store.setCommentIdempotency(ownerId, validated.idempotencyKey as string, JSON.stringify(result), fingerprint);
       }
       await this.enforceActiveLimits(record);
@@ -4440,6 +4495,12 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   }
 }
 
+/** Mutations that can duplicate a visible side effect, so an `idempotencyKey` replays the first result. */
+const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([
+  'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
+  'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_reviewers_request', 'pr_merge', 'pr_auto_merge_enable'
+]);
+
 function isMutationOperation(operation: RunnerOperation, validated: Record<string, unknown>): boolean {
   if (operation === 'exec_run') {
     if (validated.privileged === true) return true;
@@ -4461,7 +4522,7 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
   }
   if (operation === 'github_action') {
     const action = validated.action as string;
-    return ['pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update', 'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish'].includes(action);
+    return (GITHUB_WRITE_ACTIONS as readonly string[]).includes(action);
   }
   return false;
 }

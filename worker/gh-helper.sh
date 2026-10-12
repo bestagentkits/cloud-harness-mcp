@@ -5,6 +5,13 @@ set -euo pipefail
 read -r GH_TOKEN
 export GH_TOKEN
 
+require_number() {
+  if ! [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    echo "$2 must be a positive integer" >&2
+    exit 1
+  fi
+}
+
 action="${1:-}"
 if [ -z "$action" ]; then
   echo "GitHub action required" >&2
@@ -24,7 +31,17 @@ case "$action" in
       echo "Pull request number required" >&2
       exit 1
     fi
-    exec gh pr view "$pr_number" --json number,title,body,state,author,reviews,comments,url
+    exec gh pr view "$pr_number" --json number,title,body,state,author,reviews,comments,url,isDraft,reviewDecision,reviewRequests,mergeable,mergeStateStatus,headRefOid,autoMergeRequest
+    ;;
+  pr_review_threads)
+    pr_number="${1:-}"
+    limit="${2:-50}"
+    require_number "$pr_number" "Pull request number"
+    require_number "$limit" "Thread limit"
+    exec gh api graphql \
+      -f owner="${GH_REPO%%/*}" -f repo="${GH_REPO#*/}" -F number="$pr_number" -F limit="$limit" \
+      -f query='query($owner: String!, $repo: String!, $number: Int!, $limit: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: $limit) { totalCount nodes { id isResolved isOutdated path line startLine diffSide comments(first: 50) { nodes { databaseId author { login } body createdAt url } } } } } } }' \
+      --jq '.data.repository.pullRequest.reviewThreads | { totalCount, threads: [.nodes[] | { id, isResolved, isOutdated, path, line, startLine, diffSide, comments: [.comments.nodes[] | { id: .databaseId, author: .author.login, body, createdAt, url }] }] }'
     ;;
   pr_create)
     title="${1:-}"
@@ -90,6 +107,128 @@ case "$action" in
       exit 1
     fi
     exec gh pr comment "$pr_number" --body "$body"
+    ;;
+  pr_review)
+    pr_number="${1:-}"
+    event="${2:-}"
+    body="${3:-}"
+    require_number "$pr_number" "Pull request number"
+    case "$event" in
+      COMMENT|APPROVE|REQUEST_CHANGES) ;;
+      *) echo "Review event must be COMMENT, APPROVE, or REQUEST_CHANGES" >&2; exit 1 ;;
+    esac
+    cmd=(gh api -X POST "repos/{owner}/{repo}/pulls/$pr_number/reviews" -f "event=$event")
+    if [ -n "$body" ]; then cmd+=(-f "body=$body"); fi
+    exec "${cmd[@]}" --jq '{ id, state, url: .html_url, author: .user.login, commitId: .commit_id }'
+    ;;
+  pr_review_comment)
+    pr_number="${1:-}"
+    body="${2:-}"
+    path="${3:-}"
+    line="${4:-}"
+    start_line="${5:-}"
+    side="${6:-RIGHT}"
+    start_side="${7:-}"
+    commit_id="${8:-}"
+    require_number "$pr_number" "Pull request number"
+    require_number "$line" "Line"
+    if [ -z "$body" ] || [ -z "$path" ]; then
+      echo "Comment body and file path required" >&2
+      exit 1
+    fi
+    if [ -z "$commit_id" ]; then
+      commit_id=$(gh api "repos/{owner}/{repo}/pulls/$pr_number" --jq .head.sha)
+    fi
+    cmd=(gh api -X POST "repos/{owner}/{repo}/pulls/$pr_number/comments" -f "body=$body" -f "commit_id=$commit_id" -f "path=$path" -F "line=$line" -f "side=$side")
+    if [ -n "$start_line" ]; then
+      require_number "$start_line" "Start line"
+      cmd+=(-F "start_line=$start_line" -f "start_side=${start_side:-$side}")
+    fi
+    exec "${cmd[@]}" --jq '{ id, url: .html_url, path, line, side, commitId: .commit_id, author: .user.login }'
+    ;;
+  pr_review_reply)
+    thread_id="${1:-}"
+    body="${2:-}"
+    if [ -z "$thread_id" ] || [ -z "$body" ]; then
+      echo "Review thread ID and reply body required" >&2
+      exit 1
+    fi
+    exec gh api graphql -f thread="$thread_id" -f body="$body" \
+      -f query='mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $thread, body: $body }) { comment { id databaseId url } } }' \
+      --jq '.data.addPullRequestReviewThreadReply.comment | { id, commentId: .databaseId, url }'
+    ;;
+  pr_review_thread_resolve|pr_review_thread_unresolve)
+    thread_id="${1:-}"
+    if [ -z "$thread_id" ]; then
+      echo "Review thread ID required" >&2
+      exit 1
+    fi
+    if [ "$action" = "pr_review_thread_resolve" ]; then mutation="resolveReviewThread"; else mutation="unresolveReviewThread"; fi
+    exec gh api graphql -f thread="$thread_id" \
+      -f query="mutation(\$thread: ID!) { ${mutation}(input: { threadId: \$thread }) { thread { id isResolved } } }" \
+      --jq ".data.${mutation}.thread | { id, isResolved }"
+    ;;
+  pr_reviewers_request|pr_reviewers_remove)
+    pr_number="${1:-}"
+    reviewers="${2:-}"
+    teams="${3:-}"
+    require_number "$pr_number" "Pull request number"
+    if [ -z "$reviewers" ] && [ -z "$teams" ]; then
+      echo "At least one reviewer or team reviewer required" >&2
+      exit 1
+    fi
+    if [ "$action" = "pr_reviewers_request" ]; then method="POST"; else method="DELETE"; fi
+    cmd=(gh api -X "$method" "repos/{owner}/{repo}/pulls/$pr_number/requested_reviewers")
+    if [ -n "$reviewers" ]; then
+      IFS=',' read -ra RLIST <<< "$reviewers"
+      for r in "${RLIST[@]}"; do cmd+=(-f "reviewers[]=$r"); done
+    fi
+    if [ -n "$teams" ]; then
+      IFS=',' read -ra TLIST <<< "$teams"
+      for t in "${TLIST[@]}"; do cmd+=(-f "team_reviewers[]=$t"); done
+    fi
+    exec "${cmd[@]}" --jq '{ number, url: .html_url, requestedReviewers: [.requested_reviewers[].login], requestedTeams: [.requested_teams[].slug] }'
+    ;;
+  pr_ready|pr_convert_to_draft)
+    pr_number="${1:-}"
+    require_number "$pr_number" "Pull request number"
+    if [ "$action" = "pr_ready" ]; then
+      if ! gh pr ready "$pr_number" >/dev/null; then echo "Failed to mark pull request $pr_number ready for review" >&2; exit 1; fi
+    else
+      if ! gh pr ready "$pr_number" --undo >/dev/null; then echo "Failed to convert pull request $pr_number to draft" >&2; exit 1; fi
+    fi
+    exec gh pr view "$pr_number" --json number,state,isDraft,url
+    ;;
+  pr_merge|pr_auto_merge_enable)
+    pr_number="${1:-}"
+    method="${2:-}"
+    subject="${3:-}"
+    body="${4:-}"
+    match_head="${5:-}"
+    require_number "$pr_number" "Pull request number"
+    case "$method" in
+      merge|squash|rebase) ;;
+      *) echo "Merge method must be merge, squash, or rebase" >&2; exit 1 ;;
+    esac
+    cmd=(gh pr merge "$pr_number" "--$method")
+    if [ -n "$subject" ]; then cmd+=(--subject "$subject"); fi
+    if [ -n "$body" ]; then cmd+=(--body "$body"); fi
+    if [ -n "$match_head" ]; then cmd+=(--match-head-commit "$match_head"); fi
+    if [ "$action" = "pr_auto_merge_enable" ]; then cmd+=(--auto); fi
+    if ! "${cmd[@]}" >/dev/null; then
+      echo "Failed to ${action#pr_} pull request $pr_number" >&2
+      exit 1
+    fi
+    exec gh pr view "$pr_number" --json number,state,mergedAt,mergeCommit,autoMergeRequest,url
+    ;;
+  pr_auto_merge_disable)
+    pr_number="${1:-}"
+    require_number "$pr_number" "Pull request number"
+    if ! gh pr merge "$pr_number" --disable-auto >/dev/null; then
+      echo "Failed to disable auto-merge on pull request $pr_number" >&2
+      exit 1
+    fi
+    exec gh pr view "$pr_number" --json number,state,autoMergeRequest,url
     ;;
   issue_list)
     limit="${1:-20}"

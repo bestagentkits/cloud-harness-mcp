@@ -219,9 +219,24 @@ describe('GitHub App broker', () => {
     ['pr_view', 'pull_requests', false],
     ['pr_create', 'pull_requests', true],
     ['pr_update', 'pull_requests', true],
-    ['pr_comment', 'pull_requests', true]
+    ['pr_comment', 'pull_requests', true],
+    ['pr_review_threads', 'pull_requests', false],
+    ['pr_review', 'pull_requests', true],
+    ['pr_review_comment', 'pull_requests', true],
+    ['pr_review_reply', 'pull_requests', true],
+    ['pr_review_thread_resolve', 'pull_requests', true],
+    ['pr_review_thread_unresolve', 'pull_requests', true],
+    ['pr_reviewers_request', 'pull_requests', true],
+    ['pr_reviewers_remove', 'pull_requests', true],
+    ['pr_ready', 'pull_requests', true],
+    ['pr_convert_to_draft', 'pull_requests', true],
+    ['pr_auto_merge_disable', 'pull_requests', true]
   ])('requires the exact GitHub permission for %s', (action, scope, write) => {
     expect(requiredGitHubPermissions(action)).toEqual({ scope, write });
+  });
+
+  it.each(['pr_merge', 'pr_auto_merge_enable'])('also requires contents:write for %s', (action) => {
+    expect(requiredGitHubPermissions(action)).toEqual({ scope: 'pull_requests', write: true, alsoWrite: ['contents'] });
   });
 
   it('reports no requirement for an action the broker does not serve', () => {
@@ -245,6 +260,26 @@ describe('GitHub App broker', () => {
       type: 'installation',
       repositoryNames: ['hello-world'],
       permissions: { pull_requests: 'write', contents: 'read' }
+    });
+  });
+
+  it('carries contents write beside the pull request scope when the action merges', async () => {
+    authMocks.installationAuth.mockClear();
+    const installations = new InMemoryGitHubInstallationStore();
+    installations.replaceVerified('principal-a', activeInstallation({ issues: 'write', pullRequests: 'write' }), 1_000);
+
+    await mintPrincipalRepositoryScopedToken({
+      config: { ...config, authMode: 'cloudflare-access' as const }, principalId: 'principal-a',
+      repositoryUrl: new URL('https://github.com/octocat/hello-world.git'),
+      installations,
+      permissionScope: 'pull_requests',
+      requiredPermission: 'write',
+      contentsPermission: 'write'
+    });
+    expect(authMocks.installationAuth).toHaveBeenLastCalledWith({
+      type: 'installation',
+      repositoryNames: ['hello-world'],
+      permissions: { pull_requests: 'write', contents: 'write' }
     });
   });
 
