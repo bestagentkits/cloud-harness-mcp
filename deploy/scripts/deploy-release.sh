@@ -42,6 +42,40 @@ source deploy/scripts/release-runtime.sh
 
 previous_sha=$(cat "$state/release-current" 2>/dev/null || true)
 backup_dir=
+
+# Build the target images while the current release keeps serving. A cold build
+# takes many minutes, and building only after stop_release kept the dashboard and
+# MCP endpoint down for the whole build. Running containers stay on their image
+# IDs, so retagging :local does not touch the live release; the build after
+# stop_release reuses this cache. A failed or interrupted prebuild never stops
+# anything: it puts the checkout and the :local tags back on the current release.
+# Defined here rather than in release-runtime.sh because a deploy of an older SHA
+# sources that older runtime.
+abandon_prebuild() {
+  local exit_code=$1 image id
+  trap '' ERR HUP INT TERM PIPE
+  set +e
+  [[ $exit_code -gt 128 ]] && exec >>"$state/deploy-interrupt.log" 2>&1
+  echo "release image build failed or was interrupted; the current release keeps serving" >&2
+  if [[ $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
+    git checkout --detach --force "$previous_sha"
+    for image in api runner executor network-guard agent model-gateway; do
+      id=$(cat "$state/release-${image}-image" 2>/dev/null) && docker tag "$id" "cloud-harness-${image}:local"
+    done
+  fi
+  exit "$exit_code"
+}
+trap 'abandon_prebuild $?' ERR
+trap 'abandon_prebuild 129' HUP
+trap 'abandon_prebuild 130' INT
+trap 'abandon_prebuild 143' TERM
+trap 'abandon_prebuild 141' PIPE
+git checkout --detach --force "$release_sha"
+[[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
+source deploy/scripts/release-runtime.sh
+compose --profile images build executor-image agent-image network-guard-image api runner model-gateway
+trap - ERR HUP INT TERM PIPE
+
 # `trap ... ERR` never sees a signal, and a dropped SSH session sends SIGHUP, so
 # an interrupted deploy would leave the stopped release down. Signals take the
 # same rollback path; output moves to a host log because the session is gone,
