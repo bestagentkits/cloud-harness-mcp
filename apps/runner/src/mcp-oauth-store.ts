@@ -127,6 +127,49 @@ export class McpOAuthStore {
     }, { principalId, environmentId: context, name, version });
   }
 
+  /**
+   * Moves every grant and flow that is not sealed with the active key onto it, for the
+   * `secrets:rekey` maintenance command. Each row is updated only while its generation and
+   * key version are unchanged, so a concurrent token save is never overwritten. Returns the
+   * number of rows re-encrypted.
+   */
+  reencrypt(signal?: AbortSignal): number {
+    const active = this.keyring.activeVersion;
+    const encode = (value: EncryptedSecret) => ({
+      key_version: value.keyVersion,
+      nonce: Buffer.from(value.nonce).toString('hex'),
+      ciphertext: Buffer.from(value.ciphertext).toString('hex'),
+      auth_tag: Buffer.from(value.authTag).toString('hex')
+    });
+    const decode = (row: { key_version: number; nonce: string; ciphertext: string; auth_tag: string }): EncryptedSecret => ({
+      keyVersion: row.key_version,
+      nonce: Buffer.from(row.nonce, 'hex'),
+      ciphertext: Buffer.from(row.ciphertext, 'hex'),
+      authTag: Buffer.from(row.auth_tag, 'hex')
+    });
+    let changed = 0;
+    const grants = this.database.prepare('SELECT * FROM mcp_oauth_grants WHERE key_version <> ?').all(active) as GrantRow[];
+    for (const row of grants) {
+      if (signal?.aborted) return changed;
+      const next = encode(this.keyring.reencrypt(decode(row), {
+        principalId: row.principal_id, environmentId: MCP_OAUTH_GRANT_CONTEXT, name: row.server_id, version: row.generation
+      }));
+      changed += Number(this.database.prepare(`UPDATE mcp_oauth_grants SET key_version = ?, nonce = ?, ciphertext = ?, auth_tag = ?
+        WHERE principal_id = ? AND server_id = ? AND generation = ? AND key_version = ?`)
+        .run(next.key_version, next.nonce, next.ciphertext, next.auth_tag, row.principal_id, row.server_id, row.generation, row.key_version).changes);
+    }
+    const flows = this.database.prepare('SELECT * FROM mcp_oauth_flows WHERE key_version <> ?').all(active) as FlowRow[];
+    for (const row of flows) {
+      if (signal?.aborted) return changed;
+      const next = encode(this.keyring.reencrypt(decode(row), {
+        principalId: row.principal_id, environmentId: MCP_OAUTH_FLOW_CONTEXT, name: row.id, version: 1
+      }));
+      changed += Number(this.database.prepare('UPDATE mcp_oauth_flows SET key_version = ?, nonce = ?, ciphertext = ?, auth_tag = ? WHERE id = ? AND key_version = ?')
+        .run(next.key_version, next.nonce, next.ciphertext, next.auth_tag, row.id, row.key_version).changes);
+    }
+    return changed;
+  }
+
   private grantRow(principalId: string, serverId: string): GrantRow | undefined {
     return this.database.prepare('SELECT * FROM mcp_oauth_grants WHERE principal_id = ? AND server_id = ?')
       .get(principalId, serverId) as GrantRow | undefined;

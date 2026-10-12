@@ -94,12 +94,9 @@ one-off runner re-encryption entry point owned by
 [`apps/runner/src/rekey-secrets.ts`](../apps/runner/src/rekey-secrets.ts) through
 the `secrets:rekey` package script or its compiled runner command.
 
-That command re-encrypts secret versions and workspace secret snapshots only.
-Downstream MCP OAuth grants and pending flows use the same keyring but are not
-rewritten by it; a grant moves to the active key only when it is next saved
-(a token refresh or a new Connect). Before retiring an old key version,
-reconnect or disconnect the affected OAuth servers, or accept that a grant
-still sealed with that key becomes unreadable and must be reconnected.
+That command re-encrypts secret versions, workspace secret snapshots, and
+downstream MCP OAuth grants and pending flows. A grant is rewritten only while
+its generation is unchanged, so a concurrent token refresh is never overwritten.
 
 The command is interruptible and safe to resume; verify that it completes,
 take a new coherent backup, and keep old decrypt keys through the release and

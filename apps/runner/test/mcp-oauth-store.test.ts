@@ -25,7 +25,8 @@ function setup() {
   const a = state.resolvePrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'a' });
   const b = state.resolvePrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'b' });
   state.close();
-  const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
+  const key = randomBytes(32);
+  const keyring = new SecretKeyring(1, [{ version: 1, key }]);
   const metadata = new MetadataStore(databasePath, keyring);
   cleanups.push(() => { try { metadata.close(); } catch { /* ignore */ } try { keyring.close(); } catch { /* ignore */ } });
   let clock = 1_800_000_000_000;
@@ -34,7 +35,7 @@ function setup() {
     name: 'oauth-server', transport: 'streamable-http', endpoint: 'https://mcp.example.com/mcp',
     headers: [], permissionDefault: 'allow', enabled: true
   }, 0)!;
-  return { metadata, store, a, b, server, advance: (ms: number) => { clock += ms; }, database: metadata.database };
+  return { metadata, store, key, a, b, server, advance: (ms: number) => { clock += ms; }, database: metadata.database };
 }
 
 const grantInput = (overrides: Partial<Parameters<McpOAuthStore['saveGrant']>[2]> = {}) => ({
@@ -127,6 +128,21 @@ describe('McpOAuthStore', () => {
     expect(audit).toContain('mcp_oauth.authorization_completed');
     expect(audit).toContain('mcp_oauth.disconnected');
     expect(audit).not.toContain('super-secret-token');
+  });
+
+  it('re-encrypts grants and flows onto the active key and keeps them readable', () => {
+    const { store, a, server, database, key } = setup();
+    store.saveGrant(a, server.id, grantInput());
+    store.beginFlow(a, server.id, { stateHash: hash('c'), expectedIssuer: 'https://as.example.com', scopes: null, blob: '{"flow":1}' });
+    const rotated = new SecretKeyring(2, [{ version: 1, key }, { version: 2, key: randomBytes(32) }]);
+    cleanups.push(() => rotated.close());
+    const next = new McpOAuthStore(database, rotated);
+    expect(next.reencrypt()).toBe(2);
+    expect(database.prepare('SELECT key_version FROM mcp_oauth_grants').get()).toEqual({ key_version: 2 });
+    expect(database.prepare('SELECT key_version FROM mcp_oauth_flows').get()).toEqual({ key_version: 2 });
+    expect(next.loadGrant(a, server.id)!.blob).toContain('super-secret-token');
+    expect(next.consumeFlow(a, hash('c')).blob).toBe('{"flow":1}');
+    expect(next.reencrypt()).toBe(0);
   });
 
   it('scrubs credentials and control characters from stored errors', () => {

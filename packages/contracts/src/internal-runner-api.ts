@@ -376,8 +376,8 @@ const metadataInputs = {
     expectedGeneration: z.number().int().min(0),
     issuer: z.string().min(1).max(2_048),
     registrationMode: McpGatewayOAuthRegistrationModeSchema,
-    grantedScopes: z.string().max(500).nullable().default(null),
-    requestedScopes: z.string().max(500).nullable().default(null),
+    grantedScopes: z.string().max(4_096).nullable().default(null),
+    requestedScopes: z.string().max(4_096).nullable().default(null),
     expiresAt: z.number().int().positive().nullable().default(null),
     refreshed: z.boolean().default(false),
     blob: z.string().min(2).max(131_072)

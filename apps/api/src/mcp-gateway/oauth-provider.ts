@@ -9,6 +9,7 @@ import {
 import {
   HarnessError,
   type McpGatewayOAuthRegistrationMode,
+  type RunnerResponse,
   type RunnerPrincipalSelector
 } from '@cloud-harness/contracts';
 import type { RunnerClient } from '../runner-client.js';
@@ -188,6 +189,8 @@ export class DownstreamOAuthProvider implements OAuthClientProvider {
 
   async saveClientInformation(info: StoredOAuthClientInformation): Promise<void> {
     await this.load();
+    // A manually registered client lives in the server configuration, never in the grant.
+    if (this.options.manualClient) return;
     this.grant.clientInformation = info;
     this.pendingRegistrationMode = this.options.clientMetadataUrl && info.client_id === this.options.clientMetadataUrl ? 'cimd' : 'dcr';
   }
@@ -227,25 +230,29 @@ export class DownstreamOAuthProvider implements OAuthClientProvider {
     const mode: McpGatewayOAuthRegistrationMode = this.options.manualClient
       ? 'manual'
       : this.pendingRegistrationMode ?? this.registrationModeFromGrant();
-    const response = await this.call('mcp_oauth_grant_save', {
+    const save = (): Promise<RunnerResponse | undefined> => this.call('mcp_oauth_grant_save', {
       serverId: this.options.serverId,
       expectedGeneration: this.generation,
       issuer,
       registrationMode: mode,
       grantedScopes: typeof tokens?.scope === 'string' ? tokens.scope : this.options.scopes,
       requestedScopes: this.options.scopes,
-      expiresAt: expiresIn === null ? null : this.now() + expiresIn * 1000,
+      expiresAt: expiresIn === null ? null : Math.floor(this.now() + expiresIn * 1000),
       refreshed,
       blob: JSON.stringify(this.grant)
     }).catch((error: unknown) => {
       if (error instanceof HarnessError && error.code === 'CONFLICT') return undefined;
       throw error;
     });
+    let response = await save();
     if (!response) {
-      // Another process rotated the grant. Adopt it rather than overwrite a newer token.
       this.loaded = false;
       await this.load();
-      return;
+      // A callback holds the only copy of the freshly authorized tokens, so it saves them
+      // over the newer generation. A background refresh adopts the newer grant instead of
+      // overwriting a token another process rotated.
+      if (this.options.flow) response = await save();
+      if (!response) return;
     }
     this.generation = Number((response.data as { generation?: number } | undefined)?.generation ?? this.generation + 1);
     this.dirty = false;
@@ -308,6 +315,8 @@ export class DownstreamOAuthProvider implements OAuthClientProvider {
       // grant untouched, so it is never reported as re-authorization.
       if (this.hasGrant && (this.dirty || !this.canRefresh)) {
         await this.markReauthorizationRequired('the authorization server rejected the stored grant');
+      } else if (this.hasGrant) {
+        throw new HarnessError('UNAVAILABLE', 'The OAuth token refresh failed temporarily; retry shortly', 503, true);
       }
       throw new McpOAuthAuthorizationRequiredError();
     }
@@ -355,7 +364,10 @@ export function guardBackgroundFetch(
     const method = (init?.method ?? 'GET').toUpperCase();
     if (method !== 'GET' && method !== 'HEAD') {
       await provider.load();
-      if (!provider.canRefresh) throw new McpOAuthAuthorizationRequiredError();
+      if (!provider.canRefresh) {
+        if (provider.hasGrant) await provider.markReauthorizationRequired('the authorization server rejected the stored client');
+        throw new McpOAuthAuthorizationRequiredError();
+      }
     }
     return fetcher(input, init);
   };

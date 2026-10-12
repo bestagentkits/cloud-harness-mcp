@@ -185,7 +185,7 @@ records the product decisions; the controls below are the boundary.
   a newer token. Owners:
   [`apps/runner/src/mcp-oauth-store.ts`](../apps/runner/src/mcp-oauth-store.ts)
   and [`apps/api/src/mcp-gateway/oauth-provider.ts`](../apps/api/src/mcp-gateway/oauth-provider.ts).
-  The `secrets:rekey` entry point does not re-encrypt these tables; see
+  The `secrets:rekey` entry point re-encrypts these tables too; see
   [secret key rotation](operations.md#secret-key-rotation).
 - **No token in any view.** Server views, the OAuth status projection,
   dashboard responses, traces, logs, and audit details carry no access token,

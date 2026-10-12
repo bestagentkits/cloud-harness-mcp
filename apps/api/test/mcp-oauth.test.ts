@@ -27,6 +27,7 @@ type WorldOptions = {
   redirectToken?: boolean;
   oversizeToken?: boolean;
   noRevocation?: boolean;
+  longScope?: boolean;
 };
 
 /** An OAuth-protected MCP server and its authorization server, in process. */
@@ -41,6 +42,7 @@ function createWorld(options: WorldOptions = {}) {
     refreshPosts: 0,
     revoked: [] as string[],
     failRefresh: false,
+    transientRefresh: false,
     registrations: 0
   };
   const json = (payload: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -113,11 +115,12 @@ function createWorld(options: WorldOptions = {}) {
           state.counter += 1;
           state.access = `access-${state.counter}`;
           state.refresh = `refresh-${state.counter}`;
-          return json({ access_token: state.access, refresh_token: state.refresh, token_type: 'Bearer', expires_in: 3600, scope: 'read' });
+          return json({ access_token: state.access, refresh_token: state.refresh, token_type: 'Bearer', expires_in: 3600, scope: options.longScope ? Array.from({ length: 200 }, (_, i) => `scope-${i}`).join(' ') : 'read' });
         }
         if (form.get('grant_type') === 'refresh_token') {
           state.refreshPosts += 1;
           await Promise.resolve();
+          if (state.transientRefresh) return new Response('', { status: 503 });
           if (state.failRefresh || form.get('refresh_token') !== state.refresh) return json({ error: 'invalid_grant' }, 400);
           state.counter += 1;
           state.access = `access-${state.counter}`;
@@ -368,6 +371,36 @@ describe('downstream MCP OAuth: background calls', () => {
     expect(fresh.marks.some((m) => m.state === 'reauthorization_required')).toBe(true);
     expect(fresh.grants.has(slot)).toBe(true);
     await fresh.connections.closeAll();
+  });
+
+  it('reports a transient refresh failure as retryable instead of requiring reauthorization', async () => {
+    const world = createWorld();
+    const built = build(world);
+    const { state } = await authorize(world, built);
+    await built.coordinator.complete(alice, { code: 'code-1', state });
+    await built.connections.closeAll();
+    const fresh = build(world, built);
+    const slot = `${alice.issuer}|${alice.subject}|${SERVER_ID}`;
+    const grant = fresh.grants.get(slot)!;
+    const blob = JSON.parse(grant.blob);
+    blob.tokensObtainedAt = 1;
+    fresh.grants.set(slot, { ...grant, blob: JSON.stringify(blob) });
+    world.state.access = 'access-expired';
+    world.state.transientRefresh = true;
+    const result = await fresh.service.testServer(alice, SERVER_ID);
+    expect(result.error?.code).not.toBe('AUTHORIZATION_REQUIRED');
+    expect(fresh.marks).toHaveLength(0);
+    await fresh.connections.closeAll();
+  });
+
+  it('stores a grant whose scope string is longer than a server-configured scope', async () => {
+    const world = createWorld({ longScope: true });
+    const built = build(world);
+    const { state } = await authorize(world, built);
+    const outcome = await built.coordinator.complete(alice, { code: 'code-1', state });
+    expect(outcome).toMatchObject({ outcome: 'connected' });
+    expect(built.grants.size).toBe(1);
+    await built.connections.closeAll();
   });
 
   it('rejects an oversized token response and an OAuth redirect', async () => {
