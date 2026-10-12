@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, open, readdir, readlink, realpath, type FileHandle } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { parseDocument } from 'yaml';
 import {
@@ -38,9 +38,13 @@ import type { StateStore } from './state-store.js';
  * Workspace and repository skills are served only to a request bound to one of the caller's workspaces,
  * and are read from that workspace's checkout on this host. That content is repository-controlled and
  * mutable by the executor at any moment, so it is never cached: every call re-checks that the workspace
- * is the caller's and still open, rebuilds the manifest it answers from, and walks only canonical paths
- * (no symlink anywhere between the checkout root and a served file). A read re-verifies the returned
- * bytes against a manifest built in the same call and refuses them as stale if they differ.
+ * is the caller's and still open, rebuilds the manifest it answers from, and reads only canonical paths
+ * (no symlink anywhere between the checkout root and a served file): every directory and file is opened
+ * without following a final link and the opened descriptor's own location is then checked to be that
+ * canonical path, so swapping a parent directory for a link mid-walk cannot redirect a read. A read
+ * re-verifies the returned bytes against a manifest built in the same call and refuses them as stale if
+ * they differ. As in the executor, a skill there is keyed by its directory name, and the highest-ranked
+ * root that holds a skill directory of a name decides it, whether or not that copy can be served.
  */
 
 type SkillStore = Pick<StateStore, 'listSkillSources' | 'getSkillRevision'>;
@@ -101,6 +105,20 @@ class SkillContentChanged extends Error {}
 
 const SKILL_DOCUMENT = 'SKILL.md';
 const MAX_FRONTMATTER_BYTES = 65_536;
+/**
+ * How much of a SKILL.md is parsed: the frontmatter bound plus room for its fences and line endings. A
+ * longer document is still served whole; only its head is ever decoded and parsed.
+ */
+const SKILL_DOCUMENT_HEAD_BYTES = MAX_FRONTMATTER_BYTES + 1_024;
+/** The buffer a file is read through, so hashing a large file never holds more than this at once. */
+const READ_CHUNK_BYTES = 65_536;
+/**
+ * Bounds the work one call does on a repository-controlled skill root: only this many directories, the
+ * first in name order, are considered, so a checkout cannot make every call load thousands of skills.
+ */
+const MAX_SKILL_DIRECTORIES_PER_ROOT = 60;
+/** Where Linux exposes each open descriptor as a link to the file it actually refers to. */
+const PROC_SELF_FD = '/proc/self/fd';
 const MAX_JSON_DEPTH = 64;
 const BUNDLE_SHA256 = /^[0-9a-f]{64}$/;
 /** Bounds the manifests held in memory; each is at most one skill's file list and frontmatter. */
@@ -147,49 +165,143 @@ export function isServableSkillName(value: unknown): value is string {
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** A path with no symlink anywhere along it resolves to itself; anything else may lead outside the skill. */
-async function assertCanonical(path: string): Promise<void> {
+/** The path through which an open descriptor can be used again, at-style, without re-resolving its name. */
+const descriptorPath = (handle: FileHandle) => `${PROC_SELF_FD}/${handle.fd}`;
+
+const errorCode = (error: unknown) => (error as NodeJS.ErrnoException | undefined)?.code;
+
+/**
+ * Checks that an open descriptor refers to the file at `path` itself. The kernel reports where the
+ * descriptor really points, so this one step covers every component of the path at the moment of the
+ * open: a parent swapped for a link (even one swapped back afterwards) yields a different location.
+ * Where that report is unavailable the location cannot be vouched for, so the path is refused.
+ */
+async function assertOpenedAt(handle: FileHandle, path: string): Promise<void> {
   let actual: string;
   try {
-    actual = await realpath(path);
+    actual = await readlink(descriptorPath(handle));
   } catch {
-    throw new SkillContentChanged('a skill path vanished while it was read');
+    throw new UnservableSkill('the location of an opened skill path cannot be verified on this host');
   }
-  if (actual !== path) throw new UnservableSkill('a skill path passes through a symbolic link');
+  if (actual === path) return;
+  // Tell a path that simply is not canonical apart from one that moved while it was being opened.
+  const resolved = await realpath(path).catch(() => undefined);
+  throw resolved === path
+    ? new SkillContentChanged('a skill path changed while it was opened')
+    : new UnservableSkill('a skill path passes through a symbolic link');
 }
 
 /**
- * Reads one regular file without following a final symlink and without blocking on a FIFO, bounded by
- * `maxBytes`. A file that grows or shrinks while it is read is reported as changed, not truncated.
- *
- * With `canonical`, the path is also checked to resolve to itself before the open, and the opened file
- * must still be the file at that canonical path afterwards, so a directory swapped for a link to
- * somewhere else between the check and the open cannot make the read return an outside file.
+ * Opens `path` without following a final symlink. With `canonical`, the descriptor must then refer to
+ * exactly that path, so no symlink anywhere along it can have led the open somewhere else.
  */
-async function readRegularFile(path: string, maxBytes: number, canonical = false): Promise<Buffer> {
-  if (canonical) await assertCanonical(path);
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+async function openNoFollow(path: string, flags: number, canonical: boolean): Promise<FileHandle> {
+  let handle: FileHandle;
+  try {
+    handle = await open(path, flags | constants.O_NOFOLLOW);
+  } catch (error) {
+    if (!canonical) throw error;
+    const code = errorCode(error);
+    if (code === 'ELOOP' || code === 'ENOTDIR') throw new UnservableSkill('a skill path is a symbolic link or not the expected type');
+    if (code === 'ENOENT') throw new SkillContentChanged('a skill path vanished while it was read');
+    throw error;
+  }
+  if (!canonical) return handle;
+  try {
+    await assertOpenedAt(handle, path);
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+/** Opens a regular file without blocking on a FIFO, refusing one above `maxBytes`. */
+async function openRegularFile(path: string, maxBytes: number, canonical: boolean): Promise<{ handle: FileHandle; size: number }> {
+  const handle = await openNoFollow(path, constants.O_RDONLY | constants.O_NONBLOCK, canonical);
   try {
     const stats = await handle.stat();
     if (!stats.isFile()) throw new UnservableSkill('a skill file is not a regular file');
     if (stats.size > maxBytes) throw new UnservableSkill('a skill exceeds the total size limit');
-    if (canonical) {
-      const named = await lstat(path).catch(() => undefined);
-      if (!named || named.dev !== stats.dev || named.ino !== stats.ino || (await realpath(path).catch(() => undefined)) !== path) {
-        throw new SkillContentChanged('a skill path changed while it was read');
-      }
-    }
-    const bytes = Buffer.alloc(stats.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
-      if (bytesRead === 0) throw new SkillContentChanged('a skill file shrank while it was read');
-      offset += bytesRead;
-    }
-    if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) {
-      throw new SkillContentChanged('a skill file grew while it was read');
-    }
+    return { handle, size: stats.size };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+/**
+ * Passes exactly `size` bytes of an open file to `consume`, a bounded chunk at a time. A file that
+ * grows or shrinks while it is read is reported as changed, not truncated.
+ */
+async function consumeFile(handle: FileHandle, size: number, consume: (chunk: Buffer) => void): Promise<void> {
+  const chunk = Buffer.alloc(Math.max(1, Math.min(size, READ_CHUNK_BYTES)));
+  let offset = 0;
+  while (offset < size) {
+    const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, size - offset), offset);
+    if (bytesRead === 0) throw new SkillContentChanged('a skill file shrank while it was read');
+    consume(chunk.subarray(0, bytesRead));
+    offset += bytesRead;
+  }
+  if ((await handle.read(Buffer.alloc(1), 0, 1, offset)).bytesRead !== 0) {
+    throw new SkillContentChanged('a skill file grew while it was read');
+  }
+}
+
+/**
+ * Reads one regular file without following a final symlink and without blocking on a FIFO, bounded by
+ * `maxBytes`. With `canonical`, the opened descriptor must be the file at that exact path, so a
+ * directory swapped for a link to somewhere else cannot make the read return an outside file.
+ */
+async function readRegularFile(path: string, maxBytes: number, canonical = false): Promise<Buffer> {
+  const { handle, size } = await openRegularFile(path, maxBytes, canonical);
+  try {
+    const bytes = Buffer.alloc(size);
+    let at = 0;
+    await consumeFile(handle, size, (chunk) => {
+      at += chunk.copy(bytes, at);
+    });
     return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Reads a SKILL.md for its frontmatter: only the head is kept for parsing, while the whole document is
+ * hashed so the manifest can later be tied to the exact bytes the frontmatter came from.
+ */
+async function readSkillDocument(path: string, canonical: boolean): Promise<{ head: Buffer; complete: boolean; digest: string }> {
+  const { handle, size } = await openRegularFile(path, SKILLS_EXTENSION_MAX_BYTES, canonical);
+  try {
+    const head = Buffer.alloc(Math.min(size, SKILL_DOCUMENT_HEAD_BYTES));
+    const hash = createHash('sha256');
+    let at = 0;
+    await consumeFile(handle, size, (chunk) => {
+      hash.update(chunk);
+      if (at < head.length) at += chunk.copy(head, at, 0, Math.min(chunk.length, head.length - at));
+    });
+    return { head, complete: size <= head.length, digest: hash.digest('hex') };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** A directory's raw entry names, and the path through which one of its entries is inspected. */
+type DirectoryView = { names: Buffer[]; entry: (name: string) => string };
+
+/**
+ * Lets `use` inspect one directory. With `canonical`, the directory is opened without following a final
+ * link and its descriptor is checked to be that exact path; its names are then read, and its entries
+ * inspected, through the descriptor, so they belong to the verified directory even if the path is
+ * swapped meanwhile. The descriptor stays open until `use` settles.
+ */
+async function withDirectory<T>(path: string, canonical: boolean, use: (view: DirectoryView) => Promise<T>): Promise<T> {
+  if (!canonical) return await use({ names: await readdir(path, { encoding: 'buffer' }), entry: (name) => join(path, name) });
+  const handle = await openNoFollow(path, constants.O_RDONLY | constants.O_DIRECTORY, true);
+  try {
+    const at = descriptorPath(handle);
+    return await use({ names: await readdir(at, { encoding: 'buffer' }), entry: (name) => `${at}/${name}` });
   } finally {
     await handle.close();
   }
@@ -209,10 +321,10 @@ async function holdsSkillDocument(dir: string): Promise<boolean> {
  * Lists a directory by raw names. A name that is not UTF-8 has no URI, so the skill holding it could
  * not publish a complete manifest and is unservable, not a read failure.
  */
-async function readNames(dir: string): Promise<string[]> {
-  const names = (await readdir(dir, { encoding: 'buffer' })).map((raw) => {
+function decodeNames(raw: Buffer[]): string[] {
+  const names = raw.map((name) => {
     try {
-      return UTF8.decode(raw);
+      return UTF8.decode(name);
     } catch {
       throw new UnservableSkill('a skill file name is not UTF-8');
     }
@@ -220,33 +332,47 @@ async function readNames(dir: string): Promise<string[]> {
   return names.sort(byName);
 }
 
+/** Hashes one file a bounded chunk at a time, so a large file is never held whole in memory. */
+async function hashRegularFile(path: string, maxBytes: number, canonical: boolean): Promise<FileDigest> {
+  const { handle, size } = await openRegularFile(path, maxBytes, canonical);
+  try {
+    const hash = createHash('sha256');
+    await consumeFile(handle, size, (chunk) => hash.update(chunk));
+    return { digest: hash.digest('hex'), size };
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Hashes every file of a skill directory from its actual bytes. Any symlink or special file makes the
  * whole skill unservable rather than being skipped, because the extension requires `resources` to be
  * complete and a skipped file would make the published manifest a lie about the directory. Reads are
- * asynchronous, so a large tree yields to other requests between files.
+ * asynchronous, so a large tree yields to other requests between files. With `canonical`, every
+ * directory and file is opened through `openNoFollow`'s location check.
  */
 async function hashSkillTree(root: string, canonical = false): Promise<Map<string, FileDigest>> {
   const files = new Map<string, FileDigest>();
   let total = 0;
-  const visit = async (absolute: string, relative: string, depth: number) => {
+  const visit = async (absolute: string, relative: string, depth: number): Promise<void> => {
     if (depth > SKILLS_EXTENSION_MAX_TREE_DEPTH) throw new UnservableSkill('a skill directory is nested too deeply');
-    if (canonical) await assertCanonical(absolute);
-    for (const name of await readNames(absolute)) {
-      const childAbsolute = join(absolute, name);
-      const childRelative = relative === '' ? name : `${relative}/${name}`;
-      const stats = await lstat(childAbsolute);
-      if (stats.isSymbolicLink()) throw new UnservableSkill('a skill contains a symbolic link');
-      if (stats.isDirectory()) {
-        await visit(childAbsolute, childRelative, depth + 1);
-        continue;
+    await withDirectory(absolute, canonical, async ({ names, entry }) => {
+      for (const name of decodeNames(names)) {
+        const childAbsolute = join(absolute, name);
+        const childRelative = relative === '' ? name : `${relative}/${name}`;
+        const stats = await lstat(entry(name));
+        if (stats.isSymbolicLink()) throw new UnservableSkill('a skill contains a symbolic link');
+        if (stats.isDirectory()) {
+          await visit(childAbsolute, childRelative, depth + 1);
+          continue;
+        }
+        if (!stats.isFile()) throw new UnservableSkill('a skill contains a special file');
+        if (files.size >= SKILLS_EXTENSION_MAX_FILES) throw new UnservableSkill('a skill exceeds the file count limit');
+        const file = await hashRegularFile(childAbsolute, SKILLS_EXTENSION_MAX_BYTES - total, canonical);
+        total += file.size;
+        files.set(childRelative, file);
       }
-      if (!stats.isFile()) throw new UnservableSkill('a skill contains a special file');
-      if (files.size >= SKILLS_EXTENSION_MAX_FILES) throw new UnservableSkill('a skill exceeds the file count limit');
-      const bytes = await readRegularFile(childAbsolute, SKILLS_EXTENSION_MAX_BYTES - total, canonical);
-      total += bytes.length;
-      files.set(childRelative, { digest: sha256(bytes), size: bytes.length });
-    }
+    });
   };
   await visit(root, '', 0);
   return files;
@@ -268,11 +394,12 @@ function isJsonValue(value: unknown, depth = 0): boolean {
  * Parses the complete YAML frontmatter of a SKILL.md, keeping every field the author wrote. Returns
  * undefined for a document that is not UTF-8, has no leading frontmatter block, does not parse cleanly,
  * or lacks a usable `name` and `description`; such a skill is skipped rather than served half-described.
+ * With `complete` false, `document` is only the head of a longer document, which may end mid-character.
  */
-export function parseSkillFrontmatter(document: Buffer): Record<string, unknown> | undefined {
+export function parseSkillFrontmatter(document: Buffer, complete = true): Record<string, unknown> | undefined {
   let text: string;
   try {
-    text = UTF8.decode(document);
+    text = complete ? UTF8.decode(document) : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(document, { stream: true });
   } catch {
     return undefined;
   }
@@ -297,10 +424,10 @@ export function parseSkillFrontmatter(document: Buffer): Record<string, unknown>
 /** Reads and parses a skill's SKILL.md; any failure leaves the skill unserved. */
 async function loadSkill(dir: string, canonical = false): Promise<CachedSkill | undefined> {
   try {
-    const document = await readRegularFile(join(dir, SKILL_DOCUMENT), SKILLS_EXTENSION_MAX_BYTES, canonical);
-    const frontmatter = parseSkillFrontmatter(document);
+    const document = await readSkillDocument(join(dir, SKILL_DOCUMENT), canonical);
+    const frontmatter = parseSkillFrontmatter(document.head, document.complete);
     if (!frontmatter) return undefined;
-    return { name: frontmatter.name as string, dir, frontmatter, skillMdDigest: sha256(document), ...(canonical ? { canonical: true as const } : {}) };
+    return { name: frontmatter.name as string, dir, frontmatter, skillMdDigest: document.digest, ...(canonical ? { canonical: true as const } : {}) };
   } catch {
     return undefined;
   }
@@ -442,7 +569,7 @@ export class SkillExtensionService {
 
   /**
    * Returns one file, only if its bytes match the manifest this call answers from and, when given,
-   * the digest the caller pinned. A cached manifest that disagrees is rebuilt once; a workspace-tier
+   * the runner-internal `expectedDigest` (the public `resources/read` never sends one). A cached manifest that disagrees is rebuilt once; a workspace-tier
    * manifest is always fresh, so any disagreement means the file changed and is refused as stale.
    */
   async read(
@@ -514,8 +641,11 @@ export class SkillExtensionService {
     return { tier: tier.data, name };
   }
 
+  /** A workspace-tier skill is looked up by name directly, so a get or read never loads the whole tier. */
   private async findHeader(scope: Scope, parsed: ParsedSkillUri, uri: string): Promise<SkillHeader> {
-    const header = (await this.tierHeaders(parsed.tier, scope)).find((candidate) => candidate.name === parsed.name);
+    const header = isWorkspaceTier(parsed.tier)
+      ? scope.workspace ? await this.workspaceHeader(parsed.tier, scope.workspace, parsed.name) : undefined
+      : (await this.tierHeaders(parsed.tier, scope)).find((candidate) => candidate.name === parsed.name);
     return header ?? notFound(`${uri} does not identify a served skill`);
   }
 
@@ -595,16 +725,15 @@ export class SkillExtensionService {
 
   /**
    * The skills one tier serves, one per name. Names are compared within the tier only: a name present
-   * in several tiers is served at each tier-qualified URI. Within a tier the shared resolver decides, so
-   * a repository skill under a higher-ranked root shadows a same-named one under a lower-ranked root,
-   * identical content at one rank resolves to one winner, and differing content at one rank is a conflict
-   * served under neither, exactly as a launch would refuse it. A same-rank collision whose content
+   * in several tiers is served at each tier-qualified URI. A workspace tier is already one skill per
+   * directory name, decided by root rank in `workspaceHeaders`. In the other tiers the shared resolver
+   * decides: identical content claiming one name resolves to one winner, and differing content is a
+   * conflict served under neither, exactly as a launch would refuse it. A collision whose content
    * cannot be established is a conflict too, so neither claimant is served.
    */
   private async tierHeaders(tier: SkillExtensionTier, scope: Scope): Promise<SkillHeader[]> {
-    let headers: SkillHeader[];
-    if (isWorkspaceTier(tier)) headers = scope.workspace ? await this.workspaceHeaders(tier, scope.workspace) : [];
-    else headers = tier === 'built-in' ? await this.builtinHeaders() : await this.ownerHeaders(scope.ownerId);
+    if (isWorkspaceTier(tier)) return scope.workspace ? await this.workspaceHeaders(tier, scope.workspace) : [];
+    const headers = tier === 'built-in' ? await this.builtinHeaders() : await this.ownerHeaders(scope.ownerId);
     const rankKey = (header: SkillHeader) => `${header.name}\0${repositorySubRank(header.rootPath)}`;
     const counts = new Map<string, number>();
     for (const header of headers) counts.set(rankKey(header), (counts.get(rankKey(header)) ?? 0) + 1);
@@ -722,27 +851,129 @@ export class SkillExtensionService {
   /**
    * The skills one workspace tier offers from the bound workspace's checkout, read fresh on every call.
    * A skill root is used only if it is a real directory reached without any symlink, so a checkout that
-   * links `.agents/skills` (or any parent) elsewhere serves nothing from that root. Each skill is then
-   * read and hashed through canonical paths only.
+   * links `.agents/skills` (or any parent) elsewhere serves nothing from that root. Within a root only
+   * the first `MAX_SKILL_DIRECTORIES_PER_ROOT` directories by name are considered. A name is decided by
+   * the highest-ranked root that claims it, as in `workspaceHeader`.
    */
   private async workspaceHeaders(tier: WorkspaceTier, workspace: { id: string; root: string }): Promise<SkillHeader[]> {
-    const headers: SkillHeader[] = [];
-    for (const rootPath of WORKSPACE_SKILL_ROOTS[tier]) {
-      const root = join(workspace.root, ...rootPath.split('/'));
-      try {
-        if (!(await lstat(root)).isDirectory() || (await realpath(root)) !== root) continue;
-      } catch {
-        continue;
+    return await this.withSkillRoots(tier, workspace, async (roots) => {
+      const headers: SkillHeader[] = [];
+      for (const [index, root] of roots.entries()) {
+        for (const name of await cappedSkillDirectories(root.view)) {
+          if (!isServableSkillName(name) || (await claimedByAny(roots.slice(0, index), name))) continue;
+          const header = await this.loadWorkspaceSkill(tier, workspace, root.rootPath, name);
+          if (header) headers.push(header);
+        }
       }
-      for (const directory of await skillDirectoryNames(root)) {
-        const dir = join(root, directory);
-        if (!(await holdsSkillDocument(dir))) continue;
-        const skill = await loadSkill(dir, true);
-        if (!skill) continue;
-        const sourceId = `${tier}:${rootPath}/${directory}`;
-        headers.push({ tier, name: skill.name, workspaceId: workspace.id, rootPath, sourceId, revisionId: sourceId, cacheKey: `${tier}\0${workspace.id}\0${dir}`, skill });
-      }
-    }
-    return headers;
+      return headers;
+    });
   }
+
+  /**
+   * One workspace-tier skill, looked up by name. The highest-ranked root holding a skill directory of
+   * that name decides it: if that copy is past the root's directory bound or cannot be served, the name
+   * is not served at all, never answered from a lower-ranked root the executor would not have used.
+   */
+  private async workspaceHeader(tier: WorkspaceTier, workspace: { id: string; root: string }, name: string): Promise<SkillHeader | undefined> {
+    return await this.withSkillRoots(tier, workspace, async (roots) => {
+      for (const root of roots) {
+        if (!(await claimedByAny([root], name))) continue;
+        if (!(await cappedSkillDirectories(root.view)).includes(name)) return undefined;
+        return await this.loadWorkspaceSkill(tier, workspace, root.rootPath, name);
+      }
+      return undefined;
+    });
+  }
+
+  /**
+   * Opens a workspace tier's skill roots, highest rank first, each through a verified descriptor that
+   * stays open while `use` runs. A root that is absent, not a directory, or not canonical is left out.
+   */
+  private async withSkillRoots<T>(
+    tier: WorkspaceTier,
+    workspace: { root: string },
+    use: (roots: SkillRoot[]) => Promise<T>
+  ): Promise<T> {
+    const roots: SkillRoot[] = [];
+    const handles: FileHandle[] = [];
+    try {
+      for (const rootPath of WORKSPACE_SKILL_ROOTS[tier]) {
+        let handle: FileHandle;
+        try {
+          handle = await openNoFollow(join(workspace.root, ...rootPath.split('/')), constants.O_RDONLY | constants.O_DIRECTORY, true);
+        } catch {
+          continue;
+        }
+        handles.push(handle);
+        roots.push({ rootPath, view: descriptorPath(handle) });
+      }
+      return await use(roots);
+    } finally {
+      await Promise.all(handles.map(async (handle) => await handle.close()));
+    }
+  }
+
+  /**
+   * Loads a workspace skill through canonical paths only. The executor keys a skill by its directory
+   * name, so a skill whose frontmatter names anything else is not served under either name.
+   */
+  private async loadWorkspaceSkill(tier: WorkspaceTier, workspace: { id: string; root: string }, rootPath: string, name: string): Promise<SkillHeader | undefined> {
+    const dir = join(workspace.root, ...rootPath.split('/'), name);
+    const skill = await loadSkill(dir, true);
+    if (!skill || skill.name !== name) return undefined;
+    const sourceId = `${tier}:${rootPath}/${name}`;
+    return { tier, name, workspaceId: workspace.id, rootPath, sourceId, revisionId: sourceId, cacheKey: `${tier}\0${workspace.id}\0${dir}`, skill };
+  }
+}
+
+/** A workspace skill root, open for this call; `view` reaches it through its verified descriptor. */
+type SkillRoot = { rootPath: string; view: string };
+
+/**
+ * The first `MAX_SKILL_DIRECTORIES_PER_ROOT` real directories of a skill root by name, inspected through
+ * the root's descriptor. A name that is not UTF-8 has no URI and is skipped.
+ */
+async function cappedSkillDirectories(view: string): Promise<string[]> {
+  let names: string[];
+  try {
+    names = (await readdir(view, { encoding: 'buffer' }))
+      .flatMap((raw) => {
+        try {
+          return [UTF8.decode(raw)];
+        } catch {
+          return [];
+        }
+      })
+      .sort(byName);
+  } catch {
+    return [];
+  }
+  const directories: string[] = [];
+  for (const name of names) {
+    if (directories.length >= MAX_SKILL_DIRECTORIES_PER_ROOT) break;
+    if ((await lstat(`${view}/${name}`).catch(() => undefined))?.isDirectory()) directories.push(name);
+  }
+  return directories;
+}
+
+/**
+ * Whether any of `roots` claims `name` the way the executor's discovery would: a real directory of that
+ * name holding a SKILL.md entry, servable or not. It is checked through each root's descriptor and the
+ * directory is opened without following a link, so the check never resolves a path outside the root.
+ */
+async function claimedByAny(roots: SkillRoot[], name: string): Promise<boolean> {
+  for (const root of roots) {
+    let handle: FileHandle;
+    try {
+      handle = await open(`${root.view}/${name}`, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    } catch {
+      continue;
+    }
+    try {
+      if (await lstat(`${descriptorPath(handle)}/${SKILL_DOCUMENT}`).then(() => true, () => false)) return true;
+    } finally {
+      await handle.close();
+    }
+  }
+  return false;
 }

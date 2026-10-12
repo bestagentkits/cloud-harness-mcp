@@ -154,6 +154,14 @@ describe('Skills over MCP extension', () => {
     expect(internalCalls[1]!.input).toEqual({ limit: 100, cursor: 'page-2' });
   });
 
+  it('never forwards a client-supplied digest pin to the runner', async () => {
+    const { client: runner, internalCalls } = fakeRunner();
+    const client = await connect(runner);
+    const pin = `sha256:${'0'.repeat(64)}`;
+    await client.request({ method: 'resources/read', params: { uri: skillUri, expectedDigest: pin } } as never, z.unknown());
+    expect(internalCalls.map((call) => call.input)).toEqual([{ uri: skillUri }]);
+  });
+
   it('maps unknown or invalid URIs and malformed params to invalid params', async () => {
     const { client: runner, internalCalls } = fakeRunner();
     const client = await connect(runner);

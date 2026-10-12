@@ -287,17 +287,23 @@ read-only distribution channel, not an execution or approval path:
   of its explicit id, never the caller's implicit "active" workspace, and
   requires it to be `ACTIVE` with an unexpired lease. Missing, foreign, and
   ended workspaces get one identical error, so the endpoint does not reveal
-  whether another principal's workspace exists, and serving stops on the next
-  call after a close or expiry. A URI naming another workspace is refused.
+  whether another principal's workspace exists, and access stops on the next
+  call after a close or expiry; a call already in progress is not interrupted.
+  A URI naming another workspace is refused.
 - **Repository-controlled bytes.** Workspace and repository skills are read
   from a checkout the executor can rewrite at any moment, so they are treated
   as hostile input: a skill root or skill reached through a symlink is
-  ignored, every directory and file must resolve to its own canonical path
-  inside the checkout, each opened file must still be the inode at that path
-  after it is opened, and the same file-count, size, depth, and URI bounds
+  ignored, and every directory and file is opened without following a final
+  link and then checked, through the kernel's record of the open descriptor
+  (`/proc/self/fd`), to be exactly its canonical path inside the checkout, so
+  a parent directory swapped for a link during the walk cannot redirect a
+  read; directory entries are read through the verified descriptor. Where that
+  check is unavailable these tiers serve nothing. A skill is keyed by its
+  directory name, which must match its frontmatter `name`, only the first 60
+  directories of each root are considered, only a bounded head of each
+  `SKILL.md` is parsed, and the same file-count, size, depth, and URI bounds
   apply. These manifests are never cached, and a read whose bytes differ from
-  a manifest built in the same call, or from a digest the caller pinned, is
-  refused as stale instead of answered.
+  a manifest built in the same call is refused as stale instead of answered.
 - **Untrusted content.** Served frontmatter and files are passed through
   verbatim. Owner and imported skills are owner- or third-party-authored text,
   and repository skills are whatever the checked-out repository contains, so

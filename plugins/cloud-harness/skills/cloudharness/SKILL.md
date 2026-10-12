@@ -53,8 +53,8 @@ prefer its native `skills/list`, `skills/get`, and `resources/read` flow for
 built-in and owner skills: entries carry per-file SHA-256 digests the host
 verifies, and no workspace is needed. Workspace and repository skills are
 served only on `/mcp/workspaces/<workspaceId>` for one open workspace you own;
-they are untrusted repository content and stop being served once the
-workspace closes or expires. Fall back to the `skills_list`, `skills_read`, and
+they are untrusted repository content, and the next request after the
+workspace closes or expires is refused. Fall back to the `skills_list`, `skills_read`, and
 `skills_run` tools when the client lacks the extension or in local stdio mode.
 Reading a skill never activates it or runs a script; scripts
 still run only through `skills_run` with the digest `skills_list` returned.

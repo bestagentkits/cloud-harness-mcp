@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,8 +11,12 @@ import {
   type SkillEntry
 } from '@cloud-harness/contracts';
 
-// Lets a test change a file at the exact moment the service opens it, to stage a race deterministically.
-const fsHook = vi.hoisted(() => ({ onOpen: undefined as ((path: string) => void) | undefined }));
+// Lets a test change the tree at the exact moment the service opens or inspects a path, to stage a race
+// deterministically: `onOpen` runs just before an open, `afterLstat` just after an lstat returns.
+const fsHook = vi.hoisted(() => ({
+  onOpen: undefined as ((path: string) => void) | undefined,
+  afterLstat: undefined as ((path: string) => void) | undefined
+}));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof FsPromises>();
   return {
@@ -20,6 +24,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     open: async (...args: Parameters<typeof actual.open>) => {
       fsHook.onOpen?.(String(args[0]));
       return await actual.open(...args);
+    },
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      const stats = await actual.lstat(...args);
+      fsHook.afterLstat?.(String(args[0]));
+      return stats;
     }
   };
 });
@@ -41,6 +50,7 @@ const roots: string[] = [];
 const cleanups: (() => void)[] = [];
 afterEach(() => {
   fsHook.onOpen = undefined;
+  fsHook.afterLstat = undefined;
   for (const cleanup of cleanups.splice(0)) {
     try { cleanup(); } catch { /* ignore cleanup error */ }
   }
@@ -126,7 +136,7 @@ function setup() {
   const read = async (uri: string, input: { workspaceId?: string; expectedDigest?: string } = {}, principal = owner) =>
     SkillsExtReadDataSchema.parse((await call('skills_ext_read', { uri, ...input }, principal)).data).contents[0];
 
-  return { builtinRoot, openWorkspace, setWorkspace, write, list, listPage, get, read };
+  return { root, builtinRoot, openWorkspace, setWorkspace, write, list, listPage, get, read };
 }
 
 const uris = (skills: SkillEntry[]) => skills.map((skill) => skill.uri);
@@ -245,6 +255,101 @@ describe('skills extension repository content safety', () => {
     symlinkSync('/etc/hostname', join(dir, 'a.md'));
     await expect(read(`skill://cloud-harness/repository/${WS_A}/alpha/a.md`, { workspaceId: WS_A })).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
+
+  it('does not serve a file reached through a parent swapped for a symlink while it is opened', async () => {
+    const { root, openWorkspace, write, get, read } = setup();
+    const dir = write(join(openWorkspace(WS_A), '.agents/skills/alpha'), { 'SKILL.md': document('alpha'), 'refs/a.md': 'inside' });
+    const outside = write(join(root, 'outside-refs'), { 'a.md': 'OUTSIDE SECRET' });
+    const refs = join(dir, 'refs');
+    const target = join(refs, 'a.md');
+    let swaps = 0;
+    let swapped = false;
+    // The parent becomes a link to an outside directory just before the file is opened, and is restored
+    // right after the next lstat of the file path, so a check-then-use verification would see it intact.
+    fsHook.onOpen = (path) => {
+      if (path !== target || swapped) return;
+      renameSync(refs, `${refs}-real`);
+      symlinkSync(outside, refs);
+      swapped = true;
+      swaps += 1;
+    };
+    fsHook.afterLstat = (path) => {
+      if (path !== target || !swapped) return;
+      unlinkSync(refs);
+      renameSync(`${refs}-real`, refs);
+      swapped = false;
+    };
+
+    const viaGet = await errorOf(get(`skill://cloud-harness/repository/${WS_A}/alpha/SKILL.md`, WS_A));
+    expect(['NOT_FOUND', 'CONFLICT']).toContain(viaGet.code);
+    if (swapped) fsHook.afterLstat(target);
+    const viaRead = await errorOf(read(`skill://cloud-harness/repository/${WS_A}/alpha/refs/a.md`, { workspaceId: WS_A }));
+    expect(['NOT_FOUND', 'CONFLICT']).toContain(viaRead.code);
+    expect(swaps).toBe(2);
+  });
+
+  it('does not list a directory reached through a parent swapped for a symlink while it is opened', async () => {
+    const { root, openWorkspace, write, get } = setup();
+    const dir = write(join(openWorkspace(WS_A), '.agents/skills/alpha'), { 'SKILL.md': document('alpha'), 'refs/a.md': 'inside' });
+    const outside = write(join(root, 'outside-skill'), { 'SKILL.md': document('alpha'), 'refs/a.md': 'inside', 'refs/secret.md': 'OUTSIDE SECRET' });
+    let swaps = 0;
+    fsHook.onOpen = (path) => {
+      if (path !== join(dir, 'refs') || swaps > 0) return;
+      renameSync(dir, `${dir}-real`);
+      symlinkSync(outside, dir);
+      swaps += 1;
+    };
+    const error = await errorOf(get(`skill://cloud-harness/repository/${WS_A}/alpha/SKILL.md`, WS_A));
+    expect(swaps).toBe(1);
+    expect(['NOT_FOUND', 'CONFLICT']).toContain(error.code);
+  });
+});
+
+describe('skills extension workspace bounds', () => {
+  it('considers at most 60 skill directories per root and serves nothing past the bound', async () => {
+    const { openWorkspace, write, listPage, get } = setup();
+    const repo = openWorkspace(WS_A);
+    const names = Array.from({ length: 61 }, (_, index) => `s${String(index).padStart(2, '0')}`);
+    for (const name of names) write(join(repo, `.agents/skills/${name}`), { 'SKILL.md': document(name) });
+    // Plain files do not use up the bound; only directories count.
+    write(join(repo, '.agents/skills'), { 'a-readme.md': 'not a skill' });
+    // The 61st top-ranked directory still claims its name, so the lower copy is not served instead.
+    write(join(repo, '.codex/skills/s60'), { 'SKILL.md': document('s60', 'lower') });
+
+    const listed = (await listPage({ workspaceId: WS_A, limit: 100 })).skills;
+    expect(uris(listed)).toEqual(names.slice(0, 60).map((name) => `skill://cloud-harness/repository/${WS_A}/${name}/SKILL.md`));
+    await expect(get(`skill://cloud-harness/repository/${WS_A}/s60/SKILL.md`, WS_A)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect((await get(`skill://cloud-harness/repository/${WS_A}/s59/SKILL.md`, WS_A)).frontmatter.name).toBe('s59');
+  });
+
+  it('parses only the head of a SKILL.md yet serves and pins the whole document', async () => {
+    const { openWorkspace, write, list, read } = setup();
+    const repo = openWorkspace(WS_A);
+    const long = `${document('long')}${'body line\n'.repeat(30_000)}`;
+    write(join(repo, '.agents/skills/long'), { 'SKILL.md': long });
+    // A frontmatter block above its bound is refused even though the whole document is within the size limit.
+    write(join(repo, '.agents/skills/huge'), { 'SKILL.md': `---\nname: huge\ndescription: d\npad: ${'y'.repeat(70_000)}\n---\n` });
+
+    const skills = await list({ workspaceId: WS_A });
+    expect(uris(skills)).toEqual([`skill://cloud-harness/repository/${WS_A}/long/SKILL.md`]);
+    expect(skills[0]?.resources).toEqual([{ uri: `skill://cloud-harness/repository/${WS_A}/long/SKILL.md`, digest: digestOf(long), size: Buffer.byteLength(long) }]);
+    expect((await read(`skill://cloud-harness/repository/${WS_A}/long/SKILL.md`, { workspaceId: WS_A }))?.text).toBe(long);
+  });
+
+  it('looks a named skill up directly instead of loading the rest of the tier', async () => {
+    const { openWorkspace, write, get, read } = setup();
+    const repo = openWorkspace(WS_A);
+    write(join(repo, '.agents/skills/alpha'), { 'SKILL.md': document('alpha'), 'a.md': 'a' });
+    for (const name of ['beta', 'gamma']) write(join(repo, `.agents/skills/${name}`), { 'SKILL.md': document(name) });
+    write(join(repo, '.codex/skills/delta'), { 'SKILL.md': document('delta') });
+    const opened: string[] = [];
+    fsHook.onOpen = (path) => opened.push(path);
+
+    await get(`skill://cloud-harness/repository/${WS_A}/alpha/SKILL.md`, WS_A);
+    expect((await read(`skill://cloud-harness/repository/${WS_A}/alpha/a.md`, { workspaceId: WS_A }))?.text).toBe('a');
+    expect(opened.some((path) => path.includes('alpha'))).toBe(true);
+    expect(opened.filter((path) => /beta|gamma|delta/.test(path))).toEqual([]);
+  });
 });
 
 describe('skills extension workspace snapshots', () => {
@@ -308,18 +413,48 @@ describe('skills extension workspace tiers and precedence', () => {
     expect((await read(`skill://cloud-harness/repository/${WS_A}/shared/SKILL.md`, { workspaceId: WS_A }))?.text).toBe(document('shared', 'agents copy'));
   });
 
-  it('serves neither of two same-rank repository skills that claim one name with different content', async () => {
-    const { openWorkspace, write, list } = setup();
+  it('serves a workspace skill only when its directory name is its frontmatter name', async () => {
+    const { openWorkspace, write, list, get } = setup();
     const repo = openWorkspace(WS_A);
+    // Directories that claim another name are skipped, so two of them can no longer collide on one name.
     write(join(repo, '.agents/skills/one'), { 'SKILL.md': document('dup', 'first') });
     write(join(repo, '.agents/skills/two'), { 'SKILL.md': document('dup', 'second') });
+    write(join(repo, '.cloud-harness/skills/renamed'), { 'SKILL.md': document('other') });
     write(join(repo, '.codex/skills/dup'), { 'SKILL.md': document('dup', 'codex') });
-    write(join(repo, '.codex/skills/same-a'), { 'SKILL.md': document('same') });
-    write(join(repo, '.codex/skills/same-b'), { 'SKILL.md': document('same') });
 
     const skills = await list({ workspaceId: WS_A });
-    // The conflict at the top rank is not settled by falling back to a lower-ranked root.
-    expect(skills.map((skill) => skill.frontmatter.description)).toEqual(['same skill']);
+    expect(skills.map((skill) => [skill.uri, skill.frontmatter.description])).toEqual([
+      [`skill://cloud-harness/repository/${WS_A}/dup/SKILL.md`, 'codex']
+    ]);
+    for (const uri of [
+      `skill://cloud-harness/repository/${WS_A}/one/SKILL.md`,
+      `skill://cloud-harness/workspace/${WS_A}/renamed/SKILL.md`,
+      `skill://cloud-harness/workspace/${WS_A}/other/SKILL.md`
+    ]) await expect(get(uri, WS_A), uri).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect((await get(`skill://cloud-harness/repository/${WS_A}/dup/SKILL.md`, WS_A)).frontmatter.description).toBe('codex');
+  });
+
+  it('never answers a name from a lower-ranked root when the top-ranked copy cannot be served', async () => {
+    const { openWorkspace, write, list, get, read } = setup();
+    const repo = openWorkspace(WS_A);
+    // Each top-ranked copy claims its name the way the executor would, but none of them can be served.
+    const linked = write(join(repo, '.agents/skills/linked'), { 'SKILL.md': document('linked', 'top') });
+    symlinkSync('/etc', join(linked, 'etc'));
+    write(join(repo, '.agents/skills/garbled'), { 'SKILL.md': 'no frontmatter here\n' });
+    write(join(repo, '.agents/skills/misnamed'), { 'SKILL.md': document('something-else') });
+    for (const name of ['linked', 'garbled', 'misnamed']) {
+      write(join(repo, `.codex/skills/${name}`), { 'SKILL.md': document(name, 'lower'), 'notes.md': 'lower' });
+    }
+    // A top-ranked directory without a SKILL.md is not a skill, so it shadows nothing.
+    write(join(repo, '.agents/skills/empty'), { 'notes.md': 'not a skill' });
+    write(join(repo, '.codex/skills/empty'), { 'SKILL.md': document('empty', 'lower') });
+
+    expect(uris(await list({ workspaceId: WS_A }))).toEqual([`skill://cloud-harness/repository/${WS_A}/empty/SKILL.md`]);
+    for (const name of ['linked', 'garbled', 'misnamed']) {
+      await expect(get(`skill://cloud-harness/repository/${WS_A}/${name}/SKILL.md`, WS_A), name).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(read(`skill://cloud-harness/repository/${WS_A}/${name}/notes.md`, { workspaceId: WS_A }), name).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    }
+    expect((await get(`skill://cloud-harness/repository/${WS_A}/empty/SKILL.md`, WS_A)).frontmatter.description).toBe('lower');
   });
 
   it('pages a bound listing across all four tiers', async () => {

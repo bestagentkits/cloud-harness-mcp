@@ -271,8 +271,11 @@ What is served:
   (`.cloud-harness/skills`, where workspace toolkits passed to `workspace_open`
   are applied) and `repository` tier (`.agents/skills`, `.codex/skills`,
   `.claude/skills`), read from its checkout. Repository skills are whatever the
-  repository contains: treat them as untrusted. Once the workspace is closed or
-  its lease expires, the endpoint stops serving it. Owner-scope toolkits
+  repository contains: treat them as untrusted. A workspace or repository
+  skill is served only when its directory name matches the `name` in its
+  frontmatter, and at most 60 skill directories per skill folder are
+  considered. Once the workspace is closed or its lease expires, the next
+  request to the endpoint is refused. Owner-scope toolkits
   passed to `workspace_open` are not served over the extension; use
   `skills_list` / `skills_read` on the open workspace for those.
 - Each file has a URI of the form

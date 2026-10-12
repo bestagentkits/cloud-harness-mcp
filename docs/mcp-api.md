@@ -176,14 +176,20 @@ Decisions that are easy to misread:
   toolkits are applied) and `repository` tier (`.agents/skills`,
   `.codex/skills`, `.claude/skills`), read from its checkout. Every call there
   re-checks that the workspace belongs to the caller and is `ACTIVE` with an
-  unexpired lease; a missing, foreign, closed, failed, or expired workspace is
-  the same `-32602` "workspace is not available", and reading does not extend
-  the lease. Workspace-tier URIs are refused (`-32602`) on the root endpoint
-  and on any other workspace's endpoint. Precedence follows the executor's
-  resolver: a name present in several tiers is served at each tier-qualified
-  URI, while within a tier a higher-ranked repository root shadows a lower one
-  and a conflict at one rank is served under neither, as a launch would refuse
-  it.
+  unexpired lease, so access stops on the next call after a close or expiry; a
+  missing, foreign, closed, failed, or expired workspace is the same `-32602`
+  "workspace is not available", and reading does not extend the lease.
+  Workspace-tier URIs are refused (`-32602`) on the root endpoint and on any
+  other workspace's endpoint. Precedence follows the executor's resolver: a
+  name present in several tiers is served at each tier-qualified URI. Within
+  the `workspace` and `repository` tiers a skill is keyed by its directory
+  name, which must equal its frontmatter `name` or the skill is not served;
+  the highest-ranked root holding a skill directory of a name decides it, and
+  if that copy cannot be served the name is not served from a lower-ranked
+  root. Only the first 60 directories of each such root, by name, are
+  considered. In the `built-in` and `owner` tiers, same-named skills with
+  differing content are a conflict served under neither, as a launch would
+  refuse it.
 - **Methods.** `skills/list`, `skills/get`, and `resources/read`. Skills are
   discovered only through `skills/list`: `resources/list` and
   `resources/templates/list` answer empty so the declared `resources`
@@ -203,7 +209,9 @@ Decisions that are easy to misread:
   never returns bytes that disagree with it. Workspace and repository content
   is mutable and repository-controlled, so it is never cached: each call
   hashes it afresh, and a read whose bytes differ from the manifest built in
-  the same call fails as changed rather than returning them. A skill with a
+  the same call fails as changed rather than returning them. Only the head of
+  a `SKILL.md` (the 64 KiB frontmatter bound plus its fences) is parsed; the
+  whole document is still hashed and served. A skill with a
   symlink, a special file, a file name that is not UTF-8, unusable frontmatter, more than 512
   files or 16 MiB, directories nested deeper than 32 levels, or a resource URI
   longer than 1024 characters is omitted rather than served partially.

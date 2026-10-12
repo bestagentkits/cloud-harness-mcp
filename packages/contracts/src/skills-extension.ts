@@ -69,7 +69,10 @@ export const SkillsExtListInputSchema = z.object({
   ...WorkspaceBinding
 }).strict();
 export const SkillsExtGetInputSchema = z.object({ uri: SkillUriSchema, ...WorkspaceBinding }).strict();
-/** `expectedDigest` pins the bytes the caller verified: a file whose digest differs is refused as stale. */
+/**
+ * `expectedDigest` is runner-internal: a file whose digest differs is refused as stale. The public
+ * `resources/read` method never forwards it, so it is not part of the client-facing contract.
+ */
 export const SkillsExtReadInputSchema = z.object({ uri: SkillUriSchema, expectedDigest: SkillDigestSchema.optional(), ...WorkspaceBinding }).strict();
 
 /** `skills_ext_list` answers `{ skills }`; the response envelope's `cursor` carries the next page. */
