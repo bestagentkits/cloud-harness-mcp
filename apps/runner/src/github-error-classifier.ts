@@ -107,7 +107,7 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
       /(?:line|position|start_line|path|start_side|commit_id|side)[^\n]*(?:could not be resolved|is not part of|is invalid|must precede|is outdated|wasn't found)/i,
       /diff hunk/i,
       /outdated/i,
-      /unprocessable entity/i
+      /HTTP 422/i
     ]
   },
   {
@@ -119,7 +119,7 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
       /review cannot be requested from pull request author/i,
       /not a collaborator/i,
       /could not (?:add|remove) reviewers?/i,
-      /unprocessable entity/i
+      /HTTP 422/i
     ]
   },
   // 4. Permission errors
@@ -128,6 +128,8 @@ const CLASSIFIER_RULES: readonly ClassifierRule[] = [
     retryable: false,
     patterns: [
       /Resource not accessible by integration/i,
+      /without .?workflows.? permission/i,
+      /refusing to allow a GitHub App to create or update workflow/i,
       /Must have push access/i,
       /Must have admin rights/i,
       /HTTP 403/i,

@@ -190,6 +190,11 @@ describe('GitHub Error Classifier', () => {
     expect(error.retryable).toBe(false);
   });
 
+  it('types an App merge of a workflow-file PR as a missing permission', () => {
+    const error = classifyGitHubFailure('GraphQL: refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission (mergePullRequest)', '', 'pr_merge');
+    expect(error.code).toBe('GITHUB_PERMISSION_MISSING');
+  });
+
   it('keeps a missing App permission on a merge distinct from a merge block', () => {
     const error = classifyGitHubFailure('gh: Resource not accessible by integration (HTTP 403)', '', 'pr_merge');
     expect(error.code).toBe('GITHUB_PERMISSION_MISSING');

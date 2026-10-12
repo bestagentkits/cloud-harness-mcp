@@ -372,6 +372,8 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       expect(result.ok).toBe(true);
       expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({ permissionScope: 'pull_requests', requiredPermission: 'write', contentsPermission: 'write' }));
       const [args] = helperCall()!;
+      expect(args.join(' ')).not.toContain('/repo:/workspace');
+      expect(args).toContain('/tmp');
       expect(args.slice(args.indexOf('pr_merge'))).toEqual(['pr_merge', '12', method, message.commitTitle ?? '', message.commitBody ?? '', sha]);
       expect(metadata.listAudit(principalId).find((a) => a.action === 'github_action.pr_merge')?.details).toMatchObject({ mergeMethod: method, success: true });
     });
@@ -439,6 +441,7 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_review', prNumber: 12, event: 'APPROVE' });
       const [args] = helperCall()!;
       expect(args.join(' ')).not.toContain('pr-scoped-write-token');
+      expect(args.join(' ')).toContain('/repo:/workspace:ro');
     });
   });
 

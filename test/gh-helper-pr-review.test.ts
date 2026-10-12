@@ -27,7 +27,7 @@ function run(args: string[], stub = '') {
   try {
     calls = readFileSync(log, 'utf8').split('\n--\n').filter(Boolean).map((chunk) => chunk.split('\0').filter((part, index, all) => part !== '' || index < all.length - 1));
   } catch { /* the helper rejected the input before calling gh */ }
-  return { ...result, calls };
+  return { ...result, calls, stdinOf: (name: string) => readFileSync(join(directory, name), 'utf8') };
 }
 
 describe('gh-helper pull request review lifecycle', () => {
@@ -75,10 +75,13 @@ describe('gh-helper pull request review lifecycle', () => {
   });
 
   it('requests and removes users and teams through the requested_reviewers endpoint', () => {
-    const request = run(['pr_reviewers_request', '12', 'octocat,hubot', 'core']);
-    expect(request.calls[0]).toEqual(expect.arrayContaining(['-X', 'POST', 'repos/{owner}/{repo}/pulls/12/requested_reviewers', 'reviewers[]=octocat', 'reviewers[]=hubot', 'team_reviewers[]=core']));
-    const remove = run(['pr_reviewers_remove', '12', '', 'core']);
-    expect(remove.calls[0]).toEqual(expect.arrayContaining(['-X', 'DELETE', 'team_reviewers[]=core']));
+    const request = run(['pr_reviewers_request', '12', 'octocat,hubot', 'core'], 'cat > "$(dirname "$0")/body.json"');
+    expect(request.calls[0]).toEqual(expect.arrayContaining(['-X', 'POST', 'repos/{owner}/{repo}/pulls/12/requested_reviewers', '--input', '-']));
+    expect(JSON.parse(request.stdinOf('body.json'))).toEqual({ reviewers: ['octocat', 'hubot'], team_reviewers: ['core'] });
+    // GitHub rejects a DELETE without `reviewers`, so a team-only removal still sends an empty array.
+    const remove = run(['pr_reviewers_remove', '12', '', 'core'], 'cat > "$(dirname "$0")/body.json"');
+    expect(remove.calls[0]).toEqual(expect.arrayContaining(['-X', 'DELETE']));
+    expect(JSON.parse(remove.stdinOf('body.json'))).toEqual({ reviewers: [], team_reviewers: ['core'] });
     expect(run(['pr_reviewers_request', '12', '', '']).stderr).toContain('At least one reviewer');
   });
 
@@ -94,9 +97,25 @@ describe('gh-helper pull request review lifecycle', () => {
     expect(run(['pr_merge', '12', 'ff']).stderr).toContain('Merge method must be');
   });
 
-  it('enables and disables auto-merge', () => {
-    expect(run(['pr_auto_merge_enable', '12', 'squash']).calls[0]).toEqual(['pr', 'merge', '12', '--squash', '--auto']);
+  it('enables auto-merge only while checks or approvals are still pending', () => {
+    const pending = run(['pr_auto_merge_enable', '12', 'squash'], 'case "$*" in *mergeStateStatus*) echo BLOCKED;; esac');
+    expect(pending.status).toBe(0);
+    expect(pending.calls[1]).toEqual(['pr', 'merge', '12', '--squash', '--auto']);
+  });
+
+  it('refuses auto-merge on a clean PR instead of merging it immediately', () => {
+    const clean = run(['pr_auto_merge_enable', '12', 'squash'], 'case "$*" in *mergeStateStatus*) echo CLEAN;; esac');
+    expect(clean.status).toBe(1);
+    expect(clean.stderr).toContain('clean status');
+    expect(clean.calls.some((call) => call.includes('--auto'))).toBe(false);
+  });
+
+  it('disables auto-merge and treats an already-disabled PR as success', () => {
     expect(run(['pr_auto_merge_disable', '12']).calls[0]).toEqual(['pr', 'merge', '12', '--disable-auto']);
+    const already = run(['pr_auto_merge_disable', '12'], 'case "$*" in *disable-auto*) echo "auto merge is not enabled" >&2; exit 1;; *autoMergeRequest*) echo true;; esac');
+    expect(already.status).toBe(0);
+    const failed = run(['pr_auto_merge_disable', '12'], 'case "$*" in *disable-auto*) echo boom >&2; exit 1;; *autoMergeRequest*) echo false;; esac');
+    expect(failed.status).toBe(1);
   });
 
   it('reports a failed merge on stderr so the broker can classify it', () => {

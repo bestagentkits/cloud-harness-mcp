@@ -294,7 +294,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
     commitId: gitObjectId.optional(),
     idempotencyKey: IdempotencyKeySchema.optional()
   }).superRefine((input, context) => {
-    if (input.startLine !== undefined && input.startLine >= input.line) {
+    if (input.startLine !== undefined && (input.startSide ?? input.side) === input.side && input.startLine >= input.line) {
       context.addIssue({ code: 'custom', path: ['startLine'], message: 'startLine must be lower than line' });
     }
     if (input.startSide !== undefined && input.startLine === undefined) {

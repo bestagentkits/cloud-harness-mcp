@@ -2201,8 +2201,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         '--pids-limit', '64',
         '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
         '--ulimit', 'nofile=1024:1024',
-        '--volume', `${record.workspacePath}/repo:/workspace:ro`,
-        '--workdir', '/workspace',
+        // Merging holds contents:write, so those helpers never see the agent-writable checkout; GH_REPO names the target.
+        ...(GITHUB_CHECKOUT_FREE_ACTIONS.has(action)
+          ? ['--workdir', '/tmp']
+          : ['--volume', `${record.workspacePath}/repo:/workspace:ro`, '--workdir', '/workspace']),
         '--env', 'HOME=/tmp/cloud-harness-home',
         '--env', `GH_REPO=${new URL(record.repositoryUrl).pathname.replace(/^\//, '').replace(/\.git$/, '')}`,
         '--entrypoint', '/opt/harness/gh-helper.sh',
@@ -4494,6 +4496,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     return record;
   }
 }
+
+/** Helpers that hold contents:write and need no checkout. */
+const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', 'pr_auto_merge_enable']);
 
 /** Mutations that can duplicate a visible side effect, so an `idempotencyKey` replays the first result. */
 const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([

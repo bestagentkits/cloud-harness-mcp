@@ -40,8 +40,8 @@ case "$action" in
     require_number "$limit" "Thread limit"
     exec gh api graphql \
       -f owner="${GH_REPO%%/*}" -f repo="${GH_REPO#*/}" -F number="$pr_number" -F limit="$limit" \
-      -f query='query($owner: String!, $repo: String!, $number: Int!, $limit: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: $limit) { totalCount nodes { id isResolved isOutdated path line startLine diffSide comments(first: 50) { nodes { databaseId author { login } body createdAt url } } } } } } }' \
-      --jq '.data.repository.pullRequest.reviewThreads | { totalCount, threads: [.nodes[] | { id, isResolved, isOutdated, path, line, startLine, diffSide, comments: [.comments.nodes[] | { id: .databaseId, author: .author.login, body, createdAt, url }] }] }'
+      -f query='query($owner: String!, $repo: String!, $number: Int!, $limit: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: $limit) { totalCount nodes { id isResolved isOutdated path line startLine diffSide comments(first: 50) { totalCount nodes { databaseId author { login } body createdAt url } } } } } } }' \
+      --jq '.data.repository.pullRequest.reviewThreads | { totalCount, threads: [.nodes[] | { id, isResolved, isOutdated, path, line, startLine, diffSide, commentsTotal: .comments.totalCount, comments: [.comments.nodes[] | { id: .databaseId, author: .author.login, body, createdAt, url }] }] }'
     ;;
   pr_create)
     title="${1:-}"
@@ -178,16 +178,10 @@ case "$action" in
       exit 1
     fi
     if [ "$action" = "pr_reviewers_request" ]; then method="POST"; else method="DELETE"; fi
-    cmd=(gh api -X "$method" "repos/{owner}/{repo}/pulls/$pr_number/requested_reviewers")
-    if [ -n "$reviewers" ]; then
-      IFS=',' read -ra RLIST <<< "$reviewers"
-      for r in "${RLIST[@]}"; do cmd+=(-f "reviewers[]=$r"); done
-    fi
-    if [ -n "$teams" ]; then
-      IFS=',' read -ra TLIST <<< "$teams"
-      for t in "${TLIST[@]}"; do cmd+=(-f "team_reviewers[]=$t"); done
-    fi
-    exec "${cmd[@]}" --jq '{ number, url: .html_url, requestedReviewers: [.requested_reviewers[].login], requestedTeams: [.requested_teams[].slug] }'
+    # GitHub requires `reviewers` on DELETE even when only teams are removed, so the body always carries both arrays.
+    jq -n --arg r "$reviewers" --arg t "$teams" \
+      '{ reviewers: ($r | split(",") | map(select(. != ""))), team_reviewers: ($t | split(",") | map(select(. != ""))) }' \
+      | exec gh api -X "$method" "repos/{owner}/{repo}/pulls/$pr_number/requested_reviewers" --input - --jq '{ number, url: .html_url, requestedReviewers: [.requested_reviewers[].login], requestedTeams: [.requested_teams[].slug] }'
     ;;
   pr_ready|pr_convert_to_draft)
     pr_number="${1:-}"
@@ -214,19 +208,30 @@ case "$action" in
     if [ -n "$subject" ]; then cmd+=(--subject "$subject"); fi
     if [ -n "$body" ]; then cmd+=(--body "$body"); fi
     if [ -n "$match_head" ]; then cmd+=(--match-head-commit "$match_head"); fi
-    if [ "$action" = "pr_auto_merge_enable" ]; then cmd+=(--auto); fi
+    if [ "$action" = "pr_auto_merge_enable" ]; then
+      # gh drops --auto and merges at once when the PR is already mergeable; refuse instead of merging unguarded.
+      merge_state=$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)
+      if [ "$merge_state" = "CLEAN" ]; then
+        echo "Auto merge is not available: pull request $pr_number is in clean status; merge it directly with pr_merge" >&2
+        exit 1
+      fi
+      cmd+=(--auto)
+    fi
     if ! "${cmd[@]}" >/dev/null; then
       echo "Failed to ${action#pr_} pull request $pr_number" >&2
       exit 1
     fi
-    exec gh pr view "$pr_number" --json number,state,mergedAt,mergeCommit,autoMergeRequest,url
+    exec gh pr view "$pr_number" --json number,state,mergedAt,mergeCommit,autoMergeRequest,isInMergeQueue,url
     ;;
   pr_auto_merge_disable)
     pr_number="${1:-}"
     require_number "$pr_number" "Pull request number"
     if ! gh pr merge "$pr_number" --disable-auto >/dev/null; then
-      echo "Failed to disable auto-merge on pull request $pr_number" >&2
-      exit 1
+      # Already disabled is the requested end state, so a retry after a lost response still succeeds.
+      if [ "$(gh pr view "$pr_number" --json autoMergeRequest --jq '.autoMergeRequest == null' 2>/dev/null || true)" != "true" ]; then
+        echo "Failed to disable auto-merge on pull request $pr_number" >&2
+        exit 1
+      fi
     fi
     exec gh pr view "$pr_number" --json number,state,autoMergeRequest,url
     ;;
