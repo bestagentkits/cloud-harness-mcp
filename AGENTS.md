@@ -130,3 +130,11 @@ or workspace lifecycle features change or are added:
 
 Keep plans and reports out of evergreen guidance, and do not add release notes
 or governance files unless the repository contract requires them.
+
+## Issue and PR status labels
+
+When an agent works an issue, keep its GitHub labels current: `in progress` while implementing,
+`blocked` when it cannot continue (say why in a comment), `in review` while the change is under agent
+or human review, `done` once a pull request is open, and `shipped` after it is merged. Assign the
+requesting owner, open an issue for each unrelated bug or gap found, and comment on related or
+duplicate issues with a link to the work in progress.

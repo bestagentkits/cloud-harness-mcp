@@ -832,11 +832,17 @@ export class DashboardControlService {
 
           const results: { slug: string; ok: boolean; skillId?: string; error?: string }[] = [];
           for (const entry of skills) {
+            if (entry.rejection) {
+              // Importing the instructions alone would leave references to files that no longer exist.
+              results.push({ slug: entry.slug, ok: false, error: `INVALID_RESOURCES: ${entry.rejection}` });
+              continue;
+            }
             try {
               // The package is published before the source row, the order the single-skill path uses:
               // a row naming bytes that do not exist would resolve and then fail at launch.
               const published = await this.workspaces.toolkitCacheManager.publishLocalBundle(principalId, {
-                [`skills/${entry.slug}/SKILL.md`]: entry.instructions
+                [`skills/${entry.slug}/SKILL.md`]: entry.instructions,
+                ...Object.fromEntries(entry.files.map((file) => [`skills/${entry.slug}/${file.path}`, file.data]))
               });
               const created = this.principals.createSkillSource({
                 ownerId: principalId,
@@ -849,7 +855,7 @@ export class DashboardControlService {
                 revision: {
                   bundleSha256: published.bundleSha256,
                   contentSha256: createHash('sha256').update(entry.instructions).digest('hex'),
-                  hasExecutableAssets: false,
+                  hasExecutableAssets: entry.files.some((file) => file.path.startsWith('scripts/')),
                   origin: 'edit',
                   version: trustedSkillVersion(entry.instructions) ?? null
                 }

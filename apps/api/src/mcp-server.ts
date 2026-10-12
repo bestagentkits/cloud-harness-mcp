@@ -5,12 +5,14 @@ import {
   type RunnerOperation,
   type RunnerPrincipalSelector,
   type RunnerResponse,
+  type SkillProtocolOperation,
   type ToolResult
 } from '@cloud-harness/contracts';
 import { principalFromAuthInfo } from './auth.js';
 import { RunnerClient } from './runner-client.js';
 import type { OperationBackend } from './operation-backend.js';
 import { formatToolResultText } from './mcp-response-text.js';
+import { registerSkillsExtension, workspaceBindingFromRequest } from './skills-extension.js';
 
 export function resultToMcp(result: ToolResult): CallToolResult {
   return {
@@ -23,8 +25,21 @@ export function resultToMcp(result: ToolResult): CallToolResult {
 export class RunnerOperationBackend implements OperationBackend {
   constructor(
     private readonly client: RunnerClient,
-    private readonly principal?: RunnerPrincipalSelector
+    private readonly principal?: RunnerPrincipalSelector,
+    readonly skillWorkspaceBinding: { workspaceId?: string; invalid?: true } = {}
   ) {}
+
+  async callSkillProtocol(operation: SkillProtocolOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    if (!this.principal) {
+      return {
+        ok: false,
+        message: 'Authentication context unavailable',
+        error: { code: 'AUTHENTICATION_FAILED', message: 'Authentication context unavailable', retryable: false },
+        truncated: false
+      };
+    }
+    return await this.client.callSkillProtocol(operation, input, this.principal, signal);
+  }
 
   async call(operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     if (!this.principal) {
@@ -84,9 +99,14 @@ export function createCloudHarnessServer(
       }
     );
   }
+  // Skills over MCP is additive: legacy clients keep the tool surface and never see these methods used.
+  if (backend.callSkillProtocol) {
+    const call = backend.callSkillProtocol.bind(backend);
+    registerSkillsExtension(server, call, backend.skillWorkspaceBinding ?? {});
+  }
   return server;
 }
 
 export function createCloudHarnessServerFactory(client: RunnerClient): (context: McpRequestContext) => McpServer {
-  return (context) => createCloudHarnessServer(new RunnerOperationBackend(client, principalFromAuthInfo(context.authInfo)));
+  return (context) => createCloudHarnessServer(new RunnerOperationBackend(client, principalFromAuthInfo(context.authInfo), workspaceBindingFromRequest(context.requestInfo)));
 }

@@ -1,6 +1,12 @@
 import { inflateRawSync } from 'node:zlib';
 
-import { HarnessError } from '@cloud-harness/contracts';
+import {
+  HarnessError,
+  SKILL_RESOURCES_MAX_BYTES,
+  SKILL_RESOURCES_MAX_FILES,
+  SKILL_RESOURCE_MAX_FILE_BYTES,
+  isSafeSkillFilePath
+} from '@cloud-harness/contracts';
 
 import { extractFrontmatter } from './skill-version.js';
 
@@ -29,6 +35,12 @@ export const SKILL_ARCHIVE_MAX_FILES = 20_000;
 export const SKILL_ARCHIVE_MAX_ENTRY_BYTES = 2 * 1024 * 1024;
 /** Defeats a zip bomb whose documents are each individually under the per-entry cap. */
 export const SKILL_ARCHIVE_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+/**
+ * Bounds what every bundled supporting file across the whole archive may inflate to. It is a budget, not a
+ * rejection of the archive: once spent, the remaining skills are reported as failed individually, so a large
+ * library never turns one oversized skill into a failed upload for the rest.
+ */
+export const SKILL_ARCHIVE_MAX_RESOURCE_TOTAL_BYTES = 64 * 1024 * 1024;
 /** Matches the bound the single-skill path applies to authored instructions. */
 export const SKILL_INSTRUCTIONS_MAX_LENGTH = 65_536;
 /** Matches `skill_create_custom`'s slug rule, so an uploaded skill is indistinguishable from a typed one. */
@@ -40,12 +52,22 @@ const LOCAL_SIGNATURE = 0x04034b50;
 const METHOD_STORED = 0;
 const METHOD_DEFLATE = 8;
 
+export type SkillArchiveFile = {
+  /** Path relative to the skill directory, always safe and never `SKILL.md`. */
+  path: string;
+  data: Buffer;
+};
+
 export type SkillArchiveEntry = {
   /** The path as the archive declared it, kept for the per-item report. */
   path: string;
   slug: string;
   displayName: string;
   instructions: string;
+  /** Every supported bundled file (references, scripts, assets) that travels with `SKILL.md`. */
+  files: SkillArchiveFile[];
+  /** Set when a bundled file is unsafe or over a limit; the skill is reported failed rather than imported without it. */
+  rejection?: string;
 };
 
 const invalid = (message: string): never => {
@@ -77,7 +99,7 @@ function assertSafeEntryPath(name: string): void {
   }
 }
 
-type CentralEntry = { name: string; method: number; compressedSize: number; localOffset: number };
+type CentralEntry = { name: string; method: number; compressedSize: number; localOffset: number; kind: 'file' | 'directory' | 'special' };
 
 /** Reads the central directory, which is the authority on the entry count and the compressed sizes. */
 function readCentralDirectory(bytes: Buffer): CentralEntry[] {
@@ -106,9 +128,13 @@ function readCentralDirectory(bytes: Buffer): CentralEntry[] {
     const commentLength = bytes.readUInt16LE(cursor + 32);
     const localOffset = bytes.readUInt32LE(cursor + 42);
     const name = bytes.subarray(cursor + 46, cursor + 46 + nameLength).toString('utf8');
+    // Unix permissions ride in the high half of the external attributes when the entry was made on a Unix host.
+    const madeByUnix = bytes.readUInt16LE(cursor + 4) >> 8 === 3;
+    const unixType = madeByUnix ? (bytes.readUInt32LE(cursor + 38) >>> 16) & 0xf000 : 0;
+    const kind = name.endsWith('/') || unixType === 0x4000 ? 'directory' : (unixType === 0 || unixType === 0x8000 ? 'file' : 'special');
 
     assertSafeEntryPath(name);
-    entries.push({ name, method, compressedSize, localOffset });
+    entries.push({ name, method, compressedSize, localOffset, kind });
     cursor += 46 + nameLength + extraLength + commentLength;
   }
   return entries;
@@ -118,7 +144,7 @@ function readCentralDirectory(bytes: Buffer): CentralEntry[] {
  * Inflates one entry. The cap is passed to zlib so it is enforced while decompressing, which is the
  * only point at which a declared size can be trusted to be irrelevant.
  */
-function readEntryData(bytes: Buffer, entry: CentralEntry): Buffer {
+function readEntryData(bytes: Buffer, entry: CentralEntry, maxBytes = SKILL_ARCHIVE_MAX_ENTRY_BYTES): Buffer {
   const { localOffset } = entry;
   if (localOffset + 30 > bytes.length) invalid(`the archive entry ${entry.name} is truncated`);
   if (bytes.readUInt32LE(localOffset) !== LOCAL_SIGNATURE) invalid(`the archive entry ${entry.name} is malformed`);
@@ -131,7 +157,7 @@ function readEntryData(bytes: Buffer, entry: CentralEntry): Buffer {
 
   const data = bytes.subarray(start, end);
   if (entry.method === METHOD_STORED) {
-    if (data.length > SKILL_ARCHIVE_MAX_ENTRY_BYTES) {
+    if (data.length > maxBytes) {
       invalid(`the archive entry ${entry.name} is larger than the per-entry limit`);
     }
     return data;
@@ -140,7 +166,7 @@ function readEntryData(bytes: Buffer, entry: CentralEntry): Buffer {
     invalid(`the archive entry ${entry.name} uses unsupported compression method ${entry.method}`);
   }
   try {
-    return inflateRawSync(data, { maxOutputLength: SKILL_ARCHIVE_MAX_ENTRY_BYTES });
+    return inflateRawSync(data, { maxOutputLength: Math.max(1, maxBytes) });
   } catch (error) {
     // `maxOutputLength` surfaces as a RangeError with ERR_BUFFER_TOO_LARGE, which is the per-entry cap
     // being enforced on the stream rather than corruption in the entry.
@@ -217,7 +243,58 @@ export function readSkillArchive(archive: Buffer): SkillArchiveEntry[] {
     if (seen.has(slug)) invalid(`the archive declares the skill ${slug} more than once`);
     seen.add(slug);
 
-    entries.push({ path: document.name, slug, displayName: declaredName(instructions) ?? slug, instructions });
+    entries.push({ path: document.name, slug, displayName: declaredName(instructions) ?? slug, instructions, files: [] });
   }
+
+  collectBundledFiles(archive, central, entries);
   return entries;
+}
+
+const isMetadataNoise = (name: string) => name.startsWith('__MACOSX/') || /(^|\/)(\.DS_Store|\._[^/]*)$/.test(name);
+
+/**
+ * Attaches each supporting file to the nearest enclosing skill directory. A problem with a bundled file fails
+ * that skill alone: dropping the file silently would import a skill whose references no longer exist.
+ */
+function collectBundledFiles(archive: Buffer, central: CentralEntry[], skills: SkillArchiveEntry[]): void {
+  const dirOf = (skill: SkillArchiveEntry) => skill.path.slice(0, -'SKILL.md'.length);
+  // Longest directory first, so a skill nested inside another claims its own files.
+  const byDepth = [...skills].sort((a, b) => dirOf(b).length - dirOf(a).length);
+  const sizes = new Map<SkillArchiveEntry, number>();
+  let archiveBudget = SKILL_ARCHIVE_MAX_RESOURCE_TOTAL_BYTES;
+
+  for (const entry of central) {
+    if (entry.kind === 'directory' || isMetadataNoise(entry.name) || entry.name.endsWith('/SKILL.md') || entry.name === 'SKILL.md') continue;
+    const owner = byDepth.find((skill) => entry.name.startsWith(dirOf(skill)));
+    if (!owner || owner.rejection) continue;
+    const relative = entry.name.slice(dirOf(owner).length);
+    if (entry.kind === 'special') {
+      owner.rejection = `bundled entry ${entry.name} is a link or special file, which skills may not contain`;
+      continue;
+    }
+    if (!isSafeSkillFilePath(relative)) {
+      owner.rejection = `bundled entry ${entry.name} has an unsupported path`;
+      continue;
+    }
+    if (owner.files.length + 1 >= SKILL_RESOURCES_MAX_FILES) {
+      owner.rejection = `the skill bundles more than ${SKILL_RESOURCES_MAX_FILES} files`;
+      continue;
+    }
+    if (owner.files.some((file) => file.path === relative)) {
+      owner.rejection = `the skill bundles ${relative} more than once`;
+      continue;
+    }
+    const allowance = Math.min(SKILL_RESOURCE_MAX_FILE_BYTES, archiveBudget, SKILL_RESOURCES_MAX_BYTES - (sizes.get(owner) ?? 0) - Buffer.byteLength(owner.instructions));
+    try {
+      const data = readEntryData(archive, entry, allowance);
+      archiveBudget -= data.length;
+      sizes.set(owner, (sizes.get(owner) ?? 0) + data.length);
+      owner.files.push({ path: relative, data });
+    } catch {
+      owner.rejection = `bundled file ${entry.name} exceeds a size limit or could not be read`;
+    }
+  }
+  for (const skill of skills) {
+    if (skill.rejection) skill.files = [];
+  }
 }

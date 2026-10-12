@@ -229,6 +229,24 @@ Cloud Harness supports two installation scopes depending on your workflow needs:
 
 ---
 
+## Skills over MCP
+
+Cloud Harness also publishes your `built-in` and `owner` skills through the standard Skills over MCP
+extension (SEP-2640), so any MCP host that supports it can discover them without a Cloud Harness
+specific plugin. The server advertises `io.modelcontextprotocol/skills`; hosts call `skills/list`,
+`skills/get` and `resources/read` on `/mcp`. Each skill is returned with its frontmatter and a
+manifest of every file's `sha256` digest and size so the host can verify what it downloads.
+
+- Only `built-in` and `owner` skills are served. Workspace and repository skills remain available
+  through `skills_list`, `skills_read` and `skills_run`.
+- To include a workspace's owner skills, send the workspace ID in the
+  `X-Cloud-Harness-Workspace-Id` header. Without it only built-in skills are listed.
+- Skills that contain symlinks, more than 512 files or more than 16 MiB, or invalid frontmatter are
+  not served.
+- Serving a skill does not run it. Scripts still run through `skills_run`.
+- Uploading a skill ZIP in the dashboard now keeps its supporting files (`references/`, `scripts/`,
+  assets). A skill whose bundle is unsafe or over the limits is rejected with `INVALID_RESOURCES`.
+
 ## 4-Tier Skill Precedence
 
 When tools query available skills via `skills_list` or `skills_read`, Cloud Harness resolves name collisions using a deterministic 4-tier precedence hierarchy:

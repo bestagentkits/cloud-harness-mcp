@@ -7,6 +7,8 @@ import {
   ApiKeyManagementRequestSchema,
   ApiKeyManagementResponseSchema,
   RunnerRequestSchema,
+  SkillProtocolRequestSchema,
+  type SkillProtocolOperation,
   RunnerResponseSchema,
   type ApiConfig,
   type ApiKeyAuthenticationResponse,
@@ -31,6 +33,11 @@ export class RunnerClient {
     const request = InternalRunnerRequestSchema.safeParse(candidate).success
       ? InternalRunnerRequestSchema.parse(candidate)
       : MetadataRunnerRequestSchema.parse(candidate);
+    return await this.request('/v1/internal/dashboard-operations', request, InternalRunnerResponseSchema, signal);
+  }
+
+  async callSkillProtocol(operation: SkillProtocolOperation, input: Record<string, unknown>, principal: RunnerPrincipalSelector, signal?: AbortSignal): Promise<RunnerResponse> {
+    const request = SkillProtocolRequestSchema.parse({ version: 2, principal, operation, input });
     return await this.request('/v1/internal/dashboard-operations', request, InternalRunnerResponseSchema, signal);
   }
 

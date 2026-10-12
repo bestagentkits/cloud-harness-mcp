@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { deflateRawSync } from 'node:zlib';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HarnessError, type MetadataRunnerRequest, type RunnerConfig } from '@cloud-harness/contracts';
@@ -11,6 +12,7 @@ import { InMemoryGitHubInstallationStore } from '../src/github-installation-stor
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
+import { readProtocolSkillFile } from '../src/skill-protocol-reader.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
 const roots: string[] = [];
@@ -88,7 +90,7 @@ function setup(withKeyring = true) {
     principals, metadata, artifacts, workspaces,
     undefined, undefined, undefined, undefined, keyring
   );
-  return { controls, principals, metadata, artifacts, keyring, workspaces };
+  return { controls, principals, metadata, artifacts, keyring, workspaces, root };
 }
 
 describe('skill revisions', () => {
@@ -673,5 +675,49 @@ describe('dashboard control service', () => {
 
     const audit = await controls.execute(request('audit_list', { limit: 50 }));
     expect(JSON.stringify(audit)).toContain('artifact.restored');
+  });
+});
+
+/** Minimal zip writer so the archive fixture states exactly which files the import must keep. */
+function zipOf(entries: { name: string; data: string }[]): Buffer {
+  const locals: Buffer[] = []; const centrals: Buffer[] = []; let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name); const raw = Buffer.from(entry.data); const body = deflateRawSync(raw);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(body.length, 18); local.writeUInt32LE(raw.length, 22); local.writeUInt16LE(name.length, 26);
+    locals.push(local, name, body);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(body.length, 20); central.writeUInt32LE(raw.length, 24); central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, name);
+    offset += 30 + name.length + body.length;
+  }
+  const directory = Buffer.concat(centrals); const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(entries.length, 8); eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(directory.length, 12); eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, eocd]);
+}
+
+describe('skill archive import', () => {
+  it('keeps supporting files and serves them through the protocol reader', async () => {
+    const { controls, principals, root } = setup();
+    const ownerId = principals.resolvePrincipal(principal);
+    const archive = zipOf([
+      { name: 'report-writer/SKILL.md', data: '---\nname: report-writer\ndescription: Writes reports\n---\nSee references/style.md\n' },
+      { name: 'report-writer/references/style.md', data: '# Style\nBe brief.\n' }
+    ]);
+    const imported = await controls.execute(request('skill_archive_import', { archiveBase64: archive.toString('base64'), expectedGeneration: 0 }));
+    expect((imported.data as { results: { ok: boolean }[] }).results).toEqual([expect.objectContaining({ slug: 'report-writer', ok: true })]);
+
+    const source = principals.listSkillSources(ownerId, { limit: 10 })[0]!;
+    const revision = principals.getSkillRevision(ownerId, source.id, source.currentRevisionId!);
+    const owner = join(root, 'toolkits', ownerId, revision!.bundleSha256, 'skills');
+
+    const style = await readProtocolSkillFile({ owner }, 'skill://owner/report-writer/references/style.md');
+    expect(style.text).toBe('# Style\nBe brief.\n');
+    const document = await readProtocolSkillFile({ owner }, 'skill://owner/report-writer/SKILL.md');
+    expect(document.text).toContain('See references/style.md');
   });
 });

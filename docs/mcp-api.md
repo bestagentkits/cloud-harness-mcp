@@ -46,6 +46,25 @@ every `/mcp` tool above are unchanged by its presence. See the
 [MCP gateway](mcp-gateway.md) for the registry, credential references,
 permissions, traces, transports, and the managed API-key lane limitation.
 
+### Skills over MCP
+
+`/mcp` also implements the Skills over MCP extension (SEP-2640). `server/discover` advertises
+`io.modelcontextprotocol/skills`, and the methods `skills/list`, `skills/get` and `resources/read`
+expose `skill://<tier>/<name>/<file>` URIs for the **built-in** and **owner** tiers only.
+Workspace and repository skills stay on `skills_list`, `skills_read` and `skills_run`, because their
+bytes are repository-controlled. Every manifest lists each file with a `sha256:` digest and size that
+the runner computes from the bytes on disk at call time; a skill that contains a link, a special
+file, invalid frontmatter, more than 512 files, or more than 16 MiB is left out rather than
+described approximately. Owner skills are read from the workspace named by the optional
+`X-Cloud-Harness-Workspace-Id` request header, and the runner re-authorizes that workspace for the
+principal on every call; without the header only built-in skills are served. Unknown, shadowed or
+malformed URIs return JSON-RPC `-32602`, server faults return `-32603` with no host detail. Serving a
+skill never executes it: a host that activates a skill still runs scripts through `skills_run`.
+The wire shapes and limits are owned by
+[`packages/contracts/src/skills-extension.ts`](../packages/contracts/src/skills-extension.ts), the adapter by
+[`apps/api/src/skills-extension.ts`](../apps/api/src/skills-extension.ts), and the reader by
+[`apps/runner/src/skill-protocol-reader.ts`](../apps/runner/src/skill-protocol-reader.ts).
+
 ## Normal workflow
 
 1. Call `workspace_open` with a credential-free HTTPS repository URL, an

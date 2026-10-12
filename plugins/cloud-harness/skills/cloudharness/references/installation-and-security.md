@@ -190,3 +190,11 @@ the owner is not authorized to process. Avoid writing sensitive content to
 repository memories or logs. If output unexpectedly contains a secret, stop,
 redact the response, rotate the credential, and inspect the affected workspace
 and logs before continuing.
+
+## Skills over MCP (host-side discovery)
+
+`/mcp` also advertises the `io.modelcontextprotocol/skills` extension. A host that supports it can call
+`skills/list`, `skills/get` and `resources/read` for `skill://built-in/...` and `skill://owner/...`
+URIs; owner skills need the `X-Cloud-Harness-Workspace-Id` header. This only exposes skill files, each
+with a verified `sha256` digest and size, and never runs anything. Workspace and repository skills
+still use `skills_list` and `skills_read`, and any script still runs through `skills_run`.

@@ -271,6 +271,16 @@ Skills are resolved across four deterministic precedence tiers (`built-in > owne
 1. **Built-in & Owner Tiers (`/opt/cloud-harness/skills:ro`, `/opt/cloud-harness/owner-skills:ro`)**: Mounted read-only (`:ro`) at the container boundary. Because they reside on immutable host mounts, processes within the executor (including any process running as UID 10001) cannot modify these skill files.
 2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope. A skill revision that carries instructions but no scripts is refused with `NO_EXECUTABLE_ASSETS` rather than a generic miss, because the revision exists and simply has nothing to run. Where those bytes execute is a deliberate choice, not an accident: the script runs in a disposable helper container launched through `runPrivilegedEphemeralExec`, which is gated on an owner privilege grant. Without a grant the runner returns `PRIVILEGE_APPROVAL_REQUIRED` naming the grant it needs, and it never falls back to running the script locally, so a caller cannot read a stronger isolation guarantee into the result than the run actually had. The response reports `executionMode: 'helper-container'`. The helper container reuses the worker's one-shot entry point, so the isolated snapshot, the full-tree bundle digest, and the script SHA checks described here still happen before the script is invoked; only the process that finally runs it moves into a container of its own.
 
+### Skills over MCP exposure
+
+The protocol serves only the immutable `built-in` and `owner` tiers. Each call is re-authorized by the
+runner against the principal (and, for owner skills, the workspace named by the binding header), every
+file is opened with `O_NOFOLLOW`, any skill tree holding a symlink or special file is withheld whole,
+and `resources/read` re-verifies size and digest against the manifest, answering a changed file with a
+refresh request instead of stale bytes. The content is untrusted data to the host; serving it grants no
+execution. ZIP imports now keep supporting files, but reject (per skill) symlinks, special files,
+unsafe paths, and anything over the file-count and byte limits instead of silently dropping them.
+
 ### Privileged execution and operator approval grants
 
 Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, and user `10001:10001`. Sudo/root execution is treated as an explicit owner-approved threat model weakening (similar to `networkMode: bridge`).

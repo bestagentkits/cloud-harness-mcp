@@ -10,6 +10,8 @@ import {
   HarnessError,
   InternalRunnerRequestSchema,
   RunnerOperationSchema,
+  SKILLS_LIST_PAGE_SIZE,
+  SkillProtocolRequestSchema,
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
   sanitizeAndAttributeProvenance,
@@ -45,6 +47,7 @@ import { RepositoryCacheManager } from './repository-cache-manager.js';
 import { ToolkitCacheManager } from './toolkit-cache-manager.js';
 import { ToolkitService } from './toolkit-service.js';
 import { resolveWorkspaceSkills, type SkillCandidate } from './skill-resolver.js';
+import { getProtocolSkill, listProtocolSkills, readProtocolSkillFile, type SkillRoots } from './skill-protocol-reader.js';
 import { NetworkProfileManager } from './network-profile-manager.js';
 import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
@@ -4070,6 +4073,45 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return { ok: true, message: 'Workspace detail', data: internalWorkspaceDetail(record), truncated: false };
     }
     return await this.closeFenced(ownerId, workspaceInput.workspaceId, workspaceInput.expectedGeneration!);
+  }
+
+  /**
+   * Backs the Skills over MCP adapter. Built-in skills are instance-wide and need only an authenticated
+   * principal. Owner skills are the per-workspace projection, so serving them requires an active
+   * workspace owned by the calling principal; every call re-resolves that binding rather than caching it.
+   */
+  async executeSkillProtocol(principal: PrincipalSelector, request: unknown): Promise<RunnerResponse> {
+    const parsed = SkillProtocolRequestSchema.parse(request);
+    const ownerId = this.store.resolvePrincipal(principal);
+    const roots: SkillRoots = {};
+    if (this.config.builtinSkillsRoot) roots['built-in'] = this.config.builtinSkillsRoot;
+    const workspaceId = parsed.input.workspaceId;
+    if (workspaceId) {
+      const record = this.requireWorkspace(ownerId, workspaceId);
+      roots.owner = join(record.workspacePath, 'toolkit-projection', 'owner-skills');
+    }
+    if (parsed.operation === 'skills_protocol_list') {
+      const after = parsed.input.cursor ? Buffer.from(parsed.input.cursor, 'base64url').toString('utf8') : '';
+      const all = (await listProtocolSkills(roots)).filter((skill) => skill.name > after);
+      const page = all.slice(0, SKILLS_LIST_PAGE_SIZE);
+      const last = page[page.length - 1];
+      return {
+        ok: true,
+        message: 'Skills listed',
+        data: {
+          skills: page.map((skill) => skill.entry),
+          ...(all.length > page.length && last ? { nextCursor: Buffer.from(last.name, 'utf8').toString('base64url') } : {})
+        },
+        truncated: false
+      };
+    }
+    if (parsed.operation === 'skills_protocol_get') {
+      const { skill } = await getProtocolSkill(roots, parsed.input.uri);
+      this.metadata?.recordAudit(ownerId, 'skills.protocol.get', 'skill', skill.name, 1, { tier: skill.tier, ...(workspaceId ? { workspaceId } : {}) });
+      return { ok: true, message: 'Skill', data: { skill: skill.entry }, truncated: false };
+    }
+    const content = await readProtocolSkillFile(roots, parsed.input.uri);
+    return { ok: true, message: 'Skill file', data: { content }, truncated: false };
   }
 
   async closeFenced(ownerId: string, workspaceId: string, expectedGeneration: number): Promise<RunnerResponse> {

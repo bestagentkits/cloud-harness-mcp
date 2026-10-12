@@ -162,3 +162,10 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Fix:**
 1. For history depth, pass `fetchDepth` (0 for full history, or a commit count) or `shallowSince` (an ISO date/datetime) to `workspace_open`, or call `git_fetch` afterward with `depth`, `unshallow`, or `shallowSince`.
 2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
+
+### 17. Skills over MCP answers "Unknown skill resource" or "Skill content changed"
+**Cause:** The URI is unknown, is shadowed by a higher-precedence tier, belongs to the workspace or repository tier (not served over the protocol), or the skill was withheld because it contains a symlink, exceeds 512 files or 16 MiB, or has invalid frontmatter. "Skill content changed" means a file was modified after the manifest was produced.
+**Fix:**
+1. For owner skills, send a valid workspace ID in the `X-Cloud-Harness-Workspace-Id` header; without it only built-in skills are listed.
+2. Call `skills/get` again to refresh the manifest, then re-read the file.
+3. Use `skills_list` and `skills_read` for workspace or repository skills.

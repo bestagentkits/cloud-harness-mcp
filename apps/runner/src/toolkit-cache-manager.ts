@@ -49,7 +49,7 @@ export class ToolkitCacheManager {
    */
   async publishLocalBundle(
     ownerId: string,
-    files: Record<string, string>
+    files: Record<string, string | Uint8Array>
   ): Promise<{ bundleSha256: string; byteCount: number; fileCount: number; bundlePath: string }> {
     const entries = Object.entries(files);
     if (entries.length === 0) throw new Error('a local bundle needs at least one file');
