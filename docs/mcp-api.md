@@ -44,7 +44,17 @@ distinct surface with its own tool list, its own contracts, and its own
 authentication-lane limitation; it is not a mode of `/mcp`. The semantics of
 every `/mcp` tool above are unchanged by its presence. See the
 [MCP gateway](mcp-gateway.md) for the registry, credential references,
-permissions, traces, transports, and the managed API-key lane limitation.
+downstream OAuth, permissions, traces, transports, and the managed API-key
+lane limitation.
+
+A gateway call to a downstream server configured for OAuth that has no usable
+grant returns `ok: false` with error code `AUTHORIZATION_REQUIRED` (part of
+`ErrorCodeSchema` in
+[`packages/contracts/src/mcp-results.ts`](../packages/contracts/src/mcp-results.ts)).
+It is not retryable: no tool call can complete the authorization, and the
+gateway never opens a browser. The owner must Connect or Reauthorize the
+server from the dashboard, then retry. This downstream OAuth is independent
+of the Managed OAuth lane that authenticates the client to Cloud Harness.
 
 ## Normal workflow
 

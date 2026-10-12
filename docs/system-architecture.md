@@ -59,7 +59,9 @@ time, stays on the API's egress network, and never runs in the runner. The
 runner instead resolves the referenced global secrets for one server and one
 explicit purpose and returns them over the internal service-token channel; the
 [security model](security-model.md) records the boundary change and its
-residual risk.
+residual risk. Downstream OAuth discovery, registration, token, and revocation
+requests use the same API egress path under the same URL policy, while the
+encrypted grants they produce stay in the runner.
 
 The executor is where repository-controlled code runs. It is non-root, has a
 read-only root filesystem, receives one writable repository mount, and has no
@@ -249,6 +251,7 @@ references/versions (`global_secret_references`, `global_secret_versions`,
 `secret_references`, `secret_versions`), workspace secret snapshots
 (`workspace_secret_snapshots`, `workspace_secret_snapshot_headers`), API-key digests,
 GitHub bindings, artifact metadata, MCP gateway registry/tool/permission/trace tables,
+encrypted downstream MCP OAuth grants and pending flows,
 and audit state share the runner-owned SQLite database. Ingest-time stream redactors in the runner sanitize exact secret matches
 (≥ 4 UTF-8 bytes) across streaming task, shell, and session stdout/stderr chunks before
 retained buffering, while synchronous `exec_run` command outputs are sanitized after

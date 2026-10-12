@@ -156,6 +156,59 @@ path in this system. Three facts define its boundary.
    to a running API, and rotate the referenced secrets if that boundary is
    crossed.
 
+## Downstream MCP OAuth client
+
+The gateway can also hold an OAuth grant for a downstream MCP server. This is
+an **outbound** credential that Cloud Harness obtains and presents to a
+third-party server; it is not the inbound Cloudflare Access Managed OAuth lane
+that admits clients to Cloud Harness, and neither lane's tokens or
+configuration reach the other. The [MCP gateway](mcp-gateway.md#downstream-oauth)
+records the product decisions; the controls below are the boundary.
+
+- **Authorization is user-initiated and bound.** Only an explicit dashboard
+  Connect creates a flow. The flow uses PKCE with `S256` and a high-entropy
+  `state` that is stored only as a hash, is single-use and short-lived, and is
+  bound to the starting principal and server; a foreign principal's callback
+  finds no flow. The callback derives its redirect target from the stored
+  flow, never from a query parameter, checks the authorization response `iss`
+  against the expected issuer, and the token request is bound to the
+  configured MCP resource (RFC 8707). Background Test, Refresh, and `execute`
+  can use or refresh an existing grant but cannot register a client, exchange
+  a code, or open a browser; they return `AUTHORIZATION_REQUIRED` instead.
+- **Grants stay in the runner, encrypted.** Grants and pending flows are
+  sealed with the runner keyring under associated data naming the principal,
+  the record kind, and the record (server and generation for a grant, flow for
+  a pending flow), so a ciphertext copied to another principal or record fails
+  to decrypt. The API loads a grant over the internal
+  service-token channel only for the call that needs it. Rotated tokens are
+  saved with a generation compare-and-swap so a stale refresh cannot overwrite
+  a newer token. Owners:
+  [`apps/runner/src/mcp-oauth-store.ts`](../apps/runner/src/mcp-oauth-store.ts)
+  and [`apps/api/src/mcp-gateway/oauth-provider.ts`](../apps/api/src/mcp-gateway/oauth-provider.ts).
+  The `secrets:rekey` entry point does not re-encrypt these tables; see
+  [secret key rotation](operations.md#secret-key-rotation).
+- **No token in any view.** Server views, the OAuth status projection,
+  dashboard responses, traces, logs, and audit details carry no access token,
+  refresh token, code, verifier, or client secret. Stored errors are scrubbed
+  of credential-shaped values before persistence.
+- **OAuth traffic is SSRF-hardened separately from MCP traffic.** Discovery,
+  registration, token, and revocation requests go through
+  [`apps/api/src/mcp-gateway/oauth-fetch.ts`](../apps/api/src/mcp-gateway/oauth-fetch.ts):
+  each URL is validated against the same gateway URL policy and the socket is
+  pinned to the validated addresses, redirects are refused, and the response
+  is read under the gateway byte and time caps. Static MCP headers never reach
+  these requests, and the bearer token is attached only to requests for the
+  configured MCP endpoint.
+- **Audited.** Start, completion, refresh, failure, reauthorization,
+  revocation, and disconnect write `mcp_oauth.*` audit events carrying the
+  issuer, scopes, or outcome, never secret material.
+
+Residual risk follows the gateway pattern above: the API heap holds a
+plaintext token while a downstream call is in flight, and a principal who
+connects a server authorizes Cloud Harness to act at that server with the
+granted scopes. Disconnect revokes best effort only; a server without a
+revocation endpoint keeps honouring an issued token until it expires.
+
 ## Executor and repository controls
 
 Executors run as a non-root UID with a read-only root filesystem, dropped

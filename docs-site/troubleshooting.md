@@ -162,3 +162,15 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Fix:**
 1. For history depth, pass `fetchDepth` (0 for full history, or a commit count) or `shallowSince` (an ISO date/datetime) to `workspace_open`, or call `git_fetch` afterward with `depth`, `unshallow`, or `shallowSince`.
 2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
+
+### 17. MCP Gateway: `AUTHORIZATION_REQUIRED` or an OAuth connection error
+**Cause:** A downstream MCP server set to **Authenticate with OAuth** has no usable sign-in for you. This is Cloud Harness signing in **to** that server, not your AI client signing in to Cloud Harness (see items 5 and 6 for that). It happens before the first **Connect**, after **Disconnect**, after you change the server's endpoint or manual client, or when the provider refuses to renew the token. Gateway calls from your AI client never open a browser, so they report `AUTHORIZATION_REQUIRED`, and **Test** or **Refresh tools** report it as HTTP `409`.
+**Fix:**
+1. Open the server in [MCP Servers](/dashboard/mcp-servers) and select **Connect** or **Reauthorize** in the **OAuth** panel of the Overview tab, then retry the call.
+2. If you return to the server page with an error, the `reason` names the cause:
+   - `invalid_state` or `expired` — the sign-in link was already used, replaced by a newer **Connect**, or left too long. Select **Connect** again in the same browser.
+   - `denied` — you or the provider declined the request. Check the scopes and the account you signed in with.
+   - `issuer_mismatch` — the provider's response did not come from the expected authorization server. Do not retry blindly; confirm the endpoint is the vendor's real MCP URL.
+   - `exchange_failed` — the provider rejected the sign-in completion. The **OAuth** panel shows the sanitized error; a wrong manual client ID or secret is a common cause.
+3. If **Connect** reports that MCP OAuth is unavailable, the operator must set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` (see the [environment variables reference](/reference/environment-variables)).
+4. If **Connect** fails before the provider's page opens, the provider may not support automatic client registration. Register a client with the provider and enter its **Client ID** (and a client-secret global secret, if it issued one) in the server form.

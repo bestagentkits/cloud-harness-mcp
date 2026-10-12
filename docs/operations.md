@@ -94,6 +94,13 @@ one-off runner re-encryption entry point owned by
 [`apps/runner/src/rekey-secrets.ts`](../apps/runner/src/rekey-secrets.ts) through
 the `secrets:rekey` package script or its compiled runner command.
 
+That command re-encrypts secret versions and workspace secret snapshots only.
+Downstream MCP OAuth grants and pending flows use the same keyring but are not
+rewritten by it; a grant moves to the active key only when it is next saved
+(a token refresh or a new Connect). Before retiring an old key version,
+reconnect or disconnect the affected OAuth servers, or accept that a grant
+still sealed with that key becomes unreadable and must be reconnected.
+
 The command is interruptible and safe to resume; verify that it completes,
 take a new coherent backup, and keep old decrypt keys through the release and
 rollback window. Remove an old key only after source, database inspection, and
@@ -175,6 +182,31 @@ not chain further down, so `api_keys`, `global_secret_references`,
 Then deploy the prior runner and canary readiness, the dashboard, unrelated
 metadata, and the absence of the `/mcp-gateway` route. Restore-from-backup
 remains the fallback instead of retrying a downgrade that does not complete.
+
+## Downstream MCP OAuth schema rollback
+
+Metadata schema v7 adds the encrypted downstream OAuth grant and pending-flow
+tables and the per-server OAuth configuration column. A v6 runner cannot start
+on a v7 ledger. Downgrading to a v6 runner destroys every downstream OAuth
+grant and every server's OAuth configuration by design; affected servers must
+be reconfigured and reconnected after a later upgrade. Quiesce dashboard and
+MCP writes, stop the service, and take a coherent recovery backup before
+running the bounded downgrade from the exact release checkout:
+
+```bash
+npm run metadata:down:v6 -w @cloud-harness/runner -- /path/to/db
+```
+
+Keep the database offline for the command. It requires version 7 and changes
+only the downstream OAuth schema, leaving the MCP gateway registry, API keys,
+and secret tables in place; it never chains further down. To reach v5, run
+`metadata:down:v5` afterwards as described above. The exact statements are
+owned by `downgradeMetadataSchemaToV6` in
+[`apps/runner/src/metadata-schema.ts`](../apps/runner/src/metadata-schema.ts)
+and the command by
+[`apps/runner/src/metadata-schema-down-v6.ts`](../apps/runner/src/metadata-schema-down-v6.ts).
+Then deploy the prior runner and canary readiness, the dashboard, and the MCP
+server list. Restore-from-backup remains the fallback.
 
 ## Release rollback
 
