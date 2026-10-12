@@ -185,10 +185,18 @@ Decisions that are easy to misread:
   this server listed is accepted.
 - **Manifests.** Every entry carries the verbatim frontmatter and a complete
   per-file manifest (`uri`, `sha256:<hex>` digest, byte size) computed from the
-  bytes on disk. A read re-derives the manifest and refuses to return bytes
-  that no longer match it. A skill with a symlink, a special file, unusable
-  frontmatter, or more than 512 files or 16 MiB is omitted rather than served
-  partially.
+  bytes on disk. Manifests are cached: an owner skill's for as long as its
+  immutable bundle, a built-in skill's only while its directory and `SKILL.md`
+  are unchanged and for a few seconds at most, so a listing can briefly lag an
+  in-place edit of a nested built-in file. A read checks the bytes it returns
+  against the manifest and rebuilds the manifest from disk on a mismatch; it
+  never returns bytes that disagree with it. A skill with a symlink, a special
+  file, a file name that is not UTF-8, unusable frontmatter, more than 512
+  files or 16 MiB, directories nested deeper than 32 levels, or a resource URI
+  longer than 1024 characters is omitted rather than served partially.
+- **Pages.** A `skills/list` page ends early, with a `nextCursor`, before its
+  serialized entries outgrow a fixed byte bound, so a page of large manifests
+  is split rather than refused.
 - **Caching.** Results carry `ttlMs: 30000` and `cacheScope: "private"`,
   because the data is per-principal.
 - **Errors.** An invalid, unknown, or unserved URI or cursor is `-32602`;

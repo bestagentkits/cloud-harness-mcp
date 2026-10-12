@@ -133,7 +133,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Cause:** Older managed nginx dashboard routes inherit the server-level 1 MiB request cap even though Cloud Harness accepts skill archives up to 8 MiB.
 **Fix:** Deploy the current release or run `deploy/scripts/upgrade-nginx-dashboard.sh` on the host. The managed `/dashboard/` route is upgraded to `client_max_body_size 8m`. Archives larger than 8 MiB are still rejected intentionally by the API and runner.
 
-**Also rejected as `INVALID_INPUT`:** an archive with more than 200 `SKILL.md` documents, more than 20,000 files, contents that expand beyond 32 MiB, a `SKILL.md` longer than 64 Ki characters, or any symbolic link or special-file entry. Each skill's whole directory is imported; `__MACOSX/`, `.DS_Store`, and files outside skill directories are ignored. A single skill above 512 files or 16 MiB is reported as `LIMIT_EXCEEDED` on its own row while the rest are imported. Split a larger library into several archives.
+**Also rejected as `INVALID_INPUT`:** an archive with more than 200 `SKILL.md` documents, more than 20,000 files, contents that expand beyond 32 MiB, skills whose published files add up to more than 32 MiB (a file inside nested skills counts once for each skill that contains it), a `SKILL.md` longer than 64 Ki characters, a path that is both a file and a directory, or any symbolic link or special-file entry. Each skill's whole directory is imported; `__MACOSX/`, `.DS_Store`, and files outside skill directories are ignored. A single skill above 512 files, 16 MiB, or 32 nested directory levels is reported as `LIMIT_EXCEEDED` on its own row (the result's `message` names the limit) while the rest are imported. Split a larger library into several archives.
 
 ---
 
@@ -170,6 +170,6 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 2. Workspace and repository skills, and toolkits passed to `workspace_open`, are not served over the extension yet. Read them with `skills_list` / `skills_read` on an open workspace.
 3. Check that the library skill is enabled, not archived or disabled.
 4. Check that `SKILL.md` is UTF-8 and starts with YAML frontmatter holding a `name` (1–120 letters, digits, `.`, `_`, or `-`) and a non-empty `description`. The URI uses that `name`.
-5. Remove symbolic links and special files from the skill directory, and keep it within 512 files and 16 MiB.
-6. Two skills with the same name and different content in the same tier conflict, and neither is served. A same name in `built-in` and `owner` is served at both tier-qualified URIs.
+5. Remove symbolic links and special files from the skill directory, keep it within 512 files, 16 MiB, and 32 nested directory levels, use UTF-8 file names, and keep every encoded file URI within 1024 characters (non-ASCII and spaces are percent-encoded, so long non-Latin paths reach it sooner).
+6. Two skills with the same name and different content in the same tier conflict, and neither is served; the same applies when one of them cannot be read. A same name in `built-in` and `owner` is served at both tier-qualified URIs.
 7. `-32603` is a transient runner failure or a file that changed while it was read; retry. Clients may cache results for up to 30 seconds.

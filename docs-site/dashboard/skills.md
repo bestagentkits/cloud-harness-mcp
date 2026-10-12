@@ -75,8 +75,9 @@ executable files is recorded as carrying executable assets; its scripts still ru
 - `__MACOSX/` folders, `.DS_Store` files, and files outside any skill directory are ignored.
 - An archive containing a symbolic link or other special entry is refused as a whole, because that
   entry could not be imported as the bytes it carries.
-- A skill with more than 512 files or more than 16 MiB of content is reported as `LIMIT_EXCEEDED` on
-  its own row and not imported; the other skills in the archive are still imported.
+- A skill with more than 512 files, more than 16 MiB of content, or directories nested deeper than 32
+  levels is reported as `LIMIT_EXCEEDED` on its own row (the result's `message` names the limit) and
+  not imported; the other skills in the archive are still imported.
 
 The dialog lists one result per skill. Archive-wide limits are covered in
 [Troubleshooting](/troubleshooting).

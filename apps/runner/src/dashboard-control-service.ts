@@ -697,11 +697,11 @@ export class DashboardControlService {
         }
         case 'skill_list': return ok('Skills listed', { skills: this.principals.listSkillSources(principalId) });
         case 'skills_ext_list': {
-          const page = this.skillExtension().list(principalId, parsed.input);
+          const page = await this.skillExtension().list(principalId, parsed.input);
           return ok('Skills listed', { skills: page.skills }, page.nextCursor);
         }
-        case 'skills_ext_get': return ok('Skill read', this.skillExtension().get(principalId, parsed.input.uri));
-        case 'skills_ext_read': return ok('Skill resource read', this.skillExtension().read(principalId, parsed.input.uri));
+        case 'skills_ext_get': return ok('Skill read', await this.skillExtension().get(principalId, parsed.input.uri));
+        case 'skills_ext_read': return ok('Skill resource read', await this.skillExtension().read(principalId, parsed.input.uri));
         case 'skill_get': return ok('Skill read', required(this.principals.getSkillSource(principalId, parsed.input.skillId), `Skill ${parsed.input.skillId} was not found`));
         case 'skill_revision_list': return ok('Skill revisions listed', { revisions: this.principals.listSkillRevisions(principalId, parsed.input.skillId, parsed.input.limit) });
         case 'skill_revision_get': return ok('Skill revision read', required(
@@ -848,12 +848,12 @@ export class DashboardControlService {
           // leave a half-created library.
           const skills = readSkillArchive(Buffer.from(parsed.input.archiveBase64, 'base64'));
 
-          const results: { slug: string; ok: boolean; skillId?: string; error?: string }[] = [];
+          const results: { slug: string; ok: boolean; skillId?: string; error?: string; message?: string }[] = [];
           for (const entry of skills) {
             // A skill over a per-skill bound is refused on its own rather than published without the
-            // files that did not fit.
+            // files that did not fit, and the message says which bound so the operator can fix it.
             if (entry.rejection !== undefined) {
-              results.push({ slug: entry.slug, ok: false, error: 'LIMIT_EXCEEDED' });
+              results.push({ slug: entry.slug, ok: false, error: 'LIMIT_EXCEEDED', message: entry.rejection });
               continue;
             }
             try {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SKILLS_EXTENSION_MAX_TREE_DEPTH } from '@cloud-harness/contracts';
 
 import {
   SKILL_ARCHIVE_MAX_ENTRIES,
@@ -187,6 +188,34 @@ describe('skill archive caps', () => {
     const asset = 'a'.repeat(SKILL_ARCHIVE_MAX_SKILL_BYTES - 1024);
     const zip = makeZip(['one', 'two', 'three'].flatMap((slug) => [skill(slug), { name: `${slug}/assets/big.bin`, data: asset }]));
     expectRejected(() => readSkillArchive(zip), /total limit/);
+  });
+
+  it('charges a file shared by nested skills once per skill that publishes it', () => {
+    // The asset inflates once, under the total, but four nested skills would each publish a copy.
+    const asset = 'a'.repeat(10 * 1024 * 1024);
+    const zip = makeZip([
+      skill('s0'), { name: 's0/s1/SKILL.md', data: document('s1') }, { name: 's0/s1/s2/SKILL.md', data: document('s2') },
+      { name: 's0/s1/s2/s3/SKILL.md', data: document('s3') }, { name: 's0/s1/s2/s3/assets/big.bin', data: asset }
+    ]);
+    expectRejected(() => readSkillArchive(zip), /would publish more than the total limit/);
+    // Three copies fit, so the bound is the publication total and not the nesting itself.
+    expect(readSkillArchive(makeZip([
+      skill('s0'), { name: 's0/s1/SKILL.md', data: document('s1') }, { name: 's0/s1/s2/SKILL.md', data: document('s2') },
+      { name: 's0/s1/s2/assets/big.bin', data: asset }
+    ])).map((entry) => entry.rejection)).toEqual([undefined, undefined, undefined]);
+  });
+
+  it('rejects only the skill whose tree nests deeper than a served skill may', () => {
+    const deep = `deep/${Array.from({ length: SKILLS_EXTENSION_MAX_TREE_DEPTH + 1 }, (_, index) => `d${index}`).join('/')}/leaf.md`;
+    const limit = `edge/${Array.from({ length: SKILLS_EXTENSION_MAX_TREE_DEPTH }, (_, index) => `d${index}`).join('/')}/leaf.md`;
+    const entries = readSkillArchive(makeZip([skill('deep'), { name: deep, data: 'x' }, skill('edge'), { name: limit, data: 'x' }]));
+    expect(entries.find((entry) => entry.slug === 'deep')?.rejection).toMatch(/nests directories deeper than the limit/);
+    expect(entries.find((entry) => entry.slug === 'edge')?.rejection).toBeUndefined();
+  });
+
+  it('rejects an archive declaring one path as both a file and a directory', () => {
+    expectRejected(() => readSkillArchive(makeZip([skill('alpha'), { name: 'alpha/x', data: '1' }, { name: 'alpha/x/y.md', data: '2' }])), /both a file and a directory/);
+    expectRejected(() => readSkillArchive(makeZip([skill('alpha'), { name: 'alpha/x/', data: '' }, { name: 'alpha/x', data: '1' }])), /both a file and a directory/);
   });
 
   it('rejects an archive larger than the archive cap', () => {

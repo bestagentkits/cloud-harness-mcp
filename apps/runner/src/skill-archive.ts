@@ -1,6 +1,11 @@
 import { inflateRawSync } from 'node:zlib';
 
-import { HarnessError, SKILLS_EXTENSION_MAX_BYTES, SKILLS_EXTENSION_MAX_FILES } from '@cloud-harness/contracts';
+import {
+  HarnessError,
+  SKILLS_EXTENSION_MAX_BYTES,
+  SKILLS_EXTENSION_MAX_FILES,
+  SKILLS_EXTENSION_MAX_TREE_DEPTH
+} from '@cloud-harness/contracts';
 
 import { extractFrontmatter } from './skill-version.js';
 
@@ -31,7 +36,11 @@ export const SKILL_ARCHIVE_MAX_ENTRIES = 200;
 export const SKILL_ARCHIVE_MAX_FILES = 20_000;
 /** One skill document is small; a larger one is a red flag rather than a use case. */
 export const SKILL_ARCHIVE_MAX_ENTRY_BYTES = 2 * 1024 * 1024;
-/** Defeats a zip bomb whose files are each individually under their cap. */
+/**
+ * Defeats a zip bomb whose files are each individually under their cap. It bounds both what the archive
+ * inflates to and what the import publishes: a file under nested skills is published once per skill
+ * that contains it, so it is charged once per publication, not once per inflation.
+ */
 export const SKILL_ARCHIVE_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 /** Matches the bound the single-skill path applies to authored instructions. */
 export const SKILL_INSTRUCTIONS_MAX_LENGTH = 65_536;
@@ -213,6 +222,7 @@ export function readSkillArchive(archive: Buffer): SkillArchiveEntry[] {
 
   const files: CentralEntry[] = [];
   const names = new Set<string>();
+  const directories = new Set<string>();
   for (const entry of readCentralDirectory(archive)) {
     if (isPlatformMetadata(entry.name)) continue;
     const type = entry.mode & S_IFMT;
@@ -221,10 +231,23 @@ export function readSkillArchive(archive: Buffer): SkillArchiveEntry[] {
     if (type !== 0 && type !== S_IFREG && type !== S_IFDIR) {
       invalid(`the archive entry ${entry.name} is a symbolic link or special file`);
     }
-    if (entry.name.endsWith('/') || type === S_IFDIR) continue;
+    if (entry.name.endsWith('/') || type === S_IFDIR) {
+      directories.add(entry.name.replace(/\/$/, ''));
+      continue;
+    }
     if (names.has(entry.name)) invalid(`the archive declares the file ${entry.name} more than once`);
     names.add(entry.name);
     files.push(entry);
+  }
+  // A path cannot be both a file and a directory on disk, so publishing such an archive would fail
+  // midway or drop one of them; it is refused before anything is read.
+  for (const entry of files) {
+    if (directories.has(entry.name)) invalid(`the archive entry ${entry.name} is both a file and a directory`);
+    const segments = entry.name.split('/');
+    for (let length = 1; length < segments.length; length += 1) {
+      const parent = segments.slice(0, length).join('/');
+      if (names.has(parent)) invalid(`the archive entry ${parent} is both a file and a directory`);
+    }
   }
 
   const documents = files.filter((entry) => entry.name.split('/').pop() === SKILL_DOCUMENT);
@@ -277,6 +300,7 @@ export function readSkillArchive(archive: Buffer): SkillArchiveEntry[] {
   }
 
   const entries: SkillArchiveEntry[] = [];
+  let published = 0;
   for (const document of documents) {
     const documentBytes = inflated.get(document.name) ?? Buffer.alloc(0);
     const instructions = documentBytes.toString('utf8');
@@ -296,6 +320,9 @@ export function readSkillArchive(archive: Buffer): SkillArchiveEntry[] {
 
     if (members.length > SKILL_ARCHIVE_MAX_SKILL_FILES) {
       rejection = `the skill ${slug} has ${members.length} files, above the per-skill limit of ${SKILL_ARCHIVE_MAX_SKILL_FILES}`;
+    } else if (members.some((member) => member.name.slice(prefix.length).split('/').length - 1 > SKILLS_EXTENSION_MAX_TREE_DEPTH)) {
+      // A tree deeper than a served skill may nest would publish a skill that is never served.
+      rejection = `the skill ${slug} nests directories deeper than the limit of ${SKILLS_EXTENSION_MAX_TREE_DEPTH}`;
     }
     for (const member of rejection === undefined ? members : []) {
       const relative = member.name.slice(prefix.length);
@@ -314,6 +341,12 @@ export function readSkillArchive(archive: Buffer): SkillArchiveEntry[] {
       }
       skillFiles[relative] = data;
       if (relative.startsWith('scripts/') || (member.mode & 0o111) !== 0) hasExecutableAssets = true;
+    }
+    if (rejection === undefined) {
+      published += skillBytes;
+      if (published > SKILL_ARCHIVE_MAX_TOTAL_BYTES) {
+        invalid(`the archive would publish more than the total limit of ${SKILL_ARCHIVE_MAX_TOTAL_BYTES} bytes`);
+      }
     }
 
     entries.push({

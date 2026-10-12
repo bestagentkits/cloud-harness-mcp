@@ -10,6 +10,8 @@ export const SKILLS_EXTENSION_ID = 'io.modelcontextprotocol/skills';
 /** The extension's per-skill limits. A skill above either is not served rather than served partially. */
 export const SKILLS_EXTENSION_MAX_FILES = 512;
 export const SKILLS_EXTENSION_MAX_BYTES = 16 * 1024 * 1024;
+/** How many directory levels a skill may nest; a deeper skill is refused on upload and not served. */
+export const SKILLS_EXTENSION_MAX_TREE_DEPTH = 32;
 
 /** The organisational prefix of every URI this harness serves; the tier keeps same-named skills apart. */
 export const SKILLS_EXTENSION_URI_PREFIX = 'skill://cloud-harness/';
@@ -19,6 +21,11 @@ export const SKILLS_EXTENSION_NAME_PATTERN = /^[A-Za-z0-9._-]{1,120}$/;
 
 export const SKILLS_EXTENSION_LIST_MAX_LIMIT = 100;
 export const SKILLS_EXTENSION_URI_MAX_LENGTH = 1_024;
+/**
+ * The serialized size one list page may reach. A page also stops at this many bytes, well below the
+ * API's bound on a metadata response, so a page of large manifests is split rather than refused.
+ */
+export const SKILLS_EXTENSION_LIST_MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
 const SkillUriSchema = z.string().min(1).max(SKILLS_EXTENSION_URI_MAX_LENGTH);
 

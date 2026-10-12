@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SKILLS_EXTENSION_MAX_BYTES,
   SKILLS_EXTENSION_MAX_FILES,
@@ -15,7 +15,7 @@ import {
 import { ArtifactStore } from '../src/artifact-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { MetadataStore } from '../src/metadata-store.js';
-import { parseSkillFrontmatter } from '../src/skill-extension-service.js';
+import { SkillExtensionService, parseSkillFrontmatter } from '../src/skill-extension-service.js';
 import { StateStore } from '../src/state-store.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
@@ -50,7 +50,8 @@ function setup() {
     try { principals.close(); } catch { /* ignore */ }
   });
   const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
-  const workspaces = { toolkitCacheManager: new ToolkitCacheManager(join(root, 'toolkits'), principals) } as unknown as WorkspaceService;
+  const toolkits = new ToolkitCacheManager(join(root, 'toolkits'), principals);
+  const workspaces = { toolkitCacheManager: toolkits } as unknown as WorkspaceService;
   const controls = new DashboardControlService(
     { artifactRetentionSeconds: 60, builtinSkillsRoot: builtinRoot } as RunnerConfig,
     principals, metadata, artifacts, workspaces
@@ -80,7 +81,17 @@ function setup() {
   const read = async (uri: string, principal = principalA) =>
     SkillsExtReadDataSchema.parse((await controls.execute(request('skills_ext_read', { uri }, principal))).data).contents[0];
 
-  return { controls, principals, builtinRoot, builtin, createOwnerSkill, list, get, read };
+  /** Publishes an owner skill from a bundle laid out exactly as given, bypassing the authoring paths. */
+  const publishOwnerBundle = async (slug: string, files: Record<string, string>) => {
+    const ownerId = principals.resolvePrincipal(principalA);
+    const published = await toolkits.publishLocalBundle(ownerId, files);
+    principals.createSkillSource({
+      ownerId, slug, displayName: slug, kind: 'owner', provider: 'custom', description: '', tags: [],
+      revision: { bundleSha256: published.bundleSha256, contentSha256: createHash('sha256').update(slug).digest('hex'), hasExecutableAssets: false, origin: 'edit', version: null }
+    });
+  };
+
+  return { controls, principals, builtinRoot, builtin, createOwnerSkill, publishOwnerBundle, list, get, read };
 }
 
 describe('skills extension entries', () => {
@@ -352,10 +363,164 @@ describe('skills extension and archive import', () => {
     const archive = makeZip([{ name: 'wide/SKILL.md', data: document('wide') }, ...files, { name: 'narrow/SKILL.md', data: document('narrow') }]);
     const imported = await controls.execute(request('skill_archive_import', { archiveBase64: archive.toString('base64'), expectedGeneration: 0 }));
     expect((imported.data as { results: unknown[] }).results).toEqual([
-      { slug: 'wide', ok: false, error: 'LIMIT_EXCEEDED' },
+      { slug: 'wide', ok: false, error: 'LIMIT_EXCEEDED', message: `the skill wide has ${SKILLS_EXTENSION_MAX_FILES + 1} files, above the per-skill limit of ${SKILLS_EXTENSION_MAX_FILES}` },
       expect.objectContaining({ slug: 'narrow', ok: true })
     ]);
     expect((await list()).skills.map((skill) => skill.frontmatter.name)).toEqual(['narrow']);
+  });
+});
+
+describe('skills extension serving bounds', () => {
+  it('serves CJK and spaced paths at canonical URIs and refuses a skill with a URI over the length bound', async () => {
+    const { builtin, list, get, read } = setup();
+    builtin('intl', { 'SKILL.md': document('intl'), '参考 资料/说明 文件.md': 'cjk' });
+    // Each CJK character is nine URI characters once encoded, so two long segments pass 1024.
+    const long = '長'.repeat(80);
+    builtin('overlong', { 'SKILL.md': document('overlong'), [`${long}/${long}.md`]: 'x' });
+
+    const { skills } = await list();
+    expect(skills.map((skill) => skill.frontmatter.name)).toEqual(['intl']);
+    const uri = `skill://cloud-harness/built-in/intl/${encodeURIComponent('参考 资料')}/${encodeURIComponent('说明 文件.md')}`;
+    expect(skills[0]?.resources).toContainEqual(expect.objectContaining({ uri }));
+    expect((await read(uri))?.text).toBe('cjk');
+    await expect(get('skill://cloud-harness/built-in/overlong/SKILL.md')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(read('skill://cloud-harness/built-in/overlong/SKILL.md')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('ends a page before it outgrows its byte bound and resumes from the cursor', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-skills-page-')); roots.push(root);
+    for (const name of ['a', 'b', 'c']) {
+      mkdirSync(join(root, name, 'assets'), { recursive: true });
+      writeFileSync(join(root, name, 'SKILL.md'), document(name));
+      for (let index = 0; index < 20; index += 1) writeFileSync(join(root, name, 'assets', `${'x'.repeat(100)}-${index}.txt`), name);
+    }
+    const store = { listSkillSources: () => [], getSkillRevision: () => undefined };
+    const unbounded = await new SkillExtensionService({ builtinSkillsRoot: root, store, bundlePath: () => root }).list('owner', { limit: 100 });
+    const [a, b] = unbounded.skills.map((skill) => Buffer.byteLength(JSON.stringify(skill)) + 1);
+    // Room for exactly the first two entries.
+    const maxPageBytes = 2 + a! + b!;
+    const service = new SkillExtensionService({ builtinSkillsRoot: root, store, bundlePath: () => root, maxPageBytes });
+
+    const first = await service.list('owner', { limit: 100 });
+    expect(first.skills.map((skill) => skill.frontmatter.name)).toEqual(['a', 'b']);
+    expect(Buffer.byteLength(JSON.stringify(first.skills))).toBeLessThanOrEqual(maxPageBytes);
+    expect(first.nextCursor).toBe('built-in:b');
+    const second = await service.list('owner', { limit: 100, cursor: first.nextCursor! });
+    expect(second.skills.map((skill) => skill.frontmatter.name)).toEqual(['c']);
+    expect(second.nextCursor).toBeUndefined();
+    // A single entry above the bound is still served whole rather than stalling the listing.
+    const tight = new SkillExtensionService({ builtinSkillsRoot: root, store, bundlePath: () => root, maxPageBytes: 10 });
+    expect((await tight.list('owner', { limit: 100 })).skills).toHaveLength(1);
+  });
+
+  it('serves neither same-named skill when one of them cannot be hashed', async () => {
+    const { builtin, list, get } = setup();
+    builtin('first', { 'SKILL.md': document('dup') });
+    const broken = builtin('second', { 'SKILL.md': document('dup') });
+    symlinkSync('/etc/hostname', join(broken, 'escape.txt'));
+    expect((await list()).skills).toEqual([]);
+    await expect(get('skill://cloud-harness/built-in/dup/SKILL.md')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('does not serve a skill holding a file name that is not UTF-8', async () => {
+    const { builtin, list, read } = setup();
+    const dir = builtin('raw', { 'SKILL.md': document('raw') });
+    writeFileSync(Buffer.concat([Buffer.from(`${dir}/`), Buffer.from([0xff, 0xfe, 0x2e, 0x6d, 0x64])]), 'x');
+    builtin('clean', { 'SKILL.md': document('clean') });
+    expect((await list()).skills.map((skill) => skill.frontmatter.name)).toEqual(['clean']);
+    await expect(read('skill://cloud-harness/built-in/raw/SKILL.md')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
+describe('skills extension owner bundles', () => {
+  it('serves owner skills from every bundle layout a revision may pin', async () => {
+    const { publishOwnerBundle, list, read } = setup();
+    await publishOwnerBundle('flat', { 'flat/SKILL.md': document('flat'), 'flat/a.md': 'flat file' });
+    await publishOwnerBundle('rooted', { 'SKILL.md': document('rooted'), 'b.md': 'root file' });
+
+    const { skills } = await list();
+    expect(skills.map((skill) => skill.uri)).toEqual(['skill://cloud-harness/owner/flat/SKILL.md', 'skill://cloud-harness/owner/rooted/SKILL.md']);
+    expect(skills[1]?.resources).toEqual([
+      expect.objectContaining({ uri: 'skill://cloud-harness/owner/rooted/SKILL.md' }),
+      expect.objectContaining({ uri: 'skill://cloud-harness/owner/rooted/b.md' })
+    ]);
+    expect((await read('skill://cloud-harness/owner/flat/a.md'))?.text).toBe('flat file');
+    expect((await read('skill://cloud-harness/owner/rooted/b.md'))?.text).toBe('root file');
+  });
+
+  it('pages owner sources in the store without overlap or gaps', async () => {
+    const { principals, publishOwnerBundle } = setup();
+    for (const slug of ['p1', 'p2', 'p3']) await publishOwnerBundle(slug, { [`${slug}/SKILL.md`]: document(slug) });
+    const ownerId = principals.resolvePrincipal(principalA);
+    const pages = [0, 2].map((offset) => principals.listSkillSources(ownerId, { limit: 2, offset }).map((source) => source!.slug));
+    expect(pages[0]).toHaveLength(2);
+    expect([...pages[0]!, ...pages[1]!].sort()).toEqual(['p1', 'p2', 'p3']);
+  });
+
+  it('reads every page of the owner sources rather than stopping at the store page bound', async () => {
+    const bundle = mkdtempSync(join(tmpdir(), 'cloud-harness-skills-owner-')); roots.push(bundle);
+    const total = 501;
+    const sources = Array.from({ length: total }, (_, index) => {
+      const slug = `s-${String(index).padStart(3, '0')}`;
+      mkdirSync(join(bundle, 'skills', slug), { recursive: true });
+      writeFileSync(join(bundle, 'skills', slug, 'SKILL.md'), document(slug));
+      return { id: `source-${index}`, slug, state: 'enabled', kind: 'owner', currentRevisionId: `revision-${index}` };
+    });
+    const store = {
+      listSkillSources: (_ownerId: string, options: { limit?: number; offset?: number } = {}) =>
+        sources.slice(options.offset ?? 0, (options.offset ?? 0) + (options.limit ?? 100)),
+      getSkillRevision: (_ownerId: string, _sourceId: string, id: string) => ({ id, bundleSha256: 'a'.repeat(64) })
+    } as unknown as ConstructorParameters<typeof SkillExtensionService>[0]['store'];
+    const service = new SkillExtensionService({ store, bundlePath: () => bundle });
+
+    const names: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await service.list('owner', { limit: 100, ...(cursor ? { cursor } : {}) });
+      names.push(...page.skills.map((skill) => skill.frontmatter.name));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(names).toHaveLength(total);
+    expect(names.at(-1)).toBe('s-500');
+  });
+});
+
+describe('skills extension manifest cache', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('never returns bytes that disagree with a manifest, even after an in-place edit', async () => {
+    const { builtin, list, get, read } = setup();
+    const dir = builtin('alpha', { 'SKILL.md': document('alpha'), 'references/a.md': 'before' });
+    await list();
+    writeFileSync(join(dir, 'references', 'a.md'), 'after, and longer');
+
+    expect((await read('skill://cloud-harness/built-in/alpha/references/a.md'))?.text).toBe('after, and longer');
+    const resource = ((await get('skill://cloud-harness/built-in/alpha/SKILL.md')).resources as { uri: string; digest: string }[])
+      .find((item) => item.uri.endsWith('/references/a.md'));
+    expect(resource?.digest).toBe(digestOf('after, and longer'));
+  });
+
+  it('reuses a built-in manifest only until it expires or its SKILL.md changes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { builtin, get } = setup();
+    const dir = builtin('alpha', { 'SKILL.md': document('alpha'), 'references/a.md': 'one' });
+    const digestFor = async () => ((await get('skill://cloud-harness/built-in/alpha/SKILL.md')).resources as { uri: string; digest: string }[])
+      .find((item) => item.uri.endsWith('/references/a.md'))?.digest;
+
+    expect(await digestFor()).toBe(digestOf('one'));
+    writeFileSync(join(dir, 'references', 'a.md'), 'two');
+    // A nested edit is not part of the stat signature, so the cached manifest stands until it expires.
+    expect(await digestFor()).toBe(digestOf('one'));
+    vi.setSystemTime(Date.now() + 60_000);
+    expect(await digestFor()).toBe(digestOf('two'));
+
+    writeFileSync(join(dir, 'references', 'a.md'), 'three');
+    writeFileSync(join(dir, 'SKILL.md'), document('alpha', 'edited description'));
+    const entry = await get('skill://cloud-harness/built-in/alpha/SKILL.md');
+    expect(entry.frontmatter.description).toBe('edited description');
+    expect(await digestFor()).toBe(digestOf('three'));
   });
 });
 
