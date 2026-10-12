@@ -33,6 +33,19 @@ Cloud Harness MCP provides two distinct connection lanes over **Streamable HTTP 
 | **Key Expiry** | Session bound | 1–3,650 days (configurable, approximately 10 years) |
 | **Max Keys per Identity** | N/A | 10 active keys |
 
+### Workspace-bound endpoint
+
+`https://harness.zuey.me/mcp/workspaces/<workspaceId>` serves the same tools as
+`/mcp` and, for a client that supports the native
+[Skills over MCP](/agent-toolkits#skills-over-mcp-native-client-skills)
+extension, also that one workspace's `workspace` and `repository` skills.
+Connect to it only when you want those skills to appear natively in your client
+for a workspace you already opened; use `/mcp` for everything else. It uses the
+Managed OAuth lane's host and authentication (or the owner bearer on an
+owner-bearer instance); the Static API Key lane forwards only `/mcp` and cannot
+reach it. The endpoint stops serving skills once the workspace is closed or its
+lease expires.
+
 
 ---
 

@@ -274,10 +274,12 @@ runner remains the single cleanup authority.
 Production Compose binds the credential-free ingress proxy to
 `127.0.0.1:3100`; the API and runner have no published host ports. Runner
 egress does not expose an ingress port. Existing
-nginx is the only intended origin host listener and proxies `/mcp`,
+nginx is the only intended origin host listener and proxies `/mcp`, the
+workspace-bound `/mcp/workspaces/<workspaceId>` prefix,
 `/mcp-gateway`, `/mcp-api-key`, `/dashboard`,
 `/healthz`, and `/readyz` to loopback. In Access mode the owned public hostname
-uses one Access application for `/mcp`, `/mcp-gateway`, and `/dashboard`, plus a
+uses one Access application for `/mcp` (including its workspace-bound paths),
+`/mcp-gateway`, and `/dashboard`, plus a
 separate application scoped exactly to `/mcp-api-key`. The external Worker owns
 the public static-key hostname and cannot proxy dashboard or arbitrary origin
 traffic. The
