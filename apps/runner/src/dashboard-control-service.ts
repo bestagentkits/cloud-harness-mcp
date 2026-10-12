@@ -9,6 +9,7 @@ import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import type { GitHubInstallationStore } from './github-installation-store.js';
 import type { McpGatewayStoredHeader } from './mcp-gateway-store.js';
+import { McpOAuthStoreError } from './mcp-oauth-store.js';
 import type { MetadataStore } from './metadata-store.js';
 import { readSkillArchive } from './skill-archive.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
@@ -616,6 +617,7 @@ export class DashboardControlService {
           transport: parsed.input.transport,
           endpoint: parsed.input.endpoint,
           headers: storedMcpHeaders(parsed.input.headers),
+          ...(parsed.input.oauth ? { oauth: parsed.input.oauth } : {}),
           permissionDefault: parsed.input.permissionDefault,
           enabled: parsed.input.enabled
         }, 0));
@@ -626,6 +628,7 @@ export class DashboardControlService {
             ...(parsed.input.transport !== undefined ? { transport: parsed.input.transport } : {}),
             ...(parsed.input.endpoint !== undefined ? { endpoint: parsed.input.endpoint } : {}),
             ...(parsed.input.headers !== undefined ? { headers: storedMcpHeaders(parsed.input.headers) } : {}),
+            ...(parsed.input.oauth !== undefined ? { oauth: parsed.input.oauth } : {}),
             ...(parsed.input.permissionDefault !== undefined ? { permissionDefault: parsed.input.permissionDefault } : {})
           }
         ));
@@ -654,6 +657,42 @@ export class DashboardControlService {
           principalId, parsed.input.serverId, parsed.input.status, parsed.input.error
         ));
         case 'mcp_server_get_credentials': return this.mcpCredentials(principalId, parsed.input);
+        case 'mcp_oauth_status': return ok('MCP OAuth status', { status: this.mcpOAuthStatus(principalId, parsed.input.serverId) });
+        case 'mcp_oauth_flow_begin': {
+          this.requireMcpOAuthServer(principalId, parsed.input.serverId);
+          const begun = this.mcpOAuthCall(() => this.oauthStore().beginFlow(principalId, parsed.input.serverId, {
+            stateHash: parsed.input.stateHash,
+            expectedIssuer: parsed.input.expectedIssuer,
+            scopes: parsed.input.scopes,
+            blob: parsed.input.blob
+          }));
+          return ok('MCP OAuth flow started', begun);
+        }
+        case 'mcp_oauth_flow_consume': {
+          this.requireMcpOAuthServer(principalId, parsed.input.serverId);
+          const flow = this.mcpOAuthCall(() => this.oauthStore().consumeFlow(principalId, parsed.input.serverId, parsed.input.stateHash));
+          return ok('MCP OAuth flow consumed', flow);
+        }
+        case 'mcp_oauth_grant_load': {
+          this.requireMcpOAuthServer(principalId, parsed.input.serverId);
+          return ok('MCP OAuth grant', { grant: this.oauthStore().loadGrant(principalId, parsed.input.serverId) ?? null });
+        }
+        case 'mcp_oauth_grant_save': {
+          this.requireMcpOAuthServer(principalId, parsed.input.serverId);
+          const { serverId, ...grant } = parsed.input;
+          const generation = this.mcpOAuthCall(() => this.oauthStore().saveGrant(principalId, serverId, grant));
+          return ok('MCP OAuth grant saved', { generation });
+        }
+        case 'mcp_oauth_grant_mark': {
+          this.requireMcpOAuthServer(principalId, parsed.input.serverId);
+          const marked = this.oauthStore().markGrant(principalId, parsed.input.serverId, parsed.input.state, parsed.input.error);
+          if (!marked) this.oauthStore().recordFailure(principalId, parsed.input.serverId, parsed.input.error ?? parsed.input.state);
+          return ok('MCP OAuth state recorded', { marked });
+        }
+        case 'mcp_oauth_disconnect': {
+          this.requireMcpOAuthServer(principalId, parsed.input.serverId);
+          return ok('MCP OAuth disconnected', { disconnected: this.oauthStore().disconnect(principalId, parsed.input.serverId) });
+        }
         case 'mcp_gateway_catalog': return ok('MCP gateway catalog', this.mcp().catalog(principalId, {
           ...(parsed.input.serverId ? { serverId: parsed.input.serverId } : {}),
           ...(parsed.input.qualifiedName ? { qualifiedName: parsed.input.qualifiedName } : {})
@@ -1206,6 +1245,37 @@ export class DashboardControlService {
   private mcp() {
     return this.metadata.mcpGateway;
   }
+  private oauthStore() {
+    if (!this.metadata.secretReadiness().ready) {
+      throw new HarnessError('UNAVAILABLE', 'MCP OAuth storage is temporarily unavailable', 503, false);
+    }
+    return this.metadata.mcpOAuth;
+  }
+  private requireMcpOAuthServer(principalId: string, serverId: string) {
+    const server = this.mcp().getServer(principalId, serverId);
+    if (!server) throw new HarnessError('NOT_FOUND', 'MCP server is unavailable', 404, false);
+    if (!server.oauth) throw new HarnessError('INVALID_INPUT', 'OAuth is not enabled for this MCP server', 400, false);
+    return server;
+  }
+  private mcpOAuthStatus(principalId: string, serverId: string) {
+    const server = this.mcp().getServer(principalId, serverId);
+    if (!server) throw new HarnessError('NOT_FOUND', 'MCP server is unavailable', 404, false);
+    return this.oauthStore().status(principalId, serverId, {
+      configured: server.oauth !== null,
+      redirectUrl: null,
+      requestedScopes: server.oauth?.scopes ?? null
+    });
+  }
+  private mcpOAuthCall<T>(action: () => T): T {
+    try {
+      return action();
+    } catch (error) {
+      if (!(error instanceof McpOAuthStoreError)) throw error;
+      if (error.code === 'CONFLICT') throw new HarnessError('CONFLICT', error.message, 409, false);
+      if (error.code === 'EXPIRED') throw new HarnessError('EXPIRED', error.message, 410, false);
+      throw new HarnessError('NOT_FOUND', error.message, 404, false);
+    }
+  }
   /**
    * Resolve one server's referenced credentials for an explicit purpose. `execute` is
    * gated by the cached tool's effective permission; `connect` is the audited
@@ -1241,6 +1311,15 @@ export class DashboardControlService {
         headers[header.name] = header.value;
       }
     }
+    let oauth: { scopes: string | null; clientId: string | null; clientSecret: string | null } | undefined;
+    if (server.oauth) {
+      const reference = server.oauth.clientSecretRef;
+      const clientSecret = reference ? this.metadata.globalSecretValue(principalId, reference) : undefined;
+      if (reference && clientSecret === undefined) {
+        throw new HarnessError('NOT_FOUND', `referenced secret ${reference} is unavailable`, 404, false);
+      }
+      oauth = { scopes: server.oauth.scopes ?? null, clientId: server.oauth.clientId ?? null, clientSecret: clientSecret ?? null };
+    }
     this.metadata.recordAudit(principalId, 'mcp_gateway.credentials_resolved', 'mcp_server', server.id, server.generation, {
       serverId: server.id,
       purpose: input.purpose,
@@ -1248,7 +1327,7 @@ export class DashboardControlService {
       headerCount: Object.keys(headers).length
     });
     return ok('MCP credentials resolved', {
-      allowed: true, transport: server.transport, endpoint: server.endpoint, headers
+      allowed: true, transport: server.transport, endpoint: server.endpoint, headers, ...(oauth ? { oauth } : {})
     });
   }
   private beginGitHubSetup(principalId: string, expectedAccountId?: string) {

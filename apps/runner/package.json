@@ -9,6 +9,7 @@
     "dev": "node --watch --experimental-strip-types src/index.ts",
     "metadata:down:v1": "node dist/metadata-schema-down.js",
     "metadata:down:v5": "node dist/metadata-schema-down-v5.js",
+    "metadata:down:v6": "node dist/metadata-schema-down-v6.js",
     "secrets:rekey": "node dist/rekey-secrets.js",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"

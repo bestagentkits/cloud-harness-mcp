@@ -103,6 +103,7 @@ describe('mcp gateway contracts', () => {
       transport: 'streamable-http',
       endpoint: 'https://mcp.example.com/mcp',
       headers: [{ name: 'authorization', kind: 'secret', secretRef: 'GITHUB_MCP_TOKEN', value: 'leaked' }],
+      oauth: null,
       enabled: true,
       status: 'connected',
       toolCount: 1,
