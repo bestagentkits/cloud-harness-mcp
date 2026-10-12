@@ -133,7 +133,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Cause:** Older managed nginx dashboard routes inherit the server-level 1 MiB request cap even though Cloud Harness accepts skill archives up to 8 MiB.
 **Fix:** Deploy the current release or run `deploy/scripts/upgrade-nginx-dashboard.sh` on the host. The managed `/dashboard/` route is upgraded to `client_max_body_size 8m`. Archives larger than 8 MiB are still rejected intentionally by the API and runner.
 
-**Also rejected as `INVALID_INPUT`:** an archive with more than 200 `SKILL.md` documents, more than 20,000 files, or a `SKILL.md` longer than 64 Ki characters. Only `SKILL.md` documents are imported, so bundled assets and macOS `__MACOSX` entries are ignored rather than counted against the skill limit. Split a larger library into several archives.
+**Also rejected as `INVALID_INPUT`:** an archive with more than 200 `SKILL.md` documents, more than 20,000 files, contents that expand beyond 32 MiB, a `SKILL.md` longer than 64 Ki characters, or any symbolic link or special-file entry. Each skill's whole directory is imported; `__MACOSX/`, `.DS_Store`, and files outside skill directories are ignored. A single skill above 512 files or 16 MiB is reported as `LIMIT_EXCEEDED` on its own row while the rest are imported. Split a larger library into several archives.
 
 ---
 
@@ -162,3 +162,14 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Fix:**
 1. For history depth, pass `fetchDepth` (0 for full history, or a commit count) or `shallowSince` (an ISO date/datetime) to `workspace_open`, or call `git_fetch` afterward with `depth`, `unshallow`, or `shallowSince`.
 2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
+
+### 17. A skill is missing from `skills/list`, or `skills/get` returns `-32602`
+**Cause:** The [Skills over MCP](/agent-toolkits#skills-over-mcp-native-client-skills) extension serves only `built-in` skills and your own enabled library skills, and omits any skill it cannot serve whole and verified.
+**Fix:**
+1. Confirm the client supports the `io.modelcontextprotocol/skills` extension and is connected to the HTTP `/mcp` endpoint. Local stdio mode and `/mcp-gateway` do not offer it; use `skills_list` / `skills_read` there.
+2. Workspace and repository skills, and toolkits passed to `workspace_open`, are not served over the extension yet. Read them with `skills_list` / `skills_read` on an open workspace.
+3. Check that the library skill is enabled, not archived or disabled.
+4. Check that `SKILL.md` is UTF-8 and starts with YAML frontmatter holding a `name` (1–120 letters, digits, `.`, `_`, or `-`) and a non-empty `description`. The URI uses that `name`.
+5. Remove symbolic links and special files from the skill directory, and keep it within 512 files and 16 MiB.
+6. Two skills with the same name and different content in the same tier conflict, and neither is served. A same name in `built-in` and `owner` is served at both tier-qualified URIs.
+7. `-32603` is a transient runner failure or a file that changed while it was read; retry. Clients may cache results for up to 30 seconds.

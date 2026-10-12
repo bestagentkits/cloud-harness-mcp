@@ -1,7 +1,15 @@
-import { ProtocolError, ProtocolErrorCode, type McpServer, type ReadResourceResult } from '@modelcontextprotocol/server';
+import {
+  ProtocolError,
+  ProtocolErrorCode,
+  type ListResourcesResult,
+  type ListResourceTemplatesResult,
+  type McpServer,
+  type ReadResourceResult
+} from '@modelcontextprotocol/server';
 import {
   SKILLS_EXTENSION_ID,
   SKILLS_EXTENSION_LIST_MAX_LIMIT,
+  SKILLS_EXTENSION_MAX_BYTES,
   SKILLS_EXTENSION_URI_MAX_LENGTH,
   SkillEntrySchema,
   SkillsExtGetDataSchema,
@@ -22,7 +30,25 @@ import type { OperationBackend, SkillsExtensionOperation } from './operation-bac
 
 /** Per-principal data: only the requesting client may cache it, briefly. */
 const CACHE_HINT = { ttlMs: 30_000, cacheScope: 'private' } as const;
-const MAX_RESULT_BYTES = 20 * 1024 * 1024;
+/** Serialized bound for skill listings and entries, which carry metadata only. */
+const MAX_METADATA_BYTES = 20 * 1024 * 1024;
+
+type SkillsReadData = z.infer<typeof SkillsExtReadDataSchema>;
+
+const serializedWithin = (maxBytes: number) => (data: unknown): boolean => {
+  try {
+    return Buffer.byteLength(JSON.stringify(data), 'utf8') <= maxBytes;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * A read is bounded by the decoded file size the runner itself enforces, not by its wire size: a
+ * maximal binary file grows by a third under base64, and JSON escaping can inflate text further.
+ */
+const readWithinFileLimit = (data: SkillsReadData): boolean => data.contents.every(({ text, blob }) =>
+  (text !== undefined ? Buffer.byteLength(text, 'utf8') : Buffer.byteLength(blob ?? '', 'base64')) <= SKILLS_EXTENSION_MAX_BYTES);
 
 const SkillUriSchema = z.string().min(1).max(SKILLS_EXTENSION_URI_MAX_LENGTH).refine((value) => !/\s/u.test(value) && ![...value].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f), 'invalid skill URI');
 const CursorSchema = z.string().min(1).max(256);
@@ -58,6 +84,7 @@ async function invoke<T>(
   operation: SkillsExtensionOperation,
   input: Record<string, unknown>,
   schema: z.ZodType<T>,
+  withinBound: (data: T) => boolean,
   signal: AbortSignal
 ): Promise<{ data: T; cursor?: string | undefined }> {
   let response: RunnerResponse;
@@ -74,22 +101,17 @@ async function invoke<T>(
     }
     throw internalError();
   }
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(response.data ?? null);
-  } catch {
-    throw internalError();
-  }
-  if (Buffer.byteLength(serialized, 'utf8') > MAX_RESULT_BYTES) throw internalError();
   const parsed = schema.safeParse(response.data);
-  if (!parsed.success) throw internalError();
+  if (!parsed.success || !withinBound(parsed.data)) throw internalError();
   return { data: parsed.data, cursor: response.cursor };
 }
 
 /**
  * Advertises the skills extension (plus the `resources` capability its
  * `resources/read` reuse requires) and installs its request handlers. Must run
- * before the server connects. `resources/directory/read` stays unimplemented.
+ * before the server connects. `resources/list` and `resources/templates/list`
+ * answer empty so the advertised capability is complete;
+ * `resources/directory/read` stays unimplemented.
  */
 export function registerSkillsExtension(server: McpServer, backend: SkillsBackend): void {
   server.server.registerCapabilities({ resources: {}, extensions: { [SKILLS_EXTENSION_ID]: {} } });
@@ -97,21 +119,25 @@ export function registerSkillsExtension(server: McpServer, backend: SkillsBacken
   server.server.setRequestHandler('skills/list', { params: ListParamsSchema, result: ListResultSchema }, async (params, ctx) => {
     const input: Record<string, unknown> = { limit: SKILLS_EXTENSION_LIST_MAX_LIMIT };
     if (params?.cursor !== undefined) input.cursor = params.cursor;
-    const { data, cursor } = await invoke(backend, 'skills_ext_list', input, SkillsExtListDataSchema, ctx.mcpReq.signal);
+    const { data, cursor } = await invoke(backend, 'skills_ext_list', input, SkillsExtListDataSchema, serializedWithin(MAX_METADATA_BYTES), ctx.mcpReq.signal);
     return { skills: data.skills, ...(cursor ? { nextCursor: cursor } : {}), resultType: 'complete' as const, ...CACHE_HINT };
   });
 
   server.server.setRequestHandler('skills/get', { params: GetParamsSchema, result: GetResultSchema }, async (params, ctx) => {
-    const { data } = await invoke(backend, 'skills_ext_get', { uri: params.uri }, SkillsExtGetDataSchema, ctx.mcpReq.signal);
+    const { data } = await invoke(backend, 'skills_ext_get', { uri: params.uri }, SkillsExtGetDataSchema, serializedWithin(MAX_METADATA_BYTES), ctx.mcpReq.signal);
     return { skill: data.skill, resultType: 'complete' as const, ...CACHE_HINT };
   });
 
   server.server.setRequestHandler('resources/read', async (request, ctx): Promise<ReadResourceResult> => {
     const uri = SkillUriSchema.safeParse(request.params.uri);
     if (!uri.success) throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Invalid resource URI');
-    const { data } = await invoke(backend, 'skills_ext_read', { uri: uri.data }, SkillsExtReadDataSchema, ctx.mcpReq.signal);
+    const { data } = await invoke(backend, 'skills_ext_read', { uri: uri.data }, SkillsExtReadDataSchema, readWithinFileLimit, ctx.mcpReq.signal);
     const contents = data.contents.map(({ uri: contentUri, mimeType, text, blob }) =>
       text !== undefined ? { uri: contentUri, mimeType, text } : { uri: contentUri, mimeType, blob: blob ?? '' });
     return { contents, ...CACHE_HINT };
   });
+
+  // Skills are discovered through skills/list, not resources/list; these answer generic resource clients.
+  server.server.setRequestHandler('resources/list', (): ListResourcesResult => ({ resources: [], ...CACHE_HINT }));
+  server.server.setRequestHandler('resources/templates/list', (): ListResourceTemplatesResult => ({ resourceTemplates: [], ...CACHE_HINT }));
 }

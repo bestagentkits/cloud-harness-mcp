@@ -232,11 +232,25 @@ describe('Skills over MCP extension over streamable HTTP', () => {
     await client.close();
   });
 
+  it('answers resources/list and resources/templates/list empty with cache fields, without reaching the runner', async () => {
+    runnerCalls.length = 0;
+    const bodies: unknown[] = [];
+    const client = await connect('modern', bodies);
+    expect((await client.listResources()).resources).toEqual([]);
+    expect(wireResult(bodies, (result) => Array.isArray(result.resources))).toMatchObject({ resources: [], ttlMs: 30_000, cacheScope: 'private' });
+    expect((await client.listResourceTemplates()).resourceTemplates).toEqual([]);
+    expect(wireResult(bodies, (result) => Array.isArray(result.resourceTemplates))).toMatchObject({ resourceTemplates: [], ttlMs: 30_000, cacheScope: 'private' });
+    expect(runnerCalls).toEqual([]);
+    await client.close();
+  });
+
   it('keeps legacy clients working', async () => {
     const legacy = await connect('legacy');
     expect((await legacy.listTools()).tools).toHaveLength(TOOL_SPECS.length);
     const result = await legacy.callTool({ name: 'workspace_list', arguments: {} });
     expect(result.isError).toBe(false);
+    expect((await legacy.listResources()).resources).toEqual([]);
+    expect((await legacy.listResourceTemplates()).resourceTemplates).toEqual([]);
     await legacy.close();
   });
 

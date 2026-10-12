@@ -242,6 +242,11 @@ of those specs in [`mcp-server.ts`](apps/api/src/mcp-server.ts).
 `memories_list`, `memories_read`, `memories_write`, `deployments_list`,
 `deployments_run`
 
+The HTTP endpoint also serves built-in and owner skills through the
+`io.modelcontextprotocol/skills` protocol extension (`skills/list`,
+`skills/get`, `resources/read`); see
+[Skills over MCP extension](docs/mcp-api.md#skills-over-mcp-extension).
+
 ### Retained artifacts
 
 `artifacts_snapshot`, `artifacts_list`, `artifacts_read`, `artifacts_restore`,

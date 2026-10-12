@@ -93,6 +93,7 @@ gateway root owns its own constant five-tool contract.
 1. **Streamable HTTP mode (default):**
    `cloud-harness-mcp --transport http` (or default without flags).
    Assembles Express routes, bearer/Access authentication, and translates requests through `RunnerClient` to the isolated Docker runner on a private network.
+   The [Skills over MCP extension](mcp-api.md#skills-over-mcp-extension) rides the same root: the API only validates and maps JSON-RPC, while the runner resolves, hashes, and reads skills for the bound principal through read-only internal operations. Local stdio mode has no such backend and does not advertise it.
 
 2. **MCP gateway mode:**
    `https://<host>/mcp-gateway`.

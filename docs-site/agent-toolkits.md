@@ -247,6 +247,40 @@ Rank 1 (Lowest):   repository  (/workspace/.agents/skills or .claude/skills)
 
 ---
 
+## Skills over MCP (native client skills)
+
+The HTTP `/mcp` endpoint also implements the official MCP
+[Skills extension](https://modelcontextprotocol.io/extensions/skills)
+(`io.modelcontextprotocol/skills`, SEP-2640) for clients on protocol revision
+`2026-07-28`. A client that supports it can discover and read skills with
+`skills/list`, `skills/get`, and `resources/read`, without opening a workspace.
+
+| | Skills exposed over MCP | Host activates a skill |
+|---|---|---|
+| Who acts | Cloud Harness serves skill files | Your AI client (the host) |
+| What happens | Lists skills and returns file bytes, each pinned to a SHA-256 digest and size | Verifies the bytes, asks for your approval if required, and loads the instructions into the model's context |
+| Runs code? | Never | Only through the host's own approval; Cloud Harness scripts still run only through `skills_run` with its digest pin and privilege grant |
+
+What is served:
+
+- `built-in` skills and **your own** enabled library skills (the `owner` tier).
+  Another user's skills are never visible.
+- Workspace and repository skills, and toolkits passed to `workspace_open`, are
+  not yet served this way. Use `skills_list` / `skills_read` on an open
+  workspace for those.
+- Each file has a URI of the form
+  `skill://cloud-harness/<tier>/<name>/<file>`. A skill is limited to 512 files
+  and 16 MiB; larger skills are omitted, never served partially.
+- Directory reads (`resources/directory/read`) are not supported; the per-skill
+  file manifest lists every file instead.
+
+Clients without the extension, local stdio mode, and the `/mcp-gateway`
+endpoint see no change: keep using the `skills_list`, `skills_read`, and
+`skills_run` tools. See the [Troubleshooting](/troubleshooting) page if a skill
+is missing.
+
+---
+
 ## Storage & Provisioning Security
 
 - **Runner Content-Addressed Storage (CAS):** Normalized skill bundles are cached under `TOOLKIT_CACHE_ROOT` using full-tree SHA-256 digests. Warm workspace starts reuse cached bundles with zero network egress.

@@ -3,7 +3,7 @@ import { Client, ProtocolError } from '@modelcontextprotocol/client';
 import { InMemoryTransport, type AuthInfo } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { SKILLS_EXTENSION_ID, TOOL_SPECS, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
+import { SKILLS_EXTENSION_ID, SKILLS_EXTENSION_MAX_BYTES, TOOL_SPECS, type RunnerPrincipalSelector, type RunnerResponse } from '@cloud-harness/contracts';
 import { createCloudHarnessServer, createCloudHarnessServerFactory } from '../src/mcp-server.js';
 import type { OperationBackend } from '../src/operation-backend.js';
 import type { RunnerClient } from '../src/runner-client.js';
@@ -174,11 +174,41 @@ describe('Skills over MCP extension', () => {
     }
   });
 
+  it('answers resources/list and resources/templates/list empty without calling the runner', async () => {
+    const { client: runner, internalCalls, toolCalls } = fakeRunner();
+    const client = await connect(runner);
+    const resources = await client.request({ method: 'resources/list', params: {} }, z.looseObject({ resources: z.array(z.unknown()), ttlMs: z.number(), cacheScope: z.string() }));
+    expect(resources).toMatchObject({ resources: [], ttlMs: 30_000, cacheScope: 'private' });
+    expect(resources.nextCursor).toBeUndefined();
+    const templates = await client.request({ method: 'resources/templates/list', params: {} }, z.looseObject({ resourceTemplates: z.array(z.unknown()), ttlMs: z.number(), cacheScope: z.string() }));
+    expect(templates).toMatchObject({ resourceTemplates: [], ttlMs: 30_000, cacheScope: 'private' });
+    expect((await client.listResources()).resources).toEqual([]);
+    expect((await client.listResourceTemplates()).resourceTemplates).toEqual([]);
+    expect(internalCalls).toEqual([]);
+    expect(toolCalls).toEqual([]);
+  });
+
   it('rejects oversized runner payloads', async () => {
     const huge = 'a'.repeat(21 * 1024 * 1024);
     const { client: runner } = fakeRunner(() => ok({ contents: [{ uri: skillUri, text: huge }] }));
     const client = await connect(runner);
     await expectProtocolError(client.readResource({ uri: skillUri }), -32603);
+  });
+
+  it('serves a binary file at the per-skill size limit despite base64 expansion, and rejects one byte more', async () => {
+    const limit = SKILLS_EXTENSION_MAX_BYTES;
+    const atLimit = Buffer.alloc(limit, 0xff);
+    const { client: runner } = fakeRunner(() => ok({ contents: [{ uri: scriptUri, mimeType: 'application/octet-stream', blob: atLimit.toString('base64') }] }));
+    const client = await connect(runner);
+    const read = await client.readResource({ uri: scriptUri });
+    const blob = (read.contents[0] as { blob: string }).blob;
+    expect(blob.length).toBeGreaterThan(20 * 1024 * 1024);
+    expect(Buffer.from(blob, 'base64').equals(atLimit)).toBe(true);
+
+    const overLimit = Buffer.alloc(limit + 1, 0xff).toString('base64');
+    const { client: overRunner } = fakeRunner(() => ok({ contents: [{ uri: scriptUri, mimeType: 'application/octet-stream', blob: overLimit }] }));
+    const overClient = await connect(overRunner);
+    await expectProtocolError(overClient.readResource({ uri: scriptUri }), -32603);
   });
 
   it('treats a missing principal as an internal error without calling the runner', async () => {
@@ -233,5 +263,6 @@ describe('Skills over MCP extension', () => {
     expect(client.getServerCapabilities()?.extensions?.[SKILLS_EXTENSION_ID]).toBeUndefined();
     expect(client.getServerCapabilities()?.resources).toBeUndefined();
     await expectProtocolError(client.request({ method: 'skills/list', params: {} }, ListResult), -32601);
+    await expectProtocolError(client.request({ method: 'resources/list', params: {} }, z.unknown()), -32601);
   });
 });
