@@ -205,8 +205,15 @@ connection restores the prior release the same way a failing step does
 connection from the non-pty CI session); after a signal the output goes to
 `/var/lib/cloud-harness/deploy-interrupt.log` because the session is gone. A
 `SIGKILL`, host reboot, or killed service still bypasses every in-process trap,
-and the deploy stops the running release before it compiles the new images, so
-check the state and use the manual rollback below after one of those.
+so check the state and use the manual rollback below after one of those.
+
+The deploy compiles the target images while the current release keeps serving,
+then stops it, so the outage lasts for the backup and the cached rebuild and
+start, not for a cold image build. A failed or interrupted build never stops the
+current release: the deploy puts the checkout and the `:local` image tags back
+on the recorded release and exits. During that build the checkout and the
+`:local` tags already point at the target, so a host reboot in that window
+starts the target release without a pre-deploy backup.
 A manual:
 
 ```bash

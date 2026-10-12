@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -163,6 +163,49 @@ false
     const result = spawnSync('bash', ['-c', script, 'bash', directory, trace], { encoding: 'utf8' });
     expect(result.status).toBe(1);
     expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(['rollback', 'after-kill']);
+  });
+
+  it('builds the target images before stopping the serving release', () => {
+    const source = readFileSync(deployScript, 'utf8');
+    const build = 'compose --profile images build executor-image agent-image network-guard-image api runner model-gateway';
+    const stop = source.indexOf('\nstop_release\n');
+    expect(stop).toBeGreaterThan(0);
+    expect(source.indexOf(build)).toBeLessThan(stop);
+    expect(source.indexOf(`git checkout --detach --force "$release_sha"`)).toBeLessThan(source.indexOf(build));
+    expect(source.indexOf("trap 'abandon_prebuild $?' ERR")).toBeLessThan(source.indexOf(build));
+    expect(source.indexOf('trap - ERR HUP INT TERM PIPE')).toBeLessThan(stop);
+  });
+
+  it.each([
+    ['a failed build', 1, false],
+    ['an interrupted build', 129, true]
+  ] as const)('restores the current checkout and image tags after %s without stopping it', (_name, code, logged) => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-prebuild-'));
+    const trace = join(directory, 'trace');
+    for (const image of ['api', 'runner', 'executor', 'network-guard', 'agent', 'model-gateway']) {
+      writeFileSync(join(directory, `release-${image}-image`), `sha256:${image}`);
+    }
+    const source = readFileSync(deployScript, 'utf8');
+    const handler = /^abandon_prebuild\(\) \{\n[\s\S]*?\n\}\n/m.exec(source)?.[0] ?? '';
+    expect(handler).not.toBe('');
+    const script = `
+set -euo pipefail
+state="$1"; previous_sha="$2"; trace_path="$3"
+stop_release() { echo stop >> "$trace_path"; }
+git() { echo "git:$*" >> "$trace_path"; }
+docker() { echo "docker:$*" >> "$trace_path"; }
+${handler}
+abandon_prebuild ${code}
+`;
+    const result = spawnSync('bash', ['-c', script, 'bash', directory, previousSha, trace], { encoding: 'utf8' });
+    expect(result.status).toBe(code);
+    const lines = readFileSync(trace, 'utf8').trim().split('\n');
+    expect(lines).not.toContain('stop');
+    expect(lines[0]).toBe(`git:checkout --detach --force ${previousSha}`);
+    expect(lines).toContain('docker:tag sha256:api cloud-harness-api:local');
+    expect(lines).toContain('docker:tag sha256:model-gateway cloud-harness-model-gateway:local');
+    expect(lines).toHaveLength(7);
+    expect(existsSync(join(directory, 'deploy-interrupt.log'))).toBe(logged);
   });
 
   it('clears the signal traps only after the release is promoted', () => {
