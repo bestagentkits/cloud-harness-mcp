@@ -40,6 +40,7 @@ if [[ ${CLOUD_HARNESS_DEPLOY_DETACHED:-} != 1 ]]; then
     --description="Cloud Harness deploy $release_sha" \
     --setenv=CLOUD_HARNESS_DEPLOY_DETACHED=1 --setenv=HOME=/root \
     --property=KillMode=mixed --property=TimeoutStopSec=30min \
+    --property="ExecStopPost=$(readlink -f "${BASH_SOURCE[0]}") --recover" \
     "$(readlink -f "${BASH_SOURCE[0]}")" "$release_sha" || status=$?
   sleep 1
   kill "$follower" 2>/dev/null || true
@@ -64,6 +65,58 @@ env_file=/etc/cloud-harness-mcp/runtime.env
 
 canary_credentials_file=/etc/cloud-harness-mcp/canary-credentials
 config_root=/etc/cloud-harness-mcp
+
+# Every exit of a deploy that has stopped the release, including a completed or
+# failed rollback, removes this marker. Only SIGKILL, an OOM kill, or a host
+# reboot leaves it behind, and then `--recover` restores the recorded release
+# and snapshot: from the deploy unit's ExecStopPost after a kill, and from
+# cloud-harness-deploy-recover.service at boot.
+in_progress="$state/deploy-in-progress"
+# A rollback cannot finish while systemd is stopping Docker for a shutdown, and
+# a failed one disables the service; leave the marker for the boot recovery.
+host_is_shutting_down() {
+  [[ $(systemctl is-system-running 2>/dev/null || true) == stopping ]]
+}
+recover_interrupted_deploy() {
+  [[ -f $in_progress ]] || return 0
+  host_is_shutting_down && return 0
+  previous_sha=$(sed -n 1p "$in_progress")
+  backup_dir=$(sed -n 2p "$in_progress")
+  echo "a killed deployment left the release stopped; restoring ${previous_sha:-no previous release}" >&2
+  cd "$repo"
+  source deploy/scripts/release-runtime.sh
+  trap 'rm -f "$in_progress"' EXIT
+  rollback 0
+}
+# The host deploy tooling only moves forward. Promoting an older release (a
+# rollback, or `cloud-harness-rollback`) keeps the newer scripts, so the next
+# deploy still runs detached with crash recovery instead of an older script that
+# predates those protections.
+tooling_release_file="$state/deploy-tooling-release"
+install_deploy_tooling() {
+  local installed
+  installed=$(cat "$tooling_release_file" 2>/dev/null || true)
+  if [[ ! -f deploy/systemd/cloud-harness-deploy-recover.service ]]; then
+    echo "keeping the installed deploy tooling; $release_sha predates crash recovery" >&2
+    return 0
+  fi
+  if [[ $installed =~ ^[0-9a-f]{40}$ ]] && ! git merge-base --is-ancestor "$installed" "$release_sha"; then
+    echo "keeping the deploy tooling from $installed, which is newer than $release_sha" >&2
+    return 0
+  fi
+  install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-deploy
+  install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
+  install -m 0755 deploy/scripts/upgrade-nginx-dashboard.sh /usr/local/sbin/cloud-harness-upgrade-nginx
+  install -m 0644 deploy/systemd/cloud-harness-deploy-recover.service /etc/systemd/system/cloud-harness-deploy-recover.service
+  systemctl daemon-reload
+  systemctl enable cloud-harness-deploy-recover.service
+  printf '%s\n' "$release_sha" > "$tooling_release_file"
+}
+
+if [[ $release_sha == --recover ]]; then
+  recover_interrupted_deploy
+  exit 0
+fi
 
 if grep -Eq '^(MCP_CANARY_URL|MCP_CANARY_ACCESS_CLIENT_ID|MCP_CANARY_ACCESS_CLIENT_SECRET)=' "$env_file"; then
   echo "Access canary credentials must be stored in $canary_credentials_file, not the runtime configuration" >&2
@@ -132,15 +185,24 @@ rollback_on_signal() {
   local signal_name=$1 exit_code=$2
   trap '' HUP INT TERM PIPE
   exec >>"$state/deploy-interrupt.log" 2>&1 || true
+  if host_is_shutting_down; then
+    echo "deployment interrupted by host shutdown; recovery runs at boot" >&2
+    trap - EXIT
+    exit "$exit_code"
+  fi
   echo "deployment interrupted by SIG$signal_name; rolling back" >&2
   (exit "$exit_code") || rollback "$exit_code"
 }
-trap 'rc=$?; trap "" HUP INT TERM PIPE; (exit "$rc") || rollback' ERR
+trap 'rc=$?; trap "" HUP INT TERM PIPE; (exit "$rc") || { ! host_is_shutting_down || { trap - EXIT; exit "$rc"; }; rollback; }' ERR
 trap 'rollback_on_signal HUP 129' HUP
 trap 'rollback_on_signal INT 130' INT
 trap 'rollback_on_signal TERM 143' TERM
 trap 'rollback_on_signal PIPE 141' PIPE
 
+# The snapshot is recorded in the marker only once it is complete; until then
+# the target never ran, so recovery restarts the previous release as it was.
+printf '%s\n' "$previous_sha" > "$in_progress"
+trap 'rm -f "$in_progress"' EXIT
 stop_release
 backup_dir="$state/backups/cloud-harness-$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0700 "$backup_dir"
@@ -160,6 +222,7 @@ if [[ $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
 else
   cp -a "$config_root" "$backup_dir/config"
 fi
+printf '%s\n%s\n' "$previous_sha" "$backup_dir" > "$in_progress"
 
 git checkout --detach --force "$release_sha"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
@@ -219,9 +282,8 @@ record_release_config
 if [[ $previous_sha =~ ^[0-9a-f]{40}$ && $previous_sha != "$release_sha" ]]; then
   printf '%s\n' "$previous_sha" > "$state/release-previous"
 fi
-install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-deploy
-install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
-install -m 0755 deploy/scripts/upgrade-nginx-dashboard.sh /usr/local/sbin/cloud-harness-upgrade-nginx
+install_deploy_tooling
 printf '%s\n' "$release_sha" > "$state/release-current"
+rm -f "$in_progress"
 trap - ERR HUP INT TERM PIPE
 echo "deployed $release_sha"
