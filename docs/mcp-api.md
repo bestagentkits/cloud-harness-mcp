@@ -175,9 +175,11 @@ Decisions that are easy to misread:
   open workspace. The same name in both tiers is served at both tier-qualified
   URIs; a same-tier conflict is served under neither, as a launch would refuse
   it.
-- **Methods.** `skills/list`, `skills/get`, and `resources/read`. The optional
-  `resources/directory/read` is not implemented, so `directoryRead` is not
-  declared.
+- **Methods.** `skills/list`, `skills/get`, and `resources/read`. Skills are
+  discovered only through `skills/list`: `resources/list` and
+  `resources/templates/list` answer empty so the declared `resources`
+  capability is complete. The optional `resources/directory/read` is not
+  implemented, so `directoryRead` is not declared.
 - **Addressing.** `skill://cloud-harness/<tier>/<name>/<file>`; a skill is
   addressed by its `SKILL.md` URI, and only the canonical encoding of a file
   this server listed is accepted.

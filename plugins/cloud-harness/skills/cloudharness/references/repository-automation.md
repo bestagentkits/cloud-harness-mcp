@@ -10,6 +10,11 @@ Cloud Harness discovers skill bundles from conventional agent skill locations
 inside the workspace. A skill's prose can guide work, while a named script can
 execute repository-controlled code.
 
+Over the MCP Skills extension, built-in and owner skills are also served as
+`skill://cloud-harness/<tier>/<name>/<file>` resources (no workspace, no
+directory reads, at most 512 files and 16 MiB per skill). Unknown URIs return
+`-32602`. Those per-file digests are not the `skills_run` pin.
+
 ### AgentKit CLI versus skill content
 
 The shipped remote executor supplies a pinned beta `ak` binary independently

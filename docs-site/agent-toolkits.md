@@ -272,7 +272,8 @@ What is served:
   `skill://cloud-harness/<tier>/<name>/<file>`. A skill is limited to 512 files
   and 16 MiB; larger skills are omitted, never served partially.
 - Directory reads (`resources/directory/read`) are not supported; the per-skill
-  file manifest lists every file instead.
+  file manifest lists every file instead. `resources/list` is intentionally
+  empty, so discover skills with `skills/list`.
 
 Clients without the extension, local stdio mode, and the `/mcp-gateway`
 endpoint see no change: keep using the `skills_list`, `skills_read`, and
