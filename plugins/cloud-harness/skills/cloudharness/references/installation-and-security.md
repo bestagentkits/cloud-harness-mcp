@@ -104,8 +104,16 @@ not the endpoint you use to open a workspace.
   static-header client uses the managed API-key lane instead: the same
   dashboard-managed key it uses for `/mcp`, at `/mcp-gateway` on the API-key
   host (for example `https://api.harness.zuey.me/mcp-gateway`).
-- **Unsupported.** Downstream `stdio` servers, OAuth-protected downstream
-  servers, and HTTP redirects are not supported.
+- **Downstream OAuth.** A `streamable-http` server may authenticate with OAuth
+  instead of a header. The owner connects it from the dashboard; the gateway
+  stores the tokens encrypted and never returns them. This is Cloud Harness
+  signing in *to* the downstream server and is unrelated to how your client
+  signs in to Cloud Harness. A call that returns `AUTHORIZATION_REQUIRED`
+  (not retryable) means the server needs Connect or Reauthorize: stop, tell
+  the owner which server, and retry only after they confirm. Never ask the
+  owner to paste a token or an authorization URL into the conversation.
+- **Unsupported.** Downstream `stdio` servers and HTTP redirects are not
+  supported.
 
 ## Marketplace compatibility
 

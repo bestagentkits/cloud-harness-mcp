@@ -1943,7 +1943,46 @@ export function renderMcpServersIndex(data) {
   `;
 }
 
-function renderMcpOverviewPanel(server, gateway) {
+const MCP_OAUTH_LABELS = {
+  not_configured: 'Not configured',
+  authorization_required: 'Authorization required',
+  authorizing: 'Authorizing',
+  connected: 'Connected',
+  reauthorization_required: 'Reauthorization required',
+  error: 'Error'
+};
+
+function renderMcpOAuthSection(server, status) {
+  if (!server.oauth) return '';
+  const state = status?.state ?? 'authorization_required';
+  const label = MCP_OAUTH_LABELS[state] ?? MCP_OAUTH_LABELS.error;
+  const connected = state === 'connected';
+  const connectLabel = connected ? 'Reconnect' : (state === 'reauthorization_required' ? 'Reauthorize' : 'Connect');
+  const facts = status ? `<dl class="facts">
+        ${status.issuer ? `<dt>Issuer</dt><dd class="mono wrap">${escape(status.issuer)}</dd>` : ''}
+        ${status.grantedScopes ? `<dt>Granted scopes</dt><dd class="mono wrap">${escape(status.grantedScopes)}</dd>` : ''}
+        ${status.registrationMode ? `<dt>Registration</dt><dd class="mono">${escape(status.registrationMode)}</dd>` : ''}
+        ${status.authorizedAt ? `<dt>Authorized</dt><dd>${time(status.authorizedAt)}</dd>` : ''}
+        ${status.expiresAt ? `<dt>Access token expires</dt><dd>${time(status.expiresAt)}</dd>` : ''}
+        ${status.redirectUrl ? `<dt>Redirect URL</dt><dd class="mono wrap">${escape(status.redirectUrl)}</dd>` : ''}
+      </dl>` : '';
+  const error = status?.lastError ? `<p class="warning wrap">${escape(status.lastError)}</p>` : '';
+  const disconnect = status && state !== 'authorization_required' && state !== 'not_configured'
+    ? `<button class="danger" type="button" data-mcp-oauth-disconnect="${escape(server.id)}">Disconnect</button>` : '';
+  return `
+    <section class="panel" aria-labelledby="mcp-oauth-heading">
+      <h2 id="mcp-oauth-heading">OAuth</h2>
+      <p><span class="status${connected ? ' connected' : ''}">${escape(label)}</span></p>
+      ${error}
+      ${facts}
+      <div class="row-actions">
+        <button class="accent-btn" type="button" data-mcp-oauth-connect="${escape(server.id)}">${escape(connectLabel)}</button>
+        ${disconnect}
+      </div>
+    </section>`;
+}
+
+function renderMcpOverviewPanel(server, gateway, oauthStatus) {
   const description = server.description ? `<p class="wrap">${escape(server.description)}</p>` : '';
   const lastError = server.lastError ? `<p class="warning wrap">${escape(server.lastError)}</p>` : '';
   const headers = Array.isArray(server.headers) ? server.headers : [];
@@ -1973,6 +2012,7 @@ function renderMcpOverviewPanel(server, gateway) {
       <h3>Headers</h3>
       <ul class="record-list">${headerItems}</ul>
     </section>
+    ${renderMcpOAuthSection(server, oauthStatus)}
     ${renderMcpGatewayCard(gateway)}
   `;
 }
@@ -2060,12 +2100,12 @@ function renderMcpLogsPanel(traces, cursor) {
   `;
 }
 
-export function renderMcpServerDetail(server, tools, traces, activeTab = 'overview', cursor, gateway) {
+export function renderMcpServerDetail(server, tools, traces, activeTab = 'overview', cursor, gateway, oauthStatus) {
   if (!server) return '<div class="empty"><h3>MCP server not found.</h3><p>It may have been deleted or belong to another identity.</p></div>';
   const tabs = [['overview', 'Overview'], ['tools', 'Tools'], ['permissions', 'Permissions'], ['logs', 'Logs']];
   const tabNav = `<div class="mcp-nav-tabs" role="tablist" aria-label="MCP server sections">${tabs.map(([key, label]) => `<button type="button" class="mcp-tab-btn${activeTab === key ? ' active' : ''}" data-mcp-tab="${key}" role="tab" aria-selected="${activeTab === key ? 'true' : 'false'}">${escape(label)}</button>`).join('')}</div>`;
   const toolCount = Array.isArray(tools) ? tools.length : count(server.toolCount);
-  const panels = { overview: renderMcpOverviewPanel(server, gateway), tools: renderMcpToolsPanel(tools), permissions: renderMcpPermissionsPanel(server, tools), logs: renderMcpLogsPanel(traces, cursor) };
+  const panels = { overview: renderMcpOverviewPanel(server, gateway, oauthStatus), tools: renderMcpToolsPanel(tools), permissions: renderMcpPermissionsPanel(server, tools), logs: renderMcpLogsPanel(traces, cursor) };
   return `
     <nav aria-label="Breadcrumb"><a href="/dashboard/mcp-servers">MCP servers</a><span>${escape(server.name)}</span></nav>
     <div class="record-heading">

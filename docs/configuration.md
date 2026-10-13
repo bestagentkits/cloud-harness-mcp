@@ -351,6 +351,36 @@ permitted endpoints there are public https URLs. The endpoint policy itself is
 owned by [`apps/api/src/mcp-gateway/url-policy.ts`](../apps/api/src/mcp-gateway/url-policy.ts),
 and the gateway boundary is described in the [MCP gateway](mcp-gateway.md).
 
+### Downstream MCP OAuth
+
+Two optional API settings enable the **outbound** OAuth client that lets the
+gateway connect to OAuth-protected downstream MCP servers. They do not
+configure the inbound Cloudflare Access Managed OAuth lane. Both are unset by
+default; their accepted shapes are owned by `ApiConfigSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts), and
+[`.env.example`](../.env.example) carries commented examples.
+
+- `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is the browser callback that
+  authorization servers redirect to: the public dashboard origin followed by
+  exactly `/dashboard/mcp-oauth/callback`, over https (plain http is accepted
+  only for a loopback host during local development), with no query or
+  fragment. While it is unset, servers can still be saved with an `oauth`
+  configuration, but Connect returns `unavailable` and OAuth servers cannot be
+  authorized. Set it to the hostname operators actually use for the dashboard,
+  because the callback must arrive with that browser's Access session.
+- `MCP_DOWNSTREAM_OAUTH_CLIENT_METADATA_URL` is optional: a public https URL
+  with a non-root path that serves this deployment's OAuth Client ID Metadata
+  Document. When set and the authorization server advertises support, the URL
+  itself is used as the `client_id`, so no registration is created at the
+  authorization server. Without it, dynamic client registration or a manually
+  entered client ID is used. Cloud Harness does not serve this document; host
+  it separately, with a `client_id` equal to its own URL and `redirect_uris`
+containing the redirect URL above.
+
+Both are read only by the API container through the runtime environment file.
+The deployment steps are in
+[deployment](deployment.md#downstream-mcp-oauth-redirect).
+
 ## Model gateway provider overrides
 
 `MODEL_GATEWAY_SESSION_HEADER` names one optional upstream header that the model

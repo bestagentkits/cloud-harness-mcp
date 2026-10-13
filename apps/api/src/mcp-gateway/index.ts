@@ -5,6 +5,7 @@ import type { RunnerClient } from '../runner-client.js';
 import { serverVersion } from '../version.js';
 import { GatewayConnectionManager, type GatewayConnectionOptions } from './connection-manager.js';
 import { registerGatewayTools } from './meta-tools.js';
+import { McpOAuthCoordinator } from './oauth-flow.js';
 import { McpGatewayService, type McpGatewayServiceOptions } from './service.js';
 
 /**
@@ -87,7 +88,18 @@ export function createMcpGateway(
     ...resolved.connection,
     ...(overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl } : {})
   });
-  const service = new McpGatewayService(runnerClient, connections, resolved.service);
+  const oauth = new McpOAuthCoordinator(runnerClient, connections, {
+    redirectUrl: config.mcpDownstreamOauthRedirectUrl,
+    clientMetadataUrl: config.mcpDownstreamOauthClientMetadataUrl,
+    fetch: {
+      timeoutMs: resolved.connection.timeoutMs,
+      maxResponseBytes: resolved.connection.maxResponseBytes,
+      allowInsecureHttp: resolved.connection.allowInsecureHttp,
+      allowPrivateEndpoints: resolved.connection.allowPrivateEndpoints,
+      ...(overrides.fetchImpl ? { fetchImpl: overrides.fetchImpl as never } : {})
+    }
+  });
+  const service = new McpGatewayService(runnerClient, connections, resolved.service, oauth);
   const factory = (context: McpRequestContext): McpServer => {
     const server = new McpServer(
       { name: 'cloud-harness-mcp-gateway', version: serverVersion },

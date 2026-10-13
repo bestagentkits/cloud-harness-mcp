@@ -116,6 +116,17 @@ To work without egress meanwhile, reset the default to `network-none` on the Set
 1. The error names the missing scope. Add that permission to the GitHub App and approve the pending installation change on GitHub, then retry. The [GitHub App setup](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/github-app-private-repositories.md) guide lists which operations need which permission. An action-scoped token also carries **Contents: Read-only** so that `gh` can resolve repository metadata, so that permission is required for `github_action` even when the named action scope is already granted.
 2. Alternatively, configure the fallback credential for that principal: the runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in `owner-bearer` mode, or that principal's global runtime secret in Access mode. The runner-environment credential is harness-side only and never enters an executor; a principal's global runtime secret is injected into that principal's workspaces, so it also authenticates the workspace `gh` CLI.
 A `403` from the helper is never retried, because the operation may already have had side effects; inspect the issue or pull request before retrying.
+3. `pr_merge` and `pr_auto_merge_enable` need **Contents: Read and write** as well as **Pull requests: Read and write**; the error names both scopes. Review actions (`pr_review`, `pr_review_comment`, thread, reviewer, and draft/ready actions) need only **Pull requests: Read and write**.
+
+### 11a. Review or merge errors (`GITHUB_REVIEW_NOT_ALLOWED`, `GITHUB_REVIEW_COMMENT_INVALID`, `GITHUB_REVIEWER_UNASSIGNABLE`, `GITHUB_MERGE_BLOCKED`, `GITHUB_MERGE_CONFLICT`, `GITHUB_AUTO_MERGE_UNAVAILABLE`)
+**Cause:** GitHub accepted the credential but refused the pull request operation itself.
+**Fix:**
+- `GITHUB_REVIEW_NOT_ALLOWED`: the acting identity authored the PR; GitHub does not let it approve or request changes on its own PR. Use `pr_comment` or have another identity review.
+- `GITHUB_REVIEW_COMMENT_INVALID`: the `path`/`line` is not in the PR diff, is outdated, or `commitId` is not part of the PR. Re-read `pr_view` (`headRefOid`) and the changed files, then retry on a line inside the diff.
+- `GITHUB_REVIEWER_UNASSIGNABLE`: the user is not a collaborator, is the PR author, or the team slug is not in the repository's organization.
+- `GITHUB_MERGE_BLOCKED`: required checks, required approvals, branch protection, or a moved head blocks the merge. Check `mergeStateStatus` and `reviewDecision` from `pr_view`; use `pr_auto_merge_enable` to merge once the requirements pass.
+- `GITHUB_MERGE_CONFLICT`: update the PR branch and resolve the conflict, then retry.
+- `GITHUB_AUTO_MERGE_UNAVAILABLE`: the repository does not allow auto-merge, or the PR is already mergeable (merge it directly).
 
 ### 12. `LIMIT_EXCEEDED: active workspace limit reached` on `workspace_open`
 **Cause:** The principal already holds `MAX_ACTIVE_WORKSPACES_PER_OWNER` counted workspaces (`CREATING`, `ACTIVE`, `NETWORK_QUARANTINED`). A record in `REAPING` is in flight to teardown and holds no slot. Multiple concurrent workspaces are supported by design, so this is a quota rather than a harness limitation.
@@ -161,7 +172,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Cause:** `workspace_open` clones a single commit by default, so a fresh workspace's history is one commit deep until deepened. Separately, MCP client approval prompts key off tool-level annotations: `github_action` is annotated destructive as a whole tool because it also performs mutations, so a client can prompt even for a read action like `pr_list` since there is no per-action server approval gate.
 **Fix:**
 1. For history depth, pass `fetchDepth` (0 for full history, or a commit count) or `shallowSince` (an ISO date/datetime) to `workspace_open`, or call `git_fetch` afterward with `depth`, `unshallow`, or `shallowSince`.
-2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
+2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `pr_review_threads`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
 
 ### 17. A skill is missing from `skills/list`, or `skills/get` returns `-32602`
 **Cause:** The [Skills over MCP](/agent-toolkits#skills-over-mcp-native-client-skills) extension serves `built-in` skills and your own enabled library skills, adds one workspace's `workspace` and `repository` skills only on that workspace's `/mcp/workspaces/<workspaceId>` endpoint, and omits any skill it cannot serve whole and verified.
@@ -173,3 +184,15 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 5. Remove symbolic links and special files from the skill directory, keep it within 512 files, 16 MiB, and 32 nested directory levels, use UTF-8 file names, and keep every encoded file URI within 1024 characters (non-ASCII and spaces are percent-encoded, so long non-Latin paths reach it sooner).
 6. Two skills with the same name and different content in the same tier conflict, and neither is served; the same applies when one of them cannot be read. In the `repository` tier, `.agents/skills` outranks `.codex/skills`, which outranks `.claude/skills`, so only same-root duplicates conflict. A same name in different tiers is served at each tier-qualified URI. A repository skill root reached through a symbolic link (for example `.agents` linked elsewhere) is ignored.
 7. `-32603` asking you to re-run `skills/get` means a workspace or repository file changed after its manifest was computed; fetch the entry again and re-read. Any other `-32603` is a transient runner failure; retry. Clients may cache results for up to 30 seconds.
+
+### 18. MCP Gateway: `AUTHORIZATION_REQUIRED` or an OAuth connection error
+**Cause:** A downstream MCP server set to **Authenticate with OAuth** has no usable sign-in for you. This is Cloud Harness signing in **to** that server, not your AI client signing in to Cloud Harness (see items 5 and 6 for that). It happens before the first **Connect**, after **Disconnect**, after you change the server's endpoint or manual client, or when the provider refuses to renew the token. Gateway calls from your AI client never open a browser, so they report `AUTHORIZATION_REQUIRED`, and **Test** or **Refresh tools** report it as HTTP `409`.
+**Fix:**
+1. Open the server in [MCP Servers](/dashboard/mcp-servers) and select **Connect** or **Reauthorize** in the **OAuth** panel of the Overview tab, then retry the call.
+2. If you return to the server page with an error, the `reason` names the cause:
+   - `invalid_state` or `expired` — the sign-in link was already used, replaced by a newer **Connect**, or left too long. Select **Connect** again in the same browser.
+   - `denied` — you or the provider declined the request. Check the scopes and the account you signed in with.
+   - `issuer_mismatch` — the provider's response did not come from the expected authorization server. Do not retry blindly; confirm the endpoint is the vendor's real MCP URL.
+   - `exchange_failed` — the provider rejected the sign-in completion. The **OAuth** panel shows the sanitized error; a wrong manual client ID or secret is a common cause.
+3. If **Connect** reports that MCP OAuth is unavailable, the operator must set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` (see the [environment variables reference](/reference/environment-variables)).
+4. If **Connect** fails before the provider's page opens, the provider may not support automatic client registration. Register a client with the provider and enter its **Client ID** (and a client-secret global secret, if it issued one) in the server form.

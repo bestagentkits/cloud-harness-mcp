@@ -149,9 +149,11 @@ export class AgentManager {
     for (const workspace of this.store.active()) {
       if (workspace.status !== 'ACTIVE') continue;
       // Agent admission is defined only for network-disabled workspaces, matching the eligibility
-      // guard in reserveSpawn and dispatch. An ineligible workspace must be skipped rather than
-      // admitted: openWorkspaceAdmission throws NOT_FOUND for it, which would abort runner startup
-      // and take the whole compose stack down.
+      // guard in reserveSpawn and dispatch. An ACTIVE dependency-access workspace is a normal,
+      // lease-bounded workspace that simply cannot host agents (its profile is fixed at creation,
+      // and the workspace service has already reconciled its executor), so it is skipped rather
+      // than closed. Admitting it would throw CONFLICT, abort runner startup, and take the whole
+      // compose stack down.
       if (workspace.networkProfile !== 'network-none') continue;
       const records = this.repository.prepareWorkspaceStartupRepair(workspace.ownerId, workspace.id, workspace.generation, this.now());
       records.sort((left, right) => agentDepth(right, records) - agentDepth(left, records));

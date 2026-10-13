@@ -26,8 +26,9 @@ The runtime split is deliberate:
   allow/deny decision, traces, and encrypted-secret resolution. It already owns
   SQLite, the keyring, and the audit trail. The gateway tables
   (`mcp_gateway_servers`, `mcp_gateway_tools`,
-  `mcp_gateway_tool_permissions`, `mcp_gateway_traces`) are part of the
-  runner-owned metadata schema v6.
+  `mcp_gateway_tool_permissions`, `mcp_gateway_traces`) were introduced by
+  runner-owned metadata schema v6; v7 adds the encrypted downstream OAuth
+  grant and pending-flow tables (`mcp_oauth_grants`, `mcp_oauth_flows`).
 - **The API owns** the MCP client role: the outbound socket to
   principal-configured URLs. The API is the internet-facing,
   Docker-socket-free, host-mount-free component with the dedicated egress
@@ -47,13 +48,18 @@ Executable owners:
   resolution: [`packages/contracts/src/mcp-gateway-schemas.ts`](../packages/contracts/src/mcp-gateway-schemas.ts)
 - Registry, tool cache, permission decisions, traces, and retention:
   [`apps/runner/src/mcp-gateway-store.ts`](../apps/runner/src/mcp-gateway-store.ts)
-- Schema v5 → v6 migration and downgrade ladder:
+- Encrypted downstream OAuth grants and single-use pending flows:
+  [`apps/runner/src/mcp-oauth-store.ts`](../apps/runner/src/mcp-oauth-store.ts)
+- Gateway schema migrations and downgrade ladder:
   [`apps/runner/src/metadata-schema.ts`](../apps/runner/src/metadata-schema.ts)
-- Gateway assembly, meta-tools, catalog, connection manager, URL policy, and
-  redaction: [`apps/api/src/mcp-gateway/`](../apps/api/src/mcp-gateway/)
+- Gateway assembly, meta-tools, catalog, connection manager, URL policy,
+  redaction, and the downstream OAuth client (`oauth-flow.ts`,
+  `oauth-provider.ts`, `oauth-fetch.ts`):
+  [`apps/api/src/mcp-gateway/`](../apps/api/src/mcp-gateway/)
 - Endpoint and route wiring:
   [`apps/api/src/app.ts`](../apps/api/src/app.ts)
-- Dashboard connection/test/refresh routes:
+- Dashboard connection/test/refresh and OAuth status/start/disconnect/callback
+  routes:
   [`apps/api/src/dashboard-gateway-router.ts`](../apps/api/src/dashboard-gateway-router.ts)
 
 ## How to add an MCP server
@@ -61,8 +67,10 @@ Executable owners:
 Add and manage servers in the dashboard **MCP Servers** section
 (`/dashboard/mcp-servers`). A server record carries a lowercase name that is
 unique per principal, an optional description, a transport, the endpoint URL,
-custom headers, a server-level default permission, and an enabled flag. The
-dashboard also offers Test, Refresh tools, enable/disable, and delete.
+custom headers, optional [downstream OAuth](#downstream-oauth) configuration,
+a server-level default permission, and an enabled flag. The dashboard also
+offers Test, Refresh tools, enable/disable, delete, and, for an OAuth server,
+Connect and Disconnect.
 
 The field set, validation, and bounds are owned by
 [`packages/contracts/src/mcp-gateway-schemas.ts`](../packages/contracts/src/mcp-gateway-schemas.ts);
@@ -200,8 +208,68 @@ recorded traces with it.
   only be attached to the configured endpoint, and an SSE server's JSON-RPC POST
   goes to a separate message path. Use `streamable-http` when a header credential
   is required.
-- OAuth-protected downstream servers are not supported; use a header secret
-  reference instead.
+- OAuth-protected downstream servers are supported on `streamable-http` only;
+  see [Downstream OAuth](#downstream-oauth).
+
+## Downstream OAuth
+
+Cloud Harness can act as an OAuth 2.1 client (MCP Authorization) to a
+downstream remote MCP server that requires it. This is the **outbound** lane:
+Cloud Harness authenticating *to* a third-party server. It is unrelated to the
+**inbound** Cloudflare Access Managed OAuth lane that authenticates AI clients
+*to* Cloud Harness; the two share no client registration, redirect URI,
+token, or configuration.
+
+Why it exists: many hosted MCP servers no longer issue static API tokens, so a
+header secret reference cannot reach them. The design keeps the gateway's
+existing boundaries rather than adding a new credential path:
+
+- **Configuration is separate from the grant.** A server's optional `oauth`
+  object (`scopes`, `clientId`, `clientSecretRef`) is ordinary,
+  generation-checked server configuration, owned by
+  `McpGatewayOAuthConfigSchema` in
+  [`packages/contracts/src/mcp-gateway-schemas.ts`](../packages/contracts/src/mcp-gateway-schemas.ts).
+  The client secret of a manually registered client is a write-only reference
+  to a global secret, exactly like a secret header. Tokens, registered client
+  information, and discovery state live only in the runner's encrypted grant,
+  never in a server view.
+- **OAuth owns the `Authorization` header.** Saving a server with OAuth and a
+  custom `Authorization` header, or with OAuth on `sse`, is refused at write
+  time, including when a partial update would combine them with stored
+  fields.
+- **Authorization is explicit and browser-driven.** Only the dashboard
+  **Connect** action starts a flow; the browser returns to
+  `/dashboard/mcp-oauth/callback`, which trusts nothing but the one-time
+  `state` and redirects back to the server detail page with an `oauth=connected`
+  or `oauth=error&reason=…` marker. Background Test, Refresh, and `execute`
+  never open a browser and never create state at an authorization server: they
+  may only use or refresh an existing grant. Without a usable grant they fail
+  with the structured `AUTHORIZATION_REQUIRED` code so the dashboard can offer
+  Connect or Reauthorize.
+- **Grants are principal-scoped and bound to what they were issued for.**
+  Changing the endpoint or the manual client, or turning OAuth off, discards
+  the stored grant locally; deleting the server deletes it. **Disconnect**
+  attempts revocation best effort and deletes the grant regardless of the
+  revocation outcome.
+- **Client registration prefers the least operator setup.** A manually entered
+  `clientId` is used as given. Otherwise Cloud Harness uses a Client ID
+  Metadata Document when `MCP_DOWNSTREAM_OAUTH_CLIENT_METADATA_URL` is set and
+  the authorization server advertises support, and falls back to dynamic
+  client registration. A server that supports neither needs a manual client.
+- **Deployment opt-in.** Connect is unavailable until
+  `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is set; see
+  [configuration](configuration.md#downstream-mcp-oauth). Because the dashboard
+  is served only in `cloudflare-access` mode, the callback is too.
+
+The state names, status fields, and transitions are owned by
+`McpGatewayOAuthStateSchema` and `McpGatewayOAuthStatusSchema` in the
+contracts file above and by
+[`apps/runner/src/mcp-oauth-store.ts`](../apps/runner/src/mcp-oauth-store.ts).
+The security properties (PKCE, state binding, issuer and resource checks,
+encryption, hardened OAuth fetch, audit) are recorded in the
+[security model](security-model.md#downstream-mcp-oauth-client). Behavioural
+evidence is in [`apps/api/test/mcp-oauth.test.ts`](../apps/api/test/mcp-oauth.test.ts)
+and [`apps/runner/test/mcp-oauth-store.test.ts`](../apps/runner/test/mcp-oauth-store.test.ts).
 
 ## Dependencies
 
@@ -223,8 +291,9 @@ parser is safe against a hostile stream.
 ## Known limitations
 
 - `stdio` downstream transports are unsupported (no package/runtime subsystem).
-- OAuth-protected downstream servers are unsupported; use a header secret
-  reference.
+- Downstream OAuth is `streamable-http` only, requires the deployment redirect
+  URL, and is connected per principal from the dashboard; an MCP client cannot
+  start an authorization through the gateway tools.
 - **HTTP redirects are refused.** A vendor base URL that 301s to `/mcp` must be
   configured as its final URL.
 - Connection pooling is per-process, bounded by `MCP_GATEWAY_MAX_CONNECTIONS`

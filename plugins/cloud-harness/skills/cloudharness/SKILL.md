@@ -42,8 +42,11 @@ progressively: `search` by intent, `inspect` one qualified `<server>.<tool>`
 name for its real input schema, then `execute` with matching arguments.
 `permissions` reports the effective allow/deny decision and `status` reports
 server health. Credentials are referenced as dashboard global secrets and are
-never echoed back. Downstream `stdio` servers, OAuth-protected downstream
-servers, and HTTP redirects are unsupported.
+never echoed back. A downstream server may instead use OAuth that the owner
+connects in the dashboard; if a gateway call returns `AUTHORIZATION_REQUIRED`,
+stop calling that server and ask the owner to Connect or Reauthorize it, since
+no tool call can complete the sign-in. Downstream `stdio` servers and HTTP
+redirects are unsupported.
 
 ## Native MCP skills
 

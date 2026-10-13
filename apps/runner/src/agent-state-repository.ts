@@ -358,6 +358,10 @@ function immediate<T>(database: DatabaseSync, action: () => T): T {
   }
 }
 
+function notEligibleForAgents(): HarnessError {
+  return new HarnessError('CONFLICT', 'workspace is not eligible for agent admission; subagents require a workspace opened with networkProfile "network-none"', 409, false);
+}
+
 function notFound(): HarnessError {
   return new HarnessError('NOT_FOUND', 'agent was not found in this workspace', 404, false);
 }
@@ -477,7 +481,7 @@ export class AgentStateRepository {
         } | undefined;
       if (!workspace) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
       if (workspace.status !== 'ACTIVE' || workspace.network_profile !== 'network-none') {
-        throw new HarnessError('CONFLICT', 'workspace is not eligible for agent admission; subagents require a workspace opened with networkProfile "network-none"', 409, false);
+        throw notEligibleForAgents();
       }
 
       this.database.prepare(`INSERT OR IGNORE INTO agent_workspace_admission
@@ -646,10 +650,15 @@ export class AgentStateRepository {
 
   openWorkspaceAdmission(ownerId: string, workspaceId: string, workspaceGeneration: number, now: number): boolean {
     return immediate(this.database, () => {
-      const workspace = this.database.prepare(`SELECT id FROM workspaces
-        WHERE owner_id=? AND id=? AND generation=? AND status='ACTIVE' AND network_profile='network-none'`)
-        .get(ownerId, workspaceId, workspaceGeneration);
+      const workspace = this.database.prepare(`SELECT status, network_profile FROM workspaces
+        WHERE owner_id=? AND id=? AND generation=?`)
+        .get(ownerId, workspaceId, workspaceGeneration) as { status: string; network_profile: string } | undefined;
       if (!workspace) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
+      // A workspace that exists but cannot host agents is a precondition failure, not a missing
+      // workspace; report it the same way reserveSpawn does.
+      if (workspace.status !== 'ACTIVE' || workspace.network_profile !== 'network-none') {
+        throw notEligibleForAgents();
+      }
       const active = this.database.prepare(`SELECT COUNT(*) AS count FROM agents
         WHERE owner_id=? AND workspace_id=? AND workspace_generation=? AND status IN ('SPAWNING','RUNNING','CANCELLING')`)
         .get(ownerId, workspaceId, workspaceGeneration) as { count: number };
