@@ -44,7 +44,7 @@ describe('internal runner HTTP boundary', () => {
     });
     expect(internal.status).toBe(200);
     expect(await internal.json()).toMatchObject({ ok: true, data: { generation: 7 } });
-    expect(executeInternal).toHaveBeenCalledWith(body.principal, 'workspace_detail', body.input);
+    expect(executeInternal).toHaveBeenCalledWith(body.principal, 'workspace_detail', body.input, expect.any(AbortSignal));
 
     const publicResponse = await fetch(`${url}/v1/operations`, {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body)
@@ -52,6 +52,30 @@ describe('internal runner HTTP boundary', () => {
     expect(publicResponse.status).toBe(400);
     expect(await publicResponse.json()).toMatchObject({ error: { code: 'INVALID_INPUT' } });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('aborts an internal operation when the caller disconnects', async () => {
+    let observed: AbortSignal | undefined;
+    const executeInternal = vi.fn((_principal: unknown, _operation: unknown, _input: unknown, signal?: AbortSignal) => new Promise((resolve) => {
+      observed = signal;
+      signal?.addEventListener('abort', () => resolve({ ok: true, message: 'Terminal output', data: {}, truncated: false }), { once: true });
+    }));
+    const { url, token } = await start({ execute: vi.fn(), executeInternal } as unknown as Pick<WorkspaceService, 'execute' | 'executeInternal'>);
+    const body = {
+      version: 2,
+      principal: { kind: 'external', issuer: 'https://access.example.com', subject: 'owner' },
+      operation: 'terminal_read',
+      input: { workspaceId: `ws_${'a'.repeat(24)}`, terminalId: `term_${'b'.repeat(24)}`, cursor: '0', waitMs: 20_000 }
+    };
+    const client = new AbortController();
+    const request = fetch(`${url}/v1/internal/dashboard-operations`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body), signal: client.signal
+    }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(executeInternal).toHaveBeenCalledTimes(1));
+    expect(observed?.aborted).toBe(false);
+    client.abort();
+    await request;
+    await vi.waitFor(() => expect(observed?.aborted).toBe(true));
   });
 
   it('keeps metadata controls on the authenticated internal endpoint', async () => {
