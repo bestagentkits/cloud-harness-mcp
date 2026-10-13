@@ -690,14 +690,6 @@ export class McpGatewayService {
     return data as McpGatewayResolvedCredentials;
   }
 
-  private async requireTool(
-    principal: RunnerPrincipalSelector,
-    qualifiedName: string,
-    signal?: AbortSignal
-  ): Promise<McpGatewayToolView> {
-    return (await this.resolveTool(principal, qualifiedName, signal)).tool;
-  }
-
   /**
    * Resolves one accessible tool and its server with a single filtered catalog read.
    * A tool whose server is disabled or whose effective permission is `deny` is
