@@ -170,10 +170,13 @@ if [[ $dashboard_present -eq 0 ]] &&
   echo "existing dashboard nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 6
 fi
-# The API-key gateway route shares the `/mcp-api-key` upstream prefix, so this probe looks
-# only for the exact API-key upstream and leaves the gateway route to its own check below.
+# The API-key and API-key gateway routes share the `/mcp-api-key` upstream prefix. Each
+# probe ignores only the other route's exact location block, so any other upstream under
+# that prefix is still refused.
+without_api_key_gateway_block() { sed '/^    location = \/mcp-api-key\/gateway {$/,/^    }$/d' "$block_file"; }
+without_api_key_block() { sed '/^    location = \/mcp-api-key {$/,/^    }$/d' "$block_file"; }
 if [[ $api_key_installed -eq 0 ]] &&
-   { [[ $api_key_count -ne 0 ]] || grep -Eq '127\.0\.0\.1:3100/mcp-api-key([;[:space:]]|$)' "$block_file"; }; then
+   { [[ $api_key_count -ne 0 ]] || without_api_key_gateway_block | grep -Fq '127.0.0.1:3100/mcp-api-key'; }; then
   echo "existing API-key nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 7
 fi
@@ -183,7 +186,7 @@ if [[ $gateway_installed -eq 0 ]] &&
   exit 8
 fi
 if [[ $api_key_gateway_installed -eq 0 ]] &&
-   { [[ $api_key_gateway_count -ne 0 ]] || grep -Fq '127.0.0.1:3100/mcp-api-key/' "$block_file"; }; then
+   { [[ $api_key_gateway_count -ne 0 ]] || without_api_key_block | grep -Fq '127.0.0.1:3100/mcp-api-key/'; }; then
   echo "existing API-key gateway nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 10
 fi

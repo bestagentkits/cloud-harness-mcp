@@ -5,7 +5,7 @@ description: Creating, monitoring, and revoking static MCP gateway API keys.
 
 # API Keys
 
-Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Codex), and scripts to authenticate against `https://api.harness.zuey.me/mcp` without an interactive browser OAuth flow. The same key also reaches the [MCP Gateway](/mcp-gateway) at `https://api.harness.zuey.me/mcp-gateway`.
+Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Codex), and scripts to authenticate against `https://api.harness.zuey.me/mcp` without an interactive browser OAuth flow. The same key also reaches the [MCP Gateway](/mcp-gateway) at `https://api.harness.zuey.me/mcp-gateway`. Keys have no per-endpoint scopes: any active key can run the downstream MCP tools you allowed in **MCP Servers**, using the secrets you configured for them, so revoke a key you suspect has leaked.
 
 ## Key Rules & Limits
 

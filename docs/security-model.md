@@ -96,9 +96,12 @@ origin requires both a cryptographically verified assertion for the exactly
 pinned gateway service subject and a valid principal-bound API key. Neither
 credential is sufficient alone, and the reserved gateway subject is rejected
 on the normal `/mcp` and `/mcp-gateway` routes. Keeping the gateway origin route
-under `/mcp-api-key/` keeps it inside the same path-scoped Access application,
-so a key reaches the MCP gateway with exactly the authority it already has on
-`/mcp`, scoped to its bound principal. Before forwarding, the Worker enforces the
+under `/mcp-api-key/` keeps it inside the same path-scoped Access application.
+Managed keys carry no scopes, so every active key, including keys issued before
+the gateway path existed, also reaches the MCP gateway of its bound principal:
+it can search and `execute` that principal's allowed downstream tools with the
+credentials the principal stored for them. Treat a key as the principal's full
+static-client authority, and revoke or rotate any key that may have leaked. Before forwarding, the Worker enforces the
 manifest-owned aggregate Rate Limiting binding and fails closed if the binding
 cannot answer. That edge-local, eventually consistent cap is defense in depth;
 the origin still enforces authoritative per-credential concurrency and request
