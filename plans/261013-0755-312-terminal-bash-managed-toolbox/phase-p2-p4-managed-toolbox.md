@@ -560,11 +560,14 @@ profiles keep their read-only mounts until recreated. The proxy change is inert 
 - The ADR invariants are each asserted by a named test: digest, generation, expiry, single-use, fence,
   read-only mounts, no network in the launch check, atomic publish, and boot recovery.
 
-## Unresolved questions
+## Resolved decisions
 
-1. Decision 5 implements uv through `uv venv` + `uv pip sync --require-hashes` instead of the literal
-   `uv tool install`, to get hash pinning. Confirm this is acceptable.
-2. There is no unbind or uninstall tool, so a binding can only be rolled back. Should an unbind be added
-   in this slice?
-3. Does `owner-bearer` with `required` approval (apply refused, plan allowed) match the owner's intent,
-   or should the runner refuse to start with that combination?
+1. uv uses `uv venv` plus `uv pip sync --require-hashes`. Integrity checking of every wheel outweighs
+   matching the literal `uv tool install` command, which cannot consume a hashed lock.
+2. No unbind or uninstall tool in this slice. The issue asks for install, upgrade, and rollback;
+   rollback to an earlier verified release covers recovery. An unbind tool is a follow-up if needed.
+3. `owner-bearer` with `required` approval keeps `packages_plan` working and refuses `packages_apply`
+   with `FORBIDDEN`, naming the `PACKAGES_APPROVAL_MODE=none` opt-in. The runner still starts, because
+   the toolbox flag is off by default and refusing to boot would break unrelated features.
+4. The managed Python download redirect host is verified empirically in the 4B1 Docker test before it is
+   added to any allow-list; until then it stays out of the documented host list.
