@@ -1413,9 +1413,10 @@ export class WorkspaceService {
   private touch(record: WorkspaceRecord): WorkspaceRecord {
     if (record.status === 'EXPIRED_RECOVERABLE' || record.status === 'NETWORK_QUARANTINED') return record;
     const now = Date.now();
+    // Activity extends the idle lease but never shortens one that workspace_lease_renew already extended.
     const touched = this.store.updateFenced(record.id, record.generation, ['ACTIVE'], {
       lastActivityAt: now,
-      expiresAt: this.expiry(record.createdAt, now)
+      expiresAt: Math.min(record.hardExpiresAt, Math.max(record.expiresAt, this.expiry(record.createdAt, now)))
     });
     if (!touched) throw new HarnessError('EXPIRED', 'workspace lifecycle changed', 410);
     return touched;

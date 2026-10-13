@@ -130,6 +130,13 @@ describe('UX Improvements and Feature Enhancements', () => {
     const renewData = renewRes.data as Record<string, unknown>;
     expect(renewData.remainingLeaseMs).toBeGreaterThan(120_000);
     expect(renewData.leaseState).toBe('ACTIVE');
+
+    // Activity after a renewal keeps the renewed lease instead of pulling it back to the idle TTL.
+    const renewed = store.byId(ws.id)!;
+    expect(renewed.expiresAt).toBeGreaterThan(Date.now() + config.idleTtlSeconds * 1_000);
+    const touched = (service as unknown as { touch(record: typeof renewed): typeof renewed }).touch(renewed);
+    expect(touched.expiresAt).toBe(renewed.expiresAt);
+    expect(touched.expiresAt).toBeLessThanOrEqual(renewed.hardExpiresAt);
   });
 
   it('Issue #92: resolves implicit active workspace when workspaceId is omitted', async () => {
