@@ -36,6 +36,14 @@ import {
 } from './mcp-gateway-schemas.js';
 import { OAuthGrantSettingsUpdateInputSchema } from './oauth-grant-settings.js';
 import { SkillsExtGetInputSchema, SkillsExtListInputSchema, SkillsExtReadInputSchema } from './skills-extension.js';
+import {
+  TerminalCloseInputSchema,
+  TerminalInputInputSchema,
+  TerminalListInputSchema,
+  TerminalOpenInputSchema,
+  TerminalReadInputSchema,
+  TerminalResizeInputSchema
+} from './terminal-schemas.js';
 
 export const InternalRunnerOperationSchema = z.enum([
   'workspace_detail',
@@ -46,7 +54,13 @@ export const InternalRunnerOperationSchema = z.enum([
   'settings_update',
   'settings_network_check',
   'oauth_settings_get',
-  'oauth_settings_update'
+  'oauth_settings_update',
+  'terminal_open',
+  'terminal_read',
+  'terminal_input',
+  'terminal_resize',
+  'terminal_close',
+  'terminal_list'
 ]);
 
 const workspaceDetailRequest = z.object({
@@ -118,6 +132,20 @@ const oauthSettingsUpdateRequest = z.object({
   input: OAuthGrantSettingsUpdateInputSchema
 }).strict();
 
+const terminalRequest = <Operation extends string, Input extends z.ZodTypeAny>(operation: Operation, input: Input) => z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal(operation),
+  input
+}).strict();
+
+const terminalOpenRequest = terminalRequest('terminal_open', TerminalOpenInputSchema);
+const terminalReadRequest = terminalRequest('terminal_read', TerminalReadInputSchema);
+const terminalInputRequest = terminalRequest('terminal_input', TerminalInputInputSchema);
+const terminalResizeRequest = terminalRequest('terminal_resize', TerminalResizeInputSchema);
+const terminalCloseRequest = terminalRequest('terminal_close', TerminalCloseInputSchema);
+const terminalListRequest = terminalRequest('terminal_list', TerminalListInputSchema);
+
 export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   workspaceDetailRequest,
   workspaceCloseFencedRequest,
@@ -127,7 +155,13 @@ export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   settingsUpdateRequest,
   settingsNetworkCheckRequest,
   oauthSettingsGetRequest,
-  oauthSettingsUpdateRequest
+  oauthSettingsUpdateRequest,
+  terminalOpenRequest,
+  terminalReadRequest,
+  terminalInputRequest,
+  terminalResizeRequest,
+  terminalCloseRequest,
+  terminalListRequest
 ]);
 
 export const InternalRunnerResponseSchema = ToolResultSchema;
