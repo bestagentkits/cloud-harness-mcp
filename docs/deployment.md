@@ -359,6 +359,37 @@ set, so its deployment is ordered:
    keep a coherent recovery backup and restore it instead of retrying a downgrade
    that does not complete.
 
+### Downstream MCP OAuth redirect
+
+Downstream MCP OAuth (the gateway authenticating *to* third-party MCP
+servers) needs no new route or Access application. Its browser callback,
+`/dashboard/mcp-oauth/callback`, is served by the existing `/dashboard/`
+nginx location and protected by the same Access application as the rest of
+the dashboard, so it only works in `cloudflare-access` mode and only for a
+browser that holds a current Access session. Do not add an Access bypass for
+the callback: it requires the verified principal to consume the one-time
+flow.
+
+1. Set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` in
+   `/etc/cloud-harness-mcp/runtime.env` (as root, without printing the file) to
+   the public dashboard hostname plus `/dashboard/mcp-oauth/callback`; the
+   accepted shape is described in
+   [configuration](configuration.md#downstream-mcp-oauth). The hostname must
+   already be in `API_PUBLIC_HOSTS` and covered by the dashboard Access
+   application.
+2. Optionally set `MCP_DOWNSTREAM_OAUTH_CLIENT_METADATA_URL` to a separately
+   hosted Client ID Metadata Document whose `redirect_uris` include that
+   redirect URL.
+3. Apply the change through the normal release deployment, which restarts the
+   service so the API reads the new values. The inbound Managed OAuth
+   **Allowed redirect URIs** list in Cloudflare is unrelated and does not need
+   this URL.
+
+The release introduces metadata schema v7, so upgrade the runner before the
+API as for v6, and prove the bounded v7 → v6 rollback in
+[operations](operations.md#downstream-mcp-oauth-schema-rollback) on a copy of
+the production database before promoting it.
+
 Before rolling back the runner to a release that predates multi-workspace
 admission, reduce every principal to one counted workspace (`CREATING`, `ACTIVE`,
 `REAPING`, `NETWORK_QUARANTINED`). Those releases re-create the retired

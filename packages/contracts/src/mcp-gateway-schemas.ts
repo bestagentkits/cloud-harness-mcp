@@ -140,6 +140,66 @@ const headerView = z
     if (header.value === undefined) ctx.addIssue({ code: 'custom', path: ['value'], message: 'literal header requires a value' });
   });
 
+/**
+ * Downstream OAuth (MCP Authorization) configuration. This is configuration only: the
+ * grant (tokens, registered client information, discovery state) lives in the runner's
+ * encrypted OAuth store and is never part of a server view.
+ *
+ * The client secret of a manually registered client is a write-only reference to an
+ * existing global secret, exactly like a secret header value.
+ */
+export const McpGatewayOAuthScopesSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .regex(/^[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*$/, 'scopes must be space-separated OAuth scope tokens');
+
+export const McpGatewayOAuthConfigSchema = z
+  .object({
+    scopes: McpGatewayOAuthScopesSchema.optional(),
+    clientId: z.string().trim().min(1).max(512).optional(),
+    clientSecretRef: SecretNameSchema.optional()
+  })
+  .strict()
+  .superRefine((config, ctx) => {
+    if (config.clientSecretRef !== undefined && config.clientId === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['clientId'], message: 'a client secret requires a manually registered client ID' });
+    }
+  });
+export type McpGatewayOAuthConfig = z.infer<typeof McpGatewayOAuthConfigSchema>;
+
+export const McpGatewayOAuthStateSchema = z.enum([
+  'not_configured',
+  'authorization_required',
+  'authorizing',
+  'connected',
+  'reauthorization_required',
+  'error'
+]);
+export type McpGatewayOAuthState = z.infer<typeof McpGatewayOAuthStateSchema>;
+
+export const McpGatewayOAuthRegistrationModeSchema = z.enum(['cimd', 'dcr', 'manual']);
+export type McpGatewayOAuthRegistrationMode = z.infer<typeof McpGatewayOAuthRegistrationModeSchema>;
+
+/** Safe metadata only: no token, code, verifier, client secret, or raw provider response. */
+export const McpGatewayOAuthStatusSchema = z
+  .object({
+    serverId: McpGatewayServerIdSchema,
+    enabled: z.boolean(),
+    state: McpGatewayOAuthStateSchema,
+    issuer: z.string().max(2_048).nullable(),
+    requestedScopes: z.string().max(4_096).nullable(),
+    grantedScopes: z.string().max(4_096).nullable(),
+    registrationMode: McpGatewayOAuthRegistrationModeSchema.nullable(),
+    authorizedAt: z.number().int().positive().nullable(),
+    expiresAt: z.number().int().positive().nullable(),
+    lastRefreshAt: z.number().int().positive().nullable(),
+    lastError: z.string().max(500).nullable(),
+    redirectUrl: z.string().max(2_048).nullable()
+  })
+  .strict();
+export type McpGatewayOAuthStatus = z.infer<typeof McpGatewayOAuthStatusSchema>;
+
 export const McpGatewayServerViewSchema = z
   .object({
     id: McpGatewayServerIdSchema,
@@ -149,6 +209,7 @@ export const McpGatewayServerViewSchema = z
     transport: McpGatewayTransportSchema,
     endpoint: McpGatewayRemoteUrlSchema,
     headers: z.array(headerView).max(20),
+    oauth: McpGatewayOAuthConfigSchema.nullable(),
     enabled: z.boolean(),
     status: McpGatewayServerStatusSchema,
     toolCount: z.number().int().min(0),
@@ -234,6 +295,28 @@ function rejectAuthenticatedSse(
   }
 }
 
+export const MCP_GATEWAY_OAUTH_AUTHORIZATION_HEADER_MESSAGE =
+  'OAuth is enabled for this server, so a custom Authorization header is refused: the OAuth grant owns that credential';
+export const MCP_GATEWAY_OAUTH_SSE_MESSAGE =
+  'OAuth is supported only for transport streamable-http; authenticated SSE is not supported';
+
+function rejectOAuthConflicts(
+  value: {
+    transport?: McpGatewayTransport | undefined;
+    headers?: ReadonlyArray<{ name: string }> | undefined;
+    oauth?: McpGatewayOAuthConfig | null | undefined;
+  },
+  ctx: z.RefinementCtx
+): void {
+  if (!value.oauth) return;
+  if (value.transport === 'sse') {
+    ctx.addIssue({ code: 'custom', path: ['transport'], message: MCP_GATEWAY_OAUTH_SSE_MESSAGE });
+  }
+  if ((value.headers ?? []).some((header) => header.name.toLowerCase() === 'authorization')) {
+    ctx.addIssue({ code: 'custom', path: ['headers'], message: MCP_GATEWAY_OAUTH_AUTHORIZATION_HEADER_MESSAGE });
+  }
+}
+
 const transportInput = z
   .string()
   .superRefine((value, ctx) => {
@@ -257,12 +340,14 @@ export const McpGatewayCreateInputSchema = z
     transport: transportInput,
     endpoint: McpGatewayRemoteUrlSchema,
     headers: McpGatewayServerHeadersSchema.default([]),
+    oauth: McpGatewayOAuthConfigSchema.optional(),
     permissionDefault: McpGatewayPermissionSchema.default('allow'),
     enabled: z.boolean().default(true),
     expectedGeneration: z.literal(0)
   })
   .strict()
-  .superRefine(rejectAuthenticatedSse);
+  .superRefine(rejectAuthenticatedSse)
+  .superRefine(rejectOAuthConflicts);
 export type McpGatewayCreateInput = z.infer<typeof McpGatewayCreateInputSchema>;
 
 export const McpGatewayUpdateInputSchema = z
@@ -272,13 +357,15 @@ export const McpGatewayUpdateInputSchema = z
     transport: transportInput.optional(),
     endpoint: McpGatewayRemoteUrlSchema.optional(),
     headers: McpGatewayServerHeadersSchema.optional(),
+    oauth: McpGatewayOAuthConfigSchema.nullable().optional(),
     permissionDefault: McpGatewayPermissionSchema.optional(),
     expectedGeneration: z.number().int().positive()
   })
   .strict()
   // A partial update can carry only one of the two fields, so the guard fires only
   // when the payload itself combines `transport: 'sse'` with a secret header.
-  .superRefine(rejectAuthenticatedSse);
+  .superRefine(rejectAuthenticatedSse)
+  .superRefine(rejectOAuthConflicts);
 export type McpGatewayUpdateInput = z.infer<typeof McpGatewayUpdateInputSchema>;
 
 export const McpGatewaySetPermissionsInputSchema = z
@@ -297,6 +384,15 @@ export const McpGatewayResolvedCredentialsSchema = z
   .object({
     allowed: z.boolean(),
     reason: z.enum(['server_disabled', 'tool_denied', 'tool_unknown']).optional(),
+    /** Present only when downstream OAuth is configured; the grant itself is loaded separately. */
+    oauth: z
+      .object({
+        scopes: z.string().max(500).nullable(),
+        clientId: z.string().max(512).nullable(),
+        clientSecret: z.string().max(4_096).nullable()
+      })
+      .strict()
+      .optional(),
     transport: McpGatewayTransportSchema.optional(),
     endpoint: McpGatewayRemoteUrlSchema.optional(),
     headers: z.record(z.string(), z.string()).optional()

@@ -8,6 +8,7 @@ import {
 } from './metadata-records.js';
 import type { SecretPurpose } from '@cloud-harness/contracts';
 import { McpGatewayStore } from './mcp-gateway-store.js';
+import { McpOAuthStore } from './mcp-oauth-store.js';
 import { SecretMetadataStore } from './secret-metadata-store.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
@@ -21,6 +22,7 @@ export class MetadataStore {
   readonly database: DatabaseSync;
   private readonly availableMcpGateway: McpGatewayStore;
   private readonly availableSecretStore?: SecretMetadataStore;
+  private readonly availableMcpOAuth?: McpOAuthStore;
   private readonly secretReadinessError?: Error;
 
   constructor(path: string, keyring?: SecretKeyring, secretReadinessError?: string) {
@@ -35,6 +37,7 @@ export class MetadataStore {
     }
     try {
       this.availableSecretStore = new SecretMetadataStore(this.database, keyring);
+      this.availableMcpOAuth = new McpOAuthStore(this.database, keyring);
     } catch (error) {
       this.secretReadinessError = error instanceof Error ? error : new Error('secret store is unavailable');
     }
@@ -42,6 +45,12 @@ export class MetadataStore {
 
   get mcpGateway(): McpGatewayStore {
     return this.availableMcpGateway;
+  }
+
+  /** Encrypted downstream OAuth state; unavailable, like secrets, without a keyring. */
+  get mcpOAuth(): McpOAuthStore {
+    if (!this.availableMcpOAuth) throw this.secretReadinessError ?? new Error('secret store is unavailable');
+    return this.availableMcpOAuth;
   }
 
   get secrets(): SecretMetadataStore {

@@ -154,7 +154,13 @@ export const ApiConfigSchema = z.object({
   mcpGatewayMaxTraceRows: z.coerce.number().int().min(100).max(1_000_000).default(20_000),
   mcpGatewayMaxConnections: z.coerce.number().int().min(1).max(256).default(32),
   mcpGatewayAllowInsecureHttp: enabled,
-  mcpGatewayAllowPrivateEndpoints: enabled
+  mcpGatewayAllowPrivateEndpoints: enabled,
+  mcpDownstreamOauthClientMetadataUrl: httpsUrl.refine((value) => new URL(value).pathname.length > 1, 'client metadata URL must have a non-root path').optional(),
+  mcpDownstreamOauthRedirectUrl: z.url().refine((value) => {
+    const url = new URL(value);
+    const loopback = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    return (url.protocol === 'https:' || loopback) && url.pathname === '/dashboard/mcp-oauth/callback' && !url.search && !url.hash;
+  }, 'redirect URL must be an https (or loopback http) URL ending in /dashboard/mcp-oauth/callback').optional()
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];

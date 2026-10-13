@@ -35,9 +35,13 @@ Your client's context window does not grow as you add servers.
    - **Endpoint** — the server's MCP URL, usually ending in `/mcp`.
    - **Headers** — any custom headers the server requires, such as an
      `Authorization` header.
+   - **Authentication** — optionally, **Authenticate with OAuth** for a server
+     that signs you in with OAuth instead of a static token. See
+     [Connect an OAuth-protected server](#connect-an-oauth-protected-server).
    - **Default permission** — `allow` or `deny` for every tool on that server.
 3. Save the server. Use **Test** to confirm Cloud Harness can reach it, and
-   **Refresh tools** to cache the server's tool list.
+   **Refresh tools** to cache the server's tool list. For an OAuth server,
+   select **Connect** first.
 
 Enable, disable, edit, and delete servers from the same list. Deleting a server
 also deletes its cached tools, permissions, and recorded logs.
@@ -59,6 +63,50 @@ the resolved credential only to requests for that server's configured endpoint.
 
 If the referenced secret is missing, the gateway tells you which reference is
 unavailable — never a value.
+
+## Connect an OAuth-protected server
+
+Some remote MCP servers do not issue static tokens and instead ask you to sign
+in with OAuth. Cloud Harness can sign in to those servers on your behalf.
+
+::: info Two different OAuth flows
+This is Cloud Harness signing in **to** a downstream MCP server. It is separate
+from the Cloudflare Access sign-in your AI client uses to reach Cloud Harness.
+Nothing you configure here changes how your client connects.
+:::
+
+1. In the server form, keep **Transport** as `streamable-http` and check
+   **Authenticate with OAuth**. Optionally enter:
+   - **Scopes** — space-separated scopes to request.
+   - **Client ID** — only if the provider requires a client you registered
+     manually with them.
+   - **Client secret** — a [global secret](/dashboard/secrets) reference for
+     that manual client; leave as **None** for a public client.
+2. Save the server, open it, and select **Connect** in the **OAuth** panel of
+   the Overview tab. Your browser goes to the provider's sign-in page and then
+   returns to the server page, which announces whether the connection
+   succeeded.
+3. Select **Test** or **Refresh tools** to load the server's tools.
+
+Things to know:
+
+- **No custom `Authorization` header.** OAuth supplies that header, so saving
+  an OAuth server with your own `Authorization` header is refused. Other
+  custom headers still work.
+- **`streamable-http` only.** OAuth cannot be enabled on an `sse` server.
+- **Tokens are never shown.** They are stored encrypted, renewed automatically
+  while the provider allows it, and never appear in the dashboard, tool
+  results, logs, or the audit trail. The OAuth panel shows only safe details
+  such as the issuer, granted scopes, registration type, and expiry.
+- **When sign-in is needed again,** gateway calls to that server fail with
+  `AUTHORIZATION_REQUIRED` and the panel shows **Reauthorize**. Calls from your
+  AI client never open a browser; reconnect from the dashboard.
+- **Disconnect** asks the provider to revoke the token where it supports that,
+  then deletes it from Cloud Harness either way. Changing the endpoint or the
+  manual client, or turning OAuth off, also discards the stored sign-in.
+- **Your operator must enable it.** If **Connect** reports that MCP OAuth is
+  unavailable, the deployment has not set
+  [`MCP_DOWNSTREAM_OAUTH_REDIRECT_URL`](/reference/environment-variables).
 
 ## Connect an MCP client
 
@@ -126,19 +174,17 @@ a server deletes its logs.
 
 | Transport | Supported | Notes |
 |---|---|---|
-| `streamable-http` | Yes | The standard remote MCP transport. Supports a secret-reference header. |
-| `sse` | Yes | Legacy remote SSE transport. Literal headers only; a secret-reference header is rejected at save time. |
+| `streamable-http` | Yes | The standard remote MCP transport. Supports a secret-reference header or OAuth. |
+| `sse` | Yes | Legacy remote SSE transport. Literal headers only; a secret-reference header or OAuth is rejected at save time. |
 | `stdio` | No | Cloud Harness does not run package-based local MCP servers. |
-
-OAuth-protected downstream servers are not supported; use a header secret
-reference instead.
 
 ## Limitations
 
 - **HTTP redirects are refused.** If your vendor's base URL redirects, configure
   its final URL directly.
 - **`stdio` servers are unsupported.** Use `streamable-http` or `sse`.
-- **OAuth-protected downstream servers are unsupported.** Use a header secret.
+- **OAuth is `streamable-http` only and connected from the dashboard.** Your AI
+  client cannot start a sign-in through the gateway tools.
 - **The managed API-key lane is not available.** Use Access or the owner bearer.
 - **Connections are per-process and bounded.** They are not shared across API
   replicas and are rebuilt after a restart.

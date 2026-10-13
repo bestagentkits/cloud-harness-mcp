@@ -269,6 +269,25 @@ describe('MCP servers dashboard renderers', () => {
     expect(logHtml).toContain('&lt;img src=z onerror=alert(6)&gt;');
   });
 
+  it('renders the OAuth state, safe facts, and connect controls only for OAuth servers', () => {
+    expect(renderMcpServerDetail(connected, [], [], 'overview', undefined, gateway)).not.toContain('data-mcp-oauth-connect');
+    const server = { ...connected, oauth: { scopes: 'read' } };
+    const status = {
+      serverId: server.id, enabled: true, state: 'connected', issuer: 'https://as.example.com', requestedScopes: 'read',
+      grantedScopes: 'read', registrationMode: 'dcr', authorizedAt: 1_725_177_600_000, expiresAt: 1_725_181_200_000,
+      lastRefreshAt: null, lastError: null, redirectUrl: 'https://harness.example.com/dashboard/mcp-oauth/callback'
+    };
+    const html = renderMcpServerDetail(server, [], [], 'overview', undefined, gateway, status);
+    expect(html).toContain('Connected');
+    expect(html).toContain('Reconnect');
+    expect(html).toContain('data-mcp-oauth-disconnect');
+    expect(html).toContain('https://as.example.com');
+    const pending = renderMcpServerDetail(server, [], [], 'overview', undefined, gateway, { ...status, state: 'reauthorization_required', lastError: '<img src=x>' });
+    expect(pending).toContain('Reauthorize');
+    expect(pending).not.toContain('<img src=x>');
+    expect(renderMcpServerDetail(server, [], [], 'overview', undefined, gateway)).toContain('Authorization required');
+  });
+
   it('renders a not-found state for an unavailable server', () => {
     const html = renderMcpServerDetail(undefined, [], [], 'overview', undefined, gateway);
     expect(html).toContain('MCP server not found.');
