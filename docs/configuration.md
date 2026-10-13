@@ -54,11 +54,13 @@ The static-client lane is an opt-in extension of `cloudflare-access`, not a
 third authentication mode. `API_KEY_AUTH_ENABLED=true` requires all of:
 
 - `API_KEY_GATEWAY_ACCESS_AUDIENCE`, the audience of the separate Access
-  application scoped to exact `/mcp-api-key`;
+  application scoped to the `/mcp-api-key` path (which also covers the
+  `/mcp-api-key/gateway` subpath);
 - `API_KEY_GATEWAY_SERVICE_SUBJECT`, the normalized `cf-service:` subject
   observed from the dedicated Worker service token; and
 - `API_KEY_GATEWAY_PUBLIC_URL`, the client-facing Worker URL, currently
-  `https://api.harness.zuey.me/mcp`.
+  `https://api.harness.zuey.me/mcp`. The dashboard derives the API-key lane's
+  MCP gateway URL from its origin plus `/mcp-gateway`.
 
 The gateway audience must differ from the main `/mcp` and `/dashboard`
 application audience. Partial configuration and enabling this lane in
@@ -70,7 +72,7 @@ The Worker stores `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` as
 Cloudflare Worker secrets, never in the runtime environment, Wrangler
 manifest, or repository. They belong only to the Service Auth policy of the
 path-scoped gateway application. Its manifest also owns an aggregate
-Cloudflare Rate Limiting binding for the exact gateway route: 600 requests per
+Cloudflare Rate Limiting binding shared by both fixed gateway paths: 600 requests per
 60 seconds in each Cloudflare location. Limiter exhaustion returns JSON `429`;
 a missing or failed binding returns JSON `503`. This eventual, edge-local cap
 is defense in depth; the origin's per-credential limits remain authoritative.

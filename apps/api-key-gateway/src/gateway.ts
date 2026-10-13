@@ -1,4 +1,10 @@
-const UPSTREAM_URL = 'https://harness.zuey.me/mcp-api-key';
+// The only public paths this Worker serves, each pinned to one fixed hidden origin route.
+// Both origin routes sit under `/mcp-api-key`, so the one path-scoped Access application
+// that admits this Worker's service token covers them without widening its scope.
+const UPSTREAM_ROUTES = new Map<string, string>([
+  ['/mcp', 'https://harness.zuey.me/mcp-api-key'],
+  ['/mcp-gateway', 'https://harness.zuey.me/mcp-api-key/gateway']
+]);
 
 const REQUEST_HEADER_POLICIES = new Map<string, { limit: number; single?: true }>([
   ['accept', { limit: 512 }],
@@ -85,7 +91,8 @@ export function createGatewayHandler(upstreamFetch: UpstreamFetch): (
 ) => Promise<Response> {
   return async (request, env) => {
     const url = new URL(request.url);
-    if (url.pathname !== '/mcp' || url.search !== '') {
+    const upstreamUrl = UPSTREAM_ROUTES.get(url.pathname);
+    if (upstreamUrl === undefined || url.search !== '') {
       return errorResponse(404, 'not_found');
     }
     if (!ALLOWED_METHODS.has(request.method)) {
@@ -118,7 +125,7 @@ export function createGatewayHandler(upstreamFetch: UpstreamFetch): (
 
     let upstream: Response;
     try {
-      upstream = await upstreamFetch(UPSTREAM_URL, init);
+      upstream = await upstreamFetch(upstreamUrl, init);
     } catch {
       return errorResponse(502, 'bad_gateway');
     }

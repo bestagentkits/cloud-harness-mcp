@@ -27,6 +27,15 @@ function gatewayPublicUrl(request: DashboardRequest, config: ApiConfig): string 
   return host ? `https://${host}/mcp-gateway` : null;
 }
 
+/**
+ * The gateway endpoint on the managed API-key lane: the configured static-key Worker
+ * origin with the `/mcp-gateway` path. Null unless that lane is enabled and published.
+ */
+function gatewayApiKeyPublicUrl(config: ApiConfig): string | null {
+  if (config.authMode !== 'cloudflare-access' || !config.apiKeyAuthEnabled || !config.apiKeyGatewayPublicUrl) return null;
+  return new URL('/mcp-gateway', config.apiKeyGatewayPublicUrl).toString();
+}
+
 function probeFailureStatus(code: string): number {
   if (code === 'NOT_FOUND' || code === 'FORBIDDEN') return 404;
   if (code === 'INVALID_INPUT') return 400;
@@ -66,6 +75,7 @@ export function registerDashboardGatewayRoutes(
       data: {
         endpoint: '/mcp-gateway',
         publicUrl: gatewayPublicUrl(request, config),
+        apiKeyPublicUrl: gatewayApiKeyPublicUrl(config),
         authMode: config.authMode ?? 'owner-bearer'
       }
     });

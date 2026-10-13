@@ -85,15 +85,23 @@ These controls are implemented in
 API restart and are not a distributed denial-of-service control.
 
 Dashboard-managed API keys add a separate static-client lane without weakening
-the Managed OAuth lane. The public `api.harness.zuey.me/mcp` Worker is a fixed
-streaming proxy to exact `harness.zuey.me/mcp-api-key`: it rebuilds a small
+the Managed OAuth lane. The public `api.harness.zuey.me` Worker is a fixed
+streaming proxy with exactly two paths: `/mcp` to `harness.zuey.me/mcp-api-key`
+and `/mcp-gateway` to `harness.zuey.me/mcp-api-key/gateway`; every other path is
+`404`. For both it rebuilds a small
 header allowlist, discards caller-supplied Cloudflare and forwarding identity,
 and injects its own Access service-token headers. The hidden origin path is
 protected by a separate path-scoped Access application and audience. The
 origin requires both a cryptographically verified assertion for the exactly
 pinned gateway service subject and a valid principal-bound API key. Neither
 credential is sufficient alone, and the reserved gateway subject is rejected
-on the normal `/mcp` route. Before forwarding, the Worker enforces the
+on the normal `/mcp` and `/mcp-gateway` routes. Keeping the gateway origin route
+under `/mcp-api-key/` keeps it inside the same path-scoped Access application.
+Managed keys carry no scopes, so every active key, including keys issued before
+the gateway path existed, also reaches the MCP gateway of its bound principal:
+it can search and `execute` that principal's allowed downstream tools with the
+credentials the principal stored for them. Treat a key as the principal's full
+static-client authority, and revoke or rotate any key that may have leaked. Before forwarding, the Worker enforces the
 manifest-owned aggregate Rate Limiting binding and fails closed if the binding
 cannot answer. That edge-local, eventually consistent cap is defense in depth;
 the origin still enforces authoritative per-credential concurrency and request
