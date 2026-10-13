@@ -10,7 +10,8 @@ import { WorkspaceService } from '../../apps/runner/src/workspace-service.js';
 
 /**
  * The `bash` toolbox target against a real executor image: one disposable container per command with the
- * executor hardening, no network, no checkout, and removal by exact name whether it exits or times out.
+ * executor hardening, no network, no checkout, and removal by exact name whether it exits, times out, or
+ * is aborted at any point, including before its container exists.
  */
 const image = process.env.EXECUTOR_IMAGE ?? 'cloud-harness-executor:local';
 const resultData = z.object({ output: z.string(), exitCode: z.number().int().nullable(), target: z.literal('toolbox') });
@@ -48,7 +49,7 @@ afterAll(async () => {
 }, 60_000);
 
 describe('bash toolbox target in a real executor image', () => {
-  it('runs as uid 10001 with no network, no workspace, a read-only root, and no Docker socket', async () => {
+  it('runs as uid 10001 with no capabilities, no sudo, no network, no workspace, a read-only root, and no Docker socket', async () => {
     const script = [
       'echo "uid=$(id -u):$(id -g)"',
       'echo "ifaces=$(ls /sys/class/net | tr "\\n" " ")"',
@@ -57,7 +58,10 @@ describe('bash toolbox target in a real executor image', () => {
       'if touch /etc/toolbox-probe 2>/dev/null; then echo rootfs=writable; else echo rootfs=readonly; fi',
       'if test -e /var/run/docker.sock; then echo socket=present; else echo socket=absent; fi',
       'if timeout 5 bash -c "exec 3<>/dev/tcp/1.1.1.1/53" 2>/dev/null; then echo egress=open; else echo egress=blocked; fi',
-      'echo "path=$PATH"'
+      'echo "path=$PATH"',
+      // The image grants NOPASSWD sudo; no-new-privileges is what must stop it here.
+      'if sudo -n true 2>/dev/null; then echo sudo=allowed; else echo sudo=denied; fi',
+      'grep "^CapEff:" /proc/self/status'
     ].join('; ');
 
     const result = await service.execute('owner', 'bash', { target: 'toolbox', command: script, timeoutMs: 30_000 });
@@ -72,7 +76,10 @@ describe('bash toolbox target in a real executor image', () => {
     expect(data.output).toContain('rootfs=readonly');
     expect(data.output).toContain('socket=absent');
     expect(data.output).toContain('egress=blocked');
-    expect(data.output).toMatch(/path=[^\n]*\/opt\/user-tools\/bin/);
+    // The login shell applies the image profile, as exec_run's `bash -lc` does in a workspace.
+    expect(data.output).toMatch(/path=\/opt\/harness\/bin:[^\n]*\/opt\/user-tools\/bin/);
+    expect(data.output).toContain('sudo=denied');
+    expect(data.output).toMatch(/^CapEff:\s+0+$/m);
     expect(await toolboxContainers()).toEqual([]);
   }, 90_000);
 
@@ -109,6 +116,32 @@ describe('bash toolbox target in a real executor image', () => {
     controller.abort();
 
     await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(await toolboxContainers()).toEqual([]);
+  }, 90_000);
+
+  it.each([0, 50, 300])('leaves no labelled container when the caller aborts %i ms after the call', async (delayMs) => {
+    const controller = new AbortController();
+    const pending = service.execute('owner', 'bash', { target: 'toolbox', command: 'sleep 120', timeoutMs: 60_000 }, controller.signal);
+    setTimeout(() => controller.abort(), delayMs);
+
+    await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(await toolboxContainers()).toEqual([]);
+  }, 90_000);
+
+  it('runs an async command behind an operation handle and removes its container on cancel', async () => {
+    const started = await service.execute('owner', 'bash', { target: 'toolbox', command: 'echo async; sleep 120', timeoutMs: 60_000, async: true });
+    const { operationId } = z.object({ operationId: z.string(), target: z.literal('toolbox') }).parse(started.data);
+    await expect.poll(toolboxContainers, { timeout: 10_000, interval: 200 }).toHaveLength(1);
+
+    const cancelled = await service.execute('owner', 'operation_cancel', { operationId });
+
+    expect(cancelled.data).toMatchObject({ status: 'cancelled' });
+    expect(await toolboxContainers()).toEqual([]);
+
+    const completed = await service.execute('owner', 'bash', { target: 'toolbox', command: 'echo handle', timeoutMs: 30_000, async: true });
+    const handle = z.object({ operationId: z.string() }).parse(completed.data).operationId;
+    const finished = await service.execute('owner', 'operation_wait', { operationId: handle, timeoutMs: 60_000 });
+    expect(finished).toMatchObject({ ok: true, data: { status: 'completed', result: { output: 'handle\n', exitCode: 0, target: 'toolbox' } } });
     expect(await toolboxContainers()).toEqual([]);
   }, 90_000);
 });

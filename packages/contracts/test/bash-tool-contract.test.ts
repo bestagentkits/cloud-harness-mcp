@@ -41,12 +41,20 @@ describe('bash tool contract', () => {
     expect(() => schema.parse({ workspaceId, command: 'true', cwd: '../outside' })).toThrow();
   });
 
-  it('accepts the toolbox target without a workspace and refuses workspace-only fields', () => {
+  it('accepts the toolbox target without a workspace, with or without async, and refuses workspace-only fields', () => {
     expect(schema.parse({ command: 'node --version', target: 'toolbox' })).toMatchObject({ target: 'toolbox', cwd: '.', async: false });
+    expect(schema.parse({ command: 'make', target: 'toolbox', async: true })).toMatchObject({ target: 'toolbox', async: true });
     expect(() => schema.parse({ workspaceId, command: 'true', target: 'toolbox' })).toThrow(/workspaceId is not allowed/);
     expect(() => schema.parse({ command: 'true', target: 'toolbox', cwd: 'src' })).toThrow(/cwd is only valid/);
-    expect(() => schema.parse({ command: 'true', target: 'toolbox', async: true })).toThrow(/async is only valid/);
     expect(() => schema.parse({ command: 'true', target: 'host' })).toThrow();
+  });
+
+  it('refuses a NUL byte in the command for both targets and for exec_run', () => {
+    for (const target of ['workspace', 'toolbox'] as const) {
+      expect(() => schema.parse({ command: 'echo a\u0000b', target }), target).toThrow(/NUL/);
+    }
+    expect(() => TOOL_SCHEMA_BY_NAME.exec_run.parse({ workspaceId, command: 'echo a\u0000b' })).toThrow(/NUL/);
+    expect(schema.parse({ command: 'printf "a\\0b"' }).command).toBe('printf "a\\0b"');
   });
 
   it('has no privileged path and refuses approval fields instead of ignoring them', () => {
@@ -57,12 +65,15 @@ describe('bash tool contract', () => {
     expect(() => schema.parse({ workspaceId, command: 'id', approvalGrantToken: 'grant' })).toThrow();
   });
 
-  it('ships the toolbox gate off by default', () => {
+  it('ships the toolbox gate off by default with a concurrency cap of two', () => {
     const runner = {
       serviceToken: 'runner-token-that-is-longer-than-32-characters', jobsRoot: '/jobs', stateDb: '/state/state.db',
       executorImage: 'executor:latest', allowedGitHosts: ['github.com']
     };
     expect(RunnerConfigSchema.parse(runner).packagesEnabled).toBe(false);
+    expect(RunnerConfigSchema.parse(runner).toolboxMaxConcurrent).toBe(2);
+    expect(RunnerConfigSchema.parse({ ...runner, toolboxMaxConcurrent: '4' }).toolboxMaxConcurrent).toBe(4);
+    expect(() => RunnerConfigSchema.parse({ ...runner, toolboxMaxConcurrent: '0' })).toThrow();
     expect(RunnerConfigSchema.parse({ ...runner, packagesEnabled: 'true' }).packagesEnabled).toBe(true);
     expect(RunnerConfigSchema.parse({ ...runner, packagesEnabled: 'yes' }).packagesEnabled).toBe(false);
   });

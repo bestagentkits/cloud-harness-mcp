@@ -29,14 +29,14 @@ import {
   TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
-import { EXECUTOR_HARDENING_ARGS, runToolboxCommand, toolboxContainerName } from './toolbox-runner.js';
+import { EXECUTOR_HARDENING_ARGS, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, type ToolboxRunResult } from './toolbox-runner.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
 import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
 import type { MetadataStore } from './metadata-store.js';
-import { OperationManager } from './operation-manager.js';
+import { OperationManager, type TrackedOperation } from './operation-manager.js';
 import { validateRepositoryUrl } from './repository-policy.js';
 import { cloneHistorySpec, fetchHistorySpec } from './git-history-spec.js';
 import {
@@ -205,6 +205,8 @@ export class WorkspaceService {
   private readonly guidanceCache = new Map<string, { generation: number; fingerprint: string; snapshot: RepositoryGuidanceSnapshot }>();
   private reaper?: NodeJS.Timeout | undefined;
   private reaperRunning = false;
+  /** Toolbox containers this runner is running now; the semaphore count and the sweep's exclusion list. */
+  private readonly liveToolboxContainers = new Set<string>();
   readonly toolkitCacheManager: ToolkitCacheManager;
   readonly toolkitService: ToolkitService;
 
@@ -1986,7 +1988,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
-  private async handleExecRun(record: WorkspaceRecord, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  /** `resultTarget` labels the stored async result for the `bash` workspace target, as its sync result is. */
+  private async handleExecRun(record: WorkspaceRecord, validated: Record<string, unknown>, signal?: AbortSignal, resultTarget?: 'workspace'): Promise<RunnerResponse> {
     const command = validated.command as string;
     const cwd = ((validated.cwd as string) || '.').replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '') || '.';
     const timeoutMs = (validated.timeoutMs as number) || 60_000;
@@ -2078,7 +2081,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           if (!timedOut) {
             this.operations.updateGenericOperation(operationId, {
               status: result.ok ? 'completed' : 'failed',
-              result: result.data,
+              result: resultTarget ? dataWithTarget(result.data, resultTarget) : result.data,
               error: result.error
             });
           }
@@ -2107,34 +2110,55 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   /**
    * The `bash` toolbox target: one command in a disposable, no-network executor-image container with no
    * checkout, secrets, or Docker socket. The operator flag is the only authorization; the target the
-   * caller asked for grants nothing by itself.
+   * caller asked for grants nothing by itself. A runner-wide cap bounds how many run at once, and an async
+   * call returns an operation handle scoped to the calling owner.
    */
-  private async runToolbox(validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+  private async runToolbox(ownerId: string, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     if (this.config.packagesEnabled !== true) {
       throw new HarnessError('FORBIDDEN', 'The bash toolbox target is disabled on this instance (the operator enables it with PACKAGES_ENABLED=true); use target "workspace" to run in a workspace', 403, false);
     }
-    const result = await runToolboxCommand({
-      name: toolboxContainerName(),
-      image: this.config.executorImage,
-      instanceId: this.instanceId,
-      command: validated.command as string,
-      // Managed package releases will be mounted here, read-only.
-      mounts: []
-    }, {
-      timeoutMs: validated.timeoutMs as number,
-      maxOutputBytes: Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes)
-    }, signal);
-    const data = { output: result.output, exitCode: result.exitCode, signal: result.signal, truncated: result.truncated, target: 'toolbox' };
-    if (result.timedOut) {
-      return {
-        ok: false,
-        message: 'Toolbox command exceeded its timeout and was stopped',
-        data,
-        error: { code: 'TIMEOUT', message: 'Toolbox command exceeded its timeout and was stopped', retryable: false },
-        truncated: result.truncated
-      };
+    // Partial test configs omit the key; production values always come from the validated schema.
+    const limit = this.config.toolboxMaxConcurrent ?? 2;
+    if (this.liveToolboxContainers.size >= limit) {
+      throw new HarnessError('LIMIT_EXCEEDED', `toolbox concurrency limit reached: ${limit} toolbox commands are already running on this instance; retry after one finishes`, 429, true);
     }
-    return { ok: true, message: `Command exited with ${result.exitCode ?? 1}`, data, truncated: result.truncated };
+    const name = toolboxContainerName();
+    const timeoutMs = validated.timeoutMs as number;
+    const run = (runSignal?: AbortSignal) => {
+      this.liveToolboxContainers.add(name);
+      return runToolboxCommand({
+        name,
+        image: this.config.executorImage,
+        instanceId: this.instanceId,
+        command: validated.command as string,
+        // Managed package releases will be mounted here, read-only.
+        mounts: []
+      }, {
+        timeoutMs,
+        maxOutputBytes: Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes)
+      }, runSignal).finally(() => { this.liveToolboxContainers.delete(name); });
+    };
+    if (validated.async !== true) return toolboxResponse(await run(signal));
+
+    const operationId = opaqueId('op');
+    const abortController = new AbortController();
+    this.operations.registerGenericOperation({ id: operationId, ownerId, kind: 'bash', deadlineMs: Date.now() + timeoutMs, abortController });
+    const settle = (patch: Parameters<OperationManager['updateGenericOperation']>[1]) => {
+      // A cancelled handle keeps its cancelled status; the run only reports into a handle still running.
+      if (this.operations.getGenericOperation(operationId)?.status === 'running') this.operations.updateGenericOperation(operationId, patch);
+    };
+    const completion = run(abortController.signal).then((result) => {
+      const response = toolboxResponse(result);
+      settle({ status: response.ok ? 'completed' : 'failed', result: response.data, error: response.error });
+    }, (error: unknown) => {
+      const harness = error instanceof HarnessError ? error : undefined;
+      settle({
+        status: harness?.code === 'CANCELLED' ? 'cancelled' : 'failed',
+        error: { code: harness?.code ?? 'INTERNAL_ERROR', message: error instanceof Error ? error.message : 'toolbox command failed', retryable: harness?.retryable ?? false }
+      });
+    });
+    this.operations.updateGenericOperation(operationId, { completion });
+    return { ok: true, message: 'Command started in background', data: { operationId, status: 'running', target: 'toolbox' }, truncated: false };
   }
 
   private async runPrivilegedEphemeralExec(
@@ -2385,6 +2409,19 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
+  /**
+   * An operation handle is visible only to its owner: through its workspace's owner, or through the owner
+   * recorded on a workspace-less (toolbox) handle. Any other handle reads as not found.
+   */
+  private ownedOperation(ownerId: string, operationId: string): TrackedOperation {
+    const op = this.operations.getGenericOperation(operationId);
+    const owned = op !== undefined && (op.workspaceId
+      ? this.store.byOwnerAndId(ownerId, op.workspaceId) !== undefined
+      : op.ownerId !== undefined && op.ownerId === ownerId);
+    if (!owned) throw new HarnessError('NOT_FOUND', `operation ${operationId} not found`);
+    return op;
+  }
+
   async execute(principal: PrincipalSelector | string, operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     const ownerId = this.store.resolvePrincipal(typeof principal === 'string' ? { kind: 'owner', ownerId: principal } : principal);
     RunnerOperationSchema.parse(operation);
@@ -2392,15 +2429,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'workspace_open') return await this.open(ownerId, validated);
     if (operation === 'workspace_list') return this.list(ownerId, validated);
     if (operation === 'secrets_list') return this.secretsList(ownerId, validated);
-    if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(validated, signal);
+    if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);
     if (operation === 'operation_status') {
-      const opId = validated.operationId as string;
-      const op = this.operations.getGenericOperation(opId);
-      if (!op) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      if (op.workspaceId) {
-        const ws = this.store.byOwnerAndId(ownerId, op.workspaceId);
-        if (!ws) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      }
+      const op = this.ownedOperation(ownerId, validated.operationId as string);
       const offset = validated.cursor ? Number(validated.cursor) : 0;
       if (!Number.isSafeInteger(offset) || offset < 0) throw new HarnessError('INVALID_INPUT', 'invalid operation output cursor');
       const total = op.output.length;
@@ -2428,13 +2459,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       };
     }
     if (operation === 'operation_cancel') {
-      const opId = validated.operationId as string;
-      const existing = this.operations.getGenericOperation(opId);
-      if (!existing) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      if (existing.workspaceId) {
-        const ws = this.store.byOwnerAndId(ownerId, existing.workspaceId);
-        if (!ws) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      }
+      const opId = this.ownedOperation(ownerId, validated.operationId as string).id;
       const op = await this.operations.cancelGenericOperation(opId);
       return {
         ok: true,
@@ -2447,13 +2472,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       };
     }
     if (operation === 'operation_wait') {
-      const opId = validated.operationId as string;
-      const existing = this.operations.getGenericOperation(opId);
-      if (!existing) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      if (existing.workspaceId) {
-        const ws = this.store.byOwnerAndId(ownerId, existing.workspaceId);
-        if (!ws) throw new HarnessError('NOT_FOUND', `operation ${opId} not found`);
-      }
+      const opId = this.ownedOperation(ownerId, validated.operationId as string).id;
       const timeoutMs = (validated.timeoutMs as number) || 60_000;
       const startTime = Date.now();
       while (Date.now() - startTime < timeoutMs) {
@@ -3605,9 +3624,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'exec_run' || operation === 'bash') {
       validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
-      const result = await this.handleExecRun(record, operation === 'bash' ? execRunInputFromBash(validated) : validated, signal);
+      const result = operation === 'bash'
+        ? await this.handleExecRun(record, execRunInputFromBash(validated), signal, 'workspace')
+        : await this.handleExecRun(record, validated, signal);
       await this.enforceActiveLimits(record);
-      return operation === 'bash' ? withWorkspaceTarget(result) : result;
+      return operation === 'bash' ? { ...result, data: dataWithTarget(result.data, 'workspace') } : result;
     }
     if (operation === 'github_action' || operation === 'github_read') {
       const action = validated.action as string;
@@ -4470,6 +4491,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   private async reapExpired(): Promise<void> {
     const now = Date.now();
+    await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).catch(() => undefined);
     const hasDependencyWorkspaces = this.store.active().some((r) => r.status === 'ACTIVE' && r.networkProfile === 'dependency-access');
     if (hasDependencyWorkspaces) {
       const attestation = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
@@ -4735,12 +4757,23 @@ function execRunInputFromBash(validated: Record<string, unknown>): Record<string
   };
 }
 
-function withWorkspaceTarget(result: RunnerResponse): RunnerResponse {
-  const target = 'workspace';
-  const data = result.data !== null && typeof result.data === 'object' && !Array.isArray(result.data)
-    ? { ...(result.data as Record<string, unknown>), target }
+/** Every `bash` result, synchronous or read through an operation handle, names the target that ran it. */
+function dataWithTarget(data: unknown, target: 'workspace' | 'toolbox'): Record<string, unknown> {
+  return data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? { ...(data as Record<string, unknown>), target }
     : { target };
-  return { ...result, data };
+}
+
+function toolboxResponse(result: ToolboxRunResult): RunnerResponse {
+  const data = dataWithTarget({ output: result.output, exitCode: result.exitCode, signal: result.signal, truncated: result.truncated }, 'toolbox');
+  if (result.timedOut) {
+    const message = 'Toolbox command exceeded its timeout and was stopped';
+    return { ok: false, message, data, error: { code: 'TIMEOUT', message, retryable: false }, truncated: result.truncated };
+  }
+  const message = result.exitCode !== null
+    ? `Command exited with ${result.exitCode}`
+    : `Command was stopped with ${result.signal ?? 'a signal'}${result.truncated ? ' after its output reached maxOutputBytes' : ''}`;
+  return { ok: true, message, data, truncated: result.truncated };
 }
 
 /**

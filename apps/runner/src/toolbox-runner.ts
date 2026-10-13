@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import { HarnessError } from '@cloud-harness/contracts';
-import { removeContainer } from './docker-engine.js';
+import { COMMAND_MAX_TIMEOUT_MS, HarnessError } from '@cloud-harness/contracts';
+import { removeContainer, runDocker } from './docker-engine.js';
 
 /**
  * Executor hardening shared by every workspace executor and every toolbox container. Keeping one list
@@ -16,8 +16,20 @@ export const EXECUTOR_HARDENING_ARGS: readonly string[] = Object.freeze([
   '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024'
 ]);
 
-/** PATH matching the executor's, minus the checkout-local `node_modules/.bin` the toolbox does not have. */
+/**
+ * The executor's `--env PATH`, minus the checkout-local `node_modules/.bin` the toolbox does not have. The
+ * command runs in a login shell (`bash -lc`, as `exec_run` does), so the image's `/etc/profile.d/harness.sh`
+ * then puts `/opt/harness/bin` and the user-tools directories first, exactly as in a workspace.
+ */
 export const TOOLBOX_PATH = '/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
+/** Seconds the in-container deadline allows beyond the caller's timeout, so the runner's own timer fires first. */
+const DEADLINE_MARGIN_SECONDS = 2;
+/** Seconds coreutils `timeout` waits after SIGTERM before it sends SIGKILL. */
+const DEADLINE_KILL_AFTER_SECONDS = 5;
+const CREATE_TIMEOUT_MS = 30_000;
+/** Bound on verifying that a toolbox container is gone; whatever survives it is left to the periodic sweep. */
+const REMOVAL_VERIFY_MS = 10_000;
 
 /**
  * A host directory exposed read-only inside the toolbox. This is the extension point for managed
@@ -71,14 +83,23 @@ function mountArgs(mount: ToolboxMount): string[] {
 }
 
 /**
- * Builds the `docker run` argv for one toolbox command. The container has the executor hardening, no
- * network, no workspace checkout, no secrets, and no Docker socket; only `spec.mounts` are added, read-only.
+ * The in-container deadline in seconds. It backs up the runner's timer: if the runner dies mid-call, the
+ * command still ends instead of running until the next startup reconcile or periodic sweep.
  */
-export function buildToolboxRunArgs(spec: ToolboxRunSpec): string[] {
+export function toolboxDeadlineSeconds(timeoutMs: number): number {
+  return Math.ceil(timeoutMs / 1_000) + DEADLINE_MARGIN_SECONDS;
+}
+
+/**
+ * Builds the `docker create` argv for one toolbox command. The container has the executor hardening, no
+ * network, no workspace checkout, no secrets, and no Docker socket; only `spec.mounts` are added, read-only.
+ * It is created without `--rm` so the runner can read its final state, and it is always removed by name.
+ */
+export function buildToolboxCreateArgs(spec: ToolboxRunSpec, timeoutMs: number): string[] {
   if (!CONTAINER_NAME.test(spec.name)) throw new HarnessError('INTERNAL_ERROR', 'toolbox container name is invalid', 500, false);
   if (!INSTANCE_ID.test(spec.instanceId)) throw new HarnessError('INTERNAL_ERROR', 'toolbox instance label is invalid', 500, false);
   return [
-    'run', '--rm', '--pull', 'never', '--name', spec.name,
+    'create', '--pull', 'never', '--name', spec.name,
     '--label', 'cloud-harness.role=toolbox', '--label', 'cloud-harness.ephemeral=true',
     '--label', `cloud-harness.instance=${spec.instanceId}`,
     ...EXECUTOR_HARDENING_ARGS,
@@ -91,68 +112,156 @@ export function buildToolboxRunArgs(spec: ToolboxRunSpec): string[] {
     '--env', 'XDG_CACHE_HOME=/tmp/cloud-harness-home/.cache',
     '--env', `PATH=${TOOLBOX_PATH}`,
     spec.image,
-    '/bin/bash', '-c', spec.command
+    '/usr/bin/timeout', '-k', `${DEADLINE_KILL_AFTER_SECONDS}s`, `${toolboxDeadlineSeconds(timeoutMs)}s`,
+    '/bin/bash', '-lc', spec.command
   ];
 }
 
+const cancelled = () => new HarnessError('CANCELLED', 'request cancelled', 499, false);
+const unavailable = (message: string, detail: string) =>
+  new HarnessError('UNAVAILABLE', `${message}${detail.trim() ? `: ${detail.trim()}` : ''}`.slice(0, 2_000), 503, true);
+
+/** True only when Docker positively reports that the container does not exist. */
+async function containerAbsent(name: string): Promise<boolean> {
+  const result = await runDocker(['inspect', '--type', 'container', '--format', '{{.Id}}', name], { timeoutMs: 10_000, maxBytes: 8_192 });
+  return result.exitCode !== 0 && /no such (object|container)/i.test(result.stderr);
+}
+
 /**
- * Runs one toolbox command and always removes its container by exact name. stdout and stderr share one
- * bounded buffer, as in the workspace executor. Reaching the output bound or the timeout stops the
- * container; an abort stops it and rejects with `CANCELLED`.
+ * Removes the container by exact name and retries with a short backoff until Docker reports it gone. The
+ * retry covers a daemon that finishes a create after an earlier removal attempt. A container that survives
+ * the bound is left to the periodic toolbox sweep rather than failing the caller's result.
+ */
+async function removeUntilGone(name: string): Promise<void> {
+  const deadline = Date.now() + REMOVAL_VERIFY_MS;
+  let delay = 50;
+  for (;;) {
+    await removeContainer(name).catch(() => undefined);
+    if (await containerAbsent(name).catch(() => false)) return;
+    if (Date.now() + delay > deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(delay * 2, 1_000);
+  }
+}
+
+type ContainerState = { started: boolean; exitCode: number };
+
+async function containerState(name: string): Promise<ContainerState | undefined> {
+  const result = await runDocker(['inspect', '--type', 'container', '--format', '{{.State.StartedAt}}\t{{.State.ExitCode}}', name], { timeoutMs: 10_000, maxBytes: 8_192 })
+    .catch(() => undefined);
+  if (!result || result.exitCode !== 0) return undefined;
+  const [startedAt = '', exitCode = ''] = result.stdout.trim().split('\t');
+  const code = Number(exitCode);
+  if (!startedAt || !Number.isInteger(code)) return undefined;
+  // Docker reports a container that never started with the zero time.
+  return { started: !startedAt.startsWith('0001-01-01'), exitCode: code };
+}
+
+/**
+ * Runs one toolbox command. The container is created first and only then started and attached, so it
+ * exists by name before any stop decision; whatever happens, it is then removed by that exact name and the
+ * removal is verified. stdout and stderr share one bounded buffer, as in the workspace executor. Reaching
+ * the output bound or the timeout stops the container (SIGKILL through `docker rm -f`); an abort stops it
+ * and rejects with `CANCELLED`. A create or start the daemon refuses is `UNAVAILABLE`, never an exit code.
  */
 export async function runToolboxCommand(
   spec: ToolboxRunSpec,
   limits: { timeoutMs: number; maxOutputBytes: number },
   signal?: AbortSignal
 ): Promise<ToolboxRunResult> {
-  const args = buildToolboxRunArgs(spec);
-  if (signal?.aborted) throw new HarnessError('CANCELLED', 'request cancelled', 499, false);
+  const createArgs = buildToolboxCreateArgs(spec, limits.timeoutMs);
+  if (signal?.aborted) throw cancelled();
+  let aborted = false;
+  let timedOut = false;
+  let truncated = false;
+  let requestStop: (() => void) | undefined;
+  const onAbort = () => { aborted = true; requestStop?.(); };
+  const timer = setTimeout(() => { timedOut = true; requestStop?.(); }, limits.timeoutMs);
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
-    return await new Promise<ToolboxRunResult>((resolve, reject) => {
-      const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    // The create is not interrupted: once it returns, the container either exists by name or was never made,
+    // so an abort during it cannot leave a container the removal below has already missed.
+    const created = await runDocker(createArgs, { timeoutMs: CREATE_TIMEOUT_MS, maxBytes: 65_536 }).catch((error: unknown) => {
+      throw unavailable('toolbox container could not be created', error instanceof Error ? error.message : '');
+    });
+    if (created.exitCode !== 0) throw unavailable('toolbox container could not be created', created.stderr);
+    if (aborted) throw cancelled();
+    if (timedOut) return { output: '', exitCode: null, signal: null, truncated: false, timedOut: true };
+
+    const attached = await new Promise<{ output: Buffer; code: number | null; stopped: boolean }>((resolve, reject) => {
+      const child = spawn('docker', ['start', '--attach', spec.name], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let output = Buffer.alloc(0);
-      let truncated = false;
-      let timedOut = false;
-      let aborted = false;
       let stopping: Promise<void> | undefined;
       const stop = () => {
         stopping ??= removeContainer(spec.name).catch(() => undefined).finally(() => { child.kill(); });
       };
+      requestStop = stop;
       const append = (chunk: Buffer) => {
         const remaining = Math.max(0, limits.maxOutputBytes - output.length);
-        if (chunk.length > remaining) truncated = true;
         if (remaining > 0) output = Buffer.concat([output, chunk.subarray(0, remaining)]);
-        if (truncated) stop();
+        if (chunk.length > remaining) {
+          truncated = true;
+          stop();
+        }
       };
-      const onAbort = () => { aborted = true; stop(); };
-      const timer = setTimeout(() => { timedOut = true; stop(); }, limits.timeoutMs);
-      signal?.addEventListener('abort', onAbort, { once: true });
       child.stdout.on('data', append);
       child.stderr.on('data', append);
       child.on('error', (error) => {
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
-        reject(new HarnessError('UNAVAILABLE', `toolbox could not start: ${error.message}`.slice(0, 2_000), 503, true));
+        requestStop = undefined;
+        reject(unavailable('toolbox container could not start', error.message));
       });
-      child.on('close', (code, closeSignal) => {
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
-        void (stopping ?? Promise.resolve()).then(() => {
-          if (aborted) {
-            reject(new HarnessError('CANCELLED', 'request cancelled', 499, false));
-            return;
-          }
-          resolve({
-            output: output.toString('utf8'),
-            exitCode: timedOut ? null : code,
-            signal: closeSignal,
-            truncated,
-            timedOut
-          });
-        });
+      child.on('close', (code) => {
+        requestStop = undefined;
+        void (stopping ?? Promise.resolve()).then(() => resolve({ output, code, stopped: stopping !== undefined }));
       });
     });
+
+    if (aborted) throw cancelled();
+    const output = attached.output.toString('utf8');
+    // The harness stopped the container with `docker rm -f`, which delivers SIGKILL: report that, not an exit code.
+    if (attached.stopped) return { output, exitCode: null, signal: 'SIGKILL', truncated, timedOut };
+    const state = await containerState(spec.name);
+    // A start the daemon refused never ran the command, so its CLI status is not the command's exit code.
+    if (state ? !state.started : attached.code === 125) throw unavailable('toolbox container could not start', output.slice(0, 500));
+    return { output, exitCode: state?.exitCode ?? attached.code, signal: null, truncated, timedOut };
   } finally {
-    await removeContainer(spec.name).catch(() => undefined);
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+    await removeUntilGone(spec.name);
   }
+}
+
+/**
+ * Age past which a toolbox container cannot belong to a live call: the longest allowed command plus its
+ * create, in-container kill grace, and removal time.
+ */
+export const TOOLBOX_STALE_AFTER_MS = COMMAND_MAX_TIMEOUT_MS + 60_000;
+
+/**
+ * Removes this runner instance's toolbox containers that are older than `TOOLBOX_STALE_AFTER_MS` and not
+ * tracked as live. It matches the exact role, ephemeral, and instance labels the toolbox sets, so it never
+ * touches another instance's or another role's containers. Returns the names it removed.
+ */
+export async function reapStaleToolboxContainers(instanceId: string, live: ReadonlySet<string>, now = Date.now()): Promise<string[]> {
+  if (!INSTANCE_ID.test(instanceId)) throw new HarnessError('INTERNAL_ERROR', 'toolbox instance label is invalid', 500, false);
+  const listed = await runDocker([
+    'ps', '-a', '--filter', 'label=cloud-harness.role=toolbox', '--filter', 'label=cloud-harness.ephemeral=true',
+    '--filter', `label=cloud-harness.instance=${instanceId}`, '--format', '{{.Names}}'
+  ], { timeoutMs: 30_000, maxBytes: 1_048_576 });
+  if (listed.exitCode !== 0) throw new HarnessError('UNAVAILABLE', 'Docker toolbox inventory failed', 503, true);
+  const names = listed.stdout.split('\n').map((name) => name.trim()).filter((name) => CONTAINER_NAME.test(name) && !live.has(name));
+  if (names.length === 0) return [];
+  // A container removed between the listing and this inspect makes the exit status non-zero, but the
+  // remaining containers are still printed, so the output is parsed regardless.
+  const inspected = await runDocker(['inspect', '--type', 'container', '--format', '{{.Name}}\t{{.Created}}', ...names], { timeoutMs: 30_000, maxBytes: 1_048_576 });
+  const removed: string[] = [];
+  for (const line of inspected.stdout.split('\n')) {
+    const [rawName = '', created = ''] = line.trim().split('\t');
+    const name = rawName.replace(/^\//, '');
+    const createdAt = Date.parse(created);
+    if (!names.includes(name) || !Number.isFinite(createdAt) || now - createdAt < TOOLBOX_STALE_AFTER_MS) continue;
+    await removeContainer(name);
+    removed.push(name);
+  }
+  return removed;
 }

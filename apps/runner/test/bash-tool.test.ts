@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ZodError } from 'zod';
 import { HarnessError, type RunnerConfig, type RunnerResponse } from '@cloud-harness/contracts';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 
@@ -134,12 +135,25 @@ describe('bash tool, workspace target', () => {
 
     releaseWorker();
     const finished = await service.execute(ownerId, 'operation_wait', { operationId: data.operationId, timeoutMs: 5_000 });
-    expect(finished).toMatchObject({ ok: true, data: { status: 'completed', result: { output: 'hello\n', exitCode: 0 } } });
+    // The result read through the handle names its target, as the synchronous result does.
+    expect(finished).toMatchObject({ ok: true, data: { status: 'completed', result: { output: 'hello\n', exitCode: 0, target: 'workspace' } } });
   });
 
-  it('refuses a privileged request at the schema instead of running it unprivileged', async () => {
+  it('refuses a privileged request at the schema, naming the field, instead of running it unprivileged', async () => {
     const { service, ownerId, record, workerCalls } = setup();
-    await expect(service.execute(ownerId, 'bash', { workspaceId: record.id, command: 'id', privileged: true })).rejects.toThrow();
+    const refusal = service.execute(ownerId, 'bash', { workspaceId: record.id, command: 'id', privileged: true });
+    await expect(refusal).rejects.toBeInstanceOf(ZodError);
+    await expect(refusal).rejects.toMatchObject({ issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['privileged'] })] });
+    expect(workerCalls).toHaveLength(0);
+  });
+
+  it('refuses a NUL byte in the command as invalid input before any worker runs', async () => {
+    const { service, ownerId, record, workerCalls } = setup();
+    for (const operation of ['bash', 'exec_run'] as const) {
+      const refusal = service.execute(ownerId, operation, { workspaceId: record.id, command: 'echo a\u0000b' });
+      await expect(refusal).rejects.toBeInstanceOf(ZodError);
+      await expect(refusal).rejects.toMatchObject({ issues: [expect.objectContaining({ path: ['command'], message: expect.stringMatching(/NUL/) })] });
+    }
     expect(workerCalls).toHaveLength(0);
   });
 });
@@ -177,6 +191,16 @@ describe('bash tool, toolbox target', () => {
     expect(workerCalls).toHaveLength(0);
   });
 
+  it('reports a run the harness stopped by its signal, not as an exit code', async () => {
+    const { service, ownerId } = setup({ packagesEnabled: true });
+    toolbox.runToolboxCommand.mockResolvedValueOnce({ output: 'yyyy', exitCode: null, signal: 'SIGKILL', truncated: true, timedOut: false } as never);
+
+    const result = await service.execute(ownerId, 'bash', { command: 'yes', target: 'toolbox' });
+
+    expect(result).toMatchObject({ ok: true, message: 'Command was stopped with SIGKILL after its output reached maxOutputBytes', truncated: true });
+    expect(result.data).toMatchObject({ exitCode: null, signal: 'SIGKILL' });
+  });
+
   it('reports a timeout as a failed TIMEOUT result that keeps the partial output', async () => {
     const { service, ownerId } = setup({ packagesEnabled: true });
     toolbox.runToolboxCommand.mockResolvedValueOnce({ output: 'partial', exitCode: null, signal: 'SIGTERM', truncated: false, timedOut: true } as never);
@@ -186,5 +210,112 @@ describe('bash tool, toolbox target', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toMatchObject({ code: 'TIMEOUT', retryable: false });
     expect(result.data).toMatchObject({ output: 'partial', exitCode: null, target: 'toolbox' });
+  });
+});
+
+/** Holds every toolbox run until released, and records the signal each run was given. */
+function holdToolboxRuns() {
+  const runs: Array<{ signal: AbortSignal | undefined; release: () => void }> = [];
+  toolbox.runToolboxCommand.mockImplementation(((_spec: unknown, _limits: unknown, signal?: AbortSignal) => new Promise((resolve, reject) => {
+    const result = { output: 'done\n', exitCode: 0, signal: null, truncated: false, timedOut: false };
+    runs.push({ signal, release: () => resolve(result) });
+    signal?.addEventListener('abort', () => reject(new HarnessError('CANCELLED', 'request cancelled', 499, false)), { once: true });
+  })) as never);
+  return runs;
+}
+
+describe('bash tool, toolbox concurrency and operation handles', () => {
+  afterEach(() => {
+    toolbox.runToolboxCommand.mockReset();
+    toolbox.runToolboxCommand.mockImplementation(async () => ({ output: 'v24\n', exitCode: 0, signal: null, truncated: false, timedOut: false }));
+  });
+
+  it('refuses a toolbox call beyond TOOLBOX_MAX_CONCURRENT with a retryable LIMIT_EXCEEDED and frees the slot afterwards', async () => {
+    const { service, ownerId } = setup({ packagesEnabled: true, toolboxMaxConcurrent: 2 });
+    const runs = holdToolboxRuns();
+    const first = service.execute(ownerId, 'bash', { command: 'sleep 1', target: 'toolbox' });
+    // An async run holds a slot too.
+    const second = await service.execute(ownerId, 'bash', { command: 'sleep 1', target: 'toolbox', async: true });
+    expect(second.ok).toBe(true);
+
+    const refusal = service.execute(ownerId, 'bash', { command: 'true', target: 'toolbox' });
+    await expect(refusal).rejects.toBeInstanceOf(HarnessError);
+    await expect(refusal).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED', status: 429, retryable: true });
+    expect(toolbox.runToolboxCommand).toHaveBeenCalledTimes(2);
+
+    runs[0]!.release();
+    await first;
+    const third = service.execute(ownerId, 'bash', { command: 'true', target: 'toolbox' });
+    await vi.waitFor(() => expect(runs).toHaveLength(3));
+    runs[1]!.release();
+    runs[2]!.release();
+    await expect(third).resolves.toMatchObject({ ok: true });
+  });
+
+  it('returns an owner-scoped operation handle whose result names the toolbox target', async () => {
+    const { service, store, ownerId } = setup({ packagesEnabled: true });
+    const runs = holdToolboxRuns();
+    const started = await service.execute(ownerId, 'bash', { command: 'make', target: 'toolbox', async: true, timeoutMs: 10_000 });
+    const data = started.data as { operationId: string; status: string; target: string };
+    expect(started).toMatchObject({ ok: true, message: 'Command started in background' });
+    expect(data).toMatchObject({ status: 'running', target: 'toolbox' });
+    expect(data.operationId).toMatch(/^op_/);
+
+    const running = await service.execute(ownerId, 'operation_status', { operationId: data.operationId });
+    expect(running.data).toMatchObject({ status: 'running', kind: 'bash' });
+
+    // A handle with no workspace is still visible only to the owner that started it.
+    const otherOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'someone-else' });
+    for (const operation of ['operation_status', 'operation_wait', 'operation_cancel'] as const) {
+      await expect(service.execute(otherOwner, operation, { operationId: data.operationId })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    }
+
+    await vi.waitFor(() => expect(runs).toHaveLength(1));
+    runs[0]!.release();
+    const finished = await service.execute(ownerId, 'operation_wait', { operationId: data.operationId, timeoutMs: 5_000 });
+    expect(finished).toMatchObject({
+      ok: true,
+      data: { status: 'completed', result: { output: 'done\n', exitCode: 0, signal: null, truncated: false, target: 'toolbox' } }
+    });
+  });
+
+  it('never exposes a handle that has neither a workspace nor an owner', async () => {
+    const { service, ownerId } = setup();
+    const operations = (service as unknown as { operations: { registerGenericOperation: (op: { id: string; kind: string }) => unknown } }).operations;
+    const operationId = `op_${'u'.repeat(24)}`;
+    operations.registerGenericOperation({ id: operationId, kind: 'bash' });
+
+    await expect(service.execute(ownerId, 'operation_status', { operationId })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('cancels an async toolbox run by aborting it and waits for its container removal', async () => {
+    const { service, ownerId } = setup({ packagesEnabled: true });
+    let removed = false;
+    toolbox.runToolboxCommand.mockImplementation(((_spec: unknown, _limits: unknown, signal?: AbortSignal) => new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => {
+        // The real runner removes the container before it settles; cancellation must wait for that.
+        setTimeout(() => { removed = true; reject(new HarnessError('CANCELLED', 'request cancelled', 499, false)); }, 20);
+      }, { once: true });
+    })) as never);
+    const started = await service.execute(ownerId, 'bash', { command: 'sleep 120', target: 'toolbox', async: true });
+    const { operationId } = started.data as { operationId: string };
+
+    const cancelledResult = await service.execute(ownerId, 'operation_cancel', { operationId });
+
+    expect(cancelledResult).toMatchObject({ ok: true, data: { status: 'cancelled' } });
+    expect(removed).toBe(true);
+    const status = await service.execute(ownerId, 'operation_status', { operationId });
+    expect(status).toMatchObject({ ok: false, data: { status: 'cancelled' } });
+  });
+
+  it('records a daemon failure on the handle as a retryable UNAVAILABLE', async () => {
+    const { service, ownerId } = setup({ packagesEnabled: true });
+    toolbox.runToolboxCommand.mockRejectedValueOnce(new HarnessError('UNAVAILABLE', 'toolbox container could not be created: No such image', 503, true));
+    const started = await service.execute(ownerId, 'bash', { command: 'true', target: 'toolbox', async: true });
+    const { operationId } = started.data as { operationId: string };
+
+    const finished = await service.execute(ownerId, 'operation_wait', { operationId, timeoutMs: 5_000 });
+
+    expect(finished).toMatchObject({ ok: false, data: { status: 'failed' }, error: { code: 'UNAVAILABLE', retryable: true } });
   });
 });
