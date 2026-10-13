@@ -444,6 +444,18 @@ When `exec_run` is invoked with `privileged: true`:
 2. In `cloudflare-access` mode, an unapproved request is rejected with `PRIVILEGE_APPROVAL_REQUIRED` and returns a single-use `grantId` bound to the command and working directory with a 60-second TTL.
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
 4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
+
+The `bash` tool has no privileged path: its `workspace` target delegates to
+unprivileged `exec_run`, and privileged commands stay on `exec_run` with the
+grant flow above. Its `toolbox` target, off unless the operator sets
+`PACKAGES_ENABLED=true`, runs each command in a fresh executor-image container
+with the same hardening flags, `--network none`, no mounts, no secrets, and no
+Docker socket, then removes it by exact name on exit, timeout, or abort. The
+executable owner is
+[`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts),
+with evidence in
+[`test/integration/bash-toolbox.docker.test.ts`](../test/integration/bash-toolbox.docker.test.ts).
+
 The public contract fixes remote transfers to `origin`, permits only branch
 push refspecs, rejects deletion refspecs, and permits force only through
 force-with-lease. Private clone/fetch/pull require GitHub App Contents read

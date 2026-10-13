@@ -24,7 +24,7 @@ See [files and search](files-and-search.md).
 
 See [execution and tasks](execution-and-tasks.md).
 
-`exec_run` `shell_open` `shell_io` `shell_close` `sessions_list`
+`exec_run` `bash` `shell_open` `shell_io` `shell_close` `sessions_list`
 `sessions_open` `sessions_io` `sessions_close` `tasks_list` `tasks_run`
 `tasks_status` `tasks_cancel` `tasks_graph` `operation_status`
 `operation_cancel` `operation_wait`

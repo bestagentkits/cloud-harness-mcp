@@ -318,6 +318,26 @@ and
   If its API request disconnects or reaches the API deadline, the
   runner terminates and verifies the operation's process groups; the workspace
   remains active for later calls.
+- `bash` is a convenience entry point, not a second engine. With
+  `target: "workspace"` (the default) it is `exec_run` without the privileged
+  fields: the same workspace resolution, lease and mutation lock, output
+  ceiling, redaction, and `async: true` operation handle for `operation_status`,
+  `operation_wait`, and `operation_cancel`. Its result is the `exec_run`
+  envelope plus `data.target`. `bash` has no `privileged` or
+  `approvalGrantToken` field and rejects both; privileged commands stay on
+  `exec_run` and its approval flow.
+  With `target: "toolbox"`, the command runs in a fresh disposable container
+  from the executor image with the executor's hardening, `--network none`, no
+  workspace checkout, no secrets, and no Docker socket. The container is
+  removed by exact name when the command exits, reaches the output bound,
+  times out, or is cancelled. A timeout returns `ok: false` with `TIMEOUT` and
+  keeps the partial output. The toolbox target takes no `workspaceId`, `cwd`,
+  or `async`, and is refused with `FORBIDDEN` unless the operator sets
+  `PACKAGES_ENABLED=true`
+  ([configuration](configuration.md#managed-toolbox)). The schema is owned by
+  [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts);
+  the container arguments by
+  [`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts).
 - `github_read` is a read-only, non-destructive tool sharing the same broker
   and handler as `github_action`, restricted to `pr_list`, `pr_view`,
   `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, and
@@ -537,7 +557,7 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
 2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
 3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
-4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action` and `exec_run.privileged=true` return structured unsupported errors.
+4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action`, `exec_run.privileged=true`, and `bash` with `target: "toolbox"` return structured unsupported errors; `bash` with `target: "workspace"` behaves like `exec_run`.
 5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 
 ### Local multi-workspace mode

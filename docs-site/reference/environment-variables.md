@@ -75,6 +75,11 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `WORKSPACE_WALL_TTL_SECONDS` | `900` | **Required** | Required configuration. |
 | `WORKSPACE_IDLE_TTL_SECONDS` | `300` | **Required** | Required configuration. |
 | `MAX_ACTIVE_WORKSPACES_PER_OWNER` | `3` | **Required** | Concurrent active workspaces allowed per principal. Defaults to 3 when unset; set 1 to restore single-workspace behaviour. Each counted workspace can use up to 1 GiB of container memory, one CPU, and 256 pids, so size host memory for this limit times the expected simultaneous builds. |
+| `TERMINAL_MAX_PER_WORKSPACE` | `4` | Optional | Dashboard Terminal (runner): live PTYs one workspace may hold; another open is refused with 429. |
+| `TERMINAL_RETAINED_BYTES` | `1048576` | Optional | Raw output bytes retained per terminal for reconnecting readers; older bytes are reported as missed. |
+| `TERMINAL_IDLE_TIMEOUT_MS` | `900000` | Optional | A terminal with no input, resize, or read for this long ends as timed_out. |
+| `TERMINAL_MAX_LIFETIME_MS` | `28800000` | Optional | Absolute terminal lifetime regardless of activity. |
+| `PACKAGES_ENABLED` | `false` | Optional | Managed toolbox (runner): enables the `bash` tool's `toolbox` target, which runs each command in a disposable no-network executor-image container. Off by default; the `workspace` target is unaffected. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |

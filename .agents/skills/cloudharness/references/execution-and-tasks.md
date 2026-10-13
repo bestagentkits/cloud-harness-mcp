@@ -22,6 +22,26 @@ before calling them. Prefer one bounded command over persistent process state.
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","command":"npm test -- --runInBand","cwd":".","timeoutMs":300000,"maxOutputBytes":262144}
 -->
 
+<!-- cloudharness-tool:bash -->
+### `bash`
+
+- Required: `command`. `target` defaults to `workspace`; `timeoutMs` and
+  `maxOutputBytes` have the same defaults and bounds as `exec_run`.
+- `target: "workspace"` is `exec_run` without privilege: same workspace,
+  limits, and result envelope plus `data.target`. `cwd` and `async: true` work
+  as on `exec_run`; async returns an `operationId` for `operation_wait`.
+- `target: "toolbox"` runs in a fresh no-network container with no checkout and
+  no secrets, then removes it. Pass no `workspaceId`, `cwd`, or `async`. It is
+  refused with `FORBIDDEN` unless the operator enabled packages. Use it for
+  checkout-independent work such as `node --version` or a quick calculation.
+- There is no `privileged` field. Use `exec_run` and its approval flow.
+- Prefer `exec_run` when you already use it; prefer `shell_*` or `sessions_*`
+  only when terminal state must persist between calls.
+
+<!-- cloudharness-example:bash
+{"target":"toolbox","command":"node --version && jq --version","timeoutMs":30000}
+-->
+
 ## Ephemeral interactive shell
 
 <!-- cloudharness-tool:shell_open -->
