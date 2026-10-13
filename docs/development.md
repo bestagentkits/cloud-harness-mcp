@@ -124,7 +124,8 @@ footer or `!` produces a major version. A successful push CI run on `dev`
 creates a `-beta.N` GitHub release; a successful push CI run on `main` creates
 the stable release. Pull-request runs never release. Only the branch tip is
 released: when a CI run finishes after a newer commit landed, its Release run
-skips with a notice and the newer commit's CI run releases both.
+skips with a notice, and the commit ships with the newer tip's release once
+that tip passes CI.
 
 The release workflow commits the generated [`CHANGELOG.md`](../CHANGELOG.md)
 and synchronized workspace/runtime versions, then tags that metadata-only
