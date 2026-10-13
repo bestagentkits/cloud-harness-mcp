@@ -183,6 +183,19 @@ describe('terminal mode of the operation manager', () => {
     expect(page.terminal.status).toBe('closed');
   });
 
+  it('releases a parked read as soon as its caller aborts', async () => {
+    const { manager, open } = setup();
+    const { terminalId } = await open();
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = manager.readTerminal(OWNER, WORKSPACE, terminalId, '0', 20_000, controller.signal);
+    setTimeout(() => controller.abort(), 20);
+    const page = await pending;
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(page).toMatchObject({ data: '', nextCursor: '0' });
+    await expect(manager.readTerminal(OWNER, WORKSPACE, terminalId, '0', 20_000, controller.signal)).resolves.toMatchObject({ data: '' });
+  });
+
   it('forwards input bytes unchanged and refuses input once the socket is backed up', async () => {
     const { manager, open, last } = setup();
     const { terminalId } = await open();

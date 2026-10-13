@@ -4158,7 +4158,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   async executeInternal(
     principal: PrincipalSelector,
     operation: InternalRunnerOperation,
-    input: Record<string, unknown>
+    input: Record<string, unknown>,
+    signal?: AbortSignal
   ): Promise<RunnerResponse> {
     const parsed = InternalRunnerRequestSchema.parse({ version: 2, principal, operation, input });
     const ownerId = this.store.resolvePrincipal(parsed.principal);
@@ -4254,7 +4255,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (parsed.operation === 'terminal_read') {
       const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
-      const page = await this.operations.readTerminal(ownerId, record.id, parsed.input.terminalId, parsed.input.cursor, parsed.input.waitMs);
+      const page = await this.operations.readTerminal(ownerId, record.id, parsed.input.terminalId, parsed.input.cursor, parsed.input.waitMs, signal);
       return { ok: true, message: 'Terminal output', data: page, truncated: false };
     }
     if (parsed.operation === 'terminal_input') {

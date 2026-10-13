@@ -19,7 +19,8 @@ export async function executeInternalRunnerOperation(
   service: WorkspaceService,
   request: unknown,
   controls?: DashboardControlService,
-  oauth?: OAuthSettingsOperations
+  oauth?: OAuthSettingsOperations,
+  signal?: AbortSignal
 ): Promise<InternalRunnerResponse> {
   const operation = request && typeof request === 'object' ? (request as { operation?: unknown }).operation : undefined;
   if (MetadataRunnerOperationSchema.safeParse(operation).success) {
@@ -35,5 +36,5 @@ export async function executeInternalRunnerOperation(
       : await oauth.settings.update(ownerId, parsed.input);
     return { ok: true, message: 'Inbound OAuth session settings', data, truncated: false };
   }
-  return await service.executeInternal(parsed.principal, parsed.operation, parsed.input);
+  return await service.executeInternal(parsed.principal, parsed.operation, parsed.input, signal);
 }

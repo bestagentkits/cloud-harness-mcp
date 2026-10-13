@@ -1219,24 +1219,25 @@ export class OperationManager {
     return this.terminalView(record);
   }
 
-  async readTerminal(ownerId: string, workspaceId: string, terminalId: string, cursor: string, waitMs: number): Promise<TerminalReadResult> {
+  async readTerminal(ownerId: string, workspaceId: string, terminalId: string, cursor: string, waitMs: number, signal?: AbortSignal): Promise<TerminalReadResult> {
     const record = this.requireTerminal(ownerId, workspaceId, terminalId);
     const requested = Number(cursor);
     if (!Number.isSafeInteger(requested) || requested < 0 || requested > record.output.end) {
       throw new HarnessError('INVALID_INPUT', 'invalid terminal cursor', 400, false);
     }
     this.touchTerminal(record);
-    if (waitMs > 0 && requested === record.output.end && record.status === 'running') {
+    // A parked read ends early when the caller goes away, so a closed browser tab never pins a waiter.
+    if (waitMs > 0 && requested === record.output.end && record.status === 'running' && !signal?.aborted) {
       await new Promise<void>((resolveWait) => {
-        const timer = setTimeout(() => {
-          record.waiters.delete(wake);
-          resolveWait();
-        }, waitMs);
         const wake = () => {
           clearTimeout(timer);
+          record.waiters.delete(wake);
+          signal?.removeEventListener('abort', wake);
           resolveWait();
         };
+        const timer = setTimeout(wake, waitMs);
         record.waiters.add(wake);
+        signal?.addEventListener('abort', wake, { once: true });
       });
     }
     const from = Math.max(requested, record.output.start);

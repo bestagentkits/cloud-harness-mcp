@@ -39,11 +39,16 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
     }
   });
   app.post('/v1/internal/dashboard-operations', serviceAuth(config.serviceToken), async (request: Request, response: Response) => {
+    const controller = new AbortController();
+    const cancelOnDisconnect = () => { if (!response.writableEnded) controller.abort(); };
+    response.once('close', cancelOnDisconnect);
     try {
-      const result = await executeInternalRunnerOperation(service, request.body, controls, oauth);
-      response.status(result.ok ? 200 : 400).json(result);
+      const result = await executeInternalRunnerOperation(service, request.body, controls, oauth, controller.signal);
+      if (!response.writableEnded && !controller.signal.aborted) response.status(result.ok ? 200 : 400).json(result);
     } catch (error) {
-      sendRunnerError(response, error);
+      if (!controller.signal.aborted) sendRunnerError(response, error);
+    } finally {
+      response.removeListener('close', cancelOnDisconnect);
     }
   });
   app.post('/v1/internal/api-keys', serviceAuth(config.serviceToken), (request: Request, response: Response) => {
