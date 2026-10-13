@@ -17,6 +17,10 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 - The API and Runner never publish host ports directly.
 - The API has no access to the Docker socket or host filesystem mounts.
 
+#### Public authentication: Cloudflare Access Managed OAuth
+
+On a `cloudflare-access` instance, such as the owner deployment at `https://harness.zuey.me/mcp`, Cloudflare Access with Managed OAuth is both the OAuth authorization server your AI client talks to and the public protection layer in front of Cloud Harness. GitHub and Google only sign you in to Access; Cloud Harness trusts the signed assertion Access forwards, never your client's token, and Access gains no Docker, runner, or workspace authority. The static API-key lane at `https://api.harness.zuey.me/mcp` is separate and not interchangeable. The sequence and verification details live in the [repository security model](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server); per-lane setup is on [Connecting MCP Clients](/connect).
+
 ### 2. Executor Confinement & Hardening
 
 - **Non-Root User:** Containers execute as UID 10001 (`harness`).

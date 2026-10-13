@@ -128,6 +128,65 @@ restart both control services. Review logs for exposure before resuming
 service; tokens must not appear in URLs, commands, documentation, or source
 control.
 
+### Inbound MCP OAuth: Cloudflare Access is the authorization server
+
+This is the canonical explanation of the Managed OAuth lane; other pages link
+here instead of restating it. In `cloudflare-access` mode, Cloudflare Zero
+Trust Access with Managed OAuth enabled is both the OAuth authorization server
+that MCP clients see and the public protection layer in front of the origin.
+The client-facing bearer and the origin-facing assertion are different
+credentials:
+
+```mermaid
+sequenceDiagram
+  participant C as MCP client
+  participant A as Cloudflare Access / Managed OAuth
+  participant I as GitHub or Google IdP
+  participant O as Cloud Harness origin
+
+  C->>A: MCP initialize without token
+  A-->>C: 401 + protected-resource metadata challenge
+  C->>A: OAuth discovery / registration / authorization
+  A->>I: Authenticate operator
+  I-->>A: Access identity
+  A-->>C: Opaque OAuth access + refresh tokens
+  C->>A: MCP request with opaque bearer
+  A->>O: Forward request + signed Cf-Access-Jwt-Assertion
+  O->>O: Verify signature, issuer, audience, expiry
+  O-->>A: MCP response
+  A-->>C: Principal-bound MCP response
+```
+
+1. An unauthenticated MCP request stops at Access, which answers with the
+   OAuth protected-resource challenge and discovery path.
+2. Discovery, dynamic client registration where enabled, browser
+   authorization, token issuance, refresh, and revocation all terminate at
+   Access. Cloud Harness does not issue or refresh client tokens.
+3. GitHub and Google authenticate the operator as Access identity providers.
+   Cloud Harness never treats either provider as its OAuth server.
+4. The client presents an opaque bearer to Access. Access validates it at the
+   edge and forwards a signed `Cf-Access-Jwt-Assertion`. The origin verifies
+   that assertion against the pinned issuer, audience, and JWKS
+   ([`access-jwt-verifier.ts`](../apps/api/src/access-jwt-verifier.ts)) and
+   derives the principal from it ([`auth.ts`](../apps/api/src/auth.ts)); it
+   never uses the opaque bearer as identity or validates it.
+5. Access is only the public authentication and admission edge. It does not
+   join the Compose control network and gains no API-to-runner, Docker,
+   workspace, or repository credential authority.
+6. The Managed OAuth endpoint and the static API-key endpoint described above
+   are separate, non-interchangeable lanes with independent trust boundaries.
+
+The repository owns the origin side: assertion verification, principal
+derivation, and the post-deploy canary in
+[`deploy-canary.mjs`](../scripts/deploy-canary.mjs), which calls MCP through
+Access with a service token; it proves the edge-to-origin assertion path, not
+the interactive Managed OAuth client flow. The Access application,
+its policies, IdPs, Managed OAuth settings, redirect allowlist, and revocation
+are operator-owned live Cloudflare configuration, set up through the
+[Cloudflare Access rollout](deployment.md#cloudflare-access-rollout). Token and
+session lifetimes are covered in
+[Inbound MCP OAuth session lifetimes](#inbound-mcp-oauth-session-lifetimes).
+
 ### Inbound MCP OAuth session lifetimes
 
 Three lifetimes govern a Managed OAuth client and must not be conflated:
