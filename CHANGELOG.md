@@ -1,3 +1,17 @@
+# [0.66.0-beta.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.1...v0.66.0-beta.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* **runner:** bound bash toolbox runs and remove their containers reliably ([edb0d58](https://github.com/bestagentkits/cloud-harness-mcp/commit/edb0d58f8bbbb312d8d4743d741753611165de9c))
+* **runner:** report unreadable toolbox state as unavailable and bound cancel waits ([17175e1](https://github.com/bestagentkits/cloud-harness-mcp/commit/17175e18807fc86b5f2e7cf0be1e8f29e35e4189))
+
+
+### Features
+
+* **runner:** add bash tool with workspace and managed toolbox targets ([46958a4](https://github.com/bestagentkits/cloud-harness-mcp/commit/46958a45c2b4b801ed1d7f5313268b66cb895956))
+* **runner:** bash MCP tool with workspace and managed toolbox targets ([#316](https://github.com/bestagentkits/cloud-harness-mcp/issues/316)) ([e940590](https://github.com/bestagentkits/cloud-harness-mcp/commit/e9405900a817fb736000244dc4dda9d7289c2f5c))
+
 # [0.66.0-beta.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.65.0...v0.66.0-beta.1) (2026-10-13)
 
 
