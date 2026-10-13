@@ -379,6 +379,10 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain('settings: loadSettings');
     expect(script).toContain('palettePageCommands()');
     for (const contract of ["api('/settings')", "api('/settings/network-check'", 'id="settings-network-profile"', 'id="settings-status"']) expect(script).toContain(contract);
+    for (const contract of [
+      "api('/settings/oauth')", "api('/settings/oauth', { method: 'POST'", 'id="settings-oauth-persistent"', 'id="settings-oauth-grant"',
+      'id="settings-oauth-token-minutes"', 'id="settings-oauth-status"', 'expectedRevision: view.revision'
+    ]) expect(script).toContain(contract);
   });
 
   it('offers only the contract network profiles and drops the retired networkMode markup', () => {

@@ -19,7 +19,8 @@ describe('internal runner API contract', () => {
   it('keeps dashboard-only operations outside the public MCP contract', () => {
     expect(InternalRunnerOperationSchema.options).toEqual([
       'workspace_detail', 'workspace_close_fenced', 'toolkits_list', 'toolkits_preview',
-      'settings_get', 'settings_update', 'settings_network_check'
+      'settings_get', 'settings_update', 'settings_network_check',
+      'oauth_settings_get', 'oauth_settings_update'
     ]);
     expect(RunnerOperationSchema.options).not.toContain('workspace_detail');
     expect(RunnerOperationSchema.options).not.toContain('workspace_close_fenced');
@@ -28,6 +29,8 @@ describe('internal runner API contract', () => {
     expect(RunnerOperationSchema.options).not.toContain('settings_get');
     expect(RunnerOperationSchema.options).not.toContain('settings_update');
     expect(RunnerOperationSchema.options).not.toContain('settings_network_check');
+    expect(RunnerOperationSchema.options).not.toContain('oauth_settings_get');
+    expect(RunnerOperationSchema.options).not.toContain('oauth_settings_update');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('workspace_detail');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('workspace_close_fenced');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('toolkits_list');
@@ -35,6 +38,8 @@ describe('internal runner API contract', () => {
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('settings_get');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('settings_update');
     expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('settings_network_check');
+    expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('oauth_settings_get');
+    expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain('oauth_settings_update');
     expect(() => RunnerRequestSchema.parse({ version: 2, principal, operation: 'workspace_detail', input: { workspaceId: `ws_${'a'.repeat(24)}` } })).toThrow();
   });
 

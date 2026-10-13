@@ -81,6 +81,39 @@ The secret-free route and proxy contract are owned by
 and
 [`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
 
+### Managed OAuth session settings
+
+The optional `CLOUDFLARE_ACCESS_*` API integration lets Dashboard Settings read
+and update the grant session duration and access-token lifetime of the Access
+application that protects `/mcp`. It is valid only in `cloudflare-access` mode
+and is configured on the runner alone:
+
+- `CLOUDFLARE_ACCESS_API_TOKEN_FILE` (preferred) or
+  `CLOUDFLARE_ACCESS_API_TOKEN`, a Cloudflare API token scoped to one account
+  with **Access: Apps and Policies Write**, or **Read** for read-only;
+- `CLOUDFLARE_ACCESS_ACCOUNT_ID` and `CLOUDFLARE_ACCESS_APP_ID`, identifying
+  that application;
+- `CLOUDFLARE_ACCESS_OAUTH_ACCESS`, `read-write` or `read-only`; and
+- `CLOUDFLARE_ACCESS_OAUTH_MAX_GRANT_SECONDS`, which overrides the provider
+  maximum offered as **Stay signed in** when a tenant accepts a different
+  ceiling. The built-in value is `CLOUDFLARE_DEFAULT_MAX_GRANT_SECONDS` in
+  [`apps/runner/src/cloudflare-access-oauth-provider.ts`](../apps/runner/src/cloudflare-access-oauth-provider.ts).
+
+Setting any of these without the token and both identifiers fails runner
+startup rather than silently hiding the Dashboard controls. Leaving all unset
+keeps the grant managed only in Cloudflare Zero Trust. Production Compose
+mounts `/etc/cloud-harness-mcp` read-only at `/run/cloud-harness-secrets` in
+the runner, so the maintained token path is
+`/run/cloud-harness-secrets/cloudflare-access-api-token`; the API service
+explicitly blanks both token variables inherited from the shared environment.
+Loading is owned by [`apps/runner/src/config.ts`](../apps/runner/src/config.ts),
+shapes and the mode rule by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts), and
+the Dashboard bounds by
+[`apps/runner/src/oauth-grant-settings-service.ts`](../apps/runner/src/oauth-grant-settings-service.ts).
+The safety boundary is in the
+[security model](security-model.md#inbound-mcp-oauth-session-lifetimes).
+
 Access principals are durable exact `(issuer, subject)` identities. Email and
 display name are never an authorization or account-link key. The first Access
 cutover can bind one legacy owner only through the complete explicit legacy
@@ -461,5 +494,6 @@ on an Internet-facing host.
 `HOST_ARTIFACT_ROOT` selects the host persistence path for `ARTIFACT_ROOT`, in
 the same way the existing job and state host overrides select their mounts.
 Keep the artifact mount, state database, runtime configuration, GitHub App
-key, and secret keyring in the coherent recovery set described in
+key, optional Cloudflare Access API token, and secret keyring in the coherent
+recovery set described in
 [`operations.md`](operations.md#backup-and-restore).

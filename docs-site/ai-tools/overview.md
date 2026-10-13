@@ -24,6 +24,12 @@ To connect a static-key client to the [MCP Gateway](/mcp-gateway) instead, use t
 
 ---
 
+## Staying Signed In (Managed OAuth)
+
+Managed OAuth clients sign in once in the browser and then refresh short-lived access tokens silently. They sign in again only when the OAuth grant expires. An operator sets that duration in **Dashboard → [Settings](/dashboard/settings#mcp-oauth-sessions) → MCP OAuth sessions**; **Stay signed in** uses the provider maximum. Static API key clients are unaffected: their key's own expiry applies. If a client keeps asking you to sign in, see [Troubleshooting](/troubleshooting#_6-frequent-mcp-sign-out-or-re-authentication-prompts-in-ai-tools).
+
+---
+
 ## Native Skills Support
 
 Clients that implement the MCP Skills extension (`io.modelcontextprotocol/skills`, protocol revision

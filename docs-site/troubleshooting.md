@@ -52,17 +52,14 @@ docker compose --profile images build executor-image
 ---
 
 ### 6. Frequent MCP Sign-out or Re-authentication Prompts in AI Tools
-**Cause:** When connecting via Managed OAuth (`https://harness.zuey.me/mcp`), client continuity depends on Cloudflare Access's **Grant session duration** (refresh token lifetime). When the grant expires, the client prompts for interactive browser re-authentication.
+**Cause:** A client on the Managed OAuth lane (`https://harness.zuey.me/mcp`) must sign in again in the browser when its OAuth grant (refresh session) expires. The short access-token lifetime is not the cause: tokens refresh silently while the grant is valid.
 
 **Fix:**
-1. **Adjust Managed OAuth Grant Session Duration (OAuth Clients):**
-   - Log into [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications**.
-   - Edit the MCP application → **Advanced settings** → **Managed OAuth**.
-   - Set **Grant session duration** to your preferred continuity interval (Cloudflare recommends 1–2 weeks for CLI/agent clients, or longer up to 1 month where supported by the tenant).
-   - Keep the **Access token lifetime** short (5–15 minutes, default 15 minutes) so silent refresh and policy re-evaluation continue normally.
-2. **Switch to Static API Key Gateway (Zero-Reauth for Coding Tools):**
+1. **Lengthen the grant:** open **Dashboard → [Settings](/dashboard/settings#mcp-oauth-sessions) → MCP OAuth sessions** and turn on **Stay signed in** (the provider maximum), or choose a longer duration. Keep the access-token lifetime short; a longer token does not reduce sign-ins.
+   - If the panel is read-only because no provider integration is configured, set **Grant session duration** in [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications** → the MCP application → **Advanced settings** → **Managed OAuth** instead.
+2. **Switch to the Static API Key Gateway (coding tools):**
    - For IDE/CLI coding agents (Claude Code, Cursor, Codex, etc.) that support static headers, generate an API key from the Dashboard at `https://harness.zuey.me/dashboard/api-keys` (configurable for 1 to 3,650 days, approximately 10 years).
-   - Configure the tool to connect directly to `https://api.harness.zuey.me/mcp` with `Authorization: Bearer <api-key>` to eliminate interactive OAuth prompts entirely.
+   - Configure the tool to connect directly to `https://api.harness.zuey.me/mcp` with `Authorization: Bearer <api-key>` to avoid OAuth sign-in prompts entirely.
 
 ---
 
@@ -169,7 +166,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 5. `package digest did not match the signed manifest`, `must contain exactly one <kitId> root directory`, or `outside the <kitId> root` — the downloaded artifact is not the published package. Retry once; if it persists, treat it as an upstream publish problem instead of mounting the content.
 6. `no published release for kit <kitId>` — that kit has no signed release on the requested channel yet. Try `channel: "beta"`, or pin a version that exists.
 
-### 15. Uploaded operator skills do not appear in `skills_list`
+### 16. Uploaded operator skills do not appear in `skills_list`
 **Cause:** The `built-in` tier is populated only when the runner is pointed at an operator-owned host directory, and only reads a strict layout.
 **Fix:**
 1. Set `BUILTIN_SKILLS_ROOT` to an absolute host directory in the runner environment (`/etc/cloud-harness-mcp/runtime.env` or `.env`) and restart the stack; with the variable unset the executor mounts nothing and the tier stays empty by design.
@@ -179,13 +176,13 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 5. Only changes to already-open workspaces need a reopen; a new workspace sees an updated upload immediately.
 6. `BUILTIN_SKILLS_ROOT` is reserved and is now the single name the worker reads. If the runner rejects a stored secret or environment record with that name (`INVALID_INPUT`), remove it with `secret_delete` (deletion of a reserved name stays allowed) and reopen. The removed `CH_BUILTIN_SKILLS_ROOT` override is no longer read: rename it to `BUILTIN_SKILLS_ROOT`. A container created before this change keeps its old environment until it is closed or rebuilt.
 
-### 16. `git_log` only shows one commit, or read-only GitHub calls prompt for approval every time
+### 17. `git_log` only shows one commit, or read-only GitHub calls prompt for approval every time
 **Cause:** `workspace_open` clones a single commit by default, so a fresh workspace's history is one commit deep until deepened. Separately, MCP client approval prompts key off tool-level annotations: `github_action` is annotated destructive as a whole tool because it also performs mutations, so a client can prompt even for a read action like `pr_list` since there is no per-action server approval gate.
 **Fix:**
 1. For history depth, pass `fetchDepth` (0 for full history, or a commit count) or `shallowSince` (an ISO date/datetime) to `workspace_open`, or call `git_fetch` afterward with `depth`, `unshallow`, or `shallowSince`.
 2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `pr_review_threads`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
 
-### 17. A skill is missing from `skills/list`, or `skills/get` returns `-32602`
+### 18. A skill is missing from `skills/list`, or `skills/get` returns `-32602`
 **Cause:** The [Skills over MCP](/agent-toolkits#skills-over-mcp-native-client-skills) extension serves `built-in` skills and your own enabled library skills, adds one workspace's `workspace` and `repository` skills only on that workspace's `/mcp/workspaces/<workspaceId>` endpoint, and omits any skill it cannot serve whole and verified.
 **Fix:**
 1. Confirm the client supports the `io.modelcontextprotocol/skills` extension and is connected to the HTTP `/mcp` endpoint. Local stdio mode and `/mcp-gateway` do not offer it; use `skills_list` / `skills_read` there.
@@ -196,7 +193,9 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 6. Two skills with the same name and different content in the same tier conflict, and neither is served; the same applies when one of them cannot be read. In the `repository` tier, `.agents/skills` outranks `.codex/skills`, which outranks `.claude/skills`, so only same-root duplicates conflict. A same name in different tiers is served at each tier-qualified URI. A repository skill root reached through a symbolic link (for example `.agents` linked elsewhere) is ignored.
 7. `-32603` asking you to re-run `skills/get` means a workspace or repository file changed after its manifest was computed; fetch the entry again and re-read. Any other `-32603` is a transient runner failure; retry. Clients may cache results for up to 30 seconds.
 
-### 18. MCP Gateway: `AUTHORIZATION_REQUIRED` or an OAuth connection error
+---
+
+### 19. MCP Gateway: `AUTHORIZATION_REQUIRED` or an OAuth connection error
 **Cause:** A downstream MCP server set to **Authenticate with OAuth** has no usable sign-in for you. This is Cloud Harness signing in **to** that server, not your AI client signing in to Cloud Harness (see items 5 and 6 for that). It happens before the first **Connect**, after **Disconnect**, after you change the server's endpoint or manual client, or when the provider refuses to renew the token. Gateway calls from your AI client never open a browser, so they report `AUTHORIZATION_REQUIRED`, and **Test** or **Refresh tools** report it as HTTP `409`.
 **Fix:**
 1. Open the server in [MCP Servers](/dashboard/mcp-servers) and select **Connect** or **Reauthorize** in the **OAuth** panel of the Overview tab, then retry the call.
@@ -208,7 +207,9 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 3. If **Connect** reports that MCP OAuth is unavailable, the operator must set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` (see the [environment variables reference](/reference/environment-variables)).
 4. If **Connect** fails before the provider's page opens, the provider may not support automatic client registration. Register a client with the provider and enter its **Client ID** (and a client-secret global secret, if it issued one) in the server form.
 
-### 19. A managed agent ends `FAILED` with `agent bootstrap failed ... repositoryContext "none"`
+---
+
+### 20. A managed agent ends `FAILED` with `agent bootstrap failed ... repositoryContext "none"`
 **Cause:** Before an `agent_spawn` agent's first turn, the runner reads the workspace's repository guidance (`AGENTS.md`, `CLAUDE.md`, `REVIEW.md`, `DESIGN.md`, client rule files) and places the applicable files ahead of the task. When that scan cannot complete (for example the executor is unavailable, or the workspace was closed or recreated meanwhile), the agent fails closed with an `UNAVAILABLE` reason instead of starting without guidance. No model lease or container was created for it.
 **Fix:**
 1. Check the workspace with `workspace_status`; recover or reopen it if it is not `ACTIVE`.
@@ -216,3 +217,25 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 3. If the agent does not need repository guidance, spawn with `repositoryContext: "none"` to send the task alone.
 
 If an agent started but followed the wrong files, read the `repository_context` event in `agent_logs`: it lists the injected and skipped paths with reasons (`not-targeted`, `overridden-by:...`, `duplicate-of:...`, `unreadable`, `client-configuration`, `context-budget`) and digests, never content. Choose the `repositoryContext` that matches the agent's guidance family, and compare with `workspace_context` for the same `clientProfile`, which applies the same selection. Rule files under `.claude/rules/` apply only to `claude`, and `.cursor/rules/` only to `cursor`. A `context-budget` skip means guidance and task exceeded a quarter of the agent's `maxInputTokens` (every model turn re-sends the first message); raise `maxInputTokens` or choose a narrower `repositoryContext`.
+
+---
+
+### 21. MCP OAuth sessions panel is read-only or shows a sync error
+**Cause:** Dashboard → Settings → **MCP OAuth sessions** reads and writes the grant through the operator's Cloudflare API integration. **Last provider sync** shows a reason code when that fails; nothing is changed by a failed save unless the reason is `write_unconfirmed` or `readback_mismatch`.
+
+**Fix:**
+
+| Reason or state | What to do |
+| :--- | :--- |
+| No provider integration is configured | The grant is managed in Cloudflare Zero Trust only. An operator can add the runner-only `CLOUDFLARE_ACCESS_*` variables from the [environment-variable reference](/reference/environment-variables). |
+| `provider_unreachable`, `provider_invalid_response` | Cloudflare could not be reached or answered unexpectedly. Wait, then use **Reload from provider**. |
+| `provider_permission_denied`, `provider_write_denied` | The API token lacks **Access: Apps and Policies** Read or Write on the account. Replace the token and restart the runner. |
+| `provider_application_not_found` | The configured account or Access application ID is wrong. |
+| `provider_rejected` | Cloudflare refused the update. Try a shorter duration, or review the application in Cloudflare Zero Trust. |
+| Configured read-only | Set `CLOUDFLARE_ACCESS_OAUTH_ACCESS=read-write` with a Write token to save here. |
+| `provider_unsupported_application` | The application uses SCIM or is not self-hosted, so Cloud Harness will not rewrite it. Change the grant in Cloudflare Zero Trust. |
+| `managed_oauth_disabled` | Turn on Managed OAuth for the application in Cloudflare Zero Trust. |
+| `revision_conflict` | Someone changed the OAuth settings in Cloudflare after the page loaded. Reload and review before saving. |
+| `write_unconfirmed` | The update timed out or failed on Cloudflare's side and may or may not have landed. Reload before retrying. |
+| `readback_mismatch` | Cloudflare accepted the update but did not confirm it. Reload to see the values actually in effect. |
+| **Set outside Cloud Harness** / **Changed outside Cloud Harness** | The value was customised in Cloudflare. Cloud Harness never overwrites it; choose **Adopt default** or save a value to manage it. |

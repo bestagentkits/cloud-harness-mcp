@@ -36,8 +36,9 @@ network required to retrieve the configured Cloudflare Access JWKS. JWKS
 fetching remains limited by the verifier's fixed URL, redirect rejection,
 timeouts, response bounds, and key-cache controls. The runner has no
 published port and is the only service with `/var/run/docker.sock`; it uses a
-separate egress network for DNS validation and optional GitHub App calls while
-the API/runner control network remains internal.
+separate egress network for DNS validation, optional GitHub App calls, and
+the optional Cloudflare Access API integration while the API/runner control
+network remains internal.
 The executor does not receive that socket, host credentials, or arbitrary host
 mounts. The exact container flags are owned by
 [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts);
@@ -126,6 +127,52 @@ longer forwards an accepted assertion. Rotate `RUNNER_TOKEN` independently and
 restart both control services. Review logs for exposure before resuming
 service; tokens must not appear in URLs, commands, documentation, or source
 control.
+
+### Inbound MCP OAuth session lifetimes
+
+Three lifetimes govern a Managed OAuth client and must not be conflated:
+
+- the **access-token lifetime** stays short, because every refresh re-checks
+  the Access policy; lengthening it delays revocation without reducing
+  sign-ins;
+- the **OAuth grant (refresh) session** decides how long a client stays signed
+  in without an interactive login; and
+- the **browser Access session** for the dashboard is a separate Access
+  setting that Cloud Harness does not read or change.
+
+Dashboard Settings can read and update the first two through an optional
+runner-only Cloudflare API token. That token is control-plane authority over
+the protected Access application, so it follows the GitHub App key boundary:
+the API blanks it, and the ingress, executors, logs, and Dashboard responses
+never receive it. [`scripts/verify-compose-boundaries.mjs`](../scripts/verify-compose-boundaries.mjs)
+enforces the Compose side. Scope the token to one account with
+**Access: Apps and Policies Write**, or **Read** for a read-only integration.
+Cloudflare offers only a full-application update, so a token that can change
+the grant can also change the application's policies and hostname coverage;
+treat its disclosure like a compromise of the Access edge and revoke it in
+Cloudflare.
+
+Writes fail closed. The adapter re-reads the application, refuses the save when
+its OAuth configuration changed since the operator loaded the page, changes
+only the two grant fields, keeps policies attached by reference, and reports
+success only after a matching read-back. SCIM-enabled and non-self-hosted
+applications are refused because their full state cannot be round-tripped. On
+startup the runner applies the provider maximum only to a new install whose
+grant duration has never been set explicitly; it never overwrites a customised
+grant or an explicit access-token lifetime outside the panel bounds, and offers
+**Adopt** in Settings instead. Provider writes from one runner are serialized,
+so the startup default cannot replace a concurrent Dashboard save. Dashboard
+saves are audited as `settings.oauth_grant.changed`; the startup default has no
+acting principal, so it is logged by the runner and shown in Settings as applied
+automatically at first start. A PUT that times out or fails server-side is
+reported as unconfirmed, never as unchanged. The owners are
+[`apps/runner/src/cloudflare-access-oauth-provider.ts`](../apps/runner/src/cloudflare-access-oauth-provider.ts)
+and
+[`apps/runner/src/oauth-grant-settings-service.ts`](../apps/runner/src/oauth-grant-settings-service.ts);
+the provider boundary and the deferred owned authorization server are recorded
+in [ADR 0002](adr/0002-inbound-oauth-grant-provider.md). The Cloudflare
+exchange is unit-tested against a fetch double, not verified against a live
+account.
 
 ## MCP gateway egress and credential resolution
 

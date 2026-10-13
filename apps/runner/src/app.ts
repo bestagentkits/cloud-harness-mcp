@@ -3,7 +3,7 @@ import pino from 'pino';
 import { ZodError } from 'zod';
 import { HarnessError, RunnerRequestSchema, type RunnerConfig } from '@cloud-harness/contracts';
 import { serviceAuth } from './security.js';
-import { executeInternalRunnerOperation } from './internal-runner-operations.js';
+import { executeInternalRunnerOperation, type OAuthSettingsOperations } from './internal-runner-operations.js';
 import { runnerRequestPrincipal } from './runner-request-principal.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { DashboardControlService } from './dashboard-control-service.js';
@@ -14,7 +14,7 @@ const logger = pino({ level: process.env.LOG_LEVEL ?? 'info', redact: ['req.head
 /** Holds the base64 form of an 8 MiB skills archive plus the operation envelope around it. */
 const DASHBOARD_OPERATION_BODY_LIMIT = '12mb';
 
-export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService): Express {
+export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService, oauth?: OAuthSettingsOperations): Express {
   const app = express();
   app.disable('x-powered-by');
   // A skills archive travels to the runner as base64 in this one route's envelope (up to ~10.7 MiB), so it
@@ -40,7 +40,7 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
   });
   app.post('/v1/internal/dashboard-operations', serviceAuth(config.serviceToken), async (request: Request, response: Response) => {
     try {
-      const result = await executeInternalRunnerOperation(service, request.body, controls);
+      const result = await executeInternalRunnerOperation(service, request.body, controls, oauth);
       response.status(result.ok ? 200 : 400).json(result);
     } catch (error) {
       sendRunnerError(response, error);

@@ -80,6 +80,11 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |
 | `GH_TOKEN` | `—` | Optional | Optional operator-wide GitHub fallback credential, read from GH_TOKEN (preferred) then GITHUB_TOKEN, each also accepting a _FILE form. Used only by the runner, only when no GitHub App repository token can be minted, and only in owner-bearer mode: an operator-wide credential must never authorize a different principal. In cloudflare-access mode, create a per-principal global runtime secret named GH_TOKEN or GITHUB_TOKEN in the dashboard instead. This credential authenticates harness-side GitHub operations only and is never placed in executor environments. To authenticate the bundled gh CLI inside a workspace, create a global runtime secret named GH_TOKEN or GITHUB_TOKEN. |
 | `GITHUB_TOKEN` | `—` | Optional | Optional configuration. |
+| `CLOUDFLARE_ACCESS_API_TOKEN_FILE` | `/run/cloud-harness-secrets/cloudflare-access-api-token` | Optional | Optional Cloudflare Access Managed OAuth integration (cloudflare-access mode only). Lets Dashboard -> Settings read and update the inbound MCP OAuth grant session duration and access-token lifetime of the Access application that protects /mcp. All three identifiers are required together. The API token is runner-only: scope it to "Access: Apps and Policies Write" (or Read with CLOUDFLARE_ACCESS_OAUTH_ACCESS=read-only) and prefer the _FILE form. Production host file: /etc/cloud-harness-mcp/cloudflare-access-api-token |
+| `CLOUDFLARE_ACCESS_ACCOUNT_ID` | `—` | Optional | Optional configuration. |
+| `CLOUDFLARE_ACCESS_APP_ID` | `—` | Optional | Optional configuration. |
+| `CLOUDFLARE_ACCESS_OAUTH_ACCESS` | `read-write` | Optional | read-write (default) or read-only. |
+| `CLOUDFLARE_ACCESS_OAUTH_MAX_GRANT_SECONDS` | `2592000` | Optional | Longest grant the provider accepts, in seconds. Defaults to 2592000 (30 days). |
 | `GITHUB_APP_PRIVATE_KEY_FILE` | `/run/cloud-harness-secrets/github-app-private-key.pem` | Optional | Production host file: /etc/cloud-harness-mcp/github-app-private-key.pem |
 | `SECRET_KEYRING_FILE` | `/run/cloud-harness-secrets/secret-keyring.json` | Optional | Versioned AES-256-GCM keyring JSON. Prefer the runner-only file form. |
 

@@ -23,7 +23,7 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 - **[Artifacts](/dashboard/artifacts):** Download and inspect workspace output files, build logs, and test results.
 - **[API Access](/dashboard/api-keys):** Create and revoke static gateway keys for IDE and local CLI tools.
 - **[Audit Logs](/dashboard/audit):** The durable security record, also reachable as the Audit filter inside the Activity Center.
-- **[Settings](/dashboard/settings):** Instance-wide defaults applied to newly opened workspaces.
+- **[Settings](/dashboard/settings):** Instance-wide defaults applied to newly opened workspaces, and how long MCP OAuth clients stay signed in.
 - **[Profile & Preferences](/dashboard/profile):** View signed-in identity details, edit the display name shown in the top-bar chip, and switch the theme with the icon control in the top bar, which cycles System, Light, and Dark and persists server-side. Profile has no rail entry: the top-bar chip and the command palette are its entry points.
 
 ## Search and Version

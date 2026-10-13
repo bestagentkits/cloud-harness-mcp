@@ -31,7 +31,7 @@ Cloud Harness MCP provides two distinct connection lanes over **Streamable HTTP 
 | **Authentication** | Cloudflare Access OAuth | Dashboard-managed API Key |
 | **Header** | Access JWT Cookie / Bearer | `Authorization: Bearer <api-key>` |
 | **Target Clients** | ChatGPT, Web App Connectors | Cursor, Claude Code, Codex, Antigravity |
-| **Key Expiry** | Session bound | 1–3,650 days (configurable, approximately 10 years) |
+| **Key Expiry** | OAuth grant duration ([Settings](/dashboard/settings#mcp-oauth-sessions)) | 1–3,650 days (configurable, approximately 10 years) |
 | **Max Keys per Identity** | N/A | 10 active keys |
 
 ### Workspace-bound endpoint

@@ -15,6 +15,8 @@ import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
 import { DockerAgentGatewayControl } from './agent-gateway-control.js';
 import { ModelProfileStateRepository } from './model-profile-state-repository.js';
+import { CloudflareAccessOAuthProvider } from './cloudflare-access-oauth-provider.js';
+import { OAuthGrantSettingsService } from './oauth-grant-settings-service.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const loaded = loadRunnerConfigWithReadiness();
@@ -52,8 +54,22 @@ const controls = new DashboardControlService(config, store, metadata, artifacts,
 // A job row outlives the process that wrote it, so startup is where an import interrupted by a restart is
 // turned into a terminal state rather than left as a spinner that never ends.
 controls.reconcileInterruptedImports();
+const oauthGrantSettings = new OAuthGrantSettingsService(
+  store,
+  config.cloudflareAccessOAuth ? new CloudflareAccessOAuthProvider(config.cloudflareAccessOAuth) : undefined,
+  (ownerId, action, details) => metadata.recordAudit(ownerId, action, 'instance', 'oauth_grant_settings', 1, details)
+);
 await service.start();
-const server = createServer(createRunnerApp(config, service, controls, apiKeys));
+// New installs default to the provider-maximum grant. This never blocks startup and
+// never overwrites a value an operator set explicitly; failures surface in Settings.
+void oauthGrantSettings.reconcileDefault().then(
+  (outcome) => logger.info({ outcome }, 'inbound OAuth grant default reconciled'),
+  () => logger.warn({ outcome: 'failed' }, 'inbound OAuth grant default reconcile failed')
+);
+const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
+  settings: oauthGrantSettings,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal)
+}));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {

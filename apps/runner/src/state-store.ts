@@ -358,6 +358,12 @@ function normalizeSkillTags(tags: string[]): string {
   return JSON.stringify([...new Set(normalized)]);
 }
 
+export type OAuthGrantChangeSource = 'dashboard' | 'startup-default';
+export type OAuthGrantSettingsRecord = {
+  desired?: { grantMode: 'provider-maximum' | 'custom'; grantSeconds: number; tokenLifetimeSeconds: number; managedAt: number; managedBy: OAuthGrantChangeSource } | undefined;
+  lastSync?: { at: number; ok: boolean; errorCode: string | null } | undefined;
+};
+
 export class StateStore {
   readonly database: DatabaseSync;
   readonly knowledge: KnowledgeStore;
@@ -444,6 +450,17 @@ export class StateStore {
         id INTEGER PRIMARY KEY CHECK(id = 1),
         default_network_profile TEXT CHECK(default_network_profile IN ('network-none','dependency-access')),
         updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS oauth_grant_settings (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        desired_grant_mode TEXT CHECK(desired_grant_mode IN ('provider-maximum','custom')),
+        desired_grant_seconds INTEGER,
+        desired_token_lifetime_seconds INTEGER,
+        managed_at INTEGER,
+        managed_by TEXT CHECK(managed_by IN ('dashboard','startup-default')),
+        last_sync_at INTEGER,
+        last_sync_ok INTEGER,
+        last_sync_error TEXT
       );
       CREATE TABLE IF NOT EXISTS git_identities (owner_id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS comment_idempotency (owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, fingerprint TEXT, result_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(owner_id, idempotency_key));
@@ -916,6 +933,44 @@ export class StateStore {
     this.database.prepare(`INSERT INTO instance_settings(id, default_network_profile, updated_at) VALUES (1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET default_network_profile = excluded.default_network_profile, updated_at = excluded.updated_at`)
       .run(value, updatedAt);
+  }
+
+  /**
+   * The inbound OAuth grant values Cloud Harness last applied and confirmed on
+   * provider read-back, plus the outcome of the latest provider sync. No row, or
+   * a row with no desired mode, means the provider value is unmanaged.
+   */
+  getOAuthGrantSettings(): OAuthGrantSettingsRecord {
+    const row = this.database.prepare('SELECT * FROM oauth_grant_settings WHERE id = 1').get() as {
+      desired_grant_mode: string | null; desired_grant_seconds: number | null; desired_token_lifetime_seconds: number | null;
+      managed_at: number | null; managed_by: string | null; last_sync_at: number | null; last_sync_ok: number | null; last_sync_error: string | null;
+    } | undefined;
+    const stored = row?.desired_grant_mode;
+    const mode: 'provider-maximum' | 'custom' | undefined = stored === 'provider-maximum' ? 'provider-maximum' : stored === 'custom' ? 'custom' : undefined;
+    const desired = mode && row?.desired_grant_seconds != null && row.desired_token_lifetime_seconds != null
+      ? { grantMode: mode, grantSeconds: Number(row.desired_grant_seconds), tokenLifetimeSeconds: Number(row.desired_token_lifetime_seconds), managedAt: Number(row.managed_at ?? 0), managedBy: row.managed_by === 'startup-default' ? 'startup-default' as const : 'dashboard' as const }
+      : undefined;
+    const lastSync = row?.last_sync_at != null
+      ? { at: Number(row.last_sync_at), ok: row.last_sync_ok === 1, errorCode: row.last_sync_error ?? null }
+      : undefined;
+    return { desired, lastSync };
+  }
+
+  /** Record values confirmed by provider read-back together with the successful sync. */
+  setOAuthGrantDesired(desired: { grantMode: 'provider-maximum' | 'custom'; grantSeconds: number; tokenLifetimeSeconds: number; managedBy: OAuthGrantChangeSource }, at: number = Date.now()): void {
+    this.database.prepare(`INSERT INTO oauth_grant_settings(id, desired_grant_mode, desired_grant_seconds, desired_token_lifetime_seconds, managed_at, managed_by, last_sync_at, last_sync_ok, last_sync_error)
+      VALUES (1, ?, ?, ?, ?, ?, ?, 1, NULL)
+      ON CONFLICT(id) DO UPDATE SET desired_grant_mode = excluded.desired_grant_mode, desired_grant_seconds = excluded.desired_grant_seconds,
+        desired_token_lifetime_seconds = excluded.desired_token_lifetime_seconds, managed_at = excluded.managed_at, managed_by = excluded.managed_by,
+        last_sync_at = excluded.last_sync_at, last_sync_ok = 1, last_sync_error = NULL`)
+      .run(desired.grantMode, desired.grantSeconds, desired.tokenLifetimeSeconds, at, desired.managedBy, at);
+  }
+
+  /** Record a provider sync outcome without touching the managed values. */
+  recordOAuthGrantSync(ok: boolean, errorCode: string | null, at: number = Date.now()): void {
+    this.database.prepare(`INSERT INTO oauth_grant_settings(id, last_sync_at, last_sync_ok, last_sync_error) VALUES (1, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET last_sync_at = excluded.last_sync_at, last_sync_ok = excluded.last_sync_ok, last_sync_error = excluded.last_sync_error`)
+      .run(at, ok ? 1 : 0, ok ? null : errorCode);
   }
 
   setGitIdentity(ownerId: string, identity: { name: string; email: string }): void {

@@ -80,6 +80,12 @@ beforeEach(async () => {
         } } };
       }
       if (operation === 'settings_network_check') return { ok: true, message: 'Dependency egress readiness', truncated: false, data: { ready: true, reason: null } };
+      if (operation === 'oauth_settings_get' || operation === 'oauth_settings_update') {
+        if ((input.grant as { seconds?: number } | undefined)?.seconds === 86_400) {
+          return { ok: false, message: 'conflict', truncated: false, error: { code: 'CONFLICT', message: 'The Cloudflare OAuth configuration changed since this page loaded. Reload to see the current values.', retryable: false } };
+        }
+        return { ok: true, message: 'Inbound OAuth session settings', truncated: false, data: { provider: { id: 'cloudflare-access', label: 'Cloudflare Access Managed OAuth' }, revision: 'b'.repeat(64) } };
+      }
       return { ok: true, message: 'detail', truncated: false, data: {
         workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', networkProfile: 'network-none', generation: 7,
         createdAt: '2026-08-17T00:00:00.000Z', lastActivityAt: '2026-08-17T00:01:00.000Z', expiresAt: '2026-08-17T00:10:00.000Z'
@@ -681,6 +687,41 @@ describe('dashboard BFF', () => {
     expect(checked.status).toBe(200);
     expect(calls.at(-1)).toEqual({ operation: 'settings_network_check', input: {}, principal });
     expect(checked.json.data).toEqual({ ready: true, reason: null });
+  });
+
+  it('proxies inbound OAuth session settings with CSRF and passes provider messages through', async () => {
+    const read = await send('/api/v1/settings/oauth');
+    expect(read.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'oauth_settings_get', input: {}, principal });
+    expect(read.json.data.provider.id).toBe('cloudflare-access');
+
+    const body = { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900, expectedRevision: 'b'.repeat(64) };
+    const unauthenticated = await send('/api/v1/settings/oauth', { method: 'POST', headers: { origin: 'https://dashboard.example', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect(unauthenticated.status).toBe(401);
+    expect(calls.some((call) => call.operation === 'oauth_settings_update')).toBe(false);
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const saved = await send('/api/v1/settings/oauth', { method: 'POST', headers, body: JSON.stringify(body) });
+    expect(saved.status).toBe(200);
+    expect(calls.at(-1)).toEqual({ operation: 'oauth_settings_update', input: body, principal });
+
+    const conflict = await send('/api/v1/settings/oauth', { method: 'POST', headers, body: JSON.stringify({ ...body, grant: { mode: 'custom', seconds: 86_400 } }) });
+    expect(conflict.status).toBe(409);
+    expect(conflict.json.message).toMatch(/changed since this page loaded/);
+
+    const before = calls.length;
+    for (const invalid of [
+      { ...body, grant: { mode: 'forever' } },
+      { ...body, tokenLifetimeSeconds: 10 },
+      { ...body, apiToken: 'leak' },
+      { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900 }
+    ]) {
+      const rejected = await send('/api/v1/settings/oauth', { method: 'POST', headers, body: JSON.stringify(invalid) });
+      expect(rejected.status, JSON.stringify(invalid)).toBe(400);
+    }
+    expect(calls.length).toBe(before);
   });
 
   it('rejects an unsupported or unknown default network profile without calling the runner', async () => {

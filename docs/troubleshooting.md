@@ -22,7 +22,7 @@ URLs, or raw command content into tickets or shared logs.
 | `401` with `WWW-Authenticate: Bearer` in owner-bearer mode | The MCP bearer is missing or differs from `MCP_BEARER_TOKEN`. Check that the client names an exported local variable, then restart it after changing the value. |
 | MCP `401` in Access mode | The public request did not arrive with a valid Access assertion for the configured issuer/audience, or the Access OAuth credential is expired/revoked. Check the Access application, policy, discovery flow, and sanitized edge logs; do not add an origin bearer bypass. |
 | OAuth DCR error: `redirect_uri is not allowed by the account configuration` | Claude Desktop, Codex App, ChatGPT Web, or another OAuth MCP client failed during Dynamic Client Registration. Cloudflare Access Managed OAuth requires whitelisting allowed callback URLs in the Access Application. In Cloudflare Zero Trust, edit the application for the MCP hostname, go to **Advanced settings → Managed OAuth → Allowed redirect URIs**, and add the target client callback URLs: for Claude Desktop, add `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback`; for Codex App and loopback clients, pin `mcp_oauth_callback_port = 3118` in `~/.codex/config.toml` and add `http://127.0.0.1:3118/callback/*`, `http://127.0.0.1:3118/*`, `http://localhost:3118/callback/*`, and `http://localhost:3118/*`; for ChatGPT Web, add `https://chatgpt.com/connector/oauth/*`, `https://chatgpt.com/connector_platform_oauth_redirect`, and `https://chatgpt.com/api/aip/p/oauth/callback`. |
-| Frequent MCP sign-out or re-authentication prompts in AI tools | AI clients connecting via Managed OAuth (`https://harness.zuey.me/mcp`) require interactive browser re-authentication when their OAuth grant expires. In Cloudflare Zero Trust, edit the MCP application → **Advanced settings → Managed OAuth → Grant session duration** and set it to the desired continuity window (e.g. 1–2 weeks or 1 month); do not lengthen the short access-token lifetime. For AI coding clients (Claude Code, Cursor, Codex, etc.) that support static headers, switch to the dedicated API-key gateway `https://api.harness.zuey.me/mcp` with an API key generated from `/dashboard/api-keys` (valid for 1–3,650 days, approximately 10 years) for zero interactive re-authentication during normal operation. |
+| Frequent MCP sign-out or re-authentication prompts in AI tools | Managed OAuth clients (`https://harness.zuey.me/mcp`) sign in again when their OAuth grant expires. Lengthen the grant in **Dashboard → Settings → MCP OAuth sessions** (or, without the [Cloudflare API integration](configuration.md#managed-oauth-session-settings), under **Advanced settings → Managed OAuth** in Cloudflare Zero Trust); keep the access-token lifetime short, because a longer token does not reduce sign-ins. Static-header clients (Claude Code, Cursor, Codex, etc.) can use the API-key gateway `https://api.harness.zuey.me/mcp` with a key from `/dashboard/api-keys` instead. |
 | Client cannot connect with static token or header | The client is configured with a static Bearer token/env var but pointed to the OAuth endpoint `https://harness.zuey.me/mcp`. Static-header clients must point to the dedicated API key gateway `https://api.harness.zuey.me/mcp` and use a managed API key generated from `/dashboard/api-keys`. |
 | API-key gateway returns JSON `401 authentication_failed` | The Worker reached the origin, but the path-scoped Access assertion did not match the configured audience/subject or the managed key was malformed, unknown, expired, or revoked. Check the distinct Access application, exact pinned service subject, feature configuration, and dashboard metadata without printing the key. All invalid key classes intentionally share this response. |
 | API-key client receives `text/html` or an Access login page | The client is using the OAuth hostname/path, Cloudflare selected an interactive policy for `/mcp-api-key`, or the Worker is not bound to the requested hostname. Static clients must use `https://api.harness.zuey.me/mcp`; the hidden path must have a separate Service Auth-only Access application. Do not add browser cookies, bypass Access, or point the client at the hidden route. |
@@ -57,6 +57,29 @@ The request policy is owned by
 [`apps/api/src/auth.ts`](../apps/api/src/auth.ts). Worker error and header
 behavior is owned by
 [`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
+
+### MCP OAuth sessions panel
+
+The panel's **Last provider sync** shows a reason code when a read or save
+fails; the operator message for each code is owned by `PROVIDER_ERRORS` in
+[`apps/runner/src/cloudflare-access-oauth-provider.ts`](../apps/runner/src/cloudflare-access-oauth-provider.ts).
+Do not paste the Cloudflare API token or provider responses into tickets.
+
+| Reason or panel state | Next check |
+|---|---|
+| Panel says no provider integration is configured | The runner has no `CLOUDFLARE_ACCESS_*` integration; the grant is managed only in Cloudflare Zero Trust. Configure it per [configuration](configuration.md#managed-oauth-session-settings) if Dashboard control is wanted. |
+| Runner fails to start after adding `CLOUDFLARE_ACCESS_*` | The integration is partial, malformed, or set in `owner-bearer` mode. Supply the token and both identifiers together in `cloudflare-access` mode. |
+| `provider_unreachable` or `provider_invalid_response` | Nothing was changed. Check runner egress to `api.cloudflare.com` and Cloudflare status, then use **Reload from provider**. |
+| `provider_permission_denied` or `provider_write_denied` | The token lacks **Access: Apps and Policies** Read or Write on that account. Replace the token file and restart the runner. |
+| `provider_application_not_found` | `CLOUDFLARE_ACCESS_ACCOUNT_ID` or `CLOUDFLARE_ACCESS_APP_ID` does not name the `/mcp` application. |
+| `provider_rejected` | Cloudflare refused the update; nothing was changed. If the duration is the cause, choose a shorter grant or lower `CLOUDFLARE_ACCESS_OAUTH_MAX_GRANT_SECONDS`; otherwise review the application in Cloudflare Zero Trust, because the update re-sends the whole application. |
+| Panel is read-only: configured read-only | `CLOUDFLARE_ACCESS_OAUTH_ACCESS=read-only`. Switch to `read-write` with a Write token to save from the Dashboard. |
+| `provider_unsupported_application` | The application uses SCIM provisioning or is not self-hosted, so Cloud Harness refuses to rewrite it. Change the grant in Cloudflare Zero Trust. |
+| `managed_oauth_disabled` | Managed OAuth is off for the application. Turn it on in Cloudflare Zero Trust first. |
+| `revision_conflict` | The OAuth configuration changed in Cloudflare after the page loaded. Reload and review before saving again. |
+| `write_unconfirmed` | The update timed out or Cloudflare answered with a server error, so it may or may not have landed. Reload before retrying. |
+| `readback_mismatch` | Cloudflare accepted the update but did not confirm the values; the change may or may not be in effect. Reload to see the effective values before retrying. |
+| Management shows **Set outside Cloud Harness** or **Changed outside Cloud Harness** | The grant was customised in Cloudflare, or changed after the last Dashboard save (including after a release rollback). The runner never overwrites it; choose **Adopt** or save a value to manage it. |
 
 ## Downstream MCP OAuth
 

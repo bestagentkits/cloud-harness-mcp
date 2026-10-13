@@ -42,10 +42,13 @@ frontend and runner-control paths remain internal. The proxy
 cannot join the API/runner control network. The runner owns principal
 resolution, workspace lifecycle, SQLite metadata, repository materialization,
 retained artifact snapshots, secret encryption, GitHub App authorization,
-Docker policy, and cleanup. Only the runner receives the Docker socket,
+optional management of the inbound Managed OAuth grant
+([ADR 0002](adr/0002-inbound-oauth-grant-provider.md)), Docker policy, and
+cleanup. Only the runner receives the Docker socket,
 job/state/artifact mounts, and key files. The API and runner
 share an internal control network; the trusted runner also has a separate
-egress network for repository DNS validation and optional GitHub App calls.
+egress network for repository DNS validation, optional GitHub App calls, and
+optional Cloudflare Access API calls.
 
 The extra byte-proxy hop is required because Docker does not activate a host
 port mapping for a service attached only to an `internal` network on the target
