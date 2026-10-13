@@ -23,7 +23,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `CLOUDFLARE_ACCESS_ISSUER` | `https://your-team.cloudflareaccess.com` | Optional | Optional configuration. |
 | `CLOUDFLARE_ACCESS_AUDIENCE` | `—` | Optional | Optional configuration. |
 | `CLOUDFLARE_ACCESS_JWKS_URL` | `https://your-team.cloudflareaccess.com/cdn-cgi/access/certs` | Optional | Optional configuration. |
-| `API_KEY_AUTH_ENABLED` | `false` | Optional | Optional managed API-key lane. Enable all four together only in cloudflare-access mode. The gateway audience belongs to a separate Access application scoped exactly to /mcp-api-key. |
+| `API_KEY_AUTH_ENABLED` | `false` | Optional | Optional managed API-key lane. Enable all four together only in cloudflare-access mode. The gateway audience belongs to a separate Access application scoped to the /mcp-api-key path (its /mcp-api-key/gateway subpath included). |
 | `API_KEY_GATEWAY_ACCESS_AUDIENCE` | `—` | Optional | Optional configuration. |
 | `API_KEY_GATEWAY_SERVICE_SUBJECT` | `cf-service:base64url-cloudflare-service-token-client-id` | Optional | Optional configuration. |
 | `API_KEY_GATEWAY_PUBLIC_URL` | `https://api.harness.zuey.me/mcp` | Optional | Optional configuration. |

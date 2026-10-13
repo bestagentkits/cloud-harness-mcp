@@ -79,8 +79,8 @@ This command reads the configured `API_PUBLIC_HOSTS` allowlist without sourcing
 the runtime file, selects the unique matching TLS server block, and refuses
 ambiguous or pre-existing nonstandard application routing. It backs up the live
 site under `/etc/cloud-harness-mcp/nginx-backups/`, installs the two
-`/dashboard` locations, the exact streaming `/mcp-gateway` and
-`/mcp-api-key` locations, and the streaming `^~ /mcp/workspaces/` prefix
+`/dashboard` locations, the exact streaming `/mcp-gateway`, `/mcp-api-key`, and
+`/mcp-api-key/gateway` locations, and the streaming `^~ /mcp/workspaces/` prefix
 location for the workspace-bound MCP endpoint when they are missing, validates
 with `nginx -t`, and reloads nginx. Existing routes
 must match the managed blocks exactly after comments and blank lines are
@@ -91,7 +91,9 @@ Exit status `9` means the server block already routes something under `/mcp/`
 (a location or a `proxy_pass` to `127.0.0.1:3100/mcp/`) that is not the managed
 workspace-bound block; reconcile it with
 [`deploy/nginx/cloud-harness-mcp.conf`](../deploy/nginx/cloud-harness-mcp.conf)
-by hand, then rerun the command. A
+by hand, then rerun the command. Exit status `10` is the same refusal for an
+unmanaged route to `127.0.0.1:3100/mcp-api-key/` that is not the managed
+`/mcp-api-key/gateway` block. A
 failed validation or reload restores the exact backup and attempts to reload
 it. The operation is idempotent. Do not use bootstrap for this upgrade.
 
@@ -260,9 +262,10 @@ issuer, hidden bearer path, or unprotected hostname as a compatibility fix.
 ### API-key gateway rollout
 
 Add the static-client lane only after the existing OAuth and dashboard lane is
-healthy. Create a second Self-hosted Access application scoped exactly to
+healthy. Create a second Self-hosted Access application scoped to the path
 `harness.zuey.me/mcp-api-key`, with an audience distinct from the hostname-wide
-application. Its only Allow policy is **Service Auth** for one dedicated Worker
+application. Access path applications also cover subpaths, so this one
+application protects the hidden gateway route `/mcp-api-key/gateway` too. Its only Allow policy is **Service Auth** for one dedicated Worker
 service token. Do not add users, groups, bypass rules, or that service token to
 the main `/mcp` and `/dashboard` application.
 
@@ -289,13 +292,24 @@ dashboard login, and CSRF behavior before enabling the hidden route and Worker.
 Then create a disposable short-lived key in the dashboard and canary:
 
 1. initialize, list tools, and make one bounded call through
-   `https://api.harness.zuey.me/mcp`;
-2. reject the same key on `https://harness.zuey.me/mcp` and reject direct calls
-   to `/mcp-api-key` without the exact Worker assertion;
+   `https://api.harness.zuey.me/mcp`, and list the five meta-tools through
+   `https://api.harness.zuey.me/mcp-gateway`;
+2. reject the same key on `https://harness.zuey.me/mcp` and
+   `https://harness.zuey.me/mcp-gateway`, and reject direct calls to
+   `/mcp-api-key` and `/mcp-api-key/gateway` without the exact Worker assertion;
 3. revoke the key and prove the next gateway request returns JSON `401`; and
 4. confirm the production Worker version contains the expected rate-limit
    binding and the sanitized preproduction `429`/fail-closed receipt; and
 5. re-run Managed OAuth discovery/initialize and both IdP dashboard logins.
+
+The Worker forwards only the fixed path table in
+[`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
+When that table gains a path, deploy the origin release and its nginx route
+(`cloud-harness-upgrade-nginx`) first, confirm the hidden route answers, and
+only then redeploy the Worker with `wrangler deploy` from
+`apps/api-key-gateway`. A Worker that forwards to a route the origin does not
+serve yet returns an nginx or origin `404`. The Access application needs no
+change for routes under `/mcp-api-key/`.
 
 Record the exact release SHA, Access application identifiers/audiences, Worker
 deployment, hostnames, and sanitized results separately. Never record either

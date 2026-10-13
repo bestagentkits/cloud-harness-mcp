@@ -43,6 +43,19 @@ const apiKeyRoute = `
         proxy_read_timeout 3600s;
         add_header X-Accel-Buffering no always;
     }`;
+const apiKeyGatewayRoute = `
+    location = /mcp-api-key/gateway {
+        proxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        add_header X-Accel-Buffering no always;
+    }`;
 const gatewayRoute = `
     location = /mcp-gateway {
         proxy_pass http://127.0.0.1:3100/mcp-gateway;
@@ -120,6 +133,7 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     expect(readFileSync(fixture.site, 'utf8')).toContain(apiKeyRoute);
     expect(readFileSync(fixture.site, 'utf8')).toContain(gatewayRoute);
     expect(readFileSync(fixture.site, 'utf8')).toContain(workspaceRoute);
+    expect(readFileSync(fixture.site, 'utf8')).toContain(apiKeyGatewayRoute);
     expect(backups(fixture.root)).toHaveLength(1);
 
     const second = runUpgrade(fixture.root);
@@ -158,6 +172,64 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     expect(second.status).toBe(0);
     expect(second.stdout).toContain('already installed');
     expect(backups(fixture.root)).toHaveLength(1);
+  });
+
+  it('adds only the missing API-key gateway route to an install that has every other route', () => {
+    const fixture = createFixture(`${dashboardRoutes}\n${apiKeyRoute}\n${gatewayRoute}\n${workspaceRoute}`);
+    const first = runUpgrade(fixture.root);
+    expect(first.status, first.stderr).toBe(0);
+    const installed = readFileSync(fixture.site, 'utf8');
+    expect(installed).toContain(apiKeyGatewayRoute);
+    expect((installed.match(/location = \/mcp-api-key\/gateway \{/g) ?? [])).toHaveLength(1);
+    expect((installed.match(/location = \/mcp-api-key \{/g) ?? [])).toHaveLength(1);
+    expect((installed.match(/location = \/mcp-gateway \{/g) ?? [])).toHaveLength(1);
+
+    const second = runUpgrade(fixture.root);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('already installed');
+    expect(backups(fixture.root)).toHaveLength(1);
+  });
+
+  it('rejects an unmanaged API-key gateway route without touching the site', () => {
+    const malformed = `${dashboardRoutes}\n${apiKeyRoute}
+    location = /mcp-api-key/gateway {
+        proxy_pass http://127.0.0.1:9999/mcp-api-key/gateway;
+        proxy_http_version 1.1;
+    }`;
+    const fixture = createFixture(malformed);
+    const result = runUpgrade(fixture.root);
+    expect(result.status, result.stderr).toBe(10);
+    expect(result.stderr).toContain('not the managed shape');
+    expect(readFileSync(fixture.site, 'utf8')).toBe(fixture.source);
+    expect(backups(fixture.root)).toHaveLength(0);
+  });
+
+  it('adds the missing API-key route next to an installed API-key gateway route', () => {
+    const fixture = createFixture(`${dashboardRoutes}\n${apiKeyGatewayRoute}\n${gatewayRoute}\n${workspaceRoute}`);
+    const first = runUpgrade(fixture.root);
+    expect(first.status, first.stderr).toBe(0);
+    const installed = readFileSync(fixture.site, 'utf8');
+    expect(installed).toContain(apiKeyRoute);
+    expect((installed.match(/location = \/mcp-api-key \{/g) ?? [])).toHaveLength(1);
+    expect((installed.match(/location = \/mcp-api-key\/gateway \{/g) ?? [])).toHaveLength(1);
+  });
+
+  it.each([
+    ['an unmanaged API-key upstream variant', `
+    location /legacy-key {
+        proxy_pass http://127.0.0.1:3100/mcp-api-key$request_uri;
+    }`, 7],
+    ['an unmanaged upstream under the API-key prefix', `${apiKeyRoute}
+    location /legacy {
+        proxy_pass http://127.0.0.1:3100/mcp-api-key/;
+    }`, 10]
+  ])('refuses %s without touching the site', (_name, routes, status) => {
+    const fixture = createFixture(`${dashboardRoutes}\n${routes}`);
+    const result = runUpgrade(fixture.root);
+    expect(result.status, result.stderr).toBe(status);
+    expect(result.stderr).toContain('not the managed shape');
+    expect(readFileSync(fixture.site, 'utf8')).toBe(fixture.source);
+    expect(backups(fixture.root)).toHaveLength(0);
   });
 
   it('rejects an unmanaged workspace MCP route without touching the site', () => {

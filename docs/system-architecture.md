@@ -12,11 +12,13 @@ MCP client
   -> ephemeral clone/Git transfer helpers and one executor for the workspace
 
 Static-header MCP client
-  -> api.harness.zuey.me/mcp (fixed Cloudflare Worker)
+  -> api.harness.zuey.me/mcp or /mcp-gateway (fixed Cloudflare Worker)
   -> path-scoped Cloudflare Access application (Worker Service Auth only)
-  -> harness.zuey.me/mcp-api-key (exact hidden origin route)
+  -> harness.zuey.me/mcp-api-key or /mcp-api-key/gateway (exact hidden origin
+     routes)
   -> API (verified gateway subject AND principal-bound API key)
-  -> the same runner and execution path above
+  -> the same runner and execution path above, or the MCP gateway composition
+     root below scoped to the key's principal
 
 MCP gateway client
   -> harness.zuey.me/mcp-gateway (same owner bearer or verified Access assertion)
@@ -178,7 +180,8 @@ outside that contract.
 Cloud Harness MCP provides a portable coding context plane across agent clients without elevating repository text or scripts to trusted policy:
 
 1. **Passive Context Scanner:**
-   `worker/harness-worker.mjs` executes bounded passive discovery of allowlisted instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and test declarations. The scanner performs zero dynamic execution and enforces strict byte budgets (32 KiB default, 128 KiB max) and a 250ms deadline.
+   `worker/harness-worker.mjs` executes bounded passive discovery of allowlisted instruction files (`INSTRUCTION_CANDIDATES` and the client rule directories), language manifests, and test declarations. The scanner performs zero dynamic execution and enforces strict byte budgets (32 KiB default, 128 KiB max) and a 250ms deadline.
+   The runner reuses the same discovery, through a runner-internal worker operation, for a per-workspace repository-guidance snapshot: `workspace_open` returns its content-free summary and `agent_spawn` composes it into a managed agent's first message. The selection lives in the contracts package so `workspace_context` and agent bootstrap agree; see [repository guidance bootstrap](mcp-api.md#repository-guidance-bootstrap).
 
 2. **Runner Provenance Resolver:**
    The trusted Runner control plane (`apps/runner/src/workspace-service.ts`) stamps canonical provenance metadata (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) based on physical isolation boundaries:
@@ -282,12 +285,13 @@ Production Compose binds the credential-free ingress proxy to
 egress does not expose an ingress port. Existing
 nginx is the only intended origin host listener and proxies `/mcp`, the
 workspace-bound `/mcp/workspaces/<workspaceId>` prefix,
-`/mcp-gateway`, `/mcp-api-key`, `/dashboard`,
+`/mcp-gateway`, `/mcp-api-key`, `/mcp-api-key/gateway`, `/dashboard`,
 `/healthz`, and `/readyz` to loopback. In Access mode the owned public hostname
 uses one Access application for `/mcp` (including its workspace-bound paths),
 `/mcp-gateway`, and `/dashboard`, plus a
-separate application scoped exactly to `/mcp-api-key`. The external Worker owns
-the public static-key hostname and cannot proxy dashboard or arbitrary origin
-traffic. The
+separate application scoped to the `/mcp-api-key` path, which also covers its
+`/mcp-api-key/gateway` subpath. The external Worker owns the public static-key
+hostname, forwards only its two fixed paths, and cannot proxy dashboard or
+arbitrary origin traffic. The
 [deployment guide](deployment.md) explains the safe install order and the TLS
 step that is intentionally outside Compose.

@@ -1922,8 +1922,9 @@ function renderMcpStatusPill(status) {
 
 /**
  * The single endpoint a user configures in an MCP client. The card names the
- * credential lane `/mcp-gateway` actually accepts and the two hard limitations an
- * operator hits first; the managed API-key lane is deliberately not shown as an option.
+ * credential lanes `/mcp-gateway` accepts — the session/bearer lane and, when the
+ * deployment publishes it, the managed API-key lane — and the two hard limitations an
+ * operator hits first.
  */
 function renderMcpGatewayCard(gateway) {
   const gatewayData = gateway ?? {};
@@ -1933,6 +1934,13 @@ function renderMcpGatewayCard(gateway) {
   const lane = gatewayData.authMode === 'owner-bearer'
     ? 'Authenticates with your Cloud Harness owner bearer token.'
     : 'Authenticates with your Cloud Harness Access session.';
+  const apiKeyEndpoint = typeof gatewayData.apiKeyPublicUrl === 'string' && gatewayData.apiKeyPublicUrl
+    ? gatewayData.apiKeyPublicUrl
+    : '';
+  const apiKeyLane = apiKeyEndpoint
+    ? `<p class="mcp-endpoint-lane">Clients that send a static header use the managed API-key lane instead: point them at this endpoint with a key from <a href="/dashboard/api-keys">API keys</a> as the bearer token.</p>
+      <p class="mcp-endpoint"><span class="mono wrap">${escape(apiKeyEndpoint)}</span> <button type="button" class="copy" data-copy="${escape(apiKeyEndpoint)}">Copy</button></p>`
+    : (gatewayData.authMode === 'owner-bearer' ? '' : '<p class="mcp-endpoint-lane">The managed API-key lane is not enabled on this deployment.</p>');
   return `
     <section class="panel mcp-gateway-card" aria-labelledby="mcp-gateway-heading">
       <h2 id="mcp-gateway-heading">Your Cloud Harness MCP Gateway</h2>
@@ -1945,7 +1953,8 @@ function renderMcpGatewayCard(gateway) {
         <li><code class="mono">execute</code> runs it, re-checking permission on every call.</li>
         <li><code class="mono">permissions</code> and <code class="mono">status</code> report what is allowed and which servers are connected.</li>
       </ol>
-      <p class="mcp-endpoint-lane">${escape(lane)} The managed API-key lane is not yet available for this endpoint.</p>
+      <p class="mcp-endpoint-lane">${escape(lane)}</p>
+      ${apiKeyLane}
       <div class="page-note">
         <strong>Hard limitations.</strong>
         <ul>

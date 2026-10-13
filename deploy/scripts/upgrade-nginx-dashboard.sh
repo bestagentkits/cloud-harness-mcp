@@ -105,11 +105,13 @@ dashboard_entry_count=$(grep -Fxc '    location = /dashboard {' "$block_file" ||
 dashboard_prefix_count=$(grep -Fxc '    location ^~ /dashboard/ {' "$block_file" || true)
 api_key_count=$(grep -Fxc '    location = /mcp-api-key {' "$block_file" || true)
 gateway_count=$(grep -Fxc '    location = /mcp-gateway {' "$block_file" || true)
+api_key_gateway_count=$(grep -Fxc '    location = /mcp-api-key/gateway {' "$block_file" || true)
 workspace_count=$(grep -Fxc '    location ^~ /mcp/workspaces/ {' "$block_file" || true)
 dashboard_entry_block=$(sed -n '/^    location = \/dashboard {$/,/^    }$/p' "$block_file")
 dashboard_prefix_block=$(sed -n '/^    location \^~ \/dashboard\/ {$/,/^    }$/p' "$block_file")
 api_key_block=$(sed -n '/^    location = \/mcp-api-key {$/,/^    }$/p' "$block_file")
 gateway_block=$(sed -n '/^    location = \/mcp-gateway {$/,/^    }$/p' "$block_file")
+api_key_gateway_block=$(sed -n '/^    location = \/mcp-api-key\/gateway {$/,/^    }$/p' "$block_file")
 workspace_block=$(sed -n '/^    location \^~ \/mcp\/workspaces\/ {$/,/^    }$/p' "$block_file")
 normalize_block() {
   sed -E \
@@ -123,6 +125,7 @@ legacy_dashboard_prefix=$'location ^~ /dashboard/ {\nproxy_pass http://127.0.0.1
 expected_dashboard_prefix=$'location ^~ /dashboard/ {\nclient_max_body_size 8m;\nproxy_pass http://127.0.0.1:3100/dashboard/;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\n}'
 expected_api_key=$'location = /mcp-api-key {\nproxy_pass http://127.0.0.1:3100/mcp-api-key;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
 expected_gateway=$'location = /mcp-gateway {\nproxy_pass http://127.0.0.1:3100/mcp-gateway;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
+expected_api_key_gateway=$'location = /mcp-api-key/gateway {\nproxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
 expected_workspace=$'location ^~ /mcp/workspaces/ {\nproxy_pass http://127.0.0.1:3100/mcp/workspaces/;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
 
 dashboard_installed=0
@@ -147,14 +150,19 @@ gateway_installed=0
 if [[ $gateway_count -eq 1 && $(normalize_block <<< "$gateway_block") == "$expected_gateway" ]]; then
   gateway_installed=1
 fi
+api_key_gateway_installed=0
+if [[ $api_key_gateway_count -eq 1 && $(normalize_block <<< "$api_key_gateway_block") == "$expected_api_key_gateway" ]]; then
+  api_key_gateway_installed=1
+fi
 workspace_installed=0
 if [[ $workspace_count -eq 1 && $(normalize_block <<< "$workspace_block") == "$expected_workspace" ]]; then
   workspace_installed=1
 fi
 
-if [[ $dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1 && $workspace_installed -eq 1 ]]; then
+if [[ $dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1 && $workspace_installed -eq 1 &&
+      $api_key_gateway_installed -eq 1 ]]; then
   "$nginx_command" -t
-  echo "Cloud Harness dashboard, API-key, gateway, and workspace MCP nginx routes are already installed"
+  echo "Cloud Harness dashboard, API-key, gateway, API-key gateway, and workspace MCP nginx routes are already installed"
   exit 0
 fi
 if [[ $dashboard_present -eq 0 ]] &&
@@ -162,8 +170,13 @@ if [[ $dashboard_present -eq 0 ]] &&
   echo "existing dashboard nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 6
 fi
+# The API-key and API-key gateway routes share the `/mcp-api-key` upstream prefix. Each
+# probe ignores only the other route's exact location block, so any other upstream under
+# that prefix is still refused.
+without_api_key_gateway_block() { sed '/^    location = \/mcp-api-key\/gateway {$/,/^    }$/d' "$block_file"; }
+without_api_key_block() { sed '/^    location = \/mcp-api-key {$/,/^    }$/d' "$block_file"; }
 if [[ $api_key_installed -eq 0 ]] &&
-   { [[ $api_key_count -ne 0 ]] || grep -Fq '127.0.0.1:3100/mcp-api-key' "$block_file"; }; then
+   { [[ $api_key_count -ne 0 ]] || without_api_key_gateway_block | grep -Fq '127.0.0.1:3100/mcp-api-key'; }; then
   echo "existing API-key nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 7
 fi
@@ -172,13 +185,18 @@ if [[ $gateway_installed -eq 0 ]] &&
   echo "existing gateway nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 8
 fi
+if [[ $api_key_gateway_installed -eq 0 ]] &&
+   { [[ $api_key_gateway_count -ne 0 ]] || without_api_key_block | grep -Fq '127.0.0.1:3100/mcp-api-key/'; }; then
+  echo "existing API-key gateway nginx routing is not the managed shape; refusing to overwrite it" >&2
+  exit 10
+fi
 if [[ $workspace_installed -eq 0 ]] &&
    { [[ $workspace_count -ne 0 ]] || grep -Fq '127.0.0.1:3100/mcp/' "$block_file" || grep -Eq '^[[:space:]]*location[^{]*/mcp/' "$block_file"; }; then
   echo "existing workspace MCP nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 9
 fi
 
-awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - dashboard_present))" -v upgrade_dashboard="$dashboard_legacy" -v add_api_key="$((1 - api_key_installed))" -v add_gateway="$((1 - gateway_installed))" -v add_workspace="$((1 - workspace_installed))" '
+awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - dashboard_present))" -v upgrade_dashboard="$dashboard_legacy" -v add_api_key="$((1 - api_key_installed))" -v add_gateway="$((1 - gateway_installed))" -v add_api_key_gateway="$((1 - api_key_gateway_installed))" -v add_workspace="$((1 - workspace_installed))" '
   upgrade_dashboard && NR >= opening && NR <= closing && $0 == "    location ^~ /dashboard/ {" {
     print
     print "        client_max_body_size 8m;"
@@ -203,6 +221,21 @@ awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - das
     if (add_gateway) {
       print "    location = /mcp-gateway {"
       print "        proxy_pass http://127.0.0.1:3100/mcp-gateway;"
+      print "        proxy_http_version 1.1;"
+      print "        proxy_set_header Host $host;"
+      print "        proxy_set_header X-Forwarded-Proto $scheme;"
+      print "        proxy_set_header Connection \"\";"
+      print "        proxy_buffering off;"
+      print "        proxy_request_buffering off;"
+      print "        proxy_cache off;"
+      print "        proxy_read_timeout 3600s;"
+      print "        add_header X-Accel-Buffering no always;"
+      print "    }"
+      print ""
+    }
+    if (add_api_key_gateway) {
+      print "    location = /mcp-api-key/gateway {"
+      print "        proxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;"
       print "        proxy_http_version 1.1;"
       print "        proxy_set_header Host $host;"
       print "        proxy_set_header X-Forwarded-Proto $scheme;"
@@ -268,4 +301,4 @@ fi
 "$nginx_command" -t
 "$systemctl_command" reload nginx
 trap 'rm -f -- "$block_file" "$rendered"' EXIT
-echo "installed Cloud Harness dashboard, API-key, gateway, and workspace MCP nginx routes; backup: $backup"
+echo "installed Cloud Harness dashboard, API-key, gateway, API-key gateway, and workspace MCP nginx routes; backup: $backup"

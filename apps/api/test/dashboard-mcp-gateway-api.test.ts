@@ -492,5 +492,29 @@ describe('Dashboard MCP gateway routes', () => {
     expect(res.json.data.publicUrl).not.toContain('?');
     expect(res.json.data.publicUrl).not.toContain('evil.example');
     expect(res.json.data.authMode).toBe('cloudflare-access');
+    expect(res.json.data.apiKeyPublicUrl).toBeNull();
+  });
+
+  it('projects the managed API-key lane gateway endpoint from the configured Worker URL', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const app = express();
+    app.use((request: any, _response, next) => { request.auth = { token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal } }; next(); });
+    app.use('/dashboard', createDashboardRouter({
+      ...config,
+      apiKeyAuthEnabled: true,
+      apiKeyGatewayAccessAudience: 'gateway-audience',
+      apiKeyGatewayServiceSubject: 'cf-service:d29ya2Vy',
+      apiKeyGatewayPublicUrl: 'https://api.dashboard.example/mcp'
+    }, runner, {} as McpGatewayService));
+    server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server unavailable');
+    port = address.port;
+
+    const res = await send('/api/v1/mcp-gateway');
+    expect(res.status).toBe(200);
+    expect(res.json.data.publicUrl).toBe('https://dashboard.example/mcp-gateway');
+    expect(res.json.data.apiKeyPublicUrl).toBe('https://api.dashboard.example/mcp-gateway');
   });
 });

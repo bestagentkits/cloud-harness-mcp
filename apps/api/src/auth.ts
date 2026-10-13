@@ -93,7 +93,7 @@ export function principalFromAuthInfo(authInfo: AuthInfo | undefined): RunnerPri
   return parsed.success ? parsed.data : undefined;
 }
 
-type VerifierOverrides = Omit<Partial<AccessJwtVerifierOptions>, 'issuer' | 'audience' | 'jwksUrl'>;
+export type VerifierOverrides = Omit<Partial<AccessJwtVerifierOptions>, 'issuer' | 'audience' | 'jwksUrl'>;
 
 function accessVerifier(config: ApiConfig, verifierOptions: VerifierOverrides): CloudflareAccessJwtVerifier | undefined {
   return config.authMode === 'cloudflare-access'

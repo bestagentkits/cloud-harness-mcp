@@ -34,7 +34,7 @@ docker compose --profile images build executor-image
 ### 4. API Key Denied (`401 Unauthorized`)
 **Cause:** Expired key, revoked key, or key used against the Managed OAuth URL instead of the gateway.
 **Fix:**
-- Ensure the client URL is `https://api.harness.zuey.me/mcp` (NOT `https://harness.zuey.me/mcp`).
+- Ensure the client URL is `https://api.harness.zuey.me/mcp` or, for the MCP Gateway, `https://api.harness.zuey.me/mcp-gateway` (NOT `https://harness.zuey.me/mcp` or `https://harness.zuey.me/mcp-gateway`).
 - Verify key validity in the Dashboard under **API Keys**.
 
 ---
@@ -175,7 +175,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Cause:** The [Skills over MCP](/agent-toolkits#skills-over-mcp-native-client-skills) extension serves `built-in` skills and your own enabled library skills, adds one workspace's `workspace` and `repository` skills only on that workspace's `/mcp/workspaces/<workspaceId>` endpoint, and omits any skill it cannot serve whole and verified.
 **Fix:**
 1. Confirm the client supports the `io.modelcontextprotocol/skills` extension and is connected to the HTTP `/mcp` endpoint. Local stdio mode and `/mcp-gateway` do not offer it; use `skills_list` / `skills_read` there.
-2. For workspace and repository skills, connect to `/mcp/workspaces/<workspaceId>` for that workspace, on the same host and with the same authentication as `/mcp` (the static API-key lane forwards only `/mcp`, so it cannot reach this endpoint). If that URL returns an nginx `404` page while `/mcp` works, the host predates the route: the operator runs `sudo /usr/local/sbin/cloud-harness-upgrade-nginx` (Access-mode release deploys run it automatically). If that command exits `9`, the site already routes something else under `/mcp/`; reconcile it with `deploy/nginx/cloud-harness-mcp.conf` by hand and rerun. `-32602` "workspace is not available" means the workspace is not yours, does not exist, or is no longer open (closed, failed, or lease expired); open or recover it and reconnect. A `skill://cloud-harness/workspace/...` or `.../repository/...` URI works only on the endpoint of the workspace it names. Owner-scope toolkits passed to `workspace_open` are not served over the extension; use `skills_list` / `skills_read` for those.
+2. For workspace and repository skills, connect to `/mcp/workspaces/<workspaceId>` for that workspace, on the same host and with the same authentication as `/mcp` (the static API-key lane forwards only `/mcp` and `/mcp-gateway`, so it cannot reach this endpoint). If that URL returns an nginx `404` page while `/mcp` works, the host predates the route: the operator runs `sudo /usr/local/sbin/cloud-harness-upgrade-nginx` (Access-mode release deploys run it automatically). If that command exits `9`, the site already routes something else under `/mcp/`; reconcile it with `deploy/nginx/cloud-harness-mcp.conf` by hand and rerun. `-32602` "workspace is not available" means the workspace is not yours, does not exist, or is no longer open (closed, failed, or lease expired); open or recover it and reconnect. A `skill://cloud-harness/workspace/...` or `.../repository/...` URI works only on the endpoint of the workspace it names. Owner-scope toolkits passed to `workspace_open` are not served over the extension; use `skills_list` / `skills_read` for those.
 3. Check that the library skill is enabled, not archived or disabled.
 4. Check that `SKILL.md` is UTF-8 and starts with YAML frontmatter holding a `name` (1–120 letters, digits, `.`, `_`, or `-`) and a non-empty `description`. The URI uses that `name`.
 5. Remove symbolic links and special files from the skill directory, keep it within 512 files, 16 MiB, and 32 nested directory levels, use UTF-8 file names, and keep every encoded file URI within 1024 characters (non-ASCII and spaces are percent-encoded, so long non-Latin paths reach it sooner).
@@ -198,7 +198,18 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 
 ---
 
-### 20. MCP OAuth sessions panel is read-only or shows a sync error
+### 20. A managed agent ends `FAILED` with `agent bootstrap failed ... repositoryContext "none"`
+**Cause:** Before an `agent_spawn` agent's first turn, the runner reads the workspace's repository guidance (`AGENTS.md`, `CLAUDE.md`, `REVIEW.md`, `DESIGN.md`, client rule files) and places the applicable files ahead of the task. When that scan cannot complete (for example the executor is unavailable, or the workspace was closed or recreated meanwhile), the agent fails closed with an `UNAVAILABLE` reason instead of starting without guidance. No model lease or container was created for it.
+**Fix:**
+1. Check the workspace with `workspace_status`; recover or reopen it if it is not `ACTIVE`.
+2. Retry `agent_spawn` with a new idempotency key. Replaying the failed key returns the failed record.
+3. If the agent does not need repository guidance, spawn with `repositoryContext: "none"` to send the task alone.
+
+If an agent started but followed the wrong files, read the `repository_context` event in `agent_logs`: it lists the injected and skipped paths with reasons (`not-targeted`, `overridden-by:...`, `duplicate-of:...`, `unreadable`, `client-configuration`, `context-budget`) and digests, never content. Choose the `repositoryContext` that matches the agent's guidance family, and compare with `workspace_context` for the same `clientProfile`, which applies the same selection. Rule files under `.claude/rules/` apply only to `claude`, and `.cursor/rules/` only to `cursor`.
+
+---
+
+### 21. MCP OAuth sessions panel is read-only or shows a sync error
 **Cause:** Dashboard → Settings → **MCP OAuth sessions** reads and writes the grant through the operator's Cloudflare API integration. **Last provider sync** shows a reason code when that fails; nothing is changed by a failed save unless the reason is `write_unconfirmed` or `readback_mismatch`.
 
 **Fix:**

@@ -91,6 +91,24 @@ instead of copying behavior, defaults, command inventories, or configuration.
   (boot) or the deploy unit's `ExecStopPost` rolls it back. Do not delete the
   marker by hand before reading its journal.
 
+## Issue and PR coordination
+
+Parallel contributors and agents coordinate through issue state, so keep it
+current:
+
+- Before starting an issue, check its labels, assignees, and linked PRs. Skip or
+  coordinate on an issue already `in progress`, `in review`, or `done`.
+- Assign yourself (or the requesting owner) and move the issue through exactly
+  one status label at a time: `in progress` while implementing, `blocked` when
+  waiting on an external decision or prerequisite (comment what blocks it),
+  `in review` during isolated code review, `done` once the PR is open and green,
+  and `shipped` after it merges to `main`.
+- `main` is the integration branch; merging to it triggers `Deploy production`,
+  so a merge is a live operation that needs owner authorization.
+- When you find a related or duplicate issue, comment on it with a reference to
+  the issue you are working on instead of duplicating work. File an unrelated
+  defect you discover as its own issue rather than widening the current PR.
+
 ## Change workflow
 
 1. Inspect the relevant document, executable owner, nearby tests, and current
