@@ -970,6 +970,7 @@ const schemas = {
     // family plus shared REVIEW.md/DESIGN.md). Left without a schema default so omitting it keeps
     // the idempotency payload of existing callers unchanged.
     repositoryContext: z.enum(['codex', 'claude', 'cursor', 'aider', 'all', 'none']).optional()
+      .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.')
   }).strict(),
   agent_status: agentLookup,
   agent_logs: z.object({

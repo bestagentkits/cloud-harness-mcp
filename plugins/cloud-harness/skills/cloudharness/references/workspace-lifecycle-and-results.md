@@ -90,7 +90,10 @@ Clone an approved repository and start its bounded executor.
   `networkProfile: "network-none"` only when the owner asks for isolation; it
   blocks all executor egress. The legacy `networkMode` field is rejected.
 - Returns workspace metadata including opaque `workspaceId`, status, network
-  profile, timestamps, and expiry.
+  profile, timestamps, and expiry. A fresh open usually also returns a
+  content-free `repositoryContext` summary (digest, discovered guidance paths,
+  client targets, sizes, truncation, warnings). It is best-effort: its absence
+  is not an error and does not mean the repository has no guidance.
 - `toolkits` accepts `{ kind: 'preset' | 'git' | 'agentkit' }` selections.
   Licensed AgentKit kits (`kind: 'agentkit'`, e.g. `kitId: 'engineer'`) stay
   `owner`-scoped, need an operator-pinned registry signing key plus a stored
@@ -181,8 +184,17 @@ Recover an active or recoverable expired workspace to active state, or inspect, 
 
 Read compact active workspace overview, branch, remaining lease, and Git identity.
 
-- Optional: `workspaceId`.
-- Returns active workspace ID, repository URL, current branch, remaining lease time, and default Git author.
+- Optional: `workspaceId`, `clientProfile`, `include`, `contentMode`
+  (`none` or `excerpt`), `cursor`, `limit`, `maxBytes`.
+- Returns active workspace ID, repository URL, current branch, remaining lease
+  time, default Git author, and a bounded `manifest` of repository guidance,
+  languages, test commands, and skills with untrusted repository provenance.
+- Instruction items carry `activeForClient` for the requested `clientProfile`
+  and, when inactive, an `inactiveReason` such as `overridden-by:AGENTS.override.md`,
+  `duplicate-of:<path>`, or `unreadable`. This is the same decision `agent_spawn`
+  uses to bootstrap a managed agent.
+- If you are not a managed agent, pass your own `clientProfile`, then
+  `files_read` the active paths you need in full; excerpts are bounded.
 
 <!-- cloudharness-example:workspace_context
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}

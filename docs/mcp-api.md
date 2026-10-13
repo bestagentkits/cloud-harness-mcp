@@ -158,6 +158,46 @@ writes. Any active agent from a prior runner epoch is reconciled: its model
 lease is revoked, its container is removed, and its status transitions to
 `INTERRUPTED` with `outcomeUnknown: true`.
 
+### Repository guidance bootstrap
+
+Repositories ship guidance for coding agents (`AGENTS.md`, `CLAUDE.md`,
+`REVIEW.md`, `DESIGN.md`, client rule directories, and similar). Two consumers
+need the same answer to "which of these apply", so one selection owns it:
+[`packages/contracts/src/repository-guidance.ts`](../packages/contracts/src/repository-guidance.ts)
+decides precedence, explicit overrides, duplicate suppression, bounds, and the
+composed block. The worker's `INSTRUCTION_CANDIDATES` in
+[`worker/harness-worker.mjs`](../worker/harness-worker.mjs) owns which paths are
+discovered and which client each targets.
+
+- **Managed agents.** `agent_spawn` places the applicable guidance in the
+  agent's first message, in a delimited untrusted block ahead of the caller's
+  task, which is carried byte-for-byte. `repositoryContext` selects the client
+  family (`none` sends the task alone); the omitted default is set in
+  [`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts) and
+  is deliberately not a schema default, so existing callers' idempotency
+  payloads are unchanged. The block is bounded and truncated deterministically
+  rather than dropped. What was injected, skipped, or cut is recorded as a
+  `repository_context` event in `agent_logs`, with paths and digests but never
+  content. Guidance is composed before any model lease or container exists: if
+  it cannot be scanned the agent fails closed (`FAILED`, with a terminal reason
+  suggesting a retry or `repositoryContext: "none"`) instead of starting
+  without guidance.
+- **External clients.** A fresh `workspace_open` result carries a content-free
+  `repositoryContext` summary. It is best-effort: a scan failure never fails
+  the open, and an idempotent replay includes it only while the runner still
+  holds the snapshot. To act on guidance, call `workspace_context` with the
+  client's own `clientProfile` and read the active paths.
+- **One decision.** `workspace_context` instruction items report
+  `activeForClient` and, when inactive, an `inactiveReason`
+  (`not-targeted`, `unreadable`, `overridden-by:<path>`, `duplicate-of:<path>`)
+  from the same selection the bootstrap uses, so the manifest and an agent's
+  first message cannot disagree. Rule-directory files target only the client
+  that reads that directory, and client configuration such as
+  `.aider.conf.yml` is listed but never read into an agent's context.
+- **Snapshot reuse.** The runner caches one digest-addressed snapshot per
+  workspace generation and reuses it while a stat fingerprint of the candidate
+  files is unchanged; any guidance edit causes a rescan before the next spawn.
+
 ## Skills over MCP extension
 
 The Streamable HTTP `/mcp` root also serves the official
