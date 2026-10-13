@@ -12,8 +12,13 @@ import {
   RunnerOperationSchema,
   RunnerResponseSchema,
   TOOL_SCHEMA_BY_NAME,
+  applyGuidanceActivity,
+  buildRepositoryGuidanceSnapshot,
+  repositoryGuidanceSummary,
   sanitizeAndAttributeProvenance,
   toolkitSelectionIdentity,
+  type GuidanceProfile,
+  type RepositoryGuidanceSnapshot,
   type AgentProxyOperation,
   type RunnerConfig,
   type InternalRunnerOperation,
@@ -190,6 +195,12 @@ export class WorkspaceService {
   private readonly instanceId: string;
   private readonly bootId: string = randomBytes(16).toString('hex');
   private readonly redactorCache = new Map<string, SecretSnapshotRedactor>();
+  /**
+   * Repository-guidance snapshots by workspace. A snapshot is reused only for the same workspace
+   * generation and only while the worker reports an unchanged candidate fingerprint; a runner
+   * restart simply rescans on first use.
+   */
+  private readonly guidanceCache = new Map<string, { generation: number; fingerprint: string; snapshot: RepositoryGuidanceSnapshot }>();
   private reaper?: NodeJS.Timeout | undefined;
   private reaperRunning = false;
   readonly toolkitCacheManager: ToolkitCacheManager;
@@ -220,7 +231,14 @@ export class WorkspaceService {
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
           ...managerDependencies,
-          toolExecutor: async (request) => await this.executeAgentProxy(request)
+          toolExecutor: async (request) => await this.executeAgentProxy(request),
+          repositoryGuidance: async (request) => {
+            const record = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
+            if (record.generation !== request.workspaceGeneration) {
+              throw new HarnessError('EXPIRED', 'agent bootstrap lost its workspace fence', 410, false);
+            }
+            return await this.repositoryGuidance(record, request.signal);
+          }
         })
       : undefined);
     this.instanceId = store.instanceId();
@@ -832,7 +850,7 @@ export class WorkspaceService {
       if (prior.requestFingerprint && prior.requestFingerprint !== requestFingerprint) {
         throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
       }
-      return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(prior), truncated: false };
+      return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior), truncated: false };
     }
     await this.ensureCapacity(ownerId);
     const url = await validateRepositoryUrl(parsed.repositoryUrl, this.config.allowedGitHosts);
@@ -858,7 +876,7 @@ export class WorkspaceService {
         if (replay.requestFingerprint && replay.requestFingerprint !== requestFingerprint) {
           throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
         }
-        return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.publicWorkspaceRecord(replay), truncated: false };
+        return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(replay), truncated: false };
       }
       if (error instanceof ActiveWorkspaceLimitReachedError) {
         throw this.activeWorkspaceLimitError(error.active, error.limit);
@@ -941,7 +959,18 @@ export class WorkspaceService {
         throw new HarnessError('CONFLICT', 'workspace creation lost its lifecycle lease', 409, true);
       }
       await this.runLifecycleHooks(active, 'on_workspace_open').catch(() => undefined);
-      return { ok: true, message: 'Workspace opened', data: this.publicWorkspaceRecord(active), truncated: false };
+      // Eager guidance bootstrap: scanned after open hooks so the snapshot reflects the checkout an
+      // agent will see. A scan failure never fails the open; agent_spawn rescans and fails closed.
+      const guidance = await this.repositoryGuidance(active).catch(() => undefined);
+      return {
+        ok: true,
+        message: 'Workspace opened',
+        data: {
+          ...this.publicWorkspaceRecord(active),
+          ...(guidance ? { repositoryContext: repositoryGuidanceSummary(guidance.snapshot) } : {})
+        },
+        truncated: false
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'workspace creation failed';
       this.store.updateFenced(workspaceId, record.generation, ['CREATING'], { status: 'FAILED', error: message.slice(0, 2_000) });
@@ -1466,13 +1495,48 @@ export class WorkspaceService {
     };
   }
 
+  /** An open replay carries the cached guidance summary when this runner still holds one. */
+  private openedWorkspaceData(record: WorkspaceRecord) {
+    const cached = this.guidanceCache.get(record.id);
+    return {
+      ...this.publicWorkspaceRecord(record),
+      ...(cached && cached.generation === record.generation ? { repositoryContext: repositoryGuidanceSummary(cached.snapshot) } : {})
+    };
+  }
+
+  /**
+   * Resolves the workspace's repository-guidance snapshot. The worker compares candidate file
+   * identities against the cached fingerprint, so an unchanged checkout costs one stat pass and
+   * reuses the digest-addressed snapshot instead of re-reading guidance for every agent.
+   */
+  async repositoryGuidance(record: WorkspaceRecord, signal?: AbortSignal): Promise<{ snapshot: RepositoryGuidanceSnapshot; reused: boolean }> {
+    const cached = this.guidanceCache.get(record.id);
+    const known = cached && cached.generation === record.generation ? cached : undefined;
+    const response = await this.runWorker(
+      record, 'workspace_bootstrap_context', { timeoutMs: 10_000, ...(known ? { knownFingerprint: known.fingerprint } : {}) }, signal
+    );
+    const data = response.ok && response.data && typeof response.data === 'object' ? response.data as Record<string, unknown> : undefined;
+    const fingerprint = typeof data?.fingerprint === 'string' && /^[0-9a-f]{64}$/.test(data.fingerprint) ? data.fingerprint : undefined;
+    if (!data || !fingerprint) throw new HarnessError('UNAVAILABLE', 'repository guidance could not be scanned', 503, true);
+    if (data.unchanged === true && known && known.fingerprint === fingerprint) return { snapshot: known.snapshot, reused: true };
+    if (data.unchanged === true) throw new HarnessError('UNAVAILABLE', 'repository guidance scan returned no snapshot', 503, true);
+    const snapshot = buildRepositoryGuidanceSnapshot(data.manifest);
+    // A scan the clock cut short is used once but never cached, so a slow open cannot pin an
+    // incomplete snapshot for every later agent. A workspace closed mid-scan is not re-cached.
+    const current = this.store.byId(record.id);
+    if (!snapshot.truncationReasons.includes('time-limit') && current?.status === 'ACTIVE' && current.generation === record.generation) {
+      this.guidanceCache.set(record.id, { generation: record.generation, fingerprint, snapshot });
+    }
+    return { snapshot, reused: false };
+  }
+
   private async runWorker(
     record: WorkspaceRecord,
     /**
      * `skills_roster` is executed by the worker but is not a public operation: it feeds the suggestion
      * engine rather than a caller, so it stays out of the shared operation enum and is named here.
      */
-    operation: RunnerOperation | 'skills_roster',
+    operation: RunnerOperation | 'skills_roster' | 'workspace_bootstrap_context',
     input: Record<string, unknown>,
     signal?: AbortSignal
   ): Promise<RunnerResponse> {
@@ -2733,11 +2797,13 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           let truncated = Boolean(rawManifest.truncated);
           const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
 
-          for (const rawItem of rawItems as Record<string, unknown>[]) {
-            const item = sanitizeAndAttributeProvenance(rawItem, {
-              partitionSource: 'repository',
-              repositoryRoot: record.workspacePath
-            });
+          // Instruction activity is decided by the same selection agent bootstrap uses, so the
+          // manifest and an agent's injected guidance cannot disagree about which files apply.
+          const attributedItems = applyGuidanceActivity((rawItems as Record<string, unknown>[]).map((rawItem) => sanitizeAndAttributeProvenance(rawItem, {
+            partitionSource: 'repository',
+            repositoryRoot: record.workspacePath
+          })), (validated as { clientProfile?: GuidanceProfile }).clientProfile ?? 'all');
+          for (const item of attributedItems) {
             const itemBytes = Buffer.byteLength(JSON.stringify(item));
             if (accumulatedBytes + itemBytes > maxBytes) {
               truncated = true;
@@ -4292,6 +4358,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     this.store.deleteSecretSnapshot(claimed.id);
     this.store.reapWorkspaceMemories(claimed.ownerId, claimed.id);
     this.redactorCache.delete(claimed.id);
+    this.guidanceCache.delete(claimed.id);
     const closed = this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'CLOSED', containerName: null, error: reason, expiresAt: Date.now() });
     if (!closed) {
       const finalState = this.store.byId(claimed.id);

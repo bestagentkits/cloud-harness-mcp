@@ -57,5 +57,6 @@ Cloud Harness separates request validation from Docker execution authority:
 |---|---|---|
 | **Managed OAuth** | `https://harness.zuey.me/mcp` | Cloudflare Access (GitHub/Google SSO) |
 | **Static API Key** | `https://api.harness.zuey.me/mcp` | `Authorization: Bearer <dashboard-api-key>` |
+| **MCP Gateway (API key)** | `https://api.harness.zuey.me/mcp-gateway` | `Authorization: Bearer <dashboard-api-key>` |
 | **Operator Dashboard** | `https://harness.zuey.me/dashboard` | Browser SSO Session |
 | **Documentation** | `https://docs.harness.agentkit.best` | Public (Static Pages) |

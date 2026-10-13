@@ -1425,6 +1425,7 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
 | `maxInputTokens` | `integer` | No | range: 1–2000000, default: `200000` |
 | `maxOutputTokens` | `integer` | No | range: 1–2000000, default: `32000` |
 | `maxCostMicros` | `integer` | No | range: 0–1000000000, default: `10000000` |
+| `repositoryContext` | `"codex"` \| `"claude"` \| `"cursor"` \| `"aider"` \| `"all"` \| `"none"` | No | Repository guidance profile placed before the task; omitted uses codex, none sends the task alone. |
 
 ### `agent_status`
 

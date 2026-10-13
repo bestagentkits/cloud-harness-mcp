@@ -407,14 +407,93 @@ describe('release commit CI request', () => {
   });
 });
 
+function firstScript(job: string): string {
+  const start = job.indexOf('run: |\n') + 'run: |\n'.length;
+  const lines = job.slice(start).split('\n');
+  const end = lines.findIndex((line) => line !== '' && !line.startsWith('          '));
+  return (end === -1 ? lines : lines.slice(0, end)).map((line) => line.slice(10)).join('\n');
+}
+
+describe('release tip check', () => {
+  const releaseJob = jobSection(releaseWorkflow, 'release');
+  const script = firstScript(releaseJob);
+  const directories: string[] = [];
+
+  afterEach(() => {
+    for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  });
+
+  function run({ tip = MERGE, branch = 'main', lsRemoteStatus = 0 }) {
+    const root = mkdtempSync(join(tmpdir(), 'cloud-harness-release-tip-'));
+    directories.push(root);
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const log = join(root, 'git.log');
+    const output = join(root, 'output');
+    writeFileSync(output, '');
+    writeFileSync(
+      join(bin, 'git'),
+      [
+        '#!/usr/bin/env bash',
+        `echo "$*" >> '${log}'`,
+        `if [[ "$1" == ls-remote ]]; then printf '%s\\trefs/heads/x\\n' '${tip}'; exit ${lsRemoteStatus}; fi`,
+        ''
+      ].join('\n')
+    );
+    chmodSync(join(bin, 'git'), 0o755);
+    const result = spawnSync('bash', ['-c', script], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { PATH: `${bin}:${process.env.PATH}`, BRANCH: branch, RELEASE_SHA: MERGE, GITHUB_OUTPUT: output }
+    });
+    let calls: string[] = [];
+    try {
+      calls = readFileSync(log, 'utf8').trim().split('\n');
+    } catch {
+      calls = [];
+    }
+    return { status: result.status, stdout: result.stdout, output: readFileSync(output, 'utf8'), calls };
+  }
+
+  const switched = (calls: string[]) => calls.some((call) => call.startsWith('switch'));
+
+  it('releases only when CI tested the current tip', () => {
+    const result = run({});
+    expect(result.status).toBe(0);
+    expect(result.output).toBe('current=true\n');
+    expect(result.calls).toContain(`switch --force-create main ${MERGE}`);
+  });
+
+  it('skips the release instead of failing when the branch moved on', () => {
+    const result = run({ tip: OTHER });
+    expect(result.status).toBe(0);
+    expect(result.output).toBe('current=false\n');
+    expect(result.stdout).toContain(`::notice::main is at ${OTHER}`);
+    expect(switched(result.calls)).toBe(false);
+  });
+
+  it('fails when the tip cannot be read or the branch is not a release branch', () => {
+    for (const options of [{ tip: '' }, { lsRemoteStatus: 128 }, { branch: 'feature' }]) {
+      const result = run(options);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toBe('');
+      expect(switched(result.calls)).toBe(false);
+    }
+    expect(run({ lsRemoteStatus: 128 }).stdout).toContain('::error::Could not read the main tip.');
+  });
+
+  it('gates every later release step on the tip check', () => {
+    const later = releaseJob.slice(releaseJob.indexOf('id: tip'));
+    const steps = later.split('\n      - ').slice(1);
+    expect(steps.length).toBe(4);
+    for (const step of steps) expect(step).toContain("if: steps.tip.outputs.current == 'true'");
+    expect(jobSection(releaseWorkflow, 'request-release-ci')).toContain("needs.release.outputs.release_commit != '' &&");
+  });
+});
+
 describe('release commit CI request script', () => {
   const requestJob = jobSection(releaseWorkflow, 'request-release-ci');
-  const script = requestJob
-    .slice(requestJob.indexOf('run: |\n') + 'run: |\n'.length)
-    .split('\n')
-    .filter((line) => line.startsWith('          ') || line === '')
-    .map((line) => line.slice(10))
-    .join('\n');
+  const script = firstScript(requestJob);
   const directories: string[] = [];
 
   afterEach(() => {

@@ -20,6 +20,8 @@ Cloud Harness MCP is compatible with all leading AI agent environments, IDEs, an
 | **Google Antigravity** | Static API Key | `https://api.harness.zuey.me/mcp` | Antigravity MCP Settings |
 | **Grok / xAI** | Static API Key | `https://api.harness.zuey.me/mcp` | Responses API tool definitions |
 
+To connect a static-key client to the [MCP Gateway](/mcp-gateway) instead, use the same key with `https://api.harness.zuey.me/mcp-gateway`.
+
 ---
 
 ## Native Skills Support

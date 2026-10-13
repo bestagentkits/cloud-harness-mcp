@@ -113,16 +113,30 @@ describe('MCP servers dashboard renderers', () => {
     // The card explains the hub's progressive discovery with the real meta-tool names.
     for (const tool of ['search', 'inspect', 'execute', 'permissions', 'status']) expect(html).toContain(`<code class="mono">${tool}</code>`);
     expect(html).toContain('Authenticates with your Cloud Harness Access session.');
-    expect(html).toContain('The managed API-key lane is not yet available for this endpoint.');
+    expect(html).toContain('The managed API-key lane is not enabled on this deployment.');
     expect(html).toContain('HTTP redirects are refused');
     expect(html).toContain('stdio');
     expect(html).toContain('unsupported');
     expectCspSafe(html);
   });
 
+  it('names the managed API-key lane endpoint when the deployment publishes it', () => {
+    const html = renderMcpServersIndex({
+      servers: [],
+      gateway: { ...gateway, apiKeyPublicUrl: 'https://api.harness.example.com/mcp-gateway' }
+    });
+    expect(html).toContain('Authenticates with your Cloud Harness Access session.');
+    expect(html).toContain('managed API-key lane');
+    expect(html).toContain('data-copy="https://api.harness.example.com/mcp-gateway"');
+    expect(html).toContain('href="/dashboard/api-keys"');
+    expect(html).not.toContain('not enabled on this deployment');
+    expectCspSafe(html);
+  });
+
   it('names the owner-bearer lane and falls back to the relative endpoint', () => {
     const html = renderMcpServersIndex({ servers: [], gateway: { endpoint: '/mcp-gateway', authMode: 'owner-bearer' } });
     expect(html).toContain('Authenticates with your Cloud Harness owner bearer token.');
+    expect(html).not.toContain('managed API-key lane');
     expect(html).toContain('/mcp-gateway');
     expectCspSafe(html);
   });

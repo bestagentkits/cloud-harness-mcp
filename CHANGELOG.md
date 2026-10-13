@@ -1,3 +1,20 @@
+# [0.64.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.3...v0.64.0) (2026-10-13)
+
+
+### Bug Fixes
+
+* **release:** deploy the tagged release commit so production reports the newest version ([#300](https://github.com/bestagentkits/cloud-harness-mcp/issues/300)) ([ff657c2](https://github.com/bestagentkits/cloud-harness-mcp/commit/ff657c255ec5d19d6417a9354ec356e7f0b98738)), closes [#186](https://github.com/bestagentkits/cloud-harness-mcp/issues/186) [#211](https://github.com/bestagentkits/cloud-harness-mcp/issues/211) [#295](https://github.com/bestagentkits/cloud-harness-mcp/issues/295)
+* **release:** skip instead of failing when the branch moved past the CI-tested commit ([#305](https://github.com/bestagentkits/cloud-harness-mcp/issues/305)) ([86e4604](https://github.com/bestagentkits/cloud-harness-mcp/commit/86e4604d2075fbe00ef9ec1ca0dbcbacdf6bdf55)), closes [#302](https://github.com/bestagentkits/cloud-harness-mcp/issues/302)
+* **runner:** report an ineligible workspace as CONFLICT when opening agent admission ([#297](https://github.com/bestagentkits/cloud-harness-mcp/issues/297)) ([d941520](https://github.com/bestagentkits/cloud-harness-mcp/commit/d941520f9795b938092dfb82d155b4e73fdee99e)), closes [#263](https://github.com/bestagentkits/cloud-harness-mcp/issues/263)
+
+
+### Features
+
+* **api-key:** serve the MCP gateway on the managed API-key lane ([#298](https://github.com/bestagentkits/cloud-harness-mcp/issues/298)) ([74639aa](https://github.com/bestagentkits/cloud-harness-mcp/commit/74639aa2ae65f7c9b4c1ec15153334a1ead5e5b1)), closes [#209](https://github.com/bestagentkits/cloud-harness-mcp/issues/209)
+* bootstrap repository guidance into managed agent context ([#301](https://github.com/bestagentkits/cloud-harness-mcp/issues/301)) ([2803576](https://github.com/bestagentkits/cloud-harness-mcp/commit/28035766debf4741e270d90efb260957e41a26c7))
+* **github:** native PR reviews, review threads, reviewers and merge lifecycle ([#290](https://github.com/bestagentkits/cloud-harness-mcp/issues/290)) ([7aede27](https://github.com/bestagentkits/cloud-harness-mcp/commit/7aede27c5f8b04fa7369998163442e76543eb5b6)), closes [#255](https://github.com/bestagentkits/cloud-harness-mcp/issues/255)
+* OAuth-authenticated downstream MCP servers in the Dashboard ([#291](https://github.com/bestagentkits/cloud-harness-mcp/issues/291)) ([364ed96](https://github.com/bestagentkits/cloud-harness-mcp/commit/364ed9698816379baffee5d81bd577cefeb7dfcd))
+
 ## [0.63.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.2...v0.63.3) (2026-10-13)
 
 

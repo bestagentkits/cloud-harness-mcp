@@ -30,7 +30,17 @@ function handlerReturning(response = new Response('{}', {
 }
 
 describe('API-key gateway boundary', () => {
-  it.each(['/mcp/', '/dashboard', '/mcp?target=other'])('rejects non-exact route %s', async (path) => {
+  it.each([
+    '/mcp/',
+    '/dashboard',
+    '/mcp?target=other',
+    '/mcp-gateway/',
+    '/mcp-gateway?target=other',
+    '/mcp/gateway',
+    '/mcp-api-key',
+    '/mcp-api-key/gateway',
+    '/MCP-GATEWAY'
+  ])('rejects non-exact route %s', async (path) => {
     const { handler, upstreamFetch } = handlerReturning();
     const response = await handler(request(path), ENV);
     expect(response.status).toBe(404);
@@ -67,6 +77,43 @@ describe('API-key gateway boundary', () => {
       'https://harness.zuey.me/mcp-api-key',
       expect.objectContaining({ redirect: 'manual', cache: 'no-store' })
     );
+  });
+
+  it('pins the gateway path to its own fixed origin route under the API-key Access scope', async () => {
+    const { handler, upstreamFetch } = handlerReturning();
+    const response = await handler(new Request('https://attacker.invalid/mcp-gateway', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer [redacted-api-key]',
+        host: 'other.invalid',
+        'x-forwarded-host': 'other.invalid'
+      }
+    }), ENV);
+
+    expect(response.status).toBe(200);
+    expect(upstreamFetch).toHaveBeenCalledOnce();
+    const [url, init] = upstreamFetch.mock.calls[0]!;
+    expect(url).toBe('https://harness.zuey.me/mcp-api-key/gateway');
+    expect(init).toEqual(expect.objectContaining({ redirect: 'manual', cache: 'no-store' }));
+    const headers = new Headers(init?.headers);
+    expect(headers.get('cf-access-client-id')).toBe(ENV.CF_ACCESS_CLIENT_ID);
+    expect(headers.get('authorization')).toBe('Bearer [redacted-api-key]');
+    expect(headers.has('host')).toBe(false);
+    expect(headers.has('x-forwarded-host')).toBe(false);
+  });
+
+  it.each(['DELETE', 'GET', 'POST'])('allows Streamable HTTP method %s on the gateway path', async (method) => {
+    const { handler, upstreamFetch } = handlerReturning();
+    const response = await handler(request('/mcp-gateway', { method }), ENV);
+    expect(response.status).toBe(200);
+    expect(upstreamFetch).toHaveBeenCalledOnce();
+  });
+
+  it('applies the same credential-header rules on the gateway path', async () => {
+    const { handler, upstreamFetch } = handlerReturning();
+    const response = await handler(request('/mcp-gateway', { headers: { authorization: 'Basic abc' } }), ENV);
+    expect(response.status).toBe(400);
+    expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
   it('reconstructs request headers and strips mixed-case duplicate forbidden headers', async () => {

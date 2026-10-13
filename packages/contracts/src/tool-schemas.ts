@@ -965,7 +965,12 @@ const schemas = {
     maxOutputBytes: z.number().int().min(1_024).max(10_485_760).default(262_144),
     maxInputTokens: z.number().int().min(1).max(2_000_000).default(200_000),
     maxOutputTokens: z.number().int().min(1).max(2_000_000).default(32_000),
-    maxCostMicros: z.number().int().min(0).max(1_000_000_000).default(10_000_000)
+    maxCostMicros: z.number().int().min(0).max(1_000_000_000).default(10_000_000),
+    // Which repository guidance is placed before the task; omitted means `codex` (the AGENTS.md
+    // family plus shared REVIEW.md/DESIGN.md). Left without a schema default so omitting it keeps
+    // the idempotency payload of existing callers unchanged.
+    repositoryContext: z.enum(['codex', 'claude', 'cursor', 'aider', 'all', 'none']).optional()
+      .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.')
   }).strict(),
   agent_status: agentLookup,
   agent_logs: z.object({

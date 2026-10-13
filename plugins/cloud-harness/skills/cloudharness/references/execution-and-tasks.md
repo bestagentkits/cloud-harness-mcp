@@ -180,7 +180,17 @@ Wait for an operation to reach a terminal state with a server timeout.
 Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.
 
 - Required: `prompt`, `idempotencyKey`, `profileId`, `proxyOperations`.
-- Optional: `workspaceId`, `parentAgentId`, `ttlSeconds`, `maxOutputBytes`, `maxInputTokens`, `maxOutputTokens`, `maxCostMicros`.
+- Optional: `workspaceId`, `parentAgentId`, `ttlSeconds`, `maxOutputBytes`, `maxInputTokens`, `maxOutputTokens`, `maxCostMicros`, `repositoryContext`.
+- The agent's first message automatically carries the workspace's applicable
+  repository guidance (for example `AGENTS.md`, `REVIEW.md`, `DESIGN.md`) in a
+  delimited untrusted block before your verbatim task, so do not paste those
+  files into `prompt`. Choose `repositoryContext` to match the guidance family
+  the agent should follow (`codex` when omitted, or `claude`, `cursor`,
+  `aider`, `all`); pass `none` to send the task alone.
+- A `repository_context` event in `agent_logs` lists the injected and skipped
+  paths and digests, never content. If guidance cannot be scanned the agent
+  ends `FAILED` with an "agent bootstrap failed" reason: retry, or spawn again
+  with `repositoryContext: "none"` and a new idempotency key.
 
 <!-- cloudharness-example:agent_spawn
 {"prompt":"Implement feature","idempotencyKey":"spawn-subagent-1234","profileId":"default","proxyOperations":["files_read","files_write","files_apply_patch"]}

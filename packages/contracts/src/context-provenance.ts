@@ -90,6 +90,7 @@ export function sanitizeAndAttributeProvenance(
     path: pathStr,
     appliesTo: typeof rawItem.appliesTo === 'string' ? rawItem.appliesTo : undefined,
     activeForClient: Boolean(rawItem.activeForClient ?? true),
+    inactiveReason: typeof rawItem.inactiveReason === 'string' ? rawItem.inactiveReason.slice(0, 300) : undefined,
     contentSha256: hashStr,
     byteCount: typeof rawItem.byteCount === 'number' ? rawItem.byteCount : 0,
     excerpt: typeof rawItem.excerpt === 'string' ? rawItem.excerpt.slice(0, 8192) : undefined,
