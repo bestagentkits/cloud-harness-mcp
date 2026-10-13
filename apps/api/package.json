@@ -1,8 +1,11 @@
 {
   "name": "@cloud-harness/api",
-  "version": "0.4.0-beta.1",
+  "version": "0.65.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "cloud-harness-mcp": "./dist/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
@@ -11,11 +14,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@cloud-harness/contracts": "0.4.0-beta.1",
+    "@cloud-harness/contracts": "0.65.0",
+    "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "express": "5.2.1",
     "pino": "10.3.1",
+    "undici": "7.29.0",
+    "yaml": "2.9.0",
     "zod": "4.4.3"
   }
 }

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cloud-harness": {
+      "type": "http",
+      "url": "${userConfig.mcpUrl}"
+    }
+  }
+}

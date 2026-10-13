@@ -10,8 +10,11 @@ WorkingDirectory=/opt/cloud-harness-mcp/repo
 Environment=CLOUD_HARNESS_ENV_FILE=/etc/cloud-harness-mcp/runtime.env
 Environment=HOST_JOBS_ROOT=/var/lib/cloud-harness/jobs
 Environment=HOST_STATE_ROOT=/var/lib/cloud-harness/state
-ExecStart=/usr/bin/docker compose -f compose.yaml -f compose.production.yaml up --remove-orphans
-ExecStop=/usr/bin/docker compose -f compose.yaml -f compose.production.yaml down
+Environment=HOST_ARTIFACT_ROOT=/var/lib/cloud-harness/artifacts
+# Prefer the installed wrapper. A release whose unit is installed by an on-host deploy
+# script that predates the wrapper still starts through the copy in its own checkout.
+ExecStart=/bin/bash -c 'if [ -x /usr/local/sbin/cloud-harness-service-compose ]; then exec /usr/local/sbin/cloud-harness-service-compose up --remove-orphans; fi; exec /bin/bash deploy/scripts/service-compose.sh up --remove-orphans'
+ExecStop=/bin/bash -c 'if [ -x /usr/local/sbin/cloud-harness-service-compose ]; then exec /usr/local/sbin/cloud-harness-service-compose down; fi; exec /bin/bash deploy/scripts/service-compose.sh down'
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=300

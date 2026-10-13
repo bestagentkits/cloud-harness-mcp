@@ -1,0 +1,111 @@
+#!/usr/bin/env node
+/**
+ * Offline `skillx` compatibility CLI.
+ *
+ * Like the `skills` launcher it only reads the local catalog and projection, so it never attempts a
+ * network connection inside a `networkMode: 'none'` workspace. `--search` queries the local catalog
+ * index rather than the remote service, and a slug that is not mirrored fails closed with
+ * `CACHE_MISS`.
+ */
+import { cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+
+const CATALOG_PATH = process.env.CLOUD_HARNESS_CATALOG ?? '/opt/cloud-harness/skill-catalog.json';
+const DEFAULT_INSTALL_DIR = join('.cloud-harness', 'skills');
+
+const installDir = () => resolve(process.env.CLOUD_HARNESS_SKILLS_TARGET ?? join(process.cwd(), DEFAULT_INSTALL_DIR));
+
+function readCatalog() {
+  if (!existsSync(CATALOG_PATH)) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(CATALOG_PATH, 'utf8'));
+  } catch (error) {
+    process.stderr.write(`the local skill catalog is unreadable: ${error instanceof Error ? error.message : 'invalid JSON'}\n`);
+    process.exit(1);
+  }
+  const base = dirname(CATALOG_PATH);
+  const entries = Array.isArray(parsed?.skills) ? parsed.skills : [];
+  return entries.map((entry) => ({
+    name: String(entry.name),
+    repository: String(entry.repository ?? ''),
+    description: String(entry.description ?? ''),
+    references: Array.isArray(entry.references) ? entry.references.map(String) : [],
+    path: resolve(base, String(entry.path ?? join('owner-skills', String(entry.name))))
+  }));
+}
+
+function cacheMiss(subject) {
+  process.stderr.write(`CACHE_MISS: ${subject} is not mirrored in this workspace.\n`);
+  process.stderr.write('Import it from the dashboard Skills page while the runner has network access, then run this command again.\n');
+  return 1;
+}
+
+function usage() {
+  process.stdout.write('usage: skillx use <slug> [--raw] [--include-refs] [--search] [--agent [name]]\n');
+  return 2;
+}
+
+function resolveAgentDir(argv) {
+  const index = argv.indexOf('--agent');
+  if (index === -1) return installDir();
+  const candidate = argv[index + 1];
+  const agent = candidate === undefined || candidate.startsWith('-') ? 'claude' : candidate;
+  // Rooted at the workspace, matching the `skills` launcher, so an agent directory never nests
+  // inside the default install target.
+  return resolve(process.env.CLOUD_HARNESS_AGENT_ROOT ?? process.cwd(), `.${agent}`, 'skills');
+}
+
+function search(argv) {
+  const needle = argv.find((value) => !value.startsWith('-'));
+  const catalog = readCatalog();
+  const matches = needle === undefined
+    ? catalog
+    : catalog.filter((entry) => `${entry.name} ${entry.description}`.toLowerCase().includes(needle.toLowerCase()));
+  if (matches.length === 0) return cacheMiss(needle ?? 'the skill catalog');
+  for (const entry of matches) process.stdout.write(`${entry.name}\t${entry.description}\n`);
+  return 0;
+}
+
+function use(argv) {
+  if (argv.includes('--search')) return search(argv);
+
+  const slug = argv.find((value) => !value.startsWith('-'));
+  if (slug === undefined) return usage();
+
+  const catalog = readCatalog();
+  const entry = catalog.find((candidate) => candidate.name === slug);
+  if (entry === undefined) return cacheMiss(slug);
+
+  const skillFile = join(entry.path, 'SKILL.md');
+  if (!existsSync(skillFile)) return cacheMiss(slug);
+
+  if (argv.includes('--raw')) {
+    process.stdout.write(readFileSync(skillFile, 'utf8'));
+    return 0;
+  }
+
+  const destination = resolveAgentDir(argv);
+  mkdirSync(destination, { recursive: true });
+  cpSync(entry.path, join(destination, entry.name), { recursive: true });
+  process.stdout.write(`resolved ${entry.name} -> ${join(destination, entry.name)}\n`);
+
+  if (argv.includes('--include-refs')) {
+    for (const reference of entry.references) {
+      const referenced = catalog.find((candidate) => candidate.name === reference);
+      if (referenced === undefined || !existsSync(join(referenced.path, 'SKILL.md'))) {
+        process.stderr.write(`referenced skill ${reference} is not mirrored\n`);
+        return 1;
+      }
+      cpSync(referenced.path, join(destination, referenced.name), { recursive: true });
+      process.stdout.write(`resolved ${referenced.name} -> ${join(destination, referenced.name)}\n`);
+    }
+  }
+  return 0;
+}
+
+const [command, ...rest] = process.argv.slice(2);
+if (command !== 'use') {
+  process.exit(usage());
+}
+process.exit(use(rest));

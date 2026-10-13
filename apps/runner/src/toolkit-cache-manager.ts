@@ -1,0 +1,368 @@
+import { createHash } from 'node:crypto';
+import { closeSync, existsSync, fsyncSync, openSync, readdirSync } from 'node:fs';
+import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+import type { StateStore, ToolkitCacheEntryRecord } from './state-store.js';
+
+export type ToolkitAcquisitionSpec = {
+  sourceIdentity: string;
+  resolvedRevision: string;
+  adapterVersion: number;
+  configDigest: string;
+};
+
+export type CachedToolkitBundle = {
+  cacheKey: string;
+  ownerId: string;
+  bundleSha256: string;
+  bundlePath: string;
+  byteCount: number;
+  fileCount: number;
+};
+
+export class ToolkitCacheManager {
+  private readonly root: string;
+  private readonly store: StateStore;
+  private readonly inFlight = new Map<string, Promise<CachedToolkitBundle>>();
+
+  constructor(root: string, store: StateStore) {
+    if (!root) throw new Error('toolkit cache root is required');
+    this.root = root;
+    this.store = store;
+  }
+
+  computeCacheKey(ownerId: string, spec: ToolkitAcquisitionSpec): string {
+    const raw = [ownerId, spec.sourceIdentity, spec.resolvedRevision, spec.adapterVersion, spec.configDigest].join(':');
+    return createHash('sha256').update(raw).digest('hex');
+  }
+
+  bundlePath(ownerId: string, bundleSha256: string): string {
+    return join(this.root, ownerId, bundleSha256);
+  }
+
+  /**
+   * Publish a bundle whose content this process produced itself, so there is no acquisition spec to
+   * key it by. A custom skill is exactly that shape: a one-skill bundle laid out as
+   * `<bundle>/skills/<name>`, which is the layout the launch projection already reads from the cache
+   * root, so publishing here keeps one cache root and one projection path.
+   */
+  async publishLocalBundle(
+    ownerId: string,
+    files: Record<string, string | Buffer>
+  ): Promise<{ bundleSha256: string; byteCount: number; fileCount: number; bundlePath: string }> {
+    const entries = Object.entries(files);
+    if (entries.length === 0) throw new Error('a local bundle needs at least one file');
+    for (const [relativePath] of entries) {
+      // The bundle is published into the cache root, so a traversing or absolute member would write
+      // outside the directory belonging to this owner. Checking whole segments keeps a file such as
+      // `notes..md` publishable while still refusing every `..`, `.`, and empty segment.
+      const segments = relativePath.split('/');
+      if (relativePath.startsWith('/') || relativePath.includes('\\') || relativePath.includes('\0')
+        || segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+        throw new Error(`unsafe bundle member path: ${relativePath}`);
+      }
+    }
+
+    const tempId = `staging-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const stagingDir = join(this.root, 'staging', tempId);
+    await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+    try {
+      for (const [relativePath, content] of entries) {
+        const memberPath = join(stagingDir, relativePath);
+        await mkdir(dirname(memberPath), { recursive: true, mode: 0o700 });
+        await writeFile(memberPath, content, { mode: 0o600 });
+      }
+
+      const { bundleSha256, byteCount, fileCount } = computeFullTreeDigest(stagingDir);
+      const targetDir = this.bundlePath(ownerId, bundleSha256);
+      await mkdir(dirname(targetDir), { recursive: true, mode: 0o700 });
+
+      if (existsSync(targetDir)) {
+        // Identical content is already published, so the new copy is redundant rather than conflicting.
+        await rm(stagingDir, { recursive: true, force: true });
+      } else {
+        this.fsyncDirectoryRecursive(stagingDir);
+        await rename(stagingDir, targetDir);
+        this.fsyncDirectory(dirname(targetDir));
+      }
+      return { bundleSha256, byteCount, fileCount, bundlePath: targetDir };
+    } catch (error) {
+      await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async reconcileStartup(): Promise<void> {
+    const stagingRoot = join(this.root, 'staging');
+    try {
+      const entries = await readdir(stagingRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          await rm(join(stagingRoot, entry.name), { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
+    } catch {
+      // staging dir absent or inaccessible
+    }
+    // Quarantined bundles are kept for inspection but must not grow without bound.
+    const quarantineRoot = join(this.root, 'quarantine');
+    try {
+      const entries = await readdir(quarantineRoot, { withFileTypes: true });
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      for (const entry of entries) {
+        const stagedAt = Number(entry.name.split('-').pop());
+        if (Number.isFinite(stagedAt) && stagedAt < cutoff) {
+          await rm(join(quarantineRoot, entry.name), { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
+    } catch {
+      // quarantine dir absent
+    }
+  }
+  getExisting(ownerId: string, spec: ToolkitAcquisitionSpec): CachedToolkitBundle | undefined {
+    const cacheKey = this.computeCacheKey(ownerId, spec);
+    const existing = this.store.getToolkitCacheEntry(cacheKey);
+    if (existing && existing.status === 'READY') {
+      const targetPath = this.bundlePath(ownerId, existing.bundleSha256);
+      if (existsSync(targetPath)) {
+        return {
+          cacheKey,
+          ownerId,
+          bundleSha256: existing.bundleSha256,
+          bundlePath: targetPath,
+          byteCount: existing.byteCount,
+          fileCount: existing.fileCount
+        };
+      }
+    }
+    return undefined;
+  }
+
+
+  async getOrAcquire(
+    ownerId: string,
+    spec: ToolkitAcquisitionSpec,
+    acquireFn: (stagingDir: string) => Promise<{ bundleSha256: string; byteCount: number; fileCount: number }>
+  ): Promise<CachedToolkitBundle> {
+    const cacheKey = this.computeCacheKey(ownerId, spec);
+    const existing = this.store.getToolkitCacheEntry(cacheKey);
+
+    if (existing && existing.status === 'READY') {
+      const targetPath = this.bundlePath(ownerId, existing.bundleSha256);
+      if (existsSync(targetPath)) {
+        this.store.upsertToolkitCacheEntry({
+          ...existing,
+          lastUsedAt: Date.now()
+        });
+        return {
+          cacheKey,
+          ownerId,
+          bundleSha256: existing.bundleSha256,
+          bundlePath: targetPath,
+          byteCount: existing.byteCount,
+          fileCount: existing.fileCount
+        };
+      }
+    }
+
+    const pending = this.inFlight.get(cacheKey);
+    if (pending) return pending;
+
+    const task = this.executeAcquisition(cacheKey, ownerId, spec, acquireFn);
+    this.inFlight.set(cacheKey, task);
+    try {
+      return await task;
+    } finally {
+      this.inFlight.delete(cacheKey);
+    }
+  }
+
+  private async executeAcquisition(
+    cacheKey: string,
+    ownerId: string,
+    spec: ToolkitAcquisitionSpec,
+    acquireFn: (stagingDir: string) => Promise<{ bundleSha256: string; byteCount: number; fileCount: number }>
+  ): Promise<CachedToolkitBundle> {
+    const tempId = `staging-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const stagingDir = join(this.root, 'staging', tempId);
+    await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+
+    const now = Date.now();
+    this.store.upsertToolkitCacheEntry({
+      cacheKey,
+      ownerId,
+      sourceIdentity: spec.sourceIdentity,
+      resolvedRevision: spec.resolvedRevision,
+      adapterVersion: spec.adapterVersion,
+      bundleSha256: 'pending',
+      status: 'INITIALIZING',
+      byteCount: 0,
+      fileCount: 0,
+      createdAt: now,
+      lastUsedAt: now,
+      errorSummary: null
+    });
+
+    try {
+      const { bundleSha256, byteCount, fileCount } = await acquireFn(stagingDir);
+      const targetDir = this.bundlePath(ownerId, bundleSha256);
+      await mkdir(dirname(targetDir), { recursive: true, mode: 0o700 });
+
+      if (existsSync(targetDir)) {
+        await rm(stagingDir, { recursive: true, force: true });
+      } else {
+        this.fsyncDirectoryRecursive(stagingDir);
+        await rename(stagingDir, targetDir);
+        this.fsyncDirectory(dirname(targetDir));
+      }
+
+      const publishedRecord: ToolkitCacheEntryRecord = {
+        cacheKey,
+        ownerId,
+        sourceIdentity: spec.sourceIdentity,
+        resolvedRevision: spec.resolvedRevision,
+        adapterVersion: spec.adapterVersion,
+        bundleSha256,
+        status: 'READY',
+        byteCount,
+        fileCount,
+        createdAt: now,
+        lastUsedAt: Date.now(),
+        errorSummary: null
+      };
+      this.store.upsertToolkitCacheEntry(publishedRecord);
+
+      return {
+        cacheKey,
+        ownerId,
+        bundleSha256,
+        bundlePath: targetDir,
+        byteCount,
+        fileCount
+      };
+    } catch (error) {
+      await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      const message = error instanceof Error ? error.message : 'toolkit acquisition failed';
+      this.store.upsertToolkitCacheEntry({
+        cacheKey,
+        ownerId,
+        sourceIdentity: spec.sourceIdentity,
+        resolvedRevision: spec.resolvedRevision,
+        adapterVersion: spec.adapterVersion,
+        bundleSha256: 'failed',
+        status: 'FAILED',
+        byteCount: 0,
+        fileCount: 0,
+        createdAt: now,
+        lastUsedAt: Date.now(),
+        errorSummary: message.slice(0, 1000)
+      });
+      throw error;
+    }
+  }
+
+  private fsyncDirectory(dirPath: string): void {
+    try {
+      const fd = openSync(dirPath, 'r');
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      // Best-effort directory fsync across platforms
+    }
+  }
+
+  private fsyncDirectoryRecursive(dirPath: string): void {
+    try {
+      const items = readdirSync(dirPath, { withFileTypes: true });
+      for (const item of items) {
+        const fullPath = join(dirPath, item.name);
+        if (item.isDirectory()) {
+          this.fsyncDirectoryRecursive(fullPath);
+        } else if (item.isFile()) {
+          try {
+            const fd = openSync(fullPath, 'r');
+            try {
+              fsyncSync(fd);
+            } finally {
+              closeSync(fd);
+            }
+          } catch {
+            // Ignore file sync error
+          }
+        }
+      }
+      this.fsyncDirectory(dirPath);
+    } catch {
+      // Ignore walk errors
+    }
+  }
+
+  /**
+   * Recomputes a published bundle's full-tree digest and quarantines the bundle when the bytes no
+   * longer match the digest the cache row was published with. Quarantine moves the directory under
+   * `<root>/quarantine` and drops the cache row, so the next acquisition re-fetches instead of
+   * serving bytes that failed verification. No cache status is invented, so no schema change is
+   * needed; the dropped row is what makes the cache miss on the next lookup.
+   */
+  async quarantineIfCorrupt(ownerId: string, spec: ToolkitAcquisitionSpec): Promise<{ quarantined: boolean; reason?: string }> {
+    const cacheKey = this.computeCacheKey(ownerId, spec);
+    const entry = this.store.getToolkitCacheEntry(cacheKey);
+    if (!entry || entry.status !== 'READY') return { quarantined: false };
+
+    const targetPath = this.bundlePath(ownerId, entry.bundleSha256);
+    if (!existsSync(targetPath)) {
+      this.store.deleteToolkitCacheEntry(cacheKey);
+      return { quarantined: true, reason: 'bundle directory is missing' };
+    }
+
+    let actualDigest: string;
+    try {
+      actualDigest = computeFullTreeDigest(targetPath).bundleSha256;
+    } catch (error) {
+      actualDigest = `unreadable:${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (actualDigest === entry.bundleSha256) return { quarantined: false };
+
+    const quarantineRoot = join(this.root, 'quarantine');
+    await mkdir(quarantineRoot, { recursive: true, mode: 0o700 });
+    await rename(targetPath, join(quarantineRoot, `${entry.bundleSha256}-${Date.now()}`)).catch(() => undefined);
+    this.store.deleteToolkitCacheEntry(cacheKey);
+    return {
+      quarantined: true,
+      reason: `bundle digest ${actualDigest} does not match published ${entry.bundleSha256}`
+    };
+  }
+
+  async garbageCollect(ownerId: string, maxBytesQuota: number): Promise<{ purgedCount: number; purgedBytes: number }> {
+    const entries = this.store.listToolkitCacheEntries(ownerId);
+    const liveBundleShas = this.store.listReferencedToolkitBundleShas();
+
+    let totalBytes = entries.reduce((sum, e) => sum + (e.status === 'READY' ? e.byteCount : 0), 0);
+    if (totalBytes <= maxBytesQuota) {
+      return { purgedCount: 0, purgedBytes: 0 };
+    }
+
+    let purgedCount = 0;
+    let purgedBytes = 0;
+    // Oldest used first
+    const sorted = [...entries].sort((a, b) => a.lastUsedAt - b.lastUsedAt);
+
+    for (const entry of sorted) {
+      if (totalBytes <= maxBytesQuota) break;
+      if (liveBundleShas.has(entry.bundleSha256)) continue; // Pinned by active workspace
+
+      const dir = this.bundlePath(ownerId, entry.bundleSha256);
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      this.store.deleteToolkitCacheEntry(entry.cacheKey);
+      purgedCount++;
+      purgedBytes += entry.byteCount;
+      totalBytes -= entry.byteCount;
+    }
+
+    return { purgedCount, purgedBytes };
+  }
+}

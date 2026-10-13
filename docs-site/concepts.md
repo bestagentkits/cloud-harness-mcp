@@ -1,0 +1,59 @@
+---
+title: Concepts & Glossary
+description: Essential domain concepts, terminology, and invariants in Cloud Harness MCP.
+---
+
+# Concepts & Glossary
+
+## Core Concepts
+
+### Workspace
+A bounded, temporary working directory created on the host filesystem at `/var/lib/cloud-harness/jobs/<workspaceId>/repo`. A workspace hosts a clean clone of the target Git repository and is mounted exclusively into a single executor container.
+
+### Executor
+The Docker container (`cloud-harness-executor:local`) executing repository commands on behalf of the workspace. It runs with UID/GID 10001 (`harness`), preserves strict hardening (`--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`), operates across 3 partitioned storage zones (`/tmp/cloud-harness-home` RAM tmpfs, `/opt/user-tools` & `/var/cache/harness`, `/workspace`), has no Docker socket, lacks host mount access, and is isolated by network namespaces.
+### Runner
+The trusted central daemon (`apps/runner`) responsible for Docker container lifecycle, SQLite state persistence, GitHub App token brokerage, and audit recording. It is not exposed to the public Internet.
+
+### Principal
+The authenticated identity invoking MCP tools.
+- In **Managed OAuth** mode, the principal is identified by Cloudflare Access claims (`sub`, `email`).
+- In **Static API Key** mode, the principal is identified by the API key record created in the dashboard.
+Workspaces are strictly isolated between different principals. A single principal may hold several concurrent workspaces at once, up to the instance's configured `MAX_ACTIVE_WORKSPACES_PER_OWNER` limit (default 3, `1` restores single-workspace behaviour). Each is addressed by its own opaque `workspaceId`, and once more than one workspace is counted every operation except `workspace_list` must carry that id (or a `workspace_set_active` preference) to avoid a `CONFLICT` ambiguity error.
+
+### Idempotency Key
+A unique client-generated string (8–128 characters) passed to mutating lifecycle operations such as `workspace_open`. If network connectivity drops, sending the same idempotency key recovers the existing workspace without repeating the clone operation.
+
+### Time-To-Live (TTL)
+Every workspace enforces two hard lifetime boundaries:
+1. **Wall TTL (default 900s / 15 min):** The maximum total duration a workspace may exist before automatic termination.
+2. **Idle TTL (default 300s / 5 min):** The maximum period of inactivity between MCP tool calls before cleanup.
+
+### Artifact
+Output files generated during workspace execution (logs, test reports, build outputs) that exceed inline MCP message bounds or need to survive container termination. Managed under `/var/lib/cloud-harness/artifacts`.
+
+### Sibling Git Transfer Helper
+An ephemeral container spawned by the Runner to handle `git_fetch`, `git_pull`, and `git_push`. It mounts the workspace repository as a sibling, receives a 10-minute GitHub App installation token via `stdin`, talks only to `github.com`, and is immediately destroyed.
+
+### Context Manifest & Provenance
+A bounded, vendor-neutral overview of allowlisted instruction files (such as `AGENTS.md`, `CLAUDE.md`, `REVIEW.md`, `DESIGN.md`, and client rule directories), language manifests, and test declarations produced by `workspace_context`. Every item carries immutable provenance (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) stamped by the trusted Runner:
+- `built-in`: release-packaged built-ins (`trust: trusted-control-plane`, `mutableBy: release`)
+- `owner`: runner-managed principal catalog (`trust: owner-controlled`, `mutableBy: owner`)
+- `workspace`: workspace-managed tools overlay (`trust: untrusted-executor`, `mutableBy: workspace-process`)
+- `repository`: checkout files (`trust: untrusted-executor`, `mutableBy: repository-commit`)
+
+### Repository Guidance Bootstrap
+Agents started with `agent_spawn` receive the workspace's applicable instruction files automatically, in a delimited `untrusted-executor` block ahead of the caller's verbatim task. `repositoryContext` picks the guidance family (`codex` when omitted, `claude`, `cursor`, `aider`, `all`, or `none` to send the task alone). `workspace_open` returns a content-free `repositoryContext` summary, and `workspace_context` marks each instruction file `activeForClient` with an `inactiveReason` using the same selection, so external clients see what a managed agent would receive. Client configuration such as `.aider.conf.yml` is listed but never injected.
+
+### Scoped Memories
+Persistent notes stored in SQLite `StateStore` v5 isolated by `principal_id` across 3 scopes:
+- `owner`: Principal-wide notes persistent across all workspaces.
+- `repository`: Notes bound to `(principal_id, repository_key)`, persistent across workspaces for the same repository.
+- `workspace`: Notes bound to `(principal_id, workspace_id)`, reaped when the workspace terminates.
+Enforces Optimistic Concurrency Control via `expectedGeneration` (CAS: 0 for create, positive integer for update/delete) and automatic TTL cleanup.
+
+### Declarative Lifecycle Hooks
+Pre-configured automation commands declared in `.cloud-harness/hooks.json` for named lifecycle events (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest and runs exclusively inside an unprivileged executor container.
+### Agent Toolkits
+Pre-packaged collections of agent skills (e.g. `mattpocock/skills`, `obra/superpowers`, or custom Git repositories) that can be dynamically mounted or staged into a workspace upon creation. Toolkits are resolved across 4 deterministic precedence tiers (`built-in > owner > workspace > repository`). The default `owner` scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills:ro`, keeping `git status` clean.
+

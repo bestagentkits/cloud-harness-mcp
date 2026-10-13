@@ -1,13 +1,23 @@
 import { z } from 'zod';
-import { AgentIdSchema, IdempotencyKeySchema, SessionIdSchema, ShellIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
-import { AgentProxyOperationSchema, AgentStatusSchema, type RunnerOperation } from './runner-api.js';
-
+import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
+import { SkillSuggestInputSchema } from './typesafe-schemas.js';
+import {
+  JournalTypeSchema,
+  KnowledgeItemIdSchema,
+  KnowledgeKindSchema,
+  KnowledgeLinkIdSchema,
+  KnowledgeRelationSchema,
+  KnowledgeScopeSchema,
+  KnowledgeTagSchema,
+  ProjectIdSchema
+} from './knowledge-schemas.js';
 const relativePath = z.string().min(1).max(1_024).refine((value) => {
   const normalized = value.replaceAll('\\', '/');
   return !normalized.startsWith('/') && !/^[A-Za-z]:/.test(normalized) && !normalized.split('/').includes('..') && !normalized.includes('\0');
 }, 'path must stay workspace-relative');
 const entryPath = relativePath.refine((value) => value.replaceAll('\\', '/') !== '.', 'path must identify an entry below the workspace root');
-const workspace = { workspaceId: WorkspaceIdSchema };
+const workspace = { workspaceId: WorkspaceIdSchema.optional() };
 const pagination = { cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500).default(100) };
 const gitArgument = z.string().min(1).max(255).refine((value) => !value.startsWith('-') && !value.includes('\0'), 'Git argument cannot start with a dash');
 const gitFetchRef = gitArgument.refine((value) => !value.includes(':'), 'Git fetch ref cannot contain a destination');
@@ -16,39 +26,651 @@ const gitRefspec = z.string().min(1).max(512).refine((value) => {
   if (value.startsWith('-') || value.startsWith(':') || value.includes('\0') || value.includes('\n') || value.includes('..') || value.includes('@{')) return false;
   const [source, destination, extra] = value.split(':');
   if (!source || extra !== undefined || !/^(?:HEAD|[A-Za-z0-9._/-]+)$/.test(source)) return false;
-  return destination === undefined || /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(destination);
+  if (destination === undefined) return true;
+  if (destination.startsWith('refs/')) return /^refs\/heads\/[A-Za-z0-9._/-]+$/.test(destination);
+  return /^[A-Za-z0-9._/-]+$/.test(destination);
 }, 'invalid Git branch push refspec');
 const sessionName = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
-const utf8Encoder = new TextEncoder();
-const boundedUtf8Text = (maximumBytes: number) => z.string().min(1).refine(
-  (value) => utf8Encoder.encode(value).byteLength <= maximumBytes,
-  `text must not exceed ${maximumBytes} UTF-8 bytes`
-);
-const decimalCursor = z.string().regex(/^(?:0|[1-9]\d*)$/);
-const positiveDecimalCursor = z.string().regex(/^[1-9]\d*$/);
+const EnvironmentIdSchema = z.string().regex(/^env_[A-Za-z0-9_-]{20,80}$/);
+const SkillFilterSchema = z.object({
+  include: z.array(z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/)).max(128).optional(),
+  exclude: z.array(z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/)).max(128).optional()
+}).strict().superRefine((val, ctx) => {
+  if (val.include && val.exclude) {
+    ctx.addIssue({ code: 'custom', message: 'include and exclude cannot both be specified' });
+  }
+});
+
+const RegistryToolkitReferenceSchema = z.string().min(1).max(300).refine((value) => !value.includes('\0'), 'reference cannot contain null bytes');
+
+export const ToolkitRegistrySelectionSchema = z.object({
+  kind: z.literal('registry'),
+  provider: z.enum(['skills-sh', 'skillx']),
+  instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
+  reference: RegistryToolkitReferenceSchema,
+  ref: gitObjectId.optional(),
+  subdirectory: relativePath.optional(),
+  scope: z.enum(['owner', 'workspace']).default('owner'),
+  skills: SkillFilterSchema.optional(),
+  activation: z.literal('skills-only').default('skills-only')
+}).strict();
+
+export type ToolkitRegistrySelection = z.infer<typeof ToolkitRegistrySelectionSchema>;
+
+export const SkillSetSelectionSchema = z.object({
+  skillSetId: SkillSetIdSchema,
+  expectedGeneration: z.number().int().positive()
+}).strict();
+
+export const SkillOverrideMapSchema = z.record(
+  z.string().regex(/^[A-Za-z0-9._-]{1,80}$/, 'invalid skill name'),
+  SkillRevisionIdSchema
+).refine((value) => Object.keys(value).length <= 128, 'at most 128 skill overrides per launch');
+
+export type SkillSetSelection = z.infer<typeof SkillSetSelectionSchema>;
+export type SkillOverrideMap = z.infer<typeof SkillOverrideMapSchema>;
+
+export const ToolkitSelectionSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('preset'),
+    instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).optional(),
+    id: z.enum(['mattpocock/skills', 'obra/superpowers']),
+    version: z.string().max(80).optional(),
+    scope: z.enum(['owner', 'workspace']).default('owner'),
+    skills: SkillFilterSchema.optional(),
+    activation: z.enum(['skills-only', 'toolkit-default']).default('toolkit-default')
+  }).strict(),
+  z.object({
+    kind: z.literal('git'),
+    instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
+    url: z.string().url().refine((val) => val.startsWith('https://'), 'Git toolkit URL must use HTTPS'),
+    ref: gitObjectId.optional(),
+    subdirectory: relativePath.optional(),
+    scope: z.enum(['owner', 'workspace']).default('owner'),
+    skills: SkillFilterSchema.optional(),
+    layout: z.object({
+      skillRoots: z.array(relativePath).max(16).default(['skills']),
+      recursive: z.boolean().default(true)
+    }).strict().default({ skillRoots: ['skills'], recursive: true }),
+    activation: z.literal('skills-only').default('skills-only')
+  }).strict(),
+  ToolkitRegistrySelectionSchema,
+  // Licensed AgentKit kits. The runner resolves the signed package through the
+  // first-party registry with an operator-provisioned credential, verifies the
+  // manifest signature and package digest, and mounts skills read-only.
+  z.object({
+    kind: z.literal('agentkit'),
+    instanceId: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/).optional(),
+    kitId: z.enum(['engineer', 'marketing']),
+    channel: z.enum(['dev', 'beta', 'stable']).default('stable'),
+    version: z.string().max(80).regex(
+      /^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/,
+      'expected a semantic version'
+    ).optional(),
+    // Licensed content stays owner-scoped: it is mounted read-only and never
+    // materialized into a repository that may later be published.
+    scope: z.literal('owner').default('owner'),
+    skills: SkillFilterSchema.optional(),
+    activation: z.literal('skills-only').default('skills-only')
+  }).strict()
+]);
+
+export type ToolkitSelection = z.infer<typeof ToolkitSelectionSchema>;
+
+/**
+ * Canonical identity for one selection, used for request fingerprints and
+ * duplicate detection. Caller-supplied instance ids win; curated presets and
+ * licensed kits derive theirs from their own coordinates.
+ */
+export function toolkitSelectionIdentity(selection: ToolkitSelection): string {
+  if (selection.kind === 'preset') return selection.instanceId ?? selection.id;
+  if (selection.kind === 'git' || selection.kind === 'registry') return selection.instanceId;
+  return selection.instanceId ?? `agentkit:${selection.kitId}:${selection.channel}`;
+}
+
+/**
+ * One licensed AgentKit kit as advertised by `toolkits_list`. `available` is the
+ * instance-level gate (pinned registry key material); `credentialReady` is the
+ * per-principal gate (a stored licence token). Neither value is a credential.
+ */
+export const LicensedKitCatalogEntrySchema = z.object({
+  kind: z.literal('agentkit'),
+  kitId: z.enum(['engineer', 'marketing']),
+  name: z.string().min(1).max(120),
+  description: z.string().min(1).max(512),
+  defaultChannel: z.enum(['dev', 'beta', 'stable']),
+  available: z.boolean(),
+  credentialReady: z.boolean(),
+  requiresCredentialSecret: z.string().min(1).max(120),
+  supportedScopes: z.array(z.literal('owner')).length(1),
+  activation: z.literal('skills-only'),
+  verification: z.literal('registry-signed')
+}).strict();
+
+export type LicensedKitCatalogEntry = z.infer<typeof LicensedKitCatalogEntrySchema>;
+
+// A ref or revision GitHub resolves server-side: branch, tag, or commit SHA. It is placed in a REST path,
+// so traversal, range syntax, and option-like values are refused up front.
+const githubRevision = z.string().min(1).max(255).refine((value) =>
+  /^[A-Za-z0-9._/-]+$/.test(value) && !value.startsWith('-') && !value.startsWith('/') && !value.includes('..') && !value.endsWith('/'),
+'revision must be a branch, tag, or commit SHA without range syntax');
+const githubHistoryPath = relativePath.refine((value) => !value.includes('?') && !value.includes('#'), 'path cannot contain query or fragment characters');
+const isoInstant = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);
+
+/** Read-only GitHub actions: they never mutate the repository or its issues and pull requests. */
+export const GITHUB_READ_ACTIONS = [
+  'pr_list', 'pr_view', 'pr_review_threads', 'issue_list', 'issue_view', 'commit_list', 'compare', 'release_list', 'tag_list'
+] as const;
+/** Mutating GitHub actions that stay on the destructive-annotated github_action tool. */
+export const GITHUB_WRITE_ACTIONS = [
+  'pr_create', 'pr_update', 'pr_comment', 'issue_create', 'issue_comment', 'issue_comment_update',
+  'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish',
+  'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_review_thread_resolve', 'pr_review_thread_unresolve',
+  'pr_reviewers_request', 'pr_reviewers_remove', 'pr_ready', 'pr_convert_to_draft',
+  'pr_merge', 'pr_auto_merge_enable', 'pr_auto_merge_disable'
+] as const;
+
+const reviewBody = z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes');
+const githubLogin = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username');
+// A team is addressed by its slug inside the organization that owns the repository.
+const githubTeamSlug = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/, 'invalid GitHub team slug');
+// GraphQL node IDs of review threads (`PRRT_...`) come from pr_review_threads.
+const reviewThreadId = z.string().regex(/^PRRT_[A-Za-z0-9_-]{4,200}$/, 'threadId must be a review thread node id from pr_review_threads');
+const reviewSide = z.enum(['LEFT', 'RIGHT']);
+const mergeMethod = z.enum(['merge', 'squash', 'rebase']);
+const reviewerList = <T extends z.ZodType<string>>(item: T) => z.array(item).max(15);
+
+const githubReadActionSchemas = [
+  z.object({
+    ...workspace,
+    action: z.literal('pr_list'),
+    limit: z.number().int().min(1).max(100).default(20),
+    state: z.enum(['open', 'closed', 'all']).default('open')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_view'),
+    prNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_threads'),
+    prNumber: z.number().int().positive(),
+    limit: z.number().int().min(1).max(100).default(50)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_list'),
+    limit: z.number().int().min(1).max(100).default(20),
+    state: z.enum(['open', 'closed', 'all']).default('open')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_view'),
+    issueNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('commit_list'),
+    limit: z.number().int().min(1).max(100).default(30),
+    sha: githubRevision.optional(),
+    path: githubHistoryPath.optional(),
+    since: isoInstant.optional(),
+    until: isoInstant.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('compare'),
+    base: githubRevision,
+    head: githubRevision,
+    limit: z.number().int().min(1).max(250).default(100)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('release_list'),
+    limit: z.number().int().min(1).max(100).default(20)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('tag_list'),
+    limit: z.number().int().min(1).max(100).default(30)
+  })
+] as const;
+
+const githubActionUnion = z.discriminatedUnion('action', [
+  ...githubReadActionSchemas,
+  z.object({
+    ...workspace,
+    action: z.literal('pr_create'),
+    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
+    head: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'head cannot contain null bytes'),
+    base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').default('main'),
+    draft: z.boolean().default(false),
+    labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_update'),
+    prNumber: z.number().int().positive(),
+    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+    base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').optional(),
+    state: z.enum(['open', 'closed']).optional()
+  }).superRefine((input, context) => {
+    if (!input.title && !input.body && !input.base && !input.state) {
+      context.addIssue({ code: 'custom', path: ['title'], message: 'at least one of title, body, base, or state is required' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_comment'),
+    prNumber: z.number().int().positive(),
+    body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review'),
+    prNumber: z.number().int().positive(),
+    event: z.enum(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (input.event !== 'APPROVE' && !input.body?.trim()) {
+      context.addIssue({ code: 'custom', path: ['body'], message: 'body is required for COMMENT and REQUEST_CHANGES reviews' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_comment'),
+    prNumber: z.number().int().positive(),
+    body: reviewBody,
+    path: githubHistoryPath,
+    line: z.number().int().positive(),
+    startLine: z.number().int().positive().optional(),
+    side: reviewSide.default('RIGHT'),
+    startSide: reviewSide.optional(),
+    commitId: gitObjectId.optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (input.startLine !== undefined && (input.startSide ?? input.side) === input.side && input.startLine >= input.line) {
+      context.addIssue({ code: 'custom', path: ['startLine'], message: 'startLine must be lower than line' });
+    }
+    if (input.startSide !== undefined && input.startLine === undefined) {
+      context.addIssue({ code: 'custom', path: ['startSide'], message: 'startSide requires startLine' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_reply'),
+    threadId: reviewThreadId,
+    body: reviewBody,
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_thread_resolve'),
+    threadId: reviewThreadId
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_review_thread_unresolve'),
+    threadId: reviewThreadId
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_reviewers_request'),
+    prNumber: z.number().int().positive(),
+    reviewers: reviewerList(githubLogin).optional(),
+    teamReviewers: reviewerList(githubTeamSlug).optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (!input.reviewers?.length && !input.teamReviewers?.length) {
+      context.addIssue({ code: 'custom', path: ['reviewers'], message: 'at least one of reviewers or teamReviewers is required' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_reviewers_remove'),
+    prNumber: z.number().int().positive(),
+    reviewers: reviewerList(githubLogin).optional(),
+    teamReviewers: reviewerList(githubTeamSlug).optional()
+  }).superRefine((input, context) => {
+    if (!input.reviewers?.length && !input.teamReviewers?.length) {
+      context.addIssue({ code: 'custom', path: ['reviewers'], message: 'at least one of reviewers or teamReviewers is required' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_ready'),
+    prNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_convert_to_draft'),
+    prNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_merge'),
+    prNumber: z.number().int().positive(),
+    method: mergeMethod,
+    commitTitle: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'commitTitle cannot contain null bytes').optional(),
+    commitBody: z.string().max(65_536).refine((val) => !val.includes('\0'), 'commitBody cannot contain null bytes').optional(),
+    matchHeadCommit: gitObjectId.optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (input.method === 'rebase' && (input.commitTitle || input.commitBody)) {
+      context.addIssue({ code: 'custom', path: ['commitTitle'], message: 'GitHub does not accept a commit message for rebase merges' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_auto_merge_enable'),
+    prNumber: z.number().int().positive(),
+    method: mergeMethod,
+    commitTitle: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'commitTitle cannot contain null bytes').optional(),
+    commitBody: z.string().max(65_536).refine((val) => !val.includes('\0'), 'commitBody cannot contain null bytes').optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (input.method === 'rebase' && (input.commitTitle || input.commitBody)) {
+      context.addIssue({ code: 'custom', path: ['commitTitle'], message: 'GitHub does not accept a commit message for rebase merges' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_auto_merge_disable'),
+    prNumber: z.number().int().positive()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_create'),
+    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
+    labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+    assignees: z.array(z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username')).max(10).optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_comment'),
+    issueNumber: z.number().int().positive(),
+    body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes'),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_comment_update'),
+    commentId: z.number().int().positive(),
+    body: z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('label_create'),
+    name: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label name cannot contain null bytes'),
+    color: z.string().regex(/^[0-9A-Fa-f]{6}$/).optional(),
+    description: z.string().max(200).optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_labels_add'),
+    issueNumber: z.number().int().positive(),
+    labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).min(1).max(50),
+    createMissing: z.boolean().default(true),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_labels_remove'),
+    issueNumber: z.number().int().positive(),
+    label: z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_update'),
+    issueNumber: z.number().int().positive(),
+    title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
+    body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+    state: z.enum(['open', 'closed']).optional(),
+    stateReason: z.enum(['completed', 'not_planned', 'reopened']).optional()
+  }).superRefine((input, context) => {
+    if (!input.title && !input.body && !input.state) {
+      context.addIssue({ code: 'custom', path: ['title'], message: 'at least one of title, body, or state is required' });
+    }
+    if (input.stateReason && input.state !== 'closed' && input.stateReason !== 'reopened') {
+      context.addIssue({ code: 'custom', path: ['stateReason'], message: 'stateReason is valid only when closing or reopening an issue' });
+    }
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('issue_publish'),
+    issueNumber: z.number().int().positive(),
+    comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
+    addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+    removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+    createMissingLabels: z.boolean().default(true),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    const hasComment = Boolean(input.comment?.trim());
+    const hasAdd = Boolean(input.addLabels && input.addLabels.length > 0);
+    const hasRemove = Boolean(input.removeLabels && input.removeLabels.length > 0);
+    if (!hasComment && !hasAdd && !hasRemove) {
+      context.addIssue({
+        code: 'custom',
+        path: ['comment'],
+        message: 'at least one of comment, addLabels, or removeLabels is required'
+      });
+    }
+    if (input.addLabels && input.removeLabels) {
+      const addMap: Record<string, true> = {};
+      for (const label of input.addLabels) addMap[label] = true;
+      for (const label of input.removeLabels) {
+        if (addMap[label]) {
+          context.addIssue({
+            code: 'custom',
+            path: ['removeLabels'],
+            message: `label "${label}" cannot appear in both addLabels and removeLabels`
+          });
+        }
+      }
+    }
+  })
+]);
+
+const githubReadUnion = z.discriminatedUnion('action', [...githubReadActionSchemas]);
+
+const githubReadInput = z.object({
+  ...workspace,
+  action: z.enum(GITHUB_READ_ACTIONS),
+  limit: z.number().int().min(1).max(250).optional(),
+  state: z.enum(['open', 'closed', 'all']).optional(),
+  prNumber: z.number().int().positive().optional(),
+  issueNumber: z.number().int().positive().optional(),
+  sha: githubRevision.optional(),
+  path: githubHistoryPath.optional(),
+  since: isoInstant.optional(),
+  until: isoInstant.optional(),
+  base: githubRevision.optional(),
+  head: githubRevision.optional()
+});
+
+const githubActionInput = z.object({
+  ...workspace,
+  action: z.enum([...GITHUB_READ_ACTIONS, ...GITHUB_WRITE_ACTIONS]),
+  limit: z.number().int().min(1).max(250).optional(),
+  state: z.enum(['open', 'closed', 'all']).optional(),
+  prNumber: z.number().int().positive().optional(),
+  issueNumber: z.number().int().positive().optional(),
+  commentId: z.number().int().positive().optional(),
+  title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes').optional(),
+  body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').optional(),
+  head: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'head cannot contain null bytes').optional(),
+  base: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'base cannot contain null bytes').optional(),
+  draft: z.boolean().optional(),
+  labels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+  assignees: z.array(z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/, 'invalid GitHub username')).max(10).optional(),
+  name: z.string().min(1).max(100).refine((val) => !val.includes('\0'), 'label name cannot contain null bytes').optional(),
+  color: z.string().regex(/^[0-9A-Fa-f]{6}$/).optional(),
+  description: z.string().max(200).optional(),
+  label: z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas').optional(),
+  createMissing: z.boolean().optional(),
+  createMissingLabels: z.boolean().optional(),
+  stateReason: z.enum(['completed', 'not_planned', 'reopened']).optional(),
+  comment: z.string().max(65_536).refine((val) => !val.includes('\0'), 'comment cannot contain null bytes').optional(),
+  addLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+  removeLabels: z.array(z.string().min(1).max(100).refine((val) => !val.includes('\0') && !val.includes(','), 'label cannot contain null bytes or commas')).max(50).optional(),
+  sha: githubRevision.optional(),
+  path: githubHistoryPath.optional(),
+  since: isoInstant.optional(),
+  until: isoInstant.optional(),
+  event: z.enum(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']).optional(),
+  line: z.number().int().positive().optional(),
+  startLine: z.number().int().positive().optional(),
+  side: reviewSide.optional(),
+  startSide: reviewSide.optional(),
+  commitId: gitObjectId.optional(),
+  threadId: reviewThreadId.optional(),
+  reviewers: reviewerList(githubLogin).optional(),
+  teamReviewers: reviewerList(githubTeamSlug).optional(),
+  method: mergeMethod.optional(),
+  commitTitle: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'commitTitle cannot contain null bytes').optional(),
+  commitBody: z.string().max(65_536).refine((val) => !val.includes('\0'), 'commitBody cannot contain null bytes').optional(),
+  matchHeadCommit: gitObjectId.optional(),
+  idempotencyKey: IdempotencyKeySchema.optional()
+});
+
 const profileId = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
 const uniqueProxyOperations = z.array(AgentProxyOperationSchema)
   .min(1)
   .max(AgentProxyOperationSchema.options.length)
   .refine((operations) => new Set(operations).size === operations.length, 'proxy operations must be unique');
+const decimalCursor = z.string().regex(/^(?:0|[1-9]\d*)$/);
+const positiveDecimalCursor = z.string().regex(/^[1-9]\d*$/);
+const boundedUtf8Text = (maxBytes: number) =>
+  z.string().min(1).refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes, `text must be <= ${maxBytes} bytes`);
+
 const agentLookup = z.object({
   ...workspace,
   agentId: AgentIdSchema.optional(),
   idempotencyKey: IdempotencyKeySchema.optional()
 }).strict().superRefine((input, context) => {
   if ((input.agentId === undefined) === (input.idempotencyKey === undefined)) {
-    context.addIssue({ code: 'custom', message: 'exactly one of agentId or idempotencyKey is required' });
+    context.addIssue({
+      code: 'custom',
+      path: ['agentId'],
+      message: 'either agentId or idempotencyKey must be provided, but not both'
+    });
   }
 });
 
 const schemas = {
-  workspace_open: z.object({ repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema, networkMode: z.enum(['none', 'bridge']).optional() }),
+  workspace_open: z.object({
+    repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
+    fetchDepth: z.number().int().min(0).max(100_000).optional()
+      .describe('Commits of history to clone; 0 clones full history. Omitted keeps the default single-commit clone.'),
+    shallowSince: isoInstant.optional().describe('Clone history newer than this ISO date or datetime instead of a commit count.'),
+    networkProfile: ExecutorNetworkProfileSchema.optional(),
+    networkMode: z.unknown().optional().meta({
+      deprecated: true,
+      description: 'Retired and rejected: this field was replaced by networkProfile.'
+    }),
+    environmentId: EnvironmentIdSchema.optional(),
+    confirmEnvironmentInjection: z.literal(true).optional(),
+    toolkits: z.array(ToolkitSelectionSchema).max(8).default([]),
+    skillSets: z.array(SkillSetSelectionSchema).max(16).default([]),
+    skillOverrides: SkillOverrideMapSchema.default({}),
+    allowToolkitWorkspaceChanges: z.literal(true).optional()
+  }).superRefine((input, context) => {
+    if (input.networkMode !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['networkMode'],
+        message: "networkMode was replaced by networkProfile; choose 'network-none' or 'dependency-access'"
+      });
+    }
+    if (input.fetchDepth !== undefined && input.shallowSince !== undefined) {
+      context.addIssue({ code: 'custom', path: ['shallowSince'], message: 'choose either fetchDepth or shallowSince, not both' });
+    }
+    if (Boolean(input.environmentId) !== Boolean(input.confirmEnvironmentInjection)) {
+      context.addIssue({ code: 'custom', path: ['confirmEnvironmentInjection'], message: 'environment injection requires an explicit environment selection and confirmation' });
+    }
+    const hasWorkspaceScope = input.toolkits.some((t) => t.scope === 'workspace');
+    if (hasWorkspaceScope && !input.allowToolkitWorkspaceChanges) {
+      context.addIssue({ code: 'custom', path: ['allowToolkitWorkspaceChanges'], message: 'workspace-scope toolkits require allowToolkitWorkspaceChanges confirmation' });
+    }
+    const instanceIds = new Set<string>();
+    for (const t of input.toolkits) {
+      const key = toolkitSelectionIdentity(t);
+      if (instanceIds.has(key)) {
+        context.addIssue({ code: 'custom', path: ['toolkits'], message: `duplicate toolkit instance or id: ${key}` });
+      }
+      instanceIds.add(key);
+    }
+    const skillSetIds = new Set<string>();
+    for (const set of input.skillSets) {
+      if (skillSetIds.has(set.skillSetId)) {
+        context.addIssue({ code: 'custom', path: ['skillSets'], message: `duplicate skill set: ${set.skillSetId}` });
+      }
+      skillSetIds.add(set.skillSetId);
+    }
+    const overrideNames = Object.keys(input.skillOverrides);
+    if (overrideNames.length > 0 && input.skillSets.length === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['skillOverrides'],
+        message: 'skill overrides require at least one skill set selection'
+      });
+    }
+  }),
   workspace_list: z.object(pagination),
   workspace_status: z.object(workspace),
+  workspace_capabilities: z.object(workspace),
   workspace_close: z.object(workspace),
+  workspace_lease_renew: z.object({ ...workspace, extensionSeconds: z.number().int().min(60).max(86_400).optional() }),
+  workspace_recover: z.object({ ...workspace, mode: z.enum(['resume', 'status', 'patch', 'export']).default('resume'), targetBranch: gitArgument.optional() }),
+  workspace_context: z.object({
+    ...workspace,
+    clientProfile: z.enum(['all', 'claude', 'codex', 'cursor', 'aider']).default('all'),
+    include: z.array(z.enum(['instructions', 'languages', 'test_commands', 'skills'])).max(4).default(['instructions', 'languages', 'test_commands', 'skills']),
+    contentMode: z.enum(['none', 'excerpt']).default('none'),
+    cursor: z.string().max(256).optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+    maxBytes: z.number().int().min(4_096).max(131_072).default(32_768)
+  }),
+  workspace_set_active: z.object({ workspaceId: WorkspaceIdSchema }),
+  workspace_finalize: z.object({
+    ...workspace,
+    paths: z.array(relativePath).max(500).optional(),
+    all: z.boolean().default(true),
+    commitMessage: z.string().min(1).max(10_000),
+    branch: gitArgument.optional(),
+    push: z.boolean().default(true),
+    authorName: z.string().min(1).max(200).optional(),
+    authorEmail: z.email().optional(),
+    preflight: z.object({ checkDiff: z.boolean().default(true), forbiddenPatterns: z.array(z.string()).optional() }).optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }).superRefine((input, context) => {
+    if (!input.all && (!input.paths || input.paths.length === 0)) {
+      context.addIssue({ code: 'custom', path: ['paths'], message: 'paths are required when all is false' });
+    }
+    if (input.all && input.paths && input.paths.length > 0) {
+      context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
+    }
+  }),
   files_list: z.object({ ...workspace, path: relativePath.default('.'), ...pagination }),
-  files_read: z.object({ ...workspace, path: relativePath, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(262_144).default(65_536) }),
+  files_read: z.object({ ...workspace, path: relativePath, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1_048_576).default(65_536), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
   files_write: z.object({ ...workspace, path: relativePath, content: z.string().max(1_048_576), expectedSha256: z.string().length(64).optional() }),
+  files_write_batch: z.object({
+    ...workspace,
+    files: z.array(z.object({
+      path: relativePath,
+      content: z.string().max(1_048_576),
+      expectedSha256: z.string().length(64).optional()
+    })).min(1).max(100),
+    createParents: z.boolean().default(true),
+    atomic: z.boolean().default(true),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
   files_apply_patch: z.object({ ...workspace, path: relativePath, oldText: z.string().max(262_144), newText: z.string().max(262_144), expectedSha256: z.string().length(64).optional() }),
   files_delete: z.object({ ...workspace, path: entryPath, recursive: z.boolean().default(false), expectedSha256: z.string().length(64).optional() }),
   files_move: z.object({ ...workspace, source: entryPath, destination: entryPath, overwrite: z.boolean().default(false) }),
@@ -56,7 +678,16 @@ const schemas = {
   grep_search: z.object({ ...workspace, pattern: z.string().min(1).max(4_096), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
   symbols_search: z.object({ ...workspace, query: z.string().min(1).max(256), path: relativePath.default('.'), language: z.string().regex(/^[A-Za-z0-9_+#.-]{1,40}$/).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
   symbols_references: z.object({ ...workspace, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
-  exec_run: z.object({ ...workspace, command: z.string().min(1).max(32_768), cwd: relativePath.default('.'), timeoutMs: z.number().int().min(100).max(300_000).default(60_000), maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144) }),
+  exec_run: z.object({
+    ...workspace,
+    command: z.string().min(1).max(32_768),
+    cwd: relativePath.default('.'),
+    timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
+    maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144),
+    privileged: z.boolean().default(false),
+    approvalGrantToken: z.string().min(1).max(128).optional(),
+    async: z.boolean().default(false)
+  }),
   shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   shell_close: z.object({ ...workspace, shellId: ShellIdSchema }),
@@ -69,9 +700,12 @@ const schemas = {
   tasks_status: z.object({ ...workspace, taskId: TaskIdSchema, cursor: z.string().max(256).optional() }),
   tasks_cancel: z.object({ ...workspace, taskId: TaskIdSchema }),
   tasks_graph: z.object(workspace),
+  operation_status: z.object({ operationId: OperationIdSchema, cursor: z.string().max(256).optional() }),
+  operation_cancel: z.object({ operationId: OperationIdSchema }),
+  operation_wait: z.object({ operationId: OperationIdSchema, timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
   git_status: z.object(workspace),
-  git_diff: z.object({ ...workspace, staged: z.boolean().default(false), path: relativePath.optional() }),
-  git_log: z.object({ ...workspace, limit: z.number().int().min(1).max(100).default(20) }),
+  git_diff: z.object({ ...workspace, staged: z.boolean().default(false), path: relativePath.optional(), cursor: z.string().max(256).optional(), limit: z.number().int().min(1).max(500_000).default(65_536), readAll: z.boolean().optional() }),
+  git_log: z.object({ ...workspace, limit: z.number().int().min(1).max(500).default(20), cursor: z.string().max(256).optional(), readAll: z.boolean().optional() }),
   git_branch: z.object({ ...workspace, action: z.enum(['list', 'create', 'delete']), name: gitArgument.optional(), startPoint: gitArgument.optional(), force: z.boolean().default(false) }).superRefine((input, context) => {
     if (input.action !== 'list' && !input.name) context.addIssue({ code: 'custom', path: ['name'], message: 'name is required for create and delete' });
   }),
@@ -80,15 +714,30 @@ const schemas = {
     if (!input.all && input.paths.length === 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths are required unless all is true' });
     if (input.all && input.paths.length > 0) context.addIssue({ code: 'custom', path: ['paths'], message: 'paths must be empty when all is true' });
   }),
-  git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200), authorEmail: z.email(), all: z.boolean().default(false) }),
-  git_fetch: z.object({ ...workspace, remote: z.literal('origin').default('origin'), refspec: gitFetchRef.optional() }),
+  git_commit: z.object({ ...workspace, message: z.string().min(1).max(10_000), authorName: z.string().min(1).max(200).optional(), authorEmail: z.email().optional(), all: z.boolean().default(false), expectedHeadOid: gitObjectId.optional(), idempotencyKey: z.string().min(1).max(256).optional() }),
+  git_identity_status: z.object(workspace),
+  git_identity_set: z.object({ ...workspace, name: z.string().min(1).max(200), email: z.email() }),
+  git_fetch: z.object({
+    ...workspace,
+    remote: z.literal('origin').default('origin'),
+    refspec: gitFetchRef.optional(),
+    depth: z.number().int().min(1).max(100_000).optional().describe('Deepen history to this many commits from each fetched tip.'),
+    unshallow: z.boolean().optional().describe('Fetch the complete history of a shallow workspace.'),
+    shallowSince: isoInstant.optional().describe('Deepen history back to this ISO date or datetime.')
+  }).superRefine((input, context) => {
+    const selected = [input.depth !== undefined, input.unshallow === true, input.shallowSince !== undefined].filter(Boolean).length;
+    if (selected > 1) {
+      context.addIssue({ code: 'custom', path: ['depth'], message: 'choose at most one of depth, unshallow, or shallowSince' });
+    }
+  }),
   git_pull: z.object({ ...workspace, remote: z.literal('origin').default('origin'), branch: gitArgument.optional(), strategy: z.enum(['ff-only', 'merge', 'rebase']).default('ff-only') }),
   git_push: z.object({
     ...workspace,
     remote: z.literal('origin').default('origin'),
     refspec: gitRefspec.optional(),
     forceWithLease: z.boolean().default(false),
-    expectedRemoteOid: gitObjectId.optional()
+    expectedRemoteOid: gitObjectId.optional(),
+    idempotencyKey: z.string().min(1).max(256).optional()
   }).superRefine((input, context) => {
     if (input.forceWithLease && !input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid is required with forceWithLease' });
     if (!input.forceWithLease && input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid is only valid with forceWithLease' });
@@ -102,16 +751,209 @@ const schemas = {
   worktrees_list: z.object(workspace),
   worktrees_create: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), ref: gitArgument, createBranch: z.boolean().default(false) }),
   worktrees_remove: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/), force: z.boolean().default(false) }),
-  skills_list: z.object(workspace),
-  skills_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/) }),
-  skills_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/), script: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), args: z.array(z.string().max(2_048)).max(50).default([]), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
-  hooks_list: z.object(workspace),
-  hooks_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
-  memories_list: z.object(workspace),
-  memories_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/) }),
-  memories_write: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), content: z.string().max(262_144) }),
+  skills_list: z.object({ ...workspace, limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional(), includeShadowed: z.boolean().default(true) }),
+  skills_read: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/), source: ProvenanceSourceSchema.optional(), expectedSha256: z.string().length(64).optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(262_144).default(65_536) }),
+  skills_run: z.object({
+    ...workspace,
+    name: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/),
+    source: ProvenanceSourceSchema.optional(),
+    script: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    args: z.array(z.string().max(2_048)).max(50).default([]),
+    timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
+    expectedSha256: z.string().length(64).optional(),
+    expectedContentSha256: z.string().length(64).optional(),
+    // Skill execution runs in a disposable helper container, and that path is gated on an owner
+    // privilege grant. The field stays optional so a caller without one receives an approval request
+    // that names the grant, instead of a validation error that hides the grant it needs.
+    approvalGrantToken: z.string().min(1).max(128).optional()
+  }).superRefine((input, context) => {
+    if (!input.expectedSha256 && !input.expectedContentSha256) {
+      context.addIssue({ code: 'custom', path: ['expectedSha256'], message: 'expectedSha256 or expectedContentSha256 is required to prevent TOCTOU execution of modified scripts' });
+    }
+  }),
+  // The prompt bound is measured in bytes, because the bound exists to limit what leaves the process.
+  skill_suggest: SkillSuggestInputSchema,
+  hooks_list: z.object({ ...workspace, event: HookEventSchema.optional(), includeInactive: z.boolean().default(false), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  hooks_run: z.object({
+    ...workspace,
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    event: HookEventSchema.optional(),
+    expectedSha256: z.string().length(64).optional(),
+    expectedManifestSha256: z.string().length(64).optional(),
+    timeoutMs: z.number().int().min(100).max(300_000).default(60_000)
+  }).superRefine((input, context) => {
+    if (!input.expectedSha256 && !input.expectedManifestSha256) {
+      context.addIssue({ code: 'custom', path: ['expectedManifestSha256'], message: 'expectedManifestSha256 or expectedSha256 is required to prevent TOCTOU execution of modified hooks' });
+    }
+  }),
+  hooks_activate: z.object({ ...workspace, manifestSha256: z.string().length(64), events: z.array(HookEventSchema).min(1).max(10), retentionSeconds: z.number().int().min(60).max(2_592_000).optional() }),
+  hooks_deactivate: z.object({ ...workspace, events: z.array(HookEventSchema).max(10).optional() }),
+  memories_list: z.object({ ...workspace, scope: MemoryScopeSchema.optional(), tags: z.array(z.string().min(1).max(50)).max(16).optional(), limit: z.number().int().min(1).max(100).default(50), cursor: z.string().max(256).optional() }),
+  memories_read: z.object({
+    ...workspace,
+    scope: MemoryScopeSchema.optional(),
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional(),
+    memoryId: z.string().regex(/^mem_[A-Za-z0-9_-]{10,80}$/).optional()
+  }).superRefine((input, context) => {
+    if (!input.name && !input.memoryId) context.addIssue({ code: 'custom', message: 'name or memoryId is required' });
+  }),
+  memories_write: z.object({
+    ...workspace,
+    scope: MemoryScopeSchema.default('workspace'),
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/),
+    content: z.string().max(262_144),
+    tags: z.array(z.string().min(1).max(50)).max(16).default([]),
+    retentionSeconds: z.number().int().min(60).max(31_536_000).optional(),
+    expectedGeneration: z.number().int().min(0).default(0),
+    idempotencyKey: z.string().min(1).max(256).optional()
+  }),
+  memories_search: z.object({
+    ...workspace,
+    query: z.string().min(1).max(512),
+    scope: MemoryScopeSchema.optional(),
+    tags: z.array(z.string().min(1).max(50)).max(16).optional(),
+    tagMatch: z.enum(['all', 'any']).default('all'),
+    limit: z.number().int().min(1).max(50).default(20),
+    cursor: z.string().max(256).optional()
+  }),
+  memories_delete: z.object({
+    ...workspace,
+    memoryId: z.string().regex(/^mem_[A-Za-z0-9_-]{10,80}$/).optional(),
+    name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/).optional(),
+    scope: MemoryScopeSchema.optional(),
+    expectedGeneration: z.number().int().positive().default(1)
+  }).superRefine((input, context) => {
+    if (!input.memoryId && !input.name) context.addIssue({ code: 'custom', message: 'memoryId or name is required' });
+  }),
+  knowledge_create: z.object({
+    ...workspace,
+    kind: KnowledgeKindSchema.default('memory'),
+    scope: KnowledgeScopeSchema.default('workspace'),
+    projectId: ProjectIdSchema.optional(),
+    title: z.string().min(1).max(120),
+    content: z.string().max(262_144),
+    journalType: JournalTypeSchema.optional(),
+    occurredAt: z.number().int().positive().optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).default([]),
+    retentionSeconds: z.number().int().min(60).max(31_536_000).optional(),
+    expectedGeneration: z.number().int().min(0).default(0),
+    idempotencyKey: z.string().min(1).max(256).optional()
+  }).superRefine((input, ctx) => {
+    if (input.scope === 'project' && !input.projectId) {
+      ctx.addIssue({ code: 'custom', message: 'projectId is required for project-scoped knowledge' });
+    }
+    if (input.kind === 'journal' && !input.journalType) {
+      ctx.addIssue({ code: 'custom', message: 'journalType is required for journal items' });
+    }
+  }),
+  knowledge_read: z.object({
+    ...workspace,
+    id: KnowledgeItemIdSchema
+  }),
+  knowledge_update: z.object({
+    ...workspace,
+    id: KnowledgeItemIdSchema,
+    title: z.string().min(1).max(120).optional(),
+    content: z.string().max(262_144).optional(),
+    journalType: JournalTypeSchema.optional(),
+    occurredAt: z.number().int().positive().optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    retentionSeconds: z.number().int().min(60).max(31_536_000).optional(),
+    expectedGeneration: z.number().int().positive()
+  }),
+  knowledge_delete: z.object({
+    ...workspace,
+    id: KnowledgeItemIdSchema,
+    expectedGeneration: z.number().int().positive()
+  }),
+  knowledge_list: z.object({
+    ...workspace,
+    kind: KnowledgeKindSchema.optional(),
+    scope: KnowledgeScopeSchema.optional(),
+    projectId: ProjectIdSchema.optional(),
+    journalType: JournalTypeSchema.optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    tagMatch: z.enum(['all', 'any']).default('all'),
+    limit: z.number().int().min(1).max(100).default(50),
+    cursor: z.string().max(256).optional()
+  }),
+  knowledge_search: z.object({
+    ...workspace,
+    query: z.string().min(1).max(512),
+    kinds: z.array(KnowledgeKindSchema).max(2).optional(),
+    scope: KnowledgeScopeSchema.optional(),
+    projectId: ProjectIdSchema.optional(),
+    journalType: JournalTypeSchema.optional(),
+    tags: z.array(KnowledgeTagSchema).max(16).optional(),
+    tagMatch: z.enum(['all', 'any']).default('all'),
+    limit: z.number().int().min(1).max(50).default(20),
+    cursor: z.string().max(256).optional()
+  }),
+  knowledge_link: z.object({
+    ...workspace,
+    sourceId: KnowledgeItemIdSchema,
+    targetId: KnowledgeItemIdSchema,
+    relation: KnowledgeRelationSchema.default('relates-to'),
+    expectedGeneration: z.number().int().min(0).default(0)
+  }),
+  knowledge_unlink: z.object({
+    ...workspace,
+    linkId: KnowledgeLinkIdSchema.optional(),
+    sourceId: KnowledgeItemIdSchema.optional(),
+    targetId: KnowledgeItemIdSchema.optional(),
+    relation: KnowledgeRelationSchema.optional(),
+    expectedGeneration: z.number().int().positive().optional()
+  }).superRefine((input, ctx) => {
+    if (!input.linkId && (!input.sourceId || !input.targetId)) {
+      ctx.addIssue({ code: 'custom', message: 'linkId or (sourceId and targetId) is required' });
+    }
+  }),
+  knowledge_graph: z.object({
+    ...workspace,
+    rootId: KnowledgeItemIdSchema.optional(),
+    depth: z.number().int().min(1).max(3).default(1),
+    maxNodes: z.number().int().min(1).max(200).default(50),
+    kinds: z.array(KnowledgeKindSchema).max(2).optional(),
+    projectId: ProjectIdSchema.optional()
+  }),
   deployments_list: z.object(workspace),
   deployments_run: z.object({ ...workspace, name: z.string().regex(/^[A-Za-z0-9._-]{1,120}$/), timeoutMs: z.number().int().min(100).max(300_000).default(60_000) }),
+  artifacts_snapshot: z.object({
+    ...workspace,
+    path: relativePath,
+    logicalName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, 'invalid artifact logical name'),
+    retentionSeconds: z.number().int().min(60).max(2_592_000).optional()
+  }),
+  artifacts_list: z.object({
+    cursor: z.string().max(256).optional(),
+    limit: z.number().int().min(1).max(100).default(50)
+  }),
+  artifacts_read: z.object({
+    artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
+    offset: z.number().int().min(0).default(0),
+    limit: z.number().int().min(1).max(1_048_576).default(65_536)
+  }),
+  artifacts_restore: z.object({
+    ...workspace,
+    artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
+    path: relativePath,
+    overwrite: z.boolean().default(false),
+    expectedSha256: z.string().length(64).optional()
+  }),
+  artifacts_delete: z.object({
+    artifactId: z.string().regex(/^art_[A-Za-z0-9_-]{20,80}$/, 'invalid artifact identifier'),
+    expectedGeneration: z.number().int().positive().default(1)
+  }),
+  // SAFETY: `pipe` takes the output of the left schema as the input of the right one, and the union's
+  // own input type is already narrowed by `githubActionInput`, which TypeScript cannot express here.
+  github_action: githubActionInput.pipe(githubActionUnion as unknown as z.ZodType<unknown, z.output<typeof githubActionInput>>),
+  github_read: githubReadInput.pipe(githubReadUnion as unknown as z.ZodType<unknown, z.output<typeof githubReadInput>>),
+  secrets_list: z.object({
+    ...workspace,
+    environmentId: EnvironmentIdSchema.optional(),
+    query: z.string().max(200).optional(),
+    ...pagination
+  }),
   agent_spawn: z.object({
     ...workspace,
     prompt: boundedUtf8Text(131_072),
@@ -123,7 +965,12 @@ const schemas = {
     maxOutputBytes: z.number().int().min(1_024).max(10_485_760).default(262_144),
     maxInputTokens: z.number().int().min(1).max(2_000_000).default(200_000),
     maxOutputTokens: z.number().int().min(1).max(2_000_000).default(32_000),
-    maxCostMicros: z.number().int().min(0).max(1_000_000_000).default(10_000_000)
+    maxCostMicros: z.number().int().min(0).max(1_000_000_000).default(10_000_000),
+    // Which repository guidance is placed before the task; omitted means `codex` (the AGENTS.md
+    // family plus shared REVIEW.md/DESIGN.md). Left without a schema default so omitting it keeps
+    // the idempotency payload of existing callers unchanged.
+    repositoryContext: z.enum(['codex', 'claude', 'cursor', 'aider', 'all', 'none']).optional()
+      .describe('Repository guidance profile placed before the task; omitted uses codex, none sends the task alone.')
   }).strict(),
   agent_status: agentLookup,
   agent_logs: z.object({
@@ -139,7 +986,7 @@ const schemas = {
     mode: z.enum(['steer', 'followUp']),
     message: boundedUtf8Text(65_536)
   }).strict(),
-  agent_cancel: z.object({ ...workspace, agentId: AgentIdSchema }).strict(),
+  agent_cancel: z.object({ ...workspace, agentId: AgentIdSchema, reason: z.string().max(2_000).optional() }).strict(),
   agent_list: z.object({
     ...workspace,
     parentAgentId: AgentIdSchema.optional(),
@@ -147,7 +994,7 @@ const schemas = {
     cursor: positiveDecimalCursor.optional(),
     limit: z.number().int().min(1).max(100).default(50)
   }).strict()
-} satisfies Record<RunnerOperation, z.ZodType>;
+};
 
 export type ToolSpec = {
   name: RunnerOperation;
@@ -161,60 +1008,180 @@ export type ToolSpec = {
 };
 
 const titles: Record<RunnerOperation, string> = {
-  workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_close: 'Close workspace',
-  files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
+  workspace_open: 'Open workspace', workspace_list: 'List workspaces', workspace_status: 'Workspace status', workspace_capabilities: 'Workspace capabilities', workspace_close: 'Close workspace',
+  workspace_lease_renew: 'Renew workspace lease', workspace_recover: 'Recover workspace state', workspace_context: 'Workspace context', workspace_set_active: 'Set active workspace',
+  workspace_finalize: 'Finalize workspace commit and push',
+  files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
   exec_run: 'Run command', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
   sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
   tasks_graph: 'Read task dependency graph',
+  operation_status: 'Read operation status', operation_cancel: 'Cancel operation', operation_wait: 'Wait for operation',
   git_status: 'Git status', git_diff: 'Git diff', git_log: 'Git log', git_branch: 'Manage Git branches', git_checkout: 'Checkout Git ref', git_add: 'Stage Git changes', git_commit: 'Create Git commit', git_fetch: 'Fetch Git refs', git_pull: 'Pull Git changes', git_push: 'Push Git changes', git_merge: 'Merge Git ref', git_rebase: 'Manage Git rebase',
+  git_identity_status: 'Read Git author identity', git_identity_set: 'Set Git author identity',
   worktrees_list: 'List worktrees', worktrees_create: 'Create worktree', worktrees_remove: 'Remove worktree',
-  skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', hooks_list: 'List hooks', hooks_run: 'Run hook', memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory',
+  skills_list: 'List skills', skills_read: 'Read skill', skills_run: 'Run skill script', skill_suggest: 'Suggest a skill',
+  hooks_list: 'List hooks', hooks_run: 'Run hook', hooks_activate: 'Activate lifecycle hooks', hooks_deactivate: 'Deactivate lifecycle hooks',
+  memories_list: 'List memories', memories_read: 'Read memory', memories_write: 'Write memory', memories_search: 'Search memories', memories_delete: 'Delete memory note',
+  knowledge_create: 'Create knowledge note or journal', knowledge_read: 'Read knowledge item', knowledge_update: 'Update knowledge item', knowledge_delete: 'Delete knowledge item', knowledge_list: 'List knowledge items', knowledge_search: 'Hybrid search knowledge items', knowledge_link: 'Link knowledge items', knowledge_unlink: 'Unlink knowledge items', knowledge_graph: 'Query knowledge neighborhood graph',
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
-  agent_spawn: 'Spawn coding agent', agent_status: 'Read coding agent status', agent_logs: 'Read coding agent logs',
-  agent_message: 'Message coding agent', agent_cancel: 'Cancel coding agent', agent_list: 'List coding agents'
+  artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
+  github_action: 'Create and manage GitHub issues, pull requests, native PR reviews, review threads, reviewers, and merges',
+  github_read: 'Read GitHub pull requests, review threads, issues, commits, comparisons, releases, and tags',
+  secrets_list: 'List available secrets',
+  agent_spawn: 'Spawn coding agent',
+  agent_status: 'Read coding agent status',
+  agent_logs: 'Read coding agent logs',
+  agent_message: 'Message coding agent',
+  agent_cancel: 'Cancel coding agent',
+  agent_list: 'List coding agents'
 };
 
-const readOnly: Partial<Record<RunnerOperation, true>> = {
-  workspace_list: true, workspace_status: true, files_list: true, files_read: true, grep_search: true,
-  symbols_search: true, symbols_references: true, sessions_list: true, tasks_list: true, tasks_status: true,
-  tasks_graph: true, git_status: true, git_diff: true, git_log: true, worktrees_list: true, skills_list: true,
-  skills_read: true, hooks_list: true, memories_list: true, memories_read: true, deployments_list: true,
-  agent_status: true, agent_logs: true, agent_list: true
+const descriptions: Record<RunnerOperation, string> = {
+  workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace.',
+  workspace_list: 'List owner-visible workspace records with bounded cursor pagination.',
+  workspace_status: 'Read the lifecycle state and metadata for one workspace.',
+  workspace_capabilities: 'Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens.',
+  workspace_close: 'Stop a workspace executor and permanently remove all workspace files, including unpushed commits.',
+  workspace_lease_renew: 'Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace.',
+  workspace_recover: 'Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.',
+  workspace_context: 'Read the active workspace ID, branch, lease time, Git identity, and repository overview.',
+  workspace_set_active: 'Set the caller preferred active workspace when multiple workspaces exist.',
+  workspace_finalize: 'Transactionally stage changes, run preflights, commit with default or explicit identity, and push to remote in one call.',
+  files_list: 'List one workspace directory with bounded cursor pagination.',
+  files_read: 'Read a bounded byte range from a workspace file with its size, SHA-256, and continuation cursor.',
+  files_write: 'Atomically create or replace a workspace file, optionally guarded by its current SHA-256.',
+  files_write_batch: 'Atomically write multiple workspace files in one call, automatically creating missing parent directories.',
+  files_apply_patch: 'Replace one unique exact text occurrence, optionally guarded by the file SHA-256.',
+  files_delete: 'Delete one workspace file or directory, with explicit recursion and optional file hash guard.',
+  files_move: 'Move or rename one workspace entry, optionally overwriting an existing file.',
+  files_mkdir: 'Create one workspace directory, including missing parents by default.',
+  grep_search: 'Search workspace text with a bounded regular expression and optional path, glob filter, and continuation cursor.',
+  symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring.',
+  symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text.',
+  exec_run: 'Run one bounded shell command in the workspace and return captured output.',
+  shell_open: 'Open an idempotent ephemeral interactive shell in the workspace.',
+  shell_io: 'Send input to or poll bounded output from an open interactive shell.',
+  shell_close: 'Terminate an interactive shell and release its in-memory state.',
+  sessions_list: 'List named coding sessions in a workspace with bounded cursor pagination.',
+  sessions_open: 'Open an idempotent named coding session in the workspace.',
+  sessions_io: 'Send input to or poll bounded output from a named coding session.',
+  sessions_close: 'Terminate a coding session and release its in-memory state.',
+  tasks_list: 'List managed background task records with bounded cursor pagination.',
+  tasks_run: 'Start an idempotent managed command task with optional task dependencies.',
+  tasks_status: 'Read one managed task state and its next bounded output chunk.',
+  tasks_cancel: 'Terminate a managed task process group without rolling back completed effects.',
+  tasks_graph: 'Read the current managed-task dependency graph for a workspace.',
+  operation_status: 'Query the execution state, progress, and terminal result of a long-running operation.',
+  operation_cancel: 'Cancel an in-flight long-running operation.',
+  operation_wait: 'Wait for a long-running operation to reach a terminal state with a timeout.',
+  git_status: 'Read branch, index, and working-tree status for the workspace repository.',
+  git_diff: 'Read a bounded staged or unstaged Git diff with cursor pagination and readAll convenience.',
+  git_log: 'Read bounded recent commit metadata from the workspace repository with cursor pagination.',
+  git_branch: 'List, create, or delete a local Git branch with constrained ref arguments.',
+  git_checkout: 'Check out an existing Git ref or create and check out a local branch.',
+  git_add: 'Stage either explicit workspace paths or all tracked and untracked changes.',
+  git_commit: 'Create an unsigned local Git commit with default or explicit author and message.',
+  git_identity_status: 'Read the default or configured Git author name and email for the workspace.',
+  git_identity_set: 'Configure default Git author name and email for workspace commits.',
+  git_fetch: 'Fetch a constrained source ref from origin through the trusted repository broker.',
+  git_pull: 'Integrate an origin branch using ff-only, merge, or rebase strategy.',
+  git_push: 'Push a constrained branch refspec to origin, with optional explicit force-with-lease.',
+  git_merge: 'Merge a Git ref with an explicit fast-forward policy and optional message.',
+  git_rebase: 'Start, continue, or abort a local Git rebase with constrained ref arguments.',
+  worktrees_list: 'List managed Git worktrees and their current branch or HEAD state.',
+  worktrees_create: 'Create a named managed worktree, optionally with a new local branch.',
+  worktrees_remove: 'Remove one named managed worktree, optionally discarding dirty state.',
+  skills_list: 'List repository-provided agent skills discovered in the workspace.',
+  skills_read: 'Read bounded instructions for one repository-provided agent skill.',
+  skills_run: 'Execute one reviewed script packaged by a repository-provided skill.',
+  skill_suggest: 'Suggest at most one skill from the workspace roster for a prompt. When an integration key is configured, the redacted prompt is sent to the configured TypeSafe endpoint; the answer is a skill name, never model prose.',
+  hooks_list: 'List repository-defined Cloud Harness automation hooks without running them.',
+  hooks_run: 'Execute one named repository-defined hook as a bounded shell command.',
+  hooks_activate: 'Explicitly activate reviewed lifecycle hooks for a workspace by exact manifest digest.',
+  hooks_deactivate: 'Deactivate enrolled lifecycle hooks for a workspace.',
+  memories_list: 'List Cloud Harness memory note names across owner, repository, and workspace scopes.',
+  memories_read: 'Read one bounded Cloud Harness memory note by name or ID.',
+  memories_write: 'Create or replace one scoped Cloud Harness memory note with optimistic concurrency.',
+  memories_search: 'Search scoped memory notes by literal text query and tag filters with bounded pagination.',
+  memories_delete: 'Delete one scoped memory note with generation guard.',
+  knowledge_create: 'Create a new scoped memory or chronological journal entry in the control plane with CAS generation 0.',
+  knowledge_read: 'Read one scoped knowledge item by stable ID with metadata, tags, and link relationships.',
+  knowledge_update: 'Atomically update title, content, or metadata of one knowledge item with CAS expectedGeneration.',
+  knowledge_delete: 'Soft-delete one knowledge item by ID with generation guard.',
+  knowledge_list: 'List knowledge items across scopes with project, journal-type, tag, and date filters.',
+  knowledge_search: 'Perform hybrid search combining FTS5 lexical matching and semantic vector similarity with 0–100 relevance scoring.',
+  knowledge_link: 'Create a typed relationship link between two knowledge items.',
+  knowledge_unlink: 'Remove a relationship link between two knowledge items.',
+  knowledge_graph: 'Traverse and query the bounded neighborhood knowledge graph for a root node.',
+  deployments_list: 'List repository-defined deployment targets without running them.',
+  deployments_run: 'Execute one named repository-defined deployment target with external-effect risk.',
+  artifacts_snapshot: 'Preserve one workspace file as a principal-owned, TTL-retained artifact snapshot.',
+  artifacts_list: 'List principal-owned retained artifact snapshots with bounded pagination.',
+  artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
+  artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
+  artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
+  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, and pullRequestMerge; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_list, compare, release_list, tag_list. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list. Maps to operations.pullRequestList, pullRequestView, issueList, issueView, commitList, compare, releaseList, and tagList. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
+  agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
+  agent_status: 'Read the execution state, budgets, and terminal summary of one coding agent.',
+  agent_logs: 'Read bounded streaming diagnostic and tool events from one coding agent.',
+  agent_message: 'Send an idempotent steering or follow-up message to a running coding agent.',
+  agent_cancel: 'Cancel an in-flight coding agent and cascade cancellation to all its child agents.',
+  agent_list: 'List coding agents in a workspace with bounded pagination.'
 };
-const destructive: Partial<Record<RunnerOperation, true>> = {
-  workspace_close: true, files_write: true, files_apply_patch: true, files_delete: true, files_move: true,
-  files_mkdir: true, exec_run: true, shell_open: true, shell_io: true, shell_close: true, sessions_open: true,
-  sessions_io: true, sessions_close: true, tasks_run: true, tasks_cancel: true, git_branch: true,
-  git_checkout: true, git_add: true, git_commit: true, git_fetch: true, git_pull: true, git_push: true,
-  git_merge: true, git_rebase: true, worktrees_create: true, worktrees_remove: true, skills_run: true,
-  hooks_run: true, memories_write: true, deployments_run: true, agent_spawn: true, agent_message: true,
-  agent_cancel: true
-};
-const idempotent: Partial<Record<RunnerOperation, true>> = {
-  workspace_open: true, workspace_list: true, workspace_status: true, workspace_close: true, files_list: true,
-  files_read: true, files_write: true, files_apply_patch: true, files_mkdir: true, grep_search: true,
-  symbols_search: true, symbols_references: true, shell_open: true, shell_close: true, sessions_list: true,
-  sessions_open: true, sessions_close: true, tasks_list: true, tasks_run: true, tasks_status: true,
-  tasks_cancel: true, tasks_graph: true, git_status: true, git_diff: true, git_log: true, git_add: true,
-  worktrees_list: true, skills_list: true, skills_read: true, hooks_list: true, memories_list: true,
-  memories_read: true, memories_write: true, deployments_list: true, agent_spawn: true, agent_status: true,
-  agent_logs: true, agent_message: true, agent_cancel: true, agent_list: true
-};
-const openWorld: Partial<Record<RunnerOperation, true>> = {
-  workspace_open: true, git_fetch: true, git_pull: true, git_push: true, deployments_run: true,
-  agent_spawn: true, agent_message: true
-};
+
+const readOnly = new Set<RunnerOperation>([
+  'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_context',
+  'files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references',
+  'sessions_list', 'tasks_list', 'tasks_status', 'tasks_graph',
+  'operation_status', 'operation_wait',
+  'git_status', 'git_diff', 'git_log', 'git_identity_status',
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search',
+  'knowledge_read', 'knowledge_list', 'knowledge_search', 'knowledge_graph', 'deployments_list',
+  'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
+  'agent_status', 'agent_logs', 'agent_list'
+]);
+const destructive = new Set<RunnerOperation>([
+  'workspace_close', 'workspace_recover', 'workspace_finalize',
+  'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move',
+  'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
+  'tasks_run', 'tasks_cancel', 'operation_cancel',
+  'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
+  'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete',
+  'knowledge_create', 'knowledge_update', 'knowledge_delete', 'knowledge_link', 'knowledge_unlink',
+  'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action',
+  'agent_spawn', 'agent_message', 'agent_cancel'
+]);
+const idempotent = new Set<RunnerOperation>([
+  'workspace_open', 'workspace_list', 'workspace_status', 'workspace_capabilities', 'workspace_close', 'workspace_lease_renew', 'workspace_context', 'workspace_set_active', 'workspace_finalize',
+  'files_list', 'files_read', 'files_write', 'files_write_batch', 'files_apply_patch', 'files_mkdir', 'grep_search', 'symbols_search', 'symbols_references',
+  'shell_open', 'shell_close', 'sessions_list', 'sessions_open', 'sessions_close',
+  'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph',
+  'operation_status', 'operation_cancel', 'operation_wait',
+  'git_status', 'git_diff', 'git_log', 'git_add', 'git_identity_status', 'git_identity_set',
+  'worktrees_list', 'skills_list', 'skills_read', 'hooks_list', 'memories_list', 'memories_read', 'memories_search', 'memories_write',
+  'knowledge_create', 'knowledge_read', 'knowledge_update', 'knowledge_delete', 'knowledge_list', 'knowledge_search', 'knowledge_link', 'knowledge_unlink', 'knowledge_graph',
+  'deployments_list',
+  'artifacts_list', 'artifacts_read', 'secrets_list', 'github_read',
+  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
+]);
+const openWorld = new Set<RunnerOperation>([
+  'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',
+  'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read',
+  'agent_spawn', 'agent_message'
+]);
 
 export const TOOL_SPECS: ToolSpec[] = (Object.keys(schemas) as RunnerOperation[]).map((name) => ({
   name,
   title: titles[name],
-  description: `${titles[name]} inside an owner-bound, TTL-limited cloud coding workspace.`,
+  description: descriptions[name],
   inputSchema: schemas[name],
-  readOnly: readOnly[name] === true,
-  destructive: destructive[name] === true,
-  idempotent: idempotent[name] === true,
-  openWorld: openWorld[name] === true
+  readOnly: readOnly.has(name),
+  destructive: destructive.has(name),
+  idempotent: idempotent.has(name),
+  openWorld: openWorld.has(name)
 }));
 
 export const TOOL_SCHEMA_BY_NAME = schemas;

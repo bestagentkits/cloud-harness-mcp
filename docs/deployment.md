@@ -1,10 +1,14 @@
 # VPS deployment
 
-This route installs the private single-owner service behind an existing nginx
+This route installs the private trusted-operator service behind an existing nginx
 instance. Compose publishes a credential-free TCP ingress proxy only on
 `127.0.0.1:3100`; the API and runner remain on private networks and nginx
 remains the only public ingress. The bootstrap script installs an HTTP server block but
 does not obtain a certificate. Certbot is a separate required step.
+
+`owner-bearer` remains the default. The optional Cloudflare Access route adds
+an authentication edge to this topology; it does not replace the private
+API/runner boundary or grant Cloudflare any Docker authority.
 
 ## Prerequisites and safe preflight
 
@@ -50,10 +54,57 @@ project's dedicated nginx target with the repository's HTTP template, including
 Certbot edits in that file. Back up and deliberately reapply TLS configuration
 before any rerun.
 
+The generated `/etc/cloud-harness-mcp/runtime.env` pins
+`WORKSPACE_NETWORK_PROFILE=dependency-access`, so a fresh host opens workspaces
+with public DNS and TCP 80/443 egress for the GitHub API and the bundled `gh`
+CLI. Provision the host firewall with `deploy/scripts/setup-dependency-firewall.sh`
+before the first workspace open, or set that variable to `network-none` for an
+air-gapped host; an unattested egress profile fails the open closed rather than
+downgrading it. An existing runtime file is never rewritten: an upgraded host
+keeps the value it already has and changes it from the dashboard Settings page or
+by editing that variable. The release canary reports the profile it actually
+resolved together with the effective instance default, so a pinned override that
+outranks the built-in default is visible in the deploy output without host
+access.
+
+For an existing TLS-enabled installation, the Access-mode release deploy runs
+the dedicated application-route upgrade before its public canary. It can also be
+run idempotently after deploying a release that contains it:
+
+```bash
+sudo /usr/local/sbin/cloud-harness-upgrade-nginx
+```
+
+This command reads the configured `API_PUBLIC_HOSTS` allowlist without sourcing
+the runtime file, selects the unique matching TLS server block, and refuses
+ambiguous or pre-existing nonstandard application routing. It backs up the live
+site under `/etc/cloud-harness-mcp/nginx-backups/`, installs the two
+`/dashboard` locations, the exact streaming `/mcp-gateway`, `/mcp-api-key`, and
+`/mcp-api-key/gateway` locations, and the streaming `^~ /mcp/workspaces/` prefix
+location for the workspace-bound MCP endpoint when they are missing, validates
+with `nginx -t`, and reloads nginx. Existing routes
+must match the managed blocks exactly after comments and blank lines are
+removed; otherwise the command fails closed without changing the site, with a
+message naming the route and a route-specific exit status owned by
+[`deploy/scripts/upgrade-nginx-dashboard.sh`](../deploy/scripts/upgrade-nginx-dashboard.sh).
+Exit status `9` means the server block already routes something under `/mcp/`
+(a location or a `proxy_pass` to `127.0.0.1:3100/mcp/`) that is not the managed
+workspace-bound block; reconcile it with
+[`deploy/nginx/cloud-harness-mcp.conf`](../deploy/nginx/cloud-harness-mcp.conf)
+by hand, then rerun the command. Exit status `10` is the same refusal for an
+unmanaged route to `127.0.0.1:3100/mcp-api-key/` that is not the managed
+`/mcp-api-key/gateway` block. A
+failed validation or reload restores the exact backup and attempts to reload
+it. The operation is idempotent. Do not use bootstrap for this upgrade.
+
 Review `/etc/cloud-harness-mcp/runtime.env` as root. Do not print or transfer
 its tokens through logs or shell history. Configure the optional GitHub App
 private-key file only if private clone is required; see
-[configuration](configuration.md#optional-private-github-clone).
+[GitHub App setup for private repositories](github-app-private-repositories.md)
+and the [configuration rationale](configuration.md#optional-github-app-repository-access).
+In Access mode, also install the runner-only secret keyring file and use a
+durable host artifact root. The maintained config template and schema remain
+the exact setting authorities.
 
 The current bootstrap sudoers rule grants the fixed deploy commands to the
 `dev` account. Verify that this is the intended `VPS_USER`; if not, change the
@@ -90,6 +141,181 @@ unambiguously matched its `server_name`. Re-run `nginx -T` and compare against
 the preflight capture. Do not delete or replace certificates used by other
 sites.
 
+## Cloudflare Access rollout
+
+Access mode is an explicit operator rollout after the code is merged and the
+origin is healthy. It requires a hostname in an owner-controlled
+Cloudflare-managed zone and the matching Zero Trust organization; the current
+`sslip.io` hostname may not satisfy that prerequisite.
+
+Use a compatibility deployment before changing authentication configuration.
+Deploy the release while the existing owner-bearer service is healthy, then
+deploy that exact SHA once more without changing configuration. The second pass
+uses the newly installed deployment tooling and records the last-known-good
+configuration and runner-only key directory. Only then switch to Access mode
+and deploy again. If the Access canary or readiness check fails, automatic
+rollback restores that known-good configuration together with the database,
+artifacts, commit, and images. Do not combine the first code deployment and the
+authentication cutover.
+
+In the Cloudflare dashboard, use **Zero Trust → Integrations → Identity
+providers → Add new identity provider** to configure and test
+[GitHub](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/github/)
+and
+[Google](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/google/).
+Then use **Zero Trust → Access controls → Applications → Create new
+application → Self-hosted and private**. Add the selected public hostname
+without a path so the same application protects `/mcp`, the workspace-bound
+`/mcp/workspaces/<workspaceId>` endpoints, `/mcp-gateway`, and
+`/dashboard`, add
+the trusted-operator Allow policy, and select both IdPs under Authentication.
+Edit the application, then enable **Advanced settings → Managed OAuth** as
+described in Cloudflare's
+[Managed OAuth guide](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/).
+
+Under **Allowed redirect URIs**, configure the exact callback URLs required by target AI clients:
+
+- **Claude Desktop (Web/Cloud Connector):**
+  - `https://claude.ai/api/mcp/auth_callback`
+  - `https://claude.com/api/mcp/auth_callback`
+- **Codex App / Native Desktop Clients (Loopback OAuth):**
+  - `http://127.0.0.1:3118/callback/*`
+  - `http://127.0.0.1:3118/*`
+  - `http://localhost:3118/callback/*`
+  - `http://localhost:3118/*`
+- **ChatGPT Web / Custom MCP Connectors:**
+  - `https://chatgpt.com/connector/oauth/*`
+  - `https://chatgpt.com/connector_platform_oauth_redirect`
+  - `https://chatgpt.com/api/aip/p/oauth/callback`
+
+#### Why Allowed redirect URIs and wildcards are required
+
+1. **RFC 7591 Dynamic Client Registration (DCR):** When an AI client initiates an OAuth connection to `https://harness.zuey.me/mcp`, it automatically sends metadata (including `redirect_uris`, `grant_types`, and `client_name`) to the Cloudflare Access registration endpoint (`/cdn-cgi/access/oauth/registration`). If the requested callback URI is not allowlisted in the Cloudflare application settings, Cloudflare rejects the request with `HTTP 400 Bad Request: {"error":"invalid_client_metadata","error_description":"redirect_uri is not allowed by the account configuration"}`.
+2. **Loopback Port Pinning & Dynamic Subpaths:** Native desktop clients (such as Codex App using the `rmcp` engine) generate an ephemeral unique transaction ID per login attempt (e.g. `http://127.0.0.1:3118/callback/<TX_ID>`). Pinning the callback port (`mcp_oauth_callback_port = 3118` in `~/.codex/config.toml`) and adding wildcard subpaths (`/*`) in the Zero Trust Allowed redirect URIs allows these dynamic transaction subpaths to match and succeed without compromising security.
+3. **ChatGPT Connector Subpaths & Least-Privilege Scoping:** ChatGPT Web generates per-connector callback URLs under `https://chatgpt.com/connector/oauth/<CALLBACK_ID>`. Allowlisting `https://chatgpt.com/connector/oauth/*` covers all dynamic connector instances while avoiding overly broad wildcards (such as `https://chatgpt.com/*`) that could risk authorization code leakage on arbitrary parameter-reflecting endpoints.
+
+#### Managed OAuth grant, access token, and browser session
+
+Cloudflare Access governs OAuth clients and browser dashboard sessions through
+separate settings. The decision behind keeping them apart is recorded in the
+[security model](security-model.md#inbound-mcp-oauth-session-lifetimes).
+
+1. **Managed OAuth grant session duration and access-token lifetime (AI OAuth
+   clients):** the grant decides how long a client stays signed in; the access
+   token stays short so each silent refresh re-checks the Access policy. With
+   the optional Cloudflare API integration below, manage both from
+   **Dashboard → Settings → MCP OAuth sessions**. Without it, set them under
+   **Advanced settings → Managed OAuth** in Cloudflare Zero Trust.
+2. **Access application and policy session duration (dashboard browser):** the
+   application and policy **Session Duration** controls the browser
+   application token and when Access re-evaluates access. Cloud Harness never
+   changes it.
+3. **Static client alternative:** IDE/CLI coding agents that support static
+   headers can use the API-key gateway (`https://api.harness.zuey.me/mcp`) with
+   a dashboard-managed API key and avoid OAuth grant expiry entirely.
+
+To enable the Dashboard controls after the Access cutover is healthy:
+
+1. In Cloudflare, create an account API token limited to the one account with
+   **Access: Apps and Policies Write** (or **Read** for a read-only panel).
+   Record the account ID and the Access application ID of the hostname-wide
+   `/mcp` and `/dashboard` application. Do not use the separate API-key
+   gateway application.
+2. Install the token as a root-owned `0600` file at
+   `/etc/cloud-harness-mcp/cloudflare-access-api-token`. Production Compose
+   already mounts that directory read-only into the runner only.
+3. Set the runner variables listed in
+   [configuration](configuration.md#managed-oauth-session-settings), using
+   `CLOUDFLARE_ACCESS_API_TOKEN_FILE=/run/cloud-harness-secrets/cloudflare-access-api-token`,
+   then deploy or restart through the normal release path.
+4. Open **Dashboard → Settings** and confirm the panel shows the provider and a
+   successful last sync. A new install whose grant was never set explicitly
+   receives the provider maximum on startup; an existing customised value is
+   left unchanged until an operator chooses **Adopt** or saves a new value.
+
+Release rollback restores Cloud Harness state but not the Cloudflare value, so
+check the panel after a rollback and save again if it reports drift.
+
+Configure the origin from that same application's issuer, audience, and JWKS
+material, remove the owner bearer, and pin any legacy owner mapping to the
+exact observed issuer and subject. Never infer a mapping from email. The mode
+constraints and operator baseline are owned by
+[configuration](configuration.md#authentication-and-request-policy).
+
+Provisioning Cloudflare, DNS, IdPs, Access policy, and credentials is a live
+owner operation and is not performed by this repository. Before promotion,
+collect sanitized evidence for:
+
+- protected-resource and authorization-server discovery from each release-
+  gating client;
+- GitHub and Google login producing the intended Access-normalized subject;
+- refresh plus logout/revocation, followed by rejection at the origin;
+- unknown and cross-principal resource denial;
+- dashboard CSRF rejection and browser response/storage secret absence;
+- per-principal GitHub App installation/repository reconciliation; and
+- Access-mode deployment canary and rollback from the public HTTPS edge.
+
+If a target client cannot complete Managed OAuth, stop and make the separate
+Managed OAuth versus Workers OAuth Provider decision. Do not add a second
+issuer, hidden bearer path, or unprotected hostname as a compatibility fix.
+
+### API-key gateway rollout
+
+Add the static-client lane only after the existing OAuth and dashboard lane is
+healthy. Create a second Self-hosted Access application scoped to the path
+`harness.zuey.me/mcp-api-key`, with an audience distinct from the hostname-wide
+application. Access path applications also cover subpaths, so this one
+application protects the hidden gateway route `/mcp-api-key/gateway` too. Its only Allow policy is **Service Auth** for one dedicated Worker
+service token. Do not add users, groups, bypass rules, or that service token to
+the main `/mcp` and `/dashboard` application.
+
+Store the token as `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` Worker
+secrets. Deploy the Worker manifest at
+[`apps/api-key-gateway/wrangler.jsonc`](../apps/api-key-gateway/wrangler.jsonc),
+which binds the custom hostname `api.harness.zuey.me`; do not enable a
+`workers.dev` or preview URL. The same manifest provisions
+`API_KEY_RATE_LIMITER`, an aggregate 600-request/60-second cap per Cloudflare
+location. Confirm the deployed Worker version lists that binding and, in a
+controlled preproduction route, prove exhaustion returns bounded JSON `429`
+with `Retry-After: 60` while a failed/missing binding returns JSON `503` and
+does not reach the origin. Do not weaken the origin's authoritative
+per-credential limiter. Observe the verified service principal at the
+origin, normalize and pin that exact value in
+`API_KEY_GATEWAY_SERVICE_SUBJECT`, and set the separate application audience
+and public URL in `API_KEY_GATEWAY_ACCESS_AUDIENCE` and
+`API_KEY_GATEWAY_PUBLIC_URL`. Enable `API_KEY_AUTH_ENABLED` only after those
+values are complete.
+
+Roll out the schema-capable runner and API with the feature disabled first.
+After the quiesced state backup and v2 migration, prove OAuth, GitHub/Google
+dashboard login, and CSRF behavior before enabling the hidden route and Worker.
+Then create a disposable short-lived key in the dashboard and canary:
+
+1. initialize, list tools, and make one bounded call through
+   `https://api.harness.zuey.me/mcp`, and list the five meta-tools through
+   `https://api.harness.zuey.me/mcp-gateway`;
+2. reject the same key on `https://harness.zuey.me/mcp` and
+   `https://harness.zuey.me/mcp-gateway`, and reject direct calls to
+   `/mcp-api-key` and `/mcp-api-key/gateway` without the exact Worker assertion;
+3. revoke the key and prove the next gateway request returns JSON `401`; and
+4. confirm the production Worker version contains the expected rate-limit
+   binding and the sanitized preproduction `429`/fail-closed receipt; and
+5. re-run Managed OAuth discovery/initialize and both IdP dashboard logins.
+
+The Worker forwards only the fixed path table in
+[`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
+When that table gains a path, deploy the origin release and its nginx route
+(`cloud-harness-upgrade-nginx`) first, confirm the hidden route answers, and
+only then redeploy the Worker with `wrangler deploy` from
+`apps/api-key-gateway`. A Worker that forwards to a route the origin does not
+serve yet returns an nginx or origin `404`. The Access application needs no
+change for routes under `/mcp-api-key/`.
+
+Record the exact release SHA, Access application identifiers/audiences, Worker
+deployment, hostnames, and sanitized results separately. Never record either
+the key or service-token values. The Worker route can be removed independently;
+the OAuth/dashboard lane remains available.
+
 ## Deploy a release
 
 The deploy command accepts only an exact 40-character commit that is an
@@ -100,12 +326,141 @@ release_sha="$(git rev-parse HEAD)"
 sudo /usr/local/sbin/cloud-harness-deploy "$release_sha"
 ```
 
+The command starts the deploy as the transient systemd unit
+`cloud-harness-deploy-<sha>` and streams its journal, so closing the terminal or
+losing the SSH connection never interrupts a deploy or its rollback. Running the
+same command again while that unit is active re-attaches to it; read a finished
+deploy with `journalctl -u cloud-harness-deploy-<sha>`.
+
 [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
-checks the hardcoded public origin, quiesces and backs up SQLite, checks out the
-exact commit, builds fixed local images, starts systemd, waits for readiness,
-and performs an authenticated MCP initialization smoke check. On error it
-restores the prior recorded release when available or disables the first
-install.
+checks the hardcoded public origin, stops writes, snapshots the state database,
+artifact store, and root-owned configuration/key files as one recovery set,
+checks out the exact commit, builds fixed local images, starts systemd, waits
+for readiness, and performs an auth-mode-aware canary. On error it restores the
+prior recorded release plus the database and artifacts when available, and
+replaces `/etc/cloud-harness-mcp` with the configuration snapshot recorded at
+the last successful deploy; the config/key copy is retained for coherent manual
+recovery. Configuration edits made after that snapshot are therefore not part of
+a rollback: re-apply them after the host is healthy, or make them through a
+deploy that succeeds. A failed first install is disabled. Active job checkouts
+are not part of the snapshot.
+
+The deploy command takes a nonblocking host lock before reading or mutating the
+shared checkout, service, snapshots, or release metadata. A concurrent manual
+or automated invocation exits with status 75 and performs no rollback; rerun it
+only after the active deployment finishes. This prevents one release from
+rolling back another release's in-progress state.
+
+[`deploy/systemd/cloud-harness-mcp.service`](../deploy/systemd/cloud-harness-mcp.service)
+starts the stack through the installed
+`/usr/local/sbin/cloud-harness-service-compose` wrapper when it exists and
+otherwise through the release's own `deploy/scripts/service-compose.sh`. The
+fallback keeps a release startable on a host whose installed deploy script
+predates the wrapper, which would otherwise leave the unit waiting for a binary
+that only a newer deploy script installs.
+
+Release deployment installs the fixed `cloud-harness-upgrade-nginx` command.
+In Access mode it invokes the same fail-closed operation before the public
+canary; owner-bearer deployments do not change nginx, so an owner-bearer host
+bootstrapped before a route existed (for example the workspace-bound
+`/mcp/workspaces/` prefix) gets it only by running
+`sudo /usr/local/sbin/cloud-harness-upgrade-nginx` after the deploy. If a later manual
+rollback must remove those routes, restore the printed backup path to
+`/etc/nginx/sites-available/cloud-harness-mcp.conf`, run `nginx -t`, and reload
+nginx; normal application rollback can leave the backward-compatible routes in
+place.
+
+### MCP gateway release order and schema v6
+
+The gateway introduces metadata schema v6 and a new internal runner operation
+set, so its deployment is ordered:
+
+1. **Upgrade the runner first, then the API.** The runner validates the internal
+   RPC against its own operation set and refuses an unsupported metadata schema
+   version. A pre-v6 runner cannot serve a v6 database, and an API built for the
+   gateway cannot be paired with a runner that does not know the new metadata
+   operations. Confirm the runner is ready and the v5 → v6 migration applied
+   before starting the new API.
+2. **Install the `/mcp-gateway` route before advertising it.** Run
+   `sudo /usr/local/sbin/cloud-harness-upgrade-nginx` (the deploy script does
+   this in Access mode) and confirm the exact `/mcp-gateway` location is
+   present. The Cloudflare Access application that protects `/mcp` must also
+   cover `/mcp-gateway` with the same audience and policy; this is the same
+   authentication system, not a new one.
+3. **Prove the v6 → v5 rollback path before the release ships.** A pre-v6 runner
+   cannot start on a v6 ledger. Rolling back to a pre-v6 release requires the
+   bounded, quiesced v6 → v5 downgrade, run from the exact release checkout with
+   the state database offline:
+
+   ```bash
+   npm run metadata:down:v5 -w @cloud-harness/runner -- /path/to/db
+   ```
+
+   It requires the ledger to be version 6 and drops only the four gateway tables
+   (servers, cached tools, tool permissions, and traces), destroying the gateway
+   registry by design while leaving `api_keys`, `global_secret_references`,
+   `global_secret_versions`, `secret_references.description`, and the
+   `secret_references.purpose` and `global_secret_references.purpose` columns
+   intact. Unlike `metadata:down:v1`, it never chains
+   further down. The ladder is owned by
+   [`apps/runner/src/metadata-schema.ts`](../apps/runner/src/metadata-schema.ts);
+   exercise the command on a copy of the production database and record the
+   result before promoting the release. Restore-from-backup remains the fallback:
+   keep a coherent recovery backup and restore it instead of retrying a downgrade
+   that does not complete.
+
+### Downstream MCP OAuth redirect
+
+Downstream MCP OAuth (the gateway authenticating *to* third-party MCP
+servers) needs no new route or Access application. Its browser callback,
+`/dashboard/mcp-oauth/callback`, is served by the existing `/dashboard/`
+nginx location and protected by the same Access application as the rest of
+the dashboard, so it only works in `cloudflare-access` mode and only for a
+browser that holds a current Access session. Do not add an Access bypass for
+the callback: it requires the verified principal to consume the one-time
+flow.
+
+1. Set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` in
+   `/etc/cloud-harness-mcp/runtime.env` (as root, without printing the file) to
+   the public dashboard hostname plus `/dashboard/mcp-oauth/callback`; the
+   accepted shape is described in
+   [configuration](configuration.md#downstream-mcp-oauth). The hostname must
+   already be in `API_PUBLIC_HOSTS` and covered by the dashboard Access
+   application.
+2. Optionally set `MCP_DOWNSTREAM_OAUTH_CLIENT_METADATA_URL` to a separately
+   hosted Client ID Metadata Document whose `redirect_uris` include that
+   redirect URL.
+3. Apply the change through the normal release deployment, which restarts the
+   service so the API reads the new values. The inbound Managed OAuth
+   **Allowed redirect URIs** list in Cloudflare is unrelated and does not need
+   this URL.
+
+The release introduces metadata schema v7, so upgrade the runner before the
+API as for v6, and prove the bounded v7 → v6 rollback in
+[operations](operations.md#downstream-mcp-oauth-schema-rollback) on a copy of
+the production database before promoting it.
+
+Before rolling back the runner to a release that predates multi-workspace
+admission, reduce every principal to one counted workspace (`CREATING`, `ACTIVE`,
+`REAPING`, `NETWORK_QUARANTINED`). Those releases re-create the retired
+`one_active_workspace_per_owner` unique index while constructing the state store,
+which fails against a database holding two or more counted workspaces for one
+principal and prevents that runner from starting. The retirement, its boot-time
+drop, and the constraint are owned by
+[`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts),
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts), and
+[configuration](configuration.md).
+
+Owner-bearer canary uses the private bearer path. Access canary requires an
+owner-provisioned Access service-token client ID/secret and the public HTTPS
+endpoint, so the request traverses the Access edge; there is no local bearer
+bypass. This proves the public deployment path, not a GitHub/Google Managed
+OAuth user flow or release-gating client compatibility. Rotate or revoke the
+canary credential separately. Store these three canary-only settings in the
+root-owned `/etc/cloud-harness-mcp/canary-credentials` file, not the shared
+runtime configuration; the deploy script exports them only to the transient
+canary container. The exact environment names and invocation are owned by the deploy script and
+[`scripts/deploy-canary.mjs`](../scripts/deploy-canary.mjs).
 
 Verify locally and externally:
 
@@ -121,8 +476,9 @@ The unauthenticated MCP request should be rejected; readiness should succeed.
 Confirm `3100` is loopback-only, the ingress container has no runtime secrets,
 and no API, runner, or executor port is public.
 
-From a trusted operator checkout, run the authenticated production workflow
-with the bearer supplied only through the environment:
+For an owner-bearer deployment, run the authenticated production workflow from
+a trusted operator checkout with the bearer supplied only through the
+environment:
 
 ```bash
 MCP_URL="https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp" \
@@ -136,6 +492,9 @@ it, exercises modern and legacy MCP negotiation, tests cancellation, closes
 the workspace, and emits sanitized JSON. It intentionally records the optional
 private GitHub App clone as not run; repeat a separate leak check only when the
 owner supplies valid App credentials.
+
+This script is not Access/IdP verification; use the Access rollout checklist
+above for that distinct live claim.
 
 ## GitHub Actions deployment
 
@@ -152,12 +511,45 @@ pins the SSH host key, passes an exact commit SHA to the fixed sudo command,
 uses a forced-command deployment key, and removes ephemeral SSH files. Protect the `production` environment and
 restrict who may approve or modify these secrets.
 
+A `classify` job, owned by
+[`scripts/classify-production-deploy.mjs`](../scripts/classify-production-deploy.mjs),
+decides what a CI-triggered run deploys:
+
+- After a successful CI run it waits for the Release run started by the same CI
+  completion, then skips only a merge commit that Release superseded with a
+  version commit (`chore(release): …`, whose parent is that merge) while that
+  version commit has a queued, running, or successful CI run. That run deploys
+  the tagged tree, so one merge still opens one container-recreation window and
+  production reports the newest release. The trade-off is latency: a
+  release-cutting merge reaches production after push CI, Release, and a second
+  full CI run, not after push CI alone.
+- Every other successful run deploys, including any API error, a Release run
+  still busy after ten minutes, or a version commit without a usable CI run.
+- After a failed or cancelled CI run nothing deploys, except when that run
+  belongs to a version commit that is still the head of `main` and whose
+  parent passed CI and was not deployed yet; the parent then deploys, so merged code never waits on a
+  flaky or cancelled version-commit run. The deploy job re-verifies CI success
+  for any commit other than the one CI just tested.
+- If the `classify` job itself fails, the deploy falls back to deploying a
+  successful `main` CI run.
+
+A manual **Deploy production** run (`workflow_dispatch`, optionally with an
+explicit 40-character commit SHA) always deploys and remains the override.
+
 GitHub release automation is separate from deployment. After successful CI,
 `dev` produces beta releases and `main` produces stable releases from
 Conventional Commit history; it requires `contents: write` for the workflow
 token and branch protection that permits its generated version/changelog
-commit. Production deployment remains tied to successful `main` CI, so a
-release tag is not itself production-deployment evidence.
+commit. The version commit carries `[skip ci]`, so on `main` the Release
+workflow then requests CI for it (`gh workflow run ci.yml --ref main`, with
+`RELEASE_TOKEN` or the workflow token as fallback) when it is still the head of
+`main`. That request runs in its own job, the only one with Actions write
+access. Release ignores the dispatched run, and **Deploy production** deploys
+the version commit once it passes. Production deployment remains tied to
+successful `main` CI, so a release tag is not itself production-deployment
+evidence until that run and its deploy succeed. If the request job fails, run
+the same command by hand while the version commit is still the head of `main`;
+the command tests whatever `main` points at.
 
 ## Rollback or disable the route
 
@@ -176,7 +568,14 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-This leaves the project configuration, state, backups, and any dedicated
+This leaves the project configuration, state, artifact store, backups, and any dedicated
 certificate available for investigation. Remove them only after resolving
 their exact ownership and retention requirements. See
 [operations](operations.md) for backup and cleanup.
+
+For an API-key-gateway rollback, disable the Worker custom route first, set
+`API_KEY_AUTH_ENABLED=false`, confirm the hidden origin route returns 404, and
+revoke the Worker service token. A prior binary that understands only metadata
+schema v1 also requires the quiesced v2→v1 procedure in
+[operations](operations.md#api-key-schema-rollback); that downgrade invalidates
+all managed API keys while preserving unrelated metadata.

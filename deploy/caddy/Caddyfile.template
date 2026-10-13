@@ -1,0 +1,33 @@
+# Caddy configuration template for CloudHarness MCP Single-Owner Ingress
+# Upstream target: Loopback Ingress Proxy on 127.0.0.1:3100
+{$DOMAIN} {
+    # If email is provided for ACME Let's Encrypt notifications
+    {$TLS_CONFIG}
+
+    # Security Headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Logging
+    log {
+        output file /var/log/caddy/cloud-harness.log {
+            roll_size 10MB
+            roll_keep 3
+        }
+        format json
+    }
+
+    # Reverse proxy to loopback ingress proxy
+    # flush_interval -1 ensures unbuffered SSE (Server-Sent Events) streaming for MCP
+    reverse_proxy http://127.0.0.1:3100 {
+        flush_interval -1
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

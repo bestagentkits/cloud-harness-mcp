@@ -1,39 +1,85 @@
 import { createServer } from 'node:http';
 import pino from 'pino';
-import { createRunnerApp, RunnerHttpLifecycle } from './app.js';
-import { loadRunnerConfig } from './config.js';
+import { createRunnerApp } from './app.js';
+import { ArtifactStore } from './artifact-store.js';
+import { ApiKeyService } from './api-key-service.js';
+import { ApiKeyStore } from './api-key-store.js';
+import { loadRunnerConfigWithReadiness } from './config.js';
+import { DashboardControlService } from './dashboard-control-service.js';
+import { GitHubApiInstallationVerifier } from './github-api-installation-verifier.js';
+import { GitHubBindingService, GitHubSetupStateStore } from './github-binding-service.js';
+import { SqliteGitHubInstallationStore } from './github-installation-sqlite-store.js';
+import { MetadataStore } from './metadata-store.js';
+import { SecretKeyring } from './secret-keyring.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
+import { DockerAgentGatewayControl } from './agent-gateway-control.js';
+import { ModelProfileStateRepository } from './model-profile-state-repository.js';
+import { CloudflareAccessOAuthProvider } from './cloudflare-access-oauth-provider.js';
+import { OAuthGrantSettingsService } from './oauth-grant-settings-service.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
-const config = loadRunnerConfig();
+const loaded = loadRunnerConfigWithReadiness();
+const config = loaded.config;
 const store = new StateStore(config.stateDb);
-const service = new WorkspaceService(config, store);
+let keyring: SecretKeyring | undefined;
+let secretReadinessError = loaded.secretReadinessError;
+try {
+  keyring = config.secretKeyring ? new SecretKeyring(config.secretKeyring.activeVersion, config.secretKeyring.keys) : undefined;
+} catch {
+  secretReadinessError = 'secret keyring configuration is invalid';
+  logger.error('secret operations disabled because the keyring configuration is invalid');
+}
+const metadata = new MetadataStore(config.stateDb, keyring, secretReadinessError);
+const apiKeyStore = new ApiKeyStore(store.database, (database, principalId, action, key) => {
+  metadata.recordAuditInTransaction(database, principalId, action, 'api_key', key.id, key.generation, {
+    expiresAt: key.expiresAt
+  });
+});
+const apiKeys = new ApiKeyService(store, apiKeyStore);
+const githubInstallations = new SqliteGitHubInstallationStore(store.database);
+const githubBinding = config.githubApp
+  ? new GitHubBindingService(new GitHubSetupStateStore(store.database), githubInstallations, new GitHubApiInstallationVerifier(config.githubApp))
+  : undefined;
+const artifacts = new ArtifactStore(store.database, {
+  root: config.artifactRoot, maxArtifactBytes: config.maxArtifactBytes,
+  maxPrincipalBytes: config.maxPrincipalArtifactBytes,
+  defaultRetentionMs: config.artifactRetentionSeconds * 1_000,
+  maxRetentionMs: 2_592_000_000
+});
+const gatewayControl = config.agents ? new DockerAgentGatewayControl() : undefined;
+const modelProfiles = keyring ? new ModelProfileStateRepository(store.database, keyring) : undefined;
+const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts, { modelProfiles, ...(gatewayControl !== undefined ? { gateway: gatewayControl } : {}) });
+const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding, modelProfiles, gatewayControl, keyring);
+// A job row outlives the process that wrote it, so startup is where an import interrupted by a restart is
+// turned into a terminal state rather than left as a spinner that never ends.
+controls.reconcileInterruptedImports();
+const oauthGrantSettings = new OAuthGrantSettingsService(
+  store,
+  config.cloudflareAccessOAuth ? new CloudflareAccessOAuthProvider(config.cloudflareAccessOAuth) : undefined,
+  (ownerId, action, details) => metadata.recordAudit(ownerId, action, 'instance', 'oauth_grant_settings', 1, details)
+);
 await service.start();
-const lifecycle = new RunnerHttpLifecycle();
-const server = createServer(createRunnerApp(config, service, lifecycle));
+// New installs default to the provider-maximum grant. This never blocks startup and
+// never overwrites a value an operator set explicitly; failures surface in Settings.
+void oauthGrantSettings.reconcileDefault().then(
+  (outcome) => logger.info({ outcome }, 'inbound OAuth grant default reconciled'),
+  () => logger.warn({ outcome: 'failed' }, 'inbound OAuth grant default reconcile failed')
+);
+const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
+  settings: oauthGrantSettings,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal)
+}));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
-let shuttingDown: Promise<void> | undefined;
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return await shuttingDown;
-  shuttingDown = (async () => {
-    logger.info({ signal }, 'runner shutting down');
-    service.beginShutdown();
-    const drained = lifecycle.shutdown();
-    const closed = new Promise<void>((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-    });
-    await Promise.all([drained, closed]);
-    await service.stop();
-    store.close();
-  })();
-  try {
-    await shuttingDown;
-  } catch (error) {
-    logger.error({ err: error }, 'runner shutdown failed');
-    process.exitCode = 1;
-  }
+async function shutdown(signal: string) {
+  logger.info({ signal }, 'runner shutting down');
+  server.close();
+  await service.stop();
+  metadata.close();
+  keyring?.close();
+  store.close();
+  process.exit(0);
 }
 
 process.on('SIGTERM', () => void shutdown('SIGTERM'));

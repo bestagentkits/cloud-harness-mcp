@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+STATE_DIR=/var/lib/cloud-harness
+CONFIG_DIR=/etc/cloud-harness-mcp
+ENV_FILE="$CONFIG_DIR/runtime.env"
+REPO_DIR=/opt/cloud-harness-mcp/repo
+SERVICE_NAME="cloud-harness-mcp.service"
+
+require_root() {
+  if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+    echo "Error: This command requires root privileges. Please run with sudo." >&2
+    exit 1
+  fi
+}
+
+run_compose() {
+  if [[ ! -d "$REPO_DIR" ]]; then
+    echo "Error: Repository directory $REPO_DIR not found." >&2
+    exit 1
+  fi
+  cd "$REPO_DIR"
+  export CLOUD_HARNESS_ENV_FILE="${ENV_FILE}"
+  export HOST_JOBS_ROOT="$STATE_DIR/jobs"
+  export HOST_STATE_ROOT="$STATE_DIR/state"
+  export HOST_ARTIFACT_ROOT="$STATE_DIR/artifacts"
+  if [[ -x /usr/local/sbin/cloud-harness-service-compose ]]; then
+    /usr/local/sbin/cloud-harness-service-compose "$@"
+  elif [[ -x "$REPO_DIR/deploy/scripts/service-compose.sh" ]]; then
+    "$REPO_DIR/deploy/scripts/service-compose.sh" "$@"
+  else
+    docker compose -f compose.yaml -f compose.production.yaml "$@"
+  fi
+}
+cmd_status() {
+  echo "=== CloudHarness MCP Status ==="
+  local current_sha="unknown"
+  if [[ -f "$STATE_DIR/release-current" ]]; then
+    current_sha=$(cat "$STATE_DIR/release-current")
+  fi
+  echo "Current Release SHA: $current_sha"
+  
+  echo -n "Systemd Service: "
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    echo "active (running)"
+  else
+    echo "inactive / stopped"
+  fi
+
+  echo -n "Loopback Ingress (/readyz): "
+  if curl -fsS -m 3 http://127.0.0.1:3100/readyz >/dev/null 2>&1; then
+    echo "healthy (HTTP 200 OK)"
+  else
+    echo "unreachable / unhealthy"
+  fi
+
+  echo ""
+  echo "=== Container Status ==="
+  run_compose ps
+}
+
+cmd_logs() {
+  run_compose logs "$@"
+}
+
+cmd_start() {
+  require_root
+  echo "Starting $SERVICE_NAME..."
+  systemctl start "$SERVICE_NAME"
+  echo "Started. Checking readiness..."
+  cmd_status
+}
+
+cmd_stop() {
+  require_root
+  echo "Stopping $SERVICE_NAME..."
+  systemctl stop "$SERVICE_NAME"
+  echo "Stopped."
+}
+
+cmd_restart() {
+  require_root
+  echo "Restarting $SERVICE_NAME..."
+  systemctl restart "$SERVICE_NAME"
+  echo "Restarted. Checking readiness..."
+  cmd_status
+}
+
+cmd_token() {
+  local subcmd=${1:-view}
+  require_root
+
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "Error: Environment file $ENV_FILE not found." >&2
+    exit 1
+  fi
+
+  case "$subcmd" in
+    view)
+      local token
+      token=$(grep '^MCP_BEARER_TOKEN=' "$ENV_FILE" | cut -d'=' -f2-)
+      if [[ -z "$token" ]]; then
+        echo "Error: MCP_BEARER_TOKEN not found in $ENV_FILE" >&2
+        exit 1
+      fi
+      echo "=== CloudHarness MCP Bearer Token ==="
+      echo "Token: $token"
+      echo ""
+      echo "Use this token in your MCP client configuration (Claude Desktop / Cursor)."
+      ;;
+    rotate)
+      echo "Rotating MCP Bearer Token..."
+      local new_token
+      new_token=$(openssl rand -base64 48 | tr -d '\n')
+      
+      local tmp_env
+      tmp_env=$(mktemp "$CONFIG_DIR/runtime.env.tmp.XXXXXX")
+      chmod 0600 "$tmp_env"
+      
+      grep -v '^MCP_BEARER_TOKEN=' "$ENV_FILE" > "$tmp_env" || true
+      printf 'MCP_BEARER_TOKEN=%s\n' "$new_token" >> "$tmp_env"
+      mv -f "$tmp_env" "$ENV_FILE"
+      chmod 0600 "$ENV_FILE"
+      
+      echo "Token updated in $ENV_FILE. Restarting service..."
+      systemctl restart "$SERVICE_NAME"
+      echo "Service restarted. New MCP Bearer Token:"
+      echo "$new_token"
+      ;;
+    *)
+      echo "Usage: cloudharness token [view|rotate]"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_upgrade() {
+  require_root
+  local target_sha=${1:-}
+  if [[ -x /usr/local/sbin/cloud-harness-deploy ]]; then
+    if [[ -z "$target_sha" ]]; then
+      echo "Resolving latest release on origin/main..."
+      cd "$REPO_DIR"
+      git fetch --prune origin main
+      target_sha=$(git rev-parse origin/main)
+    fi
+    echo "Upgrading to $target_sha via /usr/local/sbin/cloud-harness-deploy..."
+    /usr/local/sbin/cloud-harness-deploy "$target_sha"
+  else
+    echo "Error: /usr/local/sbin/cloud-harness-deploy not found or not executable." >&2
+    exit 1
+  fi
+}
+
+cmd_help() {
+  cat <<'EOF'
+CloudHarness MCP Server Management CLI
+
+Usage:
+  cloudharness <command> [arguments]
+
+Commands:
+  status               Check service, container, and ingress health status
+  logs [service] [-f]  View logs for services (api, runner, ingress, cloudflared)
+  start                Start the cloud-harness-mcp systemd service
+  stop                 Stop the cloud-harness-mcp systemd service
+  restart              Restart the cloud-harness-mcp systemd service
+  token view           Safely display the active MCP Bearer Token
+  token rotate         Generate a new bearer token, update config, and restart
+  upgrade [SHA]        Deploy the latest release (or specified 40-char commit SHA)
+  help                 Display this help information
+EOF
+}
+
+case "${1:-help}" in
+  status)
+    cmd_status
+    ;;
+  logs)
+    shift
+    cmd_logs "$@"
+    ;;
+  start)
+    cmd_start
+    ;;
+  stop)
+    cmd_stop
+    ;;
+  restart)
+    cmd_restart
+    ;;
+  token)
+    shift
+    cmd_token "${1:-view}"
+    ;;
+  upgrade)
+    shift
+    cmd_upgrade "${1:-}"
+    ;;
+  help|--help|-h)
+    cmd_help
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    cmd_help
+    exit 1
+    ;;
+esac

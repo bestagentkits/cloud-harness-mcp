@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { RunnerAgentsConfigSchema, type RunnerOperation } from '@cloud-harness/contracts';
+import { RunnerAgentsConfigSchema, buildRepositoryGuidanceSnapshot, type RunnerOperation } from '@cloud-harness/contracts';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../src/agent-manager.js';
 import type { AgentGatewayControl, AgentLeaseGrant } from '../src/agent-gateway-control.js';
@@ -12,8 +13,14 @@ import { AgentStateRepository } from '../src/agent-state-repository.js';
 import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 
 const directories: string[] = [];
+const openStores: StateStore[] = [];
 afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  for (const store of openStores.splice(0)) {
+    try { store.close(); } catch { /* ignore */ }
+  }
+  for (const directory of directories.splice(0)) {
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 });
 
 const agentsConfig = RunnerAgentsConfigSchema.parse({
@@ -28,25 +35,28 @@ const agentsConfig = RunnerAgentsConfigSchema.parse({
   limits: { minTtlSeconds: 30, maxTtlSeconds: 3_600 }
 });
 
-function workspace(networkMode: WorkspaceRecord['networkMode'] = 'none'): WorkspaceRecord {
+function workspace(networkProfile: WorkspaceRecord['networkProfile'] = 'network-none', ownerId = 'owner'): WorkspaceRecord {
   const now = Date.now();
   return {
-    id: `ws_${'w'.repeat(24)}`, ownerId: 'owner', idempotencyKey: 'workspace-key',
+    id: `ws_${'w'.repeat(24)}`, ownerId, idempotencyKey: 'workspace-key',
     repositoryUrl: 'https://github.com/example/repository.git', repositoryRef: null,
-    containerName: 'executor', workspacePath: '/tmp/workspace', status: 'ACTIVE', networkMode,
-    createdAt: now, lastActivityAt: now, expiresAt: now + 600_000, generation: 1, error: null
+    containerName: 'executor', workspacePath: '/tmp/workspace', environmentId: null, status: 'ACTIVE', networkProfile,
+    createdAt: now, lastActivityAt: now, expiresAt: now + 600_000, hardExpiresAt: now + 3_600_000,
+    gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null
   };
 }
 
 function setup(
-  networkMode: WorkspaceRecord['networkMode'] = 'none',
+  networkProfile: WorkspaceRecord['networkProfile'] = 'network-none',
   config = agentsConfig,
   now?: () => number
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'agent-manager-'));
   directories.push(directory);
   const store = new StateStore(join(directory, 'state.db'));
-  const record = workspace(networkMode);
+  openStores.push(store);
+  const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+  const record = workspace(networkProfile, ownerId);
   store.create(record);
   const repository = new AgentStateRepository(store.database, config.limits);
   const launcher = new FakeLauncher();
@@ -56,9 +66,9 @@ function setup(
   return { store, record, repository, launcher, gateway, toolExecutor, manager };
 }
 
-function spawnInput(overrides: Record<string, unknown> = {}) {
+function spawnInput(record: WorkspaceRecord, overrides: Record<string, unknown> = {}) {
   return {
-    workspaceId: `ws_${'w'.repeat(24)}`,
+    workspaceId: record.id,
     prompt: 'inspect the repository', idempotencyKey: 'spawn-key', profileId: 'default',
     proxyOperations: ['files_read'], ttlSeconds: 30, maxOutputBytes: 262_144,
     maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 1_000_000,
@@ -143,10 +153,10 @@ class FakeLauncher implements AgentLauncher {
 }
 
 async function waitForRunning(manager: AgentManager, record: WorkspaceRecord): Promise<string> {
-  await vi.waitFor(() => expect(manager.dispatch('owner', record, 'agent_status', {
+  await vi.waitFor(() => expect(manager.dispatch(record.ownerId, record, 'agent_status', {
     workspaceId: record.id, idempotencyKey: 'spawn-key'
   })).resolves.toMatchObject({ data: { status: 'RUNNING' } }));
-  const response = await manager.dispatch('owner', record, 'agent_status', {
+  const response = await manager.dispatch(record.ownerId, record, 'agent_status', {
     workspaceId: record.id, idempotencyKey: 'spawn-key'
   });
   return (response.data as { agentId: string }).agentId;
@@ -161,56 +171,112 @@ describe('AgentManager', () => {
     expect(AgentManager.isPublicOperation('deployments_run')).toBe(false);
   });
 
-  it('atomically replays concurrent spawn admission with one runtime launch', async () => {
-    const { manager, record, launcher, store } = setup();
-    const [first, replay] = await Promise.all([
-      manager.dispatch('owner', record, 'agent_spawn', spawnInput()),
-      manager.dispatch('owner', record, 'agent_spawn', spawnInput())
-    ]);
-    expect((first.data as { agentId: string }).agentId).toBe((replay.data as { agentId: string }).agentId);
-    expect([first.data, replay.data]).toEqual(expect.arrayContaining([
-      expect.objectContaining({ replayed: false }), expect.objectContaining({ replayed: true })
-    ]));
-    await vi.waitFor(() => expect(launcher.launches).toHaveLength(1));
+  it('atomically replays concurrent spawn admission with one runtime launch (32-way fan-out)', async () => {
+    const { manager, record, launcher, gateway, store } = setup();
+    const concurrentCount = 32;
+    const requests = Array.from({ length: concurrentCount }, () =>
+      manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record))
+    );
+    const results = await Promise.all(requests);
+    const firstAgentId = (results[0]!.data as { agentId: string }).agentId;
+    for (const res of results) {
+      expect((res.data as { agentId: string }).agentId).toBe(firstAgentId);
+    }
+    const nonReplayed = results.filter((res) => (res.data as { replayed: boolean }).replayed === false);
+    const replayed = results.filter((res) => (res.data as { replayed: boolean }).replayed === true);
+    expect(nonReplayed).toHaveLength(1);
+    expect(replayed).toHaveLength(concurrentCount - 1);
+    expect(launcher.launches).toHaveLength(1);
+    expect(gateway.issued).toHaveLength(1);
     store.close();
   });
 
   it('rejects network-enabled workspaces before launcher or gateway effects', async () => {
-    const { manager, record, launcher, gateway, store } = setup('bridge');
-    await expect(manager.dispatch('owner', record, 'agent_spawn', spawnInput())).rejects.toMatchObject({ code: 'CONFLICT' });
+    const { manager, record, launcher, gateway, store } = setup('dependency-access');
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record))).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(launcher.launches).toHaveLength(0);
     expect(gateway.issued).toHaveLength(0);
     store.close();
   });
 
+  it('skips agent admission for an ACTIVE dependency-access workspace instead of aborting startup', async () => {
+    // Regression: openWorkspaceAdmission throws for a workspace whose profile is not
+    // network-none, and the startup loop called it unconditionally. A single ACTIVE
+    // dependency-access workspace therefore killed the runner on every restart, and the unhealthy
+    // runner took the entire compose stack down with it.
+    const { manager, record, store } = setup('dependency-access');
+    await expect(manager.start()).resolves.toBeUndefined();
+    const admission = store.database.prepare('SELECT COUNT(*) AS count FROM agent_workspace_admission').get() as { count: number };
+    expect(admission.count).toBe(0);
+    // The eligibility rule itself is unchanged: spawning there is still refused.
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record))).rejects.toMatchObject({ code: 'CONFLICT' });
+    await manager.stop();
+    store.close();
+  });
+
+  it('reports a found-but-ineligible workspace as CONFLICT, not NOT_FOUND, when opening admission', () => {
+    const { repository, record, store } = setup('dependency-access');
+    expect(() => repository.openWorkspaceAdmission(record.ownerId, record.id, record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'CONFLICT', message: expect.stringContaining('not eligible for agent admission') }));
+    // A missing workspace, a stale generation, and a foreign owner still read as NOT_FOUND.
+    expect(() => repository.openWorkspaceAdmission(record.ownerId, 'ws_missing', record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    expect(() => repository.openWorkspaceAdmission(record.ownerId, record.id, record.generation + 1, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    const foreignOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'foreign' });
+    expect(() => repository.openWorkspaceAdmission(foreignOwner, record.id, record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    store.close();
+  });
+
+  it('reports a non-ACTIVE network-none workspace as CONFLICT to its owner and NOT_FOUND to others', () => {
+    const { repository, record, store } = setup();
+    store.update(record.id, { status: 'CLOSED' });
+    expect(() => repository.openWorkspaceAdmission(record.ownerId, record.id, record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'CONFLICT' }));
+    const foreignOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'foreign' });
+    expect(() => repository.openWorkspaceAdmission(foreignOwner, record.id, record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    store.close();
+  });
+
   it('makes foreign ownership indistinguishable from a missing workspace', async () => {
     const { manager, record, store } = setup();
-    await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
-    await expect(manager.dispatch('foreign', record, 'agent_status', {
+    const foreignOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'foreign' });
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    await expect(manager.dispatch(foreignOwner, record, 'agent_status', {
       workspaceId: record.id, idempotencyKey: 'spawn-key'
     })).rejects.toMatchObject({ code: 'NOT_FOUND' });
     store.close();
   });
 
-  it('persists message delivery and replays without writing a second protocol record', async () => {
+  it('persists message delivery and replays without writing a second protocol record (32-way fan-out)', async () => {
     const { manager, record, launcher, store } = setup();
-    await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
     const agentId = await waitForRunning(manager, record);
     const chunks: Buffer[] = [];
     launcher.inputs[0]!.on('data', (chunk: Buffer) => chunks.push(chunk));
-    const input = { workspaceId: record.id, agentId, idempotencyKey: 'message-key', mode: 'steer', message: 'focus on tests' };
-    const first = await manager.dispatch('owner', record, 'agent_message', input);
-    const beforeReplay = Buffer.concat(chunks).byteLength;
-    const replay = await manager.dispatch('owner', record, 'agent_message', input);
-    expect(first.data).toMatchObject({ state: 'SENT', replayed: false });
-    expect(replay.data).toMatchObject({ state: 'SENT', replayed: true });
-    expect(Buffer.concat(chunks).byteLength).toBe(beforeReplay);
+    const input = { workspaceId: record.id, agentId, idempotencyKey: 'message-key', mode: 'steer' as const, message: 'focus on tests' };
+    const concurrentCount = 32;
+    const messageRequests = Array.from({ length: concurrentCount }, () =>
+      manager.dispatch(record.ownerId, record, 'agent_message', input)
+    );
+    const messageResults = await Promise.all(messageRequests);
+    const nonReplayed = messageResults.filter((res) => (res.data as { replayed: boolean }).replayed === false);
+    const replayed = messageResults.filter((res) => (res.data as { replayed: boolean }).replayed === true);
+    expect(nonReplayed).toHaveLength(1);
+    expect(replayed.length).toBe(concurrentCount - 1);
+    await vi.waitFor(() => {
+      expect(Buffer.concat(chunks).toString('utf8').split('\n').filter((line) => line.includes('"type":"message"'))).toHaveLength(1);
+    });
+    const followUpReplay = await manager.dispatch(record.ownerId, record, 'agent_message', input);
+    expect(followUpReplay.data).toMatchObject({ state: 'SENT', replayed: true });
     store.close();
   });
 
   it('executes only granted proxy tools and appends bounded protocol events', async () => {
     const { manager, record, launcher, toolExecutor, store } = setup();
-    await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
     const agentId = await waitForRunning(manager, record);
     launcher.outputs[0]!.write(`${JSON.stringify({ type: 'event', sequence: 1, event: { kind: 'notice', message: 'hello' } })}\n`);
     launcher.outputs[0]!.write(`${JSON.stringify({
@@ -218,10 +284,10 @@ describe('AgentManager', () => {
     })}\n`);
     await vi.waitFor(() => expect(toolExecutor).toHaveBeenCalledTimes(1));
     expect(toolExecutor).toHaveBeenCalledWith(expect.objectContaining({
-      ownerId: 'owner', workspaceId: record.id, agentId, operation: 'files_read',
+      ownerId: record.ownerId, workspaceId: record.id, agentId, operation: 'files_read',
       toolInput: expect.objectContaining({ workspaceId: record.id, path: 'README.md' })
     }));
-    const logs = await manager.dispatch('owner', record, 'agent_logs', {
+    const logs = await manager.dispatch(record.ownerId, record, 'agent_logs', {
       workspaceId: record.id, agentId, cursor: '0', limitBytes: 65_536
     });
     expect(logs.data).toMatchObject({ events: [expect.objectContaining({ type: 'event' })] });
@@ -232,7 +298,7 @@ describe('AgentManager', () => {
     const { manager, record, launcher, toolExecutor, store } = setup();
     const content = '\0'.repeat(262_144);
     toolExecutor.mockResolvedValueOnce({ ok: true, message: 'read', data: { content }, truncated: false });
-    await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
     await waitForRunning(manager, record);
     const chunks: Buffer[] = [];
     launcher.inputs[0]!.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -255,46 +321,46 @@ describe('AgentManager', () => {
 
   it('fences a settled parent and cancels descendants post-order before terminal persistence', async () => {
     const { manager, record, launcher, repository, store } = setup();
-    const parentSpawn = await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
+    const parentSpawn = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
     const parentId = (parentSpawn.data as { agentId: string }).agentId;
-    await vi.waitFor(() => expect(repository.findAgent('owner', record.id, parentId)?.status).toBe('RUNNING'));
-    const childSpawn = await manager.dispatch('owner', record, 'agent_spawn', spawnInput({
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, parentId)?.status).toBe('RUNNING'));
+    const childSpawn = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
       idempotencyKey: 'child-key',
       parentAgentId: parentId
     }));
     const childId = (childSpawn.data as { agentId: string }).agentId;
-    await vi.waitFor(() => expect(repository.findAgent('owner', record.id, childId)?.status).toBe('RUNNING'));
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, parentId)?.status).toBe('RUNNING'));
     launcher.outputs[0]!.write(`${JSON.stringify({
       type: 'terminal',
       state: 'SUCCEEDED',
       usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2, cost: 0 }
     })}\n`);
-    await vi.waitFor(() => expect(repository.findAgent('owner', record.id, parentId)?.status).toBe('SUCCEEDED'));
-    expect(repository.findAgent('owner', record.id, childId)?.status).toBe('CANCELLED');
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, parentId)?.status).toBe('SUCCEEDED'));
+    expect(repository.findAgent(record.ownerId, record.id, childId)?.status).toBe('CANCELLED');
     expect(launcher.cleanups.map((cleanup) => cleanup.containerName)).toEqual([
-      repository.findAgent('owner', record.id, childId)?.containerName,
-      repository.findAgent('owner', record.id, parentId)?.containerName
+      repository.findAgent(record.ownerId, record.id, childId)?.containerName,
+      repository.findAgent(record.ownerId, record.id, parentId)?.containerName
     ]);
     store.close();
   });
 
   it('keeps cleanup failures nonterminal with durable retry metadata', async () => {
     const { manager, record, launcher, repository, store } = setup();
-    await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
     const agentId = await waitForRunning(manager, record);
     launcher.failCleanup = true;
-    await expect(manager.dispatch('owner', record, 'agent_cancel', { workspaceId: record.id, agentId })).rejects.toThrow('injected cleanup failure');
-    expect(repository.findAgent('owner', record.id, agentId)?.status).toBe('CANCELLING');
-    expect(repository.cleanupRetry('owner', record.id, agentId, 1)).toMatchObject({ attempts: 1 });
+    await expect(manager.dispatch(record.ownerId, record, 'agent_cancel', { workspaceId: record.id, agentId })).rejects.toThrow('injected cleanup failure');
+    expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('CANCELLING');
+    expect(repository.cleanupRetry(record.ownerId, record.id, agentId, 1)).toMatchObject({ attempts: 1 });
     store.close();
   });
 
   it('removes launched resources when lease issue fails', async () => {
     const { manager, record, launcher, gateway, repository, store } = setup();
     gateway.failIssue = true;
-    const spawned = await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
     const agentId = (spawned.data as { agentId: string }).agentId;
-    await vi.waitFor(() => expect(repository.findAgent('owner', record.id, agentId)?.status).toBe('FAILED'));
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('FAILED'));
     expect(launcher.launches).toHaveLength(0);
     expect(launcher.cleanups).toHaveLength(1);
     store.close();
@@ -302,16 +368,16 @@ describe('AgentManager', () => {
 
   it('attempts local resource removal when gateway drain fails', async () => {
     const { manager, record, launcher, gateway, repository, store } = setup();
-    await manager.dispatch('owner', record, 'agent_spawn', spawnInput());
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
     const agentId = await waitForRunning(manager, record);
     gateway.failRevoke = true;
-    await expect(manager.dispatch('owner', record, 'agent_cancel', {
+    await expect(manager.dispatch(record.ownerId, record, 'agent_cancel', {
       workspaceId: record.id,
       agentId
     })).rejects.toThrow('injected lease revoke failure');
     expect(launcher.cleanups).toHaveLength(1);
-    expect(repository.findAgent('owner', record.id, agentId)?.status).toBe('CANCELLING');
-    expect(repository.cleanupRetry('owner', record.id, agentId, 1)).toBeDefined();
+    expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('CANCELLING');
+    expect(repository.cleanupRetry(record.ownerId, record.id, agentId, 1)).toBeDefined();
     store.close();
   });
 
@@ -319,7 +385,7 @@ describe('AgentManager', () => {
     const { manager, record, repository, launcher, gateway, store } = setup();
     const now = Date.now();
     const reserved = repository.reserveSpawn({
-      id: `agent_${'a'.repeat(24)}`, ownerId: 'owner', workspaceId: record.id, workspaceGeneration: 1,
+      id: `agent_${'a'.repeat(24)}`, ownerId: record.ownerId, workspaceId: record.id, workspaceGeneration: 1,
       idempotencyKey: 'restart-key', payloadHash: 'a'.repeat(64), promptHash: 'b'.repeat(64), profileId: 'default',
       proxyOperations: ['files_read'], budget: { ttlSeconds: 30, maxOutputBytes: 262_144, maxInputTokens: 10_000, maxOutputTokens: 2_000, maxCostMicros: 1_000_000 },
       containerName: 'agent-restart', networkName: 'agent-net-restart', gatewayLeaseId: 'lease-restart', now, expiresAt: now + 30_000
@@ -327,7 +393,7 @@ describe('AgentManager', () => {
     const drain = Promise.withResolvers<void>();
     gateway.revokeGate = drain.promise;
     const starting = manager.start();
-    await vi.waitFor(() => expect(repository.findAgent('owner', record.id, reserved.id)).toMatchObject({
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, reserved.id)).toMatchObject({
       status: 'CANCELLING',
       outcomeUnknown: false
     }));
@@ -336,7 +402,7 @@ describe('AgentManager', () => {
     await starting;
     expect(launcher.reconciled).toBe(true);
     expect(gateway.revoked).toContain(reserved.gatewayLeaseId);
-    expect(repository.findAgent('owner', record.id, reserved.id)).toMatchObject({ status: 'INTERRUPTED', outcomeUnknown: true });
+    expect(repository.findAgent(record.ownerId, record.id, reserved.id)).toMatchObject({ status: 'INTERRUPTED', outcomeUnknown: true });
     await manager.stop();
     store.close();
   });
@@ -354,7 +420,7 @@ describe('AgentManager', () => {
         workspaceRetainedRows: 1
       }
     });
-    const { manager, record, repository, store } = setup('none', config, () => now);
+    const { manager, record, repository, store } = setup('network-none', config, () => now);
     const terminal = repository.reserveSpawn(reservationForManager(record, 'retained', now)).record;
     repository.transitionStatus({
       ownerId: record.ownerId,
@@ -367,12 +433,7 @@ describe('AgentManager', () => {
       terminalReason: 'test terminal'
     });
     store.updateFenced(record.id, record.generation, ['ACTIVE'], { status: 'CLOSED' });
-    const replacement = {
-      ...workspace(),
-      id: `ws_${'r'.repeat(24)}`,
-      idempotencyKey: 'replacement-workspace',
-      workspacePath: '/tmp/replacement'
-    };
+    const replacement = { ...workspace('network-none', record.ownerId), id: `ws_${'r'.repeat(24)}`, idempotencyKey: 'replacement-workspace' };
     store.create(replacement);
     expect(() => repository.reserveSpawn(reservationForManager(replacement, 'blocked', now)))
       .toThrow('retained record capacity');
@@ -412,5 +473,125 @@ describe('AgentManager', () => {
     expect(repository.reserveSpawn(reservationForManager(replacement, 'admitted', now)).record.status).toBe('SPAWNING');
     await restarted.stop();
     store.close();
+  });
+
+  it('fences stale manager from transitioning or executing after epoch bump on restart', async () => {
+    const { manager, record, repository, launcher, gateway, store } = setup();
+    await manager.start();
+    const spawnRes = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const agentId = (spawnRes.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('RUNNING'));
+
+    const secondLauncher = new FakeLauncher();
+    const secondGateway = new FakeGateway();
+    // Create a new restarted manager on the same store which bumps epoch
+    const secondManager = new AgentManager(agentsConfig, store, {
+      repository,
+      launcher: secondLauncher,
+      gateway: secondGateway,
+      toolExecutor: vi.fn(async () => ({ ok: true as const, message: 'ok', data: {}, truncated: false }))
+    });
+    await secondManager.start();
+
+    // The old agent was reconciled to INTERRUPTED by restart
+    expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('INTERRUPTED');
+
+    const initialLaunches = launcher.launches.length;
+    const initialGatewayIssued = gateway.issued.length;
+
+    // The old manager instance attempts to spawn a fresh key with old epoch -> rejected
+    await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, {
+      idempotencyKey: 'fresh-key-after-bump'
+    }))).rejects.toThrow();
+
+    // The old manager instance attempts to message with old epoch -> rejected
+    await expect(manager.dispatch(record.ownerId, record, 'agent_message', {
+      workspaceId: record.id, agentId, idempotencyKey: 'old-epoch-msg', mode: 'steer', message: 'stale'
+    })).rejects.toThrow();
+
+    // Assert zero side effects occurred on the stale manager's launcher/gateway
+    expect(launcher.launches.length).toBe(initialLaunches);
+    expect(gateway.issued.length).toBe(initialGatewayIssued);
+
+    await secondManager.stop();
+    await manager.stop();
+    store.close();
+  });
+});
+
+describe('agent repository guidance bootstrap', () => {
+  function guidedSetup(repositoryGuidance: ConstructorParameters<typeof AgentManager>[2]['repositoryGuidance'], config = agentsConfig) {
+    const directory = mkdtempSync(join(tmpdir(), 'agent-manager-guidance-'));
+    directories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+    const record = workspace('network-none', ownerId);
+    store.create(record);
+    const repository = new AgentStateRepository(store.database, config.limits);
+    const launcher = new FakeLauncher();
+    const gateway = new FakeGateway();
+    const toolExecutor = vi.fn(async () => ({ ok: true as const, message: 'read', data: {}, truncated: false }));
+    const manager = new AgentManager(config, store, { repository, launcher, gateway, toolExecutor, repositoryGuidance });
+    return { store, record, repository, launcher, gateway, manager };
+  }
+
+  it('fails closed before any lease or container exists when the guidance scan fails', async () => {
+    const { manager, record, repository, launcher, gateway } = guidedSetup(async () => { throw new Error('scan exceeded its deadline'); });
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const agentId = (spawned.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('FAILED'));
+    expect(gateway.issued).toHaveLength(0);
+    expect(launcher.launches).toHaveLength(0);
+    const agent = repository.findAgent(record.ownerId, record.id, agentId)!;
+    expect(`${agent.cleanupReason ?? ''} ${agent.terminalReason ?? ''}`).toContain('repositoryContext "none"');
+    await manager.stop();
+  });
+
+  it('keeps a small output budget for the agent instead of ending it on the guidance report', async () => {
+    const items = Array.from({ length: 8 }, (_, index) => {
+      const content = `rule ${index}`;
+      return {
+        kind: 'instruction', path: `.claude/rules/rule-${index}.md`, format: 'claude', clients: ['claude'],
+        contentSha256: createHash('sha256').update(content).digest('hex'), byteCount: content.length, content
+      };
+    });
+    const snapshot = buildRepositoryGuidanceSnapshot({ items, warnings: [], truncated: false });
+    const { manager, record, repository, launcher } = guidedSetup(async () => ({ snapshot, reused: false }));
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { repositoryContext: 'claude', maxOutputBytes: 1_024 }));
+    const agentId = (spawned.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(launcher.inputs).toHaveLength(1));
+    const agent = repository.findAgent(record.ownerId, record.id, agentId)!;
+    expect(agent.status).toBe('RUNNING');
+    expect(repository.readLogs(record.ownerId, record.id, agentId, agent.generation, '0', 1_024).events
+      .every((event) => Buffer.byteLength(event.content) <= 256)).toBe(true);
+    await manager.stop();
+  });
+
+  it('records only counts when the injected-document report would exceed the log event bound', async () => {
+    const items = Array.from({ length: 60 }, (_, index) => {
+      const content = `rule ${index}`;
+      return {
+        kind: 'instruction', path: `.claude/rules/${'r'.repeat(200)}-${index}.md`, format: 'claude', clients: ['claude'],
+        contentSha256: createHash('sha256').update(content).digest('hex'), byteCount: content.length, content
+      };
+    });
+    const snapshot = buildRepositoryGuidanceSnapshot({ items, warnings: [], truncated: false });
+    const config = RunnerAgentsConfigSchema.parse({ ...agentsConfig, limits: { ...agentsConfig.limits, maxLogEventBytes: 4_096 } });
+    const { manager, record, repository, launcher } = guidedSetup(async () => ({ snapshot, reused: true }), config);
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { repositoryContext: 'claude' }));
+    const agentId = (spawned.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(launcher.inputs).toHaveLength(1));
+    const agent = repository.findAgent(record.ownerId, record.id, agentId)!;
+    const page = repository.readLogs(record.ownerId, record.id, agentId, agent.generation, '0', 262_144);
+    const report = JSON.parse(page.events.find((event) => event.type === 'repository_context')!.content) as Record<string, unknown>;
+    expect(report).toMatchObject({ profile: 'claude', listsOmitted: true, snapshotReused: true, snapshotDigest: snapshot.digest, truncated: true });
+    // The profile's input budget bounds the injected guidance, so the remainder is reported as skipped.
+    expect((report.injected as number) + (report.skipped as number)).toBe(60);
+    // The gateway charges one input token per body byte on every turn, so guidance and task stay
+    // within a quarter of the input budget.
+    expect((report.injectedBytes as number) + Buffer.byteLength('inspect the repository')).toBeLessThanOrEqual(2_500);
+    expect(report.skipped as number).toBeGreaterThan(0);
+    await manager.stop();
   });
 });

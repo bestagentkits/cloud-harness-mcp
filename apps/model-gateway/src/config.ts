@@ -1,5 +1,6 @@
 import { lstat, open, readFile, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { isIP } from 'node:net';
 import type { GatewayConfig, GatewayMode, GatewayProfile, ProfileLimits } from './types.js';
 
@@ -96,7 +97,7 @@ export function assertProductionHostname(hostname: string): void {
 }
 
 async function exactRegularFile(path: string, label: string): Promise<string> {
-  if (!path.startsWith('/')) throw new Error(`${label} must be an absolute path`);
+  if (!isAbsolute(path)) throw new Error(`${label} must be an absolute path`);
   const stat = await lstat(path);
   if (stat.isSymbolicLink()) throw new Error(`${label} must not be a symlink`);
   if (!stat.isFile()) throw new Error(`${label} must name an exact regular file`);
@@ -193,33 +194,70 @@ async function parseProfile(raw: unknown, mode: GatewayMode, index: number): Pro
   };
 }
 
+const RESERVED_UPSTREAM_HEADERS: Record<string, true> = {
+  accept: true, 'content-type': true, 'content-length': true, host: true,
+  'user-agent': true, authorization: true, 'x-api-key': true
+};
+
+/**
+ * `MODEL_GATEWAY_SESSION_HEADER` names the optional provider session header the
+ * gateway fills with the calling agent id. It must be a plain lowercase header
+ * name and must not collide with a header the gateway sets itself.
+ */
+function parseSessionHeader(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (!/^[a-z0-9][a-z0-9-]{1,62}$/u.test(value)) {
+    throw new Error('MODEL_GATEWAY_SESSION_HEADER must be a lowercase header name');
+  }
+  if (RESERVED_UPSTREAM_HEADERS[value] === true) {
+    throw new Error(`MODEL_GATEWAY_SESSION_HEADER must not be ${value}`);
+  }
+  return value;
+}
+
 export async function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): Promise<GatewayConfig> {
-  const profileFile = string(env.MODEL_GATEWAY_PROFILES_FILE, 'MODEL_GATEWAY_PROFILES_FILE', 1024);
-  await exactRegularFile(profileFile, 'MODEL_GATEWAY_PROFILES_FILE');
-  const source = await readFile(profileFile, 'utf8');
-  if (Buffer.byteLength(source) > 1_048_576) throw new Error('profile file exceeds 1 MiB');
-  const root = object(JSON.parse(source) as unknown, 'profile file');
-  exactKeys(root, CONFIG_KEYS, 'profile file');
-  if (root.version !== 1) throw new Error('profile file version must be 1');
   const mode = env.MODEL_GATEWAY_MODE;
   if (mode !== 'production' && mode !== 'test') throw new Error('MODEL_GATEWAY_MODE must be production or test');
-  if (root.mode !== mode) throw new Error('profile file mode must match MODEL_GATEWAY_MODE');
-  if (!Array.isArray(root.profiles) || root.profiles.length < 1 || root.profiles.length > 64) throw new Error('profile file must contain 1 through 64 profiles');
+
   const profiles = new Map<string, GatewayProfile>();
-  for (let index = 0; index < root.profiles.length; index += 1) {
-    const profile = await parseProfile(root.profiles[index], mode, index);
-    if (profiles.has(profile.id)) throw new Error(`duplicate profile ${profile.id}`);
-    profiles.set(profile.id, profile);
+  const isDynamic = env.MODEL_GATEWAY_DYNAMIC_MODE === 'true' || Boolean(env.MODEL_GATEWAY_PROFILES_JSON) || !env.MODEL_GATEWAY_PROFILES_FILE;
+
+  if (env.MODEL_GATEWAY_PROFILES_JSON) {
+    const rawList = JSON.parse(env.MODEL_GATEWAY_PROFILES_JSON);
+    if (Array.isArray(rawList)) {
+      for (let index = 0; index < rawList.length; index += 1) {
+        const profile = await parseProfile(rawList[index], mode, index);
+        profiles.set(profile.id, profile);
+      }
+    }
+  } else if (env.MODEL_GATEWAY_PROFILES_FILE) {
+    const profileFile = string(env.MODEL_GATEWAY_PROFILES_FILE, 'MODEL_GATEWAY_PROFILES_FILE', 1024);
+    await exactRegularFile(profileFile, 'MODEL_GATEWAY_PROFILES_FILE');
+    const source = await readFile(profileFile, 'utf8');
+    if (Buffer.byteLength(source) > 1_048_576) throw new Error('profile file exceeds 1 MiB');
+    const root = object(JSON.parse(source) as unknown, 'profile file');
+    exactKeys(root, CONFIG_KEYS, 'profile file');
+    if (root.version !== 1) throw new Error('profile file version must be 1');
+    if (root.mode !== mode) throw new Error('profile file mode must match MODEL_GATEWAY_MODE');
+    if (!Array.isArray(root.profiles) || root.profiles.length < 1 || root.profiles.length > 64) throw new Error('profile file must contain 1 through 64 profiles');
+    for (let index = 0; index < root.profiles.length; index += 1) {
+      const profile = await parseProfile(root.profiles[index], mode, index);
+      if (profiles.has(profile.id)) throw new Error(`duplicate profile ${profile.id}`);
+      profiles.set(profile.id, profile);
+    }
+  } else if (!isDynamic) {
+    throw new Error('MODEL_GATEWAY_PROFILES_FILE must be configured unless dynamic mode is enabled');
   }
+
   const controlSocket = env.MODEL_GATEWAY_CONTROL_SOCKET ?? '/tmp/model-gateway-control.sock';
-  if (!/^\/tmp\/[a-zA-Z0-9._-]+\.sock$/u.test(controlSocket)) {
-    throw new Error('MODEL_GATEWAY_CONTROL_SOCKET must be an exact socket path under /tmp');
-  }
+  const sessionHeader = parseSessionHeader(env.MODEL_GATEWAY_SESSION_HEADER);
   return {
     mode,
     host: env.MODEL_GATEWAY_HOST ?? '0.0.0.0',
     port: integer(Number(env.MODEL_GATEWAY_PORT ?? '3210'), 'MODEL_GATEWAY_PORT', 1, 65_535),
     controlSocket,
-    profiles
+    profiles,
+    tlsCaFile: mode === 'test' ? env.MODEL_GATEWAY_TEST_TLS_CA_FILE : undefined,
+    ...(sessionHeader === undefined ? {} : { sessionHeader })
   };
 }

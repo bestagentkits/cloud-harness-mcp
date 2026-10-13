@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kế Hoạch Triển Khai: CloudHarness HaaS & OSS Platform (v1.2 - Gated Architecture)</title>
+  <style>
+    :root {
+      --bg: #faf7f2;
+      --panel: #f2ece1;
+      --panel-hover: #e8e0d2;
+      --ink: #111111;
+      --muted: #6b6258;
+      --line: #dfd7ca;
+      --accent: #b8232c;
+      --accent-soft: rgba(184, 35, 44, 0.08);
+      --accent-hover: #9c1c24;
+      --success: #2e7d32;
+      --success-soft: rgba(46, 125, 50, 0.1);
+      --font-serif: "Newsreader", "Georgia", "Cambria", serif;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: "SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      padding: 2.5rem 1.5rem;
+      max-width: 1200px;
+      margin: 0 auto;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Typography */
+    h1, h2, h3, h4 { font-family: var(--font-serif); font-weight: 600; color: var(--ink); }
+    h1 { font-size: 2.75rem; line-height: 1.15; margin-bottom: 0.75rem; letter-spacing: -0.02em; }
+    h2 { font-size: 1.75rem; margin: 2.5rem 0 1rem; border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
+    h3 { font-size: 1.25rem; margin: 1.5rem 0 0.5rem; }
+    p { margin-bottom: 1rem; color: #2a2a2a; }
+    .mono { font-family: var(--font-mono); }
+    .muted { color: var(--muted); }
+    .accent { color: var(--accent); }
+
+    /* Header & Badge */
+    .header { margin-bottom: 3rem; border-bottom: 2px solid var(--ink); padding-bottom: 1.5rem; }
+    .meta-bar { display: flex; flex-wrap: wrap; gap: 1.5rem; font-size: 0.875rem; font-family: var(--font-mono); color: var(--muted); margin-top: 1rem; }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 3px;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge-p1 { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
+    .badge-p2 { background: #e2e8f0; color: #475569; border: 1px solid #cbd5e1; }
+    .badge-success { background: var(--success-soft); color: var(--success); border: 1px solid var(--success); }
+    .badge-ready { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+    .badge-gated { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+
+    /* KPI Grid */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+    .kpi-card {
+      background: var(--panel);
+      padding: 1.25rem;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      position: relative;
+    }
+    .kpi-card .val { font-size: 1.85rem; font-weight: 700; font-family: var(--font-serif); color: var(--ink); }
+    .kpi-card .label { font-size: 0.8rem; font-family: var(--font-mono); color: var(--muted); text-transform: uppercase; margin-top: 0.25rem; }
+
+    /* Architecture Diagram Container */
+    .diagram-container {
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 1.5rem;
+      margin: 2rem 0;
+      overflow-x: auto;
+    }
+
+    /* Phase Cards */
+    .phase-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 1.5rem;
+      margin: 1.5rem 0;
+    }
+    .phase-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 1.5rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .phase-card:hover {
+      background: var(--panel-hover);
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+    }
+    .phase-card .num { font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent); font-weight: 600; }
+    .phase-card h3 { margin: 0.4rem 0 0.75rem; font-size: 1.25rem; }
+    .phase-card ul { padding-left: 1.2rem; font-size: 0.9rem; color: #333; margin-bottom: 1rem; }
+    .phase-card li { margin-bottom: 0.35rem; }
+    .phase-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--line);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    /* Interactive Mockup */
+    .mockup-window {
+      background: #1e1e1e;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+      margin: 2rem 0;
+      color: #e0e0e0;
+      font-family: var(--font-mono);
+    }
+    .mockup-header {
+      background: #2d2d2d;
+      padding: 0.6rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: #999;
+      border-bottom: 1px solid #3d3d3d;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .dot-red { background: #ff5f56; }
+    .dot-yellow { background: #ffbd2e; }
+    .dot-green { background: #27c93f; }
+    .mockup-body { padding: 1.5rem; font-size: 0.85rem; line-height: 1.5; overflow-x: auto; }
+    .mockup-ui-panel {
+      background: #252526;
+      border: 1px solid #3e3e42;
+      border-radius: 6px;
+      padding: 1.25rem;
+      margin-top: 1rem;
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(17, 17, 17, 0.6);
+      backdrop-filter: blur(2px);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      padding: 1.5rem;
+      z-index: 1000;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal-content {
+      background: var(--bg);
+      border: 1px solid var(--ink);
+      max-width: 850px;
+      width: 100%;
+      max-height: 85vh;
+      border-radius: 6px;
+      padding: 2.5rem;
+      overflow-y: auto;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.25);
+      position: relative;
+    }
+    .modal-close {
+      position: absolute;
+      top: 1.25rem;
+      right: 1.25rem;
+      background: none;
+      border: 1px solid var(--line);
+      padding: 0.3rem 0.6rem;
+      border-radius: 3px;
+      cursor: pointer;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+    }
+    .modal-close:hover { background: var(--panel); border-color: var(--ink); }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.75rem 1rem; border-bottom: 1px solid var(--line); }
+    th { font-family: var(--font-mono); font-size: 0.8rem; text-transform: uppercase; background: var(--panel); }
+    tr:hover td { background: rgba(0,0,0,0.015); }
+
+    /* Callout */
+    .callout {
+      background: var(--accent-soft);
+      border-left: 3px solid var(--accent);
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0;
+      border-radius: 0 4px 4px 0;
+    }
+    .callout-title { font-weight: 600; color: var(--accent); font-family: var(--font-mono); font-size: 0.85rem; text-transform: uppercase; margin-bottom: 0.25rem; }
+
+    @media (max-width: 768px) {
+      body { padding: 1.5rem 1rem; }
+      h1 { font-size: 2.1rem; }
+      .phase-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="header">
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+      <div>
+        <div class="badge badge-p1" style="margin-bottom: 0.5rem;">Kế Hoạch Triển Khai Kỹ Thuật (v1.2 - Gated)</div>
+        <h1>CloudHarness HaaS & OSS Platform</h1>
+        <p class="muted" style="font-size: 1.1rem; max-width: 800px;">
+          Chiến lược Dual-Model: Giữ vững lõi Open Source MIT 100% kèm 1-click installer (sẵn sàng thực thi ngay), đồng thời thiết lập cổng kiểm soát Threat Model & ADR trước khi kích hoạt hạ tầng thương mại HaaS đa người dùng.
+        </p>
+      </div>
+    </div>
+    <div class="meta-bar">
+      <span>PLAN ID: 260830-1800-haas-platform</span>
+      <span>GIAI ĐOẠN: 6 PHASES (00-05)</span>
+      <span>DỰ TOÁN: 38 DAYS</span>
+      <span>STATUS: PHASE 01 READY / HAAS GATED</span>
+    </div>
+  </header>
+
+  <!-- KPI SUMMARY -->
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="val">&lt; 60s</div>
+      <div class="label">Thời Gian Cài Đặt 1-Click OSS (Phase 01)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="val">Phase 00</div>
+      <div class="label">Cổng Threat Model & ADR Sign-Off</div>
+    </div>
+    <div class="kpi-card">
+      <div class="val">71.4%</div>
+      <div class="label">Gross Margin Mục Tiêu (50% Tải)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="val">&lt; 180ms</div>
+      <div class="label">Boot Latency MicroVM (Phase 04 GA)</div>
+    </div>
+  </div>
+
+  <!-- SECURITY ADVISORY CALLOUT -->
+  <div class="callout">
+    <div class="callout-title">Quy Tắc Kiểm Soát Phân Lập & Cổng Nghiệm Thu (Gated Invariants)</div>
+    <p style="margin: 0 0 0.5rem 0; font-size: 0.9rem;">
+      <strong>1. Phân tách dòng thực thi:</strong> <code>Phase 01 (OSS Installer)</code> phục vụ máy chủ đơn chủ sở hữu (single trusted owner) và <strong>sẵn sàng thực thi ngay</strong>.
+    </p>
+    <p style="margin: 0; font-size: 0.9rem;">
+      <strong>2. Cổng Multi-Tenant (Phase 00 Gate):</strong> Toàn bộ các Phase thương mại chia sẻ tài nguyên (Phase 02, 03, 04, 05) bắt buộc <strong>chặn (gated)</strong> cho đến khi <code>Phase 00</code> hoàn tất bản đánh giá Threat Model, benchmark hiệu năng microVM, tính toán ngân sách SLO và nhận phê duyệt Go/No-Go chính thức từ Owner.
+    </p>
+  </div>
+
+  <!-- WORKFLOW & ARCHITECTURE DIAGRAM -->
+  <h2>1. Kiến Trúc Phân Tầng Hệ Thống (System Architecture)</h2>
+  <p>Toàn bộ kiến trúc được thiết kế theo mô hình 2 tầng: Control Plane trung tâm điều phối qua mTLS và các Worker Node phân tán độc lập.</p>
+  
+  <div class="diagram-container">
+    <svg viewBox="0 0 960 420" width="100%" height="100%" style="font-family: var(--font-mono); font-size: 12px;">
+      <!-- Background Boxes -->
+      <rect x="20" y="20" width="920" height="110" rx="6" fill="#f4efe6" stroke="#dfd7ca" stroke-width="1.5" />
+      <text x="40" y="45" font-weight="700" fill="#b8232c" font-size="13">CLOUDHARNESS CENTRAL CONTROL PLANE (API & BILLING)</text>
+      
+      <!-- API Sub-components -->
+      <rect x="40" y="60" width="260" height="50" rx="4" fill="#ffffff" stroke="#111" stroke-width="1"/>
+      <text x="55" y="82" font-weight="600" fill="#111">MCP Ingress & Gateway</text>
+      <text x="55" y="98" fill="#666" font-size="11">Streamable HTTP / Bearer Auth</text>
+
+      <rect x="330" y="60" width="280" height="50" rx="4" fill="#ffffff" stroke="#111" stroke-width="1"/>
+      <text x="345" y="82" font-weight="600" fill="#111">Scheduler & Capacity Engine</text>
+      <text x="345" y="98" fill="#666" font-size="11">Dedicated Tenant Admission & Cache</text>
+
+      <rect x="640" y="60" width="280" height="50" rx="4" fill="#ffffff" stroke="#111" stroke-width="1"/>
+      <text x="655" y="82" font-weight="600" fill="#111">Double-Entry Billing Ledger</text>
+      <text x="655" y="98" fill="#666" font-size="11">PostgreSQL Balanced Accounts</text>
+
+      <!-- Connection Lines -->
+      <path d="M 170 130 L 170 190" stroke="#b8232c" stroke-width="2" stroke-dasharray="4,4" />
+      <path d="M 470 130 L 470 190" stroke="#b8232c" stroke-width="2" />
+      <path d="M 780 130 L 780 190" stroke="#b8232c" stroke-width="2" stroke-dasharray="4,4" />
+
+      <text x="380" y="165" fill="#b8232c" font-weight="600" font-size="11">Outbound gRPC over mTLS (Heartbeat 5s)</text>
+
+      <!-- Worker Nodes Tier -->
+      <rect x="20" y="190" width="920" height="200" rx="6" fill="#ffffff" stroke="#dfd7ca" stroke-width="1.5" />
+      <text x="40" y="215" font-weight="700" fill="#111" font-size="13">DISTRIBUTED WORKER FLEET (HETZNER, OVH, AWS, HOMELAB)</text>
+
+      <!-- Node 1 -->
+      <rect x="40" y="235" width="270" height="135" rx="4" fill="#faf7f2" stroke="#111" stroke-width="1"/>
+      <text x="55" y="258" font-weight="700" fill="#111">Worker Node EU-01</text>
+      <text x="55" y="275" fill="#666" font-size="11">Node Agent Daemon</text>
+      <rect x="55" y="290" width="240" height="65" rx="3" fill="#ffffff" stroke="#cbd5e1"/>
+      <text x="65" y="310" font-size="11" font-weight="600" fill="#2e7d32">Dedicated VM (Beta)</text>
+      <text x="65" y="326" font-size="10" fill="#666">Hardened Docker Sandbox</text>
+      <text x="65" y="342" font-size="10" fill="#666">1 Tenant / Single Host Isolation</text>
+
+      <!-- Node 2 -->
+      <rect x="345" y="235" width="270" height="135" rx="4" fill="#faf7f2" stroke="#111" stroke-width="1"/>
+      <text x="360" y="258" font-weight="700" fill="#111">Worker Node US-01</text>
+      <text x="360" y="275" fill="#666" font-size="11">Node Agent Daemon</text>
+      <rect x="360" y="290" width="240" height="65" rx="3" fill="#ffffff" stroke="#cbd5e1"/>
+      <text x="370" y="310" font-size="11" font-weight="600" fill="#b8232c">Firecracker MicroVM (GA)</text>
+      <text x="370" y="326" font-size="10" fill="#666">FAIL-CLOSED KVM Hardware Virtualization</text>
+      <text x="370" y="342" font-size="10" fill="#666">Multi-Tenant Safe Pooled Cluster</text>
+
+      <!-- Node 3 -->
+      <rect x="645" y="235" width="270" height="135" rx="4" fill="#faf7f2" stroke="#111" stroke-width="1"/>
+      <text x="660" y="258" font-weight="700" fill="#111">Community Self-Hosted</text>
+      <text x="660" y="275" fill="#666" font-size="11">1-Click Install Script</text>
+      <rect x="660" y="290" width="240" height="65" rx="3" fill="#ffffff" stroke="#cbd5e1"/>
+      <text x="670" y="310" font-size="11" font-weight="600" fill="#111">Local Standalone Instance</text>
+      <text x="670" y="326" font-size="10" fill="#666">Caddy TLS + Loopback Ingress</text>
+      <text x="670" y="342" font-size="10" fill="#666">Verified at 127.0.0.1:3100/readyz</text>
+    </svg>
+  </div>
+
+  <!-- PHASES ROADMAP -->
+  <h2>2. Lộ Trình Triển Khai 6 Giai Đoạn (Phased Roadmap)</h2>
+  <p>Nhấp vào từng thẻ phase để xem tài liệu chi tiết (Requirements, Architecture, Files, Test Criteria).</p>
+
+  <div class="phase-grid">
+    <!-- Phase 0 -->
+    <div class="phase-card" onclick="openModal('modal-00')">
+      <div>
+        <div class="num">PHASE 00 &bull; P1 GATE</div>
+        <h3>Multi-Tenant Threat Model & ADR</h3>
+        <p class="muted" style="font-size: 0.85rem;">Đánh giá ma trận rủi ro, benchmark Firecracker vs gVisor, mô hình chi phí/SLO, và phê duyệt quyết định Go/No-Go từ Owner.</p>
+        <ul>
+          <li>Mô hình hóa rủi ro đa người dùng và bán kính ảnh hưởng.</li>
+          <li>Benchmark cold-boot latency (&lt; 200ms) và memory overhead.</li>
+          <li>Xuất bản ADR chính thức: Cổng bắt buộc trước khi mở HaaS.</li>
+        </ul>
+      </div>
+      <div class="phase-footer">
+        <span>EFFORT: 4 DAYS</span>
+        <span class="badge badge-gated">HAAS GATE</span>
+      </div>
+    </div>
+
+    <!-- Phase 1 -->
+    <div class="phase-card" onclick="openModal('modal-01')">
+      <div>
+        <div class="num">PHASE 01 &bull; P1</div>
+        <h3>OSS 1-Click Installer & TLS Pipeline</h3>
+        <p class="muted" style="font-size: 0.85rem;">Xây dựng script cài đặt tự động <code style="color:var(--accent);">curl | bash</code>, Caddy Let's Encrypt TLS, Cloudflare Tunnel, và CLI quản lý vòng đời.</p>
+        <ul>
+          <li>Preflight: Kiểm tra OS, RAM &gt; 2GB, Docker Compose.</li>
+          <li>Bảo toàn loopback ingress proxy, xác thực tại <code style="color:var(--accent);">127.0.0.1:3100/readyz</code>.</li>
+          <li>Tự động in cấu hình MCP cho Claude / Cursor.</li>
+        </ul>
+      </div>
+      <div class="phase-footer">
+        <span>EFFORT: 5 DAYS</span>
+        <span class="badge badge-ready">READY TO COOK</span>
+      </div>
+    </div>
+
+    <!-- Phase 2 -->
+    <div class="phase-card" onclick="openModal('modal-02')">
+      <div>
+        <div class="num">PHASE 02 &bull; P1</div>
+        <h3>Outbound Node Agent & Orchestrator</h3>
+        <p class="muted" style="font-size: 0.85rem;">Quản lý multi-worker node cho Admin qua gRPC/mTLS outbound, bảo mật enrollment token tuyệt đối, scheduler dedicated-tenant.</p>
+        <ul>
+          <li>Enrollment qua <code style="color:var(--accent);">--token-stdin</code> hoặc file mode 0600 (O_NOFOLLOW).</li>
+          <li>Token hash Argon2id ở Control Plane, tiêu thụ atomic single-use.</li>
+          <li>PostgreSQL schema với tenant_id constraint và scheduler admission.</li>
+        </ul>
+      </div>
+      <div class="phase-footer">
+        <span>EFFORT: 8 DAYS</span>
+        <span class="badge badge-gated">GATED ON PH 00</span>
+      </div>
+    </div>
+
+    <!-- Phase 3 -->
+    <div class="phase-card" onclick="openModal('modal-03')">
+      <div>
+        <div class="num">PHASE 03 &bull; P1</div>
+        <h3>Hybrid Metering & Double-Entry Ledger</h3>
+        <p class="muted" style="font-size: 0.85rem;">Đo lường thời lượng workspace kết hợp số lượng request, tính năng 15-min auto-idle sleep, tích hợp ví Polar.sh / Stripe.</p>
+        <ul>
+          <li>Đo lường Duration theo cấu hình vCPU/RAM ($0.08/hr).</li>
+          <li>Tự động đưa workspace vào Sleep sau 15p (dừng tính giờ).</li>
+          <li>Sổ cái kép (Double-Entry Ledger) và xác thực raw-body webhook.</li>
+        </ul>
+      </div>
+      <div class="phase-footer">
+        <span>EFFORT: 6 DAYS</span>
+        <span class="badge badge-gated">GATED ON PH 02</span>
+      </div>
+    </div>
+
+    <!-- Phase 4 -->
+    <div class="phase-card" onclick="openModal('modal-04')">
+      <div>
+        <div class="num">PHASE 04 &bull; P1</div>
+        <h3>Fail-Closed Firecracker MicroVM Runtime</h3>
+        <p class="muted" style="font-size: 0.85rem;">Thang phân lập bảo mật: Dedicated VM cho khách Beta, và Firecracker MicroVM cho phiên bản GA dùng chung (Fail-Closed).</p>
+        <ul>
+          <li>Trừu tượng hóa <code style="color:var(--accent);">ExecutionDriver</code> trong Runner.</li>
+          <li>Fail-Closed: Nếu thiếu <code>/dev/kvm</code> trên pooled node, từ chối khởi tạo ngay lập tức (không fallback sang Docker).</li>
+          <li>Firecracker KVM jailer khởi động &lt; 180ms với snapshot mã hóa.</li>
+        </ul>
+      </div>
+      <div class="phase-footer">
+        <span>EFFORT: 10 DAYS</span>
+        <span class="badge badge-gated">GATED ON PH 00/03</span>
+      </div>
+    </div>
+
+    <!-- Phase 5 -->
+    <div class="phase-card" onclick="openModal('modal-05')">
+      <div>
+        <div class="num">PHASE 05 &bull; P2</div>
+        <h3>GTM Distribution, Registries & Guides</h3>
+        <p class="muted" style="font-size: 0.85rem;">Phân phối lên Smithery.ai, Glama, PulseMCP; hướng dẫn 1-click connect Claude/Cursor/Codex; Developer Portal UI.</p>
+        <ul>
+          <li>Đăng ký chính thức lên các thư mục MCP Server toàn cầu.</li>
+          <li>Giao diện nạp Credit ví Polar.sh và giám sát chi phí live.</li>
+          <li>Chiến dịch ra mắt theo giai đoạn (OSS -&gt; Beta Dedicated -&gt; GA Pooled).</li>
+        </ul>
+      </div>
+      <div class="phase-footer">
+        <span>EFFORT: 5 DAYS</span>
+        <span class="badge badge-p2">GATED ON GA</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- UI/UX MOCKUP -->
+  <h2>3. Trải Nghiệm Giao Diện Người Dùng (UI/UX Mockups)</h2>
+  <p>Thiết kế giao diện Developer Dashboard quản lý số dư, phiên làm việc trực tiếp và trải nghiệm terminal an toàn.</p>
+
+  <div class="mockup-window">
+    <div class="mockup-header">
+      <span class="dot dot-red"></span>
+      <span class="dot dot-yellow"></span>
+      <span class="dot dot-green"></span>
+      <span style="margin-left: 0.5rem; color: #bbb;">CloudHarness Developer Portal &mdash; Billing & Active Sessions</span>
+    </div>
+    <div class="mockup-body">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 1rem; flex-wrap: wrap; gap: 1rem;">
+        <div>
+          <span style="color: #888; font-size: 0.75rem;">DEVELOPER WALLET</span>
+          <div style="font-size: 1.6rem; font-weight: 700; color: #4ade80;">$42.50 <span style="font-size: 0.85rem; color: #888; font-weight: 400;">PRE-PAID BALANCE</span></div>
+        </div>
+        <div>
+          <button style="background: #b8232c; color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 4px; font-family: var(--font-mono); font-size: 0.8rem; cursor: pointer;">+ Top Up via Polar.sh</button>
+        </div>
+      </div>
+
+      <div class="mockup-ui-panel">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <span style="font-weight: 600; color: #fff;">Active Workspace: <code style="color: #60a5fa;">ws_9f82a1c0</code></span>
+          <span class="badge badge-success" style="background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid #4ade80;">RUNNING &bull; 2 vCPU / 4GB RAM</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; font-size: 0.8rem; color: #aaa;">
+          <div>Repo: <span style="color: #fff;">owner/my-react-app</span></div>
+          <div>Elapsed Time: <span style="color: #fff;">00:24:18</span></div>
+          <div>Requests: <span style="color: #fff;">42 tool calls</span></div>
+          <div>Session Cost: <span style="color: #facc15;">$0.032</span></div>
+        </div>
+        <div style="margin-top: 0.75rem; font-size: 0.75rem; color: #888;">
+          Auto-idle sleep in <span style="color: #4ade80;">11m 42s</span> if no tool calls are received.
+        </div>
+      </div>
+
+      <div style="margin-top: 1.5rem; color: #666; font-size: 0.75rem;">
+        SECURE NODE ENROLLMENT DEMO (ZERO TOKEN LEAK RECIPE):
+      </div>
+      <div style="background: #111; padding: 0.75rem; border-radius: 4px; margin-top: 0.4rem; color: #a3e635; font-size: 0.8rem;">
+        $ read -s -p "Enter Enrollment Token: " TOKEN &amp;&amp; sudo cloudharness-node-agent enroll --control-plane https://api.cloudharness.cloud:8443 --token-stdin &lt;&lt;&lt; "$TOKEN" &amp;&amp; unset TOKEN<br>
+        <span style="color: #aaa;">[INFO] Ingesting token from stdin into zeroable memory buffer...</span><br>
+        <span style="color: #aaa;">[INFO] Exchanging mTLS CSR with Control Plane (Argon2id validation)...</span><br>
+        <span style="color: #4ade80;">[SUCCESS] Node enrolled as 'node-eu-01'. Signed client certificate saved to /etc/cloudharness/node.crt</span><br>
+        <span style="color: #f87171;">[SECURITY] In-memory token buffer wiped with zeros. Zero traces in shell history or ps.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PRICING TABLE -->
+  <h2>4. Bảng Giá & Phân Tích Kinh Tế (Unit Economics)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Gói Dịch Vụ</th>
+        <th>Mức Giá</th>
+        <th>Tài Nguyên Cung Cấp</th>
+        <th>Mục Tiêu & Đối Tượng</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Community (OSS)</strong></td>
+        <td>$0 / tháng</td>
+        <td>Tự host trên VPS riêng (MIT License)</td>
+        <td>Developer cá nhân, Homelab, Tự chủ hạ tầng</td>
+      </tr>
+      <tr>
+        <td><strong>Developer (PAYG)</strong></td>
+        <td>$0.08 / giờ chạy</td>
+        <td>2 vCPU / 4GB RAM + 100 free reqs/hr</td>
+        <td>AI Agent builder chạy ngắt quãng theo nhu cầu</td>
+      </tr>
+      <tr>
+        <td><strong>Pro Developer</strong></td>
+        <td>$29 / tháng</td>
+        <td>Gồm 300 giờ chạy ($0.06/hr thêm) + 5 concurrent</td>
+        <td>Power user dùng Claude Code / Cursor hàng ngày</td>
+      </tr>
+      <tr>
+        <td><strong>Team / Dedicated</strong></td>
+        <td>$199 / tháng</td>
+        <td>1 Dedicated Node riêng biệt + SLA 99.9%</td>
+        <td>Doanh nghiệp cần cách ly tuyệt đối và lưu vết audit</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- RED TEAM AUDIT RESULTS -->
+  <h2>5. Kết Quả Thẩm Định Đối Kháng (Red Team Audit & Remediation)</h2>
+  <p>Toàn bộ 12 phát hiện đối kháng từ 5 chuyên gia Red Team độc lập đã được xử lý và tích hợp trực tiếp vào kế hoạch:</p>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Lỗ Hổng Đối Kháng / Rủi Ro</th>
+        <th>Mức Độ</th>
+        <th>Biện Pháp Khắc Phục Đã Tích Hợp</th>
+        <th>Phase</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>Ghi đè Keyring khi chạy lại Installer</td>
+        <td><span class="badge badge-p1">Critical</span></td>
+        <td>Kiểm tra Idempotent: Giữ nguyên secret keyring và runtime.env nếu đã tồn tại</td>
+        <td>Phase 01</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>Cloudflare Tunnel không tới được loopback</td>
+        <td><span class="badge badge-p2">High</span></td>
+        <td>Cấu hình cloudflared container trên mạng non-internal <code>ingress</code> forward trực tiếp tới <code>http://ingress:3100</code></td>
+        <td>Phase 01</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>Thiếu build images trên fresh VPS</td>
+        <td><span class="badge badge-p1">Critical</span></td>
+        <td>Thực thi <code>cloud-harness-deploy &lt;SHA&gt;</code> build đầy đủ images và chạy canary probe</td>
+        <td>Phase 01</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>Token query thiếu id PK và kiểm tra expires_at</td>
+        <td><span class="badge badge-p2">High</span></td>
+        <td>Định dạng <code>&lt;id&gt;.&lt;secret&gt;</code>, lookup <code>WHERE id = $1 FOR UPDATE</code>, Argon2id verify, kiểm tra <code>expires_at &gt; NOW()</code></td>
+        <td>Phase 02</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>Trộn lẫn port bootstrap và mTLS gRPC</td>
+        <td><span class="badge badge-p2">High</span></td>
+        <td>Tách biệt endpoint HTTPS bootstrap token (/enroll) và port gRPC stream mTLS</td>
+        <td>Phase 02</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>Split-brain khi rớt mạng worker node</td>
+        <td><span class="badge badge-p1">Critical</span></td>
+        <td>Bổ sung Node Watchdog Fence: tự động freeze và pause workspace nếu mất kết nối &gt; 30s</td>
+        <td>Phase 02</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td>TOCTOU thất thoát credit do billing trễ</td>
+        <td><span class="badge badge-p1">Critical</span></td>
+        <td>Cơ chế Atomic Reservation: Đặt cọc 1 giờ compute ngay khi mở workspace</td>
+        <td>Phase 03</td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td>Ledger thiếu procedure atomic & scale micro-USD</td>
+        <td><span class="badge badge-p2">High</span></td>
+        <td>Xây dựng <code>post_journal(...)</code> với đơn vị 1 USD = 1,000,000 micro-USD (cho giá $0.002)</td>
+        <td>Phase 03</td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td>Trùng lặp webhook theo transaction ID</td>
+        <td><span class="badge badge-p1">Critical</span></td>
+        <td>Deduplicate theo khóa phức hợp <code>(gateway, webhook_event_id)</code></td>
+        <td>Phase 03</td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td>Xung đột socket chung /tmp/firecracker.socket</td>
+        <td><span class="badge badge-p1">Critical</span></td>
+        <td>Chuyển sang socket riêng biệt theo từng jailer workspace: <code>/srv/jailer/.../firecracker.socket</code></td>
+        <td>Phase 04</td>
+      </tr>
+      <tr>
+        <td>11</td>
+        <td>Ext4 không hỗ trợ COW storage quota</td>
+        <td><span class="badge badge-p2">High</span></td>
+        <td>Khống chế cứng 20GB/workspace độc quyền qua Device Mapper thin-provisioning (<code>dm-thin</code>)</td>
+        <td>Phase 04</td>
+      </tr>
+      <tr>
+        <td>12</td>
+        <td>Snapshot thiếu xác thực mã hóa (tampering)</td>
+        <td><span class="badge badge-p2">High</span></td>
+        <td>Sử dụng AES-256-GCM có authentication tags và HMAC checksum gắn với workspace ID</td>
+        <td>Phase 04</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- MODALS FOR DETAILED PHASES -->
+  <div id="modal-00" class="modal-overlay" onclick="closeModal(event, 'modal-00')">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModalDirect('modal-00')">ESC &times;</button>
+      <div class="badge badge-gated" style="margin-bottom: 0.5rem;">Phase 00 &bull; Isolation Gate</div>
+      <h2>Multi-Tenant Threat Model, ADR & Owner Go/No-Go Gate</h2>
+      <p><strong>Mục tiêu:</strong> Hoàn thành khảo sát kiến trúc, benchmark Firecracker, mô hình hóa rủi ro đối kháng, và ký duyệt ADR trước khi triển khai bất kỳ hạ tầng đa người dùng nào.</p>
+      <h3>Chi tiết triển khai:</h3>
+      <ul>
+        <li>Tạo tài liệu <code>docs/adr/0001-multi-tenant-isolation-and-haas-ladder.md</code> xác định ranh giới cách ly.</li>
+        <li>Kiểm thử benchmark <code>test/benchmarks/isolation-overhead.bench.ts</code> chứng minh độ trễ khởi động microVM &lt; 200ms.</li>
+        <li>Thiết lập ngân sách SLO và các chỉ số cảnh báo rò rỉ tài nguyên / vi phạm bảo mật.</li>
+      </ul>
+      <h3>Tiêu chí hoàn thành:</h3>
+      <p>&check; ADR được Owner xem xét và ký duyệt Go/No-Go.<br>&check; Phiên bản OSS (Phase 01) hoàn toàn độc lập và không bị ảnh hưởng.</p>
+    </div>
+  </div>
+
+  <div id="modal-01" class="modal-overlay" onclick="closeModal(event, 'modal-01')">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModalDirect('modal-01')">ESC &times;</button>
+      <div class="badge badge-ready" style="margin-bottom: 0.5rem;">Phase 01 &bull; Ready to Cook</div>
+      <h2>OSS 1-Click Installer & Production Compose Pipeline</h2>
+      <p><strong>Mục tiêu:</strong> Tạo script cài đặt 1-click chuẩn xác kế thừa <code>deploy/scripts/bootstrap-vps.sh</code>, <code>deploy-release.sh</code> và <code>cloud-harness-mcp.service</code>, clone repo vào <code>/opt/cloud-harness-mcp/repo</code>, build toàn bộ Docker images (executor, api, runner) qua <code>cloud-harness-deploy &lt;SHA&gt;</code>, ghi <code>runtime.env</code> (mode 0600) với <code>MCP_BEARER_TOKEN</code>, <code>RUNNER_TOKEN</code>, và container mount <code>SECRET_KEYRING_FILE=/run/cloud-harness-secrets/secret-keyring.json</code>.</p>
+      <h3>Chi tiết triển khai:</h3>
+      <ul>
+        <li>Tạo file <code>scripts/install.sh</code> với kiểm tra Preflight nghiêm ngặt (RAM &gt;= 2GB, OS Debian/Ubuntu/RHEL).</li>
+        <li>Clone repository vào <code>/opt/cloud-harness-mcp/repo</code> và cài đặt helper <code>/usr/local/sbin/cloud-harness-deploy</code>.</li>
+        <li>Sinh <code>MCP_BEARER_TOKEN</code> và <code>RUNNER_TOKEN</code> độc lập (48-byte base64).</li>
+        <li>Sinh host keyring <code>/etc/cloud-harness-mcp/secret-keyring.json</code> hợp lệ với <code>SecretKeyringConfigSchema</code>, cấu hình đường dẫn container <code>SECRET_KEYRING_FILE=/run/cloud-harness-secrets/secret-keyring.json</code>.</li>
+        <li>Chạy <code>cloud-harness-deploy &lt;SHA&gt;</code> để build toàn bộ image, khởi chạy systemd, xác thực readiness <code>127.0.0.1:3100/readyz</code> và chạy canary probe.</li>
+        <li>Caddy reverse proxy chuyển tiếp về loopback ingress <code>127.0.0.1:3100</code>; Cloudflare Tunnel container đính kèm mạng non-internal <code>ingress</code> chuyển tiếp trực tiếp tới <code>http://ingress:3100</code>.</li>
+      </ul>
+      <h3>Chi tiết nghiệm thu:</h3>
+      <p>&check; Cài đặt hoàn tất trong &lt; 60 giây trên Ubuntu 24.04 sạch.<br>&check; Build đầy đủ images (executor-image:local, api, runner) và chạy thành công canary probe.<br>&check; In ra đoạn mã JSON cấu hình MCP sẵn sàng copy-paste cho Cursor và Claude Desktop.</p>
+    </div>
+  </div>
+
+  <div id="modal-02" class="modal-overlay" onclick="closeModal(event, 'modal-02')">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModalDirect('modal-02')">ESC &times;</button>
+      <div class="badge badge-p1" style="margin-bottom: 0.5rem;">Phase 02</div>
+      <h2>Outbound Node Agent, Secure Enrollment & Dedicated Tenant Orchestration</h2>
+      <p><strong>Mục tiêu:</strong> Xây dựng Node Agent kết nối outbound qua gRPC mTLS về Control Plane, cấu trúc token wire <code>&lt;id&gt;.&lt;secret&gt;</code>, atomic transaction <code>BEGIN ... COMMIT</code> với row lock <code>FOR UPDATE</code>, guarded consume, và hợp đồng lease epoch chống split-brain.</p>
+      <h3>Chi tiết triển khai:</h3>
+      <ul>
+        <li>Node Agent đọc token qua <code>--token-file /path/to/token</code> (mode 0600, O_NOFOLLOW) hoặc <code>--token-stdin</code>. Tuyệt đối không dùng <code>--token &lt;VAL&gt;</code>.</li>
+        <li>Đọc vào zeroable <code>Buffer</code>, xóa file (unlink) trước khi gọi mạng, và zero buffer trong <code>finally</code>.</li>
+        <li>Bảng <code>node_enrollment_tokens</code> với <code>id VARCHAR(32) PRIMARY KEY</code>. Xác thực trong transaction: <code>SELECT ... FOR UPDATE</code> kiểm tra <code>expires_at &gt; NOW() AND consumed_at IS NULL</code>, verify <code>argon2.verify(row.token_hash, secret)</code>, rồi guarded update: <code>UPDATE ... SET consumed_at = NOW() WHERE id = $1 AND consumed_at IS NULL AND expires_at &gt; NOW() RETURNING id</code>.</li>
+        <li>Hợp đồng Lease Epoch: Workspace chạy không gián đoạn trong &le; 30s rớt mạng; quá 30s node tự freeze/quarantine. Node chỉ được resume khi Control Plane tái cấp phép lease epoch. Scheduler không được cấp phát thay thế trước hạn chót 45s.</li>
+      </ul>
+      <h3>Chi tiết nghiệm thu:</h3>
+      <p>&check; Node xuất hiện trong bảng điều khiển Admin trong 5s sau khi enroll.<br>&check; Từ chối token sai format (400), token sai secret (401), token hết hạn (410), và token đã sử dụng (409).<br>&check; Kiểm thử đồng thời: 10 request cùng gửi 1 token đồng thời chỉ có đúng 1 request thành công (200) và 9 request bị từ chối 409.<br>&check; Kiểm thử Partition/Reconnect: Chứng minh node cũ và node thay thế không bao giờ chạy đồng thời cùng 1 workspace.<br>&check; Lệnh <code>ps aux</code> và shell history hoàn toàn không chứa secret token.</p>
+    </div>
+  </div>
+  <div id="modal-03" class="modal-overlay" onclick="closeModal(event, 'modal-03')">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModalDirect('modal-03')">ESC &times;</button>
+      <div class="badge badge-p1" style="margin-bottom: 0.5rem;">Phase 03</div>
+      <h2>Hybrid Metering & Double-Entry Billing Engine</h2>
+      <p><strong>Mục tiêu:</strong> Động cơ đo lường chuẩn xác thời lượng workspace và request calls, tính năng Auto-idle sleep sau 15 phút, sổ cái tài chính kép (double-entry ledger), atomic reservation và xác thực raw-body webhook.</p>
+      <h3>Chi tiết triển khai:</h3>
+      <ul>
+        <li>Theo dõi chính xác thời gian mở/đóng/tạm dừng của từng workspace container.</li>
+        <li>Cơ chế Auto-Sleep tạm dừng container khi không có request trong 15 phút, dừng tính tiền duration ngay lập tức.</li>
+        <li>Sổ cái kép PostgreSQL qua <code>post_journal(...)</code> với đơn vị 1 USD = 1,000,000 micro-USD. Đặt cọc trước (reservation) 1 giờ compute khi mở workspace.</li>
+        <li>Xác thực raw-body HMAC signature cho Polar.sh và Stripe; deduplicate webhook theo <code>(gateway, webhook_event_id)</code>.</li>
+      </ul>
+      <h3>Chi tiết nghiệm thu:</h3>
+      <p>&check; Mở workspace 30 phút Standard tier tính chính xác $0.04.<br>&check; Nạp tiền trên Polar.sh cập nhật số dư ví tức thì qua webhook an toàn.</p>
+    </div>
+  </div>
+
+  <div id="modal-04" class="modal-overlay" onclick="closeModal(event, 'modal-04')">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModalDirect('modal-04')">ESC &times;</button>
+      <div class="badge badge-p1" style="margin-bottom: 0.5rem;">Phase 04</div>
+      <h2>Fail-Closed Firecracker MicroVM Multi-Tenant Runtime</h2>
+      <p><strong>Mục tiêu:</strong> Thực thi thang phân lập đa người dùng: Cấp VM chuyên dụng cho khách Beta, và nâng cấp Firecracker MicroVM cho phiên bản GA dùng chung với nguyên tắc FAIL-CLOSED và hạn ngạch ổ đĩa <code>dm-thin</code>.</p>
+      <h3>Chi tiết triển khai:</h3>
+      <ul>
+        <li>Trừu tượng hóa <code>ExecutionDriver</code> hỗ trợ cả Docker (cho dedicated nodes) lẫn Firecracker.</li>
+        <li>Fail-Closed: Nếu thiếu <code>/dev/kvm</code> trên pooled node, từ chối khởi tạo ngay lập tức (không fallback sang Docker).</li>
+        <li>Xây dựng Firecracker microVM với kernel riêng, socket riêng theo từng jailer workspace (<code>/srv/jailer/.../firecracker.socket</code>), UID/GID độc lập, và mã hóa snapshot AES-256-GCM.</li>
+        <li>Khống chế cứng hạn ngạch lưu trữ 20GB/workspace độc quyền qua Device Mapper thin-provisioning (<code>dm-thin</code>).</li>
+      </ul>
+      <h3>Chi tiết nghiệm thu:</h3>
+      <p>&check; Khởi động Firecracker microVM trong &lt; 180ms qua KVM.<br>&check; Bài test sandbox escape chứng minh zero host access và cách ly hoàn toàn giữa các microVM lân cận.</p>
+    </div>
+  </div>
+
+  <div id="modal-05" class="modal-overlay" onclick="closeModal(event, 'modal-05')">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModalDirect('modal-05')">ESC &times;</button>
+      <div class="badge badge-p2" style="margin-bottom: 0.5rem;">Phase 05</div>
+      <h2>GTM Distribution, Registries & Guides</h2>
+      <p><strong>Mục tiêu:</strong> Đăng ký chính thức lên Smithery.ai, PulseMCP, Glama, cung cấp hướng dẫn 1-click connect cho Claude/Cursor, và ra mắt cộng đồng theo 3 mốc (OSS -&gt; Beta -&gt; GA).</p>
+      <h3>Chi tiết triển khai:</h3>
+      <ul>
+        <li>Tạo file <code>smithery.yaml</code> và đăng ký MCP tag <code>ai-agents</code>, <code>sandbox</code>.</li>
+        <li>Nâng cấp UI Dashboard hiển thị số dư ví, nạp tiền nhanh và danh sách workspace active.</li>
+        <li>Chiến dịch ra mắt tuần tự: Show HN cho OSS core, Closed Beta cho dedicated users, và Public GA cho pooled HaaS.</li>
+      </ul>
+      <h3>Tiêu chí hoàn thành:</h3>
+      <p>&check; Người dùng kết nối Cursor tới CloudHarness trong &lt; 30 giây.<br>&check; Xuất bản đầy đủ trang tài liệu self-hosting và bảng giá minh bạch.</p>
+    </div>
+  </div>
+
+  <script>
+    function openModal(id) {
+      document.getElementById(id).classList.add('active');
+      document.body.style.overflow = 'hidden';
+    }
+    function closeModal(event, id) {
+      if (event.target.id === id) {
+        closeModalDirect(id);
+      }
+    }
+    function closeModalDirect(id) {
+      document.getElementById(id).classList.remove('active');
+      document.body.style.overflow = 'auto';
+    }
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        document.querySelectorAll('.modal-overlay').forEach(el => el.classList.remove('active'));
+        document.body.style.overflow = 'auto';
+      }
+    });
+  </script>
+</body>
+</html>

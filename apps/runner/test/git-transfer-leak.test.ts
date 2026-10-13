@@ -20,8 +20,12 @@ const docker = vi.hoisted(() => ({
 
 vi.mock('../src/docker-engine.js', () => docker);
 vi.mock('../src/repository-policy.js', () => ({ validateRepositoryUrl: vi.fn(async (value: string) => new URL(value)) }));
-vi.mock('../src/github-app-broker.js', () => ({ mintRepositoryToken: vi.fn(async () => repositoryToken) }));
+vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubAppBroker>()),
+  mintRepositoryToken: vi.fn(async () => repositoryToken)
+}));
 
+import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
@@ -39,7 +43,7 @@ function fixture(idCharacter: string) {
   const config: RunnerConfig = {
     host: '127.0.0.1', port: 3001, serviceToken: 'runner-test-token-that-is-longer-than-32-characters',
     jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state.db'), executorImage: 'executor',
-    allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300, idleTtlSeconds: 180,
+    allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 300, idleTtlSeconds: 180,
     maxOutputBytes: 262_144, minFreeBytes: 0, maxWorkspaceBytes: 536_870_912, reaperIntervalSeconds: 30,
     githubApp: { appId: 123, installationId: 456, privateKey: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----' }
   };
@@ -48,7 +52,7 @@ function fixture(idCharacter: string) {
   const record: WorkspaceRecord = {
     id: workspaceId, ownerId: 'owner', idempotencyKey: `git-transfer-${idCharacter}`,
     repositoryUrl: 'https://github.com/example/private-repo.git', repositoryRef: null,
-    containerName: 'executor-container', workspacePath, status: 'ACTIVE', networkMode: 'none',
+    containerName: 'executor-container', workspacePath, status: 'ACTIVE', networkProfile: 'network-none',
     createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, generation: 1, error: null
   };
   store.create(record);
@@ -71,6 +75,19 @@ describe('remote Git credential boundary', () => {
       store.close();
     }
   });
+  it('normalizes shorthand refspecs to canonical destination refs', async () => {
+    const { workspaceId, store, service } = fixture('c');
+    try {
+      const result = await service.execute('owner', 'git_push', { workspaceId, remote: 'origin', refspec: 'HEAD:main', forceWithLease: false });
+      expect(result.ok).toBe(true);
+      expect(result.data).toMatchObject({ refspec: 'HEAD:refs/heads/main' });
+      const pushCall = docker.runDocker.mock.calls.find(([args]) => args.includes('push') && args.includes('/opt/harness/git-transfer-helper.sh'));
+      expect(pushCall?.[0]).toContain('HEAD:refs/heads/main');
+    } finally {
+      store.close();
+    }
+  });
+
 
   it('orchestrates pull as credentialed fetch plus uncredentialed rebase inside the executor', async () => {
     const { workspaceId, store, service } = fixture('b');

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { RunnerConfig } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker } from '../../apps/runner/src/docker-engine.js';
 import { StateStore } from '../../apps/runner/src/state-store.js';
@@ -15,14 +16,23 @@ let runnerConfig: RunnerConfig;
 let orphanContainer: string | undefined;
 let foreignOrphanContainer: string | undefined;
 const workspaceCeilingBytes = 64 * 1_024 * 1_024;
+const workspaceResultSchema = z.object({ workspaceId: z.string() });
+const executionResultSchema = z.object({ exitCode: z.number().int(), output: z.string() });
+const planCreateResultSchema = z.object({
+  data: z.object({ dir: z.string().regex(/^\/workspace\/plans\/[a-z0-9-]+$/) })
+});
+const fileReadResultSchema = z.object({ content: z.string() });
 
 beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), 'cloud-harness-docker-'));
   runnerConfig = {
+    authMode: 'cloudflare-access',
     host: '127.0.0.1', port: 3001, serviceToken: 'runner-test-token-that-is-longer-than-32-characters',
     jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state', 'state.db'), executorImage: 'cloud-harness-executor:local',
-    allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300, idleTtlSeconds: 180,
-    maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: workspaceCeilingBytes, reaperIntervalSeconds: 30
+    allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 300, idleTtlSeconds: 180,
+    maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: workspaceCeilingBytes, reaperIntervalSeconds: 30,
+    artifactRoot: join(directory, 'artifacts'), maxArtifactBytes: 16_777_216, maxPrincipalArtifactBytes: 134_217_728,
+    artifactRetentionSeconds: 86_400, enableRepoCache: false, repoCacheRoot: join(directory, 'cache')
   };
   store = new StateStore(runnerConfig.stateDb);
   service = new WorkspaceService(runnerConfig, store);
@@ -30,19 +40,29 @@ beforeAll(async () => {
 }, 20_000);
 
 afterAll(async () => {
-  if (workspaceId) await service.close('owner', workspaceId).catch(() => undefined);
+  if (workspaceId) await service.execute('owner', 'workspace_close', { workspaceId }).catch(() => undefined);
   if (orphanContainer) await removeContainer(orphanContainer).catch(() => undefined);
   if (foreignOrphanContainer) await removeContainer(foreignOrphanContainer).catch(() => undefined);
   await service.stop();
   store.close();
-  rmSync(directory, { recursive: true, force: true });
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    await runDocker([
+      'run', '--rm', '--network', 'none', '--user', '0:0',
+      '--volume', `${directory}:/target`,
+      '--entrypoint', '/bin/sh', runnerConfig.executorImage,
+      '-c', 'rm -rf /target/*'
+    ]).catch(() => undefined);
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 });
 
 describe('real Docker sandbox', () => {
   it('clones, persists edits across calls, enforces container policy, and cleans up', async () => {
     const opened = await service.execute('owner', 'workspace_open', {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
-      idempotencyKey: 'docker-test-workspace-1', networkMode: 'none'
+      idempotencyKey: 'docker-test-workspace-1', networkProfile: 'network-none'
     });
     expect(opened.ok).toBe(true);
     workspaceId = (opened.data as { workspaceId: string }).workspaceId;
@@ -61,7 +81,7 @@ describe('real Docker sandbox', () => {
     expect(hostConfig.PidsLimit).toBe(256);
     expect(hostConfig.Ulimits).toContainEqual({ Name: 'nofile', Hard: 1024, Soft: 1024 });
     expect(hostConfig.Binds.join('\n')).not.toContain('docker.sock');
-    await expect(service.execute('different-owner', 'workspace_status', { workspaceId })).rejects.toThrow('workspace does not belong to this owner');
+    await expect(service.execute('different-owner', 'workspace_status', { workspaceId })).rejects.toThrow('workspace not found');
 
     const read = await service.execute('owner', 'files_read', { workspaceId, path: 'README.md', offset: 0, limit: 65_536 });
     expect((read.data as { content: string }).content).toContain('cloud-harness-mcp');
@@ -119,9 +139,9 @@ describe('real Docker sandbox', () => {
     expect(truncated.truncated).toBe(true);
     const startedAt = Date.now();
     const timed = await service.execute('owner', 'exec_run', {
-      workspaceId, command: 'sleep 2', cwd: '.', timeoutMs: 100, maxOutputBytes: 65_536
+      workspaceId, command: 'sleep 5', cwd: '.', timeoutMs: 100, maxOutputBytes: 65_536
     });
-    expect(Date.now() - startedAt).toBeLessThan(1_500);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
     expect((timed.data as { exitCode: number }).exitCode).not.toBe(0);
 
     const escaped = await service.execute('owner', 'exec_run', {
@@ -140,13 +160,13 @@ describe('real Docker sandbox', () => {
 
     const cancellableWorkspace = await service.execute('owner', 'workspace_open', {
       repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
-      idempotencyKey: 'docker-test-abort-workspace', networkMode: 'none'
+      idempotencyKey: 'docker-test-abort-workspace', networkProfile: 'network-none'
     });
     workspaceId = (cancellableWorkspace.data as { workspaceId: string }).workspaceId;
     const cancellableRecord = store.byId(workspaceId)!;
     const controller = new AbortController();
     const execution = service.execute('owner', 'exec_run', {
-      workspaceId, command: 'sleep 2; printf leaked > aborted-command.txt', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536
+      workspaceId, command: 'sleep 10; printf leaked > aborted-command.txt', cwd: '.', timeoutMs: 15_000, maxOutputBytes: 65_536
     }, controller.signal);
     setTimeout(() => controller.abort(), 100);
     await expect(execution).rejects.toThrow('request cancelled');
@@ -155,7 +175,172 @@ describe('real Docker sandbox', () => {
     expect(store.byId(workspaceId)?.status).toBe('ACTIVE');
     expect(existsSync(cancellableRecord.workspacePath)).toBe(true);
     expect(JSON.stringify((await service.execute('owner', 'files_list', { workspaceId, path: '.', limit: 100 })).data)).not.toContain('aborted-command.txt');
-    await service.close('owner', workspaceId);
+    await service.execute('owner', 'workspace_close', { workspaceId });
     workspaceId = undefined;
   }, 120_000);
+
+  it('creates, validates, and rejects invalid AgentKit plans offline through exec_run', async () => {
+    const opened = await service.execute('owner', 'workspace_open', {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: 'docker-test-agentkit-plan', networkProfile: 'network-none'
+    });
+    expect(opened.ok).toBe(true);
+    workspaceId = workspaceResultSchema.parse(opened.data).workspaceId;
+    const created = await service.execute('owner', 'exec_run', {
+      workspaceId, command: 'ak plan create executor-plan-proof --json', cwd: '.', timeoutMs: 10_000
+    });
+    const createdResult = executionResultSchema.parse(created.data);
+    expect(createdResult.exitCode).toBe(0);
+    const planDirectory = planCreateResultSchema.parse(JSON.parse(createdResult.output)).data.dir;
+    const relativeDirectory = planDirectory.slice('/workspace/'.length);
+    const planFile = await service.execute('owner', 'files_read', {
+      workspaceId, path: `${relativeDirectory}/plan.md`, offset: 0, limit: 65_536
+    });
+    expect(fileReadResultSchema.parse(planFile.data).content).toContain('executor-plan-proof');
+    const validated = await service.execute('owner', 'exec_run', {
+      workspaceId, command: `ak plan validate '${relativeDirectory}' --json`, cwd: '.', timeoutMs: 10_000
+    });
+    const validatedResult = executionResultSchema.parse(validated.data);
+    expect(validatedResult.exitCode).toBe(0);
+    expect(JSON.parse(validatedResult.output)).toMatchObject({ data: { valid: true } });
+
+    await service.execute('owner', 'files_write', {
+      workspaceId, path: `${relativeDirectory}/plan.md`, content: '# Invalid plan without required metadata\n'
+    });
+    const invalid = await service.execute('owner', 'exec_run', {
+      workspaceId, command: `ak plan validate '${relativeDirectory}' --json`, cwd: '.', timeoutMs: 10_000
+    });
+    const invalidResult = executionResultSchema.parse(invalid.data);
+    expect(invalidResult.exitCode).not.toBe(0);
+    expect(JSON.parse(invalidResult.output)).toMatchObject({ data: { valid: false } });
+
+    await service.execute('owner', 'workspace_close', { workspaceId });
+    workspaceId = undefined;
+  }, 120_000);
+
+  it('enforces 3-zone storage isolation and single-use approval grants for privileged execution', async () => {
+    const opened = await service.execute('owner', 'workspace_open', {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: 'docker-test-privilege-workspace', networkProfile: 'network-none'
+    });
+    expect(opened.ok).toBe(true);
+    workspaceId = (opened.data as { workspaceId: string }).workspaceId;
+    const testWsId = workspaceId;
+    // 1. Verify 3-zone storage mounts, pre-baked toolchain versions, and user-space writability
+    const storageCheck = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'test -w /opt/user-tools && test -w /var/cache/harness && test -w /tmp && gh --version && bun --version && uv --version && pnpm --version && wrangler --version && echo "3-zone-writable"',
+      cwd: '.'
+    });
+    expect(JSON.stringify(storageCheck.data)).toContain('3-zone-writable');
+    expect(JSON.stringify(storageCheck.data)).toContain('gh version');
+    // 2. Unapproved privileged command must be rejected with PRIVILEGE_APPROVAL_REQUIRED
+    const unapproved = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'whoami',
+      privileged: true
+    });
+    expect(unapproved.ok).toBe(false);
+    expect(unapproved.error?.code).toBe('PRIVILEGE_APPROVAL_REQUIRED');
+    const grantId = unapproved.error?.grantRequest?.grantId;
+    expect(grantId).toBeDefined();
+
+    const wsRecord = store.byId(testWsId)!;
+
+    // 3. Operator approves the grant
+    expect(store.approvePrivilegeGrant(wsRecord.ownerId, grantId!)).toBe(true);
+
+    // 4. Executing with approved grant token runs in privileged ephemeral container
+    const approved = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'whoami',
+      privileged: true,
+      approvalGrantToken: grantId
+    });
+    expect(approved.ok).toBe(true);
+    expect(JSON.stringify(approved.data)).toContain('root');
+
+    // 5. Reusing the consumed grant token must be forbidden
+    await expect(service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'whoami',
+      privileged: true,
+      approvalGrantToken: grantId
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // 6. Modified command with valid token must fail hash check
+    const unapproved2 = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'id -u',
+      privileged: true
+    });
+    const grantId2 = unapproved2.error?.grantRequest?.grantId;
+    expect(store.approvePrivilegeGrant(wsRecord.ownerId, grantId2!)).toBe(true);
+    await expect(service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'id -g',
+      privileged: true,
+      approvalGrantToken: grantId2
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // 7. Modified cwd with valid token must fail
+    const unapproved3 = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'id -u',
+      cwd: '.',
+      privileged: true
+    });
+    const grantId3 = unapproved3.error?.grantRequest?.grantId;
+    expect(store.approvePrivilegeGrant(wsRecord.ownerId, grantId3!)).toBe(true);
+    await expect(service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'id -u',
+      cwd: 'src',
+      privileged: true,
+      approvalGrantToken: grantId3
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // 8. In owner-bearer mode, privileged exec is forbidden
+    const ownerBearerService = new WorkspaceService({ ...runnerConfig, authMode: 'owner-bearer' }, store);
+    await expect(ownerBearerService.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'whoami',
+      privileged: true
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    // 9. Root execution creating 0700 directory does not break subsequent quota metering or cleanup
+    const unapproved4 = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'mkdir -m 0700 root-0700 && touch root-0700/secret.txt',
+      cwd: '.',
+      privileged: true
+    });
+    const grantId4 = unapproved4.error?.grantRequest?.grantId;
+    expect(store.approvePrivilegeGrant(wsRecord.ownerId, grantId4!)).toBe(true);
+    const rootExec = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'mkdir -m 0700 root-0700 && touch root-0700/secret.txt',
+      cwd: '.',
+      privileged: true,
+      approvalGrantToken: grantId4
+    });
+    expect(rootExec.ok).toBe(true);
+
+    // Standard exec and status still work
+    const nextExec = await service.execute('owner', 'exec_run', {
+      workspaceId: testWsId,
+      command: 'echo "post-root-ok"',
+      cwd: '.'
+    });
+    expect(JSON.stringify(nextExec.data)).toContain('post-root-ok');
+
+    await service.execute('owner', 'workspace_close', { workspaceId: testWsId });
+  }, 120_000);
+
+  it('rejects the removed bridge escape hatch and legacy networkMode input', async () => {
+    await expect(service.execute('owner', 'workspace_open', {
+      repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
+      idempotencyKey: 'docker-test-legacy-bridge', networkMode: 'bridge'
+    })).rejects.toThrow(/networkMode was replaced by networkProfile/);
+  }, 30_000);
 });

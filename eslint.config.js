@@ -2,7 +2,7 @@ import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/coverage/**', 'plans/**', 'work/**'] },
+  { ignores: ['**/dist/**', '**/coverage/**', 'plans/**', 'work/**', 'docs-site/.vitepress/cache/**'] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -23,6 +23,23 @@ export default tseslint.config(
         process: 'readonly',
         setTimeout: 'readonly',
         URL: 'readonly'
+      }
+    }
+  },
+  {
+    files: ['apps/api/dashboard/**/*.js'],
+    languageOptions: {
+      globals: {
+        addEventListener: 'readonly',
+        document: 'readonly',
+        fetch: 'readonly',
+        FormData: 'readonly',
+        history: 'readonly',
+        localStorage: 'readonly',
+        location: 'readonly',
+        matchMedia: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly'
       }
     }
   }

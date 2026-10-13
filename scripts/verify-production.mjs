@@ -80,12 +80,12 @@ try {
   const suffix = randomUUID();
   const opened = data(await modern.callTool({
     name: 'workspace_open',
-    arguments: { repositoryUrl, ...(repositoryRef ? { ref: repositoryRef } : {}), idempotencyKey: `production-${suffix}`, networkMode: 'none' }
+    arguments: { repositoryUrl, ...(repositoryRef ? { ref: repositoryRef } : {}), idempotencyKey: `production-${suffix}`, networkProfile: 'network-none' }
   }), 'workspace_open');
   workspaceId = opened.workspaceId;
   const replayed = data(await modern.callTool({
     name: 'workspace_open',
-    arguments: { repositoryUrl, ...(repositoryRef ? { ref: repositoryRef } : {}), idempotencyKey: `production-${suffix}`, networkMode: 'none' }
+    arguments: { repositoryUrl, ...(repositoryRef ? { ref: repositoryRef } : {}), idempotencyKey: `production-${suffix}`, networkProfile: 'network-none' }
   }), 'workspace_open replay');
   ensure(replayed.workspaceId === workspaceId, 'workspace idempotency replay changed the handle');
 

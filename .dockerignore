@@ -6,3 +6,4 @@ coverage
 plans
 .env*
 deploy/.generated
+.cloud-harness-test-fixtures

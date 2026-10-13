@@ -1,0 +1,237 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { resolveOwnerPrincipal } from '../src/principal-store.js';
+import { StateStore } from '../src/state-store.js';
+import { computeFullTreeDigest } from '../src/adapters/mattpocock-adapter.js';
+import { ToolkitCacheManager, type ToolkitAcquisitionSpec } from '../src/toolkit-cache-manager.js';
+describe('ToolkitCacheManager', () => {
+  let tmpDir: string;
+  let cacheRoot: string;
+  let dbPath: string;
+  let store: StateStore;
+  let cacheManager: ToolkitCacheManager;
+  let ownerId: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ch-toolkit-cache-test-'));
+    cacheRoot = join(tmpDir, 'cache');
+    dbPath = join(tmpDir, 'state.sqlite3');
+    store = new StateStore(dbPath);
+    cacheManager = new ToolkitCacheManager(cacheRoot, store);
+    ownerId = resolveOwnerPrincipal(store.database, 'owner-cache-1');
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('computes deterministic cache keys', () => {
+    const spec: ToolkitAcquisitionSpec = {
+      sourceIdentity: 'mattpocock/skills',
+      resolvedRevision: 'commit-123456',
+      adapterVersion: 1,
+      configDigest: 'none'
+    };
+    const key1 = cacheManager.computeCacheKey(ownerId, spec);
+    const key2 = cacheManager.computeCacheKey(ownerId, spec);
+    expect(key1).toBe(key2);
+    expect(key1.length).toBe(64);
+  });
+
+  it('acquires and publishes a bundle atomically with single-flight deduplication', async () => {
+    const spec: ToolkitAcquisitionSpec = {
+      sourceIdentity: 'mattpocock/skills',
+      resolvedRevision: 'c'.repeat(40),
+      adapterVersion: 1,
+      configDigest: 'digest-1'
+    };
+
+    let acquireCallCount = 0;
+    const acquireFn = async (stagingDir: string) => {
+      acquireCallCount++;
+      writeFileSync(join(stagingDir, 'SKILL.md'), '# Skill Content');
+      writeFileSync(join(stagingDir, 'manifest.json'), JSON.stringify({ id: 'mattpocock/skills' }));
+      return {
+        bundleSha256: 'd'.repeat(64),
+        byteCount: 1024,
+        fileCount: 2
+      };
+    };
+
+    // Run 3 concurrent acquisitions for the exact same spec
+    const [res1, res2, res3] = await Promise.all([
+      cacheManager.getOrAcquire(ownerId, spec, acquireFn),
+      cacheManager.getOrAcquire(ownerId, spec, acquireFn),
+      cacheManager.getOrAcquire(ownerId, spec, acquireFn)
+    ]);
+
+    expect(acquireCallCount).toBe(1); // Single-flight executed only once
+    expect(res1.bundleSha256).toBe('d'.repeat(64));
+    expect(res2.bundleSha256).toBe('d'.repeat(64));
+    expect(res3.bundleSha256).toBe('d'.repeat(64));
+
+    const dbRecord = store.getToolkitCacheEntry(res1.cacheKey);
+    expect(dbRecord?.status).toBe('READY');
+    expect(dbRecord?.byteCount).toBe(1024);
+
+    // Warm getOrAcquire uses cache with zero acquire calls
+    const warmRes = await cacheManager.getOrAcquire(ownerId, spec, acquireFn);
+    expect(acquireCallCount).toBe(1);
+    expect(warmRes.bundleSha256).toBe('d'.repeat(64));
+  });
+
+  it('cleans up staging directory and records FAILED status on error', async () => {
+    const spec: ToolkitAcquisitionSpec = {
+      sourceIdentity: 'broken/skills',
+      resolvedRevision: 'f'.repeat(40),
+      adapterVersion: 1,
+      configDigest: 'err'
+    };
+
+    const failingAcquire = async () => {
+      throw new Error('network connection timed out');
+    };
+
+    await expect(cacheManager.getOrAcquire(ownerId, spec, failingAcquire)).rejects.toThrow('network connection timed out');
+
+    const cacheKey = cacheManager.computeCacheKey(ownerId, spec);
+    const dbRecord = store.getToolkitCacheEntry(cacheKey);
+    expect(dbRecord?.status).toBe('FAILED');
+    expect(dbRecord?.errorSummary).toContain('network connection timed out');
+  });
+
+  it('reconciles orphaned staging directories at startup', async () => {
+    const orphanDir = join(cacheRoot, 'staging', 'staging-orphaned-1234');
+    mkdirSync(orphanDir, { recursive: true });
+    writeFileSync(join(orphanDir, 'test.txt'), 'partial');
+
+    await cacheManager.reconcileStartup();
+
+    expect(existsSync(orphanDir)).toBe(false);
+  });
+  it('garbage collects unreferenced bundles when quota is exceeded while preserving referenced bundles', async () => {
+    const spec1: ToolkitAcquisitionSpec = { sourceIdentity: 'pkg1', resolvedRevision: '1', adapterVersion: 1, configDigest: '1' };
+    const spec2: ToolkitAcquisitionSpec = { sourceIdentity: 'pkg2', resolvedRevision: '2', adapterVersion: 1, configDigest: '2' };
+
+    const sha1 = '1'.repeat(64);
+    const sha2 = '2'.repeat(64);
+
+    await cacheManager.getOrAcquire(ownerId, spec1, async (dir) => {
+      writeFileSync(join(dir, 'file.txt'), 'data1');
+      return { bundleSha256: sha1, byteCount: 5000, fileCount: 1 };
+    });
+
+    await cacheManager.getOrAcquire(ownerId, spec2, async (dir) => {
+      writeFileSync(join(dir, 'file.txt'), 'data2');
+      return { bundleSha256: sha2, byteCount: 5000, fileCount: 1 };
+    });
+
+    // Create a live workspace referencing sha2
+    const wsId = 'ws_live_1234567890123456';
+    store.create({
+      id: wsId,
+      ownerId,
+      idempotencyKey: 'idem-live-1',
+      repositoryUrl: 'https://github.com/test/repo',
+      repositoryRef: 'main',
+      containerName: 'cnt-1',
+      workspacePath: join(tmpDir, 'ws'),
+      environmentId: null,
+      status: 'ACTIVE',
+      networkMode: 'none',
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+      expiresAt: Date.now() + 100000,
+      hardExpiresAt: Date.now() + 200000,
+      gitAuthorName: null,
+      gitAuthorEmail: null,
+      mutationLockedUntil: null,
+      generation: 1,
+      error: null
+    });
+
+    store.saveWorkspaceToolkits(wsId, ownerId, [
+      {
+        ordinal: 0,
+        toolkitId: 'pkg2',
+        scope: 'owner',
+        requestedJson: '{}',
+        resolvedJson: '{}',
+        bundleSha256: sha2
+      }
+    ]);
+
+    // Total bytes = 10000. Quota = 6000.
+    // sha1 is unreferenced -> should be purged.
+    // sha2 is referenced by active workspace wsId -> MUST BE PRESERVED.
+    const result = await cacheManager.garbageCollect(ownerId, 6000);
+    expect(result.purgedCount).toBe(1);
+    expect(result.purgedBytes).toBe(5000);
+
+    const entries = store.listToolkitCacheEntries(ownerId);
+    expect(entries.length).toBe(1);
+    expect(entries[0]!.bundleSha256).toBe(sha2);
+  });
+
+  it('publishes a locally produced bundle and reuses the directory for identical content', async () => {
+    const files = { 'skills/tdd/SKILL.md': '# TDD' };
+    const first = await cacheManager.publishLocalBundle(ownerId, files);
+    expect(existsSync(first.bundlePath)).toBe(true);
+    expect(first.fileCount).toBe(1);
+    expect(readFileSync(join(first.bundlePath, 'skills/tdd/SKILL.md'), 'utf8')).toBe('# TDD');
+
+    // The same bytes resolve to the same directory rather than creating a second copy, which is what
+    // makes a repeated custom skill ever cheaper to publish and keeps one bundle per content hash.
+    const second = await cacheManager.publishLocalBundle(ownerId, files);
+    expect(second.bundleSha256).toBe(first.bundleSha256);
+    expect(second.bundlePath).toBe(first.bundlePath);
+  });
+
+  it('refuses a bundle member that would escape the owner directory', async () => {
+    await expect(cacheManager.publishLocalBundle(ownerId, { '../escape.md': 'x' })).rejects.toThrow(/unsafe bundle member path/);
+    await expect(cacheManager.publishLocalBundle(ownerId, { '/etc/passwd': 'x' })).rejects.toThrow(/unsafe bundle member path/);
+    await expect(cacheManager.publishLocalBundle(ownerId, { 'skills/space/': 'x' })).rejects.toThrow(/unsafe bundle member path/);
+    await expect(cacheManager.publishLocalBundle(ownerId, {})).rejects.toThrow(/at least one file/);
+  });
+
+  it('quarantines a published bundle whose bytes no longer match the recorded digest', async () => {    const spec: ToolkitAcquisitionSpec = { sourceIdentity: 'skills-sh:mattpocock/skills', resolvedRevision: 'abc', adapterVersion: 1, configDigest: 'd' };
+    const published = await cacheManager.getOrAcquire(ownerId, spec, async (dir) => {
+      writeFileSync(join(dir, 'manifest.json'), '{"id":"test"}');
+      writeFileSync(join(dir, 'SKILL.md'), '# Skill');
+      const digest = computeFullTreeDigest(dir);
+      return { bundleSha256: digest.bundleSha256, byteCount: digest.byteCount, fileCount: digest.fileCount };
+    });
+
+    // An intact bundle is left alone.
+    await expect(cacheManager.quarantineIfCorrupt(ownerId, spec)).resolves.toEqual({ quarantined: false });
+
+    // Tamper with the published bytes without touching the recorded digest.
+    writeFileSync(join(published.bundlePath, 'SKILL.md'), '# Tampered');
+
+    const result = await cacheManager.quarantineIfCorrupt(ownerId, spec);
+    expect(result.quarantined).toBe(true);
+    expect(result.reason).toMatch(/does not match published/);
+
+    // The bytes left the cache root and the row is gone, so the next lookup is a miss and the
+    // next acquisition re-fetches rather than serving unverified content.
+    expect(existsSync(published.bundlePath)).toBe(false);
+    expect(cacheManager.getExisting(ownerId, spec)).toBeUndefined();
+  });
+
+  it('quarantines a cache row whose bundle directory disappeared', async () => {
+    const spec: ToolkitAcquisitionSpec = { sourceIdentity: 'skillx:gone', resolvedRevision: 'x', adapterVersion: 1, configDigest: 'e' };
+    const published = await cacheManager.getOrAcquire(ownerId, spec, async (dir) => {
+      writeFileSync(join(dir, 'SKILL.md'), '# Skill');
+      const digest = computeFullTreeDigest(dir);
+      return { bundleSha256: digest.bundleSha256, byteCount: digest.byteCount, fileCount: digest.fileCount };
+    });
+    rmSync(published.bundlePath, { recursive: true, force: true });
+
+    await expect(cacheManager.quarantineIfCorrupt(ownerId, spec))
+      .resolves.toEqual({ quarantined: true, reason: 'bundle directory is missing' });
+    expect(cacheManager.getExisting(ownerId, spec)).toBeUndefined();
+  });
+});

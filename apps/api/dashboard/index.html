@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overview | Cloud Harness</title>
+  <link rel="stylesheet" href="/dashboard/assets/__CH_ASSET_VERSION__/dashboard.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="menu-button" class="icon-btn topbar-menu" type="button" aria-controls="product-nav" aria-expanded="false" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <button id="nav-toggle" class="icon-btn topbar-collapse" type="button" aria-expanded="true" aria-label="Collapse navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg></button>
+      <span class="brand">Cloud Harness</span>
+      <span class="env-tag">MCP Control Plane</span>
+    </div>
+    <div class="topbar-center">
+      <button id="open-palette" class="palette-open" type="button" aria-label="Search or jump to (Command K)" aria-keyshortcuts="Meta+K Control+K" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span class="palette-label" aria-hidden="true">Search or jump to…</span><span class="palette-hint" aria-hidden="true">⌘K</span></button>
+    </div>
+    <div class="topbar-right">
+      <button id="theme-toggle" class="icon-btn theme-toggle" type="button" aria-label="Theme: system. Activate to switch to light."><svg data-theme-value="system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/></svg><svg data-theme-value="light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.9 4.9 1.4 1.4"/><path d="m17.7 17.7 1.4 1.4"/><path d="m19.1 4.9-1.4 1.4"/><path d="m6.3 17.7-1.4 1.4"/></svg><svg data-theme-value="dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      <a class="profile-chip" id="profile-chip" href="/dashboard/profile" aria-label="Open profile"><span class="avatar" id="profile-avatar" aria-hidden="true"></span><span class="profile-meta"><strong id="profile-name">Signed in</strong><span id="profile-email" class="wrap"></span></span></a>
+      <a class="icon-btn signout" id="signout" href="/cdn-cgi/access/logout" aria-label="Sign out" title="Sign out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/><path d="m10 8-4 4 4 4"/><path d="M6 12h9"/></svg></a>
+    </div>
+  </header>
+  <div class="app-shell">
+    <aside id="product-nav" class="sidebar" aria-label="Product navigation">
+      <nav aria-label="Primary">
+        <!-- Rendered from the page registry (dashboard-pages.js); no page label, route or icon is
+             authored here, so navigation cannot drift from routing again. -->
+        <div id="sidebar-nav"></div>
+      </nav>
+      <p class="sidebar-version"><span class="sr-only">Server version</span><span class="mono">v__CH_VERSION__</span></p>
+    </aside>
+    <main id="main" tabindex="-1">
+      <header class="page-header" data-shell-pending><div class="page-heading"><p class="eyebrow" id="page-eyebrow">Console</p><h1 id="page-title">Overview</h1><p id="page-help">Attention, running work, usage, and workspace expiry for your signed-in identity.</p></div><div id="page-actions" class="page-actions"></div></header>
+      <div id="command-surface" class="command-surface" hidden>
+        <form role="search" aria-label="Filter workspaces" id="workspace-filter">
+          <label for="search">Search</label><input id="search" name="q" placeholder="Filter by repository or workspace ID">
+          <label for="status">State</label><select id="status" name="status"><option value="">All</option><option>CREATING</option><option>ACTIVE</option><option>REAPING</option><option>CLOSED</option><option>FAILED</option></select>
+          <button type="submit">Apply filters</button>
+        </form>
+        <button id="open-workspace-btn" type="button" class="accent-btn">Open workspace</button>
+        <button id="refresh" type="button">Refresh</button><span id="last-updated"></span>
+      </div>
+      <nav id="context-nav" aria-label="Page sections"></nav>
+      <section id="content" aria-labelledby="page-title" aria-busy="true"><p>Loading…</p></section>
+      <div id="alert" role="alert" hidden></div>
+    </main>
+    <aside id="detail" class="detail" aria-labelledby="workspace-detail-title" hidden></aside>
+  </div>
+  <footer class="site-footer"><p>Made with ❤️ by <a href="https://agentkit.best" rel="noreferrer">AgentKit</a></p></footer>
+  <div id="announcer" class="sr-only" aria-live="polite"></div>
+  <div id="toasts" class="toasts" aria-hidden="true"></div>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+    <h2 id="confirm-title">Confirm action</h2><p id="confirm-description"></p><p id="confirm-target" class="mono"></p>
+    <p id="confirm-status" class="status-message" aria-live="polite"></p>
+    <div class="dialog-actions"><button type="button" data-cancel autofocus>Cancel</button><button id="confirm-action" class="danger" type="button">Confirm</button></div>
+  </dialog>
+  <dialog id="file-conflict-dialog" aria-labelledby="file-conflict-title" aria-describedby="file-conflict-description">
+    <h2 id="file-conflict-title">This file changed</h2>
+    <p id="file-conflict-description">This item changed after you opened it. Your unsaved content is still in the editor.</p>
+    <p id="file-conflict-status" class="status-message" aria-live="polite"></p>
+    <div class="dialog-actions"><button id="cancel-conflict" type="button">Cancel</button><button id="copy-changes" type="button">Copy my changes</button><button id="review-latest" type="button">Review latest</button></div>
+  </dialog>
+  <dialog id="api-key-reveal-dialog" aria-labelledby="api-key-reveal-title" aria-describedby="api-key-reveal-description">
+    <h2 id="api-key-reveal-title">Copy this API key now</h2>
+    <p id="api-key-reveal-description">This is the only time the complete key will be shown. It cannot be recovered later. Anyone with it has full MCP access, including arbitrary command execution as your identity.</p>
+    <label for="api-key-secret">New API key</label>
+    <input id="api-key-secret" class="mono api-key-secret" type="text" readonly autocomplete="off" spellcheck="false">
+    <p id="api-key-copy-status" class="status-message" aria-live="polite"></p>
+    <div class="dialog-actions"><button id="copy-api-key" type="button">Copy API key</button><button id="acknowledge-api-key" type="button">I have saved it</button></div>
+  </dialog>
+  <dialog id="bulk-import-dialog" aria-labelledby="bulk-import-title" aria-describedby="bulk-import-description">
+    <h2 id="bulk-import-title">Bulk import .env</h2>
+    <p id="bulk-import-description">Paste .env content to create or rotate secrets. Contiguous comments directly above keys become descriptions. Values are write-only and not retained in the page.</p>
+    <form id="bulk-import-form" class="stack-form">
+      <input type="hidden" id="bulk-import-env-id" name="environmentId">
+      <label for="bulk-import-input">.env content</label>
+      <textarea id="bulk-import-input" class="mono" rows="8" spellcheck="false" autocomplete="off" placeholder="# Description&#10;KEY=value" required></textarea>
+      <div id="bulk-import-preview" class="bulk-diff-preview" aria-live="polite"></div>
+      <p id="bulk-import-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" id="cancel-bulk-import">Cancel</button><button type="submit" id="submit-bulk-import" class="accent-btn">Apply import</button></div>
+    </form>
+  </dialog>
+  <dialog id="open-workspace-dialog" aria-labelledby="open-workspace-title" aria-describedby="open-workspace-description">
+    <h2 id="open-workspace-title">Open new workspace</h2>
+    <p id="open-workspace-description">Clone an approved repository into an isolated, TTL-limited remote workspace.</p>
+    <form id="open-workspace-form" class="stack-form">
+      <label for="open-repo-url">Repository HTTPS URL</label>
+      <input id="open-repo-url" name="repositoryUrl" type="url" placeholder="https://github.com/org/repo" required>
+      <label for="open-repo-ref">Branch or Commit Ref (optional)</label>
+      <input id="open-repo-ref" name="ref" placeholder="main">
+      <label for="open-network-profile">Network profile (optional)</label>
+      <select id="open-network-profile" name="networkProfile">
+        <option value="network-none">No network (air-gapped isolation)</option>
+        <option value="dependency-access" selected>Dependency access (public DNS, TCP 80/443)</option>
+      </select>
+      <div class="form-section-title">Agent Toolkits & Skills (Optional)</div>
+      <label for="open-skill-sets-select">Skill sets</label>
+      <select id="open-skill-sets-select" name="skillSets" multiple size="4"></select>
+      <ul id="open-skill-sets-chips" class="skills-chips" aria-label="Selected skill sets"></ul>
+      <div id="open-skill-conflicts" class="skills-conflicts" role="group" aria-label="Skill conflicts"></div>
+      <p><a id="skills-manage-link" href="/dashboard/skills">Manage skills</a></p>
+      <div id="open-workspace-preview" class="preflight-box" aria-live="polite"></div>
+      <p id="open-workspace-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-open-workspace">Cancel</button>
+        <button type="submit" id="submit-open-workspace" class="accent-btn">Launch workspace</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="model-credential-dialog" aria-labelledby="model-credential-title" aria-describedby="model-credential-description">
+    <h2 id="model-credential-title">Add provider credential</h2>
+    <p id="model-credential-description">Configure an API key for subagent LLM providers. Values are write-only and encrypted.</p>
+    <form id="model-credential-form" class="stack-form">
+      <input type="hidden" id="model-credential-id" name="credentialId">
+      <input type="hidden" id="model-credential-generation" name="expectedGeneration" value="1">
+      <label for="model-credential-label">Label</label>
+      <input id="model-credential-label" name="label" placeholder="e.g. Production OpenAI Key" required>
+      <label for="model-credential-provider">Provider</label>
+      <select id="model-credential-provider" name="provider">
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic (OpenAI-compatible)</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="google">Google Gemini (OpenAI-compatible)</option>
+        <option value="custom">Custom (OpenAI-compatible)</option>
+      </select>
+      <label for="model-credential-auth-mode">Auth header mode</label>
+      <select id="model-credential-auth-mode" name="authMode">
+        <option value="bearer">Authorization: Bearer &lt;key&gt;</option>
+        <option value="x-api-key">X-API-Key: &lt;key&gt;</option>
+      </select>
+      <label for="model-credential-key">API Key (Write-only)</label>
+      <input id="model-credential-key" name="apiKey" type="password" autocomplete="new-password" placeholder="sk-..." required spellcheck="false">
+      <p id="model-credential-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-model-credential">Cancel</button>
+        <button type="submit" id="submit-model-credential" class="accent-btn">Save credential</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="model-profile-dialog" aria-labelledby="model-profile-title" aria-describedby="model-profile-description">
+    <h2 id="model-profile-title">Add model profile</h2>
+    <p id="model-profile-description">Configure model routing, token pricing, budget limits, and allowed proxy tools for Pi subagents.</p>
+    <form id="model-profile-form" class="stack-form">
+      <input type="hidden" id="model-profile-edit-mode" name="isEdit" value="false">
+      <input type="hidden" id="model-profile-generation" name="expectedGeneration" value="1">
+      <label for="model-profile-id">Profile ID</label>
+      <input id="model-profile-id" name="profileId" placeholder="e.g. coding-fast" required pattern="^[A-Za-z0-9._-]+$">
+      <label for="model-profile-display-name">Display name</label>
+      <input id="model-profile-display-name" name="displayName" placeholder="e.g. Fast Coding Agent" required>
+      <label for="model-profile-credential">Credential</label>
+      <select id="model-profile-credential" name="credentialId" required></select>
+      <label for="model-profile-model">Model name</label>
+      <input id="model-profile-model" name="model" placeholder="e.g. gpt-5.2-codex" required>
+      <label for="model-profile-api-mode">API Mode</label>
+      <select id="model-profile-api-mode" name="apiMode">
+        <option value="chat-completions" selected>Chat Completions (/v1/chat/completions)</option>
+      </select>
+      <div id="model-profile-custom-url-group" hidden>
+        <label for="model-profile-custom-url">Custom Upstream HTTPS URL</label>
+        <input id="model-profile-custom-url" name="customUpstreamUrl" type="url" placeholder="https://api.example.com/v1/chat/completions">
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="model-profile-pricing-input">Input $/1M Tokens</label>
+          <input id="model-profile-pricing-input" name="pricingInput" type="number" step="0.000001" min="0" value="1.75" required>
+        </div>
+        <div>
+          <label for="model-profile-pricing-output">Output $/1M Tokens</label>
+          <input id="model-profile-pricing-output" name="pricingOutput" type="number" step="0.000001" min="0" value="14.00" required>
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="model-profile-max-input">Max input tokens</label>
+          <input id="model-profile-max-input" name="maxInputTokens" type="number" min="1" value="200000" required>
+        </div>
+        <div>
+          <label for="model-profile-max-output">Max output tokens</label>
+          <input id="model-profile-max-output" name="maxOutputTokens" type="number" min="1" value="32000" required>
+        </div>
+        <div>
+          <label for="model-profile-max-cost">Max cost ($)</label>
+          <input id="model-profile-max-cost" name="maxCost" type="number" step="0.000001" min="0.01" value="5.00" required>
+        </div>
+      </div>
+      <div class="form-section-title">Allowed Proxy Operations</div>
+      <div class="tools-checkbox-grid">
+        <label><input type="checkbox" name="proxyOps" value="files_list" checked> files_list</label>
+        <label><input type="checkbox" name="proxyOps" value="files_read" checked> files_read</label>
+        <label><input type="checkbox" name="proxyOps" value="files_write"> files_write</label>
+        <label><input type="checkbox" name="proxyOps" value="files_apply_patch"> files_apply_patch</label>
+        <label><input type="checkbox" name="proxyOps" value="files_delete"> files_delete</label>
+        <label><input type="checkbox" name="proxyOps" value="files_move"> files_move</label>
+        <label><input type="checkbox" name="proxyOps" value="files_mkdir"> files_mkdir</label>
+        <label><input type="checkbox" name="proxyOps" value="grep_search" checked> grep_search</label>
+        <label><input type="checkbox" name="proxyOps" value="symbols_search" checked> symbols_search</label>
+        <label><input type="checkbox" name="proxyOps" value="symbols_references" checked> symbols_references</label>
+      </div>
+      <p id="model-profile-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-model-profile">Cancel</button>
+        <button type="submit" id="submit-model-profile" class="accent-btn">Save profile</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="knowledge-conflict-dialog" aria-labelledby="knowledge-conflict-title" aria-describedby="knowledge-conflict-description">
+    <h2 id="knowledge-conflict-title">Knowledge item changed on server</h2>
+    <p id="knowledge-conflict-description">This item was updated by another process (generation mismatch). Review the versions below to resolve conflicts.</p>
+    <div class="conflict-3way-grid">
+      <div class="conflict-pane">
+        <h3>Base version (Gen <span id="conflict-base-gen"></span>)</h3>
+        <pre id="conflict-base-content" class="mono conflict-text"></pre>
+      </div>
+      <div class="conflict-pane">
+        <h3>Current on server (Gen <span id="conflict-current-gen"></span>)</h3>
+        <pre id="conflict-current-content" class="mono conflict-text"></pre>
+      </div>
+      <div class="conflict-pane">
+        <h3>Your changes (unsaved)</h3>
+        <pre id="conflict-yours-content" class="mono conflict-text"></pre>
+      </div>
+    </div>
+    <p id="knowledge-conflict-status" class="status-message" aria-live="polite"></p>
+    <div class="dialog-actions">
+      <button type="button" id="cancel-knowledge-conflict">Keep my draft & cancel</button>
+      <button type="button" id="copy-yours-conflict">Copy my draft</button>
+      <button type="button" id="overwrite-current-conflict" class="accent-btn">Load current server version</button>
+    </div>
+  </dialog>
+  <dialog id="create-knowledge-dialog" aria-labelledby="create-knowledge-title" aria-describedby="create-knowledge-description">
+    <h2 id="create-knowledge-title">Create Knowledge item</h2>
+    <p id="create-knowledge-description">Create a scoped memory note or chronological engineering journal.</p>
+    <form id="create-knowledge-form" class="stack-form">
+      <div class="form-row">
+        <div>
+          <label for="create-kn-kind">Kind</label>
+          <select id="create-kn-kind" name="kind">
+            <option value="memory" selected>Memory (Durable note)</option>
+            <option value="journal">Journal (Chronological entry)</option>
+          </select>
+        </div>
+        <div>
+          <label for="create-kn-scope">Scope</label>
+          <select id="create-kn-scope" name="scope">
+            <option value="owner" selected>Owner (Global)</option>
+            <option value="project">Project</option>
+            <option value="workspace">Workspace</option>
+          </select>
+        </div>
+      </div>
+      <div id="create-kn-project-row" class="form-row" hidden>
+        <label for="create-kn-project">Project</label>
+        <select id="create-kn-project" name="projectId"></select>
+      </div>
+      <div id="create-kn-journal-row" class="form-row" hidden>
+        <label for="create-kn-journal-type">Journal type</label>
+        <select id="create-kn-journal-type" name="journalType">
+          <option value="engineering-log" selected>Engineering Log</option>
+          <option value="decision-record">Decision Record</option>
+          <option value="session-reflection">Session Reflection</option>
+        </select>
+      </div>
+      <label for="create-kn-title">Title</label>
+      <input id="create-kn-title" name="title" required maxlength="120" placeholder="E.g. Database Connection Pooling">
+      <label for="create-kn-tags">Tags (comma-separated)</label>
+      <input id="create-kn-tags" name="tags" placeholder="postgres, caching, adr">
+      <label for="create-kn-content">Markdown content</label>
+      <textarea id="create-kn-content" name="content" rows="6" placeholder="# Title&#10;Write content here..." required></textarea>
+      <p id="create-knowledge-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-create-knowledge">Cancel</button>
+        <button type="submit" id="submit-create-knowledge" class="accent-btn">Create item</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="mcp-server-dialog" aria-labelledby="mcp-server-title" aria-describedby="mcp-server-description">
+    <h2 id="mcp-server-title">Add MCP server</h2>
+    <p id="mcp-server-description">Register a downstream MCP server. Header secret values are write-only and are never returned to this page.</p>
+    <form id="mcp-server-form" class="stack-form">
+      <input type="hidden" name="serverId">
+      <input type="hidden" name="expectedGeneration" value="0">
+      <label for="mcp-server-name">Name</label>
+      <input id="mcp-server-name" name="name" required maxlength="63" pattern="^[a-z0-9][a-z0-9-]{0,62}$" autocomplete="off" spellcheck="false" placeholder="e.g. linear" aria-describedby="mcp-server-name-hint">
+      <p id="mcp-server-name-hint">Lowercase letters, numbers, and hyphens, up to 63 characters.</p>
+      <label for="mcp-server-description-input">Description <span class="optional">Optional</span></label>
+      <input id="mcp-server-description-input" name="description" maxlength="500" autocomplete="off">
+      <label for="mcp-server-transport">Transport</label>
+      <select id="mcp-server-transport" name="transport">
+        <option value="streamable-http" selected>streamable-http</option>
+        <option value="sse">sse</option>
+        <option value="stdio" disabled>stdio (unsupported)</option>
+      </select>
+      <label for="mcp-server-url">Endpoint URL</label>
+      <input id="mcp-server-url" name="endpoint" type="url" required maxlength="2048" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://vendor.example.com/mcp">
+      <div class="form-section-title">Authentication</div>
+      <label class="checkbox-label"><input name="oauthEnabled" type="checkbox" aria-controls="mcp-oauth-fields"><span>Authenticate with OAuth (streamable-http only)</span></label>
+      <div id="mcp-oauth-fields" hidden>
+        <p>Cloud Harness signs in to this server with OAuth 2.1 on your behalf. Connect after saving. Tokens stay encrypted and are never shown. OAuth owns the Authorization header, so a custom Authorization header is refused.</p>
+        <label for="mcp-oauth-scopes">Scopes <span class="optional">Optional</span></label>
+        <input id="mcp-oauth-scopes" name="oauthScopes" maxlength="500" autocomplete="off" spellcheck="false" placeholder="e.g. read write">
+        <label for="mcp-oauth-client-id">Client ID <span class="optional">Optional, manual registration</span></label>
+        <input id="mcp-oauth-client-id" name="oauthClientId" maxlength="512" autocomplete="off" spellcheck="false">
+        <label for="mcp-oauth-client-secret">Client secret <span class="optional">Optional, global secret reference</span></label>
+        <select id="mcp-oauth-client-secret" name="oauthClientSecretRef"><option value="">None (public client)</option></select>
+      </div>
+      <div class="form-section-title">Headers <span class="optional">Optional</span></div>
+      <p>Send a literal header value or reference an existing global secret. Secret values are write-only and are not shown after saving.</p>
+      <div id="mcp-header-rows"></div>
+      <div class="form-row-actions"><button type="button" data-mcp-add-header>Add header</button></div>
+      <label class="checkbox-label"><input name="enabled" type="checkbox" checked><span>Enabled</span></label>
+      <div class="form-row-actions"><button type="button" data-mcp-dialog-test>Test connection</button></div>
+      <p id="mcp-dialog-status" class="form-status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-mcp-server">Cancel</button>
+        <button type="submit" id="submit-mcp-server" class="accent-btn">Save server</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="command-palette" aria-label="Search Cloud Harness">
+    <label class="sr-only" for="palette-input">Search workspaces, projects, secrets, API keys, and pages</label>
+    <input id="palette-input" type="text" role="combobox" aria-expanded="false" aria-controls="palette-results" aria-autocomplete="list" autocomplete="off" spellcheck="false" placeholder="Search workspaces, projects, secrets, API keys, pages…">
+    <p id="palette-status" class="sr-only" aria-live="polite"></p>
+    <ul id="palette-results" role="listbox" aria-label="Results"></ul>
+    <p class="palette-note">Results cover the first page of each resource type. Memories and journals are searched on the Knowledge page.</p>
+  </dialog>
+  <script type="module" src="/dashboard/assets/__CH_ASSET_VERSION__/dashboard.js"></script>
+</body>
+</html>

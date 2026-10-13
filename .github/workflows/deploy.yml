@@ -15,27 +15,62 @@ on:
 permissions:
   actions: read
   contents: read
+  deployments: read
 
 concurrency:
   group: production-deploy
   cancel-in-progress: false
 
 jobs:
+  classify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      should_deploy: ${{ steps.classify.outputs.should_deploy }}
+      deploy_sha: ${{ steps.classify.outputs.deploy_sha }}
+      reason: ${{ steps.classify.outputs.reason }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      # Waits for the Release run started by the same CI completion, then skips
+      # only a merge commit that Release superseded with a version commit whose
+      # own CI run deploys the tagged tree. When that version commit's CI fails,
+      # its CI-tested parent deploys instead. The runner's preinstalled Node is
+      # enough: the script only uses fetch and node:fs.
+      - name: Classify deploy target
+        id: classify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TARGET_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+          TRIGGER_SHA: ${{ github.sha }}
+        run: node scripts/classify-production-deploy.mjs
+
   deploy:
+    needs: classify
+    # A classify job that itself fails (checkout, runner, timeout) falls back to
+    # the previous rule: deploy a successful main CI run or a manual dispatch.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+      !cancelled() &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      ((needs.classify.result == 'success' && needs.classify.outputs.should_deploy == 'true') ||
+      (needs.classify.result != 'success' && github.event.workflow_run.conclusion == 'success'))))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: production
     env:
-      RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.commit || github.sha }}
+      RELEASE_SHA: ${{ needs.classify.outputs.deploy_sha || (github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.commit || github.sha) }}
     steps:
       - name: Validate release input
         shell: bash
         run: '[[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]'
       - name: Verify manual release passed CI
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || env.RELEASE_SHA != github.event.workflow_run.head_sha
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -59,8 +94,12 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
+        # Keepalives stop an idle middlebox from dropping the session during a
+        # silent image build. The deploy itself runs as a host systemd unit, so a
+        # dropped session only loses this log stream, never the release.
         run: |
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes "$VPS_USER@$VPS_HOST" \
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "$VPS_USER@$VPS_HOST" \
             "sudo -n /usr/local/sbin/cloud-harness-deploy '$RELEASE_SHA'"
       - name: Remove SSH material
         if: always()

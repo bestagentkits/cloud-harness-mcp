@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,8 +44,10 @@ beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), 'cloud-harness-e2e-'));
   const runnerConfig: RunnerConfig = {
     host: '127.0.0.1', port: 0, serviceToken, jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state', 'state.db'),
-    executorImage: 'cloud-harness-executor:local', allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300,
-    idleTtlSeconds: 180, maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 536_870_912, reaperIntervalSeconds: 0.05
+    executorImage: 'cloud-harness-executor:local', allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 300,
+    idleTtlSeconds: 180, maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 536_870_912, reaperIntervalSeconds: 0.05,
+    artifactRoot: join(directory, 'artifacts'), maxArtifactBytes: 16_777_216, maxPrincipalArtifactBytes: 134_217_728,
+    artifactRetentionSeconds: 86_400, enableRepoCache: false, repoCacheRoot: join(directory, 'cache')
   };
   store = new StateStore(runnerConfig.stateDb);
   service = new WorkspaceService(runnerConfig, store);
@@ -53,7 +56,10 @@ beforeAll(async () => {
   const runnerPort = await listen(runnerServer);
   const apiConfig: ApiConfig = {
     host: '127.0.0.1', port: 0, ownerId: 'owner', bearerToken: bearer, runnerUrl: `http://127.0.0.1:${runnerPort}`,
-    runnerToken: serviceToken, publicHosts: ['127.0.0.1'], allowedOrigins: [], requestTimeoutMs: 120_000, maxBodyBytes: 262_144
+    runnerToken: serviceToken, publicHosts: ['127.0.0.1'], allowedOrigins: [], requestTimeoutMs: 120_000, maxBodyBytes: 262_144,
+    mcpGatewayTimeoutMs: 30_000, mcpGatewayMaxResponseBytes: 262_144, mcpGatewayMaxToolsPerServer: 500,
+    mcpGatewayMaxSchemaBytes: 65_536, mcpGatewayMaxCatalogBytes: 2_097_152, mcpGatewayMaxTraceRows: 20_000,
+    mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
   };
   apiRuntime = createApiApp(apiConfig);
   apiServer = createServer(apiRuntime.app);
@@ -63,7 +69,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  if (workspaceId) await service.close('owner', workspaceId).catch(() => undefined);
+  if (workspaceId) await service.execute('owner', 'workspace_close', { workspaceId }).catch(() => undefined);
   await client.close().catch(() => undefined);
   await apiRuntime.close();
   await service.stop();
@@ -72,20 +78,27 @@ afterAll(async () => {
     new Promise<void>((resolve) => apiServer.close(() => resolve())),
     new Promise<void>((resolve) => runnerServer.close(() => resolve()))
   ]);
-  rmSync(directory, { recursive: true, force: true });
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    execFileSync('docker', ['run', '--rm', '--user', '0:0', '--volume', `${directory}:/target:rw`, '--entrypoint', '/bin/sh', 'cloud-harness-executor:local', '-c', 'chmod -R u+rwX /target 2>/dev/null || true']);
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 describe('complete coding workflow through MCP', () => {
   it('uses every required coding domain in a persistent sandbox', async () => {
-    const opened = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-1', networkMode: 'none' });
+    const opened = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-1', networkProfile: 'network-none' });
     workspaceId = opened.data.workspaceId;
-    const replayed = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-1', networkMode: 'none' });
+    const replayed = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-1', networkProfile: 'network-none' });
     expect(replayed.data.workspaceId).toBe(workspaceId);
     expect(JSON.stringify((await call('workspace_list')).data)).toContain(workspaceId);
     expect((await call('workspace_status', { workspaceId })).data.status).toBe('ACTIVE');
 
     const read = await call('files_read', { workspaceId, path: 'README.md', offset: 0, limit: 65_536 });
-    await call('files_apply_patch', { workspaceId, path: 'README.md', oldText: 'Remote coding harness', newText: 'Verified remote coding harness', expectedSha256: read.data.sha256 });
+    const patched = await call('files_apply_patch', { workspaceId, path: 'README.md', oldText: 'Remote coding harness', newText: 'Verified remote coding harness', expectedSha256: read.data.sha256 });
+    expect(patched.data).toMatchObject({ path: 'README.md', sha256: expect.any(String) });
+    expect(patched.data.bytes).toBeUndefined();
     await call('files_write', { workspaceId, path: 'verification.txt', content: 'cloud harness verified\n' });
     await call('files_mkdir', { workspaceId, path: 'scratch/nested', recursive: true });
     const directoryMode = await call('exec_run', { workspaceId, command: 'stat -c %a scratch', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 });
@@ -103,6 +116,8 @@ describe('complete coding workflow through MCP', () => {
 
     const shell = await call('shell_open', { workspaceId, cwd: '.', idempotencyKey: 'e2e-shell-1' });
     const shellId = shell.data.id;
+    expect(shell.data).toMatchObject({ id: expect.any(String), status: expect.any(String), output: expect.any(String) });
+    expect(shell.cursor).toBeUndefined();
     const shellOutput = await call('shell_io', { workspaceId, shellId, input: 'echo shell-ok\n', waitMs: 300 });
     expect(JSON.stringify(shellOutput.data)).toContain('shell-ok');
     const shellDelta = await call('shell_io', { workspaceId, shellId, cursor: shellOutput.cursor, waitMs: 0 });
@@ -120,6 +135,8 @@ describe('complete coding workflow through MCP', () => {
 
     const session = await call('sessions_open', { workspaceId, name: 'review', cwd: '.', idempotencyKey: 'e2e-session-1' });
     const sessionId = session.data.id;
+    expect(session.data).toMatchObject({ id: expect.any(String), name: 'review', status: expect.any(String), output: expect.any(String) });
+    expect(session.cursor).toBeUndefined();
     expect(JSON.stringify((await call('sessions_list', { workspaceId, limit: 100 })).data)).toContain(sessionId);
     expect(JSON.stringify((await call('sessions_io', { workspaceId, sessionId, input: 'echo session-ok\n', waitMs: 300 })).data)).toContain('session-ok');
     await call('sessions_close', { workspaceId, sessionId });
@@ -160,12 +177,37 @@ describe('complete coding workflow through MCP', () => {
     await call('exec_run', { workspaceId, command: 'mkdir -p .agents/skills/demo/scripts .cloud-harness && printf "# Demo skill\\n" > .agents/skills/demo/SKILL.md && printf "#!/bin/sh\\necho skill-ok\\n" > .agents/skills/demo/scripts/run.sh && chmod +x .agents/skills/demo/scripts/run.sh', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 });
     await call('files_write', { workspaceId, path: '.cloud-harness/hooks.json', content: '{"verify":"echo hook-ok"}' });
     await call('files_write', { workspaceId, path: '.cloud-harness/deployments.json', content: '{"preview":{"command":"echo deploy-ok","cwd":"."},"broken":{"command":"printf deploy-failed >&2; exit 7","cwd":"."}}' });
-    expect(JSON.stringify((await call('skills_list', { workspaceId })).data)).toContain('demo');
+    const skillsRes = await call('skills_list', { workspaceId });
+    expect(JSON.stringify(skillsRes.data)).toContain('demo');
+    const demoSkill = (skillsRes.data as any).skills?.find((s: any) => s.name === 'demo');
+    expect(demoSkill).toBeDefined();
     expect(JSON.stringify((await call('skills_read', { workspaceId, name: 'demo' })).data)).toContain('Demo skill');
-    expect(JSON.stringify((await call('skills_run', { workspaceId, name: 'demo', script: 'run.sh', args: [], timeoutMs: 10_000 })).data)).toContain('skill-ok');
-    expect(JSON.stringify((await call('hooks_list', { workspaceId })).data)).toContain('verify');
-    expect(JSON.stringify((await call('hooks_run', { workspaceId, name: 'verify', timeoutMs: 10_000 })).data)).toContain('hook-ok');
-    expect(JSON.stringify((await call('deployments_list', { workspaceId })).data)).toContain('preview');
+    // Skill execution runs in a disposable helper container, so the first call reports the owner
+    // privilege grant it needs instead of running. That is the point of the change: a caller must never
+    // be able to read an isolation guarantee into a run that did not have one.
+    const skillRunInput = { workspaceId, name: 'demo', script: 'run.sh', args: [], timeoutMs: 10_000, expectedSha256: demoSkill.contentSha256 };
+    const skillDenied = await client.callTool({ name: 'skills_run', arguments: skillRunInput });
+    expect(skillDenied.isError).toBe(true);
+    const skillDeniedBody = skillDenied.structuredContent as Record<string, any>;
+    expect(skillDeniedBody.error.code).toBe('PRIVILEGE_APPROVAL_REQUIRED');
+    expect(skillDeniedBody.error.grantRequest.commandSha256).toHaveLength(64);
+    // The grant belongs to the workspace owner, which is not the client's own label, so the test reads
+    // the owner off the grant rather than assuming it: approving under the wrong owner must not work.
+    const skillGrant = store.getPrivilegeGrant(skillDeniedBody.error.grantRequest.grantId)!;
+    expect(store.approvePrivilegeGrant('not-the-owner', skillGrant.id)).toBe(false);
+    expect(store.approvePrivilegeGrant(skillGrant.ownerId, skillGrant.id)).toBe(true);
+    const skillAllowed = await call('skills_run', { ...skillRunInput, approvalGrantToken: skillGrant.id });
+    expect(JSON.stringify(skillAllowed.data)).toContain('skill-ok');
+    expect(skillAllowed.data.executionMode).toBe('helper-container');
+    const hooksRes = await call('hooks_list', { workspaceId });
+    expect(JSON.stringify(hooksRes.data)).toContain('verify');
+    const manifestSha = (hooksRes.data as any).manifestSha256;
+    expect(manifestSha).toBeDefined();
+    expect(JSON.stringify((await call('hooks_run', { workspaceId, name: 'verify', timeoutMs: 10_000, expectedSha256: manifestSha })).data)).toContain('hook-ok');
+    const deployments = await call('deployments_list', { workspaceId });
+    expect(deployments.data.deployments).toHaveLength(2);
+    expect(deployments.data.deployments).toEqual(expect.arrayContaining([{ name: 'preview', cwd: '.' }, { name: 'broken', cwd: '.' }]));
+    expect(deployments.data.deployments.every((entry: Record<string, unknown>) => entry.command === undefined && entry.description === undefined)).toBe(true);
     expect(JSON.stringify((await call('deployments_run', { workspaceId, name: 'preview', timeoutMs: 10_000 })).data)).toContain('deploy-ok');
     const failedDeployment = await client.callTool({ name: 'deployments_run', arguments: { workspaceId, name: 'broken', timeoutMs: 10_000 } });
     expect(failedDeployment.isError).toBe(true);
@@ -186,6 +228,10 @@ describe('complete coding workflow through MCP', () => {
     await call('git_add', { workspaceId, all: true, paths: [] });
     await call('git_commit', { workspaceId, message: 'test: verify harness workflow', authorName: 'Harness Test', authorEmail: 'harness@example.invalid', all: false });
     expect(JSON.stringify((await call('git_log', { workspaceId, limit: 5 })).data)).toContain('verify harness workflow');
+    await call('files_write', { workspaceId, path: 'commit-all-untracked.txt', content: 'included by git add --all\n' });
+    await call('git_commit', { workspaceId, message: 'test: verify commit all', authorName: 'Harness Test', authorEmail: 'harness@example.invalid', all: true });
+    const commitAll = await call('exec_run', { workspaceId, command: 'git show --name-only --format= HEAD', cwd: '.', timeoutMs: 10_000, maxOutputBytes: 65_536 });
+    expect(commitAll.data.output).toContain('commit-all-untracked.txt');
     await call('git_checkout', { workspaceId, ref: 'e2e-base', create: true });
     const branches = await call('git_branch', { workspaceId, action: 'list', force: false });
     expect(branches.data.output).toContain('e2e-base');
@@ -209,15 +255,16 @@ describe('complete coding workflow through MCP', () => {
     await call('workspace_close', { workspaceId });
     workspaceId = undefined;
 
-    const expiring = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-ttl', networkMode: 'none' });
+    const expiring = await call('workspace_open', { repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git', ref: fixtureRef, idempotencyKey: 'e2e-workspace-ttl', networkProfile: 'network-none' });
     workspaceId = expiring.data.workspaceId;
     const expiringRecord = store.byId(workspaceId)!;
     store.update(workspaceId, { expiresAt: Date.now() - 1 });
-    for (let attempt = 0; attempt < 50 && store.byId(workspaceId)?.status !== 'CLOSED'; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && ['ACTIVE', 'REAPING'].includes(store.byId(workspaceId)?.status ?? ''); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    expect((await call('workspace_status', { workspaceId })).data.status).toBe('CLOSED');
+    expect(['CLOSED', 'EXPIRED_RECOVERABLE']).toContain((await call('workspace_status', { workspaceId })).data.status);
     expect(await inspectContainer(expiringRecord.containerName!)).toBeUndefined();
+    await call('workspace_close', { workspaceId });
     workspaceId = undefined;
     const firstWorkspacePage = await call('workspace_list', { limit: 1 });
     expect(firstWorkspacePage.data.workspaces).toHaveLength(1);

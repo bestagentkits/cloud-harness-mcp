@@ -1,6 +1,6 @@
 {
   "name": "@cloud-harness/agent-runtime",
-  "version": "0.4.0-beta.1",
+  "version": "0.65.0",
   "private": true,
   "type": "module",
   "scripts": {

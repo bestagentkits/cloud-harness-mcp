@@ -1,20 +1,44 @@
 import { z } from 'zod';
+import { ExecutorNetworkProfileSchema } from './identifiers.js';
 import { AgentProxyOperationSchema } from './runner-api.js';
-
+import { SecretNameSchema } from './secret-policy.js';
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
+
+const httpsUrl = z.url().refine((value) => {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}, 'HTTPS URL required');
+const enabled = z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false);
+
+const principalRelink = z.object({
+  oldIssuer: httpsUrl,
+  oldSubject: z.string().min(1).max(512),
+  newIssuer: httpsUrl,
+  newSubject: z.string().min(1).max(512)
+}).strict().refine(
+  (mapping) => mapping.oldIssuer !== mapping.newIssuer || mapping.oldSubject !== mapping.newSubject,
+  'principal relink source and target must differ'
+);
 
 const positiveBoundedInteger = (maximum: number, defaultValue: number) =>
   z.coerce.number().int().min(1).max(maximum).default(defaultValue);
 
 const gatewayUrl = z.url().refine((value) => {
-  const url = new URL(value);
-  return url.protocol === 'http:'
-    && url.hostname === 'model-gateway'
-    && url.pathname === '/'
-    && !url.username
-    && !url.password
-    && !url.search
-    && !url.hash;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:'
+      && url.hostname === 'model-gateway'
+      && url.pathname === '/'
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash;
+  } catch {
+    return false;
+  }
 }, 'agent gateway URL must be the fixed internal http://model-gateway origin');
 
 export const AgentModelProfileSchema = z.object({
@@ -22,6 +46,7 @@ export const AgentModelProfileSchema = z.object({
   displayName: z.string().min(1).max(120),
   provider: z.string().regex(/^[A-Za-z0-9._-]{1,80}$/),
   model: z.string().regex(/^[A-Za-z0-9._:/-]{1,200}$/),
+  apiMode: z.enum(['chat-completions', 'responses']).default('chat-completions'),
   inputMicrosPerMillionTokens: z.coerce.number().int().min(0).max(1_000_000_000),
   outputMicrosPerMillionTokens: z.coerce.number().int().min(0).max(1_000_000_000),
   maxInputTokens: z.coerce.number().int().min(1).max(2_000_000),
@@ -81,6 +106,16 @@ export const RunnerAgentLimitsSchema = z.object({
 
 export const DEFAULT_RUNNER_AGENT_LIMITS = RunnerAgentLimitsSchema.parse({});
 
+/**
+ * Concurrent counted workspaces allowed per principal. The shipped default is the
+ * low end of the range the multi-workspace feature targets, because every counted
+ * workspace may use up to 1 GiB of container memory, one CPU, and 256 pids
+ * (`apps/runner/src/workspace-service.ts`), and `minFreeBytes` only guards disk.
+ * Operators raise it on hosts sized for parallel builds. `1` restores the previous
+ * single-workspace behaviour.
+ */
+export const DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER = 3;
+
 export const RunnerAgentsConfigSchema = z.object({
   image: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/),
   networkMode: z.literal('none').default('none'),
@@ -95,41 +130,220 @@ export const RunnerAgentsConfigSchema = z.object({
 export const ApiConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3000),
+  authMode: z.enum(['owner-bearer', 'cloudflare-access']).optional(),
   ownerId: z.string().min(1).max(100).default('owner'),
-  bearerToken: token,
+  bearerToken: token.optional(),
+  accessIssuer: httpsUrl.optional(),
+  accessAudience: z.string().min(1).max(512).optional(),
+  accessJwksUrl: httpsUrl.optional(),
+  apiKeyAuthEnabled: enabled,
+  apiKeyGatewayAccessAudience: z.string().min(1).max(512).optional(),
+  apiKeyGatewayServiceSubject: z.string().regex(/^cf-service:[A-Za-z0-9_-]+$/).max(512).optional(),
+  apiKeyGatewayPublicUrl: httpsUrl.optional(),
   runnerUrl: z.url(),
   runnerToken: token,
   publicHosts: z.array(z.string().min(1)).min(1),
   allowedOrigins: z.array(z.url()).default([]),
   requestTimeoutMs: z.coerce.number().int().min(1_000).max(300_000).default(60_000),
-  maxBodyBytes: z.coerce.number().int().min(1_024).max(4_194_304).default(1_048_576)
+  maxBodyBytes: z.coerce.number().int().min(1_024).max(4_194_304).default(1_048_576),
+  mcpGatewayTimeoutMs: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+  mcpGatewayMaxResponseBytes: z.coerce.number().int().min(1_024).max(1_048_576).default(262_144),
+  mcpGatewayMaxToolsPerServer: z.coerce.number().int().min(1).max(2_000).default(500),
+  mcpGatewayMaxSchemaBytes: z.coerce.number().int().min(1_024).max(262_144).default(65_536),
+  mcpGatewayMaxCatalogBytes: z.coerce.number().int().min(65_536).max(8_388_608).default(2_097_152),
+  mcpGatewayMaxTraceRows: z.coerce.number().int().min(100).max(1_000_000).default(20_000),
+  mcpGatewayMaxConnections: z.coerce.number().int().min(1).max(256).default(32),
+  mcpGatewayAllowInsecureHttp: enabled,
+  mcpGatewayAllowPrivateEndpoints: enabled,
+  mcpDownstreamOauthClientMetadataUrl: httpsUrl.refine((value) => new URL(value).pathname.length > 1, 'client metadata URL must have a non-root path').optional(),
+  mcpDownstreamOauthRedirectUrl: z.url().refine((value) => {
+    const url = new URL(value);
+    const loopback = url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    return (url.protocol === 'https:' || loopback) && url.pathname === '/dashboard/mcp-oauth/callback' && !url.search && !url.hash;
+  }, 'redirect URL must be an https (or loopback http) URL ending in /dashboard/mcp-oauth/callback').optional()
+}).superRefine((config, context) => {
+  const mode = config.authMode ?? 'owner-bearer';
+  const accessValues = [config.accessIssuer, config.accessAudience, config.accessJwksUrl];
+  const apiKeyValues = [config.apiKeyGatewayAccessAudience, config.apiKeyGatewayServiceSubject, config.apiKeyGatewayPublicUrl];
+  if (mode === 'owner-bearer') {
+    if (!config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'bearer token is required in owner-bearer mode' });
+    if (accessValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['authMode'], message: 'Cloudflare Access settings are forbidden in owner-bearer mode' });
+    if (config.apiKeyAuthEnabled || apiKeyValues.some((value) => value !== undefined)) context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway is only valid in cloudflare-access mode' });
+    if (config.mcpGatewayAllowInsecureHttp && !config.mcpGatewayAllowPrivateEndpoints) {
+      context.addIssue({ code: 'custom', path: ['mcpGatewayAllowInsecureHttp'], message: 'cleartext http MCP gateway endpoints require private endpoint opt-in' });
+    }
+    return;
+  }
+  if (config.mcpGatewayAllowInsecureHttp) {
+    context.addIssue({ code: 'custom', path: ['authMode'], message: 'cleartext http MCP gateway endpoints are forbidden in cloudflare-access mode' });
+  }
+  if (config.mcpGatewayAllowPrivateEndpoints) {
+    context.addIssue({ code: 'custom', path: ['authMode'], message: 'private MCP gateway endpoints are forbidden in cloudflare-access mode' });
+  }
+  if (config.bearerToken) context.addIssue({ code: 'custom', path: ['bearerToken'], message: 'owner bearer token is forbidden in cloudflare-access mode' });
+  for (const [path, value] of [
+    ['accessIssuer', config.accessIssuer],
+    ['accessAudience', config.accessAudience],
+    ['accessJwksUrl', config.accessJwksUrl]
+  ] as const) {
+    if (!value) context.addIssue({ code: 'custom', path: [path], message: `${path} is required in cloudflare-access mode` });
+  }
+  if (config.apiKeyAuthEnabled) {
+    for (const [path, value] of [
+      ['apiKeyGatewayAccessAudience', config.apiKeyGatewayAccessAudience],
+      ['apiKeyGatewayServiceSubject', config.apiKeyGatewayServiceSubject],
+      ['apiKeyGatewayPublicUrl', config.apiKeyGatewayPublicUrl]
+    ] as const) {
+      if (!value) context.addIssue({ code: 'custom', path: [path], message: `${path} is required when API key authentication is enabled` });
+    }
+    if (config.apiKeyGatewayAccessAudience === config.accessAudience) {
+      context.addIssue({ code: 'custom', path: ['apiKeyGatewayAccessAudience'], message: 'API key gateway audience must differ from the main Access audience' });
+    }
+  } else if (apiKeyValues.some((value) => value !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['apiKeyAuthEnabled'], message: 'API key gateway settings require API key authentication to be enabled' });
+  }
 });
+
+export const SecretKeyringConfigSchema = z.object({
+  activeVersion: z.number().int().positive(),
+  keys: z.array(z.object({ version: z.number().int().positive(), key: z.string().min(43).max(64) }).strict()).min(1)
+}).strict();
 
 export const RunnerConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
   port: z.coerce.number().int().min(1).max(65_535).default(3001),
+  authMode: z.enum(['owner-bearer', 'cloudflare-access']).optional(),
   serviceToken: token,
   jobsRoot: z.string().min(1),
   stateDb: z.string().min(1),
   executorImage: z.string().min(1),
+  networkGuardImage: z.string().min(1).default('cloud-harness-network-guard:local'),
   allowedGitHosts: z.array(z.string().min(1)).min(1),
-  networkMode: z.enum(['none', 'bridge']).default('none'),
+  networkProfile: ExecutorNetworkProfileSchema.default('dependency-access'),
+  /**
+   * Shipped default is egress-enabled so a workspace can reach the GitHub API
+   * and the bundled `gh` CLI. `network-none` remains available per workspace or
+   * as an instance default; `dependency-access` is refused at open time unless
+   * the host firewall is attested, and never silently downgraded.
+   */
+  dependencyDnsResolvers: z.array(z.string().regex(/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/)).min(1).default(['8.8.8.8', '1.1.1.1']),
+  dependencyBridgeSubnet: z.string().default('172.30.240.0/24'),
+  dependencyBridgeInterface: z.string().default('chm-egress0'),
+  dependencyNetworkName: z.string().default('cloud-harness-dependency-access'),
   wallTtlSeconds: z.coerce.number().int().min(60).max(86_400).default(900),
   idleTtlSeconds: z.coerce.number().int().min(30).max(43_200).default(300),
   maxOutputBytes: z.coerce.number().int().min(1_024).max(10_485_760).default(262_144),
+  // Dashboard Terminal PTYs live in runner memory: these bound how many a workspace holds, how much raw
+  // output each retains for reconnecting readers, and how long one may sit idle or live at all.
+  terminalMaxPerWorkspace: z.coerce.number().int().min(1).max(16).default(4),
+  terminalRetainedBytes: z.coerce.number().int().min(65_536).max(16_777_216).default(1_048_576),
+  terminalIdleTimeoutMs: z.coerce.number().int().min(60_000).max(86_400_000).default(900_000),
+  terminalMaxLifetimeMs: z.coerce.number().int().min(60_000).max(86_400_000).default(28_800_000),
   minFreeBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
+  maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
   reaperIntervalSeconds: z.coerce.number().int().min(10).max(3_600).default(30),
+  artifactRoot: z.string().min(1).default('/var/lib/cloud-harness/artifacts'),
+  maxArtifactBytes: z.coerce.number().int().min(1_024).max(268_435_456).default(16_777_216),
+  maxPrincipalArtifactBytes: z.coerce.number().int().min(1_024).max(2_147_483_648).default(134_217_728),
+  artifactRetentionSeconds: z.coerce.number().int().min(60).max(2_592_000).default(86_400),
+  enableRepoCache: enabled.default(false),
+  repoCacheRoot: z.string().min(1).default('/var/lib/cloud-harness/cache/repos'),
+  enableToolkitCache: enabled.default(true),
+  toolkitCacheRoot: z.string().min(1).default('/var/lib/cloud-harness/cache/toolkits'),
+  toolkitNetworkPolicy: z.enum(['cache-only', 'runner-fetch']).default('cache-only'),
+  toolkitEgressProxy: z.string().min(1).optional(),
+  // Operator-owned host directory mounted read-only into every executor at
+  // /opt/cloud-harness/skills, which is the worker's highest-precedence
+  // `built-in` skills tier. Unset leaves the tier empty. The path is a host
+  // path because the runner mounts it through the Docker socket.
+  builtinSkillsRoot: z.string().min(1).max(1_024)
+    .refine((value) => value.startsWith('/'), 'builtinSkillsRoot must be an absolute host path')
+    .optional(),
+  // AgentKit registry: the first-party, authenticated kit source. Absent key
+  // material leaves the `agentkit` toolkit kind unavailable rather than
+  // accepting an unverified bundle.
+  agentkitRegistryUrl: httpsUrl.default('https://agentkit.best'),
+  agentkitRegistryCredentialSecret: SecretNameSchema.default('AGENTKIT_REGISTRY_TOKEN'),
+  agentkitRegistryKeyId: z.string().min(1).max(120).optional(),
+  agentkitRegistryPublicKey: z.string().min(1).max(8_192).optional(),
+  provisioningNetwork: z.string().min(1).default('cloud-harness-mcp_provisioning'),
+  secretKeyring: SecretKeyringConfigSchema.optional(),
+  legacyPrincipalMapping: z.object({
+    legacyOwnerId: z.string().min(1).max(100),
+    issuer: httpsUrl,
+    subject: z.string().min(1).max(512)
+  }).strict().optional(),
+  principalRelinks: z.array(principalRelink).max(100).optional(),
   githubApp: z.object({
     appId: z.coerce.number().int().positive(),
-    installationId: z.coerce.number().int().positive(),
-    privateKey: z.string().includes('PRIVATE KEY').max(32_768)
+    installationId: z.coerce.number().int().positive().optional(),
+    privateKey: z.string().includes('PRIVATE KEY').max(32_768),
+    appSlug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/).optional()
   }).optional(),
+  /**
+   * Operator-wide GitHub fallback credential, assembled from `GH_TOKEN` and
+   * then `GITHUB_TOKEN` (each also accepting a `_FILE` form). It is used only by
+   * the runner, only when no GitHub App repository token is available, and only
+   * in `owner-bearer` mode: an operator-wide credential must never authorize a
+   * different principal, so `cloudflare-access` deployments use a
+   * principal-scoped global secret instead. It is never placed in an executor
+   * environment and never returned to a client.
+   *
+   * Length and shape are validated at load time so an unrelated environment
+   * variable cannot fail runner startup; a value that cannot be a GitHub
+   * credential is ignored with a warning rather than rejected.
+   */
+  githubToken: z.string().min(1).max(512).optional(),
+  /**
+   * Optional control-plane integration with Cloudflare Access Managed OAuth,
+   * used to read and (with `read-write`) update the inbound MCP OAuth grant
+   * session duration and access-token lifetime of one Access application. The
+   * API token is runner-only: it never reaches the API, the ingress, an
+   * executor, a log, or a Dashboard response. Least privilege is
+   * `Access: Apps and Policies Write` (or `Read` with `read-only`).
+   */
+  cloudflareAccessOAuth: z.object({
+    apiToken: z.string().min(20).max(512).regex(/^[^\s\0]+$/, 'Cloudflare API token must not contain whitespace'),
+    accountId: z.string().regex(/^[a-f0-9]{32}$/, 'Cloudflare account ID must be 32 hexadecimal characters'),
+    appId: z.string().uuid('Cloudflare Access application ID must be a UUID'),
+    access: z.enum(['read-write', 'read-only']).default('read-write'),
+    /** The provider's longest grant, in seconds. Defaults to the documented Cloudflare maximum. */
+    maxGrantSeconds: z.coerce.number().int().min(3_600).max(315_360_000).optional()
+  }).strict().optional(),
   agents: RunnerAgentsConfigSchema.optional()
-}).strict();
+}).superRefine((config, context) => {
+  const mode = config.authMode ?? 'owner-bearer';
+  if (mode === 'owner-bearer' && config.legacyPrincipalMapping) {
+    context.addIssue({ code: 'custom', path: ['legacyPrincipalMapping'], message: 'legacy principal mapping is only valid in cloudflare-access mode' });
+  }
+  if (mode === 'owner-bearer' && config.cloudflareAccessOAuth) {
+    context.addIssue({ code: 'custom', path: ['cloudflareAccessOAuth'], message: 'Cloudflare Access Managed OAuth settings are only valid in cloudflare-access mode' });
+  }
+  if (mode === 'owner-bearer' && config.principalRelinks !== undefined) {
+    context.addIssue({ code: 'custom', path: ['principalRelinks'], message: 'principal relinks are only valid in cloudflare-access mode' });
+  }
+  const relinkSources = new Set<string>();
+  for (const [index, mapping] of (config.principalRelinks ?? []).entries()) {
+    const key = JSON.stringify([mapping.oldIssuer, mapping.oldSubject]);
+    if (relinkSources.has(key)) {
+      context.addIssue({ code: 'custom', path: ['principalRelinks', index], message: 'principal relink sources must be unique' });
+    }
+    relinkSources.add(key);
+  }
+  if (mode === 'owner-bearer' && config.githubApp && !config.githubApp.installationId) {
+    context.addIssue({ code: 'custom', path: ['githubApp', 'installationId'], message: 'GitHub App installation ID is required in owner-bearer mode' });
+  }
+  if (mode === 'cloudflare-access' && config.githubApp && !config.githubApp.appSlug) {
+    context.addIssue({ code: 'custom', path: ['githubApp', 'appSlug'], message: 'GitHub App slug is required in cloudflare-access mode' });
+  }
+  if (config.maxArtifactBytes > config.maxPrincipalArtifactBytes) {
+    context.addIssue({ code: 'custom', path: ['maxArtifactBytes'], message: 'per-artifact quota cannot exceed principal quota' });
+  }
+});
 
 export type ApiConfig = z.infer<typeof ApiConfigSchema>;
-export type RunnerConfig = z.infer<typeof RunnerConfigSchema>;
 export type AgentModelProfile = z.infer<typeof AgentModelProfileSchema>;
 export type RunnerAgentLimits = z.infer<typeof RunnerAgentLimitsSchema>;
 export type RunnerAgentsConfig = z.infer<typeof RunnerAgentsConfigSchema>;
+export type RunnerConfig = z.infer<typeof RunnerConfigSchema>;

@@ -1,151 +1,2220 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Cloud Harness MCP is a private remote coding harness for one trusted owner.">
-    <meta name="theme-color" content="oklch(13% 0.02 252)">
-    <title>Cloud Harness MCP | One trusted operator</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Give AI coding agents isolated sandboxes to clone, build, test, and push over authenticated MCP, with credentials kept out of the executor."
+    />
+    <title>Cloud Harness MCP — Private remote coding harness for AI agents</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+
+    <!-- SEO / canonical -->
+    <link rel="canonical" href="https://harness.agentkit.best/" />
+    <meta name="theme-color" content="#05070a" />
+    <meta name="robots" content="index, follow" />
+    <meta name="application-name" content="Cloud Harness MCP" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Cloud Harness MCP" />
+    <meta property="og:url" content="https://harness.agentkit.best/" />
+    <meta property="og:title" content="Cloud Harness MCP — Private remote coding harness for AI agents" />
+    <meta
+      property="og:description"
+      content="Give AI coding agents isolated sandboxes to clone, build, test, and push over authenticated MCP, with credentials kept out of the executor."
+    />
+    <meta property="og:image" content="https://harness.agentkit.best/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Cloud Harness MCP — private remote coding harness for autonomous AI agents." />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Cloud Harness MCP — Private remote coding harness for AI agents" />
+    <meta
+      name="twitter:description"
+      content="Give AI coding agents isolated sandboxes to clone, build, test, and push over authenticated MCP, with credentials kept out of the executor."
+    />
+    <meta name="twitter:image" content="https://harness.agentkit.best/og-image.png" />
+
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;0,800;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg-void: #000000;
+        --bg-panel: #05070a;
+        --bg-card: #090c12;
+        --bg-card-hover: #0f1420;
+        --header-bg: rgba(0, 0, 0, 0.88);
+        --cyan-glow: #00f0ff;
+        --cyan-dim: rgba(0, 240, 255, 0.12);
+        --green-neon: #10b981;
+        --green-dim: rgba(16, 185, 129, 0.12);
+        --amber-warn: #f59e0b;
+        --purple-laser: #a855f7;
+        --border-hud: rgba(0, 240, 255, 0.2);
+        --border-soft: rgba(255, 255, 255, 0.08);
+        --border-hover: rgba(255, 255, 255, 0.18);
+        --text-bright: #f8fafc;
+        --text-muted: #94a3b8;
+        --text-dim: #64748b;
+        --font-mono: "JetBrains Mono", monospace;
+        --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        --header-offset: 7.25rem;
+      }
+
+      /* Light theme token overrides (activated by the theme toggle boot script:
+         toggles data-theme to "light"). Dark is the default; light is a
+         companion scheme with light surfaces, dark text, and tuned accent tints.
+         The grid/glow overlays on <body> and the section shadows intentionally
+         use low-contrast neutral values so they read on either background. */
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg-void: #eef2f7;
+        --bg-panel: #ffffff;
+        --bg-card: #ffffff;
+        --bg-card-hover: #f2f6fb;
+        --header-bg: rgba(255, 255, 255, 0.9);
+        --cyan-glow: #0284c7;
+        --cyan-dim: rgba(2, 132, 199, 0.12);
+        --green-neon: #0f9d58;
+        --green-dim: rgba(15, 157, 88, 0.12);
+        --amber-warn: #b45309;
+        --purple-laser: #7c3aed;
+        --border-hud: rgba(2, 132, 199, 0.32);
+        --border-soft: rgba(15, 23, 42, 0.12);
+        --border-hover: rgba(15, 23, 42, 0.24);
+        --text-bright: #0f172a;
+        --text-muted: #475569;
+        --text-dim: #64748b;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: var(--header-offset);
+        background-color: var(--bg-void);
+      }
+
+      body {
+        background-color: var(--bg-void);
+        color: var(--text-bright);
+        font-family: var(--font-sans);
+        line-height: 1.7;
+        overflow-x: hidden;
+        -webkit-font-smoothing: antialiased;
+        background-image: 
+          radial-gradient(circle at 50% 0%, rgba(0, 240, 255, 0.08) 0%, transparent 55%),
+          linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+        background-size: 100% 100%, 48px 48px, 48px 48px;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      /* Sticky Unified HUD Header */
+      .site-header-hud {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background: var(--header-bg);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border-bottom: 1px solid var(--border-soft);
+      }
+
+      /* HUD Top Telemetry Bar */
+      .telemetry-bar {
+        background: transparent;
+        border-bottom: 1px solid var(--border-soft);
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        padding: 0.45rem 1.5rem;
+        display: flex;
+        align-items: center;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+
+      /* Marquee track: one centered set on desktop; a duplicated set loops on small screens */
+      .telemetry-marquee {
+        display: flex;
+        flex: 0 0 auto;
+        margin: 0 auto;
+        align-items: center;
+        gap: 1.75rem;
+      }
+      .telemetry-marquee .is-clone {
+        display: none;
+      }
+
+      .telemetry-group {
+        display: flex;
+        gap: 1.75rem;
+        align-items: center;
+      }
+
+      .telemetry-item {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+      }
+
+      .pulse-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green-neon);
+        box-shadow: 0 0 8px var(--green-neon);
+        animation: pulse 2.4s infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.35; transform: scale(0.85); }
+      }
+
+      /* Main Nav */
+      .main-nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.85rem 2rem;
+        max-width: 1380px;
+        margin: 0 auto;
+        gap: clamp(1rem, 1.5vw, 2rem);
+        position: relative;
+      }
+
+      .logo-hud {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-family: var(--font-mono);
+        font-weight: 800;
+        font-size: 1.15rem;
+        letter-spacing: -0.02em;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+
+      .logo-icon {
+        width: 34px;
+        height: 34px;
+        background: var(--bg-card);
+        border: 1px solid var(--cyan-glow);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 0 14px var(--cyan-dim);
+      }
+
+      .logo-tag {
+        color: var(--cyan-glow);
+        font-size: 0.75rem;
+        padding: 2px 6px;
+        background: var(--cyan-dim);
+        border: 1px solid rgba(0, 240, 255, 0.4);
+        border-radius: 4px;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: clamp(0.75rem, 1.2vw, 1.5rem);
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        white-space: nowrap;
+      }
+
+      .nav-links a {
+        color: var(--text-muted);
+        transition: all 0.2s ease;
+        position: relative;
+        padding: 0.3rem 0;
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+      }
+
+      .nav-links a:hover {
+        color: var(--cyan-glow);
+        text-shadow: 0 0 8px var(--cyan-glow);
+      }
+
+      .nav-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .hud-button {
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        font-weight: 600;
+        padding: 0.55rem 1.15rem;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+      }
+
+      .hud-button-primary {
+        background: var(--cyan-glow);
+        color: var(--bg-void);
+        border: 1px solid var(--cyan-glow);
+        box-shadow: 0 0 14px rgba(0, 240, 255, 0.35);
+      }
+
+      .hud-button-primary:hover {
+        background: #33f3ff;
+        box-shadow: 0 0 20px rgba(0, 240, 255, 0.65);
+        transform: translateY(-1px);
+      }
+
+      .hud-button-outline {
+        background: rgba(10, 14, 22, 0.8);
+        color: var(--text-bright);
+        border: 1px solid var(--border-soft);
+      }
+
+      .hud-button-outline:hover {
+        border-color: var(--cyan-glow);
+        background: var(--cyan-dim);
+        color: var(--cyan-glow);
+      }
+
+      /* GitHub Star Badge */
+      .github-star-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .github-star-badge {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: var(--amber-warn);
+        font-size: 0.72rem;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-family: var(--font-mono);
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      /* Mobile Menu Toggle */
+      .mobile-menu-btn {
+        display: none;
+        background: transparent;
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+        padding: 0.45rem;
+        color: var(--text-bright);
+        cursor: pointer;
+      }
+
+            .mobile-drawer {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.98);
+        backdrop-filter: blur(24px);
+        z-index: 10000;
+        padding: 1.25rem 1.5rem;
+        flex-direction: column;
+        gap: 1rem;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .mobile-drawer.open {
+        display: flex;
+      }
+
+      .drawer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--border-soft);
+        margin-bottom: 0.5rem;
+      }
+
+      .drawer-close-btn {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        padding: 0.45rem;
+        color: var(--text-bright);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s ease;
+      }
+
+      .drawer-close-btn:hover {
+        border-color: var(--cyan-glow);
+        color: var(--cyan-glow);
+        background: var(--cyan-dim);
+      }
+
+      .mobile-drawer a {
+        font-family: var(--font-mono);
+        font-size: 1.1rem;
+        padding: 0.75rem 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        color: var(--text-bright);
+      }
+
+      .mobile-drawer a:hover {
+        color: var(--cyan-glow);
+      }
+
+      /* Hero Section with Generous Breathing Room */
+      .hero-section {
+        max-width: 1380px;
+        margin: clamp(3rem, 6vw, 6.5rem) auto clamp(4rem, 8vw, 8rem);
+        padding: 0 clamp(1.25rem, 3vw, 2.5rem);
+        display: grid;
+        grid-template-columns: 1.15fr 0.95fr;
+        gap: clamp(2.5rem, 4vw, 4.5rem);
+        align-items: center;
+      }
+
+      .badge-cyber {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.35rem 0.9rem;
+        background: rgba(0, 240, 255, 0.06);
+        border: 1px solid var(--border-hud);
+        border-radius: 999px;
+        font-family: var(--font-mono);
+        font-size: clamp(0.7rem, 2vw, 0.78rem);
+        color: var(--cyan-glow);
+        margin-bottom: 1.75rem;
+        box-shadow: 0 0 14px rgba(0, 240, 255, 0.1);
+      }
+
+      .hero-title {
+        font-size: clamp(2.3rem, 5vw, 3.8rem);
+        font-weight: 800;
+        line-height: 1.12;
+        letter-spacing: -0.035em;
+        margin-bottom: 1.5rem;
+      }
+
+      .hero-title-cyan {
+        color: var(--cyan-glow);
+        text-shadow: 0 0 24px rgba(0, 240, 255, 0.45);
+      }
+
+      .hero-desc {
+        color: var(--text-muted);
+        font-size: clamp(1rem, 2vw, 1.15rem);
+        line-height: 1.7;
+        margin-bottom: 2.5rem;
+        max-width: 620px;
+      }
+
+      .hero-actions {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 3rem;
+        flex-wrap: wrap;
+      }
+
+      .hero-stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.5rem;
+        padding-top: 1.75rem;
+        border-top: 1px solid var(--border-soft);
+      }
+
+      .stat-val {
+        font-family: var(--font-mono);
+        font-size: clamp(1.4rem, 3vw, 1.85rem);
+        font-weight: 700;
+        color: var(--text-bright);
+        margin-bottom: 0.2rem;
+      }
+
+      .stat-lbl {
+        font-size: 0.75rem;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-family: var(--font-mono);
+      }
+
+      /* Live Interactive Terminal HUD */
+      .terminal-hud {
+        background: var(--bg-panel);
+        border: 1px solid var(--border-hud);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.85), 0 0 24px rgba(0, 240, 255, 0.12);
+      }
+
+      .terminal-header {
+        background: var(--bg-void);
+        padding: 0.75rem 1.25rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--border-soft);
+        gap: 0.5rem;
+      }
+
+      .terminal-dots {
+        display: flex;
+        gap: 6px;
+      }
+
+      .terminal-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+      }
+
+      .terminal-tab-group {
+        display: flex;
+        gap: 0.4rem;
+        overflow-x: auto;
+      }
+
+      .term-tab-btn {
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--text-dim);
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        padding: 0.25rem 0.55rem;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        white-space: nowrap;
+      }
+
+      .term-tab-btn.active {
+        background: var(--bg-card-hover);
+        color: var(--cyan-glow);
+        border-color: var(--border-hud);
+      }
+
+      .terminal-body {
+        padding: 1.5rem;
+        font-family: var(--font-mono);
+        font-size: clamp(0.76rem, 1.8vw, 0.84rem);
+        min-height: 360px;
+        background: var(--bg-panel);
+        color: var(--text-muted);
+        line-height: 1.7;
+        position: relative;
+        overflow-x: auto;
+      }
+
+      .term-prompt { color: var(--green-neon); }
+      .term-keyword { color: var(--cyan-glow); }
+      .term-string { color: var(--amber-warn); }
+
+      .term-badge {
+        display: inline-block;
+        font-size: 0.68rem;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--green-neon);
+        border: 1px solid rgba(16, 185, 129, 0.35);
+      }
+
+      .coming-soon-badge {
+        display: inline-block;
+        font-size: 0.68rem;
+        font-family: var(--font-mono);
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: rgba(168, 85, 247, 0.18);
+        color: var(--purple-laser);
+        border: 1px solid rgba(168, 85, 247, 0.4);
+      }
+
+      /* Sections with Open Spacing */
+      .section-wrap {
+        max-width: 1380px;
+        margin: clamp(4.5rem, 8vw, 7.5rem) auto;
+        padding: 0 clamp(1.25rem, 3vw, 2.5rem);
+      }
+
+      .section-header {
+        text-align: center;
+        max-width: 780px;
+        margin: 0 auto clamp(2.5rem, 5vw, 4.5rem);
+      }
+
+      .section-tag {
+        font-family: var(--font-mono);
+        color: var(--cyan-glow);
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        margin-bottom: 0.75rem;
+      }
+
+      .section-title {
+        font-size: clamp(2rem, 4vw, 3rem);
+        font-weight: 800;
+        letter-spacing: -0.025em;
+        margin-bottom: 1rem;
+      }
+
+      /* Responsive Diagram Scroll Containers */
+      .diagram-container {
+        background: var(--bg-panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 14px;
+        padding: clamp(1.25rem, 3vw, 2.5rem);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.9), 0 0 24px rgba(0, 240, 255, 0.08);
+        margin-bottom: 3rem;
+        position: relative;
+      }
+
+      .diagram-scroll-wrapper {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 0.5rem;
+      }
+
+      .diagram-caption {
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--cyan-glow);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--border-soft);
+        padding-bottom: 1rem;
+        margin-bottom: 1.5rem;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+
+      .svg-hud-diagram {
+        width: 100%;
+        min-width: 760px;
+        height: auto;
+        display: block;
+      }
+
+      .svg-node-box {
+        fill: #080b12;
+        stroke: var(--border-hud);
+        stroke-width: 1.5;
+        rx: 8;
+      }
+
+      .svg-zone-box {
+        fill: rgba(0, 240, 255, 0.015);
+        stroke: rgba(0, 240, 255, 0.18);
+        stroke-dasharray: 4 4;
+        stroke-width: 1;
+        rx: 12;
+      }
+
+      .svg-zone-exec {
+        fill: rgba(16, 185, 129, 0.015);
+        stroke: rgba(16, 185, 129, 0.22);
+        stroke-dasharray: 4 4;
+        stroke-width: 1;
+        rx: 12;
+      }
+
+      .svg-wire {
+        fill: none;
+        stroke: rgba(255, 255, 255, 0.18);
+        stroke-width: 1.8;
+        stroke-dasharray: 5 4;
+      }
+
+      .svg-wire-active {
+        fill: none;
+        stroke: var(--cyan-glow);
+        stroke-width: 2.2;
+      }
+
+      .svg-wire-green {
+        fill: none;
+        stroke: var(--green-neon);
+        stroke-width: 2.2;
+      }
+
+      .svg-packet-cyan {
+        fill: var(--cyan-glow);
+        filter: drop-shadow(0 0 8px var(--cyan-glow));
+      }
+
+      .svg-packet-green {
+        fill: var(--green-neon);
+        filter: drop-shadow(0 0 8px var(--green-neon));
+      }
+
+      .svg-text-title {
+        fill: #ffffff;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .svg-text-sub {
+        fill: var(--text-muted);
+        font-family: var(--font-mono);
+        font-size: 11px;
+      }
+
+      .svg-text-zone {
+        fill: var(--cyan-glow);
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+      }
+
+      .swipe-hint {
+        display: none;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        color: var(--text-dim);
+        margin-top: 0.75rem;
+      }
+
+      .arch-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.75rem;
+        position: relative;
+      }
+
+      .arch-card {
+        background: var(--bg-panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 10px;
+        padding: 2rem;
+        position: relative;
+        transition: all 0.3s ease;
+      }
+
+      .arch-card:hover {
+        border-color: var(--cyan-glow);
+        transform: translateY(-3px);
+        box-shadow: 0 12px 36px rgba(0, 240, 255, 0.1);
+      }
+
+      .arch-plane-tag {
+        font-family: var(--font-mono);
+        font-size: 0.75rem;
+        padding: 0.3rem 0.7rem;
+        border-radius: 4px;
+        display: inline-block;
+        margin-bottom: 1.25rem;
+      }
+
+      .plane-ingress { background: rgba(168, 85, 247, 0.15); color: var(--purple-laser); border: 1px solid rgba(168, 85, 247, 0.3); }
+      .plane-control { background: rgba(0, 240, 255, 0.15); color: var(--cyan-glow); border: 1px solid rgba(0, 240, 255, 0.3); }
+      .plane-exec { background: rgba(16, 185, 129, 0.15); color: var(--green-neon); border: 1px solid rgba(16, 185, 129, 0.3); }
+
+      .arch-card h3 {
+        font-size: 1.25rem;
+        margin-bottom: 0.75rem;
+      }
+
+      .arch-card p {
+        color: var(--text-muted);
+        font-size: 0.92rem;
+        line-height: 1.65;
+        margin-bottom: 1.25rem;
+      }
+
+      .arch-specs {
+        list-style: none;
+        border-top: 1px solid var(--border-soft);
+        padding-top: 1rem;
+      }
+
+      .arch-specs li {
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .arch-specs li span {
+        color: var(--cyan-glow);
+      }
+
+      /* 52 Tools Section & Expanded Tabs */
+      .tools-filter-bar {
+        display: flex;
+        gap: 0.75rem;
+        margin-bottom: 2rem;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+
+      .tool-pill {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        padding: 0.5rem 1rem;
+        background: var(--bg-panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 6px;
+        color: var(--text-muted);
+        cursor: pointer;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+      }
+
+      .tool-pill.active, .tool-pill:hover {
+        background: var(--cyan-dim);
+        border-color: var(--cyan-glow);
+        color: var(--cyan-glow);
+      }
+
+      .tools-cards-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 1.25rem;
+      }
+
+      .tool-card {
+        background: var(--bg-panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        padding: 1.35rem;
+        transition: all 0.2s ease;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .tool-card:hover {
+        border-color: var(--border-hud);
+        background: var(--bg-card-hover);
+        transform: translateY(-2px);
+      }
+
+      .tool-name {
+        font-family: var(--font-mono);
+        font-weight: 700;
+        color: var(--cyan-glow);
+        font-size: 0.92rem;
+        margin-bottom: 0.45rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .tool-desc {
+        color: var(--text-muted);
+        font-size: 0.84rem;
+        line-height: 1.55;
+      }
+
+      /* Client Connectors */
+      .client-matrix {
+        background: var(--bg-panel);
+        border: 1px solid var(--border-hud);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      .client-tabs {
+        display: flex;
+        border-bottom: 1px solid var(--border-soft);
+        background: var(--bg-void);
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .client-tab-btn {
+        padding: 1rem 1.5rem;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        font-weight: 600;
+        background: transparent;
+        border: none;
+        color: var(--text-dim);
+        cursor: pointer;
+        border-right: 1px solid var(--border-soft);
+        transition: all 0.2s ease;
+        white-space: nowrap;
+      }
+
+      .client-tab-btn.active {
+        background: var(--bg-card);
+        color: var(--cyan-glow);
+        border-bottom: 2px solid var(--cyan-glow);
+      }
+
+      .client-content-panel {
+        padding: clamp(1.25rem, 3vw, 2.25rem);
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+      }
+
+      .code-box {
+        background: var(--bg-card);
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        padding: 1.25rem;
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        position: relative;
+        overflow-x: auto;
+      }
+
+      .copy-btn {
+        position: absolute;
+        top: 0.75rem;
+        right: 0.75rem;
+        background: var(--bg-card);
+        border: 1px solid var(--border-soft);
+        color: var(--text-muted);
+        padding: 0.3rem 0.65rem;
+        border-radius: 4px;
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        cursor: pointer;
+      }
+
+      .copy-btn:hover {
+        color: var(--cyan-glow);
+        border-color: var(--cyan-glow);
+      }
+
+      /* Security Invariants Section */
+      .security-box {
+        background: var(--bg-panel);
+        border: 1px solid var(--border-hud);
+        border-radius: 14px;
+        padding: clamp(1.5rem, 4vw, 3rem);
+      }
+
+      .invariants-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.75rem;
+        margin-top: 2rem;
+      }
+
+      .invariant-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        padding: 1.5rem;
+      }
+
+      .invariant-title {
+        font-family: var(--font-mono);
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--green-neon);
+        margin-bottom: 0.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      /* CTA Cyber Banner */
+      .cta-cyber {
+        background: linear-gradient(135deg, rgba(0, 240, 255, 0.08) 0%, rgba(168, 85, 247, 0.06) 100%), var(--bg-panel);
+        border: 1px solid var(--cyan-glow);
+        border-radius: 16px;
+        padding: clamp(3rem, 6vw, 4.5rem) clamp(1.25rem, 3vw, 2.5rem);
+        text-align: center;
+        box-shadow: 0 0 50px rgba(0, 240, 255, 0.12);
+        margin-top: clamp(4rem, 8vw, 6.5rem);
+      }
+
+      /* Footer with Creator Line */
+      .cyber-footer {
+        border-top: 1px solid var(--border-soft);
+        padding: 3rem clamp(1.25rem, 3vw, 2.5rem) 2.5rem;
+        max-width: 1380px;
+        margin: clamp(4.5rem, 8vw, 6.5rem) auto 0;
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        color: var(--text-dim);
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+
+      .footer-top-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+      }
+
+      .creator-attribution {
+        font-family: var(--font-sans);
+        font-size: 0.9rem;
+        color: var(--text-muted);
+        text-align: center;
+      }
+
+      .creator-link {
+        color: var(--cyan-glow);
+        font-weight: 600;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        transition: color 0.2s ease;
+      }
+
+      .creator-link:hover {
+        color: #fff;
+      }
+
+                  /* Responsive Queries */
+      @media (max-width: 1360px) {
+        .nav-links { display: none !important; }
+        .mobile-menu-btn { display: inline-flex !important; }
+      }
+
+      @media (max-width: 860px) {
+        :root { --header-offset: 6.25rem; }
+        .nav-actions .nav-connect-btn { display: none !important; }
+        .nav-actions .github-btn-text { display: none !important; }
+        .logo-hud .logo-tag { display: none !important; }
+        .main-nav { padding: 0.75rem 1.15rem; }
+        .hero-section { grid-template-columns: 1fr; }
+        .invariants-grid { grid-template-columns: 1fr; }
+        .client-content-panel { grid-template-columns: 1fr; }
+        .swipe-hint { display: block; }
+        .footer-top-row { flex-direction: column; text-align: center; }
+        .tools-filter-bar { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.5rem; -webkit-overflow-scrolling: touch; }
+      }
+
+      @media (max-width: 640px) {
+        .hero-stats { grid-template-columns: 1fr; gap: 1rem; }
+        .tools-cards-grid { grid-template-columns: 1fr; }
+        .telemetry-bar { font-size: 0.7rem; padding: 0.4rem 1rem; }
+      }
+
+      /* Loop slide animation for the telemetry strip on mobile/tablet */
+      @media (max-width: 1024px) {
+        .telemetry-bar {
+          justify-content: flex-start;
+          overflow: hidden;
+          -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+        }
+        .telemetry-marquee {
+          gap: 0;
+          margin-left: 0;
+          margin-right: 0;
+          animation: telemetry-scroll 22s linear infinite;
+          will-change: transform;
+        }
+        .telemetry-marquee .is-clone { display: flex; }
+        .telemetry-group {
+          flex: 0 0 auto;
+          padding-right: 1.75rem;
+        }
+        @keyframes telemetry-scroll {
+          from { transform: translateX(0); }
+          to { transform: translateX(-50%); }
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .telemetry-marquee { animation: none; }
+        .telemetry-marquee .is-clone { display: none; }
+        .telemetry-bar {
+          justify-content: flex-start;
+          overflow-x: auto;
+          -webkit-mask-image: none;
+          mask-image: none;
+        }
+      }
+      /* Theme toggle icon button (desktop header + mobile drawer) */
+      .theme-toggle-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        padding: 0;
+        cursor: pointer;
+        background: transparent;
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        color: var(--text-bright);
+        transition: border-color 0.2s ease, color 0.2s ease;
+      }
+      .theme-toggle-btn:hover {
+        border-color: var(--cyan-glow);
+        color: var(--cyan-glow);
+      }
+      .theme-toggle-btn svg {
+        width: 20px;
+        height: 20px;
+        display: none;
+      }
+      .theme-toggle-btn[data-mode="light"] .theme-icon-sun,
+      .theme-toggle-btn[data-mode="dark"] .theme-icon-moon,
+      .theme-toggle-btn[data-mode="system"] .theme-icon-system,
+      .theme-toggle-btn:not([data-mode]) .theme-icon-system {
+        display: block;
+      }
+
+    </style>
+
+    <script>
+      // Apply persisted/system theme before first paint to prevent a theme flash
+      // (FOUC). The <html data-theme="dark"> default loads instantly for dark; a
+      // stored/system "light" preference is forced here before the body renders.
+      (function () {
+        try {
+          var STORE = "harness-theme";
+          var root = document.documentElement;
+          var saved = localStorage.getItem(STORE) || "system";
+          var sysLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+          var resolved =
+            saved === "light" ? "light" : saved === "dark" ? "dark" : sysLight ? "light" : "dark";
+          root.setAttribute("data-theme", resolved);
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", resolved === "light" ? "#eef2f7" : "#05070a");
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
+    <link rel="alternate" type="text/plain" href="https://harness.agentkit.best/llms.txt" title="LLM-readable summary" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://harness.agentkit.best/#website",
+            "url": "https://harness.agentkit.best/",
+            "name": "Cloud Harness MCP",
+            "publisher": { "@id": "https://harness.agentkit.best/#org" }
+          },
+          {
+            "@type": "Organization",
+            "@id": "https://harness.agentkit.best/#org",
+            "name": "AgentKit",
+            "url": "https://agentkit.best"
+          },
+          {
+            "@type": "SoftwareSourceCode",
+            "name": "Cloud Harness MCP",
+            "description": "A private, single-owner remote coding harness that gives AI coding agents isolated sandboxes to clone, build, test, and push over authenticated MCP.",
+            "codeRepository": "https://github.com/bestagentkits/cloud-harness-mcp",
+            "programmingLanguage": "TypeScript",
+            "license": "https://opensource.org/licenses/MIT",
+            "url": "https://harness.agentkit.best/",
+            "sameAs": ["https://docs.harness.agentkit.best/"],
+            "author": { "@id": "https://harness.agentkit.best/#org" }
+          }
+        ]
+      }
+    </script>
   </head>
-  <body>
-    <a class="skip-link" href="#main-content">Skip to content</a>
-
-    <header class="site-header">
-      <a class="brand" href="#top" aria-label="Cloud Harness MCP home">
-        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M6 6h12v4h-8v20h8v4H6zM22 6h12v28H22v-4h8V10h-8zM16 16h8v8h-8z"/></svg>
-        <span>Cloud Harness <b>MCP</b></span>
-      </a>
-      <nav aria-label="Primary navigation">
-        <a href="#operation-lane">Architecture</a>
-        <a href="#boundaries">Boundaries</a>
-        <a href="#start">Start</a>
-      </nav>
-      <a class="header-link" href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">Repository <span aria-hidden="true">↗</span></a>
-    </header>
-
-    <main id="main-content">
-      <section class="hero" id="top" aria-labelledby="hero-title">
-        <div class="hero-copy">
-          <p class="overline">Remote coding, under one owner</p>
-          <h1 id="hero-title">Keep the controls close.</h1>
-          <p class="hero-lede">Cloud Harness MCP opens an isolated repository workspace in a time-limited Docker executor for one trusted operator.</p>
-          <div class="hero-actions">
-            <a class="button button-primary" href="#start">See the workflow <span aria-hidden="true">↓</span></a>
-            <a class="button button-quiet" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md" target="_blank" rel="noreferrer">Read MCP usage <span aria-hidden="true">↗</span></a>
+  <body id="top">
+    <header class="site-header-hud">
+      <!-- Top Telemetry HUD -->
+      <aside class="telemetry-bar" aria-label="System telemetry">
+        <div class="telemetry-marquee">
+          <div class="telemetry-group">
+            <div class="telemetry-item">
+              <span class="pulse-dot"></span>
+              <span>CONTROL PLANE: OPERATIONAL</span>
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--cyan-glow)">PROTOCOL:</span> STREAMABLE HTTP MCP
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--text-dim)">INGRESS LATENCY:</span> 8ms
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--green-neon)">SECURITY:</span> DOCKER NON-ROOT + STDIO GITHUB BROKER
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--amber-warn)">RESIDUAL STATE:</span> 0 BYTES
+            </div>
+          </div>
+          <div class="telemetry-group is-clone" aria-hidden="true">
+            <div class="telemetry-item">
+              <span class="pulse-dot"></span>
+              <span>CONTROL PLANE: OPERATIONAL</span>
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--cyan-glow)">PROTOCOL:</span> STREAMABLE HTTP MCP
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--text-dim)">INGRESS LATENCY:</span> 8ms
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--green-neon)">SECURITY:</span> DOCKER NON-ROOT + STDIO GITHUB BROKER
+            </div>
+            <div class="telemetry-item">
+              <span style="color: var(--amber-warn)">RESIDUAL STATE:</span> 0 BYTES
+            </div>
           </div>
         </div>
-        <div class="hero-plate" aria-label="An abstract control panel showing a trusted owner, contained executor, and bounded workspace">
-          <div class="plate-line plate-line-top"></div>
-          <div class="plate-line plate-line-bottom"></div>
-          <p class="plate-label">Control plane</p>
-          <div class="operator-symbol" aria-hidden="true"><span></span><span></span><span></span></div>
-          <p class="plate-state">Trusted owner</p>
-          <div class="plate-divider" aria-hidden="true"></div>
-          <p class="plate-label plate-label-lower">Execution plane</p>
-          <div class="executor-symbol" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
-          <p class="plate-state plate-state-lower">TTL-bound workspace</p>
-        </div>
-      </section>
+      </aside>
 
-      <section class="statement" aria-labelledby="statement-title">
-        <div class="statement-grid">
-          <h2 id="statement-title">Repository code is an input, not a peer.</h2>
-          <p>Commands, dependencies, hooks, skills, and Git metadata from a repository can execute inside the executor. The control plane stays separate from Docker authority and repository credentials.</p>
+      <!-- Main Navigation -->
+      <div class="main-nav">
+        <div class="logo-hud">
+          <div class="logo-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cyan-glow)" stroke-width="2.2" aria-hidden="true">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <span>CLOUD HARNESS <span class="logo-tag">MCP</span></span>
         </div>
-      </section>
 
-      <section class="lane-section" id="operation-lane" aria-labelledby="lane-title">
-        <div class="section-heading">
-          <h2 id="lane-title">A narrow route to execution.</h2>
-          <p>Each service has a job. Authority moves forward only where it is required.</p>
-        </div>
-        <ol class="operation-lane">
-          <li class="lane-node client">
-            <span class="lane-index">01</span>
-            <div><h3>MCP client</h3><p>The owner begins with an authenticated request.</p></div>
-          </li>
-          <li class="lane-node ingress">
-            <span class="lane-index">02</span>
-            <div><h3>Ingress</h3><p>A credential-free proxy accepts the loopback route.</p></div>
-          </li>
-          <li class="lane-node api">
-            <span class="lane-index">03</span>
-            <div><h3>API</h3><p>Request policy and MCP translation stay off the Docker socket.</p></div>
-          </li>
-          <li class="lane-node runner">
-            <span class="lane-index">04</span>
-            <div><h3>Runner</h3><p>Lifecycle, repository materialization, and cleanup live here.</p></div>
-          </li>
-          <li class="lane-node executor">
-            <span class="lane-index">05</span>
-            <div><h3>Docker executor</h3><p>Repository-controlled work runs non-root in a bounded workspace.</p></div>
-          </li>
-        </ol>
-        <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/system-architecture.md" target="_blank" rel="noreferrer">Inspect the architecture documentation <span aria-hidden="true">↗</span></a>
-      </section>
+        <nav class="nav-links" aria-label="Primary">
+          <a href="#install">Install</a>
+          <a href="haas.html" style="color: var(--cyan-glow); font-weight: 600; gap: 0.35rem;">HaaS Platform <span style="font-size: 0.65rem; padding: 1px 5px; background: var(--cyan-dim); border: 1px solid var(--border-hud); border-radius: 4px; line-height: 1.2;">Preview</span></a>
+          <a href="#architecture">Architecture</a>
+          <a href="#workflows">Workflows</a>
+          <a href="#tools">Tools</a>
+          <a href="#connect">AI Clients</a>
+          <a href="#security">Security</a>
+          <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Docs ↗</a>
+        </nav>
 
-      <section class="capabilities" aria-labelledby="capability-title">
-        <div class="capability-intro">
-          <h2 id="capability-title">Useful controls. Bounded handles.</h2>
-        </div>
-        <div class="capability-list">
-          <article>
-            <span class="capability-number">A</span>
-            <h3>Open with intent</h3>
-            <p>Open a credential-free HTTPS repository URL with an idempotency key. Keep the opaque workspace ID for later calls.</p>
-          </article>
-          <article>
-            <span class="capability-number">B</span>
-            <h3>Inspect and change</h3>
-            <p>Use bounded file, search, command, shell, task, Git, worktree, skill, hook, and memory tools within that workspace.</p>
-          </article>
-          <article>
-            <span class="capability-number">C</span>
-            <h3>Close the lane</h3>
-            <p>Close when the work is complete. Workspace files expire after close or TTL cleanup, while durable metadata records the outcome.</p>
-          </article>
-        </div>
-      </section>
+        <div class="nav-actions">
+          <!-- Theme Toggle Button (system / light / dark) -->
+          <button class="theme-toggle-btn" data-mode="system" type="button" aria-label="Switch theme (currently system)" title="Theme: system">
+            <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg class="theme-icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a9 9 0 0 1 0 18z"/></svg>
+          </button>
+          <!-- GitHub Star Badge Button -->
+          <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" class="hud-button hud-button-outline github-star-btn" aria-label="GitHub Repository">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+            </svg>
+            <span class="github-btn-text">GitHub</span><span class="github-star-badge" id="githubStarsCount">★ Star</span>
+          </a>
 
-      <section class="boundary-section" id="boundaries" aria-labelledby="boundary-title">
-        <div class="boundary-copy">
-          <p class="overline">Read this before use</p>
-          <h2 id="boundary-title">A private harness, not a tenant boundary.</h2>
-          <p>Cloud Harness MCP is for one authenticated, trusted owner using owner-approved repositories. It is not an anonymous service, shared team sandbox, or hostile multi-tenant platform.</p>
-          <a class="button button-copper" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/security-model.md" target="_blank" rel="noreferrer">Read the security model <span aria-hidden="true">↗</span></a>
-        </div>
-        <dl class="limit-list">
-          <div><dt>Untrusted input</dt><dd>Repository content and supplied commands may execute inside the executor.</dd></div>
-          <div><dt>Network</dt><dd>Executor networking is <strong>none</strong> by default. Bridge mode is an explicit weakening.</dd></div>
-          <div><dt>Git credentials</dt><dd>Executors have no GitHub App token, deployment credential, SSH key, or Git push tool.</dd></div>
-          <div><dt>Lifetime</dt><dd>Close or TTL cleanup removes the executor and workspace directory.</dd></div>
-        </dl>
-      </section>
+          <a href="#connect" class="hud-button hud-button-primary nav-connect-btn">Connect Agent →</a>
 
-      <section class="start-section" id="start" aria-labelledby="start-title">
+          <!-- Mobile Menu Toggle Button -->
+          <button class="mobile-menu-btn" onclick="toggleMobileMenu()" aria-label="Toggle navigation menu" aria-controls="mobileDrawer" aria-expanded="false">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Mobile Navigation Drawer -->
+    <nav class="mobile-drawer" id="mobileDrawer" aria-label="Mobile Navigation">
+      <div class="drawer-header">
+        <div class="logo-hud">
+          <div class="logo-icon" style="width: 30px; height: 30px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--cyan-glow)" stroke-width="2.2" aria-hidden="true">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <span style="font-size: 1.05rem;">CLOUD HARNESS</span>
+        </div>
+        <button class="theme-toggle-btn" data-mode="system" type="button" aria-label="Switch theme (currently system)" title="Theme: system">
+          <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="theme-icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a9 9 0 0 1 0 18z"/></svg>
+        </button>
+        <button class="drawer-close-btn" onclick="toggleMobileMenu()" aria-label="Close navigation menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <a href="#connect" class="hud-button hud-button-primary drawer-connect-btn" style="justify-content: center; text-align: center; margin-bottom: 0.5rem;" onclick="toggleMobileMenu()">Connect Agent →</a>
+      <a href="#install" onclick="toggleMobileMenu()">1-Click Install</a>
+      <a href="haas.html" onclick="toggleMobileMenu()" style="color: var(--cyan-glow); font-weight: 700;">HaaS Cloud Platform (Preview) 🚀</a>
+      <a href="#architecture" onclick="toggleMobileMenu()">Architecture</a>
+      <a href="#workflows" onclick="toggleMobileMenu()">Workflows</a>
+      <a href="#tools" onclick="toggleMobileMenu()">Tools</a>
+      <a href="#connect" onclick="toggleMobileMenu()">AI Clients</a>
+      <a href="#security" onclick="toggleMobileMenu()">Security Invariants</a>
+      <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Documentation ↗</a>
+    </nav>
+
+    <!-- Hero Section with Generous Spacing -->
+    <main>
+      <section class="hero-section">
         <div>
-          <h2 id="start-title">Open. Work. Close.</h2>
+          <div class="badge-cyber">
+            <span class="pulse-dot"></span>
+            STREAMABLE HTTP MCP // SINGLE-OWNER REMOTE HARNESS
+          </div>
+          <h1 class="hero-title">
+            Autonomous Coding.<br/>
+            <span class="hero-title-cyan">Isolated Sandboxes.</span><br/>
+            Zero Credential Leaks.
+          </h1>
+          <p class="hero-desc">
+            Cloud Harness MCP gives Claude Code, Cursor, Codex, and ChatGPT full execution power over isolated repository clones inside bounded Docker executors — without ever exposing Docker host sockets or GitHub App secrets.
+          </p>
+          <div class="hero-actions">
+            <a href="#install" class="hud-button hud-button-primary" style="font-size: 0.95rem; padding: 0.85rem 1.85rem;">
+              1-Click Install ⚡
+            </a>
+            <a href="haas.html" class="hud-button hud-button-outline" style="font-size: 0.95rem; padding: 0.85rem 1.85rem; border-color: var(--purple-laser); color: #d8b4fe;">
+              Explore HaaS Cloud →
+            </a>
+            <a href="#architecture" class="hud-button hud-button-outline" style="font-size: 0.95rem; padding: 0.85rem 1.85rem;">
+              View Architecture ↓
+            </a>
+          </div>
+          <div class="hero-stats">
+            <div>
+              <div class="stat-val">52+</div>
+              <div class="stat-lbl">Structured Tools</div>
+            </div>
+            <div>
+              <div class="stat-val" style="color: var(--green-neon);">100%</div>
+              <div class="stat-lbl">Non-Root Sandboxes</div>
+            </div>
+            <div>
+              <div class="stat-val" style="color: var(--cyan-glow);">0s</div>
+              <div class="stat-lbl">TTL Residual Leak</div>
+            </div>
+          </div>
         </div>
-        <div class="start-content">
-          <p>Connect Codex with an owner-provided bearer token kept in the environment, then call <code>workspace_open</code> with a credential-free HTTPS repository URL and fresh idempotency key.</p>
-          <div class="start-actions">
-            <a class="button button-primary" href="https://github.com/bestagentkits/cloud-harness-mcp#connect-from-codex" target="_blank" rel="noreferrer">Connect from Codex <span aria-hidden="true">↗</span></a>
-            <a class="text-link" href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/mcp-api.md" target="_blank" rel="noreferrer">Tool semantics <span aria-hidden="true">↗</span></a>
+
+        <!-- Live Interactive Terminal HUD -->
+        <div class="terminal-hud">
+          <div class="terminal-header">
+            <div class="terminal-dots">
+              <div class="terminal-dot" style="background: #ef4444;"></div>
+              <div class="terminal-dot" style="background: #f59e0b;"></div>
+              <div class="terminal-dot" style="background: #10b981;"></div>
+            </div>
+            <div class="terminal-tab-group">
+              <button class="term-tab-btn active" onclick="switchTermDemo('open', this)">workspace_open</button>
+              <button class="term-tab-btn" onclick="switchTermDemo('ast', this)">symbols_search</button>
+              <button class="term-tab-btn" onclick="switchTermDemo('push', this)">git_push</button>
+            </div>
+          </div>
+          <div class="terminal-body" id="termContent">
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.workspace_open({</p>
+            <p style="padding-left: 1.5rem;">"repositoryUrl": <span class="term-string">"https://github.com/org/core-infra"</span>,</p>
+            <p style="padding-left: 1.5rem;">"idempotencyKey": <span class="term-string">"task_448f_09a1"</span></p>
+            <p>})</p>
+            <br/>
+            <p style="color: var(--cyan-glow)">[200 OK] Streamable HTTP Connection Established (14ms)</p>
+            <p style="color: var(--text-muted)">├── Ingress: Cloudflare Access OAuth token validated</p>
+            <p style="color: var(--text-muted)">├── Runner: Ephemeral GitHub broker minted stdin-only push key</p>
+            <p style="color: var(--text-muted)">├── Docker: Spawned non-root executor (TTL: 1800s, net: none)</p>
+            <p style="color: var(--green-neon)">└── Workspace Ready: <span class="term-badge">ws_8f93e120da</span></p>
+            <br/>
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.exec_run({</p>
+            <p style="padding-left: 1.5rem;">"workspaceId": <span class="term-string">"ws_8f93e120da"</span>,</p>
+            <p style="padding-left: 1.5rem;">"command": <span class="term-string">"npm test -- --bail"</span></p>
+            <p>})</p>
+            <p style="color: var(--green-neon)">✓ Test suite completed in 1.42s (0 host leaks, 0 socket mounts)</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Animated Architecture Topology Section -->
+      <section class="section-wrap" id="architecture">
+        <div class="section-header">
+          <div class="section-tag">// Hardened Topology</div>
+          <h2 class="section-title">Live Architecture Signal Matrix</h2>
+          <p style="color: var(--text-muted);">
+            Explore how authenticated MCP requests navigate the isolated boundary layers with live packet animation.
+          </p>
+        </div>
+
+        <!-- Animated SVG Architecture Diagram -->
+        <div class="diagram-container">
+          <div class="diagram-caption">
+            <span>● LIVE BOUNDARY TRACE — AUTHENTICATED CONTROL VS ISOLATED EXECUTION</span>
+            <span style="color: var(--green-neon);">PACKET FLOW: ACTIVE</span>
+          </div>
+
+          <div class="diagram-scroll-wrapper">
+            <svg class="svg-hud-diagram" viewBox="0 0 1000 480" aria-label="Architecture Diagram">
+              <defs>
+                <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+                <filter id="glow-green" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+                <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--cyan-glow)" />
+                </marker>
+              </defs>
+
+              <!-- Zone 1: Ingress & Client -->
+              <rect class="svg-zone-box" x="20" y="40" width="220" height="400" />
+              <text class="svg-text-zone" x="35" y="70">01 // INGRESS PERIMETER</text>
+
+              <g class="svg-node-group" transform="translate(40, 100)">
+                <rect class="svg-node-box" x="0" y="0" width="180" height="70" />
+                <text class="svg-text-title" x="20" y="30">AI Client / IDE</text>
+                <text class="svg-text-sub" x="20" y="52">Claude • Cursor • Codex</text>
+              </g>
+
+              <g class="svg-node-group" transform="translate(40, 260)">
+                <rect class="svg-node-box" x="0" y="0" width="180" height="70" />
+                <text class="svg-text-title" x="20" y="30">Ingress Proxy</text>
+                <text class="svg-text-sub" x="20" y="52">Cloudflare Access / SSO</text>
+              </g>
+
+              <!-- Zone 2: Trusted Control Plane -->
+              <rect class="svg-zone-box" x="270" y="40" width="360" height="400" />
+              <text class="svg-text-zone" x="290" y="70">02 // TRUSTED CONTROL PLANE</text>
+
+              <g class="svg-node-group" transform="translate(290, 100)">
+                <rect class="svg-node-box" x="0" y="0" width="150" height="70" />
+                <text class="svg-text-title" x="15" y="30">Stateless MCP</text>
+                <text class="svg-text-sub" x="15" y="52">Zod Validations</text>
+              </g>
+
+              <g class="svg-node-group" transform="translate(470, 100)">
+                <rect class="svg-node-box" x="0" y="0" width="140" height="70" />
+                <text class="svg-text-title" x="15" y="30">Trusted Runner</text>
+                <text class="svg-text-sub" x="15" y="52">Policy & Docker Auth</text>
+              </g>
+
+              <g class="svg-node-group" transform="translate(290, 260)">
+                <rect class="svg-node-box" x="0" y="0" width="150" height="70" />
+                <text class="svg-text-title" x="15" y="30">SQLite State</text>
+                <text class="svg-text-sub" x="15" y="52">Encrypted Records</text>
+              </g>
+
+              <g class="svg-node-group" transform="translate(470, 260)">
+                <rect class="svg-node-box" x="0" y="0" width="140" height="70" />
+                <text class="svg-text-title" x="15" y="30">GitHub Broker</text>
+                <text class="svg-text-sub" x="15" y="52">60s Stdin Tokens</text>
+              </g>
+
+              <!-- Zone 3: TTL Execution Plane -->
+              <rect class="svg-zone-exec" x="660" y="40" width="320" height="400" />
+              <text class="svg-text-zone" x="680" y="70" fill="var(--green-neon)">03 // EXECUTION PLANE (TTL SANDBOX)</text>
+
+              <g class="svg-node-group" transform="translate(680, 100)">
+                <rect class="svg-node-box" x="0" y="0" width="280" height="110" style="stroke: var(--green-neon); stroke-width: 1.8;" />
+                <text class="svg-text-title" x="20" y="35" fill="var(--green-neon)">Non-Root Docker Executor</text>
+                <text class="svg-text-sub" x="20" y="60">UID 1000 • Read-Only Root • Net: None</text>
+                <text class="svg-text-sub" x="20" y="82">Isolated Repo Clone & AST Engine</text>
+              </g>
+
+              <g class="svg-node-group" transform="translate(680, 260)">
+                <rect class="svg-node-box" x="0" y="0" width="280" height="70" style="stroke: var(--cyan-glow);" />
+                <text class="svg-text-title" x="20" y="30">Ephemeral Git Helper</text>
+                <text class="svg-text-sub" x="20" y="52">Stdin Auth Push → GitHub Origin</text>
+              </g>
+
+              <!-- Animated Connecting Wire Paths -->
+              <path class="svg-wire" id="path-client-ingress" d="M 130 170 L 130 260" />
+              <path class="svg-wire" id="path-ingress-api" d="M 220 295 L 260 295 L 260 135 L 290 135" />
+              <path class="svg-wire-active" id="path-api-runner" d="M 440 135 L 470 135" />
+              <path class="svg-wire-green" id="path-runner-exec" d="M 610 135 L 680 135" />
+              <path class="svg-wire" id="path-runner-broker" d="M 540 170 L 540 260" />
+              <path class="svg-wire" id="path-broker-helper" d="M 610 295 L 680 295" />
+
+              <!-- Traveling Glowing Packets -->
+              <circle class="svg-packet-cyan" r="5">
+                <animateMotion dur="4.5s" repeatCount="indefinite" path="M 130 170 L 130 260 L 260 260 L 260 135 L 290 135 L 440 135 L 470 135 L 610 135 L 680 135" />
+              </circle>
+
+              <circle class="svg-packet-green" r="4.5">
+                <animateMotion dur="4.5s" begin="2.25s" repeatCount="indefinite" path="M 540 170 L 540 260 L 610 295 L 680 295" />
+              </circle>
+            </svg>
+          </div>
+          <div class="swipe-hint">← Swipe horizontally to view complete architecture blueprint →</div>
+        </div>
+
+        <!-- 3 Isolation Cards -->
+        <div class="arch-grid">
+          <div class="arch-card">
+            <div class="arch-plane-tag plane-ingress">Plane 01 // Ingress Proxy</div>
+            <h3>Stateless Ingress & SSO</h3>
+            <p>Cloudflare Access OAuth or Gateway API tokens are validated at the perimeter. The ingress proxy has zero secrets and never joins the backend Docker network.</p>
+            <ul class="arch-specs">
+              <li><span>✓</span> Managed OAuth via GitHub/Google SSO</li>
+              <li><span>✓</span> Static Bearer tokens for headless CI</li>
+              <li><span>✓</span> Rate-limited loopback forwarding</li>
+            </ul>
+          </div>
+
+          <div class="arch-card">
+            <div class="arch-plane-tag plane-control">Plane 02 // Trusted Control</div>
+            <h3>Policy & Lifecycle Runner</h3>
+            <p>Maintains SQLite state records, verifies TTL limits, and negotiates short-lived GitHub App tokens piped directly over stdin to temporary git helpers.</p>
+            <ul class="arch-specs">
+              <li><span>✓</span> Idempotent workspace orchestration</li>
+              <li><span>✓</span> Secrets never touch disk or env vars</li>
+              <li><span>✓</span> Principal authorization checks</li>
+            </ul>
+          </div>
+
+          <div class="arch-card">
+            <div class="arch-plane-tag plane-exec">Plane 03 // Execution Plane</div>
+            <h3>Non-Root Docker Sandbox</h3>
+            <p>Every workspace lives in an isolated container. Default network mode is <code>none</code>, root filesystem is read-only, and memory/CPU limits are strictly enforced.</p>
+            <ul class="arch-specs">
+              <li><span>✓</span> Non-root UID execution only</li>
+              <li><span>✓</span> Auto-purged upon workspace_close</li>
+              <li><span>✓</span> No access to host Docker daemon</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- Animated Sequence Workflows Section -->
+      <section class="section-wrap" id="workflows">
+        <div class="section-header">
+          <div class="section-tag">// Lifecycle Dynamics</div>
+          <h2 class="section-title">Bounded Coding Workflow</h2>
+          <p style="color: var(--text-muted);">
+            A high-velocity, deterministic sequence from workspace boot to safe git push and automatic sandbox purging.
+          </p>
+        </div>
+
+        <!-- Sequence Diagram Container -->
+        <div class="diagram-container">
+          <div class="diagram-caption">
+            <span>● SEQUENCE TRACE — TIME-LIMITED WORKSPACE LIFECYCLE</span>
+            <span style="color: var(--cyan-glow);">4-STAGE CONTINUOUS VERIFICATION</span>
+          </div>
+
+          <div class="diagram-scroll-wrapper">
+            <svg class="svg-hud-diagram" viewBox="0 0 1000 440" aria-label="Sequence Workflow">
+              <defs>
+                <marker id="seq-arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--cyan-glow)" />
+                </marker>
+                <marker id="seq-arrow-purple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--purple-laser)" />
+                </marker>
+                <marker id="seq-arrow-green" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--green-neon)" />
+                </marker>
+                <marker id="seq-arrow-amber" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 z" fill="var(--amber-warn)" />
+                </marker>
+              </defs>
+              <!-- Column Lifelines -->
+              <line x1="120" y1="60" x2="120" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="380" y1="60" x2="380" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="650" y1="60" x2="650" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+              <line x1="880" y1="60" x2="880" y2="400" stroke="rgba(255,255,255,0.08)" stroke-width="1.5" stroke-dasharray="4 4" />
+
+              <!-- Column Header Badges -->
+              <rect x="50" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--cyan-glow)" stroke-width="1.2" />
+              <text x="75" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">AI Client</text>
+
+              <rect x="310" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--cyan-glow)" stroke-width="1.2" />
+              <text x="325" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">Control Plane</text>
+
+              <rect x="580" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--green-neon)" stroke-width="1.2" />
+              <text x="590" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">Docker Executor</text>
+
+              <rect x="810" y="20" width="140" height="36" rx="6" fill="#080b12" stroke="var(--purple-laser)" stroke-width="1.2" />
+              <text x="830" y="43" fill="#fff" font-family="var(--font-mono)" font-size="12" font-weight="700">GitHub Origin</text>
+
+              <!-- Step 1: workspace_open -->
+              <path d="M 120 100 L 380 100" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#seq-arrow-cyan)" />
+              <text x="140" y="92" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">1. workspace_open(repoUrl, idempotencyKey)</text>
+
+              <path d="M 380 130 L 880 130" stroke="var(--purple-laser)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-purple)" />
+              <text x="420" y="122" fill="var(--purple-laser)" font-family="var(--font-mono)" font-size="11">2. Ephemeral Git Clone (Token over stdin)</text>
+
+              <path d="M 380 165 L 650 165" stroke="var(--green-neon)" stroke-width="2" marker-end="url(#seq-arrow-green)" />
+              <text x="400" y="157" fill="var(--green-neon)" font-family="var(--font-mono)" font-size="11">3. Spawn Non-Root Container (TTL: 30m, Net: None)</text>
+
+              <path d="M 380 195 L 120 195" stroke="var(--cyan-glow)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-cyan)" />
+              <text x="160" y="187" fill="var(--text-muted)" font-family="var(--font-mono)" font-size="11">4. Returns opaque workspaceId</text>
+
+              <!-- Step 2: Agent Work -->
+              <path d="M 120 240 L 650 240" stroke="var(--cyan-glow)" stroke-width="2" marker-end="url(#seq-arrow-cyan)" />
+              <text x="180" y="232" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">5. grep_search / files_apply_patch / shell_open / tasks_run</text>
+
+              <path d="M 650 270 L 120 270" stroke="var(--green-neon)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-green)" />
+              <text x="240" y="262" fill="var(--green-neon)" font-family="var(--font-mono)" font-size="11">6. Real-time stream results (Zero host leaks)</text>
+
+              <!-- Step 3: Git Push & Purge -->
+              <path d="M 120 320 L 380 320" stroke="var(--cyan-glow)" stroke-width="2" />
+              <text x="150" y="312" fill="var(--cyan-glow)" font-family="var(--font-mono)" font-size="11">7. git_push(refspec, forceWithLease)</text>
+
+              <path d="M 380 345 L 880 345" stroke="var(--purple-laser)" stroke-width="2" marker-end="url(#seq-arrow-purple)" />
+              <text x="450" y="337" fill="var(--purple-laser)" font-family="var(--font-mono)" font-size="11">8. Broker push via short-lived stdin helper</text>
+
+              <path d="M 120 380 L 380 380" stroke="#f59e0b" stroke-width="2" marker-end="url(#seq-arrow-amber)" />
+              <text x="150" y="372" fill="#f59e0b" font-family="var(--font-mono)" font-size="11">9. workspace_close → Container & volumes destroyed (0 residual state)</text>
+            </svg>
+          </div>
+          <div class="swipe-hint">← Swipe horizontally to view full sequence workflow →</div>
+        </div>
+      </section>
+
+      <!-- Expanded 52+ Tools Section with Coming Soon Tools -->
+      <section class="section-wrap" id="tools">
+        <div class="section-header">
+          <div class="section-tag">// Comprehensive Surface</div>
+          <h2 class="section-title">52+ Precision Coding & Agent Tools</h2>
+          <p style="color: var(--text-muted);">
+            From file manipulation and AST code intelligence to repository automation and autonomous multi-agent swarm orchestration.
+          </p>
+        </div>
+
+        <div class="tools-filter-bar">
+          <button class="tool-pill active" onclick="filterTools('all', this)">All Primitives (52+)</button>
+          <button class="tool-pill" onclick="filterTools('file', this)">Files & Search</button>
+          <button class="tool-pill" onclick="filterTools('shell', this)">Shell & Tasks</button>
+          <button class="tool-pill" onclick="filterTools('git', this)">Git & Worktree</button>
+          <button class="tool-pill" onclick="filterTools('repo', this)">Skills & Hooks</button>
+          <button class="tool-pill" onclick="filterTools('agent', this)" style="border-color: rgba(168, 85, 247, 0.4); color: #d8b4fe;">Agents Swarm (Coming Soon)</button>
+        </div>
+
+        <div class="tools-cards-grid" id="toolsGrid">
+          <!-- Live Tools -->
+          <div class="tool-card" data-cat="file">
+            <div>
+              <div class="tool-name"><span>symbols_search</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Search LSP symbols, declarations, and definitions across TypeScript, Go, Python, and Rust.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="file">
+            <div>
+              <div class="tool-name"><span>files_apply_patch</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Apply line-anchored atomic text patches with conflict detection and rollback.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="file">
+            <div>
+              <div class="tool-name"><span>grep_search</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Rust-powered regex search with cross-line multiline support and gitignore respect.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="shell">
+            <div>
+              <div class="tool-name"><span>shell_open & shell_io</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Interactive persistent PTY shell sessions supporting full terminal interaction and ANSI signals.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="shell">
+            <div>
+              <div class="tool-name"><span>tasks_run & tasks_graph</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Dispatch DAG multi-stage tasks with topological barriers, artifact tracking, and timeouts.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="git">
+            <div>
+              <div class="tool-name"><span>worktrees_create</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Spawn instant isolated branch worktrees allowing subagents to work without Git collisions.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="git">
+            <div>
+              <div class="tool-name"><span>git_push</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Push commits through stdin-fed short-lived GitHub App tokens with force-with-lease safety.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="repo">
+            <div>
+              <div class="tool-name"><span>skills_list & skills_run</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Discover and execute repository-defined custom skills, automated code reviewers, and linters.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="repo">
+            <div>
+              <div class="tool-name"><span>hooks_list & hooks_run</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Run repository lifecycle hooks (pre-commit, post-build, security-scan) in isolated sandboxes.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="repo">
+            <div>
+              <div class="tool-name"><span>deployments_run</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Trigger owner-reviewed repository deployment recipes directly from AI agent context.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="repo">
+            <div>
+              <div class="tool-name"><span>memories_read & write</span> <span class="term-badge">LIVE</span></div>
+              <p class="tool-desc">Store and recall durable repository decisions and conventions across agent sessions.</p>
+            </div>
+          </div>
+
+          <!-- Coming Soon Agent Tools -->
+          <div class="tool-card" data-cat="agent" style="border-color: rgba(168, 85, 247, 0.3);">
+            <div>
+              <div class="tool-name"><span style="color: var(--purple-laser);">agents_spawn</span> <span class="coming-soon-badge">COMING SOON</span></div>
+              <p class="tool-desc">Instantly boot autonomous subagent peers within dedicated micro-workspaces.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="agent" style="border-color: rgba(168, 85, 247, 0.3);">
+            <div>
+              <div class="tool-name"><span style="color: var(--purple-laser);">agents_delegate</span> <span class="coming-soon-badge">COMING SOON</span></div>
+              <p class="tool-desc">Delegate bounded sub-tasks to specialized subagents with strict output schemas.</p>
+            </div>
+          </div>
+
+          <div class="tool-card" data-cat="agent" style="border-color: rgba(168, 85, 247, 0.3);">
+            <div>
+              <div class="tool-name"><span style="color: var(--purple-laser);">agents_inbox & wait</span> <span class="coming-soon-badge">COMING SOON</span></div>
+              <p class="tool-desc">Peer-to-peer asynchronous messaging and coordination across distributed agent fleets.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Client Connect Matrix -->
+      <section class="section-wrap" id="connect">
+        <div class="section-header">
+          <div class="section-tag">// Plug & Play</div>
+          <h2 class="section-title">Connect Any AI Coding Agent</h2>
+          <p style="color: var(--text-muted);">
+            Compatible with all modern MCP-enabled IDEs, terminals, and web agents in seconds.
+          </p>
+        </div>
+
+        <div class="client-matrix">
+          <div class="client-tabs" role="tablist" aria-label="AI Client selection">
+            <button class="client-tab-btn active" role="tab" aria-selected="true" tabindex="0" aria-controls="clientContent" onclick="switchClientTab('claude', this)">Claude Code</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="clientContent" onclick="switchClientTab('cursor', this)">Cursor IDE</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="clientContent" onclick="switchClientTab('chatgpt', this)">ChatGPT</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="clientContent" onclick="switchClientTab('codex', this)">Codex CLI</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="clientContent" onclick="switchClientTab('antigravity', this)">Antigravity</button>
+          </div>
+          <div class="client-content-panel" id="clientContent" role="tabpanel" tabindex="0">
+            <div>
+              <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">Claude Code Setup</h3>
+              <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">
+                Connect via Streamable HTTP with your operator API key. Claude Code will instantly acquire all remote execution capabilities.
+              </p>
+              <ul class="arch-specs" style="border: none; padding: 0;">
+                <li><span>→</span> Full worktree & subagent task graph support</li>
+                <li><span>→</span> Non-root execution ensures your local machine stays clean</li>
+                <li><span>→</span> Auto-reconnect with session recovery</li>
+              </ul>
+            </div>
+            <div class="code-box">
+              <button class="copy-btn" onclick="copySnippet('claude-snippet')">Copy</button>
+              <pre id="claude-snippet" style="overflow-x: auto; color: var(--text-bright);">claude mcp add cloud-harness \
+  --transport http \
+  https://api.harness.zuey.me/mcp \
+  --header "Authorization: Bearer YOUR_OPERATOR_KEY"</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- 1-Click Server & Companion Skill Installation Section -->
+      <section class="section-wrap" id="install">
+        <div class="section-header">
+          <div class="section-tag">// Quickstart Deployment</div>
+          <h2 class="section-title">Install CloudHarness in Seconds</h2>
+          <p style="color: var(--text-muted); max-width: 780px; margin: 0 auto 1.25rem;">
+            Deploy a private single-owner server on your own Linux VPS, install the portable companion skill, or integrate agent plugins.
+          </p>
+          <div style="display: inline-flex; align-items: center; gap: 0.5rem; background: rgba(0, 240, 255, 0.05); border: 1px solid var(--border-hud); padding: 0.4rem 1rem; border-radius: 9999px; font-size: 0.82rem; font-family: var(--font-mono); color: var(--cyan-glow);">
+            <span>ℹ️</span> The server, operating skill, and authenticated MCP connection are separate installation steps.
+          </div>
+        </div>
+
+        <div class="client-matrix" style="margin-top: 2rem;">
+          <div class="client-tabs" role="tablist" aria-label="Installation method selection">
+            <button class="client-tab-btn active" role="tab" aria-selected="true" tabindex="0" aria-controls="installContent" onclick="switchInstallTab('server-caddy', this)">1-Click Server (Caddy TLS)</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="installContent" onclick="switchInstallTab('server-tunnel', this)">1-Click Server (Cloudflare Tunnel)</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="installContent" onclick="switchInstallTab('agent-skill', this)">Companion Agent Skill</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="installContent" onclick="switchInstallTab('plugins', this)">AI Plugin Marketplace</button>
+            <button class="client-tab-btn" role="tab" aria-selected="false" tabindex="-1" aria-controls="installContent" onclick="switchInstallTab('docker-manual', this)">Manual Compose</button>
+          </div>
+          <div class="client-content-panel" id="installContent" role="tabpanel" tabindex="0">
+            <div>
+              <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">1-Click Linux VPS Server (Caddy TLS)</h3>
+              <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1rem;">
+                Single-command interactive installer for Ubuntu 24.04 / Debian 12 with automatic Let's Encrypt TLS reverse proxy to loopback <code>127.0.0.1:3100</code>.
+              </p>
+              <ul class="arch-specs" style="border: none; padding: 0; margin-bottom: 1rem;">
+                <li><span>→</span> Generates high-entropy cryptographic keys & secret keyring</li>
+                <li><span>→</span> Enables systemd auto-restart service</li>
+                <li><span>→</span> Includes <code>cloudharness</code> CLI (status, token view/rotate, upgrade)</li>
+              </ul>
+              <p style="font-size: 0.8rem; color: var(--text-dim);">Runs repository installer as root. Review source on <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" style="color: var(--cyan-glow); text-decoration: underline;">GitHub repository</a> first.</p>
+            </div>
+            <div class="code-box">
+              <button class="copy-btn" onclick="copySnippet('active-install-box')">Copy</button>
+              <pre id="active-install-box" style="overflow-x: auto; color: var(--text-bright);">curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- HaaS Platform Preview Banner -->
+      <section class="section-wrap" id="haas-preview" style="padding-top: 1rem;">
+        <div style="background: linear-gradient(135deg, rgba(9, 12, 18, 0.95), rgba(15, 20, 32, 0.95)); border: 1px solid var(--border-hud); border-radius: 16px; padding: 2.5rem; position: relative; overflow: hidden; box-shadow: 0 0 35px rgba(0, 240, 255, 0.08);">
+          <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 2rem;">
+            <div style="max-width: 740px;">
+              <div style="display: inline-flex; align-items: center; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.78rem; color: var(--purple-laser); margin-bottom: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;">
+                <span class="pulse-dot" style="background: var(--purple-laser); box-shadow: 0 0 8px var(--purple-laser);"></span>
+                Architecture Preview // Multi-Tenant Cloud Platform
+              </div>
+              <h2 style="font-size: clamp(1.8rem, 3vw, 2.3rem); font-weight: 800; margin-bottom: 1rem; color: var(--text-bright);">
+                CloudHarness <span style="color: var(--cyan-glow);">HaaS</span> (Harness as a Service)
+              </h2>
+              <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; margin-bottom: 1.5rem;">
+                Scale beyond single-owner servers. Explore our 3-tier Tenant Isolation Ladder — from dedicated single-tenant provider VMs in Beta to hardware-isolated Firecracker KVM MicroVMs with fail-closed security and double-entry metering in GA.
+              </p>
+              <div style="display: flex; flex-wrap: wrap; gap: 1.25rem; font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted);">
+                <span style="display: inline-flex; align-items: center; gap: 0.35rem;">🛡️ ADR 0001 Isolation Ladder</span>
+                <span style="display: inline-flex; align-items: center; gap: 0.35rem;">⚡ Sub-150ms Cold Boot Target</span>
+                <span style="display: inline-flex; align-items: center; gap: 0.35rem;">💳 Double-Entry Ledger</span>
+              </div>
+            </div>
+            <div>
+              <a href="haas.html" class="hud-button hud-button-primary" style="font-size: 0.95rem; padding: 0.9rem 2rem; white-space: nowrap;">
+                Explore HaaS Architecture & Roadmap →
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+      <!-- Security Model Section with Anchor #security -->
+      <section class="section-wrap" id="security">
+        <div class="security-box">
+          <div class="section-tag" style="text-align: center;">// Zero-Trust Security Guarantees</div>
+          <h2 class="section-title" style="text-align: center;">Hardened Single-Owner Invariants</h2>
+          <p style="text-align: center; color: var(--text-muted); max-width: 700px; margin: 0 auto 2.5rem;">
+            Designed intentionally for one trusted operator or team. Arbitrary execution capability inside shared-kernel executors with strict boundary separation.
+          </p>
+          <div class="invariants-grid">
+            <div class="invariant-card">
+              <div class="invariant-title">🔒 No Docker Host Socket Mounting</div>
+              <p style="color: var(--text-muted); font-size: 0.9rem;">
+                The API and Ingress proxy never receive Docker socket mounts or host volume binds. Docker daemon control remains strictly localized to the trusted Runner daemon.
+              </p>
+            </div>
+            <div class="invariant-card">
+              <div class="invariant-title">🔑 Zero-Disk GitHub App Credentials</div>
+              <p style="color: var(--text-muted); font-size: 0.9rem;">
+                GitHub App private keys reside exclusively in runner control memory. Installation tokens are short-lived (60s) and piped over stdin to an ephemeral git helper.
+              </p>
+            </div>
+            <div class="invariant-card">
+              <div class="invariant-title">🛡️ Non-Root Docker Sandboxes</div>
+              <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Executors run as UID 1000 with read-only root filesystems, memory/CPU caps, and network mode <code>none</code> by default.
+              </p>
+            </div>
+            <div class="invariant-card">
+              <div class="invariant-title">⏱️ Automatic TTL Cleanup & Zero Residuals</div>
+              <p style="color: var(--text-muted); font-size: 0.9rem;">
+                Workspaces are destroyed immediately upon <code>workspace_close</code> or when TTL expires, leaving zero leftover state, containers, or leaked temp files.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Cyber CTA Banner -->
+      <section class="section-wrap">
+        <div class="cta-cyber">
+          <h2 style="font-size: clamp(2.4rem, 4vw, 3rem); font-weight: 800; margin-bottom: 1.25rem;">
+            Ready to Upgrade Your AI Agent Fleet?
+          </h2>
+          <p style="color: var(--text-muted); max-width: 680px; margin: 0 auto 2.5rem; font-size: 1.15rem;">
+            Deploy Cloud Harness MCP in under 5 minutes with Docker Compose or connect your existing agent to our managed control plane.
+          </p>
+          <div style="display: flex; gap: 1.5rem; justify-content: center; flex-wrap: wrap;">
+            <a href="https://docs.harness.agentkit.best/getting-started" target="_blank" rel="noreferrer" class="hud-button hud-button-primary" style="font-size: 1rem; padding: 0.9rem 2.2rem;">
+              Read Getting Started Guide ↗
+            </a>
+            <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer" class="hud-button hud-button-outline" style="font-size: 1rem; padding: 0.9rem 2.2rem;">
+              Star on GitHub ★
+            </a>
           </div>
         </div>
       </section>
     </main>
 
-    <footer class="site-footer">
-      <p>Cloud Harness MCP. Remote execution, operated with intent.</p>
-      <div>
-        <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">GitHub</a>
-        <a href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>
+    <!-- Footer with Creator Attribution -->
+    <footer class="cyber-footer">
+      <div class="footer-top-row">
+        <div>
+          <span>CLOUD HARNESS MCP // MIT LICENSED</span>
+        </div>
+        <div class="creator-attribution">
+          From the creator of <a href="https://agentkit.best" target="_blank" rel="noreferrer" class="creator-link">AgentKit</a> & <a href="https://goclaw.sh" target="_blank" rel="noreferrer" class="creator-link">GoClaw</a>
+        </div>
+        <div style="display: flex; gap: 2rem; flex-wrap: wrap;">
+          <a href="#install">Installation</a>
+          <a href="haas.html">HaaS Platform</a>
+          <a href="https://docs.harness.agentkit.best" target="_blank" rel="noreferrer">Documentation</a>
+          <a href="https://github.com/bestagentkits/cloud-harness-mcp" target="_blank" rel="noreferrer">Repository</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="terms.html">Terms</a>
+        </div>
       </div>
     </footer>
+
+    <!-- Interactive Scripts -->
+    <script>
+      function toggleMobileMenu() {
+        const drawer = document.getElementById('mobileDrawer');
+        const btn = document.querySelector('.mobile-menu-btn');
+        if (drawer) {
+          drawer.classList.toggle('open');
+          if (btn) {
+            const isOpen = drawer.classList.contains('open');
+            btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+          }
+        }
+      }
+      // Fetch dynamic GitHub stars count
+      try {
+        fetch('https://api.github.com/repos/bestagentkits/cloud-harness-mcp')
+          .then(res => res.json())
+          .then(data => {
+            if (data && typeof data.stargazers_count === 'number') {
+              const badge = document.getElementById('githubStarsCount');
+              if (badge) badge.textContent = `★ ${data.stargazers_count}`;
+            }
+          })
+          .catch(() => {});
+      } catch (e) {}
+
+      function switchTermDemo(type, btn) {
+        document.querySelectorAll('.term-tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const box = document.getElementById('termContent');
+        if (type === 'open') {
+          box.innerHTML = `
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.workspace_open({</p>
+            <p style="padding-left: 1.5rem;">"repositoryUrl": <span class="term-string">"https://github.com/org/core-infra"</span>,</p>
+            <p style="padding-left: 1.5rem;">"idempotencyKey": <span class="term-string">"task_448f_09a1"</span></p>
+            <p>})</p>
+            <br/>
+            <p style="color: var(--cyan-glow)">[200 OK] Streamable HTTP Connection Established (14ms)</p>
+            <p style="color: var(--text-muted)">├── Ingress: Cloudflare Access OAuth token validated</p>
+            <p style="color: var(--text-muted)">├── Runner: Ephemeral GitHub broker minted stdin-only push key</p>
+            <p style="color: var(--text-muted)">├── Docker: Spawned non-root executor (TTL: 1800s, net: none)</p>
+            <p style="color: var(--green-neon)">└── Workspace Ready: <span class="term-badge">ws_8f93e120da</span></p>
+          `;
+        } else if (type === 'ast') {
+          box.innerHTML = `
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.symbols_search({</p>
+            <p style="padding-left: 1.5rem;">"workspaceId": <span class="term-string">"ws_8f93e120da"</span>,</p>
+            <p style="padding-left: 1.5rem;">"query": <span class="term-string">"verifyPrincipal"</span></p>
+            <p>})</p>
+            <br/>
+            <p style="color: var(--cyan-glow)">[LSP Symbols Found: 18 definitions parsed in 18ms]</p>
+            <p style="color: var(--text-muted)">├── apps/api/src/auth.ts:42 (function verifyPrincipal)</p>
+            <p style="color: var(--text-muted)">├── apps/runner/src/security.ts:110 (export const verifyPrincipal)</p>
+            <p style="color: var(--green-neon)">└── Full structural symbol resolution returned to agent context</p>
+          `;
+        } else if (type === 'push') {
+          box.innerHTML = `
+            <p><span class="term-prompt">agent@claude-code:~$</span> <span class="term-keyword">call</span> mcp.git_push({</p>
+            <p style="padding-left: 1.5rem;">"workspaceId": <span class="term-string">"ws_8f93e120da"</span>,</p>
+            <p style="padding-left: 1.5rem;">"refspec": <span class="term-string">"feat/harness-v2"</span>,</p>
+            <p style="padding-left: 1.5rem;">"forceWithLease": <span class="term-keyword">true</span></p>
+            <p>})</p>
+            <br/>
+            <p style="color: var(--cyan-glow)">[Broker Transfer Staged]</p>
+            <p style="color: var(--text-muted)">├── GitHub App Broker minted 60s installation token</p>
+            <p style="color: var(--text-muted)">├── Token piped to git helper over stdio (zero disk writes)</p>
+            <p style="color: var(--green-neon)">└── Remote ref updated: 0a1b2c3 -> 9d8e7f6 [SUCCESS]</p>
+          `;
+        }
+      }
+
+      function filterTools(category, btn) {
+        document.querySelectorAll('.tool-pill').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        const cards = document.querySelectorAll('.tool-card');
+        cards.forEach(c => {
+          if (category === 'all' || c.getAttribute('data-cat') === category) {
+            c.style.display = 'flex';
+          } else {
+            c.style.display = 'none';
+          }
+        });
+      }
+
+      function switchClientTab(client, btn) {
+        document.querySelectorAll('#connect .client-tab-btn').forEach(b => {
+          b.classList.remove('active');
+          b.setAttribute('aria-selected', 'false');
+          b.setAttribute('tabindex', '-1');
+        });
+        btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+        btn.setAttribute('tabindex', '0');
+        const container = document.getElementById('clientContent');
+        const configs = {
+          claude: {
+            title: "Claude Code Setup",
+            desc: "Connect via Streamable HTTP with your operator API key. Claude Code will instantly acquire all remote execution capabilities.",
+            code: `claude mcp add cloud-harness \\\n  --transport http \\\n  https://api.harness.zuey.me/mcp \\\n  --header "Authorization: Bearer YOUR_OPERATOR_KEY"`
+          },
+          cursor: {
+            title: "Cursor IDE Configuration",
+            desc: "Add Cloud Harness MCP into your project or global .cursor/mcp.json for seamless background agent execution in Cursor.",
+            code: `{\n  "mcpServers": {\n    "cloud-harness": {\n      "url": "https://api.harness.zuey.me/mcp",\n      "headers": {\n        "Authorization": "Bearer YOUR_OPERATOR_KEY"\n      }\n    }\n  }\n}`
+          },
+          chatgpt: {
+            title: "ChatGPT OAuth Connector",
+            desc: "Connect directly to the Cloudflare Access SSO endpoint for single-click browser authentication with your corporate Google or GitHub ID.",
+            code: `Endpoint URL: https://harness.zuey.me/mcp\nAuth Type: Managed OAuth (Cloudflare Access)\nProtocol: Streamable HTTP MCP`
+          },
+          codex: {
+            title: "Codex CLI Setup",
+            desc: "Configure codex config.toml to route heavy repository operations and Docker executions directly into Cloud Harness.",
+            code: `[mcp_servers.cloud_harness]\nurl = "https://api.harness.zuey.me/mcp"\nheaders = { Authorization = "Bearer YOUR_OPERATOR_KEY" }`
+          },
+          antigravity: {
+            title: "Google Antigravity IDE",
+            desc: "Native integration for Google Antigravity developer environment via standard MCP config.",
+            code: `{\n  "servers": {\n    "cloud-harness": {\n      "endpoint": "https://api.harness.zuey.me/mcp",\n      "token": "YOUR_OPERATOR_KEY"\n    }\n  }\n}`
+          }
+        };
+
+        const item = configs[client];
+        container.innerHTML = `
+          <div>
+            <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">${item.title}</h3>
+            <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">${item.desc}</p>
+            <ul class="arch-specs" style="border: none; padding: 0;">
+              <li><span>→</span> Streamable HTTP MCP protocol support</li>
+              <li><span>→</span> Strict principal authorization and token validation</li>
+              <li><span>→</span> 52+ tools automatically discovered</li>
+            </ul>
+          </div>
+          <div class="code-box">
+            <button class="copy-btn" onclick="copySnippet('active-code-box')">Copy</button>
+            <pre id="active-code-box" style="overflow-x: auto; color: var(--text-bright);">${item.code}</pre>
+          </div>
+        `;
+      }
+
+
+      function switchInstallTab(type, btn) {
+        document.querySelectorAll('#install .client-tab-btn').forEach(b => {
+          b.classList.remove('active');
+          b.setAttribute('aria-selected', 'false');
+          b.setAttribute('tabindex', '-1');
+        });
+        btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+        btn.setAttribute('tabindex', '0');
+        const container = document.getElementById('installContent');
+        const installConfigs = {
+          'server-caddy': {
+            title: "1-Click Linux VPS Server (Caddy TLS)",
+            desc: "Single-command interactive installer for Ubuntu 24.04 / Debian 12 with automatic Let's Encrypt TLS reverse proxy to loopback 127.0.0.1:3100.",
+            specs: [
+              "Generates high-entropy cryptographic keys & secret keyring",
+              "Enables systemd auto-restart service",
+              "Includes cloudharness CLI (status, token view/rotate, upgrade)"
+            ],
+            note: 'Runs repository installer as root. Review source on GitHub first.',
+            code: `curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash`
+          },
+          'server-tunnel': {
+            title: "1-Click Linux VPS Server (Cloudflare Tunnel)",
+            desc: "Zero-port installation attaching cloudflared directly to the loopback ingress network without opening inbound firewall ports.",
+            specs: [
+              "Zero public host listening ports",
+              "Direct internal routing to ingress proxy on 127.0.0.1:3100",
+              "Enforces tunnel token validation and public host security"
+            ],
+            note: 'The installer prompts for your Cloudflare Tunnel token via hidden input (zero history leak).',
+            code: `curl -fsSL https://raw.githubusercontent.com/bestagentkits/cloud-harness-mcp/main/scripts/install.sh | sudo bash -s -- \\\n  --ingress tunnel \\\n  --domain mcp.example.com`
+          },
+          'agent-skill': {
+            title: "Companion Agent Skill (Portable)",
+            desc: "Install the cloudharness agent skill into your local workspace or global user profile using the Skills CLI.",
+            specs: [
+              "Zero-config installation for AI coding agents",
+              "Provides tool guidance and auto-completion",
+              "Works across Claude Code, Codex, and OpenCode"
+            ],
+            note: 'Installed via npm / npx skills CLI.',
+            code: `# Project scope\nnpx skills add bestagentkits/cloud-harness-mcp --skill cloudharness\n\n# Or global user scope\nnpx skills add bestagentkits/cloud-harness-mcp --skill cloudharness --global`
+          },
+          'plugins': {
+            title: "AI Coding Agent Plugin Marketplace",
+            desc: "Direct plugin marketplace commands for Claude Code and OpenAI Codex CLI.",
+            specs: [
+              "Instant plugin discovery and capability registration",
+              "Automatic skill sync and update channels",
+              "Seamless integration with agent workflows"
+            ],
+            note: 'Requires Claude Code or Codex CLI installed.',
+            code: `# Claude Code Plugin\nclaude plugin marketplace add bestagentkits/cloud-harness-mcp\nclaude plugin install cloud-harness@bestagentkits\n\n# OpenAI Codex Plugin\ncodex plugin marketplace add bestagentkits/cloud-harness-mcp\ncodex plugin add cloud-harness@bestagentkits`
+          },
+          'docker-manual': {
+            title: "Manual Docker Compose Setup",
+            desc: "Clone the repository, configure runtime environment, and build the local container images manually.",
+            specs: [
+              "Full manual control over configuration files",
+              "Builds local executor, api, and runner images",
+              "Exposes loopback ingress on 127.0.0.1:3100"
+            ],
+            note: 'Requires Docker CE and Docker Compose plugin installed.',
+            code: `git clone https://github.com/bestagentkits/cloud-harness-mcp.git\ncd cloud-harness-mcp\ncp .env.example .env\ndocker compose --profile images build executor-image api runner\ndocker compose up -d`
+          }
+        };
+
+        const item = installConfigs[type];
+        const specsHtml = item.specs.map(s => `<li><span>→</span> ${s}</li>`).join('');
+        container.innerHTML = `
+          <div>
+            <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">${item.title}</h3>
+            <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1rem;">${item.desc}</p>
+            <ul class="arch-specs" style="border: none; padding: 0; margin-bottom: 1rem;">
+              ${specsHtml}
+            </ul>
+            <p style="font-size: 0.8rem; color: var(--text-dim);">${item.note}</p>
+          </div>
+          <div class="code-box">
+            <button class="copy-btn" onclick="copySnippet('active-install-box')">Copy</button>
+            <pre id="active-install-box" style="overflow-x: auto; color: var(--text-bright);">${item.code}</pre>
+          </div>
+        `;
+      }
+      function copySnippet(id) {
+        const text = document.getElementById(id).innerText;
+        navigator.clipboard.writeText(text);
+        alert('Copied configuration to clipboard!');
+      }
+
+      // Keyboard arrow navigation for tablists
+      document.querySelectorAll('[role="tablist"]').forEach(tablist => {
+        tablist.addEventListener('keydown', (e) => {
+          const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+          const idx = tabs.indexOf(document.activeElement);
+          if (idx === -1) return;
+          let nextIdx = idx;
+          if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+            nextIdx = (idx + 1) % tabs.length;
+          } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+            nextIdx = (idx - 1 + tabs.length) % tabs.length;
+          } else if (e.key === 'Home') {
+            nextIdx = 0;
+          } else if (e.key === 'End') {
+            nextIdx = tabs.length - 1;
+          } else {
+            return;
+          }
+          e.preventDefault();
+          tabs[nextIdx].focus();
+          tabs[nextIdx].click();
+        });
+      });
+    </script>
+
+    <script>
+      // Theme toggle: cycles system → light → dark, persists the choice in
+      // localStorage, keeps system mode live as the OS color scheme changes,
+      // and keeps the theme-color meta in sync with the resolved scheme.
+      (function () {
+        var STORE = "harness-theme";
+        var root = document.documentElement;
+        var btns = Array.prototype.slice.call(document.querySelectorAll(".theme-toggle-btn"));
+        var mq = window.matchMedia("(prefers-color-scheme: light)");
+        var DARK_BG = "#05070a";
+        var LIGHT_BG = "#eef2f7";
+        function current() {
+          try { return localStorage.getItem(STORE) || "system"; } catch (e) { return "system"; }
+        }
+        function save(t) {
+          try { localStorage.setItem(STORE, t); } catch (e) {}
+        }
+        function resolve(theme) {
+          return theme === "light" ? "light" : theme === "dark" ? "dark" : (mq.matches ? "light" : "dark");
+        }
+        function apply(theme) {
+          var resolved = resolve(theme);
+          root.setAttribute("data-theme", resolved);
+          for (var i = 0; i < btns.length; i++) {
+            btns[i].setAttribute("data-mode", theme);
+            btns[i].setAttribute("aria-label", "Switch theme (currently " + theme + ")");
+            btns[i].setAttribute("title", "Theme: " + theme);
+          }
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", resolved === "light" ? LIGHT_BG : DARK_BG);
+        }
+        for (var i = 0; i < btns.length; i++) {
+          btns[i].addEventListener("click", function () {
+            var order = ["system", "light", "dark"];
+            var next = order[(order.indexOf(current()) + 1) % order.length];
+            save(next);
+            apply(next);
+          });
+        }
+        if (typeof mq.addEventListener === "function") {
+          mq.addEventListener("change", function () { apply(current()); });
+        }
+        apply(current());
+      })();
+    </script>
   </body>
 </html>

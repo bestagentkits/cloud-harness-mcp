@@ -16,6 +16,14 @@ services:
       GITHUB_APP_INSTALLATION_ID: ""
       GITHUB_APP_PRIVATE_KEY: ""
       GITHUB_APP_PRIVATE_KEY_FILE: ""
+      SECRET_KEYRING: ""
+      SECRET_KEYRING_FILE: ""
+      CLOUDFLARE_ACCESS_API_TOKEN: ""
+      CLOUDFLARE_ACCESS_API_TOKEN_FILE: ""
+      ACCESS_LEGACY_OWNER_ID: ""
+      ACCESS_LEGACY_ISSUER: ""
+      ACCESS_LEGACY_SUBJECT: ""
+      ACCESS_PRINCIPAL_RELINKS: ""
     depends_on:
       runner:
         condition: service_healthy
@@ -24,7 +32,7 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=32m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    networks: [frontend, control]
+    networks: [frontend, control, api-egress]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
       interval: 10s
@@ -68,6 +76,8 @@ services:
       RUNNER_HOST: 0.0.0.0
       RUNNER_PORT: 3001
       MCP_BEARER_TOKEN: ""
+      TOOLKIT_EGRESS_PROXY: http://provisioning-proxy:3128
+      PROVISIONING_NETWORK: cloud-harness-mcp_provisioning
       AGENT_IMAGE: ${AGENT_IMAGE:-cloud-harness-agent:local}
       AGENT_GATEWAY_URL: http://model-gateway:3210
       AGENT_PROFILES_FILE: /run/agent-config/profiles.json
@@ -75,6 +85,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_JOBS_ROOT:-/var/lib/cloud-harness/jobs}:${JOBS_ROOT:-/var/lib/cloud-harness/jobs}
       - ${HOST_STATE_ROOT:-/var/lib/cloud-harness/state}:/var/lib/cloud-harness/state
+      - ${HOST_ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}:${ARTIFACT_ROOT:-/var/lib/cloud-harness/artifacts}
+      - ${HOST_REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}:${REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}
+      - ${HOST_TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}:${TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}
       - ${AGENT_PROFILES_HOST_FILE:-./config/runner-agent-profiles.json}:/run/agent-config/profiles.json:ro
     networks: [control, runner-egress]
     depends_on:
@@ -85,6 +98,47 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
+
+  provisioning-proxy:
+    image: cloud-harness-api:local
+    restart: unless-stopped
+    command: ["node", "/app/deploy/provisioning-proxy.mjs"]
+    environment:
+      PROVISIONING_PROXY_HOST: 0.0.0.0
+      PROVISIONING_PROXY_PORT: 3128
+      # skills.sh imports resolve to GitHub, so they need no extra host;
+      # SkillX imports call the SkillX API and need skillx.sh below.
+      ALLOWED_HOSTS: ${ALLOWED_GIT_HOSTS:-github.com},agentkit.best,releases.agentkit.best,api.github.com,objects.githubusercontent.com,skillx.sh
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=8m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [provisioning, runner-egress]
+
+  executor-image:
+    image: cloud-harness-executor:local
+    build:
+      context: .
+      dockerfile: docker/executor.Dockerfile
+    profiles: [images]
+    command: ["true"]
+
+  network-guard-image:
+    image: cloud-harness-network-guard:local
+    build:
+      context: .
+      dockerfile: docker/network-guard.Dockerfile
+    profiles: [images]
+    command: ["true"]
+
+  agent-image:
+    image: cloud-harness-agent:local
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    profiles: [images]
+    command: ["true"]
 
   model-gateway:
     image: cloud-harness-model-gateway:local
@@ -98,9 +152,12 @@ services:
       MODEL_GATEWAY_PORT: 3210
       MODEL_GATEWAY_PROFILES_FILE: /run/model-gateway-config/profiles.json
       MODEL_GATEWAY_CONTROL_SOCKET: /tmp/model-gateway-control.sock
+      # Optional provider session header the gateway fills with the calling agent id,
+      # for OpenAI-compatible providers that require a conversation identifier.
+      MODEL_GATEWAY_SESSION_HEADER: ${MODEL_GATEWAY_SESSION_HEADER:-}
     volumes:
       - ${MODEL_GATEWAY_PROFILES_HOST_FILE:-./apps/model-gateway/profiles/production.example.json}:/run/model-gateway-config/profiles.json:ro
-      - ${MODEL_GATEWAY_PROVIDER_SECRET_FILE:-/etc/cloud-harness-mcp/provider-api-key}:/run/model-gateway-secrets/provider-api-key:ro
+      - ${MODEL_GATEWAY_PROVIDER_SECRET_FILE:-/etc/cloud-harness-model-gateway/provider-api-key}:/run/model-gateway-secrets/provider-api-key:ro
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=8m,mode=0700,uid=1000,gid=1000
@@ -165,23 +222,6 @@ services:
       interval: 5s
       timeout: 2s
       retries: 10
-
-  executor-image:
-    image: cloud-harness-executor:local
-    build:
-      context: .
-      dockerfile: docker/executor.Dockerfile
-    profiles: [images]
-    command: ["true"]
-
-  agent-image:
-    image: cloud-harness-agent:local
-    build:
-      context: .
-      dockerfile: docker/agent.Dockerfile
-    profiles: [images]
-    command: ["true"]
-
 networks:
   frontend:
     internal: true
@@ -189,8 +229,12 @@ networks:
     internal: true
   ingress:
     driver: bridge
+  api-egress:
+    driver: bridge
   runner-egress:
     driver: bridge
+  provisioning:
+    internal: true
   provider-egress:
     driver: bridge
   model-gateway-test-agent:

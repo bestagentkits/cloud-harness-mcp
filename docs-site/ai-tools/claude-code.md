@@ -1,0 +1,51 @@
+---
+title: Connect Claude Code to Cloud Harness MCP
+description: Registering Cloud Harness MCP in Claude Code CLI with local authorization headers.
+---
+
+# Claude Code
+
+Claude Code CLI natively connects to remote Streamable HTTP MCP servers.
+
+## Quick Setup
+
+Export your dashboard-managed API key in your shell:
+
+```bash
+export CLOUD_HARNESS_MCP_TOKEN="<YOUR_DASHBOARD_API_KEY>"
+```
+
+Register the server globally for your user:
+
+```bash
+claude mcp add cloud-harness \
+  --transport http \
+  --url https://api.harness.zuey.me/mcp \
+  --header "Authorization=Bearer $CLOUD_HARNESS_MCP_TOKEN" \
+  --scope user
+```
+
+## Verify Tools
+
+Start Claude Code and inspect available tools:
+
+```bash
+claude
+/mcp
+```
+
+You should see `cloud-harness` listed with 52 available tools.
+
+---
+
+## Local Stdio Mode
+
+To connect Claude Code directly to a local folder over stdio:
+
+```bash
+claude mcp add cloud-harness-local \
+  --transport stdio \
+  -- node /path/to/cloud-harness-mcp/apps/api/dist/index.js --transport stdio --workspace /absolute/path/to/project
+```
+
+To serve several local folders from one server, replace `--workspace <path>` with `--workspace-config <absolute-path>`; see [Several local workspaces from one server](/connect#several-local-workspaces-from-one-server).

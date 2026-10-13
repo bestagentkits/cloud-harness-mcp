@@ -17,35 +17,119 @@ jobs:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      (github.event.workflow_run.head_branch == 'dev' || github.event.workflow_run.head_branch == 'main')
+      github.event.workflow_run.head_repository.full_name ==
+      github.repository &&
+      (github.event.workflow_run.head_branch == 'dev' ||
+      github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      release_commit: ${{ steps.release-commit.outputs.sha }}
     steps:
+      # RELEASE_TOKEN is an owner-supplied PAT whose owner has admin
+      # rights on this repository. Branch protection cannot be bypassed by the
+      # github-actions bot, so the release commit must be pushed by an identity
+      # that can bypass it: with `enforce_admins: false`, an admin bypasses
+      # required status checks. The default token is kept as a fallback so the
+      # workflow still works when the secret is absent.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: true
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      # Only the current tip is released. When the branch has moved on, this
+      # commit is covered by a previous Release or by the newer tip's CI run,
+      # so the rest of the job is skipped rather than failed.
       - name: Confirm CI tested the current release-branch tip
+        id: tip
         shell: bash
         env:
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          set -euo pipefail
           case "$BRANCH" in dev|main) ;; *) exit 1 ;; esac
-          current_sha="$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-          test "$current_sha" = "$RELEASE_SHA"
+          refs="$(git ls-remote origin "refs/heads/$BRANCH")" || refs=""
+          current_sha="$(cut -f1 <<< "$refs")"
+          if [[ ! "$current_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not read the $BRANCH tip."
+            exit 1
+          fi
+          if [[ "$current_sha" != "$RELEASE_SHA" ]]; then
+            echo "::notice::$BRANCH is at $current_sha, not $RELEASE_SHA; only the tip is released, by a previous Release or the tip's own CI run."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git switch --force-create "$BRANCH" "$RELEASE_SHA"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+          echo "current=true" >> "$GITHUB_OUTPUT"
+      - if: steps.tip.outputs.current == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24.11.0
           cache: npm
-      - run: npm ci
+      - if: steps.tip.outputs.current == 'true'
+        run: npm ci
       - name: Create GitHub release
+        if: steps.tip.outputs.current == 'true'
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           test "$(git branch --show-current)" = "$RELEASE_BRANCH"
           env -u GITHUB_ACTIONS npm exec semantic-release
+      - name: Record the release-branch head
+        if: steps.tip.outputs.current == 'true'
+        id: release-commit
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # The version commit carries [skip ci], so push CI never tests it and the
+  # deploy that follows CI never sees it. Request CI for it explicitly: the
+  # dispatched run is not a push, so Release skips it, and Deploy production
+  # deploys the tagged tree once that run passes. Only this job holds Actions
+  # write access, and it runs no repository code.
+  request-release-ci:
+    needs: release
+    if: >-
+      github.event.workflow_run.head_branch == 'main' &&
+      needs.release.outputs.release_commit != '' &&
+      needs.release.outputs.release_commit != github.event.workflow_run.head_sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # RELEASE_TOKEN (a classic PAT with repo scope) dispatches like the owner
+      # does by hand; the workflow token is the fallback when it is absent or
+      # refused. `--ref main` tests the main head, so the head is checked first;
+      # a merge landing in the seconds between check and dispatch is tested
+      # instead, and the next push to main releases it.
+      - name: Request CI for the release commit
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_COMMIT: ${{ needs.release.outputs.release_commit }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          WORKFLOW_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ || "$RELEASE_COMMIT" == "$RELEASE_SHA" ]]; then
+            echo "No version commit was created for $RELEASE_SHA; its own CI run decides its deploy."
+            exit 0
+          fi
+          main_sha="$(GH_TOKEN="$WORKFLOW_TOKEN" gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$main_sha" != "$RELEASE_COMMIT" ]]; then
+            echo "::notice::main moved to $main_sha after release commit $RELEASE_COMMIT; that push's CI deploys both."
+            exit 0
+          fi
+          for token in "$RELEASE_TOKEN" "$WORKFLOW_TOKEN"; do
+            [[ -n "$token" ]] || continue
+            if GH_TOKEN="$token" gh workflow run ci.yml --ref main --repo "$GITHUB_REPOSITORY"; then
+              echo "Requested CI for release commit $RELEASE_COMMIT."
+              exit 0
+            fi
+          done
+          echo "::error::Could not request CI for release commit $RELEASE_COMMIT. Run: gh workflow run ci.yml --ref main"
+          exit 1

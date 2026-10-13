@@ -1,6 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { HarnessError } from '@cloud-harness/contracts';
 
 export function constantTimeEqual(actual: string, expected: string): boolean {
   const left = Buffer.from(actual);
@@ -18,8 +17,4 @@ export function serviceAuth(expected: string) {
     }
     next();
   };
-}
-
-export function assertOwner(actual: string, expected: string): void {
-  if (actual !== expected) throw new HarnessError('FORBIDDEN', 'workspace does not belong to this owner', 403);
 }

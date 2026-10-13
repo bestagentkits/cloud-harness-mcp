@@ -2,11 +2,15 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   AgentProxyOperationSchema,
   HarnessError,
+  composeAgentBootstrapPrompt,
   TOOL_SCHEMA_BY_NAME,
   type AgentBudget,
   type AgentModelProfile,
+  type AgentModelProfileMetadata,
   type AgentProxyOperation,
   type AgentStatus,
+  type GuidanceProfile,
+  type RepositoryGuidanceSnapshot,
   type RunnerAgentsConfig,
   type RunnerOperation,
   type RunnerResponse
@@ -17,6 +21,7 @@ import {
   type AgentRecord,
   type AgentTombstone
 } from './agent-state-repository.js';
+import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import { DockerAgentGatewayControl, type AgentGatewayControl } from './agent-gateway-control.js';
 import {
   AgentProtocolChannel,
@@ -37,6 +42,8 @@ const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
   agent_list: true
 };
 const terminalStatuses = new Set<AgentStatus>(AGENT_TERMINAL_STATUSES);
+/** Mirrors the agent runtime's `start` record prompt bound (`apps/agent-runtime/src/protocol-schemas.ts`). */
+const AGENT_START_PROMPT_MAX_BYTES = 256 * 1024;
 type TerminalAgentStatus = 'CANCELLED' | 'TIMED_OUT' | 'LIMIT_EXCEEDED' | 'INTERRUPTED' | 'FAILED' | 'SUCCEEDED';
 
 export type AgentToolExecutor = (input: {
@@ -65,36 +72,77 @@ type RuntimeContext = {
   pendingMessageBytes: number;
 };
 
+/**
+ * Resolves the workspace's repository-guidance snapshot for an agent's first message. It must
+ * fail rather than return stale content when the workspace fence no longer holds.
+ */
+export type AgentRepositoryGuidance = (input: {
+  ownerId: string;
+  workspaceId: string;
+  workspaceGeneration: number;
+  signal?: AbortSignal;
+}) => Promise<{ snapshot: RepositoryGuidanceSnapshot; reused: boolean }>;
+export type AgentRepositoryContext = GuidanceProfile | 'none';
+
 export type AgentManagerDependencies = {
-  repository?: AgentStateRepository;
-  gateway?: AgentGatewayControl;
-  launcher?: AgentLauncher;
+  repository?: AgentStateRepository | undefined;
+  gateway?: AgentGatewayControl | undefined;
+  launcher?: AgentLauncher | undefined;
   toolExecutor: AgentToolExecutor;
-  now?: () => number;
+  repositoryGuidance?: AgentRepositoryGuidance | undefined;
+  modelProfiles?: ModelProfileStateRepository | undefined;
+  now?: (() => number) | undefined;
 };
 
 export class AgentManager {
   private readonly repository: AgentStateRepository;
   private readonly gateway: AgentGatewayControl;
   private readonly launcher: AgentLauncher;
+  private readonly modelProfiles?: ModelProfileStateRepository | undefined;
   private readonly runtimes = new Map<string, RuntimeContext>();
   private readonly launches = new Map<string, Promise<void>>();
   private readonly cleanupTargets = new Map<string, TerminalAgentStatus>();
+  private lastSyncedBootId?: string | undefined;
+  private lastSyncedDigest?: string | undefined;
   private readonly now: () => number;
   private accepting = true;
+  private epoch = 0;
   private reaper?: NodeJS.Timeout;
-
   constructor(
     private readonly config: RunnerAgentsConfig,
     private readonly store: StateStore,
     private readonly dependencies: AgentManagerDependencies
   ) {
-    this.repository = dependencies.repository ?? new AgentStateRepository(store.database, config.limits);
+    this.modelProfiles = dependencies.modelProfiles;
+    this.repository = dependencies.repository ?? new AgentStateRepository(store.database, config.limits, store.instanceId());
     this.gateway = dependencies.gateway ?? new DockerAgentGatewayControl();
     this.launcher = dependencies.launcher ?? new DockerAgentLauncher(this.gateway, store.instanceId());
     this.now = dependencies.now ?? Date.now;
+    this.epoch = this.repository.currentEpoch(store.instanceId());
+    if (this.epoch === 0) {
+      this.epoch = this.repository.bumpEpoch(store.instanceId(), this.now());
+    }
   }
 
+
+  async ensureGatewaySynced(): Promise<void> {
+    if (!this.modelProfiles || !this.gateway.applySnapshot || !this.gateway.queryDigest) return;
+    try {
+      const snapshot = this.modelProfiles.getExportSnapshot();
+      const digestResult = await this.gateway.queryDigest();
+      if (
+        digestResult.gatewayBootId !== this.lastSyncedBootId
+        || (Object.keys(snapshot.profiles).length > 0 && digestResult.activeProfileCount === 0)
+        || (this.lastSyncedDigest !== undefined && digestResult.snapshotDigest !== this.lastSyncedDigest)
+      ) {
+        const ack = await this.gateway.applySnapshot(snapshot);
+        this.lastSyncedBootId = ack.gatewayBootId;
+        this.lastSyncedDigest = ack.snapshotDigest;
+      }
+    } catch (err) {
+      throw new HarnessError('UNAVAILABLE', `model gateway reconciliation failed: ${err instanceof Error ? err.message : 'unreachable'}`, 503, true);
+    }
+  }
   static isPublicOperation(operation: RunnerOperation): boolean {
     return AGENT_OPERATIONS[operation] === true;
   }
@@ -104,9 +152,27 @@ export class AgentManager {
 
   async start(): Promise<void> {
     this.accepting = false;
+    this.epoch = this.repository.bumpEpoch(this.store.instanceId(), this.now());
     await this.launcher.reconcile?.();
+    if (this.modelProfiles && this.gateway.applySnapshot) {
+      try {
+        const snapshot = this.modelProfiles.getExportSnapshot();
+        const ack = await this.gateway.applySnapshot(snapshot);
+        this.lastSyncedBootId = ack.gatewayBootId;
+        this.lastSyncedDigest = ack.snapshotDigest;
+      } catch {
+        // Gateway will be reconciled upon spawn or status check
+      }
+    }
     for (const workspace of this.store.active()) {
       if (workspace.status !== 'ACTIVE') continue;
+      // Agent admission is defined only for network-disabled workspaces, matching the eligibility
+      // guard in reserveSpawn and dispatch. An ACTIVE dependency-access workspace is a normal,
+      // lease-bounded workspace that simply cannot host agents (its profile is fixed at creation,
+      // and the workspace service has already reconciled its executor), so it is skipped rather
+      // than closed. Admitting it would throw CONFLICT, abort runner startup, and take the whole
+      // compose stack down.
+      if (workspace.networkProfile !== 'network-none') continue;
       const records = this.repository.prepareWorkspaceStartupRepair(workspace.ownerId, workspace.id, workspace.generation, this.now());
       records.sort((left, right) => agentDepth(right, records) - agentDepth(left, records));
       for (const record of records) await this.reconcileInterrupted(record);
@@ -121,13 +187,14 @@ export class AgentManager {
   async stop(): Promise<void> {
     this.fence();
     clearInterval(this.reaper);
-    await Promise.allSettled(this.store.active().map(async (workspace) => {
-      const generation = workspace.status === 'REAPING'
-        ? Math.max(1, workspace.generation - 1)
-        : workspace.generation;
-      this.repository.closeWorkspaceAdmission(workspace.ownerId, workspace.id, generation, this.now());
-      await this.stopWorkspace(workspace.ownerId, workspace.id, generation, 'runner stopping');
-    }));
+    // Promise.allSettled keeps teardown non-throwing: one workspace failing to stop must not abort
+    // the rest. The callback returns the promise explicitly so that intent is unambiguous.
+    await Promise.allSettled(this.store.active().map((workspace) => this.stopWorkspaceForShutdown(workspace)));
+  }
+
+  private async stopWorkspaceForShutdown(workspace: WorkspaceRecord): Promise<void> {
+    this.repository.closeWorkspaceAdmission(workspace.ownerId, workspace.id, this.now());
+    await this.stopWorkspace(workspace.ownerId, workspace.id, 'runner stopping');
   }
 
   async dispatch(
@@ -151,14 +218,14 @@ export class AgentManager {
       case 'agent_status': return this.status(ownerId, workspace.id, validated);
       case 'agent_logs': return this.logs(ownerId, workspace.id, validated);
       case 'agent_message': return await this.message(ownerId, workspace.id, validated);
-      case 'agent_cancel': return await this.cancel(ownerId, workspace.id, validated.agentId as string, 'cancelled by owner');
+      case 'agent_cancel': return await this.cancel(ownerId, workspace.id, validated.agentId as string, (validated.reason as string | undefined) ?? 'cancelled by owner');
       case 'agent_list': return this.list(ownerId, workspace.id, validated);
       default: throw new HarnessError('INVALID_INPUT', 'unsupported agent operation');
     }
   }
 
-  async stopWorkspace(ownerId: string, workspaceId: string, generation: number, reason: string): Promise<void> {
-    this.repository.closeWorkspaceAdmission(ownerId, workspaceId, generation, this.now());
+  async stopWorkspace(ownerId: string, workspaceId: string, reason: string, generation?: number): Promise<void> {
+    this.repository.closeWorkspaceAdmission(ownerId, workspaceId, this.now(), generation);
     const active = this.repository.listActiveAgents(ownerId, workspaceId, generation);
     const seen = new Set<string>();
     const ordered: AgentRecord[] = [];
@@ -178,14 +245,19 @@ export class AgentManager {
   }
 
   private async spawn(ownerId: string, workspace: WorkspaceRecord, input: Record<string, unknown>): Promise<RunnerResponse> {
-    if (!this.accepting) throw new HarnessError('UNAVAILABLE', 'agent mutation admission is closed', 503, true);
+    if (!this.accepting || this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
+      throw new HarnessError('UNAVAILABLE', 'agent mutation admission is closed', 503, true);
+    }
     if (workspace.ownerId !== ownerId || workspace.status !== 'ACTIVE' || workspace.expiresAt <= this.now()) {
       throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
     }
-    if (workspace.networkMode !== 'none') {
-      throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace', 409, false);
+    if (workspace.networkProfile !== 'network-none') {
+      throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace; open a separate workspace with networkProfile "network-none"', 409, false);
     }
-    const profile = this.profile(input.profileId as string);
+    const profile = this.profile(input.profileId as string, ownerId);
+    if (this.modelProfiles && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id))) {
+      await this.ensureGatewaySynced();
+    }
     const tools = AgentProxyOperationSchema.array().parse(input.proxyOperations);
     if (tools.some((operation) => !profile.maxProxyOperations.includes(operation))) {
       throw new HarnessError('INVALID_INPUT', 'requested proxy operation exceeds the selected profile');
@@ -219,29 +291,87 @@ export class AgentManager {
       ...(input.parentAgentId ? { parentAgentId: input.parentAgentId as string } : {}),
       idempotencyKey: input.idempotencyKey as string,
       payloadHash,
-      promptHash: createHash('sha256').update(prompt).digest('hex'),
+      promptHash: digest(prompt),
       profileId: profile.id,
       proxyOperations: tools,
       budget,
       containerName: `ch-agent-${suffix}`,
       networkName: `ch-agent-net-${suffix}`,
       gatewayLeaseId,
+      runtimeEpoch: this.epoch,
       now,
       expiresAt: Math.min(workspace.expiresAt, now + budget.ttlSeconds * 1_000)
     });
     if (reservation.replayed) {
       return success('Agent spawn replayed', spawnData(reservation.record, true));
     }
-    const launch = this.launch(reservation.record, prompt, profile)
+    const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
+    const launch = this.launch(reservation.record, prompt, profile, repositoryContext)
       .finally(() => this.launches.delete(reservation.record.id));
     this.launches.set(reservation.record.id, launch);
     void launch.catch(() => undefined);
     return success('Agent spawn accepted', spawnData(reservation.record, false));
   }
 
-  private async launch(record: AgentRecord, prompt: string, profile: AgentModelProfile): Promise<void> {
+  /**
+   * Places the workspace's applicable repository guidance before the caller's task. Guidance gets at
+   * most a quarter of the agent's input-token budget (about four bytes per token), capped by the
+   * composer's absolute bound. What was injected, skipped, or truncated is recorded as a bounded
+   * `repository_context` log event that carries paths and digests but never document content.
+   */
+  private async bootstrapPrompt(record: AgentRecord, prompt: string, repositoryContext: AgentRepositoryContext): Promise<string> {
+    if (repositoryContext === 'none' || !this.dependencies.repositoryGuidance) return prompt;
+    let resolved: Awaited<ReturnType<AgentRepositoryGuidance>>;
+    try {
+      resolved = await this.dependencies.repositoryGuidance({
+        ownerId: record.ownerId,
+        workspaceId: record.workspaceId,
+        workspaceGeneration: record.workspaceGeneration
+      });
+    } catch (error) {
+      const reason = error instanceof HarnessError ? error.message : 'repository guidance could not be scanned';
+      throw new HarnessError('UNAVAILABLE', `agent bootstrap failed: ${reason}; retry, or spawn with repositoryContext "none"`, 503, true);
+    }
+    const promptBytes = Buffer.byteLength(prompt, 'utf8');
+    const composed = composeAgentBootstrapPrompt({
+      snapshot: resolved.snapshot,
+      profile: repositoryContext,
+      prompt,
+      // The gateway reserves one input token per request-body byte and every model turn re-sends the
+      // first message, so guidance and task together take at most a quarter of the input budget,
+      // and never pass the runtime's start-record prompt bound once the block framing is added.
+      budgetBytes: Math.max(0, Math.min(
+        Math.floor(record.budget.maxInputTokens / 4) - promptBytes,
+        AGENT_START_PROMPT_MAX_BYTES - promptBytes - 1_024
+      ))
+    });
+    const event = { ...composed.report, snapshotReused: resolved.reused };
+    // The report is charged to the caller's output bytes like any log event, so it is kept to a
+    // quarter of that budget and is dropped rather than ending the agent when it cannot fit.
+    const eventLimit = Math.min(this.config.limits.maxLogEventBytes, Math.floor(record.budget.maxOutputBytes / 4));
+    let serialized = JSON.stringify(event);
+    if (Buffer.byteLength(serialized, 'utf8') > eventLimit) {
+      serialized = JSON.stringify({ ...event, injected: event.injected.length, skipped: event.skipped.length, listsOmitted: true });
+    }
+    if (Buffer.byteLength(serialized, 'utf8') <= eventLimit) {
+      try {
+        this.repository.appendLog(record.ownerId, record.workspaceId, record.id, record.generation, 'repository_context', serialized, this.now());
+      } catch (error) {
+        if (!(error instanceof HarnessError && error.code === 'LIMIT_EXCEEDED')) throw error;
+      }
+    }
+    return composed.prompt;
+  }
+
+  private async launch(record: AgentRecord, prompt: string, profile: AgentModelProfile, repositoryContext: AgentRepositoryContext): Promise<void> {
     const spec = this.launchSpec(record);
     try {
+      if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
+        throw new HarnessError('CONFLICT', 'agent launch lost its runtime epoch fence', 409, true);
+      }
+      // Guidance is composed before any lease or container exists, so an agent never starts its
+      // first turn without the repository's applicable guidance, and a failed scan costs nothing.
+      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
       const grant = await this.gateway.issue({
         leaseId: record.gatewayLeaseId,
         agentId: record.id,
@@ -275,15 +405,21 @@ export class AgentManager {
       contextRef.current = context;
       this.runtimes.set(record.id, context);
       const running = this.repository.transitionStatus({
-        ownerId: record.ownerId, workspaceId: record.workspaceId, agentId: record.id, generation: record.generation,
-        expectedStatuses: ['SPAWNING'], status: 'RUNNING', now: this.now()
+        ownerId: record.ownerId,
+        workspaceId: record.workspaceId,
+        agentId: record.id,
+        generation: record.generation,
+        runtimeEpoch: this.epoch,
+        expectedStatuses: ['SPAWNING'],
+        status: 'RUNNING',
+        now: this.now()
       });
       if (!running) throw new HarnessError('CONFLICT', 'agent launch lost its lifecycle fence', 409, true);
       context.record = running;
       const deadlineMs = Math.max(1_000, running.expiresAt - this.now());
       context.deadline = setTimeout(() => { void this.cancelOne(running, 'agent TTL expired', 'TIMED_OUT'); }, deadlineMs);
       context.deadline.unref();
-      await channel.send(this.startRecord(running, prompt, profile, lease));
+      await channel.send(this.startRecord(running, initialPrompt, profile, lease));
       void runtime.exited.then(({ code }) => {
         if (!context.terminalSeen) void this.interrupt(running, `agent runtime exited before terminal record (${code ?? 'signal'})`);
       }).catch((error: unknown) => { void this.interrupt(running, error instanceof Error ? error.message : 'agent runtime failed'); });
@@ -293,6 +429,7 @@ export class AgentManager {
       if (!current || current.status === 'CANCELLING' || terminalStatuses.has(current.status)) return;
       const cancelling = this.repository.transitionStatus({
         ownerId: current.ownerId, workspaceId: current.workspaceId, agentId: current.id, generation: current.generation,
+        runtimeEpoch: this.epoch,
         expectedStatuses: [current.status], status: 'CANCELLING', now: this.now(), cleanupReason: message.slice(0, 2_000)
       });
       if (!cancelling) return;
@@ -303,7 +440,6 @@ export class AgentManager {
       await cleanup;
     }
   }
-
   private status(ownerId: string, workspaceId: string, input: Record<string, unknown>): RunnerResponse {
     const record = this.lookup(ownerId, workspaceId, input);
     return success('Agent status', 'profileId' in record ? this.publicStatus(record) : this.compactedStatus(record));
@@ -326,8 +462,12 @@ export class AgentManager {
     if (Buffer.byteLength(text, 'utf8') > this.config.limits.maxMessageBytes) {
       throw new HarnessError('LIMIT_EXCEEDED', 'agent message exceeds the configured byte limit', 413, false);
     }
+    if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
+      throw new HarnessError('CONFLICT', 'agent message lost its runtime epoch fence', 409, true);
+    }
     const reserved = this.repository.reserveMessage({
       ownerId, workspaceId, agentId: record.id, generation: record.generation,
+      runtimeEpoch: this.epoch,
       idempotencyKey: input.idempotencyKey as string,
       payloadHash: digest({ mode: input.mode, message: text }),
       mode: input.mode as 'steer' | 'followUp', now: this.now()
@@ -439,13 +579,43 @@ export class AgentManager {
       await context.channel.send(toolError(output.requestId, 'duplicate proxy request ID'));
       return;
     }
-    const controller = new AbortController();
     const startedAt = this.now();
+    const raw = typeof output.input === 'object' && output.input !== null && !Array.isArray(output.input)
+      ? output.input as Record<string, unknown>
+      : {};
+    const payloadHash = createHash('sha256').update(JSON.stringify({ operation: output.operation, input: raw })).digest('hex');
+    const effectReservation = this.repository.reserveEffect({
+      ownerId: record.ownerId,
+      workspaceId: record.workspaceId,
+      agentId: record.id,
+      agentGeneration: record.generation,
+      runnerEpoch: this.epoch,
+      requestId: output.requestId,
+      kind: output.operation,
+      payloadHash,
+      now: startedAt
+    });
+    if (effectReservation.replayed && effectReservation.effect.state !== 'INTENT') {
+      await context.channel.send({
+        type: 'tool_result', requestId: output.requestId, final: true, isError: effectReservation.effect.state === 'REJECTED',
+        content: [{ type: 'text', text: JSON.stringify({ ok: effectReservation.effect.state === 'APPLIED', message: 'replayed effect' }) }]
+      });
+      return;
+    }
+    this.repository.transitionEffect({
+      agentId: record.id,
+      agentGeneration: record.generation,
+      requestId: output.requestId,
+      kind: output.operation,
+      expectedState: 'INTENT',
+      state: 'DISPATCHED',
+      runnerEpoch: this.epoch,
+      now: startedAt
+    });
+    const controller = new AbortController();
     const completion = (async () => {
+      let isOk = false;
       try {
-        const raw = typeof output.input === 'object' && output.input !== null && !Array.isArray(output.input)
-          ? output.input as Record<string, unknown>
-          : {};
         const toolInput = TOOL_SCHEMA_BY_NAME[output.operation].parse({ ...raw, workspaceId: record.workspaceId }) as Record<string, unknown>;
         const result = await this.dependencies.toolExecutor({
           ownerId: record.ownerId, workspaceId: record.workspaceId, workspaceGeneration: record.workspaceGeneration,
@@ -453,6 +623,7 @@ export class AgentManager {
           operation: output.operation, toolInput, signal: controller.signal
         });
         this.requireRunnable(record);
+        isOk = result.ok;
         const serialized = JSON.stringify(result);
         const text = Buffer.byteLength(serialized, 'utf8') <= MAX_TOOL_RESULT_TEXT_BYTES ? serialized : JSON.stringify({
           ok: false, message: 'tool result exceeded the agent protocol bound',
@@ -463,12 +634,25 @@ export class AgentManager {
           content: [{ type: 'text', text }]
         });
       } catch (error) {
-        await context.channel.send(toolError(output.requestId, safeError(error))).catch(() => undefined);
+        if (!context.channel.isClosed) {
+          const message = error instanceof Error ? error.message : 'proxy tool execution failed';
+          await context.channel.send(toolError(output.requestId, message));
+        }
       } finally {
+        context.proxy.delete(output.requestId);
+        this.repository.transitionEffect({
+          agentId: record.id,
+          agentGeneration: record.generation,
+          requestId: output.requestId,
+          kind: output.operation,
+          expectedState: 'DISPATCHED',
+          state: isOk ? 'APPLIED' : 'REJECTED',
+          runnerEpoch: this.epoch,
+          now: this.now()
+        });
         this.repository.addUsage(record.ownerId, record.workspaceId, record.id, record.generation, {
           toolTimeMs: Math.max(0, this.now() - startedAt)
         });
-        context.proxy.delete(output.requestId);
       }
     })();
     context.proxy.set(output.requestId, { controller, completion });
@@ -513,21 +697,21 @@ export class AgentManager {
     if (runtime) runtime.cleanupTerminal = terminal;
     this.cleanupTargets.set(record.id, terminal);
     try {
-      if (runtime) {
-        await runtime.messageChain;
-        if (!runtime.terminalSeen) {
-          await runtime.channel.send({
-            type: 'cancel', requestId: randomUUID(), reason: reason.slice(0, 1_024)
-          }).catch(() => undefined);
-        }
-        for (const pending of runtime.proxy.values()) pending.controller.abort(reason);
-        await Promise.allSettled([...runtime.proxy.values()].map((pending) => pending.completion));
-      }
       const drainErrors: unknown[] = [];
       try {
         await this.gateway.revokeAndDrain(record.gatewayLeaseId);
       } catch (error) {
         drainErrors.push(error);
+      }
+      if (runtime) {
+        for (const pending of runtime.proxy.values()) pending.controller.abort(reason);
+        await Promise.allSettled([...runtime.proxy.values()].map((pending) => pending.completion));
+        if (!runtime.terminalSeen) {
+          await runtime.channel.send({
+            type: 'cancel', requestId: randomUUID(), reason: reason.slice(0, 1_024)
+          }).catch(() => undefined);
+        }
+        await runtime.messageChain;
       }
       try {
         await this.launcher.cleanup(this.launchSpec(record), this.config.limits.cancellationGraceMs);
@@ -673,8 +857,9 @@ export class AgentManager {
     const record = this.repository.findAgent(expected.ownerId, expected.workspaceId, expected.id);
     const now = this.now();
     if (!workspace || workspace.ownerId !== expected.ownerId || workspace.generation !== expected.workspaceGeneration
-      || workspace.status !== 'ACTIVE' || workspace.networkMode !== 'none' || workspace.expiresAt <= now
-      || !record || record.generation !== expected.generation || record.status !== 'RUNNING' || record.expiresAt <= now) {
+      || workspace.status !== 'ACTIVE' || workspace.networkProfile !== 'network-none' || workspace.expiresAt <= now
+      || !record || record.generation !== expected.generation || record.runtimeEpoch !== this.epoch
+      || record.status !== 'RUNNING' || record.expiresAt <= now) {
       throw new HarnessError('EXPIRED', 'agent tool execution lost its lifecycle fence', 410, false);
     }
     return record;
@@ -697,10 +882,30 @@ export class AgentManager {
     return record;
   }
 
-  private profile(id: string): AgentModelProfile {
-    const profile = this.config.profiles.find((candidate) => candidate.id === id);
-    if (!profile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');
-    return profile;
+  private profile(id: string, ownerId?: string): AgentModelProfile {
+    if (ownerId && this.modelProfiles) {
+      const activeProfiles = this.modelProfiles.listProfiles(ownerId);
+      const matched = activeProfiles.find((p: AgentModelProfileMetadata) => (p.id === id || p.activeRevisionId === id) && p.status === 'ACTIVE');
+      if (matched && matched.activeRevision) {
+        const rev = matched.activeRevision;
+        return {
+          id: rev.id,
+          displayName: matched.displayName,
+          provider: rev.model,
+          model: rev.model,
+          apiMode: rev.apiMode,
+          inputMicrosPerMillionTokens: rev.pricing.inputMicrosPerMillionTokens,
+          outputMicrosPerMillionTokens: rev.pricing.outputMicrosPerMillionTokens,
+          maxInputTokens: rev.limits.maxInputTokens,
+          maxOutputTokens: rev.limits.maxOutputTokens,
+          maxCostMicros: rev.limits.maxCostMicros,
+          maxProxyOperations: rev.maxProxyOperations
+        };
+      }
+    }
+    const staticProfile = this.config.profiles.find((candidate) => candidate.id === id);
+    if (!staticProfile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');
+    return staticProfile;
   }
 
   private publicStatus(record: AgentRecord) {
@@ -749,7 +954,7 @@ export class AgentManager {
       type: 'start', requestId: randomUUID(), agentId: record.id, prompt, tools: record.proxyOperations,
       gateway: { profile: profile.id, lease },
       model: {
-        id: profile.model, name: profile.displayName, api: 'openai-completions', reasoning: false,
+        id: profile.model, name: profile.displayName, api: profile.apiMode === 'responses' ? 'openai-responses' : 'openai-completions', reasoning: false,
         contextWindow, maxTokens: Math.min(record.budget.maxOutputTokens, profile.maxOutputTokens, contextWindow),
         cost: {
           input: profile.inputMicrosPerMillionTokens / 1_000_000,

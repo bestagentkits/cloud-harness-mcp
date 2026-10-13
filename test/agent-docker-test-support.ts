@@ -1,5 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const composeFile = fileURLToPath(new URL('../compose.yaml', import.meta.url));
@@ -39,6 +41,11 @@ export function requireDockerPrerequisites(issue: string | undefined): void {
 }
 
 export function startGatewayTestStack(prefix: string): GatewayTestStack {
+  const fixtureKey = resolve(process.cwd(), '.cloud-harness-test-fixtures', 'model-gateway', 'provider-api-key');
+  if (!existsSync(fixtureKey)) {
+    const generatorScript = resolve(process.cwd(), 'scripts', 'generate-model-gateway-test-fixtures.mjs');
+    execFileSync('node', [generatorScript], { stdio: 'inherit' });
+  }
   const project = `${prefix}-${randomBytes(6).toString('hex')}`;
   let gatewayContainer = '';
   let providerContainer = '';
@@ -92,7 +99,11 @@ function compose(project: string, args: string[], ignoreFailure = false): string
     return execFileSync('docker', ['compose', '--file', composeFile, '--project-name', project, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', ignoreFailure ? 'ignore' : 'pipe'],
-      timeout: 60_000
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        CLOUD_HARNESS_ENV_FILE: process.env.CLOUD_HARNESS_ENV_FILE ?? resolve(process.cwd(), '.env.example')
+      }
     });
   } catch (error) {
     if (ignoreFailure) return '';

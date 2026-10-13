@@ -26,48 +26,55 @@ The systemd and Compose owners are
 
 The production defaults place:
 
-- SQLite workspace metadata at
+- SQLite workspace, principal, dashboard, GitHub binding, artifact metadata,
+  and audit state at
   `/var/lib/cloud-harness/state/cloud-harness.db`;
 - active workspace clones below `/var/lib/cloud-harness/jobs`;
-- release-time database copies below `/var/lib/cloud-harness/backups`;
-- runtime secrets in `/etc/cloud-harness-mcp/runtime.env`.
+- retained artifact payloads below `/var/lib/cloud-harness/artifacts`;
+- release-time recovery sets below `/var/lib/cloud-harness/backups`; and
+- runtime configuration, GitHub App key, and secret keyring below
+  `/etc/cloud-harness-mcp`.
 
-The database persists workspace metadata across runner restarts.
-Shell/session/task handles, dependency graphs, and their output buffers do not.
-Startup restarts surviving executors, which preserves repository files but
-stops any process whose handle was lost.
+The database persists workspace and task metadata across runner restarts.
+Interactive shell, session, and Dashboard Terminal streams remain in-memory, while background tasks
+and dependency graphs are durable in SQLite. Startup reconciles in-flight tasks
+from prior process boots to `FAILED` with `error_code: "RUNNER_RESTARTED"` while
+preserving completed task metadata and file logs.
 Workspace clones are operational, TTL-bound data and are deleted on
 close/expiry; they are not a durable source control remote or a backup.
 The same state database also owns the stable random runner-instance identity
 used to scope Docker reconciliation.
 
+Metadata schema v2 adds principal-bound API-key hashes and safe lifecycle
+metadata. A database backup therefore does not recover plaintext keys; clients
+must keep their one-time value in a private credential store.
+
 ## Backup and restore
 
 [`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh)
-stops the service before copying an existing SQLite database and restores that
-copy automatically if deployment fails. It does not back up active workspace
-files and does not prune old database copies.
+stops the service before creating a timestamped recovery set containing the
+SQLite database, artifact payload archive, and a root-owned copy of the runtime
+configuration/key directory. On deployment failure it restores the prior
+database and artifact payloads and reuses the unchanged configuration. It does
+not back up active workspace files or prune old recovery sets.
 
-For a manual metadata backup:
+Treat the database, artifact payloads, runtime configuration, GitHub App key,
+and complete secret decrypt keyring as one coherent recovery unit. Stop the
+service before copying it so no dashboard, MCP, reaper, WAL, or artifact write
+can race the snapshot. List and close active workspaces first, or explicitly
+accept that their TTL-bound checkouts and in-memory operations are excluded.
+Use the directory shape created by the deploy script rather than inventing a
+database-only backup.
 
-1. List and close active workspaces through MCP, or explicitly accept that
-   in-flight executor state will not be captured.
-2. Quiesce the database, copy it, and restart:
-
-```bash
-sudo systemctl stop cloud-harness-mcp.service
-sudo cp --reflink=auto \
-  /var/lib/cloud-harness/state/cloud-harness.db \
-  "/var/lib/cloud-harness/backups/manual-$(date -u +%Y%m%dT%H%M%SZ).db"
-sudo systemctl start cloud-harness-mcp.service
-curl --fail http://127.0.0.1:3100/readyz
-```
-
-Do not copy only the main database while the runner is writing its WAL. To
-restore, stop the service, preserve the current database, copy one verified
-backup into the configured `STATE_DB`, start the same or a schema-compatible
-release, and check readiness. The state store intentionally refuses an
-unsupported schema version.
+To restore, keep the service stopped, preserve the current recovery unit, and
+select one verified snapshot. Restore its database and matching artifact
+archive together. If the configuration or keyring changed since that snapshot,
+restore the matching root-owned config copy before starting the same or a
+schema-compatible release. Never combine an old database with newer artifacts
+or a keyring that cannot decrypt its recorded versions. Check readiness,
+dashboard secret readiness, artifact retrieval, and sanitized audit continuity
+before reopening writes. The state store intentionally refuses an unsupported
+schema version.
 
 If workspace content must be retained, commit changes and use `git_push` only
 when the configured GitHub App has repository write access; verify the remote
@@ -75,6 +82,28 @@ result before closing. Otherwise export the required files before close. The
 executor itself never receives a repository credential. Host-side archival
 should be exceptional, performed only after stopping the exact verified
 executor, and scoped to its opaque job directory.
+
+## Secret key rotation
+
+The keyring is versioned so encryption can move to a new active key without
+losing decrypt access to older secret versions. Back up the coherent recovery
+unit first. Add a new unique key version, make it active, retain every old key,
+and restart with the complete runner-only keyring. Quiesce secret mutations,
+keep the service or all write paths quiesced for the operation, then invoke the
+one-off runner re-encryption entry point owned by
+[`apps/runner/src/rekey-secrets.ts`](../apps/runner/src/rekey-secrets.ts) through
+the `secrets:rekey` package script or its compiled runner command.
+
+That command re-encrypts secret versions, workspace secret snapshots, and
+downstream MCP OAuth grants and pending flows. A grant is rewritten only while
+its generation is unchanged, so a concurrent token refresh is never overwritten.
+
+The command is interruptible and safe to resume; verify that it completes,
+take a new coherent backup, and keep old decrypt keys through the release and
+rollback window. Remove an old key only after source, database inspection, and
+a restore rehearsal prove no retained ciphertext or rollback snapshot needs
+that version. Do not run re-encryption from the API or expose key material in
+command output.
 
 ## Cleanup
 
@@ -104,10 +133,160 @@ df -h /var/lib/cloud-harness
 sudo du -sh /var/lib/cloud-harness/jobs/*
 ```
 
+## Dashboard terminals
+
+Dashboard Terminal PTYs are runner memory, not state. A runner restart or
+redeploy ends every open terminal; operators see them as lost and open a new
+session, and there is nothing to back up or restore. The executor restart that
+follows reconciliation ends any process those shells left behind. Closing a
+terminal from `/dashboard/terminals` or the workspace tab ends its whole shell
+session without touching the workspace.
+
+Terminals need the runner to reach Docker over a unix socket, which the
+production Compose topology provides. The per-workspace limit, idle timeout,
+lifetime, and retained output are runner settings documented in
+[configuration](configuration.md#dashboard-terminal). Their lifecycle appears
+in the audit log only as `terminal.opened` and `terminal.closed`; input and
+output are never retained there, so the audit log cannot reconstruct a session.
+
+## Managed API-key lifecycle
+
+Create, list, and revoke keys through the Access-authenticated dashboard. A key
+cannot be recovered after its creation response. For planned replacement,
+create a new key, update and canary the client against
+`https://api.harness.zuey.me/mcp`, then revoke the old key and verify the next
+request is rejected. For suspected disclosure, revoke first and inspect only
+redacted audit/log metadata. Do not copy a key into shell history, URLs,
+tickets, or shared logs.
+
+### API-key schema rollback
+
+Downgrading from metadata schema v2 to a binary that supports only v1 destroys
+all managed API-key records by design. Quiesce dashboard and MCP writes, stop
+the service, and take a coherent recovery backup before running the runner's
+compiled migration command from the exact release checkout:
+
+```bash
+npm run metadata:down:v1 -w @cloud-harness/runner -- /path/to/db
+```
+
+Keep the database offline for the command. It requires version 2, drops only
+the API-key table, and resets the metadata version to 1. Then deploy the prior
+binary, keep `API_KEY_AUTH_ENABLED=false`, and canary readiness, OAuth,
+dashboard, unrelated metadata, and the absence of the hidden route. Restore
+the backup instead of retrying manually if the downgrade does not complete.
+
+## MCP gateway schema rollback
+
+A pre-v6 runner cannot start on a v6 ledger. Downgrading from metadata schema v6
+to a pre-v6 runner destroys the MCP gateway registry by design. Quiesce dashboard
+and MCP writes, stop the service, and take a coherent recovery backup before
+running the runner's bounded downgrade from the exact release checkout:
+
+```bash
+npm run metadata:down:v5 -w @cloud-harness/runner -- /path/to/db
+```
+
+Keep the database offline for the command. It requires version 6, drops only the
+four `mcp_gateway_*` tables (servers, cached tools, tool permissions, and
+traces), and resets the metadata version to 5. Unlike `metadata:down:v1`, it does
+not chain further down, so `api_keys`, `global_secret_references`,
+`global_secret_versions`, `secret_references.description`, and the
+`secret_references.purpose` and `global_secret_references.purpose` columns are
+preserved.
+Then deploy the prior runner and canary readiness, the dashboard, unrelated
+metadata, and the absence of the `/mcp-gateway` route. Restore-from-backup
+remains the fallback instead of retrying a downgrade that does not complete.
+
+## Downstream MCP OAuth schema rollback
+
+Metadata schema v7 adds the encrypted downstream OAuth grant and pending-flow
+tables and the per-server OAuth configuration column. A v6 runner cannot start
+on a v7 ledger. Downgrading to a v6 runner destroys every downstream OAuth
+grant and every server's OAuth configuration by design; affected servers must
+be reconfigured and reconnected after a later upgrade. Quiesce dashboard and
+MCP writes, stop the service, and take a coherent recovery backup before
+running the bounded downgrade from the exact release checkout:
+
+```bash
+npm run metadata:down:v6 -w @cloud-harness/runner -- /path/to/db
+```
+
+Keep the database offline for the command. It requires version 7 and changes
+only the downstream OAuth schema, leaving the MCP gateway registry, API keys,
+and secret tables in place; it never chains further down. To reach v5, run
+`metadata:down:v5` afterwards as described above. The exact statements are
+owned by `downgradeMetadataSchemaToV6` in
+[`apps/runner/src/metadata-schema.ts`](../apps/runner/src/metadata-schema.ts)
+and the command by
+[`apps/runner/src/metadata-schema-down-v6.ts`](../apps/runner/src/metadata-schema-down-v6.ts).
+Then deploy the prior runner and canary readiness, the dashboard, and the MCP
+server list. Restore-from-backup remains the fallback.
+
 ## Release rollback
 
+Each merge to `main` deploys once. When Release cuts a version, it requests CI
+for its `chore(release)` commit and the merge deploy is skipped, so production
+runs the tagged tree after that second CI run passes; otherwise the merge
+commit deploys right after push CI. If the version commit's CI fails or is
+cancelled while it is still the head of `main`, its CI-tested parent merge
+deploys instead; once a newer merge lands, that merge's CI decides the deploy. A flaky failure can be
+retried with `gh workflow run ci.yml --ref main` while the version commit is
+still the head of `main`; a real fix is a new merge, which deploys on its own.
+Run **Deploy production** manually (`workflow_dispatch`, optionally with an
+explicit 40-character commit SHA) to force a deploy;
+[`docs/deployment.md`](deployment.md) owns the decision rule.
+
 An automatic deployment failure restores the prior recorded commit, the
-quiesced database copy, and rebuilt service images when a prior release exists.
+quiesced database/artifact state, the last healthy runtime configuration and
+runner-only key files, and rebuilt service images when a prior release exists.
+The deploy script records the active configuration only after readiness,
+image-identity, and canary checks succeed.
+
+That automatic recovery has two limits worth knowing before you rely on it.
+
+It is fail-closed. If the restore itself fails, `contain_failed_release` in
+`deploy/scripts/release-runtime.sh` runs
+`systemctl disable --now cloud-harness-mcp.service` and
+`compose down --remove-orphans`, deliberately leaving the release **stopped**
+rather than serving a half-promoted one.
+
+It cannot run when the deploy process is killed outright. The deploy therefore
+never runs inside the caller's session: `cloud-harness-deploy` starts it as the
+transient unit `cloud-harness-deploy-<sha>` and only follows its journal. A
+dropped SSH connection used to stop the release and then lose the deploy,
+because `sudo` (with `use_pty`) answers a dead connection by sending the
+command's process group `SIGHUP`, `SIGTERM` and, two seconds later, `SIGKILL`,
+before the signal trap could start the rollback. Inside the unit the deploy also
+traps `ERR` plus `HUP`, `INT`, `TERM` and `PIPE`, and writes signal-path output
+to `/var/lib/cloud-harness/deploy-interrupt.log`.
+
+A `SIGKILL`, OOM kill, or host reboot bypasses every in-process trap, so the
+deploy records `/var/lib/cloud-harness/deploy-in-progress` (the previous
+release, plus the snapshot once it is complete) before it stops the release and
+removes it on every normal exit. A marker left behind means a killed deploy:
+the deploy unit's `ExecStopPost` runs `cloud-harness-deploy --recover` after a
+kill, and the enabled `cloud-harness-deploy-recover.service` runs it at boot.
+Recovery takes the deploy lock and performs the ordinary rollback to the
+recorded release and snapshot. A shutdown signal skips the in-process rollback
+and leaves the marker for the boot recovery, because Docker is stopping too.
+Check `journalctl -u cloud-harness-deploy-recover` after an unplanned reboot.
+
+The deploy script installs itself into `/usr/local/sbin` only after a
+successful promotion, so every deploy runs the script of the release it
+replaces, and a change to `deploy-release.sh` takes effect from the deploy after
+the one that ships it. The installed tooling only moves forward:
+`/var/lib/cloud-harness/deploy-tooling-release` records the release it came
+from, and promoting a release that is not its descendant (a rollback to an
+older commit) keeps the newer scripts and recovery unit.
+
+The deploy compiles the target images while the current release keeps serving,
+then stops it, so the outage lasts for the backup and the cached rebuild and
+start, not for a cold image build. A failed or interrupted build never stops the
+current release: the deploy puts the checkout and the `:local` image tags back
+on the recorded release and exits. During that build the checkout and the
+`:local` tags already point at the target, so a host reboot in that window
+starts the target release without a pre-deploy backup.
 A manual:
 
 ```bash
@@ -120,6 +299,32 @@ different known-good commit on `origin/main`, pass its exact
 pipeline builds images on the VPS and records local image IDs; it does not pull
 an externally attested image digest.
 
-Always verify loopback readiness, HTTPS, and managed-container cleanup after a
-rollback. Retain at least one known-good compatible database copy; backup
-retention is an operator policy, not an automated service feature.
+Always verify loopback readiness, HTTPS, dashboard secret readiness, artifact
+state, API-key gateway disablement when applicable, and managed-container
+cleanup after a rollback. Retain at least one
+known-good coherent recovery set; backup retention is an operator policy, not
+an automated service feature.
+
+## Owner-Authorized Real-Provider Canary Runbook (Subagents)
+
+To verify live provider connectivity and obtain the operational receipts required for closing Issue #19, execute a bounded canary on isolated staging before general use.
+
+### 1. Preflight and authorization
+
+- Verify exact release SHA, image digests, and staging deployment status.
+- Prepare a disposable test repository (no private secrets, PII, or customer data).
+- Ensure workspace uses `networkMode: "none"`.
+- Configure an operator profile in `/etc/cloud-harness-model-gateway/profiles.json` with low hard caps (`maxCostMicros: 500000`, approximately $0.50 maximum spending ceiling).
+- Mount the provider API key exclusively into Model Gateway (`/etc/cloud-harness-model-gateway/provider-api-key`).
+
+### 2. Execution protocol
+
+1. **Spawn & Idempotency:** Call `agent_spawn` with the disposable workspace and curated test prompt. Replay the same idempotency key 3 times; verify identical `agentId` returned, `replayed: true` on subsequent calls, and exactly 1 container/lease created.
+2. **Live Execution & Paging:** Call `agent_status` by `agentId` and `idempotencyKey`. Stream and page `agent_logs` via byte cursors. Verify all sensitive tokens/canaries are redacted.
+3. **Steering & Cancellation:** Send an `agent_message` (`steer` or `followUp`). Test `agent_cancel`; verify post-order cascading cancellation of any child subagents and exact `Revoke -> Drain -> TERM/KILL -> Remove` order.
+4. **Failure & Restart Resilience:** Exercise a controlled runner restart with an active agent; confirm status reconciles to `INTERRUPTED` with `outcomeUnknown: true` without auto-replaying unverified side effects.
+5. **Closure & Zero Residual:** Call `workspace_close`. Confirm `docker ps -a` and `docker network ls` show 0 residual agent containers and networks, Model Gateway shows 0 active leases, and workspace directories are deleted only after barrier completion.
+
+### 3. Sign-off and receipts
+
+Record the test evidence (image digests, execution trace, token/cost reconciliation, and zero-residual confirmation) in the tracking issue before signing off on full operational readiness.

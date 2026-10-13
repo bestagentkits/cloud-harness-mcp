@@ -1,20 +1,26 @@
 {
   "name": "@cloud-harness/runner",
-  "version": "0.4.0-beta.1",
+  "version": "0.65.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "node --watch --experimental-strip-types src/index.ts",
+    "metadata:down:v1": "node dist/metadata-schema-down.js",
+    "metadata:down:v5": "node dist/metadata-schema-down-v5.js",
+    "metadata:down:v6": "node dist/metadata-schema-down-v6.js",
+    "secrets:rekey": "node dist/rekey-secrets.js",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@cloud-harness/contracts": "0.4.0-beta.1",
+    "@cloud-harness/contracts": "0.65.0",
     "@octokit/auth-app": "8.3.0",
+    "@octokit/request": "10.0.13",
     "express": "5.2.1",
     "pino": "10.3.1",
+    "yaml": "2.9.0",
     "zod": "4.4.3"
   }
 }

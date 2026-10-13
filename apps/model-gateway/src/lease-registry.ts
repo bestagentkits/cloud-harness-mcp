@@ -27,6 +27,10 @@ export class LeaseRegistry {
     this.#now = options.now ?? Date.now;
   }
 
+  activeCount(): number {
+    this.#prune();
+    return this.#leases.size + this.#active.size;
+  }
   issue(input: LeaseIssueInput, profile: GatewayProfile): string {
     this.#prune();
     if (this.#leases.size + this.#active.size + this.#used.size >= this.#maxEntries) throw new Error('lease capacity reached');

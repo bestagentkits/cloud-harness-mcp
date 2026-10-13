@@ -1,29 +1,35 @@
 {
   "name": "cloud-harness-mcp",
-  "version": "0.4.0-beta.1",
+  "version": "0.65.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "cloud-harness-mcp": "./apps/api/dist/index.js"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "docs-site"
   ],
   "scripts": {
-    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/agent-runtime && npm run build -w @cloud-harness/model-gateway",
+    "build": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/agent-runtime && npm run build -w @cloud-harness/model-gateway && npm run build -w @cloud-harness/api && npm run build -w @cloud-harness/runner && npm run build -w @cloud-harness/api-key-gateway",
     "clean": "npm run clean --workspaces --if-present",
     "dev:api": "npm run dev -w @cloud-harness/api",
     "dev:runner": "npm run dev -w @cloud-harness/runner",
     "lint": "eslint .",
-    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/agent-runtime && npm run typecheck -w @cloud-harness/model-gateway",
-    "test": "vitest run --exclude '**/*.docker.test.ts'",
+    "typecheck": "npm run build -w @cloud-harness/contracts && npm run typecheck -w @cloud-harness/agent-runtime && npm run typecheck -w @cloud-harness/model-gateway && npm run typecheck -w @cloud-harness/api && npm run typecheck -w @cloud-harness/runner && npm run typecheck -w @cloud-harness/api-key-gateway",
+    "pretest": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
+    "test": "vitest run --exclude '**/*.docker.test.ts' --no-file-parallelism",
+    "pretest:unit": "npm run build -w @cloud-harness/contracts",
     "test:unit": "vitest run packages apps --exclude '**/*.docker.test.ts'",
+    "pretest:integration": "npm run build -w @cloud-harness/contracts && npm run build -w @cloud-harness/api",
     "test:integration": "vitest run test/integration --exclude '**/*.docker.test.ts'",
-    "prepare:gateway-test": "node scripts/generate-model-gateway-test-fixtures.mjs",
-    "pretest:docker": "npm run build -w @cloud-harness/contracts && npm run prepare:gateway-test",
-    "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/agent-isolation.docker.test.ts --testTimeout=120000 --fileParallelism=false",
-    "pretest:e2e": "npm run build -w @cloud-harness/contracts && npm run prepare:gateway-test",
+    "pretest:docker": "npm run build -w @cloud-harness/contracts",
+    "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/dependency-egress.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts test/integration/agent-isolation.docker.test.ts apps/runner/test/cli-compatibility-airgap.docker.test.ts test/integration/skills-compatibility.docker.test.ts test/integration/terminal-pty.docker.test.ts --testTimeout=180000",
+    "pretest:e2e": "npm run build -w @cloud-harness/contracts",
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
     "pages:check": "node scripts/verify-pages-artifact.mjs",
     "pages:preflight": "npm run pages:check && node scripts/verify-pages-project.mjs && npm run pages:links",
@@ -31,10 +37,23 @@
     "pages:list": "wrangler pages deployment list --project-name cloud-harness-mcp --environment production --json",
     "pages:links": "node scripts/verify-pages-links.mjs",
     "pages:smoke": "node scripts/verify-pages-url.mjs",
+    "docs:dev": "npm run dev -w @cloud-harness/docs-site",
+    "docs:build": "npm run build -w @cloud-harness/docs-site",
+    "docs:preview": "npm run preview -w @cloud-harness/docs-site",
+    "docs:reference": "npm run build -w @cloud-harness/contracts && node scripts/build-docs-reference.mjs",
+    "docs:check": "node scripts/verify-docs-reference.mjs",
+    "docs:artifact": "node scripts/verify-docs-artifact.mjs",
+    "docs:preflight": "npm run docs:artifact && node scripts/verify-docs-project.mjs && npm run docs:links",
+    "docs:links": "node scripts/verify-docs-links.mjs",
+    "docs:smoke": "node scripts/verify-docs-url.mjs",
+    "docs:deploy": "npm run docs:reference && npm run docs:build && npm run docs:preflight && wrangler pages deploy docs-site/.vitepress/dist --project-name cloud-harness-docs --branch main && npm run docs:smoke",
+    "plugin:check": "node scripts/sync-cloudharness-plugin-skill.mjs --check",
+    "plugin:sync": "node scripts/sync-cloudharness-plugin-skill.mjs",
     "release:dry-run": "semantic-release --dry-run --no-ci",
     "verify:production": "node scripts/verify-production.mjs",
     "verify:compose": "node scripts/verify-compose-boundaries.mjs",
-    "verify": "npm run lint && npm run typecheck && npm test && npm run build"
+    "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "verify:typesafe": "node scripts/verify-typesafe.mjs"
   },
   "devDependencies": {
     "@semantic-release/changelog": "7.0.0",

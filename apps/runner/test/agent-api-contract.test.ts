@@ -8,8 +8,14 @@ import { StateStore, type WorkspaceRecord } from '../src/state-store.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const directories: string[] = [];
+const openStores: StateStore[] = [];
 afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  for (const store of openStores.splice(0)) {
+    try { store.close(); } catch { /* ignore */ }
+  }
+  for (const directory of directories.splice(0)) {
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 });
 
 function setup() {
@@ -23,12 +29,15 @@ function setup() {
     executorImage: 'executor:test', allowedGitHosts: ['github.com']
   });
   const store = new StateStore(config.stateDb);
+  openStores.push(store);
+  const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
   const now = Date.now();
   const record: WorkspaceRecord = {
-    id: `ws_${'w'.repeat(24)}`, ownerId: 'owner', idempotencyKey: 'workspace-key',
+    id: `ws_${'w'.repeat(24)}`, ownerId, idempotencyKey: 'workspace-key',
     repositoryUrl: 'https://github.com/example/repository.git', repositoryRef: null,
-    containerName: null, workspacePath, status: 'ACTIVE', networkMode: 'none',
-    createdAt: now, lastActivityAt: now, expiresAt: now + 300_000, generation: 1, error: null
+    containerName: null, workspacePath, environmentId: null, status: 'ACTIVE', networkProfile: 'network-none',
+    createdAt: now, lastActivityAt: now, expiresAt: now + 300_000, hardExpiresAt: now + 3_600_000,
+    gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null
   };
   store.create(record);
   return { root, config, store, record };
@@ -73,14 +82,13 @@ describe('WorkspaceService agent dispatch', () => {
   });
 
   it('returns non-enumerating not-found before manager dispatch for a foreign owner', async () => {
-    const { config, store, record } = setup();
+    const { store, record, config } = setup();
+    const foreignOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'foreign-owner' });
     const manager = injectedManager();
     const service = new WorkspaceService(config, store, { manager });
-    await expect(service.execute('foreign', 'agent_status', {
-      workspaceId: record.id, agentId: `agent_${'a'.repeat(24)}`
-    })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(service.execute(foreignOwner, 'agent_status', { workspaceId: record.id, agentId: `agent_${'a'.repeat(24)}` }))
+      .rejects.toThrow('workspace not found');
     expect(manager.dispatch).not.toHaveBeenCalled();
-    store.close();
   });
 
   it('claims REAPING and awaits agent cleanup before removing the workspace path and closing', async () => {
@@ -89,7 +97,7 @@ describe('WorkspaceService agent dispatch', () => {
     const stopWorkspace = vi.fn(async () => await gate.promise);
     const manager = injectedManager({ stopWorkspace } as Partial<AgentManager>);
     const service = new WorkspaceService(config, store, { manager });
-    const closing = service.execute('owner', 'workspace_close', { workspaceId: record.id });
+    const closing = service.execute(record.ownerId, 'workspace_close', { workspaceId: record.id });
     await vi.waitFor(() => expect(stopWorkspace).toHaveBeenCalledOnce());
     expect(store.byId(record.id)?.status).toBe('REAPING');
     gate.resolve();

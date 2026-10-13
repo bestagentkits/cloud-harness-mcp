@@ -18,9 +18,22 @@ export interface AgentGatewayControl {
   issue(input: Omit<AgentLeaseGrant, 'lease'>): Promise<AgentLeaseGrant>;
   revokeAndDrain(leaseId: string): Promise<void>;
   cancelAndDrain(requestId: string): Promise<void>;
+  applySnapshot(snapshot: {
+    credentials: Record<string, { provider: string; authMode?: string; secret: string }>;
+    profiles: Record<string, unknown>;
+    generation?: number;
+    sequence?: number;
+  }): Promise<{ gatewayBootId: string; snapshotDigest: string }>;
+  queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }>;
 }
 
-type ControlResponse = { ok: boolean; lease?: string; error?: string };
+type ControlResponse = {
+  ok: boolean;
+  lease?: string;
+  ack?: { gatewayBootId: string; snapshotDigest: string };
+  digest?: { gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number };
+  error?: string;
+};
 
 export class DockerAgentGatewayControl implements AgentGatewayControl {
   private resolvedContainer?: Promise<string>;
@@ -48,11 +61,37 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
     await this.control({ operation: 'cancel', requestId });
   }
 
-  private async control(command: Record<string, unknown>): Promise<ControlResponse> {
+  async applySnapshot(snapshot: {
+    credentials: Record<string, { provider: string; authMode?: string; secret: string }>;
+    profiles: Record<string, unknown>;
+    generation?: number;
+    sequence?: number;
+  }): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
+    const response = await this.control({
+      operation: 'apply_snapshot',
+      sequence: snapshot.sequence ?? 1,
+      generation: snapshot.generation ?? 1,
+      credentials: snapshot.credentials,
+      profiles: snapshot.profiles
+    }, 1_048_576);
+    if (!response.ack) {
+      throw new HarnessError('UNAVAILABLE', 'model gateway omitted snapshot ack', 503, true);
+    }
+    return response.ack;
+  }
+
+  async queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }> {
+    const response = await this.control({ operation: 'digest' });
+    if (!response.digest) {
+      throw new HarnessError('UNAVAILABLE', 'model gateway omitted status digest', 503, true);
+    }
+    return response.digest;
+  }
+  private async control(command: Record<string, unknown>, maxBytes = 65_536): Promise<ControlResponse> {
     const container = await this.gatewayContainer();
     const result = await runDocker(
       ['exec', '-i', container, 'node', 'apps/model-gateway/dist/control-client.js'],
-      { stdin: `${JSON.stringify(command)}\n`, timeoutMs: 30_000, maxBytes: 16_384 }
+      { stdin: `${JSON.stringify(command)}\n`, timeoutMs: 30_000, maxBytes }
     );
     if (result.exitCode !== 0) {
       throw new HarnessError('UNAVAILABLE', 'model gateway control request failed', 503, true);

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { RunnerConfigSchema, type RunnerConfig } from '@cloud-harness/contracts';
+import { RunnerConfigSchema, SecretKeyringConfigSchema, type RunnerConfig } from '@cloud-harness/contracts';
 
 function secret(name: string): string | undefined {
   const file = process.env[`${name}_FILE`];
@@ -7,25 +7,106 @@ function secret(name: string): string | undefined {
   return process.env[name];
 }
 
+/**
+ * `GH_TOKEN` and `GITHUB_TOKEN` are ordinary environment names that unrelated
+ * tooling also sets, so a value that cannot be a GitHub credential is ignored
+ * after a warning rather than failing runner startup. The credential is used
+ * only when no GitHub App repository token is available and only in
+ * `owner-bearer` mode; `resolveGitHubFallbackToken` owns that policy, and the
+ * resolved value is registered with the ingest-time redactor rather than being
+ * logged or placed in an executor environment.
+ */
+function plausibleGitHubToken(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value.length < 20 || /[\s\0]/.test(value)) {
+    console.warn('[runner-config] ignoring GH_TOKEN/GITHUB_TOKEN: value is not a plausible GitHub credential');
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * The Managed OAuth control-plane integration is configured only when the
+ * operator supplies all three identifiers; a partial set fails startup through
+ * the schema rather than silently disabling the Dashboard controls.
+ */
+function cloudflareAccessOAuth(): Record<string, unknown> | undefined {
+  const apiToken = secret('CLOUDFLARE_ACCESS_API_TOKEN');
+  const accountId = process.env.CLOUDFLARE_ACCESS_ACCOUNT_ID;
+  const appId = process.env.CLOUDFLARE_ACCESS_APP_ID;
+  const access = process.env.CLOUDFLARE_ACCESS_OAUTH_ACCESS;
+  const maxGrantSeconds = process.env.CLOUDFLARE_ACCESS_OAUTH_MAX_GRANT_SECONDS;
+  if (!apiToken && !accountId && !appId && !access && !maxGrantSeconds) return undefined;
+  return {
+    apiToken,
+    accountId,
+    appId,
+    ...(access ? { access } : {}),
+    ...(maxGrantSeconds ? { maxGrantSeconds } : {})
+  };
+}
+
 const csv = (value: string | undefined, fallback: string) => (value ?? fallback).split(',').map((entry) => entry.trim()).filter(Boolean);
 
-function agentProfiles(value: string | undefined, file: string | undefined): unknown {
+type PrincipalRelinks = NonNullable<RunnerConfig['principalRelinks']>;
+type AgentProfiles = NonNullable<RunnerConfig['agents']>['profiles'];
+
+/**
+ * Parse `ACCESS_PRINCIPAL_RELINKS` at its boundary. The configuration schema owns the shape, so this
+ * only guarantees the value is JSON and fails closed with a named error rather than a bare SyntaxError.
+ */
+function principalRelinks(value: string | undefined): PrincipalRelinks | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(value) as PrincipalRelinks;
+  } catch {
+    throw new Error('ACCESS_PRINCIPAL_RELINKS must contain valid JSON');
+  }
+}
+
+function agentProfiles(value: string | undefined, file: string | undefined): AgentProfiles | undefined {
   if (value !== undefined && file !== undefined) {
     throw new Error('configure only one of AGENT_PROFILES_JSON or AGENT_PROFILES_FILE');
   }
   const serialized = value ?? (file === undefined ? undefined : readFileSync(file, 'utf8'));
   if (serialized === undefined) return undefined;
   try {
-    return JSON.parse(serialized);
+    return JSON.parse(serialized) as AgentProfiles;
   } catch {
     throw new Error('agent profiles must contain valid JSON');
   }
 }
 
-export function loadRunnerConfig(): RunnerConfig {
+export type RunnerConfigLoadResult = {
+  config: RunnerConfig;
+  secretReadinessError?: string;
+};
+
+export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
+  let secretKeyring: RunnerConfig['secretKeyring'];
+  let secretReadinessError: string | undefined;
+  const encodedKeyring = secret('SECRET_KEYRING');
+  if (encodedKeyring) {
+    try {
+      const parsed = SecretKeyringConfigSchema.safeParse(JSON.parse(encodedKeyring) as unknown);
+      if (parsed.success) secretKeyring = parsed.data;
+      else secretReadinessError = 'secret keyring configuration is invalid';
+    } catch {
+      secretReadinessError = 'secret keyring configuration is invalid';
+    }
+  }
   const githubAppId = process.env.GITHUB_APP_ID;
   const githubInstallationId = process.env.GITHUB_APP_INSTALLATION_ID;
   const githubPrivateKey = secret('GITHUB_APP_PRIVATE_KEY');
+  const githubAppSlug = process.env['GITHUB_APP_SLUG'];
+  const githubToken = plausibleGitHubToken(secret('GH_TOKEN') ?? secret('GITHUB_TOKEN'));
+  const legacyOwnerId = process.env.ACCESS_LEGACY_OWNER_ID;
+  const legacyIssuer = process.env.ACCESS_LEGACY_ISSUER;
+  const legacySubject = process.env.ACCESS_LEGACY_SUBJECT;
+  if (process.env.WORKSPACE_NETWORK_MODE !== undefined) {
+    throw new Error("WORKSPACE_NETWORK_MODE was replaced by WORKSPACE_NETWORK_PROFILE; set WORKSPACE_NETWORK_PROFILE to 'network-none' or 'dependency-access'");
+  }
+
   const agentConfigurationPresent = [
     'AGENT_IMAGE',
     'AGENT_NETWORK_MODE',
@@ -57,26 +138,63 @@ export function loadRunnerConfig(): RunnerConfig {
     'AGENT_RETENTION_SECONDS',
     'AGENT_LOOKUP_HORIZON_SECONDS'
   ].some((name) => process.env[name] !== undefined);
-  return RunnerConfigSchema.parse({
+  const config = RunnerConfigSchema.parse({
+    authMode: process.env.AUTH_MODE,
     host: process.env.RUNNER_HOST,
     port: process.env.RUNNER_PORT,
     serviceToken: secret('RUNNER_TOKEN'),
     jobsRoot: process.env.JOBS_ROOT ?? '/var/lib/cloud-harness/jobs',
     stateDb: process.env.STATE_DB ?? '/var/lib/cloud-harness/state/cloud-harness.db',
     executorImage: process.env.EXECUTOR_IMAGE ?? 'cloud-harness-executor:local',
+    networkGuardImage: process.env.NETWORK_GUARD_IMAGE ?? 'cloud-harness-network-guard:local',
     allowedGitHosts: csv(process.env.ALLOWED_GIT_HOSTS, 'github.com'),
-    networkMode: process.env.WORKSPACE_NETWORK_MODE,
+    networkProfile: process.env.WORKSPACE_NETWORK_PROFILE,
+    dependencyDnsResolvers: process.env.DEPENDENCY_DNS_RESOLVERS ? csv(process.env.DEPENDENCY_DNS_RESOLVERS, '8.8.8.8,1.1.1.1') : undefined,
+    dependencyBridgeSubnet: process.env.DEPENDENCY_BRIDGE_SUBNET,
+    dependencyBridgeInterface: process.env.DEPENDENCY_BRIDGE_INTERFACE,
+    dependencyNetworkName: process.env.DEPENDENCY_NETWORK_NAME,
     wallTtlSeconds: process.env.WORKSPACE_WALL_TTL_SECONDS,
     idleTtlSeconds: process.env.WORKSPACE_IDLE_TTL_SECONDS,
     maxOutputBytes: process.env.MAX_OUTPUT_BYTES,
+    terminalMaxPerWorkspace: process.env.TERMINAL_MAX_PER_WORKSPACE,
+    terminalRetainedBytes: process.env.TERMINAL_RETAINED_BYTES,
+    terminalIdleTimeoutMs: process.env.TERMINAL_IDLE_TIMEOUT_MS,
+    terminalMaxLifetimeMs: process.env.TERMINAL_MAX_LIFETIME_MS,
     minFreeBytes: process.env.MIN_FREE_BYTES,
     maxWorkspaceBytes: process.env.MAX_WORKSPACE_BYTES,
+    maxActiveWorkspacesPerOwner: process.env.MAX_ACTIVE_WORKSPACES_PER_OWNER,
     reaperIntervalSeconds: process.env.REAPER_INTERVAL_SECONDS,
-    githubApp: githubAppId && githubInstallationId && githubPrivateKey ? {
+    artifactRoot: process.env.ARTIFACT_ROOT,
+    maxArtifactBytes: process.env.MAX_ARTIFACT_BYTES,
+    maxPrincipalArtifactBytes: process.env.MAX_PRINCIPAL_ARTIFACT_BYTES,
+    artifactRetentionSeconds: process.env.ARTIFACT_RETENTION_SECONDS,
+    enableRepoCache: process.env.ENABLE_REPO_CACHE,
+    repoCacheRoot: process.env.REPO_CACHE_ROOT,
+    enableToolkitCache: process.env.ENABLE_TOOLKIT_CACHE,
+    toolkitCacheRoot: process.env.TOOLKIT_CACHE_ROOT,
+    toolkitNetworkPolicy: process.env.TOOLKIT_NETWORK_POLICY,
+    toolkitEgressProxy: process.env.TOOLKIT_EGRESS_PROXY,
+    builtinSkillsRoot: process.env.BUILTIN_SKILLS_ROOT,
+    agentkitRegistryUrl: process.env.AGENTKIT_REGISTRY_URL,
+    agentkitRegistryCredentialSecret: process.env.AGENTKIT_REGISTRY_CREDENTIAL_SECRET,
+    agentkitRegistryKeyId: process.env.AGENTKIT_REGISTRY_KEY_ID,
+    agentkitRegistryPublicKey: process.env.AGENTKIT_REGISTRY_PUBLIC_KEY,
+    provisioningNetwork: process.env.PROVISIONING_NETWORK,
+    secretKeyring,
+    legacyPrincipalMapping: legacyOwnerId || legacyIssuer || legacySubject ? {
+      legacyOwnerId,
+      issuer: legacyIssuer,
+      subject: legacySubject
+    } : undefined,
+    principalRelinks: principalRelinks(process.env['ACCESS_PRINCIPAL_RELINKS']),
+    githubApp: githubAppId || githubInstallationId || githubPrivateKey || githubAppSlug ? {
       appId: githubAppId,
       installationId: githubInstallationId,
-      privateKey: githubPrivateKey
+      privateKey: githubPrivateKey,
+      appSlug: process.env.GITHUB_APP_SLUG
     } : undefined,
+    githubToken,
+    cloudflareAccessOAuth: cloudflareAccessOAuth(),
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,
       networkMode: process.env.AGENT_NETWORK_MODE,
@@ -110,4 +228,7 @@ export function loadRunnerConfig(): RunnerConfig {
       }
     } : undefined
   });
+  return { config, ...(secretReadinessError ? { secretReadinessError } : {}) };
 }
+
+export const loadRunnerConfig = (): RunnerConfig => loadRunnerConfigWithReadiness().config;

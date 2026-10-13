@@ -2,11 +2,20 @@
 
 ## Connection
 
-The Streamable HTTP endpoint is
-`https://cloud-harness-mcp.46-250-239-227.sslip.io/mcp`. Every request must
-carry the owner's bearer token. The recommended Codex configuration is in the
-[README](../README.md#connect-from-codex); the supported fields are documented
-by [OpenAI](https://developers.openai.com/codex/mcp).
+The current operator deployment has two Streamable HTTP endpoints:
+
+- `https://harness.zuey.me/mcp` for Cloudflare Access Managed OAuth through
+  GitHub or Google; and
+- `https://api.harness.zuey.me/mcp` for static-header clients using a
+  dashboard-managed API key as `Authorization: Bearer <key>`.
+
+The lanes are intentionally non-interchangeable. Managed keys are accepted
+only through the fixed Worker gateway; the hidden origin path is not a client
+endpoint. `owner-bearer` remains the default authentication contract for
+separate private deployments. The
+recommended client routes are in the
+[README](../README.md#connect-from-ai-clients). Do not treat implementation or
+configuration as proof that a specific client has completed live OAuth.
 
 The canonical public tool names are the `RunnerOperationSchema` values in
 [`packages/contracts/src/runner-api.ts`](../packages/contracts/src/runner-api.ts).
@@ -14,25 +23,98 @@ Inputs, bounds, annotations, and defaults are owned by
 [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts).
 Results use the stable envelope defined in
 [`packages/contracts/src/mcp-results.ts`](../packages/contracts/src/mcp-results.ts):
-inspect `structuredContent` for `ok`, `data`, `error`, `truncated`, and
-`cursor`; the text content is a concise human message.
+MCP tools return formatted human-readable output, metadata, error details, and
+continuation markers in the text content, while preserving the complete machine
+envelope in `structuredContent`.
+
+Create, inspect, and revoke managed keys in `/dashboard/api-keys`. The complete
+key is returned once at creation; later list responses contain only safe
+metadata. Keys grant the same full MCP/RCE authority as their creator, expire
+in 1–3,650 days (approximately 10 years), and are limited to 10 active keys per principal. There are no
+scopes, recovery, ownership transfer, or rotation endpoint. Rotate by creating
+a replacement, updating the client, verifying it, then revoking the old key.
+The lifecycle contract is owned by
+[`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts).
+
+### MCP gateway
+
+A second composition root, `https://<host>/mcp-gateway`, exposes five
+meta-tools over a principal-scoped registry of downstream MCP servers. It is a
+distinct surface with its own tool list and its own contracts; it is not a mode
+of `/mcp`. Static-header clients reach it through the managed API-key lane at
+`https://api.harness.zuey.me/mcp-gateway`. The semantics of
+every `/mcp` tool above are unchanged by its presence. See the
+[MCP gateway](mcp-gateway.md) for the registry, credential references,
+permissions, traces, transports, and how each credential lane reaches it,
+including downstream OAuth.
+
+A gateway call to a downstream server configured for OAuth that has no usable
+grant returns `ok: false` with error code `AUTHORIZATION_REQUIRED` (part of
+`ErrorCodeSchema` in
+[`packages/contracts/src/mcp-results.ts`](../packages/contracts/src/mcp-results.ts)).
+It is not retryable: no tool call can complete the authorization, and the
+gateway never opens a browser. The owner must Connect or Reauthorize the
+server from the dashboard, then retry. This downstream OAuth is independent
+of the Managed OAuth lane that authenticates the client to Cloud Harness.
 
 ## Normal workflow
 
 1. Call `workspace_open` with a credential-free HTTPS repository URL, an
-   optional ref, and a fresh idempotency key.
-2. Keep the returned opaque `workspaceId` and pass it to workspace-scoped
-   tools. Do not derive IDs or use filesystem paths as handles.
-3. Use bounded file and code-intelligence tools for inspection and edits. Use
-   `exec_run`, shells, sessions, or tasks only when arbitrary code execution is
-   intended.
-4. Read cursors and `truncated` instead of assuming a response is complete.
-5. Close shells and sessions, cancel unwanted tasks, then call
+   optional ref, and a fresh idempotency key. To inject a retained dashboard
+   environment, select its opaque ID and explicitly confirm the injection in
+   the same request; omitting either injects nothing.
+   The default clone is a single-commit shallow checkout. When an agent needs
+   `git_log` history on a freshly opened workspace, pass `fetchDepth` (0 for
+   full history, otherwise a commit count) or `shallowSince` (an ISO date or
+   datetime); the two are mutually exclusive. A history clone also carries
+   file contents (the default clone is blob-filtered), so `git log -p`,
+   `git blame`, and old-revision diffs work without network access. Prefer `github_read`'s
+   `commit_list`/`compare` actions instead when only GitHub-hosted history is
+   needed, since those do not change clone cost.
+   To pre-install agent toolkits (e.g. `mattpocock/skills`, `obra/superpowers`,
+   or custom Git repos), provide the `toolkits` parameter. Default `owner`
+   scope mounts toolkits read-only at `/opt/cloud-harness/owner-skills` without
+   polluting git status; `workspace` scope materializes files into
+   `.cloud-harness/skills` with `allowToolkitWorkspaceChanges: true`.
+   Licensed AgentKit kits use `{ kind: 'agentkit', kitId, channel }`: the runner
+   resolves and signature-verifies the registry manifest with the operator's
+   stored licence token, verifies the package digest, and mounts the kit skills
+   read-only under `owner` scope only (licensed content is never written into a
+   repository).
+2. Subsequent tool calls may omit `workspaceId`. The runner resolves it in this
+   order: an explicit `workspaceId`; the sole `ACTIVE` or `CREATING` workspace; a
+   sole recoverable record when nothing is active; otherwise the caller's
+   `workspace_set_active` preference among recoverable records. More than one
+   active workspace, or several recoverable records with no preference, returns a
+   structured `CONFLICT` naming the candidate ids rather than guessing. Because the
+   destructive tools (`workspace_close`, `workspace_finalize`, `files_write`,
+   `git_commit`) accept an optional `workspaceId`, pass it explicitly whenever more
+   than one workspace is counted. `workspace_open` never moves the preference.
+3. Use bounded file and code-intelligence tools for inspection and edits.
+   `files_write_batch` allows atomic multi-file creation with parent directory
+   scaffolding in one call.
+4. When ready to publish, use `workspace_finalize` to run preflights, stage,
+   commit, and push to origin in a single idempotent transaction.
+5. Read cursors and `truncated` or use `readAll: true` instead of assuming a response is complete.
+6. Close shells and sessions, cancel unwanted tasks, then call
    `workspace_close`.
 
-Reusing a `workspace_open`, `shell_open`, `sessions_open`, or `tasks_run`
-idempotency key returns the prior created resource for that workspace. This
-makes a lost response recoverable without duplicating work.
+Reusing an idempotency key with identical parameters returns the prior created
+resource, delivery state, or confirmed mutation for that workspace without
+duplicating work:
+
+- Creation ops (`workspace_open`, `shell_open`, `sessions_open`, `tasks_run`,
+  `agent_spawn`, `agent_message`) return the existing handle or reservation.
+- Git mutations (`git_commit`, `git_push`, `workspace_finalize`) take the key
+  on the initial attempt and reuse it to reconcile an unverified outcome (e.g.
+  `UNKNOWN_REMOTE_STATE`). A same-key replay reporting `alreadyFinalized: true`
+  is confirmed success.
+- `files_write_batch` and idempotency-enabled `github_action` mutations
+  (`pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`,
+  `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`,
+  `pr_auto_merge_enable`) replay
+  their cached result within their configured retention window (GitHub action
+  idempotency records expire after 24 hours).
 
 ## Coding-agent operations
 
@@ -83,16 +165,140 @@ schema and retention policy are owned by
 [`apps/runner/src/agent-state-repository.ts`](../apps/runner/src/agent-state-repository.ts).
 
 A runner restart never replays prompts, messages, model requests, or proxy
-calls. Admission closes while surviving state is reconciled. If cleanup cannot
-yet prove the agent container, gateway request/lease, and executor proxy work
-are stopped, the agent stays nonterminal and durable cleanup-retry metadata is
-recorded. Only after confirmed drain or removal does reconciliation record
-`INTERRUPTED` with `outcomeUnknown: true`; clients must not interpret that as
-success or failure.
+writes. Any active agent from a prior runner epoch is reconciled: its model
+lease is revoked, its container is removed, and its status transitions to
+`INTERRUPTED` with `outcomeUnknown: true`.
 
-Public dispatch, launch acknowledgement, cancellation ordering, and restart
-reconciliation are owned by
-[`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts).
+### Repository guidance bootstrap
+
+Repositories ship guidance for coding agents (`AGENTS.md`, `CLAUDE.md`,
+`REVIEW.md`, `DESIGN.md`, client rule directories, and similar). Two consumers
+need the same answer to "which of these apply", so one selection owns it:
+[`packages/contracts/src/repository-guidance.ts`](../packages/contracts/src/repository-guidance.ts)
+decides precedence, explicit overrides, duplicate suppression, bounds, and the
+composed block. The worker's `INSTRUCTION_CANDIDATES` in
+[`worker/harness-worker.mjs`](../worker/harness-worker.mjs) owns which paths are
+discovered and which client each targets.
+
+- **Managed agents.** `agent_spawn` places the applicable guidance in the
+  agent's first message, in a delimited untrusted block ahead of the caller's
+  task, which is carried byte-for-byte. `repositoryContext` selects the client
+  family (`none` sends the task alone); the omitted default is set in
+  [`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts) and
+  is deliberately not a schema default, so existing callers' idempotency
+  payloads are unchanged. The block is bounded and truncated deterministically
+  rather than dropped. Because the model gateway reserves one input token per
+  request byte and every turn re-sends the first message, guidance and task
+  together take at most a quarter of the agent's `maxInputTokens`; raise that
+  budget, or pick a narrower `repositoryContext`, when guidance is skipped
+  with `context-budget`. The report is charged to `maxOutputBytes` like any log
+  event, so with a very small output budget it shrinks to counts or is omitted
+  rather than ending the agent. What was injected, skipped, or cut is recorded as a
+  `repository_context` event in `agent_logs`, with paths and digests but never
+  content. Guidance is composed before any model lease or container exists: if
+  it cannot be scanned the agent fails closed (`FAILED`, with a terminal reason
+  suggesting a retry or `repositoryContext: "none"`) instead of starting
+  without guidance.
+- **External clients.** A fresh `workspace_open` result carries a content-free
+  `repositoryContext` summary. It is best-effort: a scan failure never fails
+  the open, and an idempotent replay includes it only while the runner still
+  holds the snapshot. To act on guidance, call `workspace_context` with the
+  client's own `clientProfile` and read the active paths.
+- **One decision.** `workspace_context` instruction items report
+  `activeForClient` and, when inactive, an `inactiveReason`
+  (`not-targeted`, `unreadable`, `overridden-by:<path>`, `duplicate-of:<path>`)
+  from the same selection the bootstrap uses, so the manifest and an agent's
+  first message cannot disagree. Rule-directory files target only the client
+  that reads that directory, and client configuration such as
+  `.aider.conf.yml` is listed but never read into an agent's context.
+- **Snapshot reuse.** The runner caches one digest-addressed snapshot per
+  workspace generation and reuses it while a stat fingerprint of the candidate
+  files is unchanged; any guidance edit causes a rescan before the next spawn.
+  A scan that hit its deadline is used once but never cached, and a file
+  dropped by the snapshot byte budget is named in a `BUDGET_EXCEEDED` warning.
+  A link between guidance files (such as `CLAUDE.md -> AGENTS.md`) is read,
+  but a guidance path linked to any other file contributes no content.
+
+## Skills over MCP extension
+
+The Streamable HTTP `/mcp` root also serves the official
+[Skills extension](https://modelcontextprotocol.io/extensions/skills)
+(`io.modelcontextprotocol/skills`, SEP-2640), declared in the server
+capabilities as written for protocol revision `2026-07-28` (`server/discover`).
+It is a protocol surface beside the tools, not a tool: `tools/list` and the
+`skills_list`, `skills_read`, and `skills_run` tools are unchanged. Local stdio
+mode and `/mcp-gateway` do not advertise it.
+
+Decisions that are easy to misread:
+
+- **Scope.** The `/mcp` root serves only `built-in` skills and the
+  authenticated principal's own enabled library skills (the `owner` tier),
+  because its caller is a principal, not a workspace. The workspace-bound
+  endpoint `/mcp/workspaces/<workspaceId>` additionally serves that one
+  workspace's `workspace` tier (`.cloud-harness/skills`, where workspace
+  toolkits are applied) and `repository` tier (`.agents/skills`,
+  `.codex/skills`, `.claude/skills`), read from its checkout. Every call there
+  re-checks that the workspace belongs to the caller and is `ACTIVE` with an
+  unexpired lease, so access stops on the next call after a close or expiry; a
+  missing, foreign, closed, failed, or expired workspace is the same `-32602`
+  "workspace is not available", and reading does not extend the lease.
+  Workspace-tier URIs are refused (`-32602`) on the root endpoint and on any
+  other workspace's endpoint. Precedence follows the executor's resolver: a
+  name present in several tiers is served at each tier-qualified URI. Within
+  the `workspace` and `repository` tiers a skill is keyed by its directory
+  name, which must equal its frontmatter `name` or the skill is not served;
+  the highest-ranked root holding a skill directory of a name decides it, and
+  if that copy cannot be served the name is not served from a lower-ranked
+  root. Only the first 60 directories of each such root, by name, are
+  considered. In the `built-in` and `owner` tiers, same-named skills with
+  differing content are a conflict served under neither, as a launch would
+  refuse it.
+- **Methods.** `skills/list`, `skills/get`, and `resources/read`. Skills are
+  discovered only through `skills/list`: `resources/list` and
+  `resources/templates/list` answer empty so the declared `resources`
+  capability is complete. The optional `resources/directory/read` is not
+  implemented, so `directoryRead` is not declared.
+- **Addressing.** `skill://cloud-harness/<tier>/<name>/<file>` for `built-in`
+  and `owner`, `skill://cloud-harness/<tier>/<workspaceId>/<name>/<file>` for
+  `workspace` and `repository`; a skill is addressed by its `SKILL.md` URI,
+  and only the canonical encoding of a file this server listed is accepted.
+- **Manifests.** Every entry carries the verbatim frontmatter and a complete
+  per-file manifest (`uri`, `sha256:<hex>` digest, byte size) computed from the
+  bytes on disk. Manifests are cached: an owner skill's for as long as its
+  immutable bundle, a built-in skill's only while its directory and `SKILL.md`
+  are unchanged and for a few seconds at most, so a listing can briefly lag an
+  in-place edit of a nested built-in file. A read checks the bytes it returns
+  against the manifest and rebuilds the manifest from disk on a mismatch; it
+  never returns bytes that disagree with it. Workspace and repository content
+  is mutable and repository-controlled, so it is never cached: each call
+  hashes it afresh, and a read whose bytes differ from the manifest built in
+  the same call fails as changed rather than returning them. Only the head of
+  a `SKILL.md` (the 64 KiB frontmatter bound plus its fences) is parsed; the
+  whole document is still hashed and served. A skill with a
+  symlink, a special file, a file name that is not UTF-8, unusable frontmatter, more than 512
+  files or 16 MiB, directories nested deeper than 32 levels, or a resource URI
+  longer than 1024 characters is omitted rather than served partially.
+- **Pages.** A `skills/list` page ends early, with a `nextCursor`, before its
+  serialized entries outgrow a fixed byte bound, so a page of large manifests
+  is split rather than refused.
+- **Caching.** Results carry `ttlMs: 30000` and `cacheScope: "private"`,
+  because the data is per-principal.
+- **Errors.** An invalid, unknown, or unserved URI or cursor, and an
+  unavailable bound workspace, are `-32602`; a file that changed since its
+  manifest was computed is `-32603` asking the client to re-run `skills/get`;
+  other runner or verification failures are `-32603` with a generic message.
+- **Reading is not activation.** These methods reach only read-only runner
+  operations. Loading, approving, and activating a skill is the host's
+  decision, and running a script still goes through `skills_run` with its
+  own digest pin and privilege grant; the extension's per-file digests are not
+  a `skills_run` approval.
+
+Executable owners:
+[`apps/api/src/skills-extension.ts`](../apps/api/src/skills-extension.ts),
+[`apps/runner/src/skill-extension-service.ts`](../apps/runner/src/skill-extension-service.ts),
+[`packages/contracts/src/skills-extension.ts`](../packages/contracts/src/skills-extension.ts),
+and
+[`test/integration/skills-extension-http.test.ts`](../test/integration/skills-extension-http.test.ts).
 
 ## Semantics that are easy to misread
 
@@ -103,9 +309,147 @@ reconciliation are owned by
   `expectedSha256` option requires the target to exist and match.
 - `exec_run` accepts raw Bash and is intentionally remote code execution
   inside the executor. It is request-owned and bounded by timeout/output
-  settings. If its API request disconnects or reaches the API deadline, the
+  settings. Standard execution runs as user `10001:10001` with `--read-only` rootfs
+  and dropped capabilities. When `privileged: true` is requested in `cloudflare-access` mode,
+  it requires a valid `approvalGrantToken`. An unapproved request returns `PRIVILEGE_APPROVAL_REQUIRED`
+  with a `grantId` for the operator to approve in the dashboard. Approved grants
+  execute once in an isolated ephemeral container with `try/finally` cleanup.
+  In `owner-bearer` mode, `privileged: true` is rejected as `FORBIDDEN` to prevent unbrokered elevation.
+  If its API request disconnects or reaches the API deadline, the
   runner terminates and verifies the operation's process groups; the workspace
   remains active for later calls.
+- `github_read` is a read-only, non-destructive tool sharing the same broker
+  and handler as `github_action`, restricted to `pr_list`, `pr_view`,
+  `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, and
+  `tag_list`. It exists because MCP client approval prompts key off tool-level
+  annotations: `github_action` is annotated destructive as a whole (there is no
+  per-action server approval gate), so every action on it — including reads —
+  could trigger an approval prompt. Prefer `github_read` for any read so
+  clients do not prompt on every call; `github_action` still accepts the same
+  read actions for backward compatibility. `commit_list` supports `limit`,
+  `sha`, `path`, `since`, and `until` filters; `compare` returns commits and a
+  changed-file summary between `base` and `head`. `workspace_capabilities`
+  reports the current read/gated split under `githubActions`.
+- `github_action` executes authenticated GitHub CLI actions (`pr_list`, `pr_view`,
+  `pr_create`, `pr_update`, `pr_comment`, `pr_review`, `pr_review_comment`, `pr_review_reply`,
+  `pr_review_thread_resolve`, `pr_review_thread_unresolve`, `pr_reviewers_request`,
+  `pr_reviewers_remove`, `pr_ready`, `pr_convert_to_draft`, `pr_merge`, `pr_auto_merge_enable`,
+  `pr_auto_merge_disable`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
+  `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
+  `issue_update`, `issue_publish`, `commit_list`, `compare`, `release_list`, `tag_list`) through an
+  ephemeral helper container using short-lived tokens
+  minted from the configured GitHub App. `pr_create` supports draft PRs and labels; `pr_update` supports
+  updating title, body, base branch, and closing or reopening PRs; `pr_comment` adds comments with
+  idempotency support. `pr_review` submits a native `COMMENT`, `APPROVE`, or `REQUEST_CHANGES`
+  review; `pr_review_comment` leaves a file/line (or line-range) comment on the PR head or a given
+  commit; `pr_review_threads` (also on `github_read`) lists review threads with the stable
+  `threadId` that `pr_review_reply`, `pr_review_thread_resolve`, and
+  `pr_review_thread_unresolve` take; `pr_reviewers_request` and `pr_reviewers_remove` manage
+  users and team slugs; `pr_ready` and `pr_convert_to_draft` move the draft state; `pr_merge`
+  (`merge`, `squash`, or `rebase`, optional commit message and `matchHeadCommit` guard) and
+  `pr_auto_merge_enable`/`pr_auto_merge_disable` complete the lifecycle. Merge and auto-merge
+  additionally need `contents: write` on the token. `workspace_capabilities` reports each
+  capability under `operations` (`pullRequestReview`, `pullRequestReviewComment`,
+  `pullRequestReviewThread`, `pullRequestReviewerManage`, `pullRequestReady`,
+  `pullRequestMerge`, `pullRequestAutoMerge`) and the authoritative action split under
+  `githubActions`. The schemas in `packages/contracts/src/tool-schemas.ts` own the inputs.
+  `issue_publish` provides a single brokered request
+  that posts a comment and adds or removes labels (with automatic missing-label creation).
+  The runner mints the installation token with the permission scope the action
+  family needs (`issues` for issue and label actions, `pull_requests` for
+  pull-request actions), then checks the permissions GitHub actually granted that
+  token before executing. When the App installation cannot satisfy the action, it
+  falls back to the requesting principal's configured credential: the
+  runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in `owner-bearer` mode (refused in
+  `cloudflare-access` mode, where an operator-wide credential must never stand in
+  for a different principal) or that principal's own global runtime secret. When
+  neither can, it returns `GITHUB_PERMISSION_MISSING` naming the missing scope and
+  both remedies. The two fallback boundaries differ: the runner-environment
+  credential is harness-side only and is never placed in an executor, while a
+  principal's global runtime secret is injected into that principal's workspaces,
+  so it also authenticates the workspace `gh` CLI. The selection is owned by
+  [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
+  and
+  [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts).
+  Tokens are supplied exclusively via stdin and are never written to workspace files.
+  All write actions emit structured `github_action.<action>` events in `audit_events`.
+  Failures return typed machine-actionable error codes (`GITHUB_RATE_LIMITED` with retryAfterMs,
+  `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`, plus the review
+  and merge codes `GITHUB_REVIEW_NOT_ALLOWED`, `GITHUB_REVIEW_COMMENT_INVALID`,
+  `GITHUB_REVIEWER_UNASSIGNABLE`, `GITHUB_MERGE_BLOCKED`, `GITHUB_MERGE_CONFLICT`,
+  `GITHUB_AUTO_MERGE_UNAVAILABLE`);
+  a `403` from the helper is never retried.
+  Comment, label, publish, review, reviewer-request, and merge mutations support idempotency keys with a 24-hour
+  retention window; retries within 24 hours replay the cached result or reject
+  payload mismatches with `CONFLICT`, after which the key expires and the request
+  executes anew.
+- Output pagination for tools such as `files_read`, `git_diff`, and `git_log` uses
+  snapshot-bound continuation cursors. The cursor is bound to content hashes or commit
+  signatures; if underlying files, index, or repository state change between calls,
+  subsequent page requests fail deterministically with `CONFLICT` to prevent silent corruption.
+- `files_write_batch` writes an array of files in a single atomic transaction. It
+  creates missing parent directories by default and verifies expected SHA256 hashes
+  prior to modifying any file. If any file fails validation or write, original files
+  are restored.
+- `workspace_finalize` provides a single transactional endpoint to stage changes,
+  run diff preflight checks, commit with workspace/owner default Git identity, and
+  push to remote. When supplied with an `idempotencyKey`, finalize is crash-durable:
+  the created commit SHA and target ref are persisted in the durable ledger. If the
+  remote push is interrupted, retrying the identical request with the same `idempotencyKey`
+  automatically reconciles against the remote ref and returns `alreadyFinalized: true`
+  instead of creating duplicate commits or pushing again.
+- `git_commit` creates an unsigned local commit. Supplying `expectedHeadOid` acts
+  as a compare-and-set guard: if workspace HEAD has diverged, the commit is
+  rejected with `STALE_HEAD` and returns `currentHeadOid`/`expectedHeadOid` detail.
+  Supplying `idempotencyKey` prevents duplicate commits on lost-response retries.
+- `git_push` pushes a branch refspec to origin. Supplying `idempotencyKey` on the
+  initial push enables safe unknown-outcome recovery: if a network drop or timeout
+  occurs, the runner returns `UNKNOWN_REMOTE_STATE` with `resumeAction: "reconcile_push"`.
+  Retrying the identical request with the same key probes the destination ref's
+  remote OID before pushing, returning `alreadyFinalized: true` if the earlier push
+  landed. Force-with-lease (`forceWithLease: true`) requires `expectedRemoteOid` and
+  an explicit destination branch, rejecting diverged remote state with `CONFLICT`.
+- `tasks_run`, `tasks_status`, and `tasks_list` manage detached dependency-aware tasks.
+  Task metadata, dependency DAGs, and status are durable in SQLite (`durable_tasks`),
+  while task output streams are written to 0600 log files on disk. Surviving task
+  records remain queryable across runner restarts; in-flight tasks interrupted by a
+  restart become terminal (`status: 'failed'`, `errorCode: 'RUNNER_RESTARTED'`) rather
+  than continuing invisibly. Task log output is automatically spooled into retained
+  artifact storage upon workspace closure. In contrast, interactive shells (`shell_*`)
+  and named sessions (`sessions_*`) live in volatile runner memory only and are lost on restart.
+- The Dashboard Terminal is not part of this contract. Its `terminal_*`
+  operations are internal dashboard operations reached only through the
+  authenticated dashboard, and no MCP tool opens a PTY; agents keep `shell_*`,
+  `sessions_*`, and `exec_run`. Its boundary is in the
+  [security model](security-model.md#dashboard-terminal).
+- `workspace_lease_renew` and `workspace_recover` allow inspecting, extending,
+  and restoring workspaces across their lifecycle states:
+  - **`ACTIVE` → `EXPIRED_RECOVERABLE` → `CLOSED` Lifecycle:** When an active
+    workspace's idle lease expires, its container executor is reaped to release CPU
+    and memory, but its repository files, unpushed commits, branches, and working-tree
+    modifications are retained during a recoverable grace period (`EXPIRED_RECOVERABLE`).
+    If the recoverable grace period lapses or the workspace is explicitly closed, it
+    transitions to `CLOSED` and all host files are permanently pruned.
+  - **`workspace_recover`:** Restores or exports work from active or `EXPIRED_RECOVERABLE`
+    workspaces. In `resume` mode (default), it restores the workspace to `ACTIVE` state,
+    recreates and starts the executor container on demand, and refreshes the idle lease
+    while preserving all local Git and file state. In `status` and `patch` modes, it
+    non-destructively returns unpushed changes or unified diffs. In `export` mode, it
+    creates a recovery snapshot commit and pushes it to a target remote branch as a
+    safety escape hatch even if the hard wall-clock deadline was reached.
+  - **`workspace_lease_renew`:** Explicitly extends the idle lease of an `ACTIVE` or
+    `EXPIRED_RECOVERABLE` workspace (clamped to the maximum `hardExpiresAt` limit),
+    reactivating the executor container if previously reaped.
+  - **`availableActions` Metadata:** `workspace_status` and `workspace_list` responses
+    expose an `availableActions` string array listing valid lifecycle operations
+    (e.g., `['workspace_recover', 'workspace_lease_renew', 'workspace_close']` for
+    `EXPIRED_RECOVERABLE` workspaces) to remove guesswork for MCP clients.
+- `secrets_list` discovers available global and environment secret names and descriptions without revealing secret values:
+  - **Value-Free Discovery:** Returns structured payload `data.secrets` containing `[{ name, description, scope: 'global' | 'environment', environmentId, version, updatedAt }]`, where `environmentId` is `"global"` for global scope or the bound environment ID. Secret values and ciphertext are write-only and never queried or returned over MCP.
+  - **Scope and Precedence:** Active global `runtime` secrets are automatically inherited by remote Docker workspaces. When an environment is explicitly injected via `environmentId` with `confirmEnvironmentInjection: true`, `runtime` environment secrets are merged and override colliding global keys.
+  - **Output Redaction (Defense-in-Depth):** When streaming commands (`tasks_status`, `shell_io`, `sessions_io`) emit exact matches of injected secret values (≥ 4 UTF-8 bytes), the runner's stream redactor sanitizes matches across chunks to `[REDACTED_SECRET: <NAME>]` before retained buffering, preserving monotonic byte cursor offsets. Synchronous `exec_run` outputs and worker error messages are sanitized after capture before return. Redaction does not match transformed, encoded (e.g. base64/hex), hashed, or partial secrets.
+- `operation_status`, `operation_cancel`, and `operation_wait` provide observable,
+  cancellable, and reconnectable management of long-running operations.
 - `symbols_search` uses Universal Ctags to find definitions. It is not a
   language server. `symbols_references` is a bounded lexical word search, so it
   can include definitions and same-spelling identifiers rather than semantic
@@ -113,25 +457,43 @@ reconciliation are owned by
   [`worker/harness-worker.mjs`](../worker/harness-worker.mjs), and the executor
   image owns the available indexer in
   [`docker/executor.Dockerfile`](../docker/executor.Dockerfile).
-- Shells, named coding sessions, and detached tasks are workspace-owned during
-  a runner process lifetime, but their handles and buffered output are in
-  memory. They are not recoverable after a runner restart. Startup restarts
-  each surviving executor so processes whose handles were lost cannot continue
-  invisibly.
-- In-memory operation retention is bounded per workspace: completed records
-  are evicted as handle limits are reached, retained output shares a fixed
-  budget, and closing the workspace evicts all shell/session/task state.
-- A task with dependencies remains queued until every named prerequisite has
-  succeeded. Failure or cancellation blocks its dependents; the dependency
-  graph exposes that scheduling state. Dependency validation and scheduling
-  are owned by
-  [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
-- Workspace metadata is durable in SQLite; executor files persist only until
-  workspace close or TTL cleanup.
-- Executors have no network by default. Dependency installation, arbitrary
-  commands, and repository-defined deployments that need network access require
-  an explicitly requested/configured `bridge` workspace, which is a weaker
-  security boundary. Remote Git fetch, pull, and push do not require executor
+- **MCP Tasks Specification Evaluation (2026-07-28 Revision):** The official Model Context Protocol specification
+  ([Overview](https://modelcontextprotocol.io/extensions/tasks/overview), 2026-07-28 revision) transitioned Tasks from
+  basic utilities into an optional extension (`io.modelcontextprotocol/tasks`) negotiated via per-request server capabilities
+  and `server/discover`. The specification defines methods (`tasks/get`, `tasks/update`, `tasks/cancel`), polymorphic
+  tool results (`resultType: "task"`), and progress notifications (`notifications/tasks/progress`).
+  According to the official [Extension Client Matrix](https://modelcontextprotocol.io/extensions/client-matrix), major host
+  clients (Claude Desktop, Cursor, Codex, ChatGPT Web) do not yet advertise or verify Tasks extension capability handshake.
+  Cloud Harness MCP maintains its stable, verified public task tool contracts (`tasks_run`, `tasks_status`, `tasks_list`,
+  `tasks_cancel`, `tasks_graph`) as canonical. Standard MCP Tasks facade integration remains evaluated and **default-off**
+  until official client host runtime support is verified across the ecosystem matrix.
+- Retained artifact snapshots (`artifacts_snapshot`, `artifacts_list`, `artifacts_read`,
+  `artifacts_restore`, `artifacts_delete`) allow agents to explicitly retain selected
+  workspace files beyond ephemeral workspace TTLs, list and read bounded base64 chunks,
+  and restore snapshots into active workspaces for cross-session and cross-agent handoffs.
+  Artifacts are principal-owned, TTL-bounded snapshots; they are not Git source history,
+  volatile task/session buffers, or arbitrary object storage.
+- Dashboard project/environment, encrypted-secret reference, GitHub binding, and audit
+  operations use the distinct internal runner contract in
+  [`packages/contracts/src/internal-runner-api.ts`](../packages/contracts/src/internal-runner-api.ts).
+  They are not public MCP tools.
+- Dashboard API-key lifecycle uses a separate internal contract and is not an
+  MCP tool. A key remains bound to the creator's durable principal across an
+  explicitly applied Access subject relink. Expiry and revocation are checked
+  on every request; `lastUsedAt` is coalesced telemetry and never an
+  authorization input.
+- Executors are egress-capable by default: `workspace_open` without
+  `networkProfile` resolves an explicit request, then the instance-wide default
+  persisted from the dashboard Settings page, then `WORKSPACE_NETWORK_PROFILE`
+  (shipped default `dependency-access`). That profile permits only public DNS and
+  public TCP 80/443 and blocks loopback-to-host, Docker/control-plane, RFC 1918,
+  link-local, and cloud-metadata ranges below the executor; it is a weaker
+  boundary that still permits public exfiltration and fails closed
+  (`DEPENDENCY_EGRESS_UNAVAILABLE`, 503) when host firewall attestation is
+  unavailable, never silently downgrading. Callers narrow a workspace only when
+  isolation is required by passing `networkProfile: "network-none"`, which blocks
+  all executor egress. The legacy `networkMode` argument is rejected with
+  `INVALID_INPUT`. Remote Git fetch, pull, and push do not require executor
   networking: the runner stages them through ephemeral transfer helpers.
 - Remote Git is deliberately limited to the validated credential-free
   `origin`. Fetch and pull download into a sibling transfer repository, then
@@ -149,17 +511,80 @@ reconciliation are owned by
 - `git_fetch` without a ref imports remote branches into `refs/remotes/origin/*`;
   an explicit branch ref also updates its corresponding tracking ref and
   `FETCH_HEAD`. Tags and arbitrary destination refspecs are intentionally not
-  part of this origin-only surface.
-- Skills are discovered only from repository-local `.agents/skills`,
-  `.codex/skills`, and `.claude/skills` directories. Hooks come from the
-  repository's `.cloud-harness/hooks.json`, and memories are files inside the
-  workspace. Named deployments come from the repository's
-  `.cloud-harness/deployments.json` and execute inside the existing executor;
-  they do not receive deployment secrets or host credentials from the harness.
-  Treat all of these surfaces as repository-controlled code or data.
+  part of this origin-only surface. `depth`, `unshallow`, and `shallowSince` are
+  mutually exclusive history controls routed through the same credential-free
+  transfer helper: the networked fetch applies the requested depth/date, and
+  the offline import applies it with `--update-shallow` only while the checkout
+  is still shallow, so these options deepen history and never truncate a
+  complete checkout. A `shallowSince` date that selects no commits on a fetched
+  branch makes Git reject the whole fetch; pick an earlier date or a `refspec`.
+- Skills resolve deterministically with 4-source precedence: `built-in > owner > workspace > repository`
+  (and repository sub-roots `.agents/skills > .codex/skills > .claude/skills`). Each result includes
+  immutable provenance, selected candidate, and shadowed alternatives. Execution requires matching
+  the approved bundle SHA-256 digest. Native MCP skill reads are described in
+  [Skills over MCP extension](#skills-over-mcp-extension).
+- Hooks support declarative JSON format in `.cloud-harness/hooks.json` with named lifecycle events
+  (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle
+  execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest.
+  Execution runs exclusively inside the container executor with `networkMode: none` by default.
+- Knowledge (Memories & Journals) is stored in principal-isolated SQLite `StateStore` (schema v10) supporting `owner`, `project`, and `workspace` scopes for memories, and chronological journals (`engineering-log`, `decision-record`, `session-reflection`). Operations (`knowledge_create`, `knowledge_read`, `knowledge_update`, `knowledge_delete`, `knowledge_list`, `knowledge_search`, `knowledge_link`, `knowledge_unlink`, `knowledge_graph`) provide CAS concurrency (`expectedGeneration`), RRF hybrid search (FTS5 + vector similarity), and bidirectional graph relations with wikilink extraction.
+- Named deployments come from the repository's `.cloud-harness/deployments.json` and execute inside the
+  existing executor; they do not receive deployment secrets or host credentials from the harness.
+- Treat all repository-derived instruction, skill, hook, and memory text as untrusted data.
 
 Tool annotations inform client approval UX. They do not replace review of the
 command, repository, network mode, or workspace changes.
+
+## Local stdio mode semantics
+
+When running Cloud Harness MCP over local stdio (`--transport stdio --workspace <path>`):
+
+1. **Pre-opened workspace:** The workspace is configured at process startup. Calling `workspace_open` returns `INVALID_INPUT` explaining that the workspace is already selected.
+2. **Lifecycle operations:** `workspace_list` lists the active local workspace. `workspace_status` and `workspace_capabilities` return structured repository and workspace capabilities (`mode: 'local'`, `gitNetwork`, `gitPush`, `sandboxed: false`, granular operations and permissions). `workspace_close` terminates owned child processes but **never deletes the local folder**.
+3. **Subprocess execution:** `exec_run`, `shell_*`, `sessions_*`, and `tasks_*` execute on the local host with the current user's permissions. Output is bounded by ring buffers and paginated with monotonic cursors.
+4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action` and `exec_run.privileged=true` return structured unsupported errors.
+5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
+
+### Local multi-workspace mode
+
+`--workspace-config <absolute-path>` replaces `--workspace` with an
+operator-owned registry of named roots, served from one stdio process or, with
+`--transport http`, from one authenticated local Streamable HTTP endpoint at
+`/mcp`. The registry file is the only way to add a root, so a client can never
+point host execution at a path the operator did not list. Each root gets its own
+single-root local backend, so path policy, processes, tasks, sessions, and
+output never cross roots. The file format and client setup are in the
+[user guide](../docs-site/connect.md#several-local-workspaces-from-one-server).
+
+- **Stable identity.** Every root is pre-opened with a `ws_local_` ID derived
+  from its name and canonical path. The ID survives restarts; renaming the entry
+  or moving the root yields a new ID, and the old ID fails closed with
+  `NOT_FOUND`. `workspace_list` entries add `name`, `root`, and `rootAvailable`.
+- **Selection fails closed.** An explicit `workspaceId` always wins. Without
+  one, stdio uses its `workspace_set_active` preference, then a sole registered
+  root; anything else returns `CONFLICT` listing the candidates instead of
+  guessing. The HTTP endpoint keeps no preference because requests share no
+  session: `workspace_set_active` returns `INVALID_INPUT` there, so pass
+  `workspaceId` on every call unless only one root is registered.
+  `workspace_open` returns `INVALID_INPUT` in both transports.
+- **Root availability.** If a root's canonical path or device/inode identity
+  changes (a dropped network mount leaving an empty mount point, a retargeted
+  symlink, a replaced directory), calls to it return retryable `UNAVAILABLE`
+  rather than executing somewhere else. A root check that hangs (a stuck
+  hard-mounted export) gives up after a short bound and reports the same, so one
+  stuck mount never blocks the other roots. `workspace_status` and
+  `workspace_close` still work so a client can inspect and stop it; a closed root
+  reports `status: CLOSED` with `workspace_recover` as its next action.
+- **Close and recover.** `workspace_close` stops that root's processes and never
+  touches its files; `workspace_recover` reopens a closed root with the same ID.
+- **Unchanged modes.** Single-root `--workspace` stdio and the remote
+  runner-backed HTTP service behave as before.
+
+The executable owners are
+[`local-workspace-registry.ts`](../apps/api/src/local/local-workspace-registry.ts),
+[`multi-local-workspace-backend.ts`](../apps/api/src/local/multi-local-workspace-backend.ts),
+[`local-http-server.ts`](../apps/api/src/local/local-http-server.ts), and
+[`test/integration/mcp-local-multi-workspace.test.ts`](../test/integration/mcp-local-multi-workspace.test.ts).
 
 ## Repository opening policy
 
@@ -170,12 +595,26 @@ stored remote URL to the credential-free URL.
 
 Optional GitHub App settings let the trusted runner mint a short-lived,
 repository-scoped installation token for clone and later remote Git transfers.
+In Access mode the installations and repository grants are bound to the exact
+authenticated principal; a principal may bind multiple concurrent installations
+(e.g. personal and organization accounts) and the runner selects the matching
+installation by repository owner. GitHub SSO alone grants nothing. In
+owner-bearer mode the fixed configured installation remains the compatibility
+path.
 The token is passed over stdin only to the ephemeral helper that needs it; it
 is absent from Docker arguments, the checkout remote, result envelopes, and the
 long-lived executor. Public clone/fetch/pull can proceed without an App token.
 Private clone/fetch/pull require repository Contents read access, while every
 push requires a configured App installation with Contents read and write
-access. The broker and leak boundary are owned by
+access. `workspace_capabilities` and `workspace_status` expose structured preflight
+information (`capabilities.repository`, `permissions`, `operations`) so clients can
+verify whether operations like `git_push` or GitHub actions are authorized before
+starting work. `capabilities.repository.issuesRead`/`issuesWrite` and
+`pullRequestsRead`/`pullRequestsWrite` are derived from the permissions the
+verified installation actually grants, not merely from an App being configured,
+and `capabilities.workspace.defaultNetworkProfile` reports the effective profile
+that `workspace_open` applies when it omits `networkProfile`. Unauthorized repository operations fail with `REPOSITORY_OPERATION_NOT_AUTHORIZED`
+identifying the missing capability. The broker and leak boundary are owned by
 [`apps/runner/src/github-app-broker.ts`](../apps/runner/src/github-app-broker.ts),
 [`apps/runner/test/git-transfer-leak.test.ts`](../apps/runner/test/git-transfer-leak.test.ts),
 and

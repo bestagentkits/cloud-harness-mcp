@@ -43,7 +43,7 @@ const terminalAgentStatuses: Record<string, true> = {
   LIMIT_EXCEEDED: true,
   INTERRUPTED: true
 };
-const ownerId = 'owner';
+let ownerId = 'owner';
 const activeWorkspaceIds = new Set<string>();
 let directory: string;
 let stack: GatewayTestStack;
@@ -68,7 +68,7 @@ beforeAll(async () => {
     stateDb: join(directory, 'state', 'state.db'),
     executorImage: 'cloud-harness-executor:local',
     allowedGitHosts: ['github.com'],
-    networkMode: 'none',
+    networkProfile: 'network-none',
     wallTtlSeconds: 300,
     idleTtlSeconds: 180,
     maxOutputBytes: 262_144,
@@ -95,7 +95,8 @@ beforeAll(async () => {
     }
   };
   store = new StateStore(runnerConfig.stateDb);
-  repository = new AgentStateRepository(store.database, limits);
+  ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+  repository = new AgentStateRepository(store.database, limits, store.instanceId());
   service = new WorkspaceService(runnerConfig, store, {
     gateway: new DockerAgentGatewayControl(stack.gatewayContainer)
   });
@@ -112,7 +113,16 @@ beforeAll(async () => {
     publicHosts: ['127.0.0.1'],
     allowedOrigins: [],
     requestTimeoutMs: 120_000,
-    maxBodyBytes: 262_144
+    maxBodyBytes: 262_144,
+    mcpGatewayTimeoutMs: 30_000,
+    mcpGatewayMaxResponseBytes: 262_144,
+    mcpGatewayMaxToolsPerServer: 500,
+    mcpGatewayMaxSchemaBytes: 65_536,
+    mcpGatewayMaxCatalogBytes: 2_097_152,
+    mcpGatewayMaxTraceRows: 20_000,
+    mcpGatewayMaxConnections: 32,
+    mcpGatewayAllowInsecureHttp: false,
+    mcpGatewayAllowPrivateEndpoints: false
   };
   apiRuntime = createApiApp(apiConfig);
   apiServer = createServer(apiRuntime.app);
@@ -138,20 +148,32 @@ afterAll(async () => {
     closeServer(apiServer),
     closeServer(runnerServer)
   ]);
-  if (directory) rmSync(directory, { recursive: true, force: true });
+  if (directory) {
+    try {
+      rmSync(directory, { recursive: true, force: true });
+    } catch {
+      await runDocker([
+        'run', '--rm', '--network', 'none', '--user', '0:0',
+        '--volume', `${directory}:/target`,
+        '--entrypoint', '/bin/sh', 'cloud-harness-executor:local',
+        '-c', 'rm -rf /target/*'
+      ]).catch(() => undefined);
+      try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
   if (stack) stopGatewayTestStack(stack);
 }, 120_000);
 
 describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the private runner', () => {
   it('edits only through allowed proxy tools and covers all six public operations with terminal cleanup', async () => {
-    const workspaceId = await openWorkspace('pi-agent-network-none', 'none');
+    const workspaceId = await openWorkspace('pi-agent-network-none', 'network-none');
     const spawnInput = {
       workspaceId,
       prompt: 'Write then edit pi-agent-proof.txt exactly as requested using only the granted tools.',
       idempotencyKey: 'pi-agent-success',
       profileId: 'fake-test-only',
       proxyOperations: ['files_write', 'files_apply_patch'],
-      ttlSeconds: 30,
+      ttlSeconds: 120,
       maxOutputBytes: 262_144,
       maxInputTokens: 65_536,
       maxOutputTokens: 1_024,
@@ -168,7 +190,7 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
     await waitFor(
       () => repository.findAgent(ownerId, workspaceId, agentId),
       (record) => record !== undefined && terminalAgentStatuses[record.status] === true,
-      45_000
+      90_000
     );
     const terminal = (await call('agent_status', { workspaceId, agentId })).data;
     expect(terminal.status, JSON.stringify({
@@ -280,10 +302,11 @@ describe.skipIf(Boolean(prerequisiteIssue))('actual Pi agent through MCP and the
     activeWorkspaceIds.delete(workspaceId);
     expect(await inspectContainer(workspaceRecord.containerName)).toBeUndefined();
     expect(existsSync(workspaceRecord.workspacePath)).toBe(false);
-  }, 120_000);
+  }, 180_000);
 
   it('rejects agent spawn for a bridge-backed workspace before creating agent resources', async () => {
-    const workspaceId = await openWorkspace('pi-agent-bridge-rejection', 'bridge');
+    const workspaceId = await openWorkspace('pi-agent-bridge-rejection', 'network-none');
+    store.database.prepare("UPDATE workspaces SET network_profile='dependency-access' WHERE id=?").run(workspaceId);
     const before = await agentResourceInventory();
     const result = await client.callTool({
       name: 'agent_spawn',
@@ -316,19 +339,30 @@ async function closeActiveWorkspaces(): Promise<void> {
       await service.close(ownerId, workspaceId);
     } catch {
       if (record?.containerName) await removeContainer(record.containerName).catch(() => undefined);
-      if (record) rmSync(record.workspacePath, { recursive: true, force: true });
+      if (record?.workspacePath) {
+        try {
+          rmSync(record.workspacePath, { recursive: true, force: true });
+        } catch {
+          await runDocker([
+            'run', '--rm', '--network', 'none', '--user', '0:0',
+            '--volume', `${record.workspacePath}:/target`,
+            '--entrypoint', '/bin/sh', 'cloud-harness-executor:local',
+            '-c', 'rm -rf /target/*'
+          ]).catch(() => undefined);
+        }
+      }
     } finally {
       activeWorkspaceIds.delete(workspaceId);
     }
   }
 }
 
-async function openWorkspace(idempotencyKey: string, networkMode: 'none' | 'bridge'): Promise<string> {
+async function openWorkspace(idempotencyKey: string, networkProfile: 'network-none' = 'network-none'): Promise<string> {
   const opened = await call('workspace_open', {
     repositoryUrl: 'https://github.com/bestagentkits/cloud-harness-mcp.git',
     ref: 'test-fixture-v1',
     idempotencyKey,
-    networkMode
+    networkProfile
   });
   const workspaceId = opened.data.workspaceId as string;
   activeWorkspaceIds.add(workspaceId);

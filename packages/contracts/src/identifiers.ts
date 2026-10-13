@@ -9,6 +9,16 @@ export const ShellIdSchema = opaqueId('sh').brand<'ShellId'>();
 export const SessionIdSchema = opaqueId('sess').brand<'SessionId'>();
 export const TaskIdSchema = opaqueId('task').brand<'TaskId'>();
 export const AgentIdSchema = opaqueId('agent').brand<'AgentId'>();
+export const AgentLeaseIdSchema = opaqueId('lease').brand<'AgentLeaseId'>();
+export const AgentMessageIdSchema = opaqueId('msg').brand<'AgentMessageId'>();
+export const ModelCredentialIdSchema = opaqueId('cred').brand<'ModelCredentialId'>();
+export const ModelProfileIdSchema = z.string().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/, 'invalid profile identifier').brand<'ModelProfileId'>();
+export const ModelRevisionIdSchema = opaqueId('rev').brand<'ModelRevisionId'>();
+export const SkillSourceIdSchema = opaqueId('sk').brand<'SkillSourceId'>();
+export const SkillRevisionIdSchema = opaqueId('skrev').brand<'SkillRevisionId'>();
+export const SkillSetIdSchema = opaqueId('skset').brand<'SkillSetId'>();
+export const SkillImportJobIdSchema = opaqueId('skjob').brand<'SkillImportJobId'>();
+export const IntegrationCredentialIdSchema = opaqueId('icr').brand<'IntegrationCredentialId'>();
 export const IdempotencyKeySchema = z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 
 export type WorkspaceId = z.infer<typeof WorkspaceIdSchema>;
@@ -17,3 +27,19 @@ export type ShellId = z.infer<typeof ShellIdSchema>;
 export type SessionId = z.infer<typeof SessionIdSchema>;
 export type TaskId = z.infer<typeof TaskIdSchema>;
 export type AgentId = z.infer<typeof AgentIdSchema>;
+export type AgentLeaseId = z.infer<typeof AgentLeaseIdSchema>;
+export type AgentMessageId = z.infer<typeof AgentMessageIdSchema>;
+export type ModelCredentialId = z.infer<typeof ModelCredentialIdSchema>;
+export type ModelProfileId = z.infer<typeof ModelProfileIdSchema>;
+export type ModelRevisionId = z.infer<typeof ModelRevisionIdSchema>;
+export type SkillSourceId = z.infer<typeof SkillSourceIdSchema>;
+export type SkillRevisionId = z.infer<typeof SkillRevisionIdSchema>;
+export type SkillSetId = z.infer<typeof SkillSetIdSchema>;
+export type SkillImportJobId = z.infer<typeof SkillImportJobIdSchema>;
+export type IntegrationCredentialId = z.infer<typeof IntegrationCredentialIdSchema>;
+
+export const ExecutorNetworkProfileSchema = z.enum(['network-none', 'dependency-access']);
+export type ExecutorNetworkProfile = z.infer<typeof ExecutorNetworkProfileSchema>;
+
+export const WorkspaceNetworkExposureSchema = z.enum(['network-none', 'dependency-access', 'local-host']);
+export type WorkspaceNetworkExposure = z.infer<typeof WorkspaceNetworkExposureSchema>;

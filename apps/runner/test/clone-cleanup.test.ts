@@ -16,8 +16,12 @@ vi.mock('../src/docker-engine.js', () => docker);
 vi.mock('../src/repository-policy.js', () => ({
   validateRepositoryUrl: vi.fn(async (value: string) => new URL(value))
 }));
-vi.mock('../src/github-app-broker.js', () => ({ mintRepositoryToken: vi.fn(async () => undefined) }));
+vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubAppBroker>()),
+  mintRepositoryToken: vi.fn(async () => undefined)
+}));
 
+import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
@@ -33,7 +37,7 @@ describe('clone helper cleanup', () => {
     const config: RunnerConfig = {
       host: '127.0.0.1', port: 3001, serviceToken: 'runner-token-that-is-longer-than-32-characters',
       jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state.db'), executorImage: 'executor',
-      allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300, idleTtlSeconds: 180,
+      allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 300, idleTtlSeconds: 180,
       maxOutputBytes: 262_144, minFreeBytes: 0, maxWorkspaceBytes: 1_048_576, reaperIntervalSeconds: 30
     };
     mkdirSync(config.jobsRoot, { recursive: true });

@@ -14,8 +14,12 @@ const dockerMocks = vi.hoisted(() => ({
 
 vi.mock('../src/docker-engine.js', () => dockerMocks);
 vi.mock('../src/repository-policy.js', () => ({ validateRepositoryUrl: async (value: string) => new URL(value) }));
-vi.mock('../src/github-app-broker.js', () => ({ mintRepositoryToken: async () => secretToken }));
+vi.mock('../src/github-app-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof GitHubAppBroker>()),
+  mintRepositoryToken: async () => secretToken
+}));
 
+import type * as GitHubAppBroker from '../src/github-app-broker.js';
 import { WorkspaceService } from '../src/workspace-service.js';
 
 const temporaryDirectories: string[] = [];
@@ -31,7 +35,7 @@ describe('private clone credential boundary', () => {
     const config: RunnerConfig = {
       host: '127.0.0.1', port: 3001, serviceToken: 'runner-test-token-that-is-longer-than-32-characters',
       jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state.db'), executorImage: 'cloud-harness-executor:local',
-      allowedGitHosts: ['github.com'], networkMode: 'none', wallTtlSeconds: 300, idleTtlSeconds: 180,
+      allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 300, idleTtlSeconds: 180,
       maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 536_870_912, reaperIntervalSeconds: 30,
       githubApp: { appId: 123, installationId: 456, privateKey: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----' }
     };

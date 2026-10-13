@@ -8,6 +8,7 @@ repository_path=$3
 transfer_path=$4
 argument=${5:-}
 expected_remote_oid=${6:-}
+history_spec=${7:-}
 token=
 IFS= read -r token || true
 
@@ -37,21 +38,52 @@ git_clean() {
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= -c http.followRedirects=false "$@"
 }
 
+# The history spec comes from schema-validated input: '' (no depth change), full, depth:N, or since:DATE.
+# The remote fetch applies the depth to the transfer repository; the offline import then applies the same
+# boundary to the checkout, with --update-shallow so shallow roots from the transfer are accepted.
+# A complete checkout is never cut back: depth and date boundaries apply to the import only while the checkout
+# is still shallow, so a history request can deepen but never truncate existing history.
+remote_history=()
+import_history=()
+checkout_shallow=false
+if [[ $mode == import && -n $history_spec && $(git_clean -C "$repository_path" rev-parse --is-shallow-repository) == true ]]; then
+  checkout_shallow=true
+fi
+case $history_spec in
+  '') ;;
+  full)
+    if [[ $checkout_shallow == true ]]; then import_history=(--update-shallow --unshallow); fi
+    ;;
+  depth:*)
+    depth=${history_spec#depth:}
+    if [[ ! $depth =~ ^[1-9][0-9]{0,5}$ ]]; then printf 'invalid fetch depth\n' >&2; exit 2; fi
+    remote_history=(--depth "$depth")
+    if [[ $checkout_shallow == true ]]; then import_history=(--update-shallow --depth "$depth"); fi
+    ;;
+  since:*)
+    since=${history_spec#since:}
+    if [[ ! $since =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}([T][0-9:.]+(Z|[+-][0-9]{2}:[0-9]{2}))?$ ]]; then printf 'invalid fetch shallow-since date\n' >&2; exit 2; fi
+    remote_history=("--shallow-since=$since")
+    if [[ $checkout_shallow == true ]]; then import_history=(--update-shallow "--shallow-since=$since"); fi
+    ;;
+  *) printf 'invalid fetch history spec\n' >&2; exit 2 ;;
+esac
+
 case $mode in
   fetch)
     configure_auth
     git_clean init --bare -- "$transfer_path"
     if [[ -n $argument ]]; then
-      git_clean --git-dir="$transfer_path" fetch --no-tags --no-recurse-submodules -- \
+      git_clean --git-dir="$transfer_path" fetch --no-tags --no-recurse-submodules ${remote_history[@]+"${remote_history[@]}"} -- \
         "$repository_url" "${argument}:refs/heads/cloud-harness-fetch"
     else
-      git_clean --git-dir="$transfer_path" fetch --no-tags --no-recurse-submodules -- \
+      git_clean --git-dir="$transfer_path" fetch --no-tags --no-recurse-submodules ${remote_history[@]+"${remote_history[@]}"} -- \
         "$repository_url" '+refs/heads/*:refs/heads/cloud-harness/*'
     fi
     ;;
   import)
     if [[ -n $argument ]]; then
-      git_clean -C "$repository_path" fetch --no-tags --no-recurse-submodules -- \
+      git_clean -C "$repository_path" fetch --no-tags --no-recurse-submodules ${import_history[@]+"${import_history[@]}"} -- \
         "$transfer_path" refs/heads/cloud-harness-fetch
       if [[ $argument == refs/heads/* ]]; then
         branch=${argument#refs/heads/}
@@ -59,7 +91,7 @@ case $mode in
         git_clean -C "$repository_path" update-ref "refs/remotes/origin/${branch}" FETCH_HEAD
       fi
     else
-      git_clean -C "$repository_path" fetch --no-tags --no-recurse-submodules -- \
+      git_clean -C "$repository_path" fetch --no-tags --no-recurse-submodules ${import_history[@]+"${import_history[@]}"} -- \
         "$transfer_path" '+refs/heads/cloud-harness/*:refs/remotes/origin/*'
     fi
     ;;

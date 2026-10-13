@@ -1,0 +1,27 @@
+# Cloud Harness MCP
+
+> A private, single-owner remote coding harness. AI coding agents connect over authenticated Streamable HTTP MCP and get isolated, non-root Docker sandboxes to clone, build, test, commit, and push, while credentials stay in the trusted control plane and out of the executor.
+
+Cloud Harness MCP is open source (MIT) and self-hosted. It is not a hostile multi-tenant sandbox: it trusts one owner and constrains what repository-controlled code can reach.
+
+## Product
+
+- [Home](https://harness.agentkit.best/): Architecture (stateless ingress, policy runner, non-root sandbox), the bounded coding workflow, the MCP tool set, client setup, and installation.
+- [HaaS design](https://harness.agentkit.best/haas.html): Design notes for a hosted, multi-tenant "Harness as a Service" built on microVM isolation. Design stage, not a shipped product.
+- [Support](https://harness.agentkit.best/support.html): Where to get help and report issues.
+
+## Documentation
+
+- [Docs home](https://docs.harness.agentkit.best/): Full user and operator documentation.
+- [Docs llms.txt](https://docs.harness.agentkit.best/llms.txt): Documentation index with Markdown URLs for every page.
+- [Getting started](https://docs.harness.agentkit.best/getting-started.md): Open a workspace and run the first commands.
+- [Security model](https://docs.harness.agentkit.best/security-model.md): Threat model, network isolation, and credential boundaries.
+
+## Source
+
+- [GitHub repository](https://github.com/bestagentkits/cloud-harness-mcp): Source code, issues, and releases.
+
+## Legal
+
+- [Privacy](https://harness.agentkit.best/privacy.html)
+- [Terms](https://harness.agentkit.best/terms.html)

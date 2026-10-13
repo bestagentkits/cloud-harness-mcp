@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 const result = spawnSync('docker', [
   'compose', '--profile', 'gateway-test', '-f', 'compose.yaml', '-f', 'compose.production.yaml', 'config', '--format', 'json'
@@ -19,27 +20,20 @@ const networkNames = (service) => Object.keys(service.networks ?? {}).sort();
 const mountTargets = (service) => (service.volumes ?? []).map((mount) => mount.target).sort();
 const environmentNames = (service) => Object.keys(service.environment ?? {}).sort();
 const sameNames = (actual, expected) => JSON.stringify(actual) === JSON.stringify([...expected].sort());
-
-for (const [name, service] of Object.entries(services)) {
-  if (name === 'ingress') continue;
-  requireBoundary(!service.ports?.length, `${name} must not publish a host port`);
-}
-const published = services.ingress.ports ?? [];
-requireBoundary(published.length === 1, 'ingress must publish exactly one port');
-requireBoundary(published[0].host_ip === '127.0.0.1' && Number(published[0].target) === 3100, 'ingress must bind only loopback port 3100');
-
+requireBoundary(!services.api.ports?.length, 'API must not publish a host port');
+requireBoundary(!services.runner.ports?.length, 'runner must not publish a host port');
 requireBoundary(!services.api.volumes?.length, 'API must not receive host mounts');
 requireBoundary(!services.ingress.volumes?.length, 'ingress must not receive host mounts');
-requireBoundary(sameNames(networkNames(services.api), ['control', 'frontend']), 'API network boundary changed');
-requireBoundary(sameNames(networkNames(services.runner), ['control', 'runner-egress']), 'runner network boundary changed');
-requireBoundary(sameNames(networkNames(services.ingress), ['frontend', 'ingress']), 'ingress network boundary changed');
-requireBoundary(networks.control.internal === true && networks.frontend.internal === true, 'private networks must remain internal');
-requireBoundary(networks.ingress.internal !== true && networks['runner-egress'].internal !== true, 'ingress and runner egress must remain routable');
+requireBoundary(JSON.stringify(networkNames(services.api)) === JSON.stringify(['api-egress', 'control', 'frontend']), 'API network boundary changed');
+requireBoundary(JSON.stringify(networkNames(services.runner)) === JSON.stringify(['control', 'runner-egress']), 'runner network boundary changed');
+requireBoundary(JSON.stringify(networkNames(services.ingress)) === JSON.stringify(['frontend', 'ingress']), 'ingress network boundary changed');
+requireBoundary(JSON.stringify(networkNames(services['provisioning-proxy'])) === JSON.stringify(['provisioning', 'runner-egress']), 'provisioning-proxy network boundary changed');
+requireBoundary(networks.control.internal === true && networks.frontend.internal === true && networks.provisioning.internal === true, 'private networks must remain internal');
+requireBoundary(networks.ingress.internal !== true && networks['api-egress'].internal !== true && networks['runner-egress'].internal !== true && networks['provider-egress'].internal !== true, 'gateway networks must remain routable');
 
 const gateway = services['model-gateway'];
 requireBoundary(gateway.read_only === true, 'model gateway filesystem must be read-only');
 requireBoundary(sameNames(networkNames(gateway), ['provider-egress']), 'model gateway may join only provider-egress statically');
-requireBoundary(networks['provider-egress'].internal !== true, 'provider-egress must remain separately routable');
 requireBoundary(Object.entries(services).every(([name, service]) => name === 'model-gateway' || !networkNames(service).includes('provider-egress')), 'only model gateway may join provider-egress');
 requireBoundary(sameNames(mountTargets(gateway), [
   '/run/model-gateway-config/profiles.json',
@@ -52,22 +46,10 @@ requireBoundary(sameNames(environmentNames(gateway), [
   'MODEL_GATEWAY_HOST',
   'MODEL_GATEWAY_MODE',
   'MODEL_GATEWAY_PORT',
-  'MODEL_GATEWAY_PROFILES_FILE'
+  'MODEL_GATEWAY_PROFILES_FILE',
+  'MODEL_GATEWAY_SESSION_HEADER'
 ]), 'model gateway environment allowlist changed');
 requireBoundary(gateway.environment.MODEL_GATEWAY_MODE === 'production', 'production gateway must force production profile validation');
-
-for (const serviceName of ['api', 'runner', 'ingress']) {
-  const names = environmentNames(services[serviceName]);
-  requireBoundary(!names.some((name) => /^MODEL_GATEWAY_|PROVIDER_|.*(?:API_KEY|SECRET)$/u.test(name)), `${serviceName} must not receive gateway/provider environment`);
-}
-const ingressEnvironment = environmentNames(services.ingress);
-requireBoundary(!ingressEnvironment.some((name) => /TOKEN|SECRET|PASSWORD|GITHUB_APP/u.test(name)), 'ingress must not receive secret variables');
-
-const runnerMounts = services.runner.volumes ?? [];
-requireBoundary(runnerMounts.some((mount) => mount.source === '/var/run/docker.sock' && mount.target === '/var/run/docker.sock'), 'runner Docker socket mount is missing');
-requireBoundary(runnerMounts.some((mount) => mount.source === '/etc/cloud-harness-mcp/github-app-private-key.pem' && mount.target === '/run/cloud-harness-secrets/github-app-private-key.pem' && mount.read_only === true), 'runner GitHub key must be one exact read-only file');
-requireBoundary(!runnerMounts.some((mount) => mount.source === '/etc/cloud-harness-mcp' || mount.target === '/run/cloud-harness-secrets'), 'runner must not mount a secret directory');
-requireBoundary(!runnerMounts.some((mount) => /model-gateway|provider-api-key/u.test(`${mount.source}:${mount.target}`)), 'runner must not receive model gateway secrets');
 
 const staticAgentNetworks = Object.keys(networks).filter((name) => /agent/u.test(name) && name !== 'model-gateway-test-agent');
 requireBoundary(staticAgentNetworks.length === 0, 'production agent workers require dynamic per-agent networks, not a shared static network');
@@ -81,4 +63,109 @@ requireBoundary(networks['model-gateway-test-agent'].internal === true && networ
 requireBoundary(!testGateway.ports?.length && !fakeProvider.ports?.length, 'test topology must not publish host ports');
 requireBoundary(!(testGateway.volumes ?? []).some((mount) => mount.target.includes('/run/model-gateway-secrets/provider-api-key')), 'test topology must not mount the production provider secret');
 
+const published = services.ingress.ports ?? [];
+requireBoundary(published.length === 1, 'ingress must publish exactly one port');
+requireBoundary(published[0].host_ip === '127.0.0.1' && Number(published[0].target) === 3100, 'ingress must bind only loopback port 3100');
+requireBoundary(!services['provisioning-proxy'].ports?.length, 'provisioning-proxy must not publish a host port');
+const ingressEnvironment = Object.keys(services.ingress.environment ?? {});
+requireBoundary(!ingressEnvironment.some((name) => /TOKEN|SECRET|PASSWORD|GITHUB_APP/.test(name)), 'ingress must not receive secret variables');
+
+const runnerMounts = services.runner.volumes ?? [];
+requireBoundary(runnerMounts.some((mount) => mount.source === '/var/run/docker.sock' && mount.target === '/var/run/docker.sock'), 'runner Docker socket mount is missing');
+requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/artifacts'), 'runner artifact persistence mount is missing');
+requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/cache/repos'), 'runner repo cache persistence mount is missing');
+requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/cache/toolkits'), 'runner toolkit cache persistence mount is missing');
+requireBoundary(!runnerMounts.some((mount) => /model-gateway|provider-api-key/u.test(`${mount.source}:${mount.target}`)), 'runner must not receive model gateway secrets');
+requireBoundary(!runnerMounts.some((mount) => mount.source.includes('cloud-harness-model-gateway')), 'runner must not mount model gateway secret directory');
+for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE', 'CLOUDFLARE_ACCESS_API_TOKEN', 'CLOUDFLARE_ACCESS_API_TOKEN_FILE']) {
+  requireBoundary(!services.api.environment?.[name], `API must not receive ${name}`);
+}
+// The Managed OAuth control-plane token is runner-only: the API must blank it so a
+// shared env file cannot leak it, and nothing else may name it at all.
+requireBoundary('CLOUDFLARE_ACCESS_API_TOKEN' in (services.api.environment ?? {}) && 'CLOUDFLARE_ACCESS_API_TOKEN_FILE' in (services.api.environment ?? {}), 'API must explicitly blank the Cloudflare Access API token');
+for (const [serviceName, service] of Object.entries(services)) {
+  if (serviceName === 'runner' || serviceName === 'api') continue;
+  requireBoundary(!Object.keys(service.environment ?? {}).some((name) => name.startsWith('CLOUDFLARE_ACCESS_API_TOKEN')), `${serviceName} must not receive the Cloudflare Access API token`);
+}
+for (const service of ['api', 'runner', 'ingress']) {
+  for (const name of ['MCP_CANARY_URL', 'MCP_CANARY_ACCESS_CLIENT_ID', 'MCP_CANARY_ACCESS_CLIENT_SECRET']) {
+    requireBoundary(!services[service].environment?.[name], `${service} must not receive ${name}`);
+  }
+}
+
+const tunnelResult = spawnSync('docker', [
+  'compose', '-f', 'compose.yaml', '-f', 'compose.production.yaml', '-f', 'deploy/cloudflare-tunnel/compose.tunnel.yaml', 'config', '--format', 'json'
+], {
+  cwd: process.cwd(),
+  encoding: 'utf8',
+  env: { ...process.env, CLOUD_HARNESS_ENV_FILE: '.env.example', CLOUDFLARE_TUNNEL_TOKEN: 'dummy-token' }
+});
+
+if (tunnelResult.status !== 0) throw new Error(tunnelResult.stderr || 'tunnel Compose config failed');
+const tunnelConfig = JSON.parse(tunnelResult.stdout);
+const tunnelServices = tunnelConfig.services;
+requireBoundary(Boolean(tunnelServices.cloudflared), 'tunnel Compose must declare cloudflared service');
+requireBoundary(!tunnelServices.cloudflared.ports?.length, 'cloudflared must not publish host ports');
+requireBoundary(!tunnelServices.cloudflared.volumes?.length, 'cloudflared must not receive host mounts');
+requireBoundary(JSON.stringify(networkNames(tunnelServices.cloudflared)) === JSON.stringify(['ingress']), 'cloudflared must attach only to the ingress network');
+requireBoundary(tunnelConfig.networks.ingress.internal !== true, 'ingress network must remain routable for tunnel');
+
+const nginx = readFileSync('deploy/nginx/cloud-harness-mcp.conf', 'utf8');
+const locationBlock = (pattern) => nginx.match(pattern)?.[0] ?? '';
+const dashboardEntry = locationBlock(/location = \/dashboard \{[^}]+\}/s);
+const dashboardPrefix = locationBlock(/location \^~ \/dashboard\/ \{[^}]+\}/s);
+const mcp = locationBlock(/location = \/mcp \{[^}]+\}/s);
+const gatewayMcp = locationBlock(/location = \/mcp-gateway \{[^}]+\}/s);
+const apiKeyMcp = locationBlock(/location = \/mcp-api-key \{[^}]+\}/s);
+const apiKeyGatewayMcp = locationBlock(/location = \/mcp-api-key\/gateway \{[^}]+\}/s);
+const workspaceMcp = locationBlock(/location \^~ \/mcp\/workspaces\/ \{[^}]+\}/s);
+requireBoundary(dashboardEntry.includes('proxy_pass http://127.0.0.1:3100/dashboard;'), 'nginx dashboard entry point must preserve its upstream path');
+requireBoundary(dashboardPrefix.includes('proxy_pass http://127.0.0.1:3100/dashboard/;'), 'nginx dashboard prefix must preserve asset and BFF paths');
+for (const directive of ['proxy_http_version 1.1;', 'proxy_buffering off;', 'proxy_request_buffering off;', 'proxy_read_timeout 3600s;']) {
+  requireBoundary(mcp.includes(directive), `nginx MCP streaming directive is missing: ${directive}`);
+  requireBoundary(gatewayMcp.includes(directive), `nginx MCP gateway streaming directive is missing: ${directive}`);
+  requireBoundary(apiKeyMcp.includes(directive), `nginx API-key MCP streaming directive is missing: ${directive}`);
+  requireBoundary(apiKeyGatewayMcp.includes(directive), `nginx API-key MCP gateway streaming directive is missing: ${directive}`);
+  requireBoundary(workspaceMcp.includes(directive), `nginx workspace MCP streaming directive is missing: ${directive}`);
+}
+requireBoundary(workspaceMcp.includes('proxy_pass http://127.0.0.1:3100/mcp/workspaces/;'), 'nginx workspace MCP route must preserve its upstream path');
+requireBoundary(gatewayMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-gateway;'), 'nginx MCP gateway route must preserve its upstream path');
+requireBoundary(apiKeyMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key;'), 'nginx API-key MCP route must preserve its hidden upstream path');
+requireBoundary(
+  apiKeyGatewayMcp.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;'),
+  'nginx API-key MCP gateway route must preserve its hidden upstream path under the API-key Access scope'
+);
+
+const nginxUpgrade = readFileSync('deploy/scripts/upgrade-nginx-dashboard.sh', 'utf8');
+requireBoundary(
+  nginxUpgrade.includes('dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1'),
+  'nginx upgrade must not return early until dashboard, API-key, and gateway routes are installed'
+);
+requireBoundary(
+  nginxUpgrade.includes('location = /mcp-api-key {') &&
+    nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key;') &&
+    nginxUpgrade.includes('add_api_key="$((1 - api_key_installed))"'),
+  'nginx upgrade must install the hidden API-key route when it is absent'
+);
+requireBoundary(
+  nginxUpgrade.includes('location = /mcp-gateway {') &&
+    nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-gateway;') &&
+    nginxUpgrade.includes('add_gateway="$((1 - gateway_installed))"') &&
+    nginxUpgrade.includes('gateway_installed -eq 0'),
+  'nginx upgrade must install the MCP gateway route when it is absent'
+);
+requireBoundary(
+  nginxUpgrade.includes('location = /mcp-api-key/gateway {') &&
+    nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;') &&
+    nginxUpgrade.includes('add_api_key_gateway="$((1 - api_key_gateway_installed))"') &&
+    nginxUpgrade.includes('$api_key_gateway_installed -eq 1 ]]'),
+  'nginx upgrade must install the hidden API-key MCP gateway route when it is absent'
+);
+requireBoundary(
+  nginxUpgrade.includes('location ^~ /mcp/workspaces/ {') &&
+    nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp/workspaces/;') &&
+    nginxUpgrade.includes('add_workspace="$((1 - workspace_installed))"') &&
+    nginxUpgrade.includes('$gateway_installed -eq 1 && $workspace_installed -eq 1'),
+  'nginx upgrade must install the workspace MCP route when it is absent'
+);
 console.log('compose-boundaries=pass');

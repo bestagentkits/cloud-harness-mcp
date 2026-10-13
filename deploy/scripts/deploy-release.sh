@@ -2,11 +2,126 @@
 set -euo pipefail
 umask 077
 
+# The deploy runs as a transient systemd service, never inside the caller's
+# session. Under `sudo` (use_pty) a dropped SSH connection makes sudo SIGHUP,
+# SIGTERM and then SIGKILL the whole process group two seconds later, which
+# lands while the signal trap is still waiting for `docker compose` to exit, so
+# the stopped release was never rolled back. The caller now only starts and
+# follows the unit; losing the caller leaves the deploy and its rollback running.
+# A second call for the same SHA attaches to the running unit instead of racing it.
+if [[ ${CLOUD_HARNESS_DEPLOY_DETACHED:-} != 1 ]]; then
+  release_sha=${1:-}
+  if [[ ! $release_sha =~ ^[0-9a-f]{40}$ ]]; then
+    echo "release must be an exact 40-character commit SHA" >&2
+    exit 2
+  fi
+  unit="cloud-harness-deploy-$release_sha"
+  case $(systemctl is-active "$unit" 2>/dev/null || true) in
+    active|activating|deactivating|reloading)
+      echo "attaching to the running deployment $unit" >&2
+      journalctl --unit="$unit" --lines=100 --follow --output=cat &
+      follower=$!
+      while [[ $(systemctl is-active "$unit" 2>/dev/null || true) =~ ^(active|activating|deactivating|reloading)$ ]]; do
+        sleep 2
+      done
+      kill "$follower" 2>/dev/null || true
+      if [[ $(cat /var/lib/cloud-harness/release-current 2>/dev/null || true) == "$release_sha" ]]; then
+        exit 0
+      fi
+      echo "deployment $unit finished without promoting $release_sha" >&2
+      exit 1
+      ;;
+  esac
+  systemctl reset-failed "$unit" 2>/dev/null || true
+  journalctl --unit="$unit" --since="@$(date +%s)" --follow --output=cat &
+  follower=$!
+  status=0
+  systemd-run --quiet --wait --collect --unit="$unit" \
+    --description="Cloud Harness deploy $release_sha" \
+    --setenv=CLOUD_HARNESS_DEPLOY_DETACHED=1 --setenv=HOME=/root \
+    --property=KillMode=mixed --property=TimeoutStopSec=30min \
+    --property="ExecStopPost=$(readlink -f "${BASH_SOURCE[0]}") --recover" \
+    "$(readlink -f "${BASH_SOURCE[0]}")" "$release_sha" || status=$?
+  sleep 1
+  kill "$follower" 2>/dev/null || true
+  exit "$status"
+fi
+
+state=/var/lib/cloud-harness
+install -d -o root -g root -m 0700 "$state"
+deploy_lock="$state/deploy.lock"
+exec 9>"$deploy_lock"
+if ! flock -n 9; then
+  echo "another Cloud Harness deployment is already running" >&2
+  exit 75
+fi
+
 release_sha=${1:-}
 repo=/opt/cloud-harness-mcp/repo
 origin=https://github.com/bestagentkits/cloud-harness-mcp.git
-state=/var/lib/cloud-harness
+install -d -m 0700 "$state/state" "$state/backups"
+install -d -m 0750 "$state/jobs" "$state/artifacts"
 env_file=/etc/cloud-harness-mcp/runtime.env
+
+canary_credentials_file=/etc/cloud-harness-mcp/canary-credentials
+config_root=/etc/cloud-harness-mcp
+
+# Every exit of a deploy that has stopped the release, including a completed or
+# failed rollback, removes this marker. Only SIGKILL, an OOM kill, or a host
+# reboot leaves it behind, and then `--recover` restores the recorded release
+# and snapshot: from the deploy unit's ExecStopPost after a kill, and from
+# cloud-harness-deploy-recover.service at boot.
+in_progress="$state/deploy-in-progress"
+# A rollback cannot finish while systemd is stopping Docker for a shutdown, and
+# a failed one disables the service; leave the marker for the boot recovery.
+host_is_shutting_down() {
+  [[ $(systemctl is-system-running 2>/dev/null || true) == stopping ]]
+}
+recover_interrupted_deploy() {
+  [[ -f $in_progress ]] || return 0
+  host_is_shutting_down && return 0
+  previous_sha=$(sed -n 1p "$in_progress")
+  backup_dir=$(sed -n 2p "$in_progress")
+  echo "a killed deployment left the release stopped; restoring ${previous_sha:-no previous release}" >&2
+  cd "$repo"
+  source deploy/scripts/release-runtime.sh
+  trap 'rm -f "$in_progress"' EXIT
+  rollback 0
+}
+# The host deploy tooling only moves forward. Promoting an older release (a
+# rollback, or `cloud-harness-rollback`) keeps the newer scripts, so the next
+# deploy still runs detached with crash recovery instead of an older script that
+# predates those protections.
+tooling_release_file="$state/deploy-tooling-release"
+install_deploy_tooling() {
+  local installed
+  installed=$(cat "$tooling_release_file" 2>/dev/null || true)
+  if [[ ! -f deploy/systemd/cloud-harness-deploy-recover.service ]]; then
+    echo "keeping the installed deploy tooling; $release_sha predates crash recovery" >&2
+    return 0
+  fi
+  if [[ $installed =~ ^[0-9a-f]{40}$ ]] && ! git merge-base --is-ancestor "$installed" "$release_sha"; then
+    echo "keeping the deploy tooling from $installed, which is newer than $release_sha" >&2
+    return 0
+  fi
+  install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-deploy
+  install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
+  install -m 0755 deploy/scripts/upgrade-nginx-dashboard.sh /usr/local/sbin/cloud-harness-upgrade-nginx
+  install -m 0644 deploy/systemd/cloud-harness-deploy-recover.service /etc/systemd/system/cloud-harness-deploy-recover.service
+  systemctl daemon-reload
+  systemctl enable cloud-harness-deploy-recover.service
+  printf '%s\n' "$release_sha" > "$tooling_release_file"
+}
+
+if [[ $release_sha == --recover ]]; then
+  recover_interrupted_deploy
+  exit 0
+fi
+
+if grep -Eq '^(MCP_CANARY_URL|MCP_CANARY_ACCESS_CLIENT_ID|MCP_CANARY_ACCESS_CLIENT_SECRET)=' "$env_file"; then
+  echo "Access canary credentials must be stored in $canary_credentials_file, not the runtime configuration" >&2
+  exit 5
+fi
 
 if [[ ! $release_sha =~ ^[0-9a-f]{40}$ ]]; then
   echo "release must be an exact 40-character commit SHA" >&2
@@ -20,71 +135,118 @@ cd "$repo"
 [[ $(git remote get-url origin) == "$origin" ]] || { echo "unexpected deployment origin" >&2; exit 3; }
 git fetch --force --prune origin main
 git merge-base --is-ancestor "$release_sha" origin/main || { echo "release is not on origin/main" >&2; exit 4; }
+source deploy/scripts/release-runtime.sh
 
 previous_sha=$(cat "$state/release-current" 2>/dev/null || true)
-backup=
+backup_dir=
 
-wait_ready() {
-  for _ in $(seq 1 60); do
-    if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:3100/readyz >/dev/null; then return 0; fi
-    sleep 2
-  done
-  return 1
-}
-
-record_images() {
-  local prefix=$1
-  docker image inspect cloud-harness-api:local --format '{{.Id}}' > "$state/${prefix}-api-image"
-  docker image inspect cloud-harness-runner:local --format '{{.Id}}' > "$state/${prefix}-runner-image"
-  docker image inspect cloud-harness-executor:local --format '{{.Id}}' > "$state/${prefix}-executor-image"
-}
-
-rollback() {
-  local exit_code=$?
-  local rollback_failed=0
-  trap - ERR
+# Build the target images while the current release keeps serving. A cold build
+# takes many minutes, and building only after stop_release kept the dashboard and
+# MCP endpoint down for the whole build. Running containers stay on their image
+# IDs, so retagging :local does not touch the live release; the build after
+# stop_release reuses this cache. A failed or interrupted prebuild never stops
+# anything: it puts the checkout and the :local tags back on the current release.
+# Defined here rather than in release-runtime.sh because a deploy of an older SHA
+# sources that older runtime.
+abandon_prebuild() {
+  local exit_code=$1 image id
+  trap '' ERR HUP INT TERM PIPE
   set +e
-  if [[ -n $previous_sha && $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
-    git checkout --detach --force "$previous_sha" || rollback_failed=1
-    if [[ -n $backup && -f $backup ]]; then cp --reflink=auto "$backup" "$state/state/cloud-harness.db" || rollback_failed=1; fi
-    CLOUD_HARNESS_ENV_FILE="$env_file" HOST_JOBS_ROOT="$state/jobs" HOST_STATE_ROOT="$state/state" docker compose --profile images -f compose.yaml -f compose.production.yaml build executor-image api runner || rollback_failed=1
-    systemctl enable --now cloud-harness-mcp.service || rollback_failed=1
-    wait_ready || rollback_failed=1
-    if [[ $rollback_failed -eq 0 ]]; then
-      record_images release || rollback_failed=1
-      printf '%s\n' "$previous_sha" > "$state/release-current" || rollback_failed=1
-    fi
-  else
-    systemctl disable --now cloud-harness-mcp.service || rollback_failed=1
-    if [[ -L /etc/nginx/sites-enabled/cloud-harness-mcp.conf ]]; then
-      rm -f /etc/nginx/sites-enabled/cloud-harness-mcp.conf || rollback_failed=1
-      nginx -t && systemctl reload nginx || rollback_failed=1
-    fi
-  fi
-  if [[ $rollback_failed -ne 0 ]]; then
-    echo "deployment failed and rollback did not become healthy" >&2
-    exit 70
+  [[ $exit_code -gt 128 ]] && exec >>"$state/deploy-interrupt.log" 2>&1
+  echo "release image build failed or was interrupted; the current release keeps serving" >&2
+  if [[ $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
+    git checkout --detach --force "$previous_sha"
+    for image in api runner executor network-guard agent model-gateway; do
+      id=$(cat "$state/release-${image}-image" 2>/dev/null) && docker tag "$id" "cloud-harness-${image}:local"
+    done
   fi
   exit "$exit_code"
 }
-trap rollback ERR
+trap 'abandon_prebuild $?' ERR
+trap 'abandon_prebuild 129' HUP
+trap 'abandon_prebuild 130' INT
+trap 'abandon_prebuild 143' TERM
+trap 'abandon_prebuild 141' PIPE
+git checkout --detach --force "$release_sha"
+[[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
+source deploy/scripts/release-runtime.sh
+compose --profile images build executor-image agent-image network-guard-image api runner model-gateway
+trap - ERR HUP INT TERM PIPE
 
-systemctl stop cloud-harness-mcp.service
+# `trap ... ERR` never sees a signal, and a dropped SSH session sends SIGHUP, so
+# an interrupted deploy would leave the stopped release down. Signals take the
+# same rollback path; output moves to a host log because the session is gone,
+# and rollback ignores further signals. Defined here, and masking signals
+# itself, because rollback-release.sh and a deploy of an older SHA source an
+# older runtime whose rollback() neither takes an exit code nor masks signals.
+# A non-pty SSH session (the CI deploy path) gets no SIGHUP; the first write to
+# the dead connection raises SIGPIPE, which takes the same path.
+rollback_on_signal() {
+  local signal_name=$1 exit_code=$2
+  trap '' HUP INT TERM PIPE
+  exec >>"$state/deploy-interrupt.log" 2>&1 || true
+  if host_is_shutting_down; then
+    echo "deployment interrupted by host shutdown; recovery runs at boot" >&2
+    trap - EXIT
+    exit "$exit_code"
+  fi
+  echo "deployment interrupted by SIG$signal_name; rolling back" >&2
+  (exit "$exit_code") || rollback "$exit_code"
+}
+trap 'rc=$?; trap "" HUP INT TERM PIPE; (exit "$rc") || { ! host_is_shutting_down || { trap - EXIT; exit "$rc"; }; rollback; }' ERR
+trap 'rollback_on_signal HUP 129' HUP
+trap 'rollback_on_signal INT 130' INT
+trap 'rollback_on_signal TERM 143' TERM
+trap 'rollback_on_signal PIPE 141' PIPE
+
+# The snapshot is recorded in the marker only once it is complete; until then
+# the target never ran, so recovery restarts the previous release as it was.
+printf '%s\n' "$previous_sha" > "$in_progress"
+trap 'rm -f "$in_progress"' EXIT
+stop_release
+backup_dir="$state/backups/cloud-harness-$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 0700 "$backup_dir"
 if [[ -f "$state/state/cloud-harness.db" ]]; then
-  backup="$state/backups/cloud-harness-$(date -u +%Y%m%dT%H%M%SZ).db"
-  cp --reflink=auto "$state/state/cloud-harness.db" "$backup"
+  cp --reflink=auto "$state/state/cloud-harness.db" "$backup_dir/cloud-harness.db"
 fi
+tar -C "$state/artifacts" -cf "$backup_dir/artifacts.tar" .
+if [[ $previous_sha =~ ^[0-9a-f]{40}$ ]]; then
+  if [[ -d $state/release-config-current ]]; then
+    cp -a "$state/release-config-current" "$backup_dir/config"
+  elif [[ $previous_sha == "$release_sha" ]]; then
+    cp -a "$config_root" "$backup_dir/config"
+  else
+    echo "last-known-good configuration is missing; redeploy the current release before promotion" >&2
+    false
+  fi
+else
+  cp -a "$config_root" "$backup_dir/config"
+fi
+printf '%s\n%s\n' "$previous_sha" "$backup_dir" > "$in_progress"
 
 git checkout --detach --force "$release_sha"
 [[ -z $(git status --porcelain --untracked-files=all) ]] || { echo "deployment checkout is dirty" >&2; false; }
-CLOUD_HARNESS_ENV_FILE="$env_file" HOST_JOBS_ROOT="$state/jobs" HOST_STATE_ROOT="$state/state" docker compose --profile images -f compose.yaml -f compose.production.yaml build executor-image api runner
+if [[ -f deploy/scripts/service-compose.sh ]]; then
+  install -m 0755 deploy/scripts/service-compose.sh /usr/local/sbin/cloud-harness-service-compose
+fi
+if [[ -f deploy/systemd/cloud-harness-mcp.service ]]; then
+  install -m 0644 deploy/systemd/cloud-harness-mcp.service /etc/systemd/system/cloud-harness-mcp.service
+  systemctl daemon-reload
+fi
+if [[ -f deploy/scripts/release-runtime.sh ]]; then
+  source deploy/scripts/release-runtime.sh
+fi
+compose --profile images build executor-image agent-image network-guard-image api runner model-gateway
 systemctl enable --now cloud-harness-mcp.service
 wait_ready
+verify_running_images
 
 set +x
 source "$env_file"
-smoke_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy-smoke","version":"1.0.0"}}}'
-curl --fail --silent --show-error --max-time 10 --data-binary "$smoke_payload" --config - >/dev/null <<EOF
+auth_mode=${AUTH_MODE:-owner-bearer}
+if [[ $auth_mode == owner-bearer ]]; then
+  smoke_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy-smoke","version":"1.0.0"}}}'
+  curl --fail --silent --show-error --max-time 10 --data-binary "$smoke_payload" --config - >/dev/null <<EOF
 url = "http://127.0.0.1:3100/mcp"
 request = "POST"
 header = "Host: 127.0.0.1"
@@ -92,17 +254,36 @@ header = "Authorization: Bearer $MCP_BEARER_TOKEN"
 header = "Content-Type: application/json"
 header = "Accept: application/json, text/event-stream"
 EOF
-
-CLOUD_HARNESS_ENV_FILE="$env_file" HOST_JOBS_ROOT="$state/jobs" HOST_STATE_ROOT="$state/state" docker compose -f compose.yaml -f compose.production.yaml exec -T api node /app/scripts/deploy-canary.mjs
+  compose exec -T api node /app/scripts/deploy-canary.mjs
+elif [[ $auth_mode == cloudflare-access ]]; then
+  deploy/scripts/upgrade-nginx-dashboard.sh
+  [[ -f $canary_credentials_file ]] || { echo "$canary_credentials_file is required for Access canary" >&2; false; }
+  set -a
+  source "$canary_credentials_file"
+  set +a
+  [[ ${MCP_CANARY_URL:-} == https://* ]] || { echo "MCP_CANARY_URL must be the public HTTPS Access endpoint" >&2; false; }
+  [[ -n ${MCP_CANARY_ACCESS_CLIENT_ID:-} ]] || { echo "MCP_CANARY_ACCESS_CLIENT_ID is required for Access canary" >&2; false; }
+  [[ -n ${MCP_CANARY_ACCESS_CLIENT_SECRET:-} ]] || { echo "MCP_CANARY_ACCESS_CLIENT_SECRET is required for Access canary" >&2; false; }
+  compose run --rm --no-deps \
+      -e MCP_CANARY_URL -e MCP_CANARY_ACCESS_CLIENT_ID -e MCP_CANARY_ACCESS_CLIENT_SECRET \
+      ingress node /app/scripts/deploy-canary.mjs
+else
+  echo "unsupported AUTH_MODE: $auth_mode" >&2
+  false
+fi
 record_images release-new
 mv "$state/release-new-api-image" "$state/release-api-image"
 mv "$state/release-new-runner-image" "$state/release-runner-image"
 mv "$state/release-new-executor-image" "$state/release-executor-image"
+mv "$state/release-new-network-guard-image" "$state/release-network-guard-image"
+mv "$state/release-new-agent-image" "$state/release-agent-image"
+mv "$state/release-new-model-gateway-image" "$state/release-model-gateway-image"
+record_release_config
 if [[ $previous_sha =~ ^[0-9a-f]{40}$ && $previous_sha != "$release_sha" ]]; then
   printf '%s\n' "$previous_sha" > "$state/release-previous"
 fi
-install -m 0755 deploy/scripts/deploy-release.sh /usr/local/sbin/cloud-harness-deploy
-install -m 0755 deploy/scripts/rollback-release.sh /usr/local/sbin/cloud-harness-rollback
+install_deploy_tooling
 printf '%s\n' "$release_sha" > "$state/release-current"
-trap - ERR
+rm -f "$in_progress"
+trap - ERR HUP INT TERM PIPE
 echo "deployed $release_sha"

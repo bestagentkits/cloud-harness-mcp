@@ -44,6 +44,7 @@ export type AgentRecord = {
   gatewayLeaseId: string;
   status: AgentStatus;
   generation: number;
+  runtimeEpoch: number;
   spawnAdmissionOpen: boolean;
   messageAdmissionOpen: boolean;
   createdAt: number;
@@ -72,6 +73,7 @@ export type AgentMessageRecord = {
   workspaceId: string;
   agentId: string;
   agentGeneration: number;
+  runnerEpoch: number;
   idempotencyKey: string;
   payloadHash: string;
   mode: AgentMessageMode;
@@ -79,6 +81,22 @@ export type AgentMessageRecord = {
   createdAt: number;
   updatedAt: number;
   error: string | null;
+};
+
+export type AgentEffectState = 'INTENT' | 'DISPATCHED' | 'APPLIED' | 'REJECTED' | 'UNKNOWN';
+
+export type AgentEffectRecord = {
+  ownerId: string;
+  workspaceId: string;
+  agentId: string;
+  agentGeneration: number;
+  runnerEpoch: number;
+  requestId: string;
+  kind: string;
+  payloadHash: string;
+  state: AgentEffectState;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type AgentLogEvent = {
@@ -125,15 +143,16 @@ export type AgentSpawnReservation = {
   containerName: string;
   networkName: string;
   gatewayLeaseId: string;
+  runtimeEpoch?: number;
   now: number;
   expiresAt: number;
 };
-
 export type AgentStatusTransition = {
   ownerId: string;
   workspaceId: string;
   agentId: string;
   generation: number;
+  runtimeEpoch?: number;
   expectedStatuses: AgentStatus[];
   status: AgentStatus;
   now: number;
@@ -184,6 +203,7 @@ type AgentRow = {
   gateway_lease_id: string;
   status: AgentStatus;
   generation: number;
+  runner_epoch: number;
   spawn_admission_open: number;
   message_admission_open: number;
   created_at: number;
@@ -200,6 +220,7 @@ type MessageRow = {
   workspace_id: string;
   agent_id: string;
   agent_generation: number;
+  runner_epoch: number;
   idempotency_key: string;
   payload_hash: string;
   mode: AgentMessageMode;
@@ -268,6 +289,7 @@ function agentFromRow(row: AgentRow): AgentRecord {
     gatewayLeaseId: row.gateway_lease_id,
     status: row.status,
     generation: row.generation,
+    runtimeEpoch: row.runner_epoch ?? 1,
     spawnAdmissionOpen: row.spawn_admission_open === 1,
     messageAdmissionOpen: row.message_admission_open === 1,
     createdAt: row.created_at,
@@ -286,6 +308,7 @@ function messageFromRow(row: MessageRow): AgentMessageRecord {
     workspaceId: row.workspace_id,
     agentId: row.agent_id,
     agentGeneration: row.agent_generation,
+    runnerEpoch: row.runner_epoch ?? 1,
     idempotencyKey: row.idempotency_key,
     payloadHash: row.payload_hash,
     mode: row.mode,
@@ -335,6 +358,10 @@ function immediate<T>(database: DatabaseSync, action: () => T): T {
   }
 }
 
+function notEligibleForAgents(): HarnessError {
+  return new HarnessError('CONFLICT', 'workspace is not eligible for agent admission; subagents require a workspace opened with networkProfile "network-none"', 409, false);
+}
+
 function notFound(): HarnessError {
   return new HarnessError('NOT_FOUND', 'agent was not found in this workspace', 404, false);
 }
@@ -353,8 +380,25 @@ function redactLogContent(content: string): string {
 export class AgentStateRepository {
   constructor(
     private readonly database: DatabaseSync,
-    private readonly limits: RunnerAgentLimits
+    private readonly limits: RunnerAgentLimits,
+    private readonly instanceId?: string
   ) {}
+
+  bumpEpoch(instanceId: string, now: number): number {
+    return immediate(this.database, () => {
+      this.database.prepare(`INSERT INTO runtime_epochs (instance_id, epoch, updated_at)
+        VALUES (?, 1, ?)
+        ON CONFLICT(instance_id) DO UPDATE SET epoch = epoch + 1, updated_at = excluded.updated_at`)
+        .run(instanceId, now);
+      const row = this.database.prepare('SELECT epoch FROM runtime_epochs WHERE instance_id = ?').get(instanceId) as { epoch: number };
+      return row.epoch;
+    });
+  }
+
+  currentEpoch(instanceId: string): number {
+    const row = this.database.prepare('SELECT epoch FROM runtime_epochs WHERE instance_id = ?').get(instanceId) as { epoch: number } | undefined;
+    return row ? row.epoch : 0;
+  }
 
   findAgent(ownerId: string, workspaceId: string, agentId: string): AgentRecord | undefined {
     const row = this.database.prepare('SELECT * FROM agents WHERE owner_id=? AND workspace_id=? AND id=?')
@@ -424,14 +468,20 @@ export class AgentStateRepository {
       throw new HarnessError('INVALID_INPUT', 'invalid gateway lease identifier');
     }
     return immediate(this.database, () => {
-      const workspace = this.database.prepare(`SELECT id, generation, status, network_mode, expires_at FROM workspaces
+      if (input.runtimeEpoch !== undefined && this.instanceId) {
+        const current = this.currentEpoch(this.instanceId);
+        if (current !== 0 && input.runtimeEpoch !== current) {
+          throw new HarnessError('CONFLICT', 'spawn request lost its runtime epoch fence', 409, true);
+        }
+      }
+      const workspace = this.database.prepare(`SELECT id, generation, status, network_profile, expires_at FROM workspaces
         WHERE owner_id=? AND id=? AND generation=?`)
         .get(input.ownerId, input.workspaceId, input.workspaceGeneration) as {
-          id: string; generation: number; status: string; network_mode: string; expires_at: number;
+          id: string; generation: number; status: string; network_profile: string; expires_at: number;
         } | undefined;
       if (!workspace) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
-      if (workspace.status !== 'ACTIVE' || workspace.network_mode !== 'none') {
-        throw new HarnessError('CONFLICT', 'workspace is not eligible for agent admission', 409, false);
+      if (workspace.status !== 'ACTIVE' || workspace.network_profile !== 'network-none') {
+        throw notEligibleForAgents();
       }
 
       this.database.prepare(`INSERT OR IGNORE INTO agent_workspace_admission
@@ -523,14 +573,14 @@ export class AgentStateRepository {
         (id, owner_id, workspace_id, workspace_generation, parent_agent_id, parent_generation,
          idempotency_key, payload_hash, prompt_hash, profile_id, proxy_operations_json,
          max_ttl_seconds, max_output_bytes, max_input_tokens, max_output_tokens, max_cost_micros,
-         container_name, network_name, gateway_lease_id, status, generation, spawn_admission_open, message_admission_open,
+         container_name, network_name, gateway_lease_id, status, generation, runner_epoch, spawn_admission_open, message_admission_open,
          created_at, started_at, terminal_at, expires_at, terminal_reason, cleanup_reason, outcome_unknown)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SPAWNING', 1, 1, 1, ?, NULL, NULL, ?, NULL, NULL, 0)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SPAWNING', 1, ?, 1, 1, ?, NULL, NULL, ?, NULL, NULL, 0)`)
         .run(
           input.id, input.ownerId, input.workspaceId, input.workspaceGeneration, input.parentAgentId ?? null, parentGeneration,
           input.idempotencyKey, input.payloadHash, input.promptHash, input.profileId, JSON.stringify(proxyOperations),
           input.budget.ttlSeconds, input.budget.maxOutputBytes, input.budget.maxInputTokens, input.budget.maxOutputTokens,
-          input.budget.maxCostMicros, input.containerName, input.networkName, input.gatewayLeaseId, input.now, input.expiresAt
+          input.budget.maxCostMicros, input.containerName, input.networkName, input.gatewayLeaseId, input.runtimeEpoch ?? 1, input.now, input.expiresAt
         );
       this.database.prepare(`INSERT INTO agent_usage
         (owner_id, workspace_id, agent_id, agent_generation) VALUES (?, ?, ?, 1)`)
@@ -565,6 +615,8 @@ export class AgentStateRepository {
     const terminal = TERMINAL_STATUSES.includes(input.status);
     const closesAdmission = terminal || input.status === 'CANCELLING';
     const placeholders = input.expectedStatuses.map(() => '?').join(',');
+    const epochPredicate = input.runtimeEpoch !== undefined ? 'AND runner_epoch=?' : '';
+    const epochArgs = input.runtimeEpoch !== undefined ? [input.runtimeEpoch] : [];
     const result = this.database.prepare(`UPDATE agents SET status=?,
       started_at=CASE WHEN ?='RUNNING' AND started_at IS NULL THEN ? ELSE started_at END,
       terminal_at=CASE WHEN ?=1 THEN ? ELSE terminal_at END,
@@ -572,35 +624,41 @@ export class AgentStateRepository {
       outcome_unknown=CASE WHEN ? IS NULL THEN outcome_unknown ELSE ? END,
       spawn_admission_open=CASE WHEN ?=1 THEN 0 ELSE spawn_admission_open END,
       message_admission_open=CASE WHEN ?=1 THEN 0 ELSE message_admission_open END
-      WHERE owner_id=? AND workspace_id=? AND id=? AND generation=? AND status IN (${placeholders})`)
+      WHERE owner_id=? AND workspace_id=? AND id=? AND generation=? ${epochPredicate} AND status IN (${placeholders})`)
       .run(
         input.status, input.status, input.now, terminal ? 1 : 0, input.now,
         input.terminalReason ?? null, input.cleanupReason ?? null,
         input.outcomeUnknown === undefined ? null : (input.outcomeUnknown ? 1 : 0), input.outcomeUnknown ? 1 : 0,
         closesAdmission ? 1 : 0, closesAdmission ? 1 : 0,
-        input.ownerId, input.workspaceId, input.agentId, input.generation, ...input.expectedStatuses
+        input.ownerId, input.workspaceId, input.agentId, input.generation, ...epochArgs, ...input.expectedStatuses
       );
     return result.changes === 1 ? this.findAgent(input.ownerId, input.workspaceId, input.agentId) : undefined;
   }
 
-  closeWorkspaceAdmission(ownerId: string, workspaceId: string, workspaceGeneration: number, now: number): boolean {
+  closeWorkspaceAdmission(ownerId: string, workspaceId: string, now: number, workspaceGeneration?: number): boolean {
     return immediate(this.database, () => {
+      const gen = workspaceGeneration ?? null;
       const result = this.database.prepare(`UPDATE agent_workspace_admission SET spawn_open=0, message_open=0, updated_at=?
-        WHERE owner_id=? AND workspace_id=? AND workspace_generation=?`)
-        .run(now, ownerId, workspaceId, workspaceGeneration);
+        WHERE owner_id=? AND workspace_id=? AND (? IS NULL OR workspace_generation=?)`)
+        .run(now, ownerId, workspaceId, gen, gen);
       this.database.prepare(`UPDATE agents SET spawn_admission_open=0, message_admission_open=0
-        WHERE owner_id=? AND workspace_id=? AND workspace_generation=? AND status IN ('SPAWNING','RUNNING','CANCELLING')`)
-        .run(ownerId, workspaceId, workspaceGeneration);
-      return result.changes === 1;
+        WHERE owner_id=? AND workspace_id=? AND (? IS NULL OR workspace_generation=?) AND status IN ('SPAWNING','RUNNING','CANCELLING')`)
+        .run(ownerId, workspaceId, gen, gen);
+      return result.changes >= 1;
     });
   }
 
   openWorkspaceAdmission(ownerId: string, workspaceId: string, workspaceGeneration: number, now: number): boolean {
     return immediate(this.database, () => {
-      const workspace = this.database.prepare(`SELECT id FROM workspaces
-        WHERE owner_id=? AND id=? AND generation=? AND status='ACTIVE' AND network_mode='none'`)
-        .get(ownerId, workspaceId, workspaceGeneration);
+      const workspace = this.database.prepare(`SELECT status, network_profile FROM workspaces
+        WHERE owner_id=? AND id=? AND generation=?`)
+        .get(ownerId, workspaceId, workspaceGeneration) as { status: string; network_profile: string } | undefined;
       if (!workspace) throw new HarnessError('NOT_FOUND', 'workspace was not found', 404, false);
+      // A workspace that exists but cannot host agents is a precondition failure, not a missing
+      // workspace; report it the same way reserveSpawn does.
+      if (workspace.status !== 'ACTIVE' || workspace.network_profile !== 'network-none') {
+        throw notEligibleForAgents();
+      }
       const active = this.database.prepare(`SELECT COUNT(*) AS count FROM agents
         WHERE owner_id=? AND workspace_id=? AND workspace_generation=? AND status IN ('SPAWNING','RUNNING','CANCELLING')`)
         .get(ownerId, workspaceId, workspaceGeneration) as { count: number };
@@ -629,6 +687,7 @@ export class AgentStateRepository {
     workspaceId: string;
     agentId: string;
     generation: number;
+    runtimeEpoch?: number;
     idempotencyKey: string;
     payloadHash: string;
     mode: AgentMessageMode;
@@ -638,7 +697,7 @@ export class AgentStateRepository {
       const agent = this.database.prepare(`SELECT agents.generation, agents.status, agents.message_admission_open FROM agents
         JOIN workspaces ON workspaces.id=agents.workspace_id AND workspaces.owner_id=agents.owner_id
         WHERE agents.owner_id=? AND agents.workspace_id=? AND agents.id=? AND agents.generation=?
-          AND workspaces.status='ACTIVE' AND workspaces.generation=agents.workspace_generation AND workspaces.network_mode='none'`)
+          AND workspaces.status='ACTIVE' AND workspaces.generation=agents.workspace_generation AND workspaces.network_profile='network-none'`)
         .get(input.ownerId, input.workspaceId, input.agentId, input.generation) as {
           generation: number; status: AgentStatus; message_admission_open: number;
         } | undefined;
@@ -663,9 +722,9 @@ export class AgentStateRepository {
         throw new HarnessError('LIMIT_EXCEEDED', 'workspace agent lifetime record capacity is exhausted', 429, false);
       }
       this.database.prepare(`INSERT INTO agent_messages
-        (owner_id, workspace_id, agent_id, agent_generation, idempotency_key, payload_hash, mode, state, created_at, updated_at, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, NULL)`)
-        .run(input.ownerId, input.workspaceId, input.agentId, input.generation, input.idempotencyKey, input.payloadHash, input.mode, input.now, input.now);
+        (owner_id, workspace_id, agent_id, agent_generation, runner_epoch, idempotency_key, payload_hash, mode, state, created_at, updated_at, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?, NULL)`)
+        .run(input.ownerId, input.workspaceId, input.agentId, input.generation, (input as { runtimeEpoch?: number }).runtimeEpoch ?? 1, input.idempotencyKey, input.payloadHash, input.mode, input.now, input.now);
       this.database.prepare(`UPDATE agent_workspace_admission SET lifetime_records=lifetime_records+1, updated_at=?
         WHERE owner_id=? AND workspace_id=? AND message_open=1`)
         .run(input.now, input.ownerId, input.workspaceId);
@@ -719,6 +778,88 @@ export class AgentStateRepository {
         ownerId, workspaceId, agentId, generation);
     if (result.changes !== 1) throw notFound();
     return this.usage(ownerId, workspaceId, agentId, generation);
+  }
+
+  reserveEffect(input: {
+    ownerId: string;
+    workspaceId: string;
+    agentId: string;
+    agentGeneration: number;
+    runnerEpoch: number;
+    requestId: string;
+    kind: string;
+    payloadHash: string;
+    now: number;
+  }): { replayed: boolean; effect: AgentEffectRecord } {
+    return immediate(this.database, () => {
+      const existing = this.database.prepare(`SELECT * FROM agent_effects
+        WHERE agent_id=? AND agent_generation=? AND request_id=? AND kind=?`)
+        .get(input.agentId, input.agentGeneration, input.requestId, input.kind) as {
+          owner_id: string; workspace_id: string; agent_id: string; agent_generation: number; runner_epoch: number;
+          request_id: string; kind: string; payload_hash: string; state: AgentEffectState; created_at: number; updated_at: number;
+        } | undefined;
+      if (existing) {
+        if (existing.payload_hash !== input.payloadHash) {
+          throw new HarnessError('CONFLICT', 'effect request ID was used with a different payload', 409, false);
+        }
+        return {
+          replayed: true,
+          effect: {
+            ownerId: existing.owner_id,
+            workspaceId: existing.workspace_id,
+            agentId: existing.agent_id,
+            agentGeneration: existing.agent_generation,
+            runnerEpoch: existing.runner_epoch,
+            requestId: existing.request_id,
+            kind: existing.kind,
+            payloadHash: existing.payload_hash,
+            state: existing.state,
+            createdAt: existing.created_at,
+            updatedAt: existing.updated_at
+          }
+        };
+      }
+      this.database.prepare(`INSERT INTO agent_effects
+        (owner_id, workspace_id, agent_id, agent_generation, runner_epoch, request_id, kind, payload_hash, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'INTENT', ?, ?)`)
+        .run(input.ownerId, input.workspaceId, input.agentId, input.agentGeneration, input.runnerEpoch, input.requestId, input.kind, input.payloadHash, input.now, input.now);
+      return {
+        replayed: false,
+        effect: {
+          ownerId: input.ownerId,
+          workspaceId: input.workspaceId,
+          agentId: input.agentId,
+          agentGeneration: input.agentGeneration,
+          runnerEpoch: input.runnerEpoch,
+          requestId: input.requestId,
+          kind: input.kind,
+          payloadHash: input.payloadHash,
+          state: 'INTENT',
+          createdAt: input.now,
+          updatedAt: input.now
+        }
+      };
+    });
+  }
+
+  transitionEffect(input: {
+    agentId: string;
+    agentGeneration: number;
+    requestId: string;
+    kind: string;
+    expectedState: AgentEffectState | AgentEffectState[];
+    state: AgentEffectState;
+    runnerEpoch?: number;
+    now: number;
+  }): boolean {
+    const expected = Array.isArray(input.expectedState) ? input.expectedState : [input.expectedState];
+    const placeholders = expected.map(() => '?').join(',');
+    const epochPredicate = input.runnerEpoch !== undefined ? 'AND runner_epoch=?' : '';
+    const epochArgs = input.runnerEpoch !== undefined ? [input.runnerEpoch] : [];
+    const result = this.database.prepare(`UPDATE agent_effects SET state=?, updated_at=?
+      WHERE agent_id=? AND agent_generation=? AND request_id=? AND kind=? ${epochPredicate} AND state IN (${placeholders})`)
+      .run(input.state, input.now, input.agentId, input.agentGeneration, input.requestId, input.kind, ...epochArgs, ...expected);
+    return result.changes === 1;
   }
 
   usage(ownerId: string, workspaceId: string, agentId: string, generation: number): AgentUsage {
@@ -866,6 +1007,11 @@ export class AgentStateRepository {
         WHERE owner_id=? AND workspace_id=? AND agent_generation IN (
           SELECT generation FROM agents WHERE owner_id=? AND workspace_id=? AND workspace_generation=?
         ) AND state='RESERVED'`)
+        .run(now, ownerId, workspaceId, ownerId, workspaceId, workspaceGeneration);
+      this.database.prepare(`UPDATE agent_effects SET state='UNKNOWN', updated_at=?
+        WHERE owner_id=? AND workspace_id=? AND agent_generation IN (
+          SELECT generation FROM agents WHERE owner_id=? AND workspace_id=? AND workspace_generation=?
+        ) AND state IN ('INTENT', 'DISPATCHED')`)
         .run(now, ownerId, workspaceId, ownerId, workspaceId, workspaceGeneration);
       const rows = this.database.prepare(`SELECT * FROM agents
         WHERE owner_id=? AND workspace_id=? AND workspace_generation=? ORDER BY created_at ASC`)
