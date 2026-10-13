@@ -9,17 +9,28 @@ import { pathToFileURL } from 'node:url';
 // the tagged tree. The merge deploy is then redundant, so it is skipped and one
 // merge still costs one container-recreation window.
 //
-// Every other outcome deploys, and so does any doubt: an API error, a Release
-// run that is still busy at the deadline, or a release commit without a CI run.
+// Every other outcome of a successful CI run deploys, and so does any doubt: an
+// API error, a Release run that is still busy at the deadline, or a release
+// commit without a CI run.
+//
+// A failed or cancelled CI run deploys nothing, as before, with one exception:
+// when it belongs to a release commit, its parent merge passed CI and was never
+// deployed, that parent deploys so merged code does not stay out of production.
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const RELEASE_SUBJECT_PREFIX = 'chore(release):';
 const DEFAULT_RELEASE_WAIT_MS = 10 * 60 * 1000;
 const DEFAULT_RELEASE_APPEAR_MS = 60 * 1000;
+const DEFAULT_CI_APPEAR_MS = 60 * 1000;
 const DEFAULT_POLL_MS = 10 * 1000;
+const REQUEST_TIMEOUT_MS = 20 * 1000;
 
-function deploy(reason) {
-  return { shouldDeploy: true, reason };
+function deploy(deploySha, reason) {
+  return { shouldDeploy: true, deploySha, reason };
+}
+
+function skip(reason) {
+  return { shouldDeploy: false, deploySha: '', reason };
 }
 
 export function isReleaseCommitSubject(message) {
@@ -38,20 +49,47 @@ async function waitForRelease(api, triggerSha, { releaseWaitMs, releaseAppearMs,
   }
 }
 
+async function findDeployableCiRun(api, sha, { ciAppearMs, pollMs, sleep, now }) {
+  // A CI run requested by Release can take a moment to be listed.
+  const started = now();
+  for (;;) {
+    const runs = await api.ciRuns(sha);
+    const usable = runs.find((run) => run.status !== 'completed' || run.conclusion === 'success');
+    if (usable || runs.length > 0 || now() - started >= ciAppearMs) return usable;
+    await sleep(pollMs);
+  }
+}
+
+async function classifyFailedCi(api, targetSha) {
+  try {
+    const commit = await api.commit(targetSha);
+    const parent = commit.parents[0];
+    if (!isReleaseCommitSubject(commit.subject) || !parent) return skip('CI did not pass');
+    if (!(await api.ciPassed(parent))) return skip('CI did not pass for the release commit or its parent');
+    if (await api.deployed(parent)) return skip(`CI did not pass; parent ${parent} is already deployed`);
+    return deploy(parent, `CI did not pass for release commit ${targetSha}; deploying its CI-tested parent ${parent}`);
+  } catch (error) {
+    return skip(`CI did not pass (${error instanceof Error ? error.message : String(error)})`);
+  }
+}
+
 export async function classifyProductionDeploy({
   eventName,
   targetSha,
   triggerSha,
+  ciConclusion = 'success',
   api,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = () => Date.now(),
   releaseWaitMs = DEFAULT_RELEASE_WAIT_MS,
   releaseAppearMs = DEFAULT_RELEASE_APPEAR_MS,
+  ciAppearMs = DEFAULT_CI_APPEAR_MS,
   pollMs = DEFAULT_POLL_MS
 }) {
-  if (eventName === 'workflow_dispatch') return deploy('manual dispatch');
-  if (eventName !== 'workflow_run') return deploy(`event ${eventName}; deploying`);
-  if (!SHA_PATTERN.test(targetSha ?? '')) return deploy('target commit is not a full SHA; deploying');
+  if (eventName === 'workflow_dispatch') return deploy(targetSha, 'manual dispatch');
+  if (eventName !== 'workflow_run') return deploy(targetSha, `event ${eventName}; deploying`);
+  if (!SHA_PATTERN.test(targetSha ?? '')) return deploy(targetSha, 'target commit is not a full SHA; deploying');
+  if (ciConclusion !== 'success') return classifyFailedCi(api, targetSha);
 
   try {
     const release = await waitForRelease(api, SHA_PATTERN.test(triggerSha ?? '') ? triggerSha : targetSha, {
@@ -61,29 +99,34 @@ export async function classifyProductionDeploy({
       sleep,
       now
     });
-    if (release === 'timeout') return deploy('Release is still running after the wait; deploying');
+    if (release === 'timeout') return deploy(targetSha, 'Release is still running after the wait; deploying');
 
     const head = await api.mainHead();
-    if (head.sha === targetSha) return deploy(`commit is the head of main: ${head.subject}`);
+    if (head.sha === targetSha) return deploy(targetSha, `commit is the head of main: ${head.subject}`);
 
     const supersededByRelease = isReleaseCommitSubject(head.subject) && head.parents[0] === targetSha;
-    if (!supersededByRelease) return deploy(`main moved to ${head.sha}; deploying this commit as before`);
+    if (!supersededByRelease) return deploy(targetSha, `main moved to ${head.sha}; deploying this commit as before`);
 
-    const ciRuns = await api.ciRuns(head.sha);
-    const pending = ciRuns.find((run) => run.status !== 'completed' || run.conclusion === 'success');
-    if (!pending) return deploy(`release commit ${head.sha} has no CI run that can deploy it; deploying`);
-    return {
-      shouldDeploy: false,
-      reason: `superseded by release commit ${head.sha}; CI run ${pending.id} deploys it`
-    };
+    const ciRun = await findDeployableCiRun(api, head.sha, { ciAppearMs, pollMs, sleep, now });
+    if (!ciRun) return deploy(targetSha, `release commit ${head.sha} has no CI run that can deploy it; deploying`);
+    return skip(`superseded by release commit ${head.sha}; CI run ${ciRun.id} deploys it`);
   } catch (error) {
-    return deploy(`classification unavailable (${error instanceof Error ? error.message : String(error)}); deploying`);
+    return deploy(targetSha, `classification unavailable (${error instanceof Error ? error.message : String(error)}); deploying`);
   }
+}
+
+function commitSummary(body) {
+  return {
+    sha: body.sha,
+    subject: body.commit.message.split('\n', 1)[0],
+    parents: body.parents.map((parent) => parent.sha)
+  };
 }
 
 export function createGitHubApi({ token, repository, apiUrl = 'https://api.github.com', fetchImpl = fetch }) {
   async function get(path) {
     const response = await fetchImpl(`${apiUrl}/repos/${repository}${path}`, {
+      signal: globalThis.AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: {
         accept: 'application/vnd.github+json',
         authorization: `Bearer ${token}`,
@@ -100,12 +143,18 @@ export function createGitHubApi({ token, repository, apiUrl = 'https://api.githu
       return body.workflow_runs.map(({ id, status, conclusion }) => ({ id, status, conclusion }));
     },
     async mainHead() {
-      const body = await get('/commits/main');
-      return {
-        sha: body.sha,
-        subject: body.commit.message.split('\n', 1)[0],
-        parents: body.parents.map((parent) => parent.sha)
-      };
+      return commitSummary(await get('/commits/main'));
+    },
+    async commit(sha) {
+      return commitSummary(await get(`/commits/${sha}`));
+    },
+    async ciPassed(sha) {
+      const body = await get(`/actions/workflows/ci.yml/runs?branch=main&status=success&head_sha=${sha}&per_page=1`);
+      return body.workflow_runs.length > 0;
+    },
+    async deployed(sha) {
+      const body = await get(`/deployments?environment=production&sha=${sha}&per_page=1`);
+      return body.length > 0;
     },
     async ciRuns(sha) {
       const body = await get(`/actions/workflows/ci.yml/runs?branch=main&head_sha=${sha}&per_page=100`);
@@ -115,16 +164,21 @@ export function createGitHubApi({ token, repository, apiUrl = 'https://api.githu
 }
 
 async function main() {
-  const { EVENT_NAME, TARGET_SHA, TRIGGER_SHA, GH_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL, GITHUB_OUTPUT } = process.env;
+  const { EVENT_NAME, TARGET_SHA, TRIGGER_SHA, CI_CONCLUSION, GH_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL, GITHUB_OUTPUT } =
+    process.env;
   const result = await classifyProductionDeploy({
     eventName: EVENT_NAME,
     targetSha: TARGET_SHA,
     triggerSha: TRIGGER_SHA,
+    ciConclusion: CI_CONCLUSION || 'success',
     api: createGitHubApi({ token: GH_TOKEN, repository: GITHUB_REPOSITORY, apiUrl: GITHUB_API_URL })
   });
   const reason = result.reason.replace(/[\r\n]+/g, ' ');
-  console.log(`should_deploy=${result.shouldDeploy}: ${reason}`);
-  if (GITHUB_OUTPUT) appendFileSync(GITHUB_OUTPUT, `should_deploy=${result.shouldDeploy}\nreason=${reason}\n`);
+  const deploySha = result.shouldDeploy && SHA_PATTERN.test(result.deploySha ?? '') ? result.deploySha : '';
+  console.log(`should_deploy=${result.shouldDeploy} deploy_sha=${deploySha}: ${reason}`);
+  if (GITHUB_OUTPUT) {
+    appendFileSync(GITHUB_OUTPUT, `should_deploy=${result.shouldDeploy}\ndeploy_sha=${deploySha}\nreason=${reason}\n`);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

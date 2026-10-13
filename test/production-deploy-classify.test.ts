@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,10 +31,26 @@ type Head = { sha: string; subject: string; parents: string[] };
 function fakeApi({
   releaseRuns = [[{ id: 1, status: 'completed', conclusion: 'success' }]],
   head = { sha: MERGE, subject: 'fix: change', parents: [OTHER] },
-  ciRuns = []
-}: { releaseRuns?: Run[][]; head?: Head | Error; ciRuns?: Run[] }) {
+  ciRuns = [],
+  ciRunSequence,
+  commits = {},
+  passed = [],
+  deployedShas = []
+}: {
+  releaseRuns?: Run[][];
+  head?: Head | Error;
+  ciRuns?: Run[];
+  ciRunSequence?: Run[][];
+  commits?: Record<string, Head>;
+  passed?: string[];
+  deployedShas?: string[];
+}) {
   let releaseCalls = 0;
+  let ciCalls = 0;
   return {
+    get ciCalls() {
+      return ciCalls;
+    },
     releaseQueries: [] as string[],
     get releaseCalls() {
       return releaseCalls;
@@ -50,7 +66,20 @@ function fakeApi({
       return head;
     },
     async ciRuns() {
-      return ciRuns;
+      const runs = ciRunSequence ? ciRunSequence[Math.min(ciCalls, ciRunSequence.length - 1)] : ciRuns;
+      ciCalls += 1;
+      return runs;
+    },
+    async commit(sha: string) {
+      const commit = commits[sha];
+      if (!commit) throw new Error(`GET /commits/${sha} returned 404`);
+      return commit;
+    },
+    async ciPassed(sha: string) {
+      return passed.includes(sha);
+    },
+    async deployed(sha: string) {
+      return deployedShas.includes(sha);
     }
   };
 }
@@ -83,6 +112,7 @@ describe('production deploy classification', () => {
     const api = fakeApi({ head: new Error('must not be called') });
     await expect(classify(api, { eventName: 'workflow_dispatch' })).resolves.toEqual({
       shouldDeploy: true,
+      deploySha: MERGE,
       reason: 'manual dispatch'
     });
     expect(api.releaseCalls).toBe(0);
@@ -97,7 +127,11 @@ describe('production deploy classification', () => {
   it('deploys a release commit whose own CI run triggered the deploy', async () => {
     const api = fakeApi({ head: releaseHead });
     const result = await classify(api, { targetSha: RELEASE, triggerSha: RELEASE });
-    expect(result).toEqual({ shouldDeploy: true, reason: 'commit is the head of main: chore(release): 1.2.3 [skip ci]' });
+    expect(result).toEqual({
+      shouldDeploy: true,
+      deploySha: RELEASE,
+      reason: 'commit is the head of main: chore(release): 1.2.3 [skip ci]'
+    });
     expect(api.releaseQueries).toEqual([RELEASE]);
   });
 
@@ -110,6 +144,7 @@ describe('production deploy classification', () => {
       const result = await classify(fakeApi({ head: releaseHead, ciRuns: [run] }));
       expect(result).toEqual({
         shouldDeploy: false,
+        deploySha: '',
         reason: `superseded by release commit ${RELEASE}; CI run 7 deploys it`
       });
     }
@@ -119,6 +154,7 @@ describe('production deploy classification', () => {
     for (const ciRuns of [[], [{ id: 8, status: 'completed', conclusion: 'failure' }], [{ id: 9, status: 'completed', conclusion: 'cancelled' }]]) {
       const result = await classify(fakeApi({ head: releaseHead, ciRuns }));
       expect(result.shouldDeploy).toBe(true);
+      expect(result.deploySha).toBe(MERGE);
       expect(result.reason).toContain('has no CI run');
     }
   });
@@ -152,7 +188,7 @@ describe('production deploy classification', () => {
   it('deploys when Release is still running at the deadline', async () => {
     const api = fakeApi({ head: releaseHead, releaseRuns: [[{ id: 1, status: 'in_progress', conclusion: null }]] });
     const result = await classify(api, { releaseWaitMs: 30_000, pollMs: 10_000 });
-    expect(result).toEqual({ shouldDeploy: true, reason: 'Release is still running after the wait; deploying' });
+    expect(result).toEqual({ shouldDeploy: true, deploySha: MERGE, reason: 'Release is still running after the wait; deploying' });
     expect(api.releaseCalls).toBe(4);
   });
 
@@ -167,7 +203,60 @@ describe('production deploy classification', () => {
     const result = await classify(fakeApi({ head: new Error('GET /commits/main returned 502') }));
     expect(result).toEqual({
       shouldDeploy: true,
+      deploySha: MERGE,
       reason: 'classification unavailable (GET /commits/main returned 502); deploying'
+    });
+  });
+
+  it('waits briefly for a requested CI run that is not listed yet', async () => {
+    const api = fakeApi({ head: releaseHead, ciRunSequence: [[], [], [{ id: 5, status: 'queued', conclusion: null }]] });
+    const result = await classify(api, { ciAppearMs: 60_000, pollMs: 10_000 });
+    expect(result.shouldDeploy).toBe(false);
+    expect(api.ciCalls).toBe(3);
+  });
+
+  it('falls back to the trigger-independent target when the trigger SHA is malformed', async () => {
+    const api = fakeApi({});
+    await classify(api, { triggerSha: 'main' });
+    expect(api.releaseQueries).toEqual([MERGE]);
+  });
+
+  describe('after CI did not pass', () => {
+    const releaseCommit = { [RELEASE]: releaseHead };
+
+    it('deploys nothing for an ordinary commit and does not wait for Release', async () => {
+      for (const ciConclusion of ['failure', 'cancelled', 'timed_out']) {
+        const api = fakeApi({ commits: { [MERGE]: { sha: MERGE, subject: 'fix: change', parents: [OTHER] } }, passed: [OTHER] });
+        const result = await classify(api, { ciConclusion });
+        expect(result).toEqual({ shouldDeploy: false, deploySha: '', reason: 'CI did not pass' });
+        expect(api.releaseCalls).toBe(0);
+      }
+    });
+
+    it('deploys the CI-tested, undeployed parent of a release commit', async () => {
+      const api = fakeApi({ commits: releaseCommit, passed: [MERGE] });
+      const result = await classify(api, { targetSha: RELEASE, triggerSha: RELEASE, ciConclusion: 'cancelled' });
+      expect(result).toEqual({
+        shouldDeploy: true,
+        deploySha: MERGE,
+        reason: `CI did not pass for release commit ${RELEASE}; deploying its CI-tested parent ${MERGE}`
+      });
+    });
+
+    it('does not deploy a parent that never passed CI or is already deployed', async () => {
+      const untested = await classify(fakeApi({ commits: releaseCommit }), { targetSha: RELEASE, ciConclusion: 'failure' });
+      expect(untested.shouldDeploy).toBe(false);
+      const deployed = await classify(fakeApi({ commits: releaseCommit, passed: [MERGE], deployedShas: [MERGE] }), {
+        targetSha: RELEASE,
+        ciConclusion: 'failure'
+      });
+      expect(deployed).toEqual({ shouldDeploy: false, deploySha: '', reason: `CI did not pass; parent ${MERGE} is already deployed` });
+    });
+
+    it('fails closed when the failed commit cannot be read', async () => {
+      const result = await classify(fakeApi({}), { targetSha: RELEASE, ciConclusion: 'failure' });
+      expect(result.shouldDeploy).toBe(false);
+      expect(result.reason).toContain('returned 404');
     });
   });
 
@@ -183,9 +272,12 @@ describe('production deploy classification', () => {
     const responses: Record<string, unknown> = {
       '/actions/workflows/release.yml/runs': { workflow_runs: [{ id: 1, status: 'completed', conclusion: 'skipped', extra: true }] },
       '/commits/main': { sha: RELEASE, commit: { message: 'chore(release): 1.2.3 [skip ci]\n\nnotes' }, parents: [{ sha: MERGE }] },
-      '/actions/workflows/ci.yml/runs': { workflow_runs: [{ id: 2, status: 'queued', conclusion: null }] }
+      '/actions/workflows/ci.yml/runs': { workflow_runs: [{ id: 2, status: 'queued', conclusion: null }] },
+      [`/commits/${RELEASE}`]: { sha: RELEASE, commit: { message: 'chore(release): 1.2.3 [skip ci]' }, parents: [{ sha: MERGE }] },
+      '/deployments': []
     };
-    const fetchImpl = async (url: string, init: { headers: Record<string, string> }) => {
+    const fetchImpl = async (url: string, init: { headers: Record<string, string>; signal: AbortSignal }) => {
+      expect(init.signal).toBeInstanceOf(AbortSignal);
       requests.push({ url, authorization: init.headers.authorization });
       const path = new URL(url).pathname.replace('/repos/owner/repo', '');
       return new Response(JSON.stringify(responses[path]), { status: 200 });
@@ -195,10 +287,16 @@ describe('production deploy classification', () => {
     await expect(api.releaseRuns(MERGE)).resolves.toEqual([{ id: 1, status: 'completed', conclusion: 'skipped' }]);
     await expect(api.mainHead()).resolves.toEqual({ sha: RELEASE, subject: 'chore(release): 1.2.3 [skip ci]', parents: [MERGE] });
     await expect(api.ciRuns(RELEASE)).resolves.toEqual([{ id: 2, status: 'queued', conclusion: null }]);
+    await expect(api.commit(RELEASE)).resolves.toEqual({ sha: RELEASE, subject: 'chore(release): 1.2.3 [skip ci]', parents: [MERGE] });
+    await expect(api.ciPassed(MERGE)).resolves.toBe(true);
+    await expect(api.deployed(MERGE)).resolves.toBe(false);
     expect(requests.map((request) => request.url)).toEqual([
       `https://api.github.com/repos/owner/repo/actions/workflows/release.yml/runs?event=workflow_run&head_sha=${MERGE}&per_page=100`,
       'https://api.github.com/repos/owner/repo/commits/main',
-      `https://api.github.com/repos/owner/repo/actions/workflows/ci.yml/runs?branch=main&head_sha=${RELEASE}&per_page=100`
+      `https://api.github.com/repos/owner/repo/actions/workflows/ci.yml/runs?branch=main&head_sha=${RELEASE}&per_page=100`,
+      `https://api.github.com/repos/owner/repo/commits/${RELEASE}`,
+      `https://api.github.com/repos/owner/repo/actions/workflows/ci.yml/runs?branch=main&status=success&head_sha=${MERGE}&per_page=1`,
+      `https://api.github.com/repos/owner/repo/deployments?environment=production&sha=${MERGE}&per_page=1`
     ]);
     expect(requests.every((request) => request.authorization === 'Bearer token-value')).toBe(true);
   });
@@ -227,7 +325,11 @@ describe('production deploy workflow', () => {
       "TARGET_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.commit || github.sha }}"
     );
     expect(classifyJob).toContain('TRIGGER_SHA: ${{ github.sha }}');
+    expect(classifyJob).toContain('CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}');
     expect(classifyJob).toContain('should_deploy: ${{ steps.classify.outputs.should_deploy }}');
+    expect(classifyJob).toContain('deploy_sha: ${{ steps.classify.outputs.deploy_sha }}');
+    expect(classifyJob).not.toContain('setup-node');
+    expect(deployWorkflow).toMatch(/permissions:\n {2}actions: read\n {2}contents: read\n {2}deployments: read\n/);
   });
 
   it('never skips a deploy because the commit is a release commit', () => {
@@ -235,19 +337,22 @@ describe('production deploy workflow', () => {
     expect(deployWorkflow).not.toMatch(/release_subject_pattern/);
   });
 
-  it('keeps the CI-success and main-branch workflow_run guard', () => {
+  it('deploys the classified commit and falls back to the CI-success rule when classify fails', () => {
     expect(deployJob).toContain('needs: classify');
-    expect(deployJob).toContain("needs.classify.outputs.should_deploy == 'true'");
+    expect(deployJob).toContain('!cancelled() &&');
     expect(deployJob).toContain("github.event_name == 'workflow_dispatch'");
-    expect(deployJob).toContain("github.event.workflow_run.conclusion == 'success'");
     expect(deployJob).toContain("github.event.workflow_run.head_branch == 'main'");
+    expect(deployJob).toContain("(needs.classify.result == 'success' && needs.classify.outputs.should_deploy == 'true')");
+    expect(deployJob).toContain("(needs.classify.result != 'success' && github.event.workflow_run.conclusion == 'success')");
     expect(deployJob).toContain(
-      "RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.commit || github.sha }}"
+      "RELEASE_SHA: ${{ needs.classify.outputs.deploy_sha || (github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.commit || github.sha) }}"
     );
   });
 
-  it('keeps the manual-dispatch CI verification, SSH material, and deploy command', () => {
-    expect(deployJob).toContain("- name: Verify manual release passed CI\n        if: github.event_name == 'workflow_dispatch'");
+  it('verifies CI success for any commit other than the one CI just tested', () => {
+    expect(deployJob).toContain(
+      "- name: Verify manual release passed CI\n        if: github.event_name == 'workflow_dispatch' || env.RELEASE_SHA != github.event.workflow_run.head_sha"
+    );
     expect(deployJob).toContain('.head_sha == \\"$RELEASE_SHA\\"');
     expect(deployJob).toContain('environment: production');
     expect(deployJob).toContain('- name: Install ephemeral SSH material');
@@ -257,29 +362,20 @@ describe('production deploy workflow', () => {
 });
 
 describe('release commit CI request', () => {
-  const step = releaseWorkflow.slice(releaseWorkflow.indexOf('- name: Request CI for the release commit'));
+  const requestJob = jobSection(releaseWorkflow, 'request-release-ci');
+  const releaseJob = jobSection(releaseWorkflow, 'release');
 
-  it('requests CI only after semantic-release, only on main, and with Actions write access', () => {
-    expect(releaseWorkflow).toMatch(/permissions:\n {2}actions: write\n {2}contents: write\n/);
-    expect(releaseWorkflow.indexOf('npm exec semantic-release')).toBeLessThan(releaseWorkflow.indexOf('Request CI for the release commit'));
-    expect(step).toContain("if: github.event.workflow_run.head_branch == 'main'");
-    expect(step).toContain('gh workflow run ci.yml --ref main --repo "$GITHUB_REPOSITORY"');
-  });
-
-  it('dispatches only when a release commit was pushed and is still the head of main', () => {
-    const noRelease = step.indexOf('if [[ "$release_commit" == "$RELEASE_SHA" ]]');
-    const moved = step.indexOf('if [[ "$main_sha" != "$release_commit" ]]');
-    const dispatch = step.indexOf('gh workflow run ci.yml');
-    expect(noRelease).toBeGreaterThan(-1);
-    expect(moved).toBeGreaterThan(noRelease);
-    expect(dispatch).toBeGreaterThan(moved);
-  });
-
-  it('prefers the release PAT, falls back to the workflow token, and fails loudly otherwise', () => {
-    expect(step).toContain('for token in "$RELEASE_TOKEN" "$WORKFLOW_TOKEN"; do');
-    expect(step).toContain('RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}');
-    expect(step).toContain('WORKFLOW_TOKEN: ${{ github.token }}');
-    expect(step).toMatch(/::error::Could not request CI[^\n]*\n\s+exit 1/);
+  it('requests CI in a separate main-only job that alone holds Actions write access', () => {
+    expect(releaseWorkflow).toMatch(/\npermissions:\n {2}contents: write\n\n/);
+    expect(releaseJob).not.toContain('actions: write');
+    expect(releaseJob).toContain('release_commit: ${{ steps.release-commit.outputs.sha }}');
+    expect(releaseJob.indexOf('npm exec semantic-release')).toBeLessThan(releaseJob.indexOf('id: release-commit'));
+    expect(requestJob).toContain('needs: release');
+    expect(requestJob).toContain("github.event.workflow_run.head_branch == 'main' &&");
+    expect(requestJob).toContain('needs.release.outputs.release_commit != github.event.workflow_run.head_sha');
+    expect(requestJob).toMatch(/permissions:\n {6}actions: write\n {6}contents: read\n/);
+    expect(requestJob).not.toContain('actions/checkout');
+    expect(requestJob).toContain('gh workflow run ci.yml --ref main --repo "$GITHUB_REPOSITORY"');
   });
 
   it('writes a release commit whose subject line is exactly the version subject', () => {
@@ -293,9 +389,9 @@ describe('release commit CI request', () => {
 });
 
 describe('release commit CI request script', () => {
-  const step = releaseWorkflow.slice(releaseWorkflow.indexOf('- name: Request CI for the release commit'));
-  const script = step
-    .slice(step.indexOf('run: |\n') + 'run: |\n'.length)
+  const requestJob = jobSection(releaseWorkflow, 'request-release-ci');
+  const script = requestJob
+    .slice(requestJob.indexOf('run: |\n') + 'run: |\n'.length)
     .split('\n')
     .filter((line) => line.startsWith('          ') || line === '')
     .map((line) => line.slice(10))
@@ -306,87 +402,84 @@ describe('release commit CI request script', () => {
     for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
   });
 
-  function fixture({ releaseCommit, mainMoved = false, failingTokens = [] as string[] }) {
+  function run({
+    releaseCommit = RELEASE,
+    mainSha = RELEASE,
+    release = 'pat',
+    workflow = 'wf',
+    failingTokens = [] as string[]
+  }) {
     const root = mkdtempSync(join(tmpdir(), 'cloud-harness-release-dispatch-'));
     directories.push(root);
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: join(root, 'work'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-    execFileSync('git', ['init', '--quiet', '--bare', '--initial-branch=main', join(root, 'origin.git')]);
-    execFileSync('git', ['clone', '--quiet', join(root, 'origin.git'), join(root, 'work')], { stdio: 'ignore' });
-    git('config', 'user.email', 'release-test@example.invalid');
-    git('config', 'user.name', 'Release Test');
-    git('commit', '--quiet', '--allow-empty', '-m', 'fix: merged change');
-    const merge = git('rev-parse', 'HEAD');
-    if (releaseCommit) git('commit', '--quiet', '--allow-empty', '-m', 'chore(release): 1.2.3 [skip ci]');
-    git('push', '--quiet', 'origin', 'HEAD:main');
-    if (mainMoved) {
-      const head = git('rev-parse', 'HEAD');
-      git('commit', '--quiet', '--allow-empty', '-m', 'feat: newer merge');
-      git('push', '--quiet', 'origin', 'HEAD:main');
-      git('reset', '--quiet', '--hard', head);
-    }
     const bin = join(root, 'bin');
     mkdirSync(bin);
     const log = join(root, 'gh.log');
     writeFileSync(
       join(bin, 'gh'),
-      `#!/usr/bin/env bash\necho "$GH_TOKEN $*" >> '${log}'\ncase " ${failingTokens.join(' ')} " in *" $GH_TOKEN "*) exit 1 ;; esac\n`
+      [
+        '#!/usr/bin/env bash',
+        `echo "$GH_TOKEN $*" >> '${log}'`,
+        `if [[ "$1" == api ]]; then echo '${mainSha}'; exit 0; fi`,
+        `case " ${failingTokens.join(' ')} " in *" $GH_TOKEN "*) exit 1 ;; esac`,
+        ''
+      ].join('\n')
     );
     chmodSync(join(bin, 'gh'), 0o755);
-    return { root, merge, log, bin };
-  }
-
-  function run(env: ReturnType<typeof fixture>, tokens: { release: string; workflow: string }) {
     const result = spawnSync('bash', ['-c', script], {
-      cwd: join(env.root, 'work'),
+      cwd: root,
       encoding: 'utf8',
       env: {
-        PATH: `${env.bin}:${process.env.PATH}`,
-        RELEASE_SHA: env.merge,
-        RELEASE_TOKEN: tokens.release,
-        WORKFLOW_TOKEN: tokens.workflow,
+        PATH: `${bin}:${process.env.PATH}`,
+        RELEASE_SHA: MERGE,
+        RELEASE_COMMIT: releaseCommit,
+        RELEASE_TOKEN: release,
+        WORKFLOW_TOKEN: workflow,
         GITHUB_REPOSITORY: 'owner/repo'
       }
     });
     let calls: string[] = [];
     try {
-      calls = readFileSync(env.log, 'utf8').trim().split('\n');
+      calls = readFileSync(log, 'utf8').trim().split('\n');
     } catch {
       calls = [];
     }
     return { status: result.status, stdout: result.stdout, calls };
   }
 
+  const dispatch = (token: string) => `${token} workflow run ci.yml --ref main --repo owner/repo`;
+  const headRead = 'wf api repos/owner/repo/commits/main --jq .sha';
+
   it('does nothing when semantic-release created no version commit', () => {
-    const result = run(fixture({ releaseCommit: false }), { release: 'pat', workflow: 'wf' });
-    expect(result.status).toBe(0);
-    expect(result.calls).toEqual([]);
-    expect(result.stdout).toContain('No version commit was created');
+    for (const releaseCommit of [MERGE, '']) {
+      const result = run({ releaseCommit });
+      expect(result.status).toBe(0);
+      expect(result.calls).toEqual([]);
+      expect(result.stdout).toContain('No version commit was created');
+    }
   });
 
   it('does nothing when main already moved past the release commit', () => {
-    const result = run(fixture({ releaseCommit: true, mainMoved: true }), { release: 'pat', workflow: 'wf' });
+    const result = run({ mainSha: OTHER });
     expect(result.status).toBe(0);
-    expect(result.calls).toEqual([]);
+    expect(result.calls).toEqual([headRead]);
     expect(result.stdout).toContain('main moved to');
   });
 
   it('dispatches CI on main with the release PAT', () => {
-    const result = run(fixture({ releaseCommit: true }), { release: 'pat', workflow: 'wf' });
+    const result = run({});
     expect(result.status).toBe(0);
-    expect(result.calls).toEqual(['pat workflow run ci.yml --ref main --repo owner/repo']);
+    expect(result.calls).toEqual([headRead, dispatch('pat')]);
   });
 
   it('falls back to the workflow token when the PAT is missing or refused', () => {
-    expect(run(fixture({ releaseCommit: true }), { release: '', workflow: 'wf' }).calls).toEqual([
-      'wf workflow run ci.yml --ref main --repo owner/repo'
-    ]);
-    const refused = run(fixture({ releaseCommit: true, failingTokens: ['pat'] }), { release: 'pat', workflow: 'wf' });
+    expect(run({ release: '' }).calls).toEqual([headRead, dispatch('wf')]);
+    const refused = run({ failingTokens: ['pat'] });
     expect(refused.status).toBe(0);
-    expect(refused.calls).toEqual(['pat workflow run ci.yml --ref main --repo owner/repo', 'wf workflow run ci.yml --ref main --repo owner/repo']);
+    expect(refused.calls).toEqual([headRead, dispatch('pat'), dispatch('wf')]);
   });
 
   it('fails the job when no token can dispatch CI', () => {
-    const result = run(fixture({ releaseCommit: true, failingTokens: ['pat', 'wf'] }), { release: 'pat', workflow: 'wf' });
+    const result = run({ failingTokens: ['pat', 'wf'] });
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('::error::Could not request CI for release commit');
   });
