@@ -1,3 +1,25 @@
+# [0.66.0-beta.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.65.0...v0.66.0-beta.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **agent:** preserve proxy tool payloads ([da82da9](https://github.com/bestagentkits/cloud-harness-mcp/commit/da82da9576c5eb25f9cba6a9d7e2db354d545ab1))
+* **ci:** expose test fixtures to containers ([657e582](https://github.com/bestagentkits/cloud-harness-mcp/commit/657e582e27f10e23802c0d2deb6d9aaa56cab778))
+* **ci:** select the checked-in test environment ([24d3d93](https://github.com/bestagentkits/cloud-harness-mcp/commit/24d3d9373c68e55cb3f12affafdacf7bfa718881))
+* **dashboard:** show privilege grants by their real status and count only pending ones ([68cf4d7](https://github.com/bestagentkits/cloud-harness-mcp/commit/68cf4d7790ee721c23c8e08a06800608ca47f3cc)), closes [#313](https://github.com/bestagentkits/cloud-harness-mcp/issues/313)
+* **dashboard:** title the operator Terminals page as Terminals ([39d00a0](https://github.com/bestagentkits/cloud-harness-mcp/commit/39d00a0dacd4f50b60b9e2921ccd4d03d21a8c4e)), closes [#312](https://github.com/bestagentkits/cloud-harness-mcp/issues/312)
+* **runner:** keep workspace activity from shortening a renewed lease ([028d53f](https://github.com/bestagentkits/cloud-harness-mcp/commit/028d53fa8f1a6b0b8a89050db2f15faf47bdab96)), closes [#314](https://github.com/bestagentkits/cloud-harness-mcp/issues/314)
+* **terminal:** end a parked terminal read when the dashboard request is cancelled ([b1091fc](https://github.com/bestagentkits/cloud-harness-mcp/commit/b1091fcb8b64986df9f48aae87cc30b53c422ec7)), closes [#312](https://github.com/bestagentkits/cloud-harness-mcp/issues/312)
+* **terminal:** keep the workspace alive while a terminal runs and harden session cleanup ([51dcb2c](https://github.com/bestagentkits/cloud-harness-mcp/commit/51dcb2c8d02dd7d593499034c6eadc342dbc5434)), closes [#312](https://github.com/bestagentkits/cloud-harness-mcp/issues/312)
+
+
+### Features
+
+* **agent:** add Pi coding subagents ([c0b0237](https://github.com/bestagentkits/cloud-harness-mcp/commit/c0b0237b3ebcbada3b95e50f15005f22fe962168))
+* **dashboard:** checkpoint terminal BFF and UI work in progress ([e94fe3b](https://github.com/bestagentkits/cloud-harness-mcp/commit/e94fe3b6cf9092e7942015ceaf2099d8606d9d89)), closes [#312](https://github.com/bestagentkits/cloud-harness-mcp/issues/312)
+* **dashboard:** real PTY terminal in the workspace executor ([#315](https://github.com/bestagentkits/cloud-harness-mcp/issues/315)) ([04c2921](https://github.com/bestagentkits/cloud-harness-mcp/commit/04c29212697b22acf19e4e57bc747969200d12fd))
+* **terminal:** checkpoint runner PTY and dashboard terminal work in progress ([f6ed409](https://github.com/bestagentkits/cloud-harness-mcp/commit/f6ed4090d4ba5c80ae55594936a37f3d8ab0ebb8)), closes [#312](https://github.com/bestagentkits/cloud-harness-mcp/issues/312)
+
 # [0.65.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.64.1...v0.65.0) (2026-10-13)
 
 
