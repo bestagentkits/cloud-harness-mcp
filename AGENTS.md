@@ -153,3 +153,19 @@ on (rather than duplicate) a related open issue with a reference back.
 
 Keep plans and reports out of evergreen guidance, and do not add release notes
 or governance files unless the repository contract requires them.
+
+## Issue coordination
+
+Parallel contributors and agents coordinate through issue labels, so keep them
+current on the issue you are working on and assign its owner:
+
+- `in progress` while implementing, `blocked` while waiting on a dependency or
+  decision (say what in a comment), `in review` while an isolated reviewer
+  checks the change, `done` once the PR is open, and `shipped` once it is
+  merged. Replace the previous state label rather than stacking them. The
+  `released` label is applied by the release automation, not by hand.
+- Before starting, check for an existing `in progress` owner or a duplicate
+  issue. Comment on related or duplicate issues with a reference instead of
+  doing the work twice.
+- File a separate issue for an unrelated defect found along the way rather
+  than widening the current PR.

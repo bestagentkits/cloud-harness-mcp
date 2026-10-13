@@ -1,6 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 import {
+  HarnessError,
   qualifiedToolName,
+  type McpGatewayOAuthConfig,
   type McpGatewayPermission,
   type McpGatewaySetPermissionsInput,
   type McpGatewayServerStatus,
@@ -26,6 +28,7 @@ export type McpGatewayServerRow = {
   transport: McpGatewayTransport;
   endpoint: string;
   headers_json: string;
+  oauth_json?: string | null;
   enabled: number;
   status: McpGatewayServerStatus;
   tool_count: number;
@@ -77,6 +80,8 @@ export type McpGatewayServerPatch = {
   transport?: McpGatewayTransport;
   endpoint?: string;
   headers?: McpGatewayStoredHeader[];
+  /** `null` disables OAuth, `undefined` leaves it unchanged. */
+  oauth?: McpGatewayOAuthConfig | null;
   permissionDefault?: McpGatewayPermission;
 };
 
@@ -163,6 +168,31 @@ function parseHeaders(raw: string): McpGatewayStoredHeader[] {
   }
 }
 
+function parseOAuth(raw: string | null | undefined): McpGatewayOAuthConfig | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const candidate = parsed as { scopes?: unknown; clientId?: unknown; clientSecretRef?: unknown };
+    return {
+      ...(typeof candidate.scopes === 'string' ? { scopes: candidate.scopes } : {}),
+      ...(typeof candidate.clientId === 'string' ? { clientId: candidate.clientId } : {}),
+      ...(typeof candidate.clientSecretRef === 'string' ? { clientSecretRef: candidate.clientSecretRef } : {})
+    };
+  } catch {
+    return null;
+  }
+}
+
+function serializeOAuth(config: McpGatewayOAuthConfig | null | undefined): string | null {
+  if (!config) return null;
+  return JSON.stringify({
+    ...(config.scopes ? { scopes: config.scopes } : {}),
+    ...(config.clientId ? { clientId: config.clientId } : {}),
+    ...(config.clientSecretRef ? { clientSecretRef: config.clientSecretRef } : {})
+  });
+}
+
 function serializeHeaders(headers: McpGatewayStoredHeader[]): string {
   return JSON.stringify(headers.map((header) => (
     'secretRef' in header
@@ -186,6 +216,7 @@ export function mcpGatewayServerView(row: McpGatewayServerRow): McpGatewayServer
     transport: row.transport,
     endpoint: row.endpoint,
     headers: parseHeaders(row.headers_json).map(headerView),
+    oauth: parseOAuth(row.oauth_json),
     enabled: row.enabled === 1,
     status: row.status,
     toolCount: row.tool_count,
@@ -273,6 +304,7 @@ export class McpGatewayStore {
       transport: McpGatewayTransport;
       endpoint: string;
       headers: McpGatewayStoredHeader[];
+      oauth?: McpGatewayOAuthConfig | undefined;
       permissionDefault: McpGatewayPermission;
       enabled: boolean;
     },
@@ -286,11 +318,11 @@ export class McpGatewayStore {
       const id = opaqueId('mcps');
       const now = Date.now();
       this.database.prepare(`INSERT INTO mcp_gateway_servers
-        (id, principal_id, name, description, transport, endpoint, headers_json, enabled, status, tool_count,
+        (id, principal_id, name, description, transport, endpoint, headers_json, oauth_json, enabled, status, tool_count,
          last_connected_at, last_error, last_checked_at, permission_default, state, generation, created_at, updated_at, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?, 'ACTIVE', 1, ?, ?, NULL)`).run(
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?, 'ACTIVE', 1, ?, ?, NULL)`).run(
         id, principalId, input.name, input.description ?? null, input.transport, input.endpoint,
-        serializeHeaders(input.headers), input.enabled ? 1 : 0,
+        serializeHeaders(input.headers), serializeOAuth(input.oauth), input.enabled ? 1 : 0,
         input.enabled ? 'unknown' : 'disabled', input.permissionDefault, now, now
       );
       appendAudit(this.database, principalId, 'mcp_server.created', 'mcp_server', id, 1, { transport: input.transport }, now);
@@ -308,6 +340,17 @@ export class McpGatewayStore {
       const current = this.serverRow(principalId, serverId);
       if (!current || current.state !== 'ACTIVE' || current.generation !== expectedGeneration) return undefined;
       const now = Date.now();
+      const nextOAuth = patch.oauth === undefined ? parseOAuth(current.oauth_json) : patch.oauth;
+      if (nextOAuth) {
+        // The contract checks the payload; the merged row is the only place a partial
+        // update's other half is visible, so enforce the OAuth exclusions here too.
+        const nextTransport = patch.transport ?? current.transport;
+        const nextHeaders = patch.headers ?? parseHeaders(current.headers_json);
+        if (nextTransport === 'sse') throw new HarnessError('INVALID_INPUT', 'OAuth is supported only for transport streamable-http', 400, false);
+        if (nextHeaders.some((header) => header.name.toLowerCase() === 'authorization')) {
+          throw new HarnessError('INVALID_INPUT', 'a custom Authorization header cannot be combined with OAuth', 400, false);
+        }
+      }
       const nextName = patch.name;
       const changedName = nextName !== undefined && nextName !== current.name;
       if (changedName && nextName !== undefined && this.database.prepare(
@@ -316,7 +359,7 @@ export class McpGatewayStore {
         return undefined;
       }
       const result = this.database.prepare(`UPDATE mcp_gateway_servers
-        SET name = ?, description = ?, transport = ?, endpoint = ?, headers_json = ?, permission_default = ?,
+        SET name = ?, description = ?, transport = ?, endpoint = ?, headers_json = ?, oauth_json = ?, permission_default = ?,
             generation = generation + 1, updated_at = ?
         WHERE principal_id = ? AND id = ? AND generation = ? AND state = 'ACTIVE'`).run(
         patch.name ?? current.name,
@@ -324,10 +367,21 @@ export class McpGatewayStore {
         patch.transport ?? current.transport,
         patch.endpoint ?? current.endpoint,
         patch.headers ? serializeHeaders(patch.headers) : current.headers_json,
+        patch.oauth === undefined ? current.oauth_json ?? null : serializeOAuth(patch.oauth),
         patch.permissionDefault ?? current.permission_default,
         now, principalId, serverId, expectedGeneration
       );
       if (result.changes !== 1) return undefined;
+      const endpointChanged = patch.endpoint !== undefined && patch.endpoint !== current.endpoint;
+      const previousOAuth = parseOAuth(current.oauth_json);
+      const clientChanged = previousOAuth?.clientId !== nextOAuth?.clientId
+        || previousOAuth?.clientSecretRef !== nextOAuth?.clientSecretRef;
+      if (!nextOAuth || endpointChanged || clientChanged) {
+        // A grant is bound to the resource it was issued for and to its registered client:
+        // re-pointing the server or changing the client must not carry the old token along.
+        this.database.prepare('DELETE FROM mcp_oauth_flows WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
+        this.database.prepare('DELETE FROM mcp_oauth_grants WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
+      }
       if (changedName && nextName !== undefined) {
         // Keep the cached catalog consistent with the identity the model was handed.
         this.database.prepare(`UPDATE mcp_gateway_tools
@@ -403,6 +457,10 @@ export class McpGatewayStore {
       this.database.prepare('DELETE FROM mcp_gateway_tools WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
       this.database.prepare('DELETE FROM mcp_gateway_tool_permissions WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
       this.database.prepare('DELETE FROM mcp_gateway_traces WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
+      // The server row is soft-deleted, so the foreign key cascade never fires: remove
+      // the OAuth grant and pending flows explicitly.
+      this.database.prepare('DELETE FROM mcp_oauth_flows WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
+      this.database.prepare('DELETE FROM mcp_oauth_grants WHERE principal_id = ? AND server_id = ?').run(principalId, serverId);
       appendAudit(this.database, principalId, 'mcp_server.deleted', 'mcp_server', serverId, expectedGeneration + 1, {}, now);
       return { ...mcpGatewayServerView({ ...current, state: 'DELETED', enabled: 0, status: 'disabled', generation: current.generation + 1, updated_at: now, deleted_at: now }) };
     });

@@ -185,7 +185,19 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 6. Two skills with the same name and different content in the same tier conflict, and neither is served; the same applies when one of them cannot be read. In the `repository` tier, `.agents/skills` outranks `.codex/skills`, which outranks `.claude/skills`, so only same-root duplicates conflict. A same name in different tiers is served at each tier-qualified URI. A repository skill root reached through a symbolic link (for example `.agents` linked elsewhere) is ignored.
 7. `-32603` asking you to re-run `skills/get` means a workspace or repository file changed after its manifest was computed; fetch the entry again and re-read. Any other `-32603` is a transient runner failure; retry. Clients may cache results for up to 30 seconds.
 
-### 18. A managed agent ends `FAILED` with `agent bootstrap failed ... repositoryContext "none"`
+### 18. MCP Gateway: `AUTHORIZATION_REQUIRED` or an OAuth connection error
+**Cause:** A downstream MCP server set to **Authenticate with OAuth** has no usable sign-in for you. This is Cloud Harness signing in **to** that server, not your AI client signing in to Cloud Harness (see items 5 and 6 for that). It happens before the first **Connect**, after **Disconnect**, after you change the server's endpoint or manual client, or when the provider refuses to renew the token. Gateway calls from your AI client never open a browser, so they report `AUTHORIZATION_REQUIRED`, and **Test** or **Refresh tools** report it as HTTP `409`.
+**Fix:**
+1. Open the server in [MCP Servers](/dashboard/mcp-servers) and select **Connect** or **Reauthorize** in the **OAuth** panel of the Overview tab, then retry the call.
+2. If you return to the server page with an error, the `reason` names the cause:
+   - `invalid_state` or `expired` — the sign-in link was already used, replaced by a newer **Connect**, or left too long. Select **Connect** again in the same browser.
+   - `denied` — you or the provider declined the request. Check the scopes and the account you signed in with.
+   - `issuer_mismatch` — the provider's response did not come from the expected authorization server. Do not retry blindly; confirm the endpoint is the vendor's real MCP URL.
+   - `exchange_failed` — the provider rejected the sign-in completion. The **OAuth** panel shows the sanitized error; a wrong manual client ID or secret is a common cause.
+3. If **Connect** reports that MCP OAuth is unavailable, the operator must set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` (see the [environment variables reference](/reference/environment-variables)).
+4. If **Connect** fails before the provider's page opens, the provider may not support automatic client registration. Register a client with the provider and enter its **Client ID** (and a client-secret global secret, if it issued one) in the server form.
+
+### 19. A managed agent ends `FAILED` with `agent bootstrap failed ... repositoryContext "none"`
 **Cause:** Before an `agent_spawn` agent's first turn, the runner reads the workspace's repository guidance (`AGENTS.md`, `CLAUDE.md`, `REVIEW.md`, `DESIGN.md`, client rule files) and places the applicable files ahead of the task. When that scan cannot complete (for example the executor is unavailable, or the workspace was closed or recreated meanwhile), the agent fails closed with an `UNAVAILABLE` reason instead of starting without guidance. No model lease or container was created for it.
 **Fix:**
 1. Check the workspace with `workspace_status`; recover or reopen it if it is not `ACTIVE`.

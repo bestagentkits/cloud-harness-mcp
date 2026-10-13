@@ -31,7 +31,8 @@ export const ErrorCodeSchema = z.enum([
   'RUNNER_RESTARTED',
   'DEPENDENCY_EGRESS_UNAVAILABLE',
   'HOOK_FAILED',
-  'EXECUTION_FAILED'
+  'EXECUTION_FAILED',
+  'AUTHORIZATION_REQUIRED'
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const ToolResultSchema = z.object({

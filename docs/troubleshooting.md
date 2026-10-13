@@ -52,6 +52,28 @@ The request policy is owned by
 behavior is owned by
 [`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts).
 
+## Downstream MCP OAuth
+
+These rows cover the gateway authenticating *to* an OAuth-protected downstream
+MCP server. Inbound Managed OAuth problems are in the table above.
+
+| Symptom | Meaning and next check |
+|---|---|
+| Connect returns `503 unavailable` | `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is unset on the API. Set it as described in [deployment](deployment.md#downstream-mcp-oauth-redirect). |
+| Test or Refresh returns `409` / a gateway call returns `AUTHORIZATION_REQUIRED` | The server has OAuth configured but no usable grant for this principal: never connected, disconnected, discarded after an endpoint or client change, or the refresh was rejected. Use Connect or Reauthorize on the server's Overview tab. Background calls intentionally never start an authorization. |
+| Callback returns to the server page with `oauth=error&reason=invalid_state` or `expired` | The one-time flow was already used, superseded by a newer Connect, started by another principal, or older than its short lifetime. Start Connect again from the same browser session. |
+| `reason=denied` | The user or the authorization server declined the request. Check the requested scopes and the account used at the provider. |
+| `reason=issuer_mismatch` | The authorization response named a different issuer from the one discovered at Connect. Treat this as a possible mix-up attack; verify the server's protected-resource metadata before retrying. |
+| `reason=exchange_failed` | The code exchange failed; the sanitized cause is stored as the OAuth status `lastError`. Common causes are a redirect URL the provider does not accept, a manual client ID or secret the provider rejects, or a token endpoint refused by the gateway URL policy or redirect refusal. |
+| Connect fails before the browser opens | Discovery or registration failed. The provider may support neither Client ID Metadata Documents nor dynamic registration (enter a manually registered client ID), the OAuth metadata may point at an address the gateway URL policy refuses, or an OAuth endpoint answered with a redirect, which is refused. |
+| Saving a server fails with an `Authorization` header or `sse` message | OAuth owns the `Authorization` header and is `streamable-http` only. Remove the custom header or keep the static-header configuration without OAuth. |
+
+The flow, status, and reasons are owned by
+[`apps/api/src/mcp-gateway/oauth-flow.ts`](../apps/api/src/mcp-gateway/oauth-flow.ts)
+and [`apps/api/src/dashboard-gateway-router.ts`](../apps/api/src/dashboard-gateway-router.ts).
+Never paste tokens, authorization codes, or callback URLs carrying `code` or
+`state` into tickets.
+
 ## Workspace opening
 
 - `LIMIT_EXCEEDED` with `active workspace limit reached: N active of a maximum M`

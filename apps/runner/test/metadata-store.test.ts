@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { downgradeMetadataSchemaToV1, downgradeMetadataSchemaToV2, downgradeMetadataSchemaToV3, downgradeMetadataSchemaToV4, downgradeMetadataSchemaToV5, migrateMetadataSchema } from '../src/metadata-schema.js';
 import { downgradeStateDbToV5 } from '../src/metadata-schema-down-v5.js';
+import { downgradeStateDbToV6 } from '../src/metadata-schema-down-v6.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
@@ -36,7 +37,7 @@ describe('MetadataStore', () => {
   it('migrates once, survives restart, and enforces owner-qualified foreign keys', () => {
     const { path, owner, foreign, store, keyring } = fixture();
     const { project, environment } = projectEnvironment(store, owner);
-    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(7);
     expect(() => store.database.prepare(`INSERT INTO environments
       (id, principal_id, project_id, name, state, generation, created_at, updated_at)
       VALUES (?, ?, ?, 'Foreign', 'ACTIVE', 1, 1, 1)`).run(`env_${'x'.repeat(24)}`, foreign, project.id)).toThrow();
@@ -372,7 +373,7 @@ describe('MetadataStore', () => {
 
   it('upgrades an existing v5 ledger to v6 in place and creates the gateway tables', () => {
     const { path, store, keyring } = fixture();
-    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(7);
 
     // Rewind to the shipped v5 shape, then migrate the same database forward again.
     downgradeMetadataSchemaToV5(store.database);
@@ -380,7 +381,7 @@ describe('MetadataStore', () => {
     expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mcp_gateway_servers'").get()).toBeUndefined();
 
     migrateMetadataSchema(store.database);
-    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
+    expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(7);
     for (const table of ['mcp_gateway_servers', 'mcp_gateway_tools', 'mcp_gateway_tool_permissions', 'mcp_gateway_traces']) {
       expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeDefined();
     }
@@ -393,6 +394,26 @@ describe('MetadataStore', () => {
     store.close();
     keyring.close();
     void path;
+  });
+
+  it('runs the bounded v7 -> v6 entry point, keeps the gateway registry, and refuses a non-v7 ledger', () => {
+    const { path, store, keyring } = fixture();
+    store.close();
+    keyring.close();
+    const out: string[] = [];
+    const errors: string[] = [];
+    const io = { out: (line: string) => out.push(line), error: (line: string) => errors.push(line) };
+    expect(downgradeStateDbToV6(path, io)).toBe(0);
+    expect(out).toEqual(['metadata-schema-version=6']);
+    const db = new DatabaseSync(path);
+    for (const table of ['mcp_oauth_grants', 'mcp_oauth_flows']) {
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeUndefined();
+    }
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mcp_gateway_servers'").get()).toBeDefined();
+    expect((db.prepare("SELECT name FROM pragma_table_info('mcp_gateway_servers')").all() as { name: string }[]).map((c) => c.name)).not.toContain('oauth_json');
+    db.close();
+    expect(downgradeStateDbToV6(path, io)).toBe(1);
+    expect(errors[0]).toContain('must be version 7');
   });
 
   it('runs the bounded v6 -> v5 entry point and refuses a non-v6 ledger', () => {
@@ -410,6 +431,9 @@ describe('MetadataStore', () => {
     const out: string[] = [];
     const errors: string[] = [];
     const io = { out: (line: string) => out.push(line), error: (line: string) => errors.push(line) };
+    expect(downgradeStateDbToV6(path, io)).toBe(0);
+    expect(out).toEqual(['metadata-schema-version=6']);
+    out.length = 0;
     expect(downgradeStateDbToV5(path, io)).toBe(0);
     expect(out).toEqual(['metadata-schema-version=5']);
     expect(errors).toEqual([]);
@@ -445,7 +469,7 @@ describe('MetadataStore', () => {
 
     const db = new DatabaseSync(path);
     const initialRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
-    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(6);
+    expect(initialRow && typeof initialRow === 'object' && 'version' in initialRow ? initialRow.version : undefined).toBe(7);
 
     downgradeMetadataSchemaToV3(db);
     const v3Row = db.prepare('SELECT version FROM metadata_schema_meta').get();
@@ -461,7 +485,7 @@ describe('MetadataStore', () => {
 
     migrateMetadataSchema(db);
     const migratedRow = db.prepare('SELECT version FROM metadata_schema_meta').get();
-    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(6);
+    expect(migratedRow && typeof migratedRow === 'object' && 'version' in migratedRow ? migratedRow.version : undefined).toBe(7);
     db.close();
   });
 
@@ -474,7 +498,7 @@ describe('MetadataStore', () => {
     ];
     for (const entry of cases) {
       const { store, keyring } = fixture();
-      expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(6);
+      expect((store.database.prepare('SELECT version FROM metadata_schema_meta').get() as { version: number }).version).toBe(7);
       for (const table of gatewayTables) {
         expect(store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table).toBeDefined();
       }
