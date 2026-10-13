@@ -199,7 +199,7 @@ describe('AgentManager', () => {
   });
 
   it('skips agent admission for an ACTIVE dependency-access workspace instead of aborting startup', async () => {
-    // Regression: openWorkspaceAdmission throws NOT_FOUND for a workspace whose profile is not
+    // Regression: openWorkspaceAdmission throws for a workspace whose profile is not
     // network-none, and the startup loop called it unconditionally. A single ACTIVE
     // dependency-access workspace therefore killed the runner on every restart, and the unhealthy
     // runner took the entire compose stack down with it.
@@ -210,6 +210,32 @@ describe('AgentManager', () => {
     // The eligibility rule itself is unchanged: spawning there is still refused.
     await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record))).rejects.toMatchObject({ code: 'CONFLICT' });
     await manager.stop();
+    store.close();
+  });
+
+  it('reports a found-but-ineligible workspace as CONFLICT, not NOT_FOUND, when opening admission', () => {
+    const { repository, record, store } = setup('dependency-access');
+    expect(() => repository.openWorkspaceAdmission(record.ownerId, record.id, record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'CONFLICT', message: expect.stringContaining('not eligible for agent admission') }));
+    // A missing workspace, a stale generation, and a foreign owner still read as NOT_FOUND.
+    expect(() => repository.openWorkspaceAdmission(record.ownerId, 'ws_missing', record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    expect(() => repository.openWorkspaceAdmission(record.ownerId, record.id, record.generation + 1, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    const foreignOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'foreign' });
+    expect(() => repository.openWorkspaceAdmission(foreignOwner, record.id, record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
+    store.close();
+  });
+
+  it('reports a non-ACTIVE network-none workspace as CONFLICT to its owner and NOT_FOUND to others', () => {
+    const { repository, record, store } = setup();
+    store.update(record.id, { status: 'CLOSED' });
+    expect(() => repository.openWorkspaceAdmission(record.ownerId, record.id, record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'CONFLICT' }));
+    const foreignOwner = store.resolvePrincipal({ kind: 'owner', ownerId: 'foreign' });
+    expect(() => repository.openWorkspaceAdmission(foreignOwner, record.id, record.generation, Date.now()))
+      .toThrow(expect.objectContaining({ code: 'NOT_FOUND' }));
     store.close();
   });
 
