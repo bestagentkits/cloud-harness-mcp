@@ -12,6 +12,7 @@ import {
 import type { Tool } from '@modelcontextprotocol/client';
 import type { RunnerClient } from '../runner-client.js';
 import type { GatewayConnectionManager } from './connection-manager.js';
+import type { McpOAuthCoordinator } from './oauth-flow.js';
 import {
   assertCatalogWithinLimit,
   filterSearchable,
@@ -182,7 +183,8 @@ export class McpGatewayService {
   constructor(
     private readonly runner: RunnerClient,
     private readonly connections: GatewayConnectionManager,
-    options: McpGatewayServiceOptions
+    options: McpGatewayServiceOptions,
+    readonly oauth?: McpOAuthCoordinator
   ) {
     this.timeoutMs = Math.max(1, finiteOr(options.timeoutMs, DEFAULT_TIMEOUT_MS));
     this.maxResponseBytes = Math.max(1, finiteOr(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES));
@@ -361,7 +363,8 @@ export class McpGatewayService {
               ...(context.signal ? { signal: context.signal } : {})
             }
           ),
-        context.signal
+        context.signal,
+        this.oauthProvider(principal, server.id, credentials)
       );
       const data = {
         content: sanitizeGatewayValue(result.content ?? [], secrets),
@@ -508,6 +511,11 @@ export class McpGatewayService {
       );
       if (!server) throw new HarnessError('NOT_FOUND', 'unknown or inaccessible MCP server', 404, false);
       const outcome = await this.discover(principal, server, context.signal);
+      if (outcome.authorizationRequired) {
+        // A structured result, not a generic downstream failure: the dashboard keys the
+        // Connect / Re-authorize action off this code.
+        throw new HarnessError('AUTHORIZATION_REQUIRED', outcome.error ?? 'OAuth authorization is required', 401, false);
+      }
       const data = {
         server: server.name,
         status: outcome.status,
@@ -542,7 +550,7 @@ export class McpGatewayService {
     principal: RunnerPrincipalSelector,
     server: McpGatewayServerView,
     signal?: AbortSignal
-  ): Promise<{ status: 'connected' | 'error'; toolCount: number; error: string | null }> {
+  ): Promise<{ status: 'connected' | 'error'; toolCount: number; error: string | null; authorizationRequired?: boolean }> {
     const response = await this.runner.callInternal(
       'mcp_server_get_credentials',
       { serverId: server.id, purpose: 'connect' },
@@ -562,7 +570,8 @@ export class McpGatewayService {
         resolved,
         credentials.headers ?? {},
         (client) => client.listTools(),
-        signal
+        signal,
+        this.oauthProvider(principal, server.id, credentials)
       );
       const normalized = normalizeUpstreamTools(server, (listed.tools ?? []) as GatewayUpstreamTool[], {
         maxTools: this.maxToolsPerServer,
@@ -591,8 +600,26 @@ export class McpGatewayService {
     } catch (error) {
       const sanitized = redactGatewayError(error, secrets);
       await this.recordConnectionResult(principal, server, 'error', sanitized.message);
-      return { status: 'error', toolCount: 0, error: sanitized.message };
+      return {
+        status: 'error',
+        toolCount: 0,
+        error: sanitized.message,
+        ...(sanitized.code === 'AUTHORIZATION_REQUIRED' ? { authorizationRequired: true } : {})
+      };
     }
+  }
+
+  /** A background provider exists only for a server that has OAuth configured. */
+  private oauthProvider(
+    principal: RunnerPrincipalSelector,
+    serverId: string,
+    credentials: McpGatewayResolvedCredentials
+  ) {
+    if (!credentials.oauth) return undefined;
+    if (!this.oauth) {
+      throw new HarnessError('UNAVAILABLE', 'MCP OAuth is not available on this deployment', 503, false);
+    }
+    return this.oauth.background(principal, serverId, credentials.oauth);
   }
 
   private async recordConnectionResult(

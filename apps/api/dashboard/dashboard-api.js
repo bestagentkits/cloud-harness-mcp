@@ -81,6 +81,9 @@ export const setMcpServerEnabled = (serverId, enabled, expectedGeneration) => ap
 export const setMcpServerPermissions = (serverId, payload) => api(`/mcp-servers/${encodeURIComponent(serverId)}/permissions`, { method: 'PUT', body: JSON.stringify(payload) });
 export const testMcpServer = (serverId) => api(`/mcp-servers/${encodeURIComponent(serverId)}/test`, { method: 'POST' });
 export const refreshMcpServerTools = (serverId) => api(`/mcp-servers/${encodeURIComponent(serverId)}/refresh`, { method: 'POST' });
+export const getMcpServerOAuth = (serverId) => api(`/mcp-servers/${encodeURIComponent(serverId)}/oauth`);
+export const startMcpServerOAuth = (serverId) => api(`/mcp-servers/${encodeURIComponent(serverId)}/oauth/start`, { method: 'POST' });
+export const disconnectMcpServerOAuth = (serverId) => api(`/mcp-servers/${encodeURIComponent(serverId)}/oauth/disconnect`, { method: 'POST' });
 export const listMcpServerLogs = (serverId, cursor) => api(`/mcp-servers/${encodeURIComponent(serverId)}/logs${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
 export const getMcpGatewayEndpoint = () => api('/mcp-gateway');
 export const listGlobalSecrets = () => api('/secrets');

@@ -296,6 +296,17 @@
       </select>
       <label for="mcp-server-url">Endpoint URL</label>
       <input id="mcp-server-url" name="endpoint" type="url" required maxlength="2048" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://vendor.example.com/mcp">
+      <div class="form-section-title">Authentication</div>
+      <label class="checkbox-label"><input name="oauthEnabled" type="checkbox" aria-controls="mcp-oauth-fields"><span>Authenticate with OAuth (streamable-http only)</span></label>
+      <div id="mcp-oauth-fields" hidden>
+        <p>Cloud Harness signs in to this server with OAuth 2.1 on your behalf. Connect after saving. Tokens stay encrypted and are never shown. OAuth owns the Authorization header, so a custom Authorization header is refused.</p>
+        <label for="mcp-oauth-scopes">Scopes <span class="optional">Optional</span></label>
+        <input id="mcp-oauth-scopes" name="oauthScopes" maxlength="500" autocomplete="off" spellcheck="false" placeholder="e.g. read write">
+        <label for="mcp-oauth-client-id">Client ID <span class="optional">Optional, manual registration</span></label>
+        <input id="mcp-oauth-client-id" name="oauthClientId" maxlength="512" autocomplete="off" spellcheck="false">
+        <label for="mcp-oauth-client-secret">Client secret <span class="optional">Optional, global secret reference</span></label>
+        <select id="mcp-oauth-client-secret" name="oauthClientSecretRef"><option value="">None (public client)</option></select>
+      </div>
       <div class="form-section-title">Headers <span class="optional">Optional</span></div>
       <p>Send a literal header value or reference an existing global secret. Secret values are write-only and are not shown after saving.</p>
       <div id="mcp-header-rows"></div>

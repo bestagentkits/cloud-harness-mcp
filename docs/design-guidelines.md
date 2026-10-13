@@ -515,8 +515,13 @@ wired, so the visible one is never the only working one. Owners:
   actually accepts (owner bearer or Access session), states that the managed
   API-key lane is not yet available, and lists the two hard limitations an
   operator hits first: HTTP redirects are refused, and `stdio` downstream
-  servers are unsupported. Owners: `renderMcpGatewayCard` and
-  `renderMcpServersIndex` in `dashboard-render.js`, and the MCP server routes in
+  servers are unsupported. A server configured for downstream OAuth adds an
+  OAuth panel to its Overview with the state, safe grant metadata, Connect /
+  Reconnect / Reauthorize, and Disconnect; the server form's Authentication
+  section collects the optional scopes and manual client, and the callback
+  outcome is announced once and stripped from the URL. Owners:
+  `renderMcpGatewayCard`, `renderMcpServersIndex`, and `renderMcpOAuthSection`
+  in `dashboard-render.js`, and the MCP server routes in
   [`apps/api/src/dashboard-gateway-router.ts`](../apps/api/src/dashboard-gateway-router.ts).
 - **Interaction states:** every control ships default / hover / `:focus-visible`
   / active / disabled; touch targets >= 44px (small controls expand their hit
