@@ -116,6 +116,21 @@ instead of copying behavior, defaults, command inventories, or configuration.
 5. If you start watch processes or Compose services, check for an existing
    project process first, track what you start, and stop it when the task ends.
 
+## Issue coordination
+
+Parallel contributors and agents coordinate through issue labels, so keep them
+current:
+
+- Before starting, skip an issue already labelled `in progress` or `in review`
+  by someone else. Otherwise assign yourself (or the requesting owner) and add
+  `in progress`.
+- Move to `in review` while an isolated review runs, to `done` once the PR is
+  open, and to `shipped` after it merges. Use `blocked` (with a comment naming
+  the blocker) when work cannot proceed.
+- When you find a related or duplicate issue, comment on it and reference the
+  issue you are working on instead of starting overlapping work. File a new
+  issue for an unrelated defect you discover rather than widening the PR.
+
 Use `npm ci` for a clean dependency install. The root `package.json` remains the
 command authority; do not duplicate its full script list here. Do not run
 `npm run verify:production` casually: it targets a live MCP endpoint, requires

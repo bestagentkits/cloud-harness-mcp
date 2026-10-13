@@ -430,13 +430,13 @@ pins the SSH host key, passes an exact commit SHA to the fixed sudo command,
 uses a forced-command deployment key, and removes ephemeral SSH files. Protect the `production` environment and
 restrict who may approve or modify these secrets.
 
-A `classify` job skips the deploy when CI completed on a semantic-release
-version commit (`chore(release): … [skip ci]`). The code for the merged commit
-is already live, so redeploying only changes version strings and the changelog
-while recreating every container again. Skipping it avoids a second
-container-recreation window per merge. A manual **Deploy production** run
-(`workflow_dispatch`, optionally with an explicit 40-character commit SHA)
-always deploys and remains the override.
+The workflow never skips a commit because of its subject. A semantic-release
+version commit (`chore(release): … [skip ci]`) normally has no CI run, so it is
+not deployed automatically; when a CI run does exist for it (for example a
+dispatched `ci.yml` run on `main`), the workflow deploys it like any other
+CI-tested commit. A manual **Deploy production** run (`workflow_dispatch`,
+optionally with an explicit 40-character commit SHA) always deploys and remains
+the override.
 
 GitHub release automation is separate from deployment. After successful CI,
 `dev` produces beta releases and `main` produces stable releases from
