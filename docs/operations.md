@@ -94,6 +94,10 @@ one-off runner re-encryption entry point owned by
 [`apps/runner/src/rekey-secrets.ts`](../apps/runner/src/rekey-secrets.ts) through
 the `secrets:rekey` package script or its compiled runner command.
 
+That command re-encrypts secret versions, workspace secret snapshots, and
+downstream MCP OAuth grants and pending flows. A grant is rewritten only while
+its generation is unchanged, so a concurrent token refresh is never overwritten.
+
 The command is interruptible and safe to resume; verify that it completes,
 take a new coherent backup, and keep old decrypt keys through the release and
 rollback window. Remove an old key only after source, database inspection, and
@@ -176,13 +180,44 @@ Then deploy the prior runner and canary readiness, the dashboard, unrelated
 metadata, and the absence of the `/mcp-gateway` route. Restore-from-backup
 remains the fallback instead of retrying a downgrade that does not complete.
 
+## Downstream MCP OAuth schema rollback
+
+Metadata schema v7 adds the encrypted downstream OAuth grant and pending-flow
+tables and the per-server OAuth configuration column. A v6 runner cannot start
+on a v7 ledger. Downgrading to a v6 runner destroys every downstream OAuth
+grant and every server's OAuth configuration by design; affected servers must
+be reconfigured and reconnected after a later upgrade. Quiesce dashboard and
+MCP writes, stop the service, and take a coherent recovery backup before
+running the bounded downgrade from the exact release checkout:
+
+```bash
+npm run metadata:down:v6 -w @cloud-harness/runner -- /path/to/db
+```
+
+Keep the database offline for the command. It requires version 7 and changes
+only the downstream OAuth schema, leaving the MCP gateway registry, API keys,
+and secret tables in place; it never chains further down. To reach v5, run
+`metadata:down:v5` afterwards as described above. The exact statements are
+owned by `downgradeMetadataSchemaToV6` in
+[`apps/runner/src/metadata-schema.ts`](../apps/runner/src/metadata-schema.ts)
+and the command by
+[`apps/runner/src/metadata-schema-down-v6.ts`](../apps/runner/src/metadata-schema-down-v6.ts).
+Then deploy the prior runner and canary readiness, the dashboard, and the MCP
+server list. Restore-from-backup remains the fallback.
+
 ## Release rollback
 
-The automatic GitHub Actions deploy skips the semantic-release version commit
-(`chore(release): … [skip ci]`) because the merged code is already live, so one
-merge opens a single container-recreation window instead of two. Run **Deploy
-production** manually (`workflow_dispatch`, optionally with an explicit
-40-character commit SHA) to force a deploy.
+Each merge to `main` deploys once. When Release cuts a version, it requests CI
+for its `chore(release)` commit and the merge deploy is skipped, so production
+runs the tagged tree after that second CI run passes; otherwise the merge
+commit deploys right after push CI. If the version commit's CI fails or is
+cancelled while it is still the head of `main`, its CI-tested parent merge
+deploys instead; once a newer merge lands, that merge's CI decides the deploy. A flaky failure can be
+retried with `gh workflow run ci.yml --ref main` while the version commit is
+still the head of `main`; a real fix is a new merge, which deploys on its own.
+Run **Deploy production** manually (`workflow_dispatch`, optionally with an
+explicit 40-character commit SHA) to force a deploy;
+[`docs/deployment.md`](deployment.md) owns the decision rule.
 
 An automatic deployment failure restores the prior recorded commit, the
 quiesced database/artifact state, the last healthy runtime configuration and

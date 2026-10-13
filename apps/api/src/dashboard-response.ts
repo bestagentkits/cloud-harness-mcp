@@ -232,6 +232,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools',
   'mcp_server_connection_result', 'mcp_server_get_credentials',
   'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list',
+  'mcp_oauth_status', 'mcp_oauth_flow_begin', 'mcp_oauth_flow_consume', 'mcp_oauth_grant_load', 'mcp_oauth_grant_save', 'mcp_oauth_grant_mark', 'mcp_oauth_disconnect',
   'skill_list', 'skill_get', 'skill_create_custom', 'skill_update', 'skill_archive', 'skill_restore', 'skill_bulk',
   'skill_usage', 'skill_search',
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
@@ -261,7 +262,7 @@ const secretKeys = ['id', 'environmentId', 'name', 'description', 'state', 'vers
 const artifactKeys = ['artifactId', 'logicalName', 'sha256', 'sizeBytes', 'projectId', 'environmentId', 'workspaceId', 'createdAt', 'updatedAt', 'expiresAt', 'retentionMs', 'generation'] as const;
 const privilegeGrantKeys = ['id', 'ownerId', 'workspaceId', 'command', 'cwd', 'commandSha256', 'status', 'createdAt', 'expiresAt', 'consumedAt'] as const;
 const knowledgeItemKeys = ['id', 'kind', 'scope', 'projectId', 'workspaceId', 'title', 'content', 'contentSha256', 'journalType', 'occurredAt', 'generation', 'createdAt', 'updatedAt', 'expiresAt', 'tags', 'provenance', 'outboundLinks', 'backlinks'] as const;
-const mcpServerKeys = ['id', 'name', 'description', 'transport', 'endpoint', 'headers', 'enabled', 'status', 'toolCount', 'lastConnectedAt', 'lastError', 'lastCheckedAt', 'permissionDefault', 'generation', 'createdAt', 'updatedAt'] as const;
+const mcpServerKeys = ['id', 'name', 'description', 'transport', 'endpoint', 'headers', 'oauth', 'enabled', 'status', 'toolCount', 'lastConnectedAt', 'lastError', 'lastCheckedAt', 'permissionDefault', 'generation', 'createdAt', 'updatedAt'] as const;
 const mcpToolKeys = ['id', 'serverId', 'qualifiedName', 'upstreamName', 'description', 'inputSchema', 'annotations', 'availability', 'permission', 'discoveredAt'] as const;
 const mcpTraceKeys = ['id', 'serverId', 'serverName', 'tool', 'operation', 'clientId', 'durationMs', 'status', 'errorCode', 'errorMessage', 'requestBytes', 'responseBytes', 'createdAt'] as const;
 const mcpCredentialKeys = ['allowed', 'reason'] as const;
@@ -308,7 +309,11 @@ function mcpHeader(value: unknown): Record<string, unknown> {
 function mcpServer(value: unknown): Record<string, unknown> {
   const server = pick(value, mcpServerKeys);
   const headers = Array.isArray(server.headers) ? server.headers : [];
-  return { ...server, headers: headers.map((header) => mcpHeader(header)) };
+  // OAuth configuration only: scopes, a manual client ID, and a write-only secret reference name.
+  const oauth = server.oauth !== null && typeof server.oauth === 'object'
+    ? pick(server.oauth, ['scopes', 'clientId', 'clientSecretRef'])
+    : null;
+  return { ...server, headers: headers.map((header) => mcpHeader(header)), oauth };
 }
 
 function mcpServerResult(data: Record<string, unknown>): Record<string, unknown> {
@@ -465,6 +470,15 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'mcp_server_create' || operation === 'mcp_server_update' || operation === 'mcp_server_set_enabled' || operation === 'mcp_server_set_permissions' || operation === 'mcp_server_delete' || operation === 'mcp_server_replace_tools') return mcpServer(data);
   if (operation === 'mcp_server_connection_result') return pick(data, mcpConnectionKeys);
   if (operation === 'mcp_server_get_credentials' || operation === 'mcp_gateway_catalog' || operation === 'mcp_gateway_trace_append') return pick(data, mcpCredentialKeys);
+  // OAuth operations are internal to the API's own OAuth service. The mapper projects
+  // metadata only: a grant or flow blob (tokens, PKCE verifier, client information)
+  // has no key here, so it can never reach the browser through a dashboard route.
+  if (operation === 'mcp_oauth_status') return { status: pick(data.status, ['serverId', 'enabled', 'state', 'issuer', 'requestedScopes', 'grantedScopes', 'registrationMode', 'authorizedAt', 'expiresAt', 'lastRefreshAt', 'lastError', 'redirectUrl']) };
+  if (operation === 'mcp_oauth_flow_begin') return pick(data, ['expiresAt']);
+  if (operation === 'mcp_oauth_flow_consume' || operation === 'mcp_oauth_grant_load') return {};
+  if (operation === 'mcp_oauth_grant_save') return pick(data, ['generation']);
+  if (operation === 'mcp_oauth_grant_mark') return pick(data, ['marked']);
+  if (operation === 'mcp_oauth_disconnect') return pick(data, ['disconnected']);
   if (operation === 'mcp_gateway_trace_list') return { traces: Array.isArray(data.traces) ? data.traces.map((trace) => pick(trace, mcpTraceKeys)) : [] };
   if (operation === 'skill_list') return list(data, 'skills', skillKeys);
   if (operation === 'skill_get' || operation === 'skill_create_custom' || operation === 'skill_update' || operation === 'skill_archive' || operation === 'skill_restore') return pick(data, skillKeys);

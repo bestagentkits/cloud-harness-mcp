@@ -141,5 +141,31 @@ or workspace lifecycle features change or are added:
   `npm test packages/contracts/test/cloudharness-skill-contract.test.ts` (or
   `npm run verify`).
 
+## Issue coordination
+
+When several people or agents work in parallel, mark ownership on the GitHub
+issue so nobody duplicates or collides with it: assign the owner and keep one
+status label current: `in progress`, `blocked`, `in review` (agent review
+running), `done` (pull request opened), `shipped` (merged). Check an issue's
+labels, assignees, and linked pull requests before starting it. File a separate
+issue for any unrelated defect or hardening gap found along the way, and comment
+on (rather than duplicate) a related open issue with a reference back.
+
 Keep plans and reports out of evergreen guidance, and do not add release notes
 or governance files unless the repository contract requires them.
+
+## Issue coordination
+
+Parallel contributors and agents coordinate through issue labels, so keep them
+current on the issue you are working on and assign its owner:
+
+- `in progress` while implementing, `blocked` while waiting on a dependency or
+  decision (say what in a comment), `in review` while an isolated reviewer
+  checks the change, `done` once the PR is open, and `shipped` once it is
+  merged. Replace the previous state label rather than stacking them. The
+  `released` label is applied by the release automation, not by hand.
+- Before starting, check for an existing `in progress` owner or a duplicate
+  issue. Comment on related or duplicate issues with a reference instead of
+  doing the work twice.
+- File a separate issue for an unrelated defect found along the way rather
+  than widening the current PR.

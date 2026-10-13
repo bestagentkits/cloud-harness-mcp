@@ -11,7 +11,7 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number };
-    if (row.version === 6) {
+    if (row.version === 7) {
       database.exec('COMMIT');
       return;
     }
@@ -236,8 +236,54 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
       UPDATE metadata_schema_meta SET version = 6 WHERE singleton = 1;
     `);
     }
+    const postV6 = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
+    if (postV6 === 6) database.exec(`
+      ALTER TABLE mcp_gateway_servers ADD COLUMN oauth_json TEXT;
+
+      CREATE TABLE mcp_oauth_grants (
+        principal_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        issuer TEXT NOT NULL,
+        registration_mode TEXT NOT NULL CHECK (registration_mode IN ('cimd', 'dcr', 'manual')),
+        requested_scopes TEXT,
+        granted_scopes TEXT,
+        state TEXT NOT NULL CHECK (state IN ('authorizing', 'connected', 'reauthorization_required', 'error')),
+        last_error TEXT,
+        authorized_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        last_refresh_at INTEGER,
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        updated_at INTEGER NOT NULL,
+        key_version INTEGER NOT NULL CHECK (key_version > 0),
+        nonce TEXT NOT NULL,
+        ciphertext TEXT NOT NULL,
+        auth_tag TEXT NOT NULL,
+        PRIMARY KEY(principal_id, server_id),
+        FOREIGN KEY(principal_id, server_id) REFERENCES mcp_gateway_servers(principal_id, id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE mcp_oauth_flows (
+        id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        state_hash TEXT NOT NULL UNIQUE,
+        expected_issuer TEXT NOT NULL,
+        scopes TEXT,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        key_version INTEGER NOT NULL CHECK (key_version > 0),
+        nonce TEXT NOT NULL,
+        ciphertext TEXT NOT NULL,
+        auth_tag TEXT NOT NULL,
+        FOREIGN KEY(principal_id, server_id) REFERENCES mcp_gateway_servers(principal_id, id) ON DELETE CASCADE
+      );
+      CREATE INDEX mcp_oauth_flows_server ON mcp_oauth_flows(principal_id, server_id);
+      CREATE INDEX mcp_oauth_flows_expiry ON mcp_oauth_flows(expires_at);
+
+      UPDATE metadata_schema_meta SET version = 7 WHERE singleton = 1;
+    `);
     const migrated = (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number }).version;
-    if (migrated !== 6) throw new Error(`unsupported metadata schema version ${migrated}`);
+    if (migrated !== 7) throw new Error(`unsupported metadata schema version ${migrated}`);
     database.exec('COMMIT');
   } catch (error) {
     database.exec('ROLLBACK');
@@ -248,12 +294,37 @@ export function migrateMetadataSchema(database: DatabaseSync): void {
 const metadataVersion = (database: DatabaseSync): number | undefined =>
   (database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined)?.version;
 
-/** Unwind a v6 ledger to v5. Must run before the caller opens its own transaction. */
+/** Unwind a v7 ledger to v6. Must run before the caller opens its own transaction. */
+function unwindFromV7(database: DatabaseSync): void {
+  if (metadataVersion(database) === 7) downgradeMetadataSchemaToV6(database);
+}
+
+/** Unwind a v6 or v7 ledger to v5. Must run before the caller opens its own transaction. */
 function unwindFromV6(database: DatabaseSync): void {
+  unwindFromV7(database);
   if (metadataVersion(database) === 6) downgradeMetadataSchemaToV5(database);
 }
 
+export function downgradeMetadataSchemaToV6(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
+    if (!row || row.version !== 7) throw new Error('metadata schema must be version 7 before downgrade');
+    database.exec(`
+      DROP TABLE IF EXISTS mcp_oauth_flows;
+      DROP TABLE IF EXISTS mcp_oauth_grants;
+      ALTER TABLE mcp_gateway_servers DROP COLUMN oauth_json;
+      UPDATE metadata_schema_meta SET version = 6 WHERE singleton = 1;
+    `);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 export function downgradeMetadataSchemaToV5(database: DatabaseSync): void {
+  unwindFromV7(database);
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
@@ -345,7 +416,7 @@ export function downgradeMetadataSchemaToV1(database: DatabaseSync): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     const row = database.prepare('SELECT version FROM metadata_schema_meta WHERE singleton = 1').get() as { version: number } | undefined;
-    if (!row || (row.version !== 2 && row.version !== 3 && row.version !== 4 && row.version !== 5 && row.version !== 6)) throw new Error('metadata schema must be version 2, 3, 4, 5, or 6 before downgrade');
+    if (!row || (row.version !== 2 && row.version !== 3 && row.version !== 4 && row.version !== 5 && row.version !== 6 && row.version !== 7)) throw new Error('metadata schema must be version 2, 3, 4, 5, 6, or 7 before downgrade');
     if (row.version === 4) {
       database.exec(`
         DROP TABLE IF EXISTS global_secret_versions;

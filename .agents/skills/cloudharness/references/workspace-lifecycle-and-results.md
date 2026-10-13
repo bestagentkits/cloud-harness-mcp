@@ -49,6 +49,7 @@ On failure `error` may also carry actionable detail fields: `resumeAction`
 | `UNKNOWN_REMOTE_STATE` | A push or finalize was interrupted before its remote outcome was confirmed. Do not start a new mutation; follow `error.resumeAction` and retry the identical request with the same idempotency key so the service reconciles against the destination ref. |
 | `STALE_HEAD` | `git_commit` `expectedHeadOid` no longer matches HEAD; inspect the returned `currentHeadOid`/`expectedHeadOid`, rebuild on the new base, then retry. A diverged remote ref on `git_push` force-with-lease returns `CONFLICT` with current/expected remote OIDs instead. |
 | `RUNNER_RESTARTED` | An in-flight task was interrupted by a runner restart and its record is terminal. Re-list/read task state; start fresh work rather than resuming the old process. |
+| `AUTHORIZATION_REQUIRED` | `/mcp-gateway` only: the downstream OAuth server has no usable grant. Not retryable from a tool; ask the owner to Connect or Reauthorize that server in the dashboard, then retry. |
 
 ## Idempotency keys
 

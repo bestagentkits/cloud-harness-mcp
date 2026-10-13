@@ -29,6 +29,9 @@ import {
   testMcpServer,
   refreshMcpServerTools,
   listMcpServerLogs,
+  getMcpServerOAuth,
+  startMcpServerOAuth,
+  disconnectMcpServerOAuth,
   getMcpGatewayEndpoint,
   listGlobalSecrets
 } from './dashboard-api.js';
@@ -2839,6 +2842,7 @@ export function initializeDashboard() {
   }
   let currentMcpServers = [];
   let currentMcpServer;
+  let currentMcpOAuth;
   let currentMcpTools = [];
   let currentMcpTraces = [];
   let currentMcpLogCursor;
@@ -2884,12 +2888,22 @@ export function initializeDashboard() {
       currentMcpServer = serverResult.data?.server ?? serverResult.data;
       currentMcpTools = Array.isArray(serverResult.data?.tools) ? serverResult.data.tools : [];
       currentMcpGateway = gatewayResult?.data;
+      currentMcpOAuth = currentMcpServer?.oauth ? (await getMcpServerOAuth(serverId).catch(() => undefined))?.data?.status : undefined;
       if (currentMcpServer?.name) setTitle(currentMcpServer.name, 'MCP server detail, tools, permissions, and gateway logs.');
       currentMcpTraces = Array.isArray(logsResult?.data?.traces) ? logsResult.data.traces : [];
       currentMcpLogCursor = logsResult?.cursor;
-      insertRendered(content, renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, tab, currentMcpLogCursor, currentMcpGateway));
+      insertRendered(content, renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, tab, currentMcpLogCursor, currentMcpGateway, currentMcpOAuth));
       bindMcpServersControls();
+      reportMcpOAuthOutcome();
     } finally { setBusy(false); }
+  }
+  function reportMcpOAuthOutcome() {
+    const params = new URLSearchParams(location.search);
+    const outcome = params.get('oauth');
+    if (!outcome) return;
+    history.replaceState(null, '', location.pathname);
+    if (outcome === 'connected') announce('OAuth connected.');
+    else announce(`OAuth connection failed: ${String(params.get('reason') ?? 'error').replace(/[^a-z_]/g, '').replaceAll('_', ' ') || 'error'}.`);
   }
   function mcpHeaderRow(header = {}, secrets = []) {
     const node = document.createElement('div');
@@ -2975,12 +2989,38 @@ export function initializeDashboard() {
     form.elements.transport.value = server?.transport ?? 'streamable-http';
     form.elements.endpoint.value = server ? mcpServerEndpoint(server) : '';
     form.elements.enabled.checked = server ? server.enabled !== false : true;
+    const oauthSecret = form.elements.oauthClientSecretRef;
+    oauthSecret.replaceChildren(mcpOption('None (public client)', ''));
+    for (const name of new Set([...secrets.map((secret) => secret.name), ...(server?.oauth?.clientSecretRef ? [server.oauth.clientSecretRef] : [])])) oauthSecret.appendChild(mcpOption(name, name));
+    form.elements.oauthEnabled.checked = Boolean(server?.oauth);
+    form.elements.oauthScopes.value = server?.oauth?.scopes ?? '';
+    form.elements.oauthClientId.value = server?.oauth?.clientId ?? '';
+    oauthSecret.value = server?.oauth?.clientSecretRef ?? '';
+    syncMcpOAuthFields(form);
     const rows = document.querySelector('#mcp-header-rows');
     rows.replaceChildren();
     for (const header of (Array.isArray(server?.headers) ? server.headers : [])) rows.appendChild(mcpHeaderRow(header, secrets));
     document.querySelector('#mcp-dialog-status').textContent = '';
     dialog.showModal();
     form.elements.name.focus();
+  }
+  function mcpOption(label, value) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }
+  function syncMcpOAuthFields(form) {
+    const enabled = form.elements.oauthEnabled.checked;
+    document.querySelector('#mcp-oauth-fields').hidden = !enabled;
+    if (enabled) form.elements.transport.value = 'streamable-http';
+  }
+  function mcpOAuthFromForm(form) {
+    if (!form.elements.oauthEnabled.checked) return null;
+    const scopes = form.elements.oauthScopes.value.trim();
+    const clientId = form.elements.oauthClientId.value.trim();
+    const clientSecretRef = form.elements.oauthClientSecretRef.value;
+    return { ...(scopes ? { scopes } : {}), ...(clientId ? { clientId } : {}), ...(clientSecretRef ? { clientSecretRef } : {}) };
   }
   function mcpHeadersFromForm(form) {
     const headers = [];
@@ -3034,6 +3074,33 @@ export function initializeDashboard() {
       } catch (error) { status.textContent = error.message; }
       finally { button.disabled = false; }
     });
+    document.querySelector('[name="oauthEnabled"]')?.addEventListener('change', (event) => syncMcpOAuthFields(event.currentTarget.form));
+    document.querySelector('[name="transport"]')?.addEventListener('change', (event) => {
+      const form = event.currentTarget.form;
+      if (event.currentTarget.value !== 'streamable-http' && form.elements.oauthEnabled.checked) {
+        form.elements.oauthEnabled.checked = false;
+        syncMcpOAuthFields(form);
+      }
+    });
+    document.querySelector('[data-mcp-oauth-connect]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const result = await startMcpServerOAuth(button.dataset.mcpOauthConnect);
+        const target = new URL(result.data.authorizationUrl);
+        if (target.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(target.hostname)) throw new Error('The authorization server returned an unsafe URL.');
+        location.assign(target.toString());
+      } catch (error) { showError(error); button.disabled = false; }
+    });
+    document.querySelector('[data-mcp-oauth-disconnect]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        await disconnectMcpServerOAuth(button.dataset.mcpOauthDisconnect);
+        announce('OAuth disconnected.');
+        await reloadMcp();
+      } catch (error) { showError(error); button.disabled = false; }
+    });
     document.querySelector('#mcp-server-form')?.addEventListener('submit', (event) => {
       event.preventDefault();
       const form = event.currentTarget;
@@ -3052,6 +3119,9 @@ export function initializeDashboard() {
         headers: mcpHeadersFromForm(form),
         enabled: form.elements.enabled.checked
       };
+      const oauthConfig = mcpOAuthFromForm(form);
+      if (oauthConfig) payload.oauth = oauthConfig;
+      else if (serverId) payload.oauth = null;
       const action = serverId
         ? () => updateMcpServer(serverId, { ...payload, expectedGeneration: Number(form.elements.expectedGeneration.value) })
         : () => createMcpServer({ ...payload, permissionDefault: 'allow', expectedGeneration: 0 });
@@ -3149,7 +3219,7 @@ export function initializeDashboard() {
       if (!serverId) return;
       const result = await listMcpServerLogs(serverId, event.currentTarget.dataset.cursor);
       currentMcpTraces = [...currentMcpTraces, ...(result.data?.traces ?? [])];
-      insertRendered(content, renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, 'logs', result.cursor, currentMcpGateway));
+      insertRendered(content, renderMcpServerDetail(currentMcpServer, currentMcpTools, currentMcpTraces, 'logs', result.cursor, currentMcpGateway, currentMcpOAuth));
       bindMcpServersControls();
     });
   }

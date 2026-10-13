@@ -102,8 +102,16 @@ not the endpoint you use to open a workspace.
 - **Connection.** Use the same Access session or owner bearer token as `/mcp`.
   Point the client at `https://<your-cloud-harness-host>/mcp-gateway`. The
   managed API-key lane is not available for this endpoint.
-- **Unsupported.** Downstream `stdio` servers, OAuth-protected downstream
-  servers, and HTTP redirects are not supported.
+- **Downstream OAuth.** A `streamable-http` server may authenticate with OAuth
+  instead of a header. The owner connects it from the dashboard; the gateway
+  stores the tokens encrypted and never returns them. This is Cloud Harness
+  signing in *to* the downstream server and is unrelated to how your client
+  signs in to Cloud Harness. A call that returns `AUTHORIZATION_REQUIRED`
+  (not retryable) means the server needs Connect or Reauthorize: stop, tell
+  the owner which server, and retry only after they confirm. Never ask the
+  owner to paste a token or an authorization URL into the conversation.
+- **Unsupported.** Downstream `stdio` servers and HTTP redirects are not
+  supported.
 
 ## Marketplace compatibility
 

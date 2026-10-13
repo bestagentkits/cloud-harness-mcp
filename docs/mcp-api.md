@@ -44,7 +44,17 @@ distinct surface with its own tool list, its own contracts, and its own
 authentication-lane limitation; it is not a mode of `/mcp`. The semantics of
 every `/mcp` tool above are unchanged by its presence. See the
 [MCP gateway](mcp-gateway.md) for the registry, credential references,
-permissions, traces, transports, and the managed API-key lane limitation.
+downstream OAuth, permissions, traces, transports, and the managed API-key
+lane limitation.
+
+A gateway call to a downstream server configured for OAuth that has no usable
+grant returns `ok: false` with error code `AUTHORIZATION_REQUIRED` (part of
+`ErrorCodeSchema` in
+[`packages/contracts/src/mcp-results.ts`](../packages/contracts/src/mcp-results.ts)).
+It is not retryable: no tool call can complete the authorization, and the
+gateway never opens a browser. The owner must Connect or Reauthorize the
+server from the dashboard, then retry. This downstream OAuth is independent
+of the Managed OAuth lane that authenticates the client to Cloud Harness.
 
 ## Normal workflow
 
@@ -99,7 +109,9 @@ duplicating work:
   `UNKNOWN_REMOTE_STATE`). A same-key replay reporting `alreadyFinalized: true`
   is confirmed success.
 - `files_write_batch` and idempotency-enabled `github_action` mutations
-  (`pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`) replay
+  (`pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`,
+  `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`,
+  `pr_auto_merge_enable`) replay
   their cached result within their configured retention window (GitHub action
   idempotency records expire after 24 hours).
 
@@ -268,13 +280,29 @@ and
   changed-file summary between `base` and `head`. `workspace_capabilities`
   reports the current read/gated split under `githubActions`.
 - `github_action` executes authenticated GitHub CLI actions (`pr_list`, `pr_view`,
-  `pr_create`, `pr_update`, `pr_comment`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
+  `pr_create`, `pr_update`, `pr_comment`, `pr_review`, `pr_review_comment`, `pr_review_reply`,
+  `pr_review_thread_resolve`, `pr_review_thread_unresolve`, `pr_reviewers_request`,
+  `pr_reviewers_remove`, `pr_ready`, `pr_convert_to_draft`, `pr_merge`, `pr_auto_merge_enable`,
+  `pr_auto_merge_disable`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
   `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
   `issue_update`, `issue_publish`, `commit_list`, `compare`, `release_list`, `tag_list`) through an
   ephemeral helper container using short-lived tokens
   minted from the configured GitHub App. `pr_create` supports draft PRs and labels; `pr_update` supports
   updating title, body, base branch, and closing or reopening PRs; `pr_comment` adds comments with
-  idempotency support. `issue_publish` provides a single brokered request
+  idempotency support. `pr_review` submits a native `COMMENT`, `APPROVE`, or `REQUEST_CHANGES`
+  review; `pr_review_comment` leaves a file/line (or line-range) comment on the PR head or a given
+  commit; `pr_review_threads` (also on `github_read`) lists review threads with the stable
+  `threadId` that `pr_review_reply`, `pr_review_thread_resolve`, and
+  `pr_review_thread_unresolve` take; `pr_reviewers_request` and `pr_reviewers_remove` manage
+  users and team slugs; `pr_ready` and `pr_convert_to_draft` move the draft state; `pr_merge`
+  (`merge`, `squash`, or `rebase`, optional commit message and `matchHeadCommit` guard) and
+  `pr_auto_merge_enable`/`pr_auto_merge_disable` complete the lifecycle. Merge and auto-merge
+  additionally need `contents: write` on the token. `workspace_capabilities` reports each
+  capability under `operations` (`pullRequestReview`, `pullRequestReviewComment`,
+  `pullRequestReviewThread`, `pullRequestReviewerManage`, `pullRequestReady`,
+  `pullRequestMerge`, `pullRequestAutoMerge`) and the authoritative action split under
+  `githubActions`. The schemas in `packages/contracts/src/tool-schemas.ts` own the inputs.
+  `issue_publish` provides a single brokered request
   that posts a comment and adds or removes labels (with automatic missing-label creation).
   The runner mints the installation token with the permission scope the action
   family needs (`issues` for issue and label actions, `pull_requests` for
@@ -295,9 +323,12 @@ and
   Tokens are supplied exclusively via stdin and are never written to workspace files.
   All write actions emit structured `github_action.<action>` events in `audit_events`.
   Failures return typed machine-actionable error codes (`GITHUB_RATE_LIMITED` with retryAfterMs,
-  `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`);
+  `GITHUB_PERMISSION_MISSING`, `INVALID_PULL_REQUEST_BASE`, `GITHUB_ACTION_FAILED`, plus the review
+  and merge codes `GITHUB_REVIEW_NOT_ALLOWED`, `GITHUB_REVIEW_COMMENT_INVALID`,
+  `GITHUB_REVIEWER_UNASSIGNABLE`, `GITHUB_MERGE_BLOCKED`, `GITHUB_MERGE_CONFLICT`,
+  `GITHUB_AUTO_MERGE_UNAVAILABLE`);
   a `403` from the helper is never retried.
-  Comment, label, and publish mutations support idempotency keys with a 24-hour
+  Comment, label, publish, review, reviewer-request, and merge mutations support idempotency keys with a 24-hour
   retention window; retries within 24 hours replay the cached result or reject
   payload mismatches with `CONFLICT`, after which the key expires and the request
   executes anew.

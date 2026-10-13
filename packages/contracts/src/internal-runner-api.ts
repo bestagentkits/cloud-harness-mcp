@@ -22,6 +22,8 @@ import {
 import {
   McpGatewayCatalogFilterSchema,
   McpGatewayCreateInputSchema,
+  McpGatewayOAuthRegistrationModeSchema,
+  McpGatewayOAuthScopesSchema,
   McpGatewayCredentialPurposeSchema,
   McpGatewayServerNameSchema,
   McpGatewayServerStatusSchema,
@@ -158,6 +160,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'mcp_server_list', 'mcp_server_get', 'mcp_server_create', 'mcp_server_update', 'mcp_server_delete',
   'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools', 'mcp_server_connection_result',
   'mcp_server_get_credentials', 'mcp_gateway_catalog', 'mcp_gateway_trace_append', 'mcp_gateway_trace_list',
+  'mcp_oauth_status', 'mcp_oauth_flow_begin', 'mcp_oauth_flow_consume', 'mcp_oauth_grant_load', 'mcp_oauth_grant_save', 'mcp_oauth_grant_mark', 'mcp_oauth_disconnect',
   'skill_list', 'skill_get', 'skill_revision_list', 'skill_revision_get', 'skill_revision_diff', 'skill_restore', 'skill_revision_fork', 'skill_revision_create',
   'skill_create_custom', 'skill_update', 'skill_archive', 'skill_bulk', 'skill_usage', 'skill_search',
   'skill_archive_import',
@@ -376,6 +379,39 @@ const metadataInputs = {
     purpose: McpGatewayCredentialPurposeSchema
   }).strict(),
   mcp_gateway_catalog: McpGatewayCatalogFilterSchema,
+  mcp_oauth_status: z.object({ serverId: internalId('mcps') }).strict(),
+  mcp_oauth_flow_begin: z.object({
+    serverId: internalId('mcps'),
+    stateHash: z.string().regex(/^[0-9a-f]{64}$/),
+    expectedIssuer: z.string().min(1).max(2_048),
+    scopes: McpGatewayOAuthScopesSchema.nullable().default(null),
+    blob: z.string().min(2).max(131_072)
+  }).strict(),
+  // The flow row, not the browser, names the server: the callback only carries `state`.
+  mcp_oauth_flow_consume: z.object({
+    stateHash: z.string().regex(/^[0-9a-f]{64}$/)
+  }).strict(),
+  mcp_oauth_grant_load: z.object({ serverId: internalId('mcps') }).strict(),
+  mcp_oauth_grant_save: z.object({
+    serverId: internalId('mcps'),
+    expectedGeneration: z.number().int().min(0),
+    issuer: z.string().min(1).max(2_048),
+    registrationMode: McpGatewayOAuthRegistrationModeSchema,
+    grantedScopes: z.string().max(4_096).nullable().default(null),
+    requestedScopes: z.string().max(4_096).nullable().default(null),
+    expiresAt: z.number().int().positive().nullable().default(null),
+    refreshed: z.boolean().default(false),
+    blob: z.string().min(2).max(131_072)
+  }).strict(),
+  mcp_oauth_grant_mark: z.object({
+    serverId: internalId('mcps'),
+    state: z.enum(['authorizing', 'reauthorization_required', 'error']),
+    error: z.string().max(2_000).nullable().default(null)
+  }).strict(),
+  mcp_oauth_disconnect: z.object({
+    serverId: internalId('mcps'),
+    revocation: z.enum(['attempted', 'unsupported', 'failed']).nullable().default(null)
+  }).strict(),
   mcp_gateway_trace_append: z.object({
     serverId: internalId('mcps').nullable().default(null),
     serverName: McpGatewayServerNameSchema,
@@ -529,6 +565,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('mcp_server_delete'), metadataRequest('mcp_server_set_enabled'), metadataRequest('mcp_server_set_permissions'),
   metadataRequest('mcp_server_replace_tools'), metadataRequest('mcp_server_connection_result'), metadataRequest('mcp_server_get_credentials'),
   metadataRequest('mcp_gateway_catalog'), metadataRequest('mcp_gateway_trace_append'), metadataRequest('mcp_gateway_trace_list'),
+  metadataRequest('mcp_oauth_status'), metadataRequest('mcp_oauth_flow_begin'), metadataRequest('mcp_oauth_flow_consume'), metadataRequest('mcp_oauth_grant_load'), metadataRequest('mcp_oauth_grant_save'), metadataRequest('mcp_oauth_grant_mark'), metadataRequest('mcp_oauth_disconnect'),
   metadataRequest('skill_list'), metadataRequest('skill_get'), metadataRequest('skill_revision_list'),
   metadataRequest('skill_revision_get'), metadataRequest('skill_revision_diff'), metadataRequest('skill_restore'),
   metadataRequest('skill_create_custom'), metadataRequest('skill_update'), metadataRequest('skill_archive'),

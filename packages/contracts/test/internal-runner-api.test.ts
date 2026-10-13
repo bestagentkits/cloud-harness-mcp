@@ -166,4 +166,18 @@ describe('internal runner API contract', () => {
     expect(deleteSpec.readOnly).toBe(false);
     expect(deleteSpec.destructive).toBe(true);
   });
+
+  it('accepts a long provider-granted scope string when saving an OAuth grant', () => {
+    const scope = Array.from({ length: 200 }, (_, index) => `scope-${index}`).join(' ');
+    const parsed = MetadataRunnerRequestSchema.parse({
+      version: 2,
+      operation: 'mcp_oauth_grant_save',
+      principal,
+      input: {
+        serverId: 'mcps_abcdefghijklmnopqrstuvwx', expectedGeneration: 0, issuer: 'https://as.example.com',
+        registrationMode: 'dcr', grantedScopes: scope, requestedScopes: 'read', expiresAt: 1_800_000_000_000, blob: '{}'
+      }
+    });
+    expect(parsed.operation).toBe('mcp_oauth_grant_save');
+  });
 });
