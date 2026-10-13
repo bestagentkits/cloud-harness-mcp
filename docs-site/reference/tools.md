@@ -371,7 +371,7 @@ Run one bounded shell command in the workspace and return captured output.
 
 **Run bash command**
 
-Run one bounded bash command. target "workspace" (default) uses the exec_run path in the workspace executor, including async operation handles. target "toolbox" runs in a disposable no-network container with no workspace checkout, no secrets, and no workspaceId; it is available only when the operator enables packages. bash has no privileged mode: use exec_run with its approval flow for privileged commands.
+Run one bounded bash command. target "workspace" (default) uses the exec_run path in the workspace executor. target "toolbox" runs in a disposable no-network container with no workspace checkout, no secrets, and no workspaceId; it is available only when the operator enables packages. Both targets accept async: true for an operation handle. bash has no privileged mode: use exec_run with its approval flow for privileged commands.
 
 **Attributes:** <span class="badge-destructive">destructive</span> · <span class="badge-openworld">openWorld</span>
 
@@ -383,7 +383,7 @@ Run one bounded bash command. target "workspace" (default) uses the exec_run pat
 | `cwd` | `string` | No | Workspace-relative directory; workspace target only. (length: 1–1024, default: `"."`) |
 | `timeoutMs` | `integer` | No | range: 100–300000, default: `60000` |
 | `maxOutputBytes` | `integer` | No | range: 1024–1048576, default: `262144` |
-| `async` | `boolean` | No | Return an operation handle instead of waiting; workspace target only. (default: `false`) |
+| `async` | `boolean` | No | Return an operation handle for operation_status, operation_wait, and operation_cancel instead of waiting. (default: `false`) |
 
 ### `shell_open`
 

@@ -450,7 +450,16 @@ unprivileged `exec_run`, and privileged commands stay on `exec_run` with the
 grant flow above. Its `toolbox` target, off unless the operator sets
 `PACKAGES_ENABLED=true`, runs each command in a fresh executor-image container
 with the same hardening flags, `--network none`, no mounts, no secrets, and no
-Docker socket, then removes it by exact name on exit, timeout, or abort. The
+Docker socket. The container is created before it is started, so it exists by
+name before any stop decision; on exit, timeout, output bound, or abort the
+runner removes it by that exact name and retries for about 10 seconds until
+Docker reports it gone. Two backstops cover a runner that dies or a removal
+that keeps failing: an in-container `timeout` deadline slightly beyond the
+caller's timeout, and the periodic reaper, which removes this instance's
+toolbox-labelled containers older than the longest command timeout plus a
+margin. `TOOLBOX_MAX_CONCURRENT` caps how many toolbox containers run at once,
+so toolbox calls cannot take more than that many executor-sized memory, CPU,
+and pid budgets from the host. The
 executable owner is
 [`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts),
 with evidence in

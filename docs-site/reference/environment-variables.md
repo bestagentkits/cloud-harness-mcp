@@ -80,6 +80,7 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `TERMINAL_IDLE_TIMEOUT_MS` | `900000` | Optional | A terminal with no input, resize, or read for this long ends as timed_out. |
 | `TERMINAL_MAX_LIFETIME_MS` | `28800000` | Optional | Absolute terminal lifetime regardless of activity. |
 | `PACKAGES_ENABLED` | `false` | Optional | Managed toolbox (runner): enables the `bash` tool's `toolbox` target, which runs each command in a disposable no-network executor-image container. Off by default; the `workspace` target is unaffected. |
+| `TOOLBOX_MAX_CONCURRENT` | `2` | Optional | Maximum toolbox containers running at once on this runner; a call beyond it gets LIMIT_EXCEEDED (429, retryable). |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |

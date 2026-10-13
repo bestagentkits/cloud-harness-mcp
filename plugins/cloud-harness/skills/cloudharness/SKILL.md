@@ -132,7 +132,8 @@ Details: [Repository automation](references/repository-automation.md#skills).
    - `bash` with the default `target: "workspace"` is the same path as
      `exec_run` (add `async: true` for an operation handle). Use
      `target: "toolbox"` only for work that needs no checkout, no network, and
-     no secrets; it is off unless the operator enabled packages. `bash` has no
+     no secrets (it also takes `async: true`); it is off unless the operator
+     enabled packages. `bash` has no
      privileged mode, so privileged commands stay on `exec_run`.
    - The shipped executor includes `ak` separately from mounted AgentKit skills.
      Before following a skill's CLI steps, inspect `ak --version` and

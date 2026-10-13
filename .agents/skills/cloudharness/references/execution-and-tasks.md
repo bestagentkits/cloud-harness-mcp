@@ -31,9 +31,14 @@ before calling them. Prefer one bounded command over persistent process state.
   limits, and result envelope plus `data.target`. `cwd` and `async: true` work
   as on `exec_run`; async returns an `operationId` for `operation_wait`.
 - `target: "toolbox"` runs in a fresh no-network container with no checkout and
-  no secrets, then removes it. Pass no `workspaceId`, `cwd`, or `async`. It is
-  refused with `FORBIDDEN` unless the operator enabled packages. Use it for
-  checkout-independent work such as `node --version` or a quick calculation.
+  no secrets, then removes it. Pass no `workspaceId` or `cwd`. Add
+  `async: true` for a long command: you get an `operationId` for
+  `operation_wait`, and `operation_cancel` removes the container. It is refused
+  with `FORBIDDEN` unless the operator enabled packages, and with retryable
+  `LIMIT_EXCEEDED` while the instance's toolbox slots are busy; wait for one of
+  your runs to finish, then retry. `UNAVAILABLE` means Docker could not start
+  the container, not that your command failed. Use it for checkout-independent
+  work such as `node --version` or a quick calculation.
 - There is no `privileged` field. Use `exec_run` and its approval flow.
 - Prefer `exec_run` when you already use it; prefer `shell_*` or `sessions_*`
   only when terminal state must persist between calls.
