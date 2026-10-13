@@ -171,6 +171,56 @@ describe('repository guidance bootstrap', () => {
     expect(snapshot.warnings.map((w) => w.code)).toEqual(expect.arrayContaining(['SCAN_ERROR', 'FILE_TOO_LARGE']));
   });
 
+  it('reads guidance through an in-checkout link only when its target is guidance itself', async () => {
+    const { service, record, checkout, write } = fixture();
+    write('AGENTS.md', '# Shared agents guidance');
+    symlinkSync(join(checkout, 'AGENTS.md'), join(checkout, 'CLAUDE.md'));
+    write('.aider.conf.yml', 'openai-api-key: sk-linked-secret');
+    symlinkSync(join(checkout, '.aider.conf.yml'), join(checkout, 'REVIEW.md'));
+    write('.env', 'TOKEN=env-linked-secret');
+    symlinkSync(join(checkout, '.env'), join(checkout, 'DESIGN.md'));
+    const { snapshot } = await service.repositoryGuidance(record);
+    expect(snapshot.documents.find((d) => d.path === 'CLAUDE.md')).toMatchObject({ content: '# Shared agents guidance' });
+    expect(snapshot.documents.find((d) => d.path === 'REVIEW.md')).not.toHaveProperty('content');
+    expect(snapshot.documents.find((d) => d.path === 'DESIGN.md')).not.toHaveProperty('content');
+    expect(JSON.stringify(snapshot)).not.toMatch(/linked-secret/);
+  });
+
+  it('keeps smaller shared guidance when large client files exhaust the snapshot budget and names what it dropped', async () => {
+    const { service, record, write } = fixture();
+    const large = 'y'.repeat(40 * 1024);
+    for (const path of ['AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md', '.claude/CLAUDE.md', 'CLAUDE.local.md', '.cursorrules', 'CONVENTIONS.md', '.github/copilot-instructions.md']) {
+      write(path, `${path}\n${large}`);
+    }
+    write('REVIEW.md', '# Review');
+    write('DESIGN.md', '# Design');
+    const { snapshot } = await service.repositoryGuidance(record);
+    const paths = snapshot.documents.map((d) => d.path);
+    expect(paths).toEqual(expect.arrayContaining(['REVIEW.md', 'DESIGN.md']));
+    expect(snapshot.truncationReasons).toContain('byte-budget');
+    const dropped = snapshot.warnings.filter((w) => w.code === 'BUDGET_EXCEEDED').map((w) => w.path);
+    expect(dropped.length).toBeGreaterThan(0);
+    for (const path of dropped) expect(paths).not.toContain(path);
+  });
+
+  it('never caches a snapshot the scan deadline cut short', async () => {
+    const { service, record, write } = fixture();
+    write('AGENTS.md', 'guidance');
+    const internals = service as unknown as { runWorker: (...args: unknown[]) => Promise<unknown> };
+    const real = internals.runWorker.bind(service);
+    const spy = vi.spyOn(internals, 'runWorker').mockImplementationOnce(async (...args: unknown[]) => {
+      const response = await real(...args) as { data: { manifest: { truncationReasons: string[] } } };
+      response.data.manifest.truncationReasons = ['time-limit'];
+      return response;
+    });
+    expect((await service.repositoryGuidance(record)).reused).toBe(false);
+    expect(docker.workerInputs.at(-1)?.input).not.toHaveProperty('knownFingerprint');
+    expect((await service.repositoryGuidance(record)).reused).toBe(false);
+    expect(docker.workerInputs.at(-1)?.input).not.toHaveProperty('knownFingerprint');
+    expect((await service.repositoryGuidance(record)).reused).toBe(true);
+    spy.mockRestore();
+  });
+
   it('agrees with workspace_context about which files are active for a profile', async () => {
     const { service, principal, record, write } = fixture();
     write('AGENTS.md', 'base');

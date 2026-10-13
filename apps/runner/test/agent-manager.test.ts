@@ -548,6 +548,26 @@ describe('agent repository guidance bootstrap', () => {
     await manager.stop();
   });
 
+  it('keeps a small output budget for the agent instead of ending it on the guidance report', async () => {
+    const items = Array.from({ length: 8 }, (_, index) => {
+      const content = `rule ${index}`;
+      return {
+        kind: 'instruction', path: `.claude/rules/rule-${index}.md`, format: 'claude', clients: ['claude'],
+        contentSha256: createHash('sha256').update(content).digest('hex'), byteCount: content.length, content
+      };
+    });
+    const snapshot = buildRepositoryGuidanceSnapshot({ items, warnings: [], truncated: false });
+    const { manager, record, repository, launcher } = guidedSetup(async () => ({ snapshot, reused: false }));
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { repositoryContext: 'claude', maxOutputBytes: 1_024 }));
+    const agentId = (spawned.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(launcher.inputs).toHaveLength(1));
+    const agent = repository.findAgent(record.ownerId, record.id, agentId)!;
+    expect(agent.status).toBe('RUNNING');
+    expect(repository.readLogs(record.ownerId, record.id, agentId, agent.generation, '0', 1_024).events
+      .every((event) => Buffer.byteLength(event.content) <= 256)).toBe(true);
+    await manager.stop();
+  });
+
   it('records only counts when the injected-document report would exceed the log event bound', async () => {
     const items = Array.from({ length: 60 }, (_, index) => {
       const content = `rule ${index}`;
@@ -568,7 +588,9 @@ describe('agent repository guidance bootstrap', () => {
     expect(report).toMatchObject({ profile: 'claude', listsOmitted: true, snapshotReused: true, snapshotDigest: snapshot.digest, truncated: true });
     // The profile's input budget bounds the injected guidance, so the remainder is reported as skipped.
     expect((report.injected as number) + (report.skipped as number)).toBe(60);
-    expect(report.injectedBytes as number).toBeLessThanOrEqual(10_000);
+    // The gateway charges one input token per body byte on every turn, so guidance and task stay
+    // within a quarter of the input budget.
+    expect((report.injectedBytes as number) + Buffer.byteLength('inspect the repository')).toBeLessThanOrEqual(2_500);
     expect(report.skipped as number).toBeGreaterThan(0);
     await manager.stop();
   });

@@ -187,7 +187,13 @@ discovered and which client each targets.
   [`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts) and
   is deliberately not a schema default, so existing callers' idempotency
   payloads are unchanged. The block is bounded and truncated deterministically
-  rather than dropped. What was injected, skipped, or cut is recorded as a
+  rather than dropped. Because the model gateway reserves one input token per
+  request byte and every turn re-sends the first message, guidance and task
+  together take at most a quarter of the agent's `maxInputTokens`; raise that
+  budget, or pick a narrower `repositoryContext`, when guidance is skipped
+  with `context-budget`. The report is charged to `maxOutputBytes` like any log
+  event, so with a very small output budget it shrinks to counts or is omitted
+  rather than ending the agent. What was injected, skipped, or cut is recorded as a
   `repository_context` event in `agent_logs`, with paths and digests but never
   content. Guidance is composed before any model lease or container exists: if
   it cannot be scanned the agent fails closed (`FAILED`, with a terminal reason
@@ -208,6 +214,10 @@ discovered and which client each targets.
 - **Snapshot reuse.** The runner caches one digest-addressed snapshot per
   workspace generation and reuses it while a stat fingerprint of the candidate
   files is unchanged; any guidance edit causes a rescan before the next spawn.
+  A scan that hit its deadline is used once but never cached, and a file
+  dropped by the snapshot byte budget is named in a `BUDGET_EXCEEDED` warning.
+  A link between guidance files (such as `CLAUDE.md -> AGENTS.md`) is read,
+  but a guidance path linked to any other file contributes no content.
 
 ## Skills over MCP extension
 

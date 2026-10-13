@@ -205,7 +205,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 2. Retry `agent_spawn` with a new idempotency key. Replaying the failed key returns the failed record.
 3. If the agent does not need repository guidance, spawn with `repositoryContext: "none"` to send the task alone.
 
-If an agent started but followed the wrong files, read the `repository_context` event in `agent_logs`: it lists the injected and skipped paths with reasons (`not-targeted`, `overridden-by:...`, `duplicate-of:...`, `unreadable`, `client-configuration`, `context-budget`) and digests, never content. Choose the `repositoryContext` that matches the agent's guidance family, and compare with `workspace_context` for the same `clientProfile`, which applies the same selection. Rule files under `.claude/rules/` apply only to `claude`, and `.cursor/rules/` only to `cursor`.
+If an agent started but followed the wrong files, read the `repository_context` event in `agent_logs`: it lists the injected and skipped paths with reasons (`not-targeted`, `overridden-by:...`, `duplicate-of:...`, `unreadable`, `client-configuration`, `context-budget`) and digests, never content. Choose the `repositoryContext` that matches the agent's guidance family, and compare with `workspace_context` for the same `clientProfile`, which applies the same selection. Rule files under `.claude/rules/` apply only to `claude`, and `.cursor/rules/` only to `cursor`. A `context-budget` skip means guidance and task exceeded a quarter of the agent's `maxInputTokens` (every model turn re-sends the first message); raise `maxInputTokens` or choose a narrower `repositoryContext`.
 
 ---
 

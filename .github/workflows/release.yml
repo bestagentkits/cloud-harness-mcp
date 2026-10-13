@@ -38,22 +38,40 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
           token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      # Only the current tip is released. When the branch has moved on, this
+      # commit is covered by a previous Release or by the newer tip's CI run,
+      # so the rest of the job is skipped rather than failed.
       - name: Confirm CI tested the current release-branch tip
+        id: tip
         shell: bash
         env:
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          set -euo pipefail
           case "$BRANCH" in dev|main) ;; *) exit 1 ;; esac
-          current_sha="$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)"
-          test "$current_sha" = "$RELEASE_SHA"
+          refs="$(git ls-remote origin "refs/heads/$BRANCH")" || refs=""
+          current_sha="$(cut -f1 <<< "$refs")"
+          if [[ ! "$current_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not read the $BRANCH tip."
+            exit 1
+          fi
+          if [[ "$current_sha" != "$RELEASE_SHA" ]]; then
+            echo "::notice::$BRANCH is at $current_sha, not $RELEASE_SHA; only the tip is released, by a previous Release or the tip's own CI run."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git switch --force-create "$BRANCH" "$RELEASE_SHA"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+          echo "current=true" >> "$GITHUB_OUTPUT"
+      - if: steps.tip.outputs.current == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24.11.0
           cache: npm
-      - run: npm ci
+      - if: steps.tip.outputs.current == 'true'
+        run: npm ci
       - name: Create GitHub release
+        if: steps.tip.outputs.current == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -61,6 +79,7 @@ jobs:
           test "$(git branch --show-current)" = "$RELEASE_BRANCH"
           env -u GITHUB_ACTIONS npm exec semantic-release
       - name: Record the release-branch head
+        if: steps.tip.outputs.current == 'true'
         id: release-commit
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -74,6 +93,7 @@ jobs:
     needs: release
     if: >-
       github.event.workflow_run.head_branch == 'main' &&
+      needs.release.outputs.release_commit != '' &&
       needs.release.outputs.release_commit != github.event.workflow_run.head_sha
     runs-on: ubuntu-24.04
     timeout-minutes: 5
