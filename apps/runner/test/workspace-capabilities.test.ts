@@ -164,6 +164,12 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
     expect(operations.gitPush).toBe(true);
     expect(operations.issueCreate).toBe(true);
     expect(operations.pullRequestCreate).toBe(true);
+    for (const op of ['pullRequestUpdate', 'pullRequestComment', 'pullRequestReview', 'pullRequestReviewComment', 'pullRequestReviewThread', 'pullRequestReviewerManage', 'pullRequestReady', 'pullRequestMerge', 'pullRequestAutoMerge']) {
+      expect(operations[op], op).toBe(true);
+    }
+    const githubActions = data.githubActions as { readOnly: string[]; gated: string[] };
+    expect(githubActions.readOnly).toContain('pr_review_threads');
+    expect(githubActions.gated).toEqual(expect.arrayContaining(['pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_review_thread_resolve', 'pr_review_thread_unresolve', 'pr_reviewers_request', 'pr_reviewers_remove', 'pr_ready', 'pr_convert_to_draft', 'pr_merge', 'pr_auto_merge_enable', 'pr_auto_merge_disable']));
   });
 
   it('computes read-only capabilities in owner-bearer mode when no githubApp installation is configured', async () => {
@@ -187,6 +193,8 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
     expect(operations.gitPush).toBe(false);
     expect(operations.issueCreate).toBe(false);
     expect(operations.pullRequestCreate).toBe(false);
+    expect(operations.pullRequestReview).toBe(false);
+    expect(operations.pullRequestMerge).toBe(false);
   });
 
   it('enforces structured error when git_push is attempted without write authorization', async () => {

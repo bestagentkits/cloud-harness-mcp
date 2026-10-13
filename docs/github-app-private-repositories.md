@@ -50,6 +50,8 @@ choose the narrowest permission level:
 | Push changes under `.github/workflows/` | **Contents: Read and write** and **Workflows: Read and write** |
 | Read issues and pull requests through `github_action` | **Issues: Read-only**, **Pull requests: Read-only**, and **Contents: Read-only** |
 | Create, comment on, label, or close issues; comment on or update pull requests; create pull requests | **Issues: Read and write**, **Pull requests: Read and write**, and **Contents: Read-only** |
+| Submit reviews, inline comments, thread replies or resolution, reviewer requests, and draft/ready changes on pull requests | **Pull requests: Read and write** and **Contents: Read-only** |
+| Merge pull requests or enable auto-merge (`pr_merge`, `pr_auto_merge_enable`) | **Pull requests: Read and write** and **Contents: Read and write** |
 
 Every other repository, organization, and account permission can stay at **No
 access**. `Contents` is the permission for HTTP Git access and is also required
@@ -242,6 +244,7 @@ successful private clone proves read access only; it does not prove push access.
 | Clone works but push returns `403` | Change `Contents` to **Read and write**, approve the changed installation permission, and check branch/ruleset restrictions. |
 | A push touching `.github/workflows/` fails | Add **Workflows: Read and write** only if modifying workflow files is intended, then approve the updated installation permission. |
 | `github_action` returns `GITHUB_PERMISSION_MISSING` / `403 Resource not accessible by integration` | Confirm **Contents: Read-only** first: an action-scoped token always carries `contents: read`, and an installation without it fails the mint before `gh` runs. Otherwise add **Issues: Read and write** (issue, comment, and label actions) or **Pull requests: Read and write** (pull-request actions) to the App, approve the changed installation permission, then reconcile the installation. `workspace_capabilities` reports the granted level per scope. |
+| `pr_merge` returns `GITHUB_PERMISSION_MISSING` naming `contents:write` | Merging needs **Contents: Read and write** on the App installation in addition to **Pull requests: Read and write**. Grant it, approve the changed permission, then reconcile the installation. Merging a PR that edits `.github/workflows/**` additionally needs the App's **Workflows** permission, which the merge token does not request. Branch protection that blocks the merge is a different error, `GITHUB_MERGE_BLOCKED`. |
 | A write fails while clone and push still work | Expected when only `Contents` is granted: Git access and `gh` authentication do not imply issue or pull-request permissions. Configure an operator `GH_TOKEN`/`GITHUB_TOKEN` (owner-bearer) or a per-principal global runtime secret (Access mode) only as the documented fallback, not instead of the App grant. |
 | `gh` inside a workspace reports no authentication | The runner-environment fallback credential never enters an executor; create a global runtime secret named `GH_TOKEN` or `GITHUB_TOKEN` for the workspace's principal and open a workspace with egress. |
 

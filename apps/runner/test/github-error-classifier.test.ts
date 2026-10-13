@@ -168,6 +168,43 @@ describe('GitHub Error Classifier', () => {
     expect(error.retryable).toBe(false);
   });
 
+  it.each([
+    ['pr_merge', 'GraphQL: Pull request has merge conflicts (mergePullRequest)', 'GITHUB_MERGE_CONFLICT'],
+    ['pr_merge', 'X Pull request #7 is not mergeable: the merge commit cannot be cleanly created.', 'GITHUB_MERGE_CONFLICT'],
+    ['pr_merge', 'X Pull request #7 is not mergeable: the base branch policy prohibits the merge. (HTTP 405)', 'GITHUB_MERGE_BLOCKED'],
+    ['pr_merge', '2 of 2 required status checks are expected.', 'GITHUB_MERGE_BLOCKED'],
+    ['pr_merge', 'At least 1 approving review is required by reviewers with write access.', 'GITHUB_MERGE_BLOCKED'],
+    ['pr_merge', 'Head branch was modified. Review and try the merge again. (HTTP 409)', 'GITHUB_MERGE_BLOCKED'],
+    ['pr_auto_merge_enable', 'GraphQL: Pull request Auto merge is not allowed for this repository (enablePullRequestAutoMerge)', 'GITHUB_AUTO_MERGE_UNAVAILABLE'],
+    ['pr_auto_merge_enable', 'GraphQL: Pull request is in clean status (enablePullRequestAutoMerge)', 'GITHUB_AUTO_MERGE_UNAVAILABLE'],
+    ['pr_auto_merge_disable', 'GraphQL: Pull request auto merge is not enabled (disablePullRequestAutoMerge)', 'GITHUB_AUTO_MERGE_UNAVAILABLE'],
+    ['pr_review', 'gh: Can not approve your own pull request (HTTP 422)', 'GITHUB_REVIEW_NOT_ALLOWED'],
+    ['pr_review', 'gh: Unprocessable Entity: Can not request changes on your own pull request (HTTP 422)', 'GITHUB_REVIEW_NOT_ALLOWED'],
+    ['pr_review_comment', 'gh: Unprocessable Entity: pull_request_review_thread.line must be part of the diff (HTTP 422)', 'GITHUB_REVIEW_COMMENT_INVALID'],
+    ['pr_review_comment', 'gh: Validation Failed: commit_id is not part of the pull request (HTTP 422)', 'GITHUB_REVIEW_COMMENT_INVALID'],
+    ['pr_reviewers_request', 'gh: Reviews may only be requested from collaborators. (HTTP 422)', 'GITHUB_REVIEWER_UNASSIGNABLE'],
+    ['pr_reviewers_request', 'gh: Review cannot be requested from pull request author. (HTTP 422)', 'GITHUB_REVIEWER_UNASSIGNABLE']
+  ] as const)('classifies %s failure "%s" as %s', (action, stderr, code) => {
+    const error = classifyGitHubFailure(stderr, '', action);
+    expect(error.code).toBe(code);
+    expect(error.retryable).toBe(false);
+  });
+
+  it('types an App merge of a workflow-file PR as a missing permission', () => {
+    const error = classifyGitHubFailure('GraphQL: refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission (mergePullRequest)', '', 'pr_merge');
+    expect(error.code).toBe('GITHUB_PERMISSION_MISSING');
+  });
+
+  it('keeps a missing App permission on a merge distinct from a merge block', () => {
+    const error = classifyGitHubFailure('gh: Resource not accessible by integration (HTTP 403)', '', 'pr_merge');
+    expect(error.code).toBe('GITHUB_PERMISSION_MISSING');
+  });
+
+  it('scopes review and merge rules to their own actions', () => {
+    expect(classifyGitHubFailure('gh: Can not approve your own pull request (HTTP 422)', '', 'pr_create').code).not.toBe('GITHUB_REVIEW_NOT_ALLOWED');
+    expect(classifyGitHubFailure('X Pull request #7 is not mergeable', '', 'pr_update').code).not.toBe('GITHUB_MERGE_BLOCKED');
+  });
+
   it('falls back to GITHUB_ACTION_FAILED for unclassified errors', () => {
     const error = classifyGitHubFailure(
       'unknown unexpected CLI failure occurred',

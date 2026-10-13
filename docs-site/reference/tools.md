@@ -854,16 +854,16 @@ Remove one named managed worktree, optionally discarding dirty state.
 
 ### `github_action`
 
-**Create and manage GitHub issues, pull requests, and labels**
+**Create and manage GitHub issues, pull requests, native PR reviews, review threads, reviewers, and merges**
 
-Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, and comment on pull requests in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, and pullRequestCreate. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_create, pr_update, pr_comment, commit_list, compare, release_list, tag_list. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.
+Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, and pullRequestMerge; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_list, compare, release_list, tag_list. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.
 
 **Attributes:** <span class="badge-destructive">destructive</span> · <span class="badge-openworld">openWorld</span>
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `action` | `"pr_list"` \| `"pr_view"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` \| `"pr_create"` \| `"pr_update"` \| `"pr_comment"` \| `"issue_create"` \| `"issue_comment"` \| `"issue_comment_update"` \| `"label_create"` \| `"issue_labels_add"` \| `"issue_labels_remove"` \| `"issue_update"` \| `"issue_publish"` | **Yes** | — |
+| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_review_threads"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` \| `"pr_create"` \| `"pr_update"` \| `"pr_comment"` \| `"issue_create"` \| `"issue_comment"` \| `"issue_comment_update"` \| `"label_create"` \| `"issue_labels_add"` \| `"issue_labels_remove"` \| `"issue_update"` \| `"issue_publish"` \| `"pr_review"` \| `"pr_review_comment"` \| `"pr_review_reply"` \| `"pr_review_thread_resolve"` \| `"pr_review_thread_unresolve"` \| `"pr_reviewers_request"` \| `"pr_reviewers_remove"` \| `"pr_ready"` \| `"pr_convert_to_draft"` \| `"pr_merge"` \| `"pr_auto_merge_enable"` \| `"pr_auto_merge_disable"` | **Yes** | — |
 | `limit` | `integer` | No | range: 1–250 |
 | `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |
@@ -890,6 +890,19 @@ Create GitHub issues (action: "issue_create"), list, view, comment on, update, a
 | `path` | `string` | No | length: 1–1024 |
 | `since` | string \| string | No | — |
 | `until` | string \| string | No | — |
+| `event` | `"COMMENT"` \| `"APPROVE"` \| `"REQUEST_CHANGES"` | No | — |
+| `line` | `integer` | No | range: 0–9007199254740991 |
+| `startLine` | `integer` | No | range: 0–9007199254740991 |
+| `side` | `"LEFT"` \| `"RIGHT"` | No | — |
+| `startSide` | `"LEFT"` \| `"RIGHT"` | No | — |
+| `commitId` | `string` | No | pattern: `^(?:[0-9a-f]{40}|[0-9a-f]{64})$` |
+| `threadId` | `string` | No | pattern: `^PRRT_[A-Za-z0-9_-]{4,200}$` |
+| `reviewers` | string[] | No | — |
+| `teamReviewers` | string[] | No | — |
+| `method` | `"merge"` \| `"squash"` \| `"rebase"` | No | — |
+| `commitTitle` | `string` | No | length: 1–256 |
+| `commitBody` | `string` | No | max length: 65536 |
+| `matchHeadCommit` | `string` | No | pattern: `^(?:[0-9a-f]{40}|[0-9a-f]{64})$` |
 | `idempotencyKey` | `string` | No | pattern: `^[A-Za-z0-9._:-]+$`, length: 8–128 |
 
 ## Repository Extensions
@@ -1370,16 +1383,16 @@ Traverse and query the bounded neighborhood knowledge graph for a root node.
 
 ### `github_read`
 
-**Read GitHub pull requests, issues, commits, comparisons, releases, and tags**
+**Read GitHub pull requests, review threads, issues, commits, comparisons, releases, and tags**
 
-Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list. Maps to operations.pullRequestList, pullRequestView, issueList, issueView, commitList, compare, releaseList, and tagList. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.
+Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list. Maps to operations.pullRequestList, pullRequestView, issueList, issueView, commitList, compare, releaseList, and tagList. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.
 
 **Attributes:** <span class="badge-ro">readOnly</span> · `idempotent` · <span class="badge-openworld">openWorld</span>
 
 | Parameter | Type | Required | Constraints & Notes |
 |---|---|---|---|
 | `workspaceId` | `string` | No | pattern: `^ws_[A-Za-z0-9_-]{20,80}$` |
-| `action` | `"pr_list"` \| `"pr_view"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` | **Yes** | — |
+| `action` | `"pr_list"` \| `"pr_view"` \| `"pr_review_threads"` \| `"issue_list"` \| `"issue_view"` \| `"commit_list"` \| `"compare"` \| `"release_list"` \| `"tag_list"` | **Yes** | — |
 | `limit` | `integer` | No | range: 1–250 |
 | `state` | `"open"` \| `"closed"` \| `"all"` | No | — |
 | `prNumber` | `integer` | No | range: 0–9007199254740991 |

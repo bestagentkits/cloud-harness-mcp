@@ -9,6 +9,8 @@ export type GitHubAuthorizationFailureReason = 'permission_not_granted' | 'repos
 type GitHubActionPermissions = {
   scope: GitHubPermissionScope;
   write: boolean;
+  /** Further scopes the same token must hold at `write`, such as `contents` for merging a pull request. */
+  alsoWrite?: readonly GitHubPermissionScope[];
 };
 
 const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
@@ -27,6 +29,19 @@ const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
   pr_create: { scope: 'pull_requests', write: true },
   pr_update: { scope: 'pull_requests', write: true },
   pr_comment: { scope: 'pull_requests', write: true },
+  pr_review_threads: { scope: 'pull_requests', write: false },
+  pr_review: { scope: 'pull_requests', write: true },
+  pr_review_comment: { scope: 'pull_requests', write: true },
+  pr_review_reply: { scope: 'pull_requests', write: true },
+  pr_review_thread_resolve: { scope: 'pull_requests', write: true },
+  pr_review_thread_unresolve: { scope: 'pull_requests', write: true },
+  pr_reviewers_request: { scope: 'pull_requests', write: true },
+  pr_reviewers_remove: { scope: 'pull_requests', write: true },
+  pr_ready: { scope: 'pull_requests', write: true },
+  pr_convert_to_draft: { scope: 'pull_requests', write: true },
+  pr_merge: { scope: 'pull_requests', write: true, alsoWrite: ['contents'] },
+  pr_auto_merge_enable: { scope: 'pull_requests', write: true, alsoWrite: ['contents'] },
+  pr_auto_merge_disable: { scope: 'pull_requests', write: true },
   commit_list: { scope: 'contents', write: false },
   compare: { scope: 'contents', write: false },
   release_list: { scope: 'contents', write: false },
@@ -35,7 +50,7 @@ const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
 
 export function requiredGitHubPermissions(
   action: string
-): { scope: GitHubPermissionScope; write: boolean } | undefined {
+): GitHubActionPermissions | undefined {
   return GITHUB_ACTION_PERMISSIONS[action];
 }
 
@@ -91,6 +106,8 @@ export async function mintPrincipalRepositoryScopedToken(input: {
   installations?: GitHubInstallationStore | undefined;
   permissionScope: GitHubPermissionScope;
   requiredPermission: 'read' | 'write';
+  /** Level of the `contents` permission to carry beside the action scope; `read` unless the action merges. */
+  contentsPermission?: 'read' | 'write';
 }): Promise<MintedInstallationToken | undefined> {
   if (!input.config.githubApp || input.repositoryUrl.hostname.toLowerCase() !== 'github.com') return undefined;
   const { owner, repository } = parseGitHubRepository(input.repositoryUrl);
@@ -125,7 +142,8 @@ export async function mintPrincipalRepositoryScopedToken(input: {
       installation.installationId,
       repository,
       input.permissionScope,
-      input.requiredPermission
+      input.requiredPermission,
+      input.contentsPermission
     );
   }
 
@@ -135,7 +153,8 @@ export async function mintPrincipalRepositoryScopedToken(input: {
       input.config.githubApp.installationId,
       repository,
       input.permissionScope,
-      input.requiredPermission
+      input.requiredPermission,
+      input.contentsPermission
     );
   }
 
@@ -156,7 +175,8 @@ async function mintForInstallationScoped(
   installationId: string | number,
   repositoryName: string,
   permissionScope: GitHubPermissionScope,
-  requiredPermission: 'read' | 'write'
+  requiredPermission: 'read' | 'write',
+  contentsPermission: 'read' | 'write' = 'read'
 ): Promise<MintedInstallationToken> {
   try {
     const auth = createAppAuth({
@@ -175,7 +195,7 @@ async function mintForInstallationScoped(
       // action needs.
       permissions: permissionScope === 'contents'
         ? { contents: requiredPermission }
-        : { [permissionScope]: requiredPermission, contents: 'read' }
+        : { [permissionScope]: requiredPermission, contents: contentsPermission }
     });
     return { token: authentication.token, permissions: authentication.permissions };
   } catch (error) {

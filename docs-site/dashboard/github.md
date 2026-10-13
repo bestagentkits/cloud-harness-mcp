@@ -76,6 +76,8 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **Push CI/CD workflows (`.github/workflows/`)** | **Contents: Read and write** + **Workflows: Read and write** |
 | **Read issues and pull requests through `github_read`/`github_action`** | **Issues: Read-only** + **Pull requests: Read-only** + **Contents: Read-only** |
 | **Create or update issues and pull requests through `github_action`** | **Issues: Read and write** + **Pull requests: Read and write** + **Contents: Read-only** |
+| **Review pull requests (reviews, inline comments, threads, reviewers, draft/ready)** | **Pull requests: Read and write** + **Contents: Read-only** |
+| **Merge pull requests or enable auto-merge** | **Pull requests: Read and write** + **Contents: Read and write** |
 | **List/compare commits, releases, and tags through `github_read`/`github_action`** | **Contents: Read-only** |
 
 ::: tip Principle of Least Privilege
