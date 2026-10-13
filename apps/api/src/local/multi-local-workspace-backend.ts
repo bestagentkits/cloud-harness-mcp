@@ -148,7 +148,8 @@ export class MultiLocalWorkspaceBackend implements OperationBackend {
     }
     if (operation === 'workspace_set_active') return await this.setActive(input);
 
-    if (WORKSPACELESS_OPERATIONS.has(operation)) {
+    // The toolbox target names no workspace; any member refuses it with the local-mode explanation.
+    if (WORKSPACELESS_OPERATIONS.has(operation) || (operation === 'bash' && input.target === 'toolbox')) {
       const member = this.resolveDefault() ?? this.pool.list()[0]!;
       return await member.backend.call(operation, input, signal);
     }

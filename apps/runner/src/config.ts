@@ -160,6 +160,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     terminalRetainedBytes: process.env.TERMINAL_RETAINED_BYTES,
     terminalIdleTimeoutMs: process.env.TERMINAL_IDLE_TIMEOUT_MS,
     terminalMaxLifetimeMs: process.env.TERMINAL_MAX_LIFETIME_MS,
+    packagesEnabled: process.env.PACKAGES_ENABLED,
     minFreeBytes: process.env.MIN_FREE_BYTES,
     maxWorkspaceBytes: process.env.MAX_WORKSPACE_BYTES,
     maxActiveWorkspacesPerOwner: process.env.MAX_ACTIVE_WORKSPACES_PER_OWNER,

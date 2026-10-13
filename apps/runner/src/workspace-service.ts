@@ -29,6 +29,7 @@ import {
   TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
+import { EXECUTOR_HARDENING_ARGS, runToolboxCommand, toolboxContainerName } from './toolbox-runner.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
@@ -755,10 +756,7 @@ export class WorkspaceService {
         'create', '--name', name,
         '--label', 'cloud-harness.managed=true', '--label', `cloud-harness.instance=${this.instanceId}`,
         '--label', `cloud-harness.workspace=${record.id}`,
-        '--user', '10001:10001', '--workdir', '/workspace', '--read-only',
-        '--tmpfs', '/tmp:rw,exec,nosuid,nodev,size=128m', '--tmpfs', '/run:rw,nosuid,nodev,size=8m',
-        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256',
-        '--memory', '1g', '--memory-swap', '1g', '--cpus', '1', '--ulimit', 'nofile=1024:1024',
+        ...EXECUTOR_HARDENING_ARGS, '--workdir', '/workspace',
         ...networkArgs,
         '--volume', `${repositoryPath}:/workspace:rw`,
         '--volume', `${toolsPath}:/opt/user-tools:rw`,
@@ -2106,6 +2104,39 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
     return await this.runWorker(record, 'exec_run', validated, signal);
   }
+  /**
+   * The `bash` toolbox target: one command in a disposable, no-network executor-image container with no
+   * checkout, secrets, or Docker socket. The operator flag is the only authorization; the target the
+   * caller asked for grants nothing by itself.
+   */
+  private async runToolbox(validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    if (this.config.packagesEnabled !== true) {
+      throw new HarnessError('FORBIDDEN', 'The bash toolbox target is disabled on this instance (the operator enables it with PACKAGES_ENABLED=true); use target "workspace" to run in a workspace', 403, false);
+    }
+    const result = await runToolboxCommand({
+      name: toolboxContainerName(),
+      image: this.config.executorImage,
+      instanceId: this.instanceId,
+      command: validated.command as string,
+      // Managed package releases will be mounted here, read-only.
+      mounts: []
+    }, {
+      timeoutMs: validated.timeoutMs as number,
+      maxOutputBytes: Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes)
+    }, signal);
+    const data = { output: result.output, exitCode: result.exitCode, signal: result.signal, truncated: result.truncated, target: 'toolbox' };
+    if (result.timedOut) {
+      return {
+        ok: false,
+        message: 'Toolbox command exceeded its timeout and was stopped',
+        data,
+        error: { code: 'TIMEOUT', message: 'Toolbox command exceeded its timeout and was stopped', retryable: false },
+        truncated: result.truncated
+      };
+    }
+    return { ok: true, message: `Command exited with ${result.exitCode ?? 1}`, data, truncated: result.truncated };
+  }
+
   private async runPrivilegedEphemeralExec(
     record: WorkspaceRecord,
     input: {
@@ -2361,6 +2392,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'workspace_open') return await this.open(ownerId, validated);
     if (operation === 'workspace_list') return this.list(ownerId, validated);
     if (operation === 'secrets_list') return this.secretsList(ownerId, validated);
+    if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(validated, signal);
     if (operation === 'operation_status') {
       const opId = validated.operationId as string;
       const op = this.operations.getGenericOperation(opId);
@@ -3571,11 +3603,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       return response;
     }
-    if (operation === 'exec_run') {
+    if (operation === 'exec_run' || operation === 'bash') {
       validated.maxOutputBytes = Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes);
-      const result = await this.handleExecRun(record, validated, signal);
+      const result = await this.handleExecRun(record, operation === 'bash' ? execRunInputFromBash(validated) : validated, signal);
       await this.enforceActiveLimits(record);
-      return result;
+      return operation === 'bash' ? withWorkspaceTarget(result) : result;
     }
     if (operation === 'github_action' || operation === 'github_read') {
       const action = validated.action as string;
@@ -4662,6 +4694,9 @@ const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 function isMutationOperation(operation: RunnerOperation, validated: Record<string, unknown>): boolean {
+  if (operation === 'bash') {
+    return validated.target === 'workspace' && validated.async !== true;
+  }
   if (operation === 'exec_run') {
     if (validated.privileged === true) return true;
     return validated.async !== true;
@@ -4685,6 +4720,27 @@ function isMutationOperation(operation: RunnerOperation, validated: Record<strin
     return (GITHUB_WRITE_ACTIONS as readonly string[]).includes(action);
   }
   return false;
+}
+
+/** The `bash` workspace target is `exec_run` without privilege: it never carries an approval grant. */
+function execRunInputFromBash(validated: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...(validated.workspaceId === undefined ? {} : { workspaceId: validated.workspaceId }),
+    command: validated.command,
+    cwd: validated.cwd,
+    timeoutMs: validated.timeoutMs,
+    maxOutputBytes: validated.maxOutputBytes,
+    privileged: false,
+    async: validated.async === true
+  };
+}
+
+function withWorkspaceTarget(result: RunnerResponse): RunnerResponse {
+  const target = 'workspace';
+  const data = result.data !== null && typeof result.data === 'object' && !Array.isArray(result.data)
+    ? { ...(result.data as Record<string, unknown>), target }
+    : { target };
+  return { ...result, data };
 }
 
 /**

@@ -30,7 +30,7 @@ const CATEGORIES = [
   {
     title: 'Commands and Shells',
     description: 'Tools for running isolated non-root commands, operations, and persistent interactive PTY shell sessions.',
-    names: ['exec_run', 'shell_open', 'shell_io', 'shell_close', 'operation_status', 'operation_cancel', 'operation_wait']
+    names: ['exec_run', 'bash', 'shell_open', 'shell_io', 'shell_close', 'operation_status', 'operation_cancel', 'operation_wait']
   },
   {
     title: 'Sessions and Tasks',
