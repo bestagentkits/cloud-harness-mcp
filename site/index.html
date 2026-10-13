@@ -1024,6 +1024,7 @@
         .hero-section { grid-template-columns: 1fr; }
         .invariants-grid { grid-template-columns: 1fr; }
         .client-content-panel { grid-template-columns: 1fr; }
+        .arch-grid { grid-template-columns: 1fr; }
         .swipe-hint { display: block; }
         .footer-top-row { flex-direction: column; text-align: center; }
         .tools-filter-bar { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 0.5rem; -webkit-overflow-scrolling: touch; }
@@ -1033,6 +1034,20 @@
         .hero-stats { grid-template-columns: 1fr; gap: 1rem; }
         .tools-cards-grid { grid-template-columns: 1fr; }
         .telemetry-bar { font-size: 0.7rem; padding: 0.4rem 1rem; }
+      }
+
+      @media (max-width: 480px) {
+        .main-nav { gap: 0.5rem; }
+        .logo-hud { font-size: 1rem; gap: 0.5rem; }
+        .nav-actions { gap: 0.5rem; }
+        .github-star-btn { padding: 0.45rem 0.6rem; }
+      }
+
+      @media (max-width: 400px) {
+        /* The drawer keeps its own theme toggle and links, so the header sheds these to fit. */
+        .nav-actions > .theme-toggle-btn { display: none; }
+        .github-star-badge { display: none; }
+        .hud-button { white-space: normal !important; max-width: 100%; text-align: center; }
       }
 
       /* Loop slide animation for the telemetry strip on mobile/tablet */
