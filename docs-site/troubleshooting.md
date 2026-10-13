@@ -155,7 +155,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 5. `package digest did not match the signed manifest`, `must contain exactly one <kitId> root directory`, or `outside the <kitId> root` — the downloaded artifact is not the published package. Retry once; if it persists, treat it as an upstream publish problem instead of mounting the content.
 6. `no published release for kit <kitId>` — that kit has no signed release on the requested channel yet. Try `channel: "beta"`, or pin a version that exists.
 
-### 15. Uploaded operator skills do not appear in `skills_list`
+### 16. Uploaded operator skills do not appear in `skills_list`
 **Cause:** The `built-in` tier is populated only when the runner is pointed at an operator-owned host directory, and only reads a strict layout.
 **Fix:**
 1. Set `BUILTIN_SKILLS_ROOT` to an absolute host directory in the runner environment (`/etc/cloud-harness-mcp/runtime.env` or `.env`) and restart the stack; with the variable unset the executor mounts nothing and the tier stays empty by design.
@@ -165,13 +165,13 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 5. Only changes to already-open workspaces need a reopen; a new workspace sees an updated upload immediately.
 6. `BUILTIN_SKILLS_ROOT` is reserved and is now the single name the worker reads. If the runner rejects a stored secret or environment record with that name (`INVALID_INPUT`), remove it with `secret_delete` (deletion of a reserved name stays allowed) and reopen. The removed `CH_BUILTIN_SKILLS_ROOT` override is no longer read: rename it to `BUILTIN_SKILLS_ROOT`. A container created before this change keeps its old environment until it is closed or rebuilt.
 
-### 16. `git_log` only shows one commit, or read-only GitHub calls prompt for approval every time
+### 17. `git_log` only shows one commit, or read-only GitHub calls prompt for approval every time
 **Cause:** `workspace_open` clones a single commit by default, so a fresh workspace's history is one commit deep until deepened. Separately, MCP client approval prompts key off tool-level annotations: `github_action` is annotated destructive as a whole tool because it also performs mutations, so a client can prompt even for a read action like `pr_list` since there is no per-action server approval gate.
 **Fix:**
 1. For history depth, pass `fetchDepth` (0 for full history, or a commit count) or `shallowSince` (an ISO date/datetime) to `workspace_open`, or call `git_fetch` afterward with `depth`, `unshallow`, or `shallowSince`.
 2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `pr_review_threads`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
 
-### 17. A skill is missing from `skills/list`, or `skills/get` returns `-32602`
+### 18. A skill is missing from `skills/list`, or `skills/get` returns `-32602`
 **Cause:** The [Skills over MCP](/agent-toolkits#skills-over-mcp-native-client-skills) extension serves `built-in` skills and your own enabled library skills, adds one workspace's `workspace` and `repository` skills only on that workspace's `/mcp/workspaces/<workspaceId>` endpoint, and omits any skill it cannot serve whole and verified.
 **Fix:**
 1. Confirm the client supports the `io.modelcontextprotocol/skills` extension and is connected to the HTTP `/mcp` endpoint. Local stdio mode and `/mcp-gateway` do not offer it; use `skills_list` / `skills_read` there.
@@ -184,7 +184,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 
 ---
 
-### 18. MCP Gateway: `AUTHORIZATION_REQUIRED` or an OAuth connection error
+### 19. MCP Gateway: `AUTHORIZATION_REQUIRED` or an OAuth connection error
 **Cause:** A downstream MCP server set to **Authenticate with OAuth** has no usable sign-in for you. This is Cloud Harness signing in **to** that server, not your AI client signing in to Cloud Harness (see items 5 and 6 for that). It happens before the first **Connect**, after **Disconnect**, after you change the server's endpoint or manual client, or when the provider refuses to renew the token. Gateway calls from your AI client never open a browser, so they report `AUTHORIZATION_REQUIRED`, and **Test** or **Refresh tools** report it as HTTP `409`.
 **Fix:**
 1. Open the server in [MCP Servers](/dashboard/mcp-servers) and select **Connect** or **Reauthorize** in the **OAuth** panel of the Overview tab, then retry the call.
@@ -198,7 +198,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 
 ---
 
-### 19. MCP OAuth sessions panel is read-only or shows a sync error
+### 20. MCP OAuth sessions panel is read-only or shows a sync error
 **Cause:** Dashboard → Settings → **MCP OAuth sessions** reads and writes the grant through the operator's Cloudflare API integration. **Last provider sync** shows a reason code when that fails; nothing is changed by a failed save unless the reason is `write_unconfirmed` or `readback_mismatch`.
 
 **Fix:**
