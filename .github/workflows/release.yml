@@ -23,8 +23,10 @@ jobs:
       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      release_commit: ${{ steps.release-commit.outputs.sha }}
     steps:
-      # RELEASE_TOKEN is an owner-supplied fine-grained PAT whose owner has admin
+      # RELEASE_TOKEN is an owner-supplied PAT whose owner has admin
       # rights on this repository. Branch protection cannot be bypassed by the
       # github-actions bot, so the release commit must be pushed by an identity
       # that can bypass it: with `enforce_admins: false`, an admin bypasses
@@ -58,3 +60,56 @@ jobs:
         run: |
           test "$(git branch --show-current)" = "$RELEASE_BRANCH"
           env -u GITHUB_ACTIONS npm exec semantic-release
+      - name: Record the release-branch head
+        id: release-commit
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # The version commit carries [skip ci], so push CI never tests it and the
+  # deploy that follows CI never sees it. Request CI for it explicitly: the
+  # dispatched run is not a push, so Release skips it, and Deploy production
+  # deploys the tagged tree once that run passes. Only this job holds Actions
+  # write access, and it runs no repository code.
+  request-release-ci:
+    needs: release
+    if: >-
+      github.event.workflow_run.head_branch == 'main' &&
+      needs.release.outputs.release_commit != github.event.workflow_run.head_sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # RELEASE_TOKEN (a classic PAT with repo scope) dispatches like the owner
+      # does by hand; the workflow token is the fallback when it is absent or
+      # refused. `--ref main` tests the main head, so the head is checked first;
+      # a merge landing in the seconds between check and dispatch is tested
+      # instead, and the next push to main releases it.
+      - name: Request CI for the release commit
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_COMMIT: ${{ needs.release.outputs.release_commit }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          WORKFLOW_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ || "$RELEASE_COMMIT" == "$RELEASE_SHA" ]]; then
+            echo "No version commit was created for $RELEASE_SHA; its own CI run decides its deploy."
+            exit 0
+          fi
+          main_sha="$(GH_TOKEN="$WORKFLOW_TOKEN" gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$main_sha" != "$RELEASE_COMMIT" ]]; then
+            echo "::notice::main moved to $main_sha after release commit $RELEASE_COMMIT; that push's CI deploys both."
+            exit 0
+          fi
+          for token in "$RELEASE_TOKEN" "$WORKFLOW_TOKEN"; do
+            [[ -n "$token" ]] || continue
+            if GH_TOKEN="$token" gh workflow run ci.yml --ref main --repo "$GITHUB_REPOSITORY"; then
+              echo "Requested CI for release commit $RELEASE_COMMIT."
+              exit 0
+            fi
+          done
+          echo "::error::Could not request CI for release commit $RELEASE_COMMIT. Run: gh workflow run ci.yml --ref main"
+          exit 1
