@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 import {
   AgentIdSchema,
+  GITHUB_READ_ACTIONS,
+  GITHUB_WRITE_ACTIONS,
   AgentProxyOperationSchema,
   AgentStatusDataSchema,
   ApiConfigSchema,
@@ -667,6 +669,57 @@ describe('contracts', () => {
       }
     }
   });
+  it('parses and discovers every pull request review lifecycle action', () => {
+    const thread = 'PRRT_kwDOabcdef123456';
+    const sha = 'c'.repeat(40);
+    const valid: Array<Record<string, unknown>> = [
+      { action: 'pr_review', prNumber: 3, event: 'APPROVE' },
+      { action: 'pr_review', prNumber: 3, event: 'REQUEST_CHANGES', body: 'fix', idempotencyKey: 'idem_review_1' },
+      { action: 'pr_review_comment', prNumber: 3, body: 'nit', path: 'a/b.ts', line: 9, startLine: 7, side: 'LEFT', startSide: 'LEFT', commitId: sha },
+      { action: 'pr_review_reply', threadId: thread, body: 'done' },
+      { action: 'pr_review_thread_resolve', threadId: thread },
+      { action: 'pr_review_thread_unresolve', threadId: thread },
+      { action: 'pr_reviewers_request', prNumber: 3, reviewers: ['octocat'], teamReviewers: ['core'] },
+      { action: 'pr_reviewers_remove', prNumber: 3, teamReviewers: ['core'] },
+      { action: 'pr_ready', prNumber: 3 },
+      { action: 'pr_convert_to_draft', prNumber: 3 },
+      { action: 'pr_merge', prNumber: 3, method: 'squash', commitTitle: 't', commitBody: 'b', matchHeadCommit: sha },
+      { action: 'pr_auto_merge_enable', prNumber: 3, method: 'rebase' },
+      { action: 'pr_auto_merge_disable', prNumber: 3 }
+    ];
+    for (const input of valid) {
+      expect(TOOL_SCHEMA_BY_NAME.github_action.parse(input), String(input.action)).toMatchObject(input);
+      expect(GITHUB_WRITE_ACTIONS).toContain(input.action);
+    }
+    expect(TOOL_SCHEMA_BY_NAME.github_read.parse({ action: 'pr_review_threads', prNumber: 3 })).toMatchObject({ action: 'pr_review_threads', limit: 50 });
+    expect(GITHUB_READ_ACTIONS).toContain('pr_review_threads');
+    expect(TOOL_SCHEMA_BY_NAME.github_action.parse({ action: 'pr_review_comment', prNumber: 3, body: 'x', path: 'a.ts', line: 1 })).toMatchObject({ side: 'RIGHT' });
+  });
+
+  it('rejects malformed pull request review lifecycle inputs', () => {
+    const bad: Array<Record<string, unknown>> = [
+      { action: 'pr_review', prNumber: 3, event: 'DISMISS' },
+      { action: 'pr_review', prNumber: 3, event: 'COMMENT' },
+      { action: 'pr_review', prNumber: 3, event: 'REQUEST_CHANGES', body: '   ' },
+      { action: 'pr_review_comment', prNumber: 3, body: 'x', path: 'a.ts', line: 5, startLine: 5 },
+      { action: 'pr_review_comment', prNumber: 3, body: 'x', path: 'a.ts', line: 5, startSide: 'LEFT' },
+      { action: 'pr_review_comment', prNumber: 3, body: 'x', path: 'a.ts', line: 0 },
+      { action: 'pr_review_comment', prNumber: 3, body: 'x', path: 'a.ts', line: 5, commitId: 'main' },
+      { action: 'pr_review_reply', threadId: 'MDExOlB1bGw=', body: 'x' },
+      { action: 'pr_review_thread_resolve', threadId: 'PRRT_x; rm -rf' },
+      { action: 'pr_reviewers_request', prNumber: 3 },
+      { action: 'pr_reviewers_request', prNumber: 3, reviewers: ['bad name'] },
+      { action: 'pr_reviewers_remove', prNumber: 3, teamReviewers: ['org/team'] },
+      { action: 'pr_merge', prNumber: 3 },
+      { action: 'pr_merge', prNumber: 3, method: 'fast-forward' },
+      { action: 'pr_merge', prNumber: 3, method: 'rebase', commitTitle: 'x' },
+      { action: 'pr_auto_merge_enable', prNumber: 3, method: 'rebase', commitBody: 'x' }
+    ];
+    for (const input of bad) {
+      expect(() => TOOL_SCHEMA_BY_NAME.github_action.parse(input), JSON.stringify(input)).toThrow();
+    }
+  });
+
   it('exposes discoverable GitHub issue and pull request operations in github_action tool spec with valid action invariants', () => {
     const ghSpec = TOOL_SPECS.find((tool) => tool.name === 'github_action');
     expect(ghSpec).toBeDefined();

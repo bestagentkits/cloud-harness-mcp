@@ -254,6 +254,197 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     })).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 
+  describe('pull request review lifecycle', () => {
+    const helperCall = () => docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'));
+    const writeToken = () => broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-scoped-write-token', { pull_requests: 'write', contents: 'write' }));
+    const THREAD = 'PRRT_kwDOabcdef123456';
+
+    it.each([
+      ['COMMENT', 'Please rename this.'],
+      ['REQUEST_CHANGES', 'Needs a test.'],
+      ['APPROVE', '']
+    ])('maps pr_review %s to the helper with pull_requests:write and audits it', async (event, body) => {
+      const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, metadata, installations);
+      writeToken();
+      const result = await service.execute(principalSelector, 'github_action', {
+        workspaceId, action: 'pr_review', prNumber: 12, event, ...(body ? { body } : {})
+      });
+      expect(result.ok).toBe(true);
+      expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({ permissionScope: 'pull_requests', requiredPermission: 'write' }));
+      const [args, opts] = helperCall()!;
+      expect(args.slice(args.indexOf('pr_review'))).toEqual(['pr_review', '12', event, body]);
+      expect(opts?.stdin).toBe('pr-scoped-write-token\n');
+      const audit = metadata.listAudit(principalId).find((a) => a.action === 'github_action.pr_review');
+      expect(audit?.details).toMatchObject({ action: 'pr_review', prNumber: 12, reviewEvent: event, success: true });
+      expect(JSON.stringify(audit)).not.toContain('pr-scoped-write-token');
+    });
+
+    it('rejects a COMMENT or REQUEST_CHANGES review without a body before any GitHub call', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      for (const event of ['COMMENT', 'REQUEST_CHANGES']) {
+        await expect(service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_review', prNumber: 12, event })).rejects.toThrow();
+      }
+      expect(helperCall()).toBeUndefined();
+    });
+
+    it('replays pr_review for the same key and payload and conflicts on a different payload', async () => {
+      const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, metadata, installations);
+      writeToken();
+      const input = { workspaceId, action: 'pr_review', prNumber: 12, event: 'APPROVE', idempotencyKey: 'idem_review_1' };
+      expect((await service.execute(principalSelector, 'github_action', input)).ok).toBe(true);
+      docker.runDocker.mockClear();
+      expect((await service.execute(principalSelector, 'github_action', input)).ok).toBe(true);
+      expect(helperCall()).toBeUndefined();
+      expect(metadata.listAudit(principalId).filter((a) => a.action === 'github_action.pr_review')).toHaveLength(1);
+      await expect(service.execute(principalSelector, 'github_action', { ...input, event: 'REQUEST_CHANGES', body: 'no' }))
+        .rejects.toMatchObject({ code: 'CONFLICT' });
+    });
+
+    it('maps pr_review_comment line, range, side, and commit arguments', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      writeToken();
+      const commitId = 'a'.repeat(40);
+      await service.execute(principalSelector, 'github_action', {
+        workspaceId, action: 'pr_review_comment', prNumber: 12, body: 'Nit', path: 'src/a.ts', line: 20, startLine: 18, startSide: 'LEFT', side: 'RIGHT', commitId
+      });
+      const [args] = helperCall()!;
+      expect(args.slice(args.indexOf('pr_review_comment'))).toEqual(['pr_review_comment', '12', 'Nit', 'src/a.ts', '20', '18', 'RIGHT', 'LEFT', commitId]);
+    });
+
+    it('rejects an invalid inline comment range before any GitHub call', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      await expect(service.execute(principalSelector, 'github_action', {
+        workspaceId, action: 'pr_review_comment', prNumber: 12, body: 'x', path: 'a.ts', line: 5, startLine: 9
+      })).rejects.toThrow();
+      expect(helperCall()).toBeUndefined();
+    });
+
+    it('lists review threads with the read scope through github_read', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-scoped-read-token', { pull_requests: 'read' }));
+      const result = await service.execute(principalSelector, 'github_read', { workspaceId, action: 'pr_review_threads', prNumber: 12 });
+      expect(result.ok).toBe(true);
+      expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({ permissionScope: 'pull_requests', requiredPermission: 'read' }));
+      const [args] = helperCall()!;
+      expect(args.slice(args.indexOf('pr_review_threads'))).toEqual(['pr_review_threads', '12', '50']);
+    });
+
+    it.each([
+      ['pr_review_reply', { threadId: THREAD, body: 'Fixed.' }, ['pr_review_reply', THREAD, 'Fixed.']],
+      ['pr_review_thread_resolve', { threadId: THREAD }, ['pr_review_thread_resolve', THREAD]],
+      ['pr_review_thread_unresolve', { threadId: THREAD }, ['pr_review_thread_unresolve', THREAD]],
+      ['pr_reviewers_request', { prNumber: 12, reviewers: ['octocat', 'hubot'], teamReviewers: ['core'] }, ['pr_reviewers_request', '12', 'octocat,hubot', 'core']],
+      ['pr_reviewers_remove', { prNumber: 12, reviewers: ['octocat'] }, ['pr_reviewers_remove', '12', 'octocat', '']],
+      ['pr_ready', { prNumber: 12 }, ['pr_ready', '12']],
+      ['pr_convert_to_draft', { prNumber: 12 }, ['pr_convert_to_draft', '12']],
+      ['pr_auto_merge_disable', { prNumber: 12 }, ['pr_auto_merge_disable', '12']]
+    ])('maps %s to the helper and audits it', async (action, input, expected) => {
+      const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, metadata, installations);
+      writeToken();
+      const result = await service.execute(principalSelector, 'github_action', { workspaceId, action, ...input });
+      expect(result.ok).toBe(true);
+      const [args] = helperCall()!;
+      expect(args.slice(args.indexOf(action))).toEqual(expected);
+      expect(metadata.listAudit(principalId).some((a) => a.action === `github_action.${action}`)).toBe(true);
+    });
+
+    it('requires a reviewer for reviewer management', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      await expect(service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_reviewers_request', prNumber: 1 })).rejects.toThrow();
+      await expect(service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_reviewers_remove', prNumber: 1, reviewers: [] })).rejects.toThrow();
+    });
+
+    it.each(['merge', 'squash', 'rebase'])('maps pr_merge with the %s method', async (method) => {
+      const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, metadata, installations);
+      writeToken();
+      const sha = 'b'.repeat(40);
+      const message = method === 'rebase' ? {} : { commitTitle: 'feat: title', commitBody: 'body' };
+      const result = await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_merge', prNumber: 12, method, matchHeadCommit: sha, ...message });
+      expect(result.ok).toBe(true);
+      expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({ permissionScope: 'pull_requests', requiredPermission: 'write', contentsPermission: 'write' }));
+      const [args] = helperCall()!;
+      expect(args.join(' ')).not.toContain('/repo:/workspace');
+      expect(args).toContain('/tmp');
+      expect(args.slice(args.indexOf('pr_merge'))).toEqual(['pr_merge', '12', method, message.commitTitle ?? '', message.commitBody ?? '', sha]);
+      expect(metadata.listAudit(principalId).find((a) => a.action === 'github_action.pr_merge')?.details).toMatchObject({ mergeMethod: method, success: true });
+    });
+
+    it('rejects a rebase merge that carries a commit message', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      await expect(service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_merge', prNumber: 12, method: 'rebase', commitTitle: 'x' })).rejects.toThrow();
+    });
+
+    it('maps pr_auto_merge_enable and replays it idempotently', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      writeToken();
+      const input = { workspaceId, action: 'pr_auto_merge_enable', prNumber: 12, method: 'squash', idempotencyKey: 'idem_auto_1' };
+      await service.execute(principalSelector, 'github_action', input);
+      const [args] = helperCall()!;
+      expect(args.slice(args.indexOf('pr_auto_merge_enable'))).toEqual(['pr_auto_merge_enable', '12', 'squash', '', '']);
+      docker.runDocker.mockClear();
+      await service.execute(principalSelector, 'github_action', input);
+      expect(helperCall()).toBeUndefined();
+    });
+
+    it('rejects review actions through github_read', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      await expect(service.execute(principalSelector, 'github_read', { workspaceId, action: 'pr_merge', prNumber: 12, method: 'squash' })).rejects.toThrow();
+      expect(helperCall()).toBeUndefined();
+    });
+
+    it('refuses to merge when the App token lacks contents:write and no fallback exists', async () => {
+      const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, metadata, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-only-token', { pull_requests: 'write', contents: 'read' }));
+      await expect(service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_merge', prNumber: 12, method: 'squash' }))
+        .rejects.toMatchObject({ code: 'GITHUB_PERMISSION_MISSING', message: expect.stringContaining('pull_requests:write and contents:write') });
+      expect(helperCall()).toBeUndefined();
+      expect(metadata.listAudit(principalId).find((a) => a.action === 'github_action.pr_merge')?.details).toMatchObject({ success: false, errorCode: 'GITHUB_PERMISSION_MISSING' });
+    });
+
+    it('does not require contents:write to approve a review', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('pr-only-token', { pull_requests: 'write' }));
+      const result = await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_review', prNumber: 12, event: 'APPROVE' });
+      expect(result.ok).toBe(true);
+    });
+
+    it('surfaces a typed merge failure without raw token material', async () => {
+      const { config, store, metadata, installations, workspaceId, principalId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, metadata, installations);
+      writeToken();
+      docker.ghResult = { stdout: '', stderr: 'X Pull request #12 is not mergeable: the base branch policy prohibits the merge.', exitCode: 1, truncated: false };
+      const result = await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_merge', prNumber: 12, method: 'squash' });
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatchObject({ code: 'GITHUB_MERGE_BLOCKED', retryable: false });
+      expect(JSON.stringify(result)).not.toContain('pr-scoped-write-token');
+      expect(metadata.listAudit(principalId).find((a) => a.action === 'github_action.pr_merge')?.details).toMatchObject({ success: false, errorCode: 'GITHUB_MERGE_BLOCKED' });
+    });
+
+    it('never passes the token through helper arguments', async () => {
+      const { config, store, installations, workspaceId, principalSelector } = fixture();
+      const service = new WorkspaceService(config, store, undefined, installations);
+      writeToken();
+      await service.execute(principalSelector, 'github_action', { workspaceId, action: 'pr_review', prNumber: 12, event: 'APPROVE' });
+      const [args] = helperCall()!;
+      expect(args.join(' ')).not.toContain('pr-scoped-write-token');
+      expect(args.join(' ')).toContain('/repo:/workspace:ro');
+    });
+  });
+
   it('executes pr_list and pr_view using pull_requests:read token scope', async () => {
     const { config, store, installations, workspaceId, principalSelector } = fixture();
     const service = new WorkspaceService(config, store, undefined, installations);
