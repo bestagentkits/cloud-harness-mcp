@@ -12,7 +12,7 @@ To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MC
 | Surface | Limit | Configurable Env Var |
 |---|---|---|
 | **Max File Read Size** | 256 KB (default 64 KB) | `files_read.limit` |
-| **Max Command Exec Output** | 1 MB | `exec_run` buffer |
+| **Max Command Exec Output** | 1 MB | `exec_run` and `bash` buffer |
 | **Max Artifact Size** | 16 MB | `MAX_ARTIFACT_BYTES` |
 | **Total Principal Artifacts** | 128 MB | `MAX_PRINCIPAL_ARTIFACT_BYTES` |
 | **Workspace Wall TTL** | 900s (15 min) | `WORKSPACE_WALL_TTL_SECONDS` |

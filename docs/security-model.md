@@ -452,6 +452,26 @@ consumed, or expired grant is shown without actions, so the page never invites
 a decision the runner would refuse. The owner is `grantIsActionable` in
 [`apps/api/dashboard/dashboard-render.js`](../apps/api/dashboard/dashboard-render.js).
 
+The `bash` tool has no privileged path: its `workspace` target delegates to
+unprivileged `exec_run`, and privileged commands stay on `exec_run` with the
+grant flow above. Its `toolbox` target, off unless the operator sets
+`PACKAGES_ENABLED=true`, runs each command in a fresh executor-image container
+with the same hardening flags, `--network none`, no mounts, no secrets, and no
+Docker socket. The container is created before it is started, so it exists by
+name before any stop decision; on exit, timeout, output bound, or abort the
+runner removes it by that exact name and retries for about 10 seconds until
+Docker reports it gone. Two backstops cover a runner that dies or a removal
+that keeps failing: an in-container `timeout` deadline slightly beyond the
+caller's timeout, and the periodic reaper, which removes this instance's
+toolbox-labelled containers older than the longest command timeout plus a
+margin. `TOOLBOX_MAX_CONCURRENT` caps how many toolbox containers run at once,
+so toolbox calls cannot take more than that many executor-sized memory, CPU,
+and pid budgets from the host. The
+executable owner is
+[`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts),
+with evidence in
+[`test/integration/bash-toolbox.docker.test.ts`](../test/integration/bash-toolbox.docker.test.ts).
+
 The public contract fixes remote transfers to `origin`, permits only branch
 push refspecs, rejects deletion refspecs, and permits force only through
 force-with-lease. Private clone/fetch/pull require GitHub App Contents read

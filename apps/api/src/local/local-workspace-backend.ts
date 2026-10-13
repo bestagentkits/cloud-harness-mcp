@@ -148,6 +148,11 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
+    if (operation === 'bash' && input.target === 'toolbox') {
+      const message = 'the bash toolbox target is unsupported in local mode because it needs the remote runner\'s disposable containers; use target "workspace"';
+      return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
+    }
+
     if (operation === 'workspace_open') {
       return {
         ok: false,
@@ -530,7 +535,9 @@ export class LocalWorkspaceBackend implements OperationBackend {
       };
     }
 
-    if (operation === 'exec_run') {
+    if (operation === 'exec_run' || operation === 'bash') {
+      // `bash` with the workspace target is exec_run; its result also names the target.
+      const target = operation === 'bash' ? { target: 'workspace' } : {};
       if (input.privileged === true) {
         return {
           ok: false,
@@ -557,7 +564,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
           return {
             ok: false,
             message: msg,
-            data: result,
+            data: { ...result, ...target },
             error: { code: 'CONFLICT', message: msg, retryable: false },
             truncated: result.truncated
           };
@@ -565,7 +572,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
         return {
           ok: true,
           message: `Command exited with ${result.exitCode}`,
-          data: result,
+          data: { ...result, ...target },
           truncated: result.truncated
         };
       } catch (err: unknown) {

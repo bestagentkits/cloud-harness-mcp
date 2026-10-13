@@ -79,7 +79,10 @@ never talks to the runner or Docker and never receives a control-plane token.
 - With `target: "toolbox"`, the command runs in a disposable toolbox container:
   the executor image's hardening, no network, no workspace checkout, and the
   principal's active managed releases mounted read-only. This target exists
-  only when the managed toolbox feature flag is on.
+  only when the managed toolbox feature flag is on. A long toolbox command
+  also returns an operation handle (`async: true`) instead of holding the MCP
+  response open; the handle has no workspace, so it is scoped to the owner
+  that started it, and cancelling it removes the container.
 - The server authorizes the target. A client-supplied target never grants
   capability on its own, and no string blocklist is treated as a security
   control.

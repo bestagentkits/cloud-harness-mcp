@@ -563,6 +563,11 @@ const agentLookup = z.object({
   }
 });
 
+/** Upper bound for one `exec_run` or `bash` command; the runner derives its stale toolbox sweep age from it. */
+export const COMMAND_MAX_TIMEOUT_MS = 300_000;
+/** A NUL byte cannot cross a process argv, so a command containing one is invalid input rather than a spawn failure. */
+const shellCommand = z.string().min(1).max(32_768).refine((value) => !value.includes('\0'), 'command must not contain NUL bytes');
+
 const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
@@ -680,13 +685,29 @@ const schemas = {
   symbols_references: z.object({ ...workspace, symbol: z.string().min(1).max(256).refine((value) => !value.includes('\0') && !value.includes('\n')), path: relativePath.default('.'), glob: z.string().max(512).optional(), maxResults: z.number().int().min(1).max(500).default(100) }),
   exec_run: z.object({
     ...workspace,
-    command: z.string().min(1).max(32_768),
+    command: shellCommand,
     cwd: relativePath.default('.'),
-    timeoutMs: z.number().int().min(100).max(300_000).default(60_000),
+    timeoutMs: z.number().int().min(100).max(COMMAND_MAX_TIMEOUT_MS).default(60_000),
     maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144),
     privileged: z.boolean().default(false),
     approvalGrantToken: z.string().min(1).max(128).optional(),
     async: z.boolean().default(false)
+  }),
+  // `bash` deliberately has no `privileged` or `approvalGrantToken`: a strict object refuses them, so
+  // privileged commands can only take the `exec_run` approval path.
+  bash: z.object({
+    ...workspace,
+    command: shellCommand,
+    target: z.enum(['workspace', 'toolbox']).default('workspace')
+      .describe('workspace runs in the workspace executor like exec_run; toolbox runs in a disposable no-network container with no checkout.'),
+    cwd: relativePath.default('.').describe('Workspace-relative directory; workspace target only.'),
+    timeoutMs: z.number().int().min(100).max(COMMAND_MAX_TIMEOUT_MS).default(60_000),
+    maxOutputBytes: z.number().int().min(1_024).max(1_048_576).default(262_144),
+    async: z.boolean().default(false).describe('Return an operation handle for operation_status, operation_wait, and operation_cancel instead of waiting.')
+  }).strict().superRefine((input, context) => {
+    if (input.target !== 'toolbox') return;
+    if (input.workspaceId !== undefined) context.addIssue({ code: 'custom', path: ['workspaceId'], message: 'workspaceId is not allowed for the toolbox target' });
+    if (input.cwd !== '.') context.addIssue({ code: 'custom', path: ['cwd'], message: 'cwd is only valid for the workspace target' });
   }),
   shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
@@ -1013,7 +1034,7 @@ const titles: Record<RunnerOperation, string> = {
   workspace_finalize: 'Finalize workspace commit and push',
   files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
-  exec_run: 'Run command', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
+  exec_run: 'Run command', bash: 'Run bash command', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
   sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
   tasks_graph: 'Read task dependency graph',
   operation_status: 'Read operation status', operation_cancel: 'Cancel operation', operation_wait: 'Wait for operation',
@@ -1060,6 +1081,7 @@ const descriptions: Record<RunnerOperation, string> = {
   symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring.',
   symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text.',
   exec_run: 'Run one bounded shell command in the workspace and return captured output.',
+  bash: 'Run one bounded bash command. target "workspace" (default) uses the exec_run path in the workspace executor. target "toolbox" runs in a disposable no-network container with no workspace checkout, no secrets, and no workspaceId; it is available only when the operator enables packages. Both targets accept async: true for an operation handle. bash has no privileged mode: use exec_run with its approval flow for privileged commands.',
   shell_open: 'Open an idempotent ephemeral interactive shell in the workspace.',
   shell_io: 'Send input to or poll bounded output from an open interactive shell.',
   shell_close: 'Terminate an interactive shell and release its in-memory state.',
@@ -1146,7 +1168,7 @@ const readOnly = new Set<RunnerOperation>([
 const destructive = new Set<RunnerOperation>([
   'workspace_close', 'workspace_recover', 'workspace_finalize',
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move',
-  'exec_run', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
+  'exec_run', 'bash', 'shell_io', 'shell_close', 'sessions_io', 'sessions_close',
   'tasks_run', 'tasks_cancel', 'operation_cancel',
   'git_branch', 'git_checkout', 'git_pull', 'git_push', 'git_merge', 'git_rebase', 'git_identity_set',
   'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete',
@@ -1168,7 +1190,7 @@ const idempotent = new Set<RunnerOperation>([
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
 ]);
 const openWorld = new Set<RunnerOperation>([
-  'workspace_open', 'workspace_finalize', 'exec_run', 'shell_io', 'sessions_io', 'tasks_run',
+  'workspace_open', 'workspace_finalize', 'exec_run', 'bash', 'shell_io', 'sessions_io', 'tasks_run',
   'git_fetch', 'git_pull', 'git_push', 'skills_run', 'skill_suggest', 'hooks_run', 'deployments_run', 'github_action', 'github_read',
   'agent_spawn', 'agent_message'
 ]);

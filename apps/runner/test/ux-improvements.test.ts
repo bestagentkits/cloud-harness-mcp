@@ -209,11 +209,12 @@ describe('UX Improvements and Feature Enhancements', () => {
     const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner-3' });
     const service = new WorkspaceService(config, store);
 
-    // Register a generic operation in operation manager
+    // Register a generic operation in operation manager. A handle without a workspace is scoped to its owner.
     const opManager = (service as unknown as { operations: { registerGenericOperation: (op: unknown) => { id: string, status: string } } }).operations;
     const opId = `op_${'a'.repeat(24)}`;
     const tracked = opManager.registerGenericOperation({
       id: opId,
+      ownerId,
       kind: 'build',
       deadlineMs: Date.now() + 60_000
     });

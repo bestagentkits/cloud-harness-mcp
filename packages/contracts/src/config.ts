@@ -239,6 +239,12 @@ export const RunnerConfigSchema = z.object({
   terminalRetainedBytes: z.coerce.number().int().min(65_536).max(16_777_216).default(1_048_576),
   terminalIdleTimeoutMs: z.coerce.number().int().min(60_000).max(86_400_000).default(900_000),
   terminalMaxLifetimeMs: z.coerce.number().int().min(60_000).max(86_400_000).default(28_800_000),
+  // Managed toolbox gate. Off by default: the `bash` toolbox target runs a disposable executor-image
+  // container per call, so the operator opts in before any caller can start one.
+  packagesEnabled: enabled.default(false),
+  // Concurrent toolbox containers per runner. Each one holds the executor memory, CPU, and pid bounds, so
+  // this caps what toolbox calls can take from the host independently of the workspace limit.
+  toolboxMaxConcurrent: z.coerce.number().int().min(1).max(16).default(2),
   minFreeBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
