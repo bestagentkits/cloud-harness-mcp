@@ -12,11 +12,13 @@ MCP client
   -> ephemeral clone/Git transfer helpers and one executor for the workspace
 
 Static-header MCP client
-  -> api.harness.zuey.me/mcp (fixed Cloudflare Worker)
+  -> api.harness.zuey.me/mcp or /mcp-gateway (fixed Cloudflare Worker)
   -> path-scoped Cloudflare Access application (Worker Service Auth only)
-  -> harness.zuey.me/mcp-api-key (exact hidden origin route)
+  -> harness.zuey.me/mcp-api-key or /mcp-api-key/gateway (exact hidden origin
+     routes)
   -> API (verified gateway subject AND principal-bound API key)
-  -> the same runner and execution path above
+  -> the same runner and execution path above, or the MCP gateway composition
+     root below scoped to the key's principal
 
 MCP gateway client
   -> harness.zuey.me/mcp-gateway (same owner bearer or verified Access assertion)
@@ -276,12 +278,13 @@ Production Compose binds the credential-free ingress proxy to
 egress does not expose an ingress port. Existing
 nginx is the only intended origin host listener and proxies `/mcp`, the
 workspace-bound `/mcp/workspaces/<workspaceId>` prefix,
-`/mcp-gateway`, `/mcp-api-key`, `/dashboard`,
+`/mcp-gateway`, `/mcp-api-key`, `/mcp-api-key/gateway`, `/dashboard`,
 `/healthz`, and `/readyz` to loopback. In Access mode the owned public hostname
 uses one Access application for `/mcp` (including its workspace-bound paths),
 `/mcp-gateway`, and `/dashboard`, plus a
-separate application scoped exactly to `/mcp-api-key`. The external Worker owns
-the public static-key hostname and cannot proxy dashboard or arbitrary origin
-traffic. The
+separate application scoped to the `/mcp-api-key` path, which also covers its
+`/mcp-api-key/gateway` subpath. The external Worker owns the public static-key
+hostname, forwards only its two fixed paths, and cannot proxy dashboard or
+arbitrary origin traffic. The
 [deployment guide](deployment.md) explains the safe install order and the TLS
 step that is intentionally outside Compose.

@@ -27,6 +27,7 @@ Cloud Harness MCP provides two distinct connection lanes over **Streamable HTTP 
 | Feature | Managed OAuth Lane | Static API Key Lane |
 |---|---|---|
 | **Public URL** | `https://harness.zuey.me/mcp` | `https://api.harness.zuey.me/mcp` |
+| **[MCP Gateway](/mcp-gateway) URL** | `https://harness.zuey.me/mcp-gateway` | `https://api.harness.zuey.me/mcp-gateway` |
 | **Authentication** | Cloudflare Access OAuth | Dashboard-managed API Key |
 | **Header** | Access JWT Cookie / Bearer | `Authorization: Bearer <api-key>` |
 | **Target Clients** | ChatGPT, Web App Connectors | Cursor, Claude Code, Codex, Antigravity |
@@ -42,8 +43,8 @@ extension, also that one workspace's `workspace` and `repository` skills.
 Connect to it only when you want those skills to appear natively in your client
 for a workspace you already opened; use `/mcp` for everything else. It uses the
 Managed OAuth lane's host and authentication (or the owner bearer on an
-owner-bearer instance); the Static API Key lane forwards only `/mcp` and cannot
-reach it. The endpoint stops serving skills once the workspace is closed or its
+owner-bearer instance); the Static API Key lane forwards only `/mcp` and
+`/mcp-gateway`, so it cannot reach it. The endpoint stops serving skills once the workspace is closed or its
 lease expires.
 
 

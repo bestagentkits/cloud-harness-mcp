@@ -66,10 +66,19 @@ Point the client at `https://<your-cloud-harness-host>/mcp-gateway`. The gateway
 uses the same authentication as your `/mcp` endpoint: your Cloudflare Access
 session in Access mode, or your owner bearer token in owner-bearer mode.
 
-::: warning Credential lanes
-The managed **API-key lane** (`https://api.harness.zuey.me/mcp`) is not available
-for `/mcp-gateway`. Clients configured with a dashboard-managed API key keep
-using `/mcp`.
+::: tip Static-header clients: use the API-key lane
+Clients that can only send a static `Authorization` header (Claude Code, Cursor,
+Codex, scripts) connect to the gateway through the managed **API-key lane**:
+
+```text
+https://api.harness.zuey.me/mcp-gateway
+```
+
+Send a key from [API Keys](/dashboard/api-keys) as `Authorization: Bearer <key>`.
+The client sees the same five tools, scoped to the account that created the key.
+The **MCP Servers** gateway card in the dashboard shows this URL with a Copy
+button when the deployment enables the lane. An API key works only on
+`api.harness.zuey.me`; it is rejected on `https://<your-cloud-harness-host>/mcp-gateway`.
 :::
 
 ## Find and run a tool: search, inspect, execute
@@ -139,7 +148,6 @@ reference instead.
   its final URL directly.
 - **`stdio` servers are unsupported.** Use `streamable-http` or `sse`.
 - **OAuth-protected downstream servers are unsupported.** Use a header secret.
-- **The managed API-key lane is not available.** Use Access or the owner bearer.
 - **Connections are per-process and bounded.** They are not shared across API
   replicas and are rebuilt after a restart.
 - **Search is lexical, not semantic.** It matches words and names; it is not an

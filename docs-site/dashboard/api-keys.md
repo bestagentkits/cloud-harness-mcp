@@ -5,7 +5,7 @@ description: Creating, monitoring, and revoking static MCP gateway API keys.
 
 # API Keys
 
-Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Codex), and scripts to authenticate against `https://api.harness.zuey.me/mcp` without an interactive browser OAuth flow.
+Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Codex), and scripts to authenticate against `https://api.harness.zuey.me/mcp` without an interactive browser OAuth flow. The same key also reaches the [MCP Gateway](/mcp-gateway) at `https://api.harness.zuey.me/mcp-gateway`.
 
 ## Key Rules & Limits
 
@@ -19,7 +19,7 @@ Static API keys allow IDE extensions (Cursor), local CLI agents (Claude Code, Co
 1. Navigate to **API Access** in the dashboard.
 2. Click **Create API key** (the page's single accented action).
 3. Choose a descriptive label (e.g. `Cursor Workstation M1`) and select an expiration timeframe.
-4. Copy the key value immediately (`ch_live_...`).
+4. Copy the key value immediately (`chm_key_...`).
 
 The key is shown once, in a dialog, and cannot be recovered. Creation moves into that
 dialog rather than sitting under the list, and the action is disabled with an explanation

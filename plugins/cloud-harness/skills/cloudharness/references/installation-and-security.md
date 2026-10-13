@@ -100,8 +100,10 @@ not the endpoint you use to open a workspace.
   secret by name. The resolved value is never shown to the client, a result, a
   trace, or a log. Never try to print or exfiltrate a referenced secret.
 - **Connection.** Use the same Access session or owner bearer token as `/mcp`.
-  Point the client at `https://<your-cloud-harness-host>/mcp-gateway`. The
-  managed API-key lane is not available for this endpoint.
+  Point the client at `https://<your-cloud-harness-host>/mcp-gateway`. A
+  static-header client uses the managed API-key lane instead: the same
+  dashboard-managed key it uses for `/mcp`, at `/mcp-gateway` on the API-key
+  host (for example `https://api.harness.zuey.me/mcp-gateway`).
 - **Unsupported.** Downstream `stdio` servers, OAuth-protected downstream
   servers, and HTTP redirects are not supported.
 

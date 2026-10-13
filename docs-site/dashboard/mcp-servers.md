@@ -12,8 +12,11 @@ description: Manage the downstream MCP servers your Cloud Harness MCP Gateway ex
 ## How an agent finds the right tool
 
 Your AI client connects one endpoint and always sees five tools, however many servers
-you register. The page's gateway card shows that endpoint with a copy button and
-explains the flow:
+you register. The page's gateway card shows that endpoint with a copy button and,
+when the deployment enables the managed API-key lane, a second copyable endpoint
+(`https://api.harness.zuey.me/mcp-gateway`) for clients that authenticate with a
+key from [API Keys](/dashboard/api-keys). Otherwise the card says the lane is not
+enabled. It explains the flow:
 
 1. `search` finds a `server.tool` from a plain description of the need, across every
    enabled server the caller may use, and can be narrowed to one server.

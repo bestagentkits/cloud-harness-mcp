@@ -114,9 +114,19 @@ be covered by the same Access application that protects `/mcp`. The
 [deployment guide](deployment.md) records the route and the required upgrade
 order.
 
-The managed **API-key lane** (the static-key Worker at
-`api.harness.zuey.me/mcp`) is **not** available for `/mcp-gateway`; clients that
-use a managed API key keep using `/mcp`.
+Clients that can only send a static header use the managed **API-key lane**
+instead: `https://api.harness.zuey.me/mcp-gateway` with a dashboard-managed key
+as the bearer. The Worker forwards that one public path to the hidden origin
+route `/mcp-api-key/gateway`, which sits under the existing `/mcp-api-key`
+prefix so the same path-scoped Service Auth Access application and the same
+dual-credential check (Worker service assertion plus principal-bound managed
+key) protect it; no Access change is needed. It serves the same five meta-tools
+scoped to the key's bound principal. Managed keys are still rejected on
+`/mcp-gateway` itself, and human assertions are still rejected on the API-key
+routes. The route exists only in `cloudflare-access` mode with the API-key lane
+enabled. Owners: the path table in
+[`apps/api-key-gateway/src/gateway.ts`](../apps/api-key-gateway/src/gateway.ts)
+and the `/mcp-api-key` mount in [`apps/api/src/app.ts`](../apps/api/src/app.ts).
 
 ## Progressive tool discovery
 
@@ -217,8 +227,6 @@ parser is safe against a hostile stream.
   reference.
 - **HTTP redirects are refused.** A vendor base URL that 301s to `/mcp` must be
   configured as its final URL.
-- `/mcp-gateway` is served on the Access/owner-bearer lane only; the managed
-  **API-key lane** is not extended.
 - Connection pooling is per-process, bounded by `MCP_GATEWAY_MAX_CONNECTIONS`
   with least-recently-used eviction, and not shared across API replicas.
 - Search is deterministic lexical/fuzzy matching, not embeddings.

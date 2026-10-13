@@ -512,8 +512,9 @@ wired, so the visible one is never the only working one. Owners:
   offers add, edit, enable/disable, Test, Refresh tools, delete, and a detail
   view with Overview / Tools / Permissions / Logs. Its gateway card shows the one
   copyable `/mcp-gateway` endpoint, names the credential lane the endpoint
-  actually accepts (owner bearer or Access session), states that the managed
-  API-key lane is not yet available, and lists the two hard limitations an
+  actually accepts (owner bearer or Access session), shows the copyable managed
+  API-key lane endpoint when the deployment enables it (or says it is not
+  enabled), and lists the two hard limitations an
   operator hits first: HTTP redirects are refused, and `stdio` downstream
   servers are unsupported. Owners: `renderMcpGatewayCard` and
   `renderMcpServersIndex` in `dashboard-render.js`, and the MCP server routes in

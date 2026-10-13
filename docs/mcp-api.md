@@ -40,11 +40,12 @@ The lifecycle contract is owned by
 
 A second composition root, `https://<host>/mcp-gateway`, exposes five
 meta-tools over a principal-scoped registry of downstream MCP servers. It is a
-distinct surface with its own tool list, its own contracts, and its own
-authentication-lane limitation; it is not a mode of `/mcp`. The semantics of
+distinct surface with its own tool list and its own contracts; it is not a mode
+of `/mcp`. Static-header clients reach it through the managed API-key lane at
+`https://api.harness.zuey.me/mcp-gateway`. The semantics of
 every `/mcp` tool above are unchanged by its presence. See the
 [MCP gateway](mcp-gateway.md) for the registry, credential references,
-permissions, traces, transports, and the managed API-key lane limitation.
+permissions, traces, transports, and how each credential lane reaches it.
 
 ## Normal workflow
 
