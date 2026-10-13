@@ -486,7 +486,7 @@ li.empty { padding: var(--space-6); }
 /* A state is a ledger stamp: square-cornered, mono, with a dot that carries the hue. */
 .status { display: inline-flex; gap: .375rem; align-items: center; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: .0625rem var(--space-2) .0625rem .4375rem; font-family: var(--font-mono); font-size: var(--text-11); font-weight: 600; letter-spacing: .02em; text-transform: lowercase; line-height: 1.6; white-space: nowrap; background: var(--surface-raised); color: var(--ink-muted); }
 .status::before { content: ""; width: .375rem; height: .375rem; border-radius: var(--radius-pill); background: currentColor; flex: 0 0 auto; }
-.status.active, .status.enabled, .status.succeeded, .status.connected, .status.ready, .status.healthy, .status.approved, .status.open { background: var(--success-soft); color: var(--success); border-color: var(--success-line); }
+.status.active, .status.enabled, .status.succeeded, .status.connected, .status.ready, .status.healthy, .status.approved, .status.consumed, .status.open { background: var(--success-soft); color: var(--success); border-color: var(--success-line); }
 .status.reaping, .status.expired, .status.pending, .status.cancelling, .status.degraded, .status.stale { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-line); }
 .status.failed, .status.error, .status.timed_out, .status.timedout, .status.limit_exceeded, .status.interrupted, .status.network_quarantined, .status.revoked, .status.rejected, .status.disconnected, .status.lost { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-line); }
 /* Neutral in-progress state. Emitted by MCP_STATUS.connecting in dashboard-render.js. */

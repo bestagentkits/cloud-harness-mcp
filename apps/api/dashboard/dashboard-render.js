@@ -717,16 +717,30 @@ export function renderActivityCenter({ events = [], filter = 'all' } = {}) {
 }
 
 /** Pending privilege grants as an inbox: context, requested capability, decision. */
-export function renderApprovals({ grants = [] } = {}) {
+/**
+ * The runner lists grants in every state with uppercase statuses. Only an unexpired PENDING grant
+ * can still be decided, so only it reads as pending, offers the two decisions, and counts toward the badge.
+ */
+const GRANT_STATUS_LABELS = { PENDING: ['Pending', 'pending'], APPROVED: ['Approved', 'approved'], REJECTED: ['Rejected', 'rejected'], CONSUMED: ['Used', 'consumed'], EXPIRED: ['Expired', 'expired'] };
+export function grantIsActionable(grant, now = Date.now()) {
+  if (String(grant?.status ?? '').toUpperCase() !== 'PENDING') return false;
+  const expiresAt = Date.parse(String(grant?.expiresAt ?? ''));
+  return Number.isNaN(expiresAt) || expiresAt > now;
+}
+export function renderApprovals({ grants = [], now = Date.now() } = {}) {
   const rows = grants.length
     ? grants.map((grant) => {
       const id = String(grant.id ?? '');
-      return `<li class="panel approval-row"><div class="record-heading"><div><h3>${escape(String(grant.command ?? 'Requested operation'))}</h3><p class="mono wrap">${escape(String(grant.workspaceId ?? 'Workspace not reported'))}</p></div><span class="status reaping">Pending</span></div><dl class="facts"><dt>Requested</dt><dd>${grant.createdAt ? time(grant.createdAt) : 'Not reported'}</dd><dt>Expires</dt><dd>${grant.expiresAt ? time(grant.expiresAt) : 'Not reported'}</dd><dt>Working directory</dt><dd class="mono wrap">${escape(String(grant.cwd ?? 'Not reported'))}</dd><dt>Command digest</dt><dd class="mono wrap">${escape(String(grant.commandSha256 ?? 'Not reported'))}</dd></dl><div class="row-actions"><button class="accent-btn approve-grant" type="button" data-grant-id="${escape(id)}">Approve</button><button class="danger reject-grant" type="button" data-grant-id="${escape(id)}">Reject</button></div></li>`;
+      const actionable = grantIsActionable(grant, now);
+      const status = String(grant.status ?? '').toUpperCase();
+      const [label, tone] = actionable ? GRANT_STATUS_LABELS.PENDING : status === 'PENDING' ? GRANT_STATUS_LABELS.EXPIRED : GRANT_STATUS_LABELS[status] ?? ['Unknown', 'unknown'];
+      const actions = actionable ? `<div class="row-actions"><button class="accent-btn approve-grant" type="button" data-grant-id="${escape(id)}">Approve</button><button class="danger reject-grant" type="button" data-grant-id="${escape(id)}">Reject</button></div>` : '';
+      return `<li class="panel approval-row"><div class="record-heading"><div><h3>${escape(String(grant.command ?? 'Requested operation'))}</h3><p class="mono wrap">${escape(String(grant.workspaceId ?? 'Workspace not reported'))}</p></div><span class="status ${tone}">${label}</span></div><dl class="facts"><dt>Requested</dt><dd>${grant.createdAt ? time(grant.createdAt) : 'Not reported'}</dd><dt>Expires</dt><dd>${grant.expiresAt ? time(grant.expiresAt) : 'Not reported'}</dd><dt>Working directory</dt><dd class="mono wrap">${escape(String(grant.cwd ?? 'Not reported'))}</dd><dt>Command digest</dt><dd class="mono wrap">${escape(String(grant.commandSha256 ?? 'Not reported'))}</dd></dl>${actions}</li>`;
     }).join('')
-    : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending and leave once you decide.</p></li>';
+    : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending. Decided and expired requests stay listed briefly, without actions.</p></li>';
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Privilege grants.</strong> Approving lets one command run in a workspace under your identity. Both decisions are audited.</div>',
-    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Pending requests</h2><ul class="record-list approval-list">${rows}</ul></section>`
+    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Privilege requests</h2><ul class="record-list approval-list">${rows}</ul></section>`
   })}`;
 }
 

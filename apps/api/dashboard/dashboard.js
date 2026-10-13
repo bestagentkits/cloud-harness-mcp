@@ -56,7 +56,7 @@ import {
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
-  renderActivityCenter, renderApprovals,
+  renderActivityCenter, renderApprovals, grantIsActionable,
   renderTerminalPanel, renderTerminalsIndex
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
@@ -3518,7 +3518,7 @@ export function initializeDashboard() {
     const result = await api('/privilege-grants');
     const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
     insertRendered(content, renderApprovals({ grants }));
-    updateApprovalsBadge(grants.length);
+    updateApprovalsBadge(grants.filter((grant) => grantIsActionable(grant)).length);
     for (const button of document.querySelectorAll('.approve-grant, .reject-grant')) button.addEventListener('click', (event) => {
       const approving = button.classList.contains('approve-grant');
       const grantId = button.dataset.grantId ?? '';
@@ -3544,7 +3544,7 @@ export function initializeDashboard() {
   async function refreshApprovalsBadge() {
     const result = await api('/privilege-grants').catch(() => undefined);
     const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
-    updateApprovalsBadge(grants.filter((grant) => !['approved', 'rejected'].includes(String(grant.status ?? ''))).length);
+    updateApprovalsBadge(grants.filter((grant) => grantIsActionable(grant)).length);
   }
   /**
    * Global Agents page and the workspace-scoped tab share one renderer and one
