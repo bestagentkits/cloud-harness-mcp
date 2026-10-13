@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ExecutorNetworkProfileSchema } from './identifiers.js';
 import { AgentProxyOperationSchema } from './runner-api.js';
+import { BUILDABLE_PACKAGE_ECOSYSTEMS, BuildablePackageEcosystemSchema } from './package-schemas.js';
 import { SecretNameSchema } from './secret-policy.js';
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
 
@@ -245,6 +246,23 @@ export const RunnerConfigSchema = z.object({
   // Concurrent toolbox containers per runner. Each one holds the executor memory, CPU, and pid bounds, so
   // this caps what toolbox calls can take from the host independently of the workspace limit.
   toolboxMaxConcurrent: z.coerce.number().int().min(1).max(16).default(2),
+  // Managed toolbox packages. Releases live under this runner path, which must equal the host path
+  // (compose HOST_PACKAGES_ROOT) because the runner mounts releases into executors through the Docker socket.
+  packagesRoot: z.string().min(1).max(1_024)
+    .refine((value) => value.startsWith('/') && !value.split('/').includes('..') && value !== '/', 'packagesRoot must be an absolute path below /')
+    .default('/var/lib/cloud-harness/packages'),
+  packagesEcosystems: z.array(BuildablePackageEcosystemSchema).min(1).max(BUILDABLE_PACKAGE_ECOSYSTEMS.length)
+    .refine((values) => new Set(values).size === values.length, 'package ecosystems must be unique')
+    .default(['npm', 'uv']),
+  // `required` makes every plan wait for a Dashboard approval bound to its digest. In owner-bearer mode
+  // there is no Dashboard, so plans still resolve but apply is refused until the operator opts into `none`.
+  packagesApprovalMode: z.enum(['required', 'none']).default('required'),
+  // npm lifecycle scripts run only when this is `allow` and the plan itself asked for them.
+  packagesNpmLifecycleScripts: z.enum(['deny', 'allow']).default('deny'),
+  packagesMaxReleaseBytes: z.coerce.number().int().min(16_777_216).max(4_294_967_296).default(536_870_912),
+  packagesMaxOwnerBytes: z.coerce.number().int().min(67_108_864).max(68_719_476_736).default(4_294_967_296),
+  packagesMaxBindings: z.coerce.number().int().min(1).max(256).default(32),
+  packagesBuildTimeoutMs: z.coerce.number().int().min(60_000).max(1_800_000).default(600_000),
   minFreeBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
@@ -320,6 +338,9 @@ export const RunnerConfigSchema = z.object({
   agents: RunnerAgentsConfigSchema.optional()
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
+  if (config.packagesMaxReleaseBytes > config.packagesMaxOwnerBytes) {
+    context.addIssue({ code: 'custom', path: ['packagesMaxReleaseBytes'], message: 'PACKAGES_MAX_RELEASE_BYTES must not exceed PACKAGES_MAX_OWNER_BYTES' });
+  }
   if (mode === 'owner-bearer' && config.legacyPrincipalMapping) {
     context.addIssue({ code: 'custom', path: ['legacyPrincipalMapping'], message: 'legacy principal mapping is only valid in cloudflare-access mode' });
   }

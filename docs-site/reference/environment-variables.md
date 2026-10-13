@@ -81,6 +81,14 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `TERMINAL_MAX_LIFETIME_MS` | `28800000` | Optional | Absolute terminal lifetime regardless of activity. |
 | `PACKAGES_ENABLED` | `false` | Optional | Managed toolbox (runner): enables the `bash` tool's `toolbox` target, which runs each command in a disposable no-network executor-image container. Off by default; the `workspace` target is unaffected. |
 | `TOOLBOX_MAX_CONCURRENT` | `2` | Optional | Maximum toolbox containers running at once on this runner; a call beyond it gets LIMIT_EXCEEDED (429, retryable). |
+| `PACKAGES_ROOT` | `/var/lib/cloud-harness/packages` | Optional | Managed toolbox packages (runner, used only while PACKAGES_ENABLED=true). Immutable releases live here; Compose mounts HOST_PACKAGES_ROOT at this path and the two must be equal. |
+| `PACKAGES_ECOSYSTEMS` | `npm,uv` | Optional | Ecosystems that may be planned: a comma-separated subset of npm,uv. apt always answers NOT_SUPPORTED. |
+| `PACKAGES_APPROVAL_MODE` | `required` | Optional | required: each plan waits for a Dashboard approval bound to its digest (cloudflare-access mode; owner-bearer refuses apply). none: plans are approved by policy when created. |
+| `PACKAGES_NPM_LIFECYCLE_SCRIPTS` | `deny` | Optional | allow lets a plan that asks for npm lifecycle scripts run them in the builder; deny always skips them. |
+| `PACKAGES_MAX_RELEASE_BYTES` | `536870912` | Optional | Largest verified release tree, in bytes (16 MiB to 4 GiB). |
+| `PACKAGES_MAX_OWNER_BYTES` | `4294967296` | Optional | Total retained release bytes per owner (64 MiB to 64 GiB). |
+| `PACKAGES_MAX_BINDINGS` | `32` | Optional | Package bindings (one package in one scope) per owner. |
+| `PACKAGES_BUILD_TIMEOUT_MS` | `600000` | Optional | Wall-clock limit for one plan or apply builder container. |
 | `GITHUB_APP_ID` | `—` | Optional | Optional GitHub App repository access; required fields depend on AUTH_MODE: |
 | `GITHUB_APP_INSTALLATION_ID` | `—` | Optional | Required in owner-bearer mode; omit in Access mode, where each principal binds an installation: |
 | `GITHUB_APP_SLUG` | `—` | Optional | Required in Access mode for the installation redirect: |
