@@ -1,12 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
+// The provisioning proxy's optional opt-in file is pointed at a path that never exists, so the rendered
+// configuration is the shipped default rather than whatever this host has in /etc.
+const ABSENT_PROXY_ENV_FILE = '.cloud-harness-verify-compose/absent-provisioning-proxy.env';
 const result = spawnSync('docker', [
   'compose', '--profile', 'gateway-test', '-f', 'compose.yaml', '-f', 'compose.production.yaml', 'config', '--format', 'json'
 ], {
   cwd: process.cwd(),
   encoding: 'utf8',
-  env: { ...process.env, CLOUD_HARNESS_ENV_FILE: '.env.example' }
+  env: { ...process.env, CLOUD_HARNESS_ENV_FILE: '.env.example', PROVISIONING_PROXY_ENV_FILE: ABSENT_PROXY_ENV_FILE }
 });
 
 if (result.status !== 0) throw new Error(result.stderr || 'production Compose config failed');
@@ -77,6 +80,37 @@ requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-ha
 requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/cache/toolkits'), 'runner toolkit cache persistence mount is missing');
 requireBoundary(!runnerMounts.some((mount) => /model-gateway|provider-api-key/u.test(`${mount.source}:${mount.target}`)), 'runner must not receive model gateway secrets');
 requireBoundary(!runnerMounts.some((mount) => mount.source.includes('cloud-harness-model-gateway')), 'runner must not mount model gateway secret directory');
+const packagesMount = runnerMounts.find((mount) => mount.target === '/var/lib/cloud-harness/packages');
+requireBoundary(packagesMount?.source === '/var/lib/cloud-harness/packages' && packagesMount.read_only !== true, 'runner managed-toolbox packages mount is missing or its host path differs from the runner path');
+requireBoundary(Object.entries(services).every(([name, service]) => name === 'runner' || !(service.volumes ?? []).some((mount) => mount.target.includes('/packages') || String(mount.source ?? '').includes('/cloud-harness/packages'))), 'only the runner may mount the managed-toolbox packages root');
+
+// The provisioning proxy gets only its own static settings, never the runtime env file, and its default
+// allow-list reaches no package registry: npm and PyPI egress is an explicit operator opt-in.
+const proxy = services['provisioning-proxy'];
+requireBoundary(sameNames(environmentNames(proxy), ['ALLOWED_HOSTS', 'PROVISIONING_PROXY_HOST', 'PROVISIONING_PROXY_PORT']), 'provisioning-proxy environment allowlist changed');
+const defaultProxyHosts = String(proxy.environment.ALLOWED_HOSTS ?? '').split(',').map((host) => host.trim().toLowerCase()).filter(Boolean);
+requireBoundary(defaultProxyHosts.length > 0, 'provisioning-proxy default allow-list is empty');
+requireBoundary(!defaultProxyHosts.some((host) => /npmjs|yarnpkg|pypi|pythonhosted/u.test(host)), 'provisioning-proxy default allow-list must not contain an npm or PyPI host');
+
+const rawResult = spawnSync('docker', [
+  'compose', '-f', 'compose.yaml', '-f', 'compose.production.yaml', 'config', '--no-interpolate', '--no-normalize', '--format', 'json'
+], {
+  cwd: process.cwd(),
+  encoding: 'utf8',
+  env: { ...process.env, CLOUD_HARNESS_ENV_FILE: '.env.example' }
+});
+if (rawResult.status !== 0) throw new Error(rawResult.stderr || 'uninterpolated Compose config failed');
+const rawServices = JSON.parse(rawResult.stdout).services;
+const envFilePaths = (service) => (service.env_file ?? []).map((entry) => (typeof entry === 'string' ? entry : entry.path));
+const proxyEnvFiles = rawServices['provisioning-proxy'].env_file ?? [];
+requireBoundary(proxyEnvFiles.length === 1 && proxyEnvFiles[0].required === false, 'provisioning-proxy must have exactly one optional env file');
+const proxyEnvFile = envFilePaths(rawServices['provisioning-proxy'])[0];
+requireBoundary(proxyEnvFile.includes('${PROVISIONING_PROXY_ENV_FILE:-/etc/cloud-harness-mcp/provisioning-proxy.env}'), 'provisioning-proxy env file must be the dedicated provisioning-proxy.env');
+requireBoundary(!/CLOUD_HARNESS_ENV_FILE|runtime\.env/u.test(proxyEnvFile), 'provisioning-proxy must not receive the runtime env file');
+for (const name of ['api', 'runner']) {
+  requireBoundary(!envFilePaths(rawServices[name]).includes(proxyEnvFile), `${name} must not share the provisioning-proxy env file`);
+}
+
 for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE', 'CLOUDFLARE_ACCESS_API_TOKEN', 'CLOUDFLARE_ACCESS_API_TOKEN_FILE']) {
   requireBoundary(!services.api.environment?.[name], `API must not receive ${name}`);
 }

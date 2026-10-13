@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isForbiddenIp, resolveAndValidateHost } from '../../../deploy/provisioning-proxy.mjs';
+import { isForbiddenIp, parsePackagesProxyHosts, resolveAndValidateHost } from '../../../deploy/provisioning-proxy.mjs';
 
 describe('Provisioning Egress Proxy IP Validation', () => {
   it('rejects loopback and current network IPv4 addresses', () => {
@@ -75,5 +75,49 @@ describe('Provisioning Egress Proxy Host Resolution and Validation', () => {
   it('rejects localhost and invalid hosts', async () => {
     expect(await resolveAndValidateHost('localhost')).toBeNull();
     expect(await resolveAndValidateHost('')).toBeNull();
+  });
+});
+
+describe('Provisioning Egress Proxy package registry opt-in', () => {
+  const parse = (raw: string | undefined) => {
+    const warnings: string[] = [];
+    const hosts = parsePackagesProxyHosts(raw, (message: string) => warnings.push(message));
+    return { hosts, warnings };
+  };
+
+  it('adds nothing when the opt-in is unset or blank', () => {
+    expect(parse(undefined)).toEqual({ hosts: [], warnings: [] });
+    expect(parse('')).toEqual({ hosts: [], warnings: [] });
+    expect(parse(' , ,')).toEqual({ hosts: [], warnings: [] });
+  });
+
+  it('accepts plain registry hostnames, normalised and de-duplicated', () => {
+    expect(parse(' registry.npmjs.org, PyPI.org ,files.pythonhosted.org,pypi.org')).toEqual({
+      hosts: ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org'],
+      warnings: []
+    });
+  });
+
+  it('ignores and reports IP literals, wildcards, ports, schemes, and single-label names', () => {
+    const { hosts, warnings } = parse([
+      '10.0.0.1', '169.254.169.254', '::1', '[::1]', '*.npmjs.org', 'registry.npmjs.org:443',
+      'https://pypi.org', 'localhost', 'bad_host.example.com', '-lead.example.com', '1.2.3', 'pypi.org/simple',
+      'registry.npmjs.org'
+    ].join(','));
+    expect(hosts).toEqual(['registry.npmjs.org']);
+    expect(warnings).toHaveLength(12);
+    expect(warnings.every((warning) => warning.startsWith('provisioning proxy ignored invalid PACKAGES_PROXY_HOSTS entry'))).toBe(true);
+  });
+
+  it('bounds the reported entry so a hostile value cannot flood the log', () => {
+    const { warnings } = parse(`${'a'.repeat(300)}.example.com`);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.length).toBeLessThan(200);
+  });
+
+  it('leaves the default allow-list without any package registry host', async () => {
+    expect(await resolveAndValidateHost('registry.npmjs.org')).toBeNull();
+    expect(await resolveAndValidateHost('pypi.org')).toBeNull();
+    expect(await resolveAndValidateHost('files.pythonhosted.org')).toBeNull();
   });
 });
