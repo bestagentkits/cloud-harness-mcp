@@ -32,6 +32,7 @@ import {
   McpGatewayTraceStatusSchema,
   McpGatewayUpdateInputSchema
 } from './mcp-gateway-schemas.js';
+import { OAuthGrantSettingsUpdateInputSchema } from './oauth-grant-settings.js';
 import { SkillsExtGetInputSchema, SkillsExtListInputSchema, SkillsExtReadInputSchema } from './skills-extension.js';
 
 export const InternalRunnerOperationSchema = z.enum([
@@ -41,7 +42,9 @@ export const InternalRunnerOperationSchema = z.enum([
   'toolkits_preview',
   'settings_get',
   'settings_update',
-  'settings_network_check'
+  'settings_network_check',
+  'oauth_settings_get',
+  'oauth_settings_update'
 ]);
 
 const workspaceDetailRequest = z.object({
@@ -99,6 +102,20 @@ const settingsNetworkCheckRequest = z.object({
   input: z.object({}).strict()
 }).strict();
 
+const oauthSettingsGetRequest = z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal('oauth_settings_get'),
+  input: z.object({}).strict()
+}).strict();
+
+const oauthSettingsUpdateRequest = z.object({
+  version: z.literal(2),
+  principal: RunnerPrincipalSelectorSchema,
+  operation: z.literal('oauth_settings_update'),
+  input: OAuthGrantSettingsUpdateInputSchema
+}).strict();
+
 export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   workspaceDetailRequest,
   workspaceCloseFencedRequest,
@@ -106,7 +123,9 @@ export const InternalRunnerRequestSchema = z.discriminatedUnion('operation', [
   toolkitsPreviewRequest,
   settingsGetRequest,
   settingsUpdateRequest,
-  settingsNetworkCheckRequest
+  settingsNetworkCheckRequest,
+  oauthSettingsGetRequest,
+  oauthSettingsUpdateRequest
 ]);
 
 export const InternalRunnerResponseSchema = ToolResultSchema;

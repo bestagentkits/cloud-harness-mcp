@@ -12,3 +12,4 @@ export * from './model-profile-schemas.js';
 export * from './knowledge-schemas.js';
 export * from './mcp-gateway-schemas.js';
 export * from './skills-extension.js';
+export * from './oauth-grant-settings.js';

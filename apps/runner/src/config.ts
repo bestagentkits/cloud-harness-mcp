@@ -25,6 +25,27 @@ function plausibleGitHubToken(value: string | undefined): string | undefined {
   return value;
 }
 
+/**
+ * The Managed OAuth control-plane integration is configured only when the
+ * operator supplies all three identifiers; a partial set fails startup through
+ * the schema rather than silently disabling the Dashboard controls.
+ */
+function cloudflareAccessOAuth(): Record<string, unknown> | undefined {
+  const apiToken = secret('CLOUDFLARE_ACCESS_API_TOKEN');
+  const accountId = process.env.CLOUDFLARE_ACCESS_ACCOUNT_ID;
+  const appId = process.env.CLOUDFLARE_ACCESS_APP_ID;
+  const access = process.env.CLOUDFLARE_ACCESS_OAUTH_ACCESS;
+  const maxGrantSeconds = process.env.CLOUDFLARE_ACCESS_OAUTH_MAX_GRANT_SECONDS;
+  if (!apiToken && !accountId && !appId && !access && !maxGrantSeconds) return undefined;
+  return {
+    apiToken,
+    accountId,
+    appId,
+    ...(access ? { access } : {}),
+    ...(maxGrantSeconds ? { maxGrantSeconds } : {})
+  };
+}
+
 const csv = (value: string | undefined, fallback: string) => (value ?? fallback).split(',').map((entry) => entry.trim()).filter(Boolean);
 
 type PrincipalRelinks = NonNullable<RunnerConfig['principalRelinks']>;
@@ -169,6 +190,7 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       appSlug: process.env.GITHUB_APP_SLUG
     } : undefined,
     githubToken,
+    cloudflareAccessOAuth: cloudflareAccessOAuth(),
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,
       networkMode: process.env.AGENT_NETWORK_MODE,

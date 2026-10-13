@@ -2380,18 +2380,99 @@ export function initializeDashboard() {
   }
   let settingsPageData;
   let settingsReadiness;
+  let settingsOAuth;
+  // A provider outage must not hide the rest of Settings, so the OAuth read fails
+  // into its own panel rather than the page.
+  async function fetchOAuthSettings() {
+    try {
+      const { data } = await api('/settings/oauth');
+      return { view: data };
+    } catch (error) {
+      return { view: undefined, error: error?.message ?? 'OAuth session settings are temporarily unavailable.' };
+    }
+  }
   async function loadSettings() {
     selectNavigation('settings');
     document.querySelector('#command-surface').hidden = true;
     insertRendered(content, '<div class="skeleton tile" aria-hidden="true"></div>');
-    const { data } = await api('/settings');
+    const [{ data }, oauth] = await Promise.all([api('/settings'), fetchOAuthSettings()]);
     settingsPageData = data;
+    settingsOAuth = oauth;
     settingsReadiness = undefined;
     renderSettingsView();
   }
   function renderSettingsView() {
-    insertRendered(content, renderSettings(settingsPageData, settingsReadiness));
+    insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth));
     bindSettingsControls();
+    bindOAuthSettingsControls();
+  }
+  function oauthStatus(message) {
+    const status = document.querySelector('#settings-oauth-status');
+    if (status) status.textContent = message;
+  }
+  async function oauthAction(button, pendingLabel, action) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = pendingLabel;
+    oauthStatus(pendingLabel);
+    try { await action(); }
+    catch (error) { oauthStatus(error?.message ?? 'The OAuth settings could not be saved.'); }
+    finally { button.disabled = false; button.textContent = original; }
+  }
+  /** Save, then show only what the provider returned on read-back. */
+  async function saveOAuthSettings(button, body, savedMessage) {
+    await oauthAction(button, 'Saving…', async () => {
+      const { data } = await api('/settings/oauth', { method: 'POST', body: requestBody(body) });
+      settingsOAuth = { view: data };
+      renderSettingsView();
+      oauthStatus(savedMessage);
+    });
+  }
+  function bindOAuthSettingsControls() {
+    const view = settingsOAuth?.view;
+    document.querySelector('#reload-settings-oauth')?.addEventListener('click', (event) => {
+      void oauthAction(event.currentTarget, 'Reloading…', async () => {
+        settingsOAuth = await fetchOAuthSettings();
+        renderSettingsView();
+        oauthStatus(settingsOAuth.view ? 'Reloaded from the provider.' : settingsOAuth.error);
+      });
+    });
+    const form = document.querySelector('#settings-oauth-form');
+    if (!form || !view) return;
+    const persistent = form.querySelector('#settings-oauth-persistent');
+    const grant = form.querySelector('#settings-oauth-grant');
+    const hours = form.querySelector('#settings-oauth-grant-hours');
+    const minutes = form.querySelector('#settings-oauth-token-minutes');
+    const syncDisabled = () => {
+      grant.disabled = persistent.checked;
+      hours.disabled = persistent.checked || grant.value !== 'custom';
+    };
+    persistent.addEventListener('change', syncDisabled);
+    grant.addEventListener('change', syncDisabled);
+    const bounds = view.capabilities.tokenLifetime;
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const tokenSeconds = Math.round(Number(minutes.value) * 60);
+      if (!Number.isInteger(tokenSeconds) || tokenSeconds < bounds.minSeconds || tokenSeconds > bounds.maxSeconds) {
+        oauthStatus(`The access-token lifetime must be between ${bounds.minSeconds / 60} and ${bounds.maxSeconds / 60} minutes.`);
+        minutes.focus();
+        return;
+      }
+      let selection = { mode: 'provider-maximum' };
+      if (!persistent.checked) {
+        const seconds = grant.value === 'custom' ? Math.round(Number(hours.value) * 3_600) : Number(grant.value);
+        const maxSeconds = view.capabilities.maxGrantSeconds;
+        if (!Number.isInteger(seconds) || seconds < view.capabilities.minGrantSeconds || (maxSeconds !== null && seconds > maxSeconds)) {
+          oauthStatus(`The grant duration must be between ${view.capabilities.minGrantSeconds / 3_600} hour(s) and ${maxSeconds === null ? 'the provider maximum' : `${maxSeconds / 3_600} hours`}.`);
+          hours.focus();
+          return;
+        }
+        selection = { mode: 'custom', seconds };
+      }
+      void saveOAuthSettings(form.querySelector('#save-settings-oauth'), { grant: selection, tokenLifetimeSeconds: tokenSeconds, expectedRevision: view.revision }, 'OAuth settings saved and confirmed by the provider.');
+    });
+    document.querySelector('#adopt-settings-oauth')?.addEventListener('click', (event) => {
+      void saveOAuthSettings(event.currentTarget, { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: bounds.defaultSeconds, expectedRevision: view.revision }, 'Default adopted: clients stay signed in for the provider maximum.');
+    });
   }
   function settingsStatus(message) {
     const status = document.querySelector('#settings-status');

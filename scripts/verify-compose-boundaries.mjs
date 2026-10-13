@@ -77,8 +77,15 @@ requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-ha
 requireBoundary(runnerMounts.some((mount) => mount.target === '/var/lib/cloud-harness/cache/toolkits'), 'runner toolkit cache persistence mount is missing');
 requireBoundary(!runnerMounts.some((mount) => /model-gateway|provider-api-key/u.test(`${mount.source}:${mount.target}`)), 'runner must not receive model gateway secrets');
 requireBoundary(!runnerMounts.some((mount) => mount.source.includes('cloud-harness-model-gateway')), 'runner must not mount model gateway secret directory');
-for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE']) {
+for (const name of ['SECRET_KEYRING', 'SECRET_KEYRING_FILE', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_APP_PRIVATE_KEY_FILE', 'CLOUDFLARE_ACCESS_API_TOKEN', 'CLOUDFLARE_ACCESS_API_TOKEN_FILE']) {
   requireBoundary(!services.api.environment?.[name], `API must not receive ${name}`);
+}
+// The Managed OAuth control-plane token is runner-only: the API must blank it so a
+// shared env file cannot leak it, and nothing else may name it at all.
+requireBoundary('CLOUDFLARE_ACCESS_API_TOKEN' in (services.api.environment ?? {}) && 'CLOUDFLARE_ACCESS_API_TOKEN_FILE' in (services.api.environment ?? {}), 'API must explicitly blank the Cloudflare Access API token');
+for (const [serviceName, service] of Object.entries(services)) {
+  if (serviceName === 'runner' || serviceName === 'api') continue;
+  requireBoundary(!Object.keys(service.environment ?? {}).some((name) => name.startsWith('CLOUDFLARE_ACCESS_API_TOKEN')), `${serviceName} must not receive the Cloudflare Access API token`);
 }
 for (const service of ['api', 'runner', 'ingress']) {
   for (const name of ['MCP_CANARY_URL', 'MCP_CANARY_ACCESS_CLIENT_ID', 'MCP_CANARY_ACCESS_CLIENT_SECRET']) {

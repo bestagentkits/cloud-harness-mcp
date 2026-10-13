@@ -881,7 +881,75 @@ export function renderProfile(profile) {
   return `<div class="page-note"><strong>Signed-in identity.</strong> These details come from your verified single sign-on assertion. Cloud Harness keeps no separate password for your account.</div>${displaySection}<section class="panel" aria-labelledby="profile-account-heading"><h2 id="profile-account-heading">Account</h2><dl class="facts"><dt>Name</dt>${value(identity.name)}<dt>Email</dt>${value(identity.email, 'wrap')}<dt>Subject</dt>${value(identity.subject, 'mono wrap')}<dt>Identity provider</dt>${value(identity.issuer, 'mono wrap')}</dl></section><section class="panel" aria-labelledby="profile-session-heading"><h2 id="profile-session-heading">Session</h2><dl class="facts"><dt>Sign-in method</dt><dd>Single sign-on</dd><dt>Session expires</dt><dd>${optionalTime(profile?.sessionExpiresAt)}</dd></dl><h3>Granted scopes</h3>${scopeList}</section>`;
 }
 
-export function renderSettings(data, readiness) {
+/** Human duration for OAuth lifetimes: whole days, then hours, then minutes. */
+export function oauthDurationLabel(seconds) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return 'Unknown';
+  const plural = (count, unit) => `${count} ${unit}${count === 1 ? '' : 's'}`;
+  if (seconds >= 86_400 && seconds % 86_400 === 0) return plural(seconds / 86_400, 'day');
+  if (seconds >= 3_600 && seconds % 3_600 === 0) return plural(seconds / 3_600, 'hour');
+  if (seconds % 60 === 0) return plural(seconds / 60, 'minute');
+  return plural(seconds, 'second');
+}
+
+const OAUTH_STATE_LABELS = {
+  unconfigured: 'Not managed by Cloud Harness (no provider integration)',
+  unmanaged: 'Set outside Cloud Harness; left unchanged',
+  managed: 'Managed by Cloud Harness',
+  drifted: 'Changed outside Cloud Harness since the last save'
+};
+
+/**
+ * Inbound MCP OAuth session controls. Every value shown as effective comes from
+ * the provider read-back; the controls render only what the provider supports,
+ * and a bounded provider never shows "forever".
+ */
+export function renderOAuthSettings(view, loadError) {
+  if (!view) {
+    return `<section class="panel" aria-labelledby="settings-oauth-heading"><h2 id="settings-oauth-heading">MCP OAuth sessions</h2><p class="warning">${escape(loadError ?? 'OAuth session settings are temporarily unavailable.')}</p><p id="settings-oauth-status" class="status-message" aria-live="polite"></p></section>`;
+  }
+  const capabilities = view.capabilities ?? {};
+  const effective = view.effective;
+  const management = view.management ?? {};
+  const desired = management.desired;
+  const maxSeconds = capabilities.maxGrantSeconds;
+  const maximumLabel = capabilities.supportsUnboundedGrant ? 'until revoked' : maxSeconds ? oauthDurationLabel(maxSeconds) : 'provider maximum';
+  const grantFact = effective
+    ? effective.grantSeconds === null
+      ? 'Provider default (not set explicitly)'
+      : `${escape(oauthDurationLabel(effective.grantSeconds))}${effective.grantIsProviderMaximum ? ' — provider maximum' : ''}`
+    : 'Not available';
+  const tokenFact = effective ? (effective.tokenLifetimeSeconds === null ? 'Provider default' : escape(oauthDurationLabel(effective.tokenLifetimeSeconds))) : 'Not available';
+  const lastSync = view.lastSync
+    ? `${time(view.lastSync.at)} — ${view.lastSync.ok ? 'OK' : `failed (<span class="mono">${escape(view.lastSync.errorCode ?? 'unknown')}</span>)`}`
+    : 'Never';
+  const facts = `<dl class="facts"><dt>Provider</dt><dd>${escape(view.provider?.label ?? 'Not configured')}</dd><dt>Stay signed in</dt><dd>${effective?.grantIsProviderMaximum ? 'On — provider maximum' : effective ? 'Custom duration' : 'Not available'}</dd><dt>Grant duration (effective)</dt><dd>${grantFact}</dd><dt>Access-token lifetime (effective)</dt><dd>${tokenFact}</dd><dt>Management</dt><dd>${escape(OAUTH_STATE_LABELS[management.state] ?? 'Unknown')}</dd><dt>Last provider sync</dt><dd>${lastSync}</dd></dl>`;
+  const notice = view.readOnlyReason ? `<p class="warning">${escape(view.readOnlyReason)}</p>` : '';
+  const intro = '<p>How long an MCP client such as ChatGPT or Claude stays connected after one sign-in. Access tokens stay short and refresh silently; every refresh re-checks your access policy, so revoking access still takes effect at the next refresh. This is separate from the browser session for this dashboard.</p>';
+  let form = '';
+  if (capabilities.canWriteGrantConfiguration) {
+    const persistent = desired ? desired.grant?.mode === 'provider-maximum' : (effective?.grantIsProviderMaximum ?? true) || (management.state === 'unmanaged' && effective?.grantSeconds === null);
+    const currentSeconds = desired?.grant?.mode === 'custom' ? desired.grant.seconds : effective?.grantSeconds ?? null;
+    const presets = Array.isArray(capabilities.grantPresetsSeconds) ? capabilities.grantPresetsSeconds : [];
+    const presetSelected = !persistent && currentSeconds !== null && presets.includes(currentSeconds);
+    const options = presets.map((seconds) => `<option value="${escape(seconds)}"${presetSelected && seconds === currentSeconds ? ' selected' : ''}>${escape(oauthDurationLabel(seconds))}</option>`).join('');
+    const customSelected = !persistent && !presetSelected;
+    const customHours = customSelected && currentSeconds ? Math.round(currentSeconds / 3_600) : 24;
+    const bounds = capabilities.tokenLifetime ?? { minSeconds: 60, maxSeconds: 3_600, defaultSeconds: 900 };
+    const tokenSeconds = desired?.tokenLifetimeSeconds ?? effective?.tokenLifetimeSeconds ?? bounds.defaultSeconds;
+    const tokenMinutes = Math.min(bounds.maxSeconds, Math.max(bounds.minSeconds, tokenSeconds)) / 60;
+    const minHours = Math.ceil((capabilities.minGrantSeconds ?? 3_600) / 3_600);
+    const maxHours = maxSeconds ? Math.floor(maxSeconds / 3_600) : '';
+    const adopt = management.state === 'unmanaged' || management.state === 'drifted'
+      ? `<button id="adopt-settings-oauth" type="button">Adopt default: stay signed in, ${escape(oauthDurationLabel(bounds.defaultSeconds))} tokens</button>`
+      : '';
+    form = `<form id="settings-oauth-form" class="stack-form" novalidate><label class="checkbox-label" for="settings-oauth-persistent"><input id="settings-oauth-persistent" type="checkbox"${persistent ? ' checked' : ''}><span>Stay signed in — use the provider maximum (${escape(maximumLabel)})</span></label><label for="settings-oauth-grant">Grant duration</label><select id="settings-oauth-grant"${persistent ? ' disabled' : ''}>${options}<option value="custom"${customSelected ? ' selected' : ''}>Custom</option></select><label for="settings-oauth-grant-hours">Custom duration (hours)</label><input id="settings-oauth-grant-hours" type="number" inputmode="numeric" step="1" min="${escape(minHours)}"${maxHours ? ` max="${escape(maxHours)}"` : ''} value="${escape(customHours)}"${persistent || !customSelected ? ' disabled' : ''}><details><summary>Advanced</summary><label for="settings-oauth-token-minutes">Access-token lifetime (minutes)</label><input id="settings-oauth-token-minutes" type="number" inputmode="numeric" step="1" min="${escape(bounds.minSeconds / 60)}" max="${escape(bounds.maxSeconds / 60)}" value="${escape(tokenMinutes)}"><p>Keep this short. ${escape(oauthDurationLabel(bounds.defaultSeconds))} is the default; a longer token does not reduce sign-ins, it only delays policy re-checks.</p></details><div class="form-row-actions"><button id="save-settings-oauth" class="accent-btn" type="submit">Save OAuth settings</button>${adopt}<button id="reload-settings-oauth" type="button">Reload from provider</button></div></form>`;
+  } else if (view.provider?.id !== 'none') {
+    form = '<div class="form-row-actions"><button id="reload-settings-oauth" type="button">Reload from provider</button></div>';
+  }
+  return `<section class="panel" aria-labelledby="settings-oauth-heading"><h2 id="settings-oauth-heading">MCP OAuth sessions</h2>${intro}${facts}${notice}${form}<p id="settings-oauth-status" class="status-message" aria-live="polite"></p></section>`;
+}
+
+export function renderSettings(data, readiness, oauth) {
   const profile = data?.defaultNetworkProfile ?? {};
   const value = profile.value === 'network-none' ? 'network-none' : 'dependency-access';
   const stored = profile.source === 'setting';
@@ -893,7 +961,7 @@ export function renderSettings(data, readiness) {
   const readinessFact = readiness
     ? `<dt>Egress readiness</dt><dd>${readiness.ready === true ? 'Ready' : `Not ready: ${escape(readiness.reason ?? 'the readiness probe reported no reason')}`}</dd>`
     : '';
-  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${renderTypesafeSkeleton()}`;
+  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${oauth ? renderOAuthSettings(oauth.view, oauth.error) : ''}${renderTypesafeSkeleton()}`;
 }
 
 export function renderRuntime(data) {

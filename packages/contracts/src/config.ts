@@ -283,11 +283,30 @@ export const RunnerConfigSchema = z.object({
    * credential is ignored with a warning rather than rejected.
    */
   githubToken: z.string().min(1).max(512).optional(),
+  /**
+   * Optional control-plane integration with Cloudflare Access Managed OAuth,
+   * used to read and (with `read-write`) update the inbound MCP OAuth grant
+   * session duration and access-token lifetime of one Access application. The
+   * API token is runner-only: it never reaches the API, the ingress, an
+   * executor, a log, or a Dashboard response. Least privilege is
+   * `Access: Apps and Policies Write` (or `Read` with `read-only`).
+   */
+  cloudflareAccessOAuth: z.object({
+    apiToken: z.string().min(20).max(512).regex(/^[^\s\0]+$/, 'Cloudflare API token must not contain whitespace'),
+    accountId: z.string().regex(/^[a-f0-9]{32}$/, 'Cloudflare account ID must be 32 hexadecimal characters'),
+    appId: z.string().uuid('Cloudflare Access application ID must be a UUID'),
+    access: z.enum(['read-write', 'read-only']).default('read-write'),
+    /** The provider's longest grant, in seconds. Defaults to the documented Cloudflare maximum. */
+    maxGrantSeconds: z.coerce.number().int().min(3_600).max(315_360_000).optional()
+  }).strict().optional(),
   agents: RunnerAgentsConfigSchema.optional()
 }).superRefine((config, context) => {
   const mode = config.authMode ?? 'owner-bearer';
   if (mode === 'owner-bearer' && config.legacyPrincipalMapping) {
     context.addIssue({ code: 'custom', path: ['legacyPrincipalMapping'], message: 'legacy principal mapping is only valid in cloudflare-access mode' });
+  }
+  if (mode === 'owner-bearer' && config.cloudflareAccessOAuth) {
+    context.addIssue({ code: 'custom', path: ['cloudflareAccessOAuth'], message: 'Cloudflare Access Managed OAuth settings are only valid in cloudflare-access mode' });
   }
   if (mode === 'owner-bearer' && config.principalRelinks !== undefined) {
     context.addIssue({ code: 'custom', path: ['principalRelinks'], message: 'principal relinks are only valid in cloudflare-access mode' });
