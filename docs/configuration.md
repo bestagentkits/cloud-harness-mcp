@@ -386,6 +386,34 @@ arguments are owned by [`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/
 | `PACKAGES_ENABLED` | `false` | Runner flag. Only `true` enables the toolbox target; otherwise it is refused with `FORBIDDEN` (403) before any container starts. The `workspace` target is unaffected. |
 | `TOOLBOX_MAX_CONCURRENT` | `2` | Runner cap on toolbox containers running at once, sync and async together. Each holds the executor's 1 GiB memory, 1 CPU, and 256-pid bounds, so size it with `MAX_ACTIVE_WORKSPACES_PER_OWNER` against host memory. A call beyond it is refused with `LIMIT_EXCEEDED` (429, retryable). |
 
+Managed packages are immutable releases that the runner builds below
+`PACKAGES_ROOT` and binds per owner or per workspace. Their input and result
+schemas are owned by
+[`packages/contracts/src/package-schemas.ts`](../packages/contracts/src/package-schemas.ts),
+the bounds by `RunnerConfigSchema` in
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts), and
+the durable plan, apply, release, and binding records by
+[`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts).
+Every variable below is runner-only and inert while `PACKAGES_ENABLED` is not
+`true`.
+
+| Variable | Default | Decision |
+|---|---|---|
+| `PACKAGES_ROOT` | `/var/lib/cloud-harness/packages` | Absolute release store, mounted only into the runner. Compose mounts `HOST_PACKAGES_ROOT` at the same path, so the two must be equal; production keeps the default because Compose interpolation does not read `runtime.env`. Backup and retention are in [operations](operations.md#managed-package-releases). |
+| `PACKAGES_ECOSYSTEMS` | `npm,uv` | Comma-separated subset of the buildable ecosystems. A plan for another ecosystem is refused. |
+| `PACKAGES_APPROVAL_MODE` | `required` | `required` holds each plan for an owner decision in the dashboard before apply. Owner-bearer auth has no dashboard approver, so planning still works but apply is refused with `FORBIDDEN` and the runner logs one startup warning; `none` records plans as approved by policy instead. |
+| `PACKAGES_NPM_LIFECYCLE_SCRIPTS` | `deny` | `allow` lets an npm plan that explicitly requests lifecycle scripts run them during the build; otherwise installs ignore them. |
+| `PACKAGES_MAX_RELEASE_BYTES` | `536870912` | Per-release size cap, 16 MiB to 4 GiB, and never above the owner cap. |
+| `PACKAGES_MAX_OWNER_BYTES` | `4294967296` | Per-owner cap on retained releases plus in-flight builds, 64 MiB to 64 GiB. Exceeding it is refused with `LIMIT_EXCEEDED`. |
+| `PACKAGES_MAX_BINDINGS` | `32` | Per-owner binding count, 1 to 256. |
+| `PACKAGES_BUILD_TIMEOUT_MS` | `600000` | Build deadline, 60000 to 1800000 ms. |
+
+Registry egress for builds is not a runner variable. The provisioning proxy's
+default allow-list contains no package registry; the owner opts registries in
+through `PACKAGES_PROXY_HOSTS` in the proxy-only
+`/etc/cloud-harness-mcp/provisioning-proxy.env`, as described in
+[operations](operations.md#package-registry-egress).
+
 ## MCP gateway
 
 The `/mcp-gateway` composition root adds nine settings. Their exact defaults,
