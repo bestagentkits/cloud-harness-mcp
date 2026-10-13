@@ -2,12 +2,15 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   AgentProxyOperationSchema,
   HarnessError,
+  composeAgentBootstrapPrompt,
   TOOL_SCHEMA_BY_NAME,
   type AgentBudget,
   type AgentModelProfile,
   type AgentModelProfileMetadata,
   type AgentProxyOperation,
   type AgentStatus,
+  type GuidanceProfile,
+  type RepositoryGuidanceSnapshot,
   type RunnerAgentsConfig,
   type RunnerOperation,
   type RunnerResponse
@@ -39,6 +42,8 @@ const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
   agent_list: true
 };
 const terminalStatuses = new Set<AgentStatus>(AGENT_TERMINAL_STATUSES);
+/** Mirrors the agent runtime's `start` record prompt bound (`apps/agent-runtime/src/protocol-schemas.ts`). */
+const AGENT_START_PROMPT_MAX_BYTES = 256 * 1024;
 type TerminalAgentStatus = 'CANCELLED' | 'TIMED_OUT' | 'LIMIT_EXCEEDED' | 'INTERRUPTED' | 'FAILED' | 'SUCCEEDED';
 
 export type AgentToolExecutor = (input: {
@@ -67,11 +72,24 @@ type RuntimeContext = {
   pendingMessageBytes: number;
 };
 
+/**
+ * Resolves the workspace's repository-guidance snapshot for an agent's first message. It must
+ * fail rather than return stale content when the workspace fence no longer holds.
+ */
+export type AgentRepositoryGuidance = (input: {
+  ownerId: string;
+  workspaceId: string;
+  workspaceGeneration: number;
+  signal?: AbortSignal;
+}) => Promise<{ snapshot: RepositoryGuidanceSnapshot; reused: boolean }>;
+export type AgentRepositoryContext = GuidanceProfile | 'none';
+
 export type AgentManagerDependencies = {
   repository?: AgentStateRepository | undefined;
   gateway?: AgentGatewayControl | undefined;
   launcher?: AgentLauncher | undefined;
   toolExecutor: AgentToolExecutor;
+  repositoryGuidance?: AgentRepositoryGuidance | undefined;
   modelProfiles?: ModelProfileStateRepository | undefined;
   now?: (() => number) | undefined;
 };
@@ -285,19 +303,62 @@ export class AgentManager {
     if (reservation.replayed) {
       return success('Agent spawn replayed', spawnData(reservation.record, true));
     }
-    const launch = this.launch(reservation.record, prompt, profile)
+    const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
+    const launch = this.launch(reservation.record, prompt, profile, repositoryContext)
       .finally(() => this.launches.delete(reservation.record.id));
     this.launches.set(reservation.record.id, launch);
     void launch.catch(() => undefined);
     return success('Agent spawn accepted', spawnData(reservation.record, false));
   }
 
-  private async launch(record: AgentRecord, prompt: string, profile: AgentModelProfile): Promise<void> {
+  /**
+   * Places the workspace's applicable repository guidance before the caller's task. Guidance gets at
+   * most a quarter of the agent's input-token budget (about four bytes per token), capped by the
+   * composer's absolute bound. What was injected, skipped, or truncated is recorded as a bounded
+   * `repository_context` log event that carries paths and digests but never document content.
+   */
+  private async bootstrapPrompt(record: AgentRecord, prompt: string, repositoryContext: AgentRepositoryContext): Promise<string> {
+    if (repositoryContext === 'none' || !this.dependencies.repositoryGuidance) return prompt;
+    let resolved: Awaited<ReturnType<AgentRepositoryGuidance>>;
+    try {
+      resolved = await this.dependencies.repositoryGuidance({
+        ownerId: record.ownerId,
+        workspaceId: record.workspaceId,
+        workspaceGeneration: record.workspaceGeneration
+      });
+    } catch (error) {
+      const reason = error instanceof HarnessError ? error.message : 'repository guidance could not be scanned';
+      throw new HarnessError('UNAVAILABLE', `agent bootstrap failed: ${reason}; retry, or spawn with repositoryContext "none"`, 503, true);
+    }
+    const composed = composeAgentBootstrapPrompt({
+      snapshot: resolved.snapshot,
+      profile: repositoryContext,
+      prompt,
+      // A quarter of the input tokens at ~4 bytes each, and never past the runtime's start-record
+      // prompt bound once the caller's task and the block framing are added.
+      budgetBytes: Math.min(record.budget.maxInputTokens, AGENT_START_PROMPT_MAX_BYTES - Buffer.byteLength(prompt, 'utf8') - 1_024)
+    });
+    const event = { ...composed.report, snapshotReused: resolved.reused };
+    let serialized = JSON.stringify(event);
+    if (Buffer.byteLength(serialized, 'utf8') > this.config.limits.maxLogEventBytes) {
+      // A small operator log-event bound keeps the digests and counts rather than failing the agent.
+      serialized = JSON.stringify({ ...event, injected: event.injected.length, skipped: event.skipped.length, listsOmitted: true });
+    }
+    if (Buffer.byteLength(serialized, 'utf8') <= this.config.limits.maxLogEventBytes) {
+      this.appendLogOrLimit(record, 'repository_context', serialized);
+    }
+    return composed.prompt;
+  }
+
+  private async launch(record: AgentRecord, prompt: string, profile: AgentModelProfile, repositoryContext: AgentRepositoryContext): Promise<void> {
     const spec = this.launchSpec(record);
     try {
       if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
         throw new HarnessError('CONFLICT', 'agent launch lost its runtime epoch fence', 409, true);
       }
+      // Guidance is composed before any lease or container exists, so an agent never starts its
+      // first turn without the repository's applicable guidance, and a failed scan costs nothing.
+      const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
       const grant = await this.gateway.issue({
         leaseId: record.gatewayLeaseId,
         agentId: record.id,
@@ -345,7 +406,7 @@ export class AgentManager {
       const deadlineMs = Math.max(1_000, running.expiresAt - this.now());
       context.deadline = setTimeout(() => { void this.cancelOne(running, 'agent TTL expired', 'TIMED_OUT'); }, deadlineMs);
       context.deadline.unref();
-      await channel.send(this.startRecord(running, prompt, profile, lease));
+      await channel.send(this.startRecord(running, initialPrompt, profile, lease));
       void runtime.exited.then(({ code }) => {
         if (!context.terminalSeen) void this.interrupt(running, `agent runtime exited before terminal record (${code ?? 'signal'})`);
       }).catch((error: unknown) => { void this.interrupt(running, error instanceof Error ? error.message : 'agent runtime failed'); });

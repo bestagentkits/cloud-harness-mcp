@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
-import { sanitizeAndAttributeProvenance, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
+import { applyGuidanceActivity, sanitizeAndAttributeProvenance, type GuidanceProfile, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
 import type { CliOptions } from '../cli-options.js';
 import { LocalPathPolicy } from './local-path-policy.js';
@@ -252,11 +252,13 @@ export class LocalWorkspaceBackend implements OperationBackend {
           let truncated = Boolean(rawManifest.truncated);
           const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
 
-          for (const rawItem of rawItems as Record<string, unknown>[]) {
-            const item = sanitizeAndAttributeProvenance(rawItem, {
-              partitionSource: 'repository',
-              repositoryRoot: this.canonicalRoot
-            });
+          // Instruction activity is decided by the same selection agent bootstrap uses, so the
+          // manifest and an agent's injected guidance cannot disagree about which files apply.
+          const attributedItems = applyGuidanceActivity((rawItems as Record<string, unknown>[]).map((rawItem) => sanitizeAndAttributeProvenance(rawItem, {
+            partitionSource: 'repository',
+            repositoryRoot: this.canonicalRoot
+          })), (input as { clientProfile?: GuidanceProfile }).clientProfile ?? 'all');
+          for (const item of attributedItems) {
             const itemBytes = Buffer.byteLength(JSON.stringify(item));
             if (accumulatedBytes + itemBytes > maxBytes) {
               truncated = true;

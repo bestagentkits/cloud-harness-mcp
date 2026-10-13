@@ -61,7 +61,8 @@ export const StartRecordSchema = z.object({
   type: z.literal('start'),
   requestId: RequestIdSchema,
   agentId: AgentIdSchema,
-  prompt: z.string().min(1).max(128 * 1024),
+  // The caller's task (at most 128 KiB) plus the runner's bounded repository-guidance preamble.
+  prompt: z.string().min(1).max(256 * 1024),
   tools: z.array(AgentProxyOperationSchema).min(1).max(AgentProxyOperationSchema.options.length)
     .refine((names) => new Set(names).size === names.length, 'duplicate proxy tool'),
   gateway: z.object({
