@@ -1,3 +1,11 @@
+# [0.65.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.64.1...v0.65.0) (2026-10-13)
+
+
+### Features
+
+* **auth:** manage inbound MCP OAuth session lifetimes from Dashboard Settings ([#303](https://github.com/bestagentkits/cloud-harness-mcp/issues/303)) ([f749863](https://github.com/bestagentkits/cloud-harness-mcp/commit/f74986360702f1a3e084d3e4c27cf55889f697c0)), closes [#282](https://github.com/bestagentkits/cloud-harness-mcp/issues/282) [#304](https://github.com/bestagentkits/cloud-harness-mcp/issues/304)
+* **local:** serve multiple persistent local workspaces behind one MCP server ([#307](https://github.com/bestagentkits/cloud-harness-mcp/issues/307)) ([f64a917](https://github.com/bestagentkits/cloud-harness-mcp/commit/f64a917ad12231dc6497d902632575d1fdf2df16)), closes [#283](https://github.com/bestagentkits/cloud-harness-mcp/issues/283)
+
 ## [0.64.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.64.0...v0.64.1) (2026-10-13)
 
 
