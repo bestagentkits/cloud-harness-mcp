@@ -30,8 +30,12 @@ MCP gateway client
 ```
 
 Cloudflare Access is an optional public authentication edge in front of nginx;
-it does not join the Compose control network. GitHub and Google are IdPs of
-that Access application, not direct API integrations.
+it does not join the Compose control network. With Managed OAuth enabled it is
+also the OAuth authorization server MCP clients see, and it forwards a signed
+assertion that the API verifies. GitHub and Google are IdPs of that Access
+application, not direct API integrations. The sequence and credential split are
+explained once in the
+[security model](security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server).
 
 The split is deliberate. The ingress proxy owns no secret or application
 logic; it only bridges host loopback to an internal frontend network. The API owns public HTTP, MCP negotiation, request

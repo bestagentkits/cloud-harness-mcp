@@ -328,7 +328,10 @@ Static API key: https://api.harness.zuey.me/mcp
 ```
 
 The owner deployment uses `cloudflare-access`: Managed OAuth clients connect to
-the first URL and complete GitHub or Google login in the browser. Static-header
+the first URL and complete GitHub or Google login in the browser. Cloudflare
+Access is the OAuth authorization server for that lane; Cloud Harness verifies
+the assertion Access forwards (see
+[how the Managed OAuth lane works](docs/security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server)). Static-header
 clients use only the second URL with `Authorization: Bearer <dashboard-api-key>`.
 Its dashboard is `https://harness.zuey.me/dashboard`.
 

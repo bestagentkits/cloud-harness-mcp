@@ -1350,7 +1350,7 @@
             <p>})</p>
             <br/>
             <p style="color: var(--cyan-glow)">[200 OK] Streamable HTTP Connection Established (14ms)</p>
-            <p style="color: var(--text-muted)">├── Ingress: Cloudflare Access OAuth token validated</p>
+            <p style="color: var(--text-muted)">├── Edge: Cloudflare Access accepted OAuth bearer; origin verified signed assertion</p>
             <p style="color: var(--text-muted)">├── Runner: Ephemeral GitHub broker minted stdin-only push key</p>
             <p style="color: var(--text-muted)">├── Docker: Spawned non-root executor (TTL: 1800s, net: none)</p>
             <p style="color: var(--green-neon)">└── Workspace Ready: <span class="term-badge">ws_8f93e120da</span></p>
@@ -1484,10 +1484,10 @@
           <div class="arch-card">
             <div class="arch-plane-tag plane-ingress">Plane 01 // Ingress Proxy</div>
             <h3>Stateless Ingress & SSO</h3>
-            <p>Cloudflare Access OAuth or Gateway API tokens are validated at the perimeter. The ingress proxy has zero secrets and never joins the backend Docker network.</p>
+            <p>Cloudflare Access Managed OAuth is the authorization server at the perimeter; the origin verifies only the signed assertion Access forwards. Dashboard API keys use a separate lane. The ingress proxy has zero secrets and never joins the backend Docker network. <a href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server" style="color: var(--cyan-glow); text-decoration: underline;">How the OAuth lane works</a>.</p>
             <ul class="arch-specs">
-              <li><span>✓</span> Managed OAuth via GitHub/Google SSO</li>
-              <li><span>✓</span> Static Bearer tokens for headless CI</li>
+              <li><span>✓</span> Managed OAuth via Cloudflare Access (GitHub/Google sign-in)</li>
+              <li><span>✓</span> Separate API-key lane for static-header clients</li>
               <li><span>✓</span> Rate-limited loopback forwarding</li>
             </ul>
           </div>
@@ -1733,6 +1733,9 @@
           <p style="color: var(--text-muted);">
             Compatible with all modern MCP-enabled IDEs, terminals, and web agents in seconds.
           </p>
+          <p style="color: var(--text-muted); max-width: 780px; margin: 0.75rem auto 0;">
+            The owner deployment has two non-interchangeable lanes: Managed OAuth at <code>https://harness.zuey.me/mcp</code>, where Cloudflare Access is the OAuth authorization server, and a static API-key lane at <code>https://api.harness.zuey.me/mcp</code>. <a href="https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/security-model.md#inbound-mcp-oauth-cloudflare-access-is-the-authorization-server" style="color: var(--cyan-glow); text-decoration: underline;">How the OAuth lane works</a>.
+          </p>
         </div>
 
         <div class="client-matrix">
@@ -1747,7 +1750,7 @@
             <div>
               <h3 style="margin-bottom: 0.85rem; color: var(--cyan-glow);">Claude Code Setup</h3>
               <p style="color: var(--text-muted); font-size: 0.92rem; margin-bottom: 1.5rem;">
-                Connect via Streamable HTTP with your operator API key. Claude Code will instantly acquire all remote execution capabilities.
+                Static API-key lane: connect via Streamable HTTP with a dashboard-managed API key. Claude Code will instantly acquire all remote execution capabilities.
               </p>
               <ul class="arch-specs" style="border: none; padding: 0;">
                 <li><span>→</span> Full worktree & subagent task graph support</li>
@@ -1760,7 +1763,7 @@
               <pre id="claude-snippet" style="overflow-x: auto; color: var(--text-bright);">claude mcp add cloud-harness \
   --transport http \
   https://api.harness.zuey.me/mcp \
-  --header "Authorization: Bearer YOUR_OPERATOR_KEY"</pre>
+  --header "Authorization: Bearer YOUR_API_KEY"</pre>
             </div>
           </div>
         </div>
@@ -1952,7 +1955,7 @@
             <p>})</p>
             <br/>
             <p style="color: var(--cyan-glow)">[200 OK] Streamable HTTP Connection Established (14ms)</p>
-            <p style="color: var(--text-muted)">├── Ingress: Cloudflare Access OAuth token validated</p>
+            <p style="color: var(--text-muted)">├── Edge: Cloudflare Access accepted OAuth bearer; origin verified signed assertion</p>
             <p style="color: var(--text-muted)">├── Runner: Ephemeral GitHub broker minted stdin-only push key</p>
             <p style="color: var(--text-muted)">├── Docker: Spawned non-root executor (TTL: 1800s, net: none)</p>
             <p style="color: var(--green-neon)">└── Workspace Ready: <span class="term-badge">ws_8f93e120da</span></p>
@@ -2011,28 +2014,28 @@
         const configs = {
           claude: {
             title: "Claude Code Setup",
-            desc: "Connect via Streamable HTTP with your operator API key. Claude Code will instantly acquire all remote execution capabilities.",
-            code: `claude mcp add cloud-harness \\\n  --transport http \\\n  https://api.harness.zuey.me/mcp \\\n  --header "Authorization: Bearer YOUR_OPERATOR_KEY"`
+            desc: "Static API-key lane: connect via Streamable HTTP with a dashboard-managed API key. Claude Code will instantly acquire all remote execution capabilities.",
+            code: `claude mcp add cloud-harness \\\n  --transport http \\\n  https://api.harness.zuey.me/mcp \\\n  --header "Authorization: Bearer YOUR_API_KEY"`
           },
           cursor: {
             title: "Cursor IDE Configuration",
-            desc: "Add Cloud Harness MCP into your project or global .cursor/mcp.json for seamless background agent execution in Cursor.",
-            code: `{\n  "mcpServers": {\n    "cloud-harness": {\n      "url": "https://api.harness.zuey.me/mcp",\n      "headers": {\n        "Authorization": "Bearer YOUR_OPERATOR_KEY"\n      }\n    }\n  }\n}`
+            desc: "Static API-key lane: add Cloud Harness MCP into your project or global .cursor/mcp.json with a dashboard-managed API key.",
+            code: `{\n  "mcpServers": {\n    "cloud-harness": {\n      "url": "https://api.harness.zuey.me/mcp",\n      "headers": {\n        "Authorization": "Bearer YOUR_API_KEY"\n      }\n    }\n  }\n}`
           },
           chatgpt: {
             title: "ChatGPT OAuth Connector",
-            desc: "Connect directly to the Cloudflare Access SSO endpoint for single-click browser authentication with your corporate Google or GitHub ID.",
+            desc: "Managed OAuth lane: Cloudflare Access is the OAuth authorization server. Sign in once in the browser with GitHub or Google; the same lane serves hosted Claude connectors.",
             code: `Endpoint URL: https://harness.zuey.me/mcp\nAuth Type: Managed OAuth (Cloudflare Access)\nProtocol: Streamable HTTP MCP`
           },
           codex: {
             title: "Codex CLI Setup",
-            desc: "Configure codex config.toml to route heavy repository operations and Docker executions directly into Cloud Harness.",
-            code: `[mcp_servers.cloud_harness]\nurl = "https://api.harness.zuey.me/mcp"\nheaders = { Authorization = "Bearer YOUR_OPERATOR_KEY" }`
+            desc: "Static API-key lane: configure codex config.toml with a dashboard-managed API key to route repository operations into Cloud Harness.",
+            code: `[mcp_servers.cloud_harness]\nurl = "https://api.harness.zuey.me/mcp"\nheaders = { Authorization = "Bearer YOUR_API_KEY" }`
           },
           antigravity: {
             title: "Google Antigravity IDE",
-            desc: "Native integration for Google Antigravity developer environment via standard MCP config.",
-            code: `{\n  "servers": {\n    "cloud-harness": {\n      "endpoint": "https://api.harness.zuey.me/mcp",\n      "token": "YOUR_OPERATOR_KEY"\n    }\n  }\n}`
+            desc: "Static API-key lane: connect Google Antigravity through standard MCP config with a dashboard-managed API key.",
+            code: `{\n  "servers": {\n    "cloud-harness": {\n      "endpoint": "https://api.harness.zuey.me/mcp",\n      "token": "YOUR_API_KEY"\n    }\n  }\n}`
           }
         };
 
