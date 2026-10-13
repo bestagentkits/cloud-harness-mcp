@@ -182,7 +182,8 @@ Each merge to `main` deploys once. When Release cuts a version, it requests CI
 for its `chore(release)` commit and the merge deploy is skipped, so production
 runs the tagged tree after that second CI run passes; otherwise the merge
 commit deploys right after push CI. If the version commit's CI fails or is
-cancelled, its CI-tested parent merge deploys instead. A flaky failure can be
+cancelled while it is still the head of `main`, its CI-tested parent merge
+deploys instead; once a newer merge lands, that merge's CI decides the deploy. A flaky failure can be
 retried with `gh workflow run ci.yml --ref main` while the version commit is
 still the head of `main`; a real fix is a new merge, which deploys on its own.
 Run **Deploy production** manually (`workflow_dispatch`, optionally with an

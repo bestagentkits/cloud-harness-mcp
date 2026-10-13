@@ -14,8 +14,9 @@ import { pathToFileURL } from 'node:url';
 // commit without a CI run.
 //
 // A failed or cancelled CI run deploys nothing, as before, with one exception:
-// when it belongs to a release commit, its parent merge passed CI and was never
-// deployed, that parent deploys so merged code does not stay out of production.
+// when it belongs to a release commit that is still the head of main, and its
+// parent merge passed CI and was never deployed, that parent deploys so merged
+// code does not stay out of production.
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const RELEASE_SUBJECT_PREFIX = 'chore(release):';
@@ -65,8 +66,16 @@ async function classifyFailedCi(api, targetSha) {
     const commit = await api.commit(targetSha);
     const parent = commit.parents[0];
     if (!isReleaseCommitSubject(commit.subject) || !parent) return skip('CI did not pass');
+    // Only the current head may fall back, so re-running an old failed run can
+    // never roll production back to an older merge.
+    const head = await api.mainHead();
+    if (head.sha !== targetSha) return skip(`CI did not pass; main moved to ${head.sha}, whose CI decides the deploy`);
     if (!(await api.ciPassed(parent))) return skip('CI did not pass for the release commit or its parent');
-    if (await api.deployed(parent)) return skip(`CI did not pass; parent ${parent} is already deployed`);
+    // A deployment record carries the trigger's main head: the parent's own
+    // deploy records the parent, and an earlier fallback records this commit.
+    if ((await api.deployed(parent)) || (await api.deployed(targetSha))) {
+      return skip(`CI did not pass; parent ${parent} is already deployed`);
+    }
     return deploy(parent, `CI did not pass for release commit ${targetSha}; deploying its CI-tested parent ${parent}`);
   } catch (error) {
     return skip(`CI did not pass (${error instanceof Error ? error.message : String(error)})`);

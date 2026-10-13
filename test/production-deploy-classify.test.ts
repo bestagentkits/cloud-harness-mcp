@@ -234,7 +234,7 @@ describe('production deploy classification', () => {
     });
 
     it('deploys the CI-tested, undeployed parent of a release commit', async () => {
-      const api = fakeApi({ commits: releaseCommit, passed: [MERGE] });
+      const api = fakeApi({ commits: releaseCommit, head: releaseHead, passed: [MERGE] });
       const result = await classify(api, { targetSha: RELEASE, triggerSha: RELEASE, ciConclusion: 'cancelled' });
       expect(result).toEqual({
         shouldDeploy: true,
@@ -244,13 +244,31 @@ describe('production deploy classification', () => {
     });
 
     it('does not deploy a parent that never passed CI or is already deployed', async () => {
-      const untested = await classify(fakeApi({ commits: releaseCommit }), { targetSha: RELEASE, ciConclusion: 'failure' });
-      expect(untested.shouldDeploy).toBe(false);
-      const deployed = await classify(fakeApi({ commits: releaseCommit, passed: [MERGE], deployedShas: [MERGE] }), {
+      const untested = await classify(fakeApi({ commits: releaseCommit, head: releaseHead }), {
         targetSha: RELEASE,
         ciConclusion: 'failure'
       });
-      expect(deployed).toEqual({ shouldDeploy: false, deploySha: '', reason: `CI did not pass; parent ${MERGE} is already deployed` });
+      expect(untested.shouldDeploy).toBe(false);
+      for (const deployedShas of [[MERGE], [RELEASE]]) {
+        const deployed = await classify(fakeApi({ commits: releaseCommit, head: releaseHead, passed: [MERGE], deployedShas }), {
+          targetSha: RELEASE,
+          ciConclusion: 'failure'
+        });
+        expect(deployed).toEqual({ shouldDeploy: false, deploySha: '', reason: `CI did not pass; parent ${MERGE} is already deployed` });
+      }
+    });
+
+    it('never falls back once main moved past the failed release commit', async () => {
+      const newer = { sha: OTHER, subject: 'feat: newer merge', parents: [RELEASE] };
+      const result = await classify(fakeApi({ commits: releaseCommit, head: newer, passed: [MERGE] }), {
+        targetSha: RELEASE,
+        ciConclusion: 'failure'
+      });
+      expect(result).toEqual({
+        shouldDeploy: false,
+        deploySha: '',
+        reason: `CI did not pass; main moved to ${OTHER}, whose CI decides the deploy`
+      });
     });
 
     it('fails closed when the failed commit cannot be read', async () => {
@@ -342,6 +360,7 @@ describe('production deploy workflow', () => {
     expect(deployJob).toContain('!cancelled() &&');
     expect(deployJob).toContain("github.event_name == 'workflow_dispatch'");
     expect(deployJob).toContain("github.event.workflow_run.head_branch == 'main'");
+    expect(deployJob).toContain('github.event.workflow_run.head_repository.full_name == github.repository &&');
     expect(deployJob).toContain("(needs.classify.result == 'success' && needs.classify.outputs.should_deploy == 'true')");
     expect(deployJob).toContain("(needs.classify.result != 'success' && github.event.workflow_run.conclusion == 'success')");
     expect(deployJob).toContain(

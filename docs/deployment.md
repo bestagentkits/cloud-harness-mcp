@@ -445,8 +445,8 @@ decides what a CI-triggered run deploys:
 - Every other successful run deploys, including any API error, a Release run
   still busy after ten minutes, or a version commit without a usable CI run.
 - After a failed or cancelled CI run nothing deploys, except when that run
-  belongs to a version commit whose parent passed CI and has no `production`
-  deployment yet; the parent then deploys, so merged code never waits on a
+  belongs to a version commit that is still the head of `main` and whose
+  parent passed CI and was not deployed yet; the parent then deploys, so merged code never waits on a
   flaky or cancelled version-commit run. The deploy job re-verifies CI success
   for any commit other than the one CI just tested.
 - If the `classify` job itself fails, the deploy falls back to deploying a
