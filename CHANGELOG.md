@@ -1,3 +1,10 @@
+## [0.63.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.2...v0.63.3) (2026-10-13)
+
+
+### Bug Fixes
+
+* **deploy:** recover a deploy killed after stopping the release, and never downgrade the deploy tooling ([#294](https://github.com/bestagentkits/cloud-harness-mcp/issues/294)) ([9d2764e](https://github.com/bestagentkits/cloud-harness-mcp/commit/9d2764e177ee8007c26e315f4ffbb4d0cf6b7826))
+
 ## [0.63.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.1...v0.63.2) (2026-10-12)
 
 
