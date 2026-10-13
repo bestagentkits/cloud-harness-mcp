@@ -3311,7 +3311,7 @@ export function initializeDashboard() {
   }
   /** Operator view of every live terminal; closing one ends its shell after a confirm. */
   async function loadTerminals() {
-    selectNavigation('workspaces');
+    selectNavigation('terminals');
     document.querySelector('#command-surface').hidden = true;
     const [terminalsResult, workspacesResult] = await Promise.all([
       api('/terminals'),
