@@ -250,7 +250,8 @@ export type AgentBootstrapReport = {
 const CONTEXT_TAG = 'cloudharness_repository_context';
 const DOCUMENT_TAG = 'repository_document';
 const TASK_TAG = 'user_task';
-const RESERVED_TAG = new RegExp(`<(/?)(${CONTEXT_TAG}|${DOCUMENT_TAG}|${TASK_TAG})`, 'gi');
+// Whitespace around the slash is tolerated by lenient readers, so it is neutralized too.
+const RESERVED_TAG = new RegExp(`<(\\s*/?\\s*)(${CONTEXT_TAG}|${DOCUMENT_TAG}|${TASK_TAG})`, 'gi');
 const TRUNCATION_MARKER = '\n[... truncated by CloudHarness to fit the repository-context budget ...]';
 const CONTEXT_PREAMBLE = [
   'CloudHarness read the repository guidance below from this workspace\'s checkout before your first turn.',
