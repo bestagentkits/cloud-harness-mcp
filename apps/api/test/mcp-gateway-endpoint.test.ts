@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   TOOL_SPECS,
@@ -157,27 +157,31 @@ function toolView(server: McpGatewayServerView, overrides: Partial<McpGatewayToo
   };
 }
 
-const github = serverView();
-const posthog = serverView({ id: `mcps_${'c'.repeat(24)}`, name: 'posthog', endpoint: 'https://posthog.example.com/mcp', toolCount: 2 });
-const issueCreate = toolView(github);
-const traffic = toolView(posthog, {
-  id: `mcpt_${'d'.repeat(24)}`,
-  qualifiedName: 'posthog.traffic_report',
-  upstreamName: 'traffic_report',
-  description: 'Website analytics traffic report for a site',
-  inputSchema: TRAFFIC_SCHEMA
-});
-const sessionDetail = toolView(posthog, {
-  id: `mcpt_${'e'.repeat(24)}`,
-  qualifiedName: 'posthog.session_detail',
-  upstreamName: 'session_detail',
-  description: 'Inspect one recorded analytics session',
-  inputSchema: { type: 'object', properties: { sessionId: { type: 'string' } } }
-});
+const POSTHOG_SERVER_ID = `mcps_${'c'.repeat(24)}`;
 
 // The runner is the sole permission authority, so its catalog already excludes the
-// disabled server and the denied tool. The API must never re-admit them.
-const ACCESSIBLE_CATALOG = { servers: [github, posthog], tools: [issueCreate, traffic, sessionDetail] };
+// disabled server and the denied tool. The API must never re-admit them. Every fake
+// runner builds its own copy, so no case can leak catalog state into another.
+function accessibleCatalog(): { servers: McpGatewayServerView[]; tools: McpGatewayToolView[] } {
+  const github = serverView();
+  const posthog = serverView({ id: POSTHOG_SERVER_ID, name: 'posthog', endpoint: 'https://posthog.example.com/mcp', toolCount: 2 });
+  const issueCreate = toolView(github);
+  const traffic = toolView(posthog, {
+    id: `mcpt_${'d'.repeat(24)}`,
+    qualifiedName: 'posthog.traffic_report',
+    upstreamName: 'traffic_report',
+    description: 'Website analytics traffic report for a site',
+    inputSchema: structuredClone(TRAFFIC_SCHEMA)
+  });
+  const sessionDetail = toolView(posthog, {
+    id: `mcpt_${'e'.repeat(24)}`,
+    qualifiedName: 'posthog.session_detail',
+    upstreamName: 'session_detail',
+    description: 'Inspect one recorded analytics session',
+    inputSchema: { type: 'object', properties: { sessionId: { type: 'string' } } }
+  });
+  return { servers: [github, posthog], tools: [issueCreate, traffic, sessionDetail] };
+}
 
 type FakeRunnerState = {
   credentials: McpGatewayResolvedCredentials;
@@ -197,7 +201,7 @@ function createFakeRunner(overrides: Partial<FakeRunnerState> = {}) {
       endpoint: ENDPOINT,
       headers: { Authorization: `Bearer ${SECRET}` }
     },
-    catalog: { servers: [...ACCESSIBLE_CATALOG.servers], tools: [...ACCESSIBLE_CATALOG.tools] },
+    catalog: accessibleCatalog(),
     calls: [],
     traces: [],
     replaceTools: [],
@@ -235,11 +239,11 @@ function createFakeRunner(overrides: Partial<FakeRunnerState> = {}) {
       }
       if (operation === 'mcp_server_replace_tools') {
         state.replaceTools.push(input);
-        return ok('MCP tools replaced', { server: github, tools: [] });
+        return ok('MCP tools replaced', { server: state.catalog.servers[0], tools: [] });
       }
       if (operation === 'mcp_server_connection_result') {
         state.connectionResults.push(input);
-        return ok('MCP connection result recorded', { server: github });
+        return ok('MCP connection result recorded', { server: state.catalog.servers[0] });
       }
       return ok('ok', {});
     },
@@ -313,18 +317,20 @@ async function startHarness(
   };
 }
 
+// Each case starts from a public resolver; a case that overrides it is reset afterwards
+// even when it fails, so a rebinding resolver can never leak into the next case.
+beforeEach(() => {
+  dns.lookup.mockImplementation(async () => PUBLIC_ADDRESS);
+});
+afterEach(() => {
+  dns.lookup.mockReset();
+});
+
 function toolResult(result: { structuredContent?: unknown; content?: unknown[] }): Record<string, unknown> {
   return result.structuredContent as Record<string, unknown>;
 }
 
 describe('GET /mcp-gateway tools/list', () => {
-  beforeAll(() => {
-    dns.lookup.mockImplementation(async () => PUBLIC_ADDRESS);
-  });
-  afterAll(() => {
-    dns.lookup.mockReset();
-  });
-
   it('advertises exactly the five meta-tools', async () => {
     const { runner } = createFakeRunner();
     const { fetchImpl } = createFakeDownstream();
@@ -377,13 +383,6 @@ describe('GET /mcp-gateway tools/list', () => {
 });
 
 describe('/mcp-gateway progressive disclosure', () => {
-  beforeAll(() => {
-    dns.lookup.mockImplementation(async () => PUBLIC_ADDRESS);
-  });
-  afterAll(() => {
-    dns.lookup.mockReset();
-  });
-
   it('searches permission-filtered tools and honours the server filter', async () => {
     const { runner } = createFakeRunner();
     const { fetchImpl } = createFakeDownstream();
@@ -486,13 +485,6 @@ describe('/mcp-gateway progressive disclosure', () => {
 });
 
 describe('/mcp-gateway execute credential boundary', () => {
-  beforeAll(() => {
-    dns.lookup.mockImplementation(async () => PUBLIC_ADDRESS);
-  });
-  afterAll(() => {
-    dns.lookup.mockReset();
-  });
-
   it('scopes the credential to exactly the tools/call request and to no trace', async () => {
     const credential = `Bearer ${SECRET}`;
     const { runner, state: runnerState } = createFakeRunner();
@@ -623,29 +615,25 @@ describe('/mcp-gateway execute credential boundary', () => {
       lookups += 1;
       return lookups === 1 ? PUBLIC_ADDRESS : [{ address: '127.0.0.1', family: 4 }];
     });
+    const { runner } = createFakeRunner();
+    const { fetchImpl, state } = createFakeDownstream();
+    const harness = await startHarness(runner, fetchImpl, {
+      mcpGatewayAllowPrivateEndpoints: false,
+      mcpGatewayAllowInsecureHttp: false
+    });
     try {
-      const { runner } = createFakeRunner();
-      const { fetchImpl, state } = createFakeDownstream();
-      const harness = await startHarness(runner, fetchImpl, {
-        mcpGatewayAllowPrivateEndpoints: false,
-        mcpGatewayAllowInsecureHttp: false
-      });
-      try {
-        const envelope = toolResult(
-          (await harness.client.callTool({
-            name: 'execute',
-            arguments: { tool: 'posthog.traffic_report', arguments: CALLER_ARGUMENTS }
-          })) as { structuredContent?: unknown }
-        );
-        expect(envelope.ok).toBe(false);
-        expect(lookups).toBeGreaterThanOrEqual(2);
-        expect(state.requests).toHaveLength(0);
-        expect(state.requests.filter((request) => request.authorization !== null)).toHaveLength(0);
-      } finally {
-        await harness.close();
-      }
+      const envelope = toolResult(
+        (await harness.client.callTool({
+          name: 'execute',
+          arguments: { tool: 'posthog.traffic_report', arguments: CALLER_ARGUMENTS }
+        })) as { structuredContent?: unknown }
+      );
+      expect(envelope.ok).toBe(false);
+      expect(lookups).toBeGreaterThanOrEqual(2);
+      expect(state.requests).toHaveLength(0);
+      expect(state.requests.filter((request) => request.authorization !== null)).toHaveLength(0);
     } finally {
-      dns.lookup.mockImplementation(async () => PUBLIC_ADDRESS);
+      await harness.close();
     }
   });
 
@@ -691,13 +679,6 @@ describe('/mcp-gateway execute credential boundary', () => {
 });
 
 describe('/mcp-gateway execute output-schema boundary', () => {
-  beforeAll(() => {
-    dns.lookup.mockImplementation(async () => PUBLIC_ADDRESS);
-  });
-  afterAll(() => {
-    dns.lookup.mockReset();
-  });
-
   const OUTPUT_SCHEMA = {
     type: 'object',
     properties: { reports: { type: 'number' } },
@@ -716,7 +697,7 @@ describe('/mcp-gateway execute output-schema boundary', () => {
   // Warm the cached connection with a `tools/list` that declares the output schema,
   // which is what makes the SDK's structured-content guard reachable on `execute`.
   async function warmConnection(harness: Harness): Promise<void> {
-    const warmed = await harness.runtime.gateway.testServer(ownerPrincipal, posthog.id);
+    const warmed = await harness.runtime.gateway.testServer(ownerPrincipal, POSTHOG_SERVER_ID);
     expect(warmed.ok).toBe(true);
   }
 
@@ -778,13 +759,6 @@ describe('/mcp-gateway execute output-schema boundary', () => {
 });
 
 describe('/mcp regression guard', () => {
-  beforeAll(() => {
-    dns.lookup.mockImplementation(async () => PUBLIC_ADDRESS);
-  });
-  afterAll(() => {
-    dns.lookup.mockReset();
-  });
-
   it('still lists the complete harness tool surface', async () => {
     const { runner, state } = createFakeRunner();
     const { fetchImpl } = createFakeDownstream();

@@ -175,7 +175,9 @@ Keep the database offline for the command. It requires version 6, drops only the
 four `mcp_gateway_*` tables (servers, cached tools, tool permissions, and
 traces), and resets the metadata version to 5. Unlike `metadata:down:v1`, it does
 not chain further down, so `api_keys`, `global_secret_references`,
-`global_secret_versions`, and `secret_references.description` are preserved.
+`global_secret_versions`, `secret_references.description`, and the
+`secret_references.purpose` and `global_secret_references.purpose` columns are
+preserved.
 Then deploy the prior runner and canary readiness, the dashboard, unrelated
 metadata, and the absence of the `/mcp-gateway` route. Restore-from-backup
 remains the fallback instead of retrying a downgrade that does not complete.

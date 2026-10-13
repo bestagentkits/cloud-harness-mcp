@@ -398,8 +398,10 @@ set, so its deployment is ordered:
 
    It requires the ledger to be version 6 and drops only the four gateway tables
    (servers, cached tools, tool permissions, and traces), destroying the gateway
-   registry by design while leaving `api_keys`, the global secret tables, and
-   `secret_references.purpose` intact. Unlike `metadata:down:v1`, it never chains
+   registry by design while leaving `api_keys`, `global_secret_references`,
+   `global_secret_versions`, `secret_references.description`, and the
+   `secret_references.purpose` and `global_secret_references.purpose` columns
+   intact. Unlike `metadata:down:v1`, it never chains
    further down. The ladder is owned by
    [`apps/runner/src/metadata-schema.ts`](../apps/runner/src/metadata-schema.ts);
    exercise the command on a copy of the production database and record the
