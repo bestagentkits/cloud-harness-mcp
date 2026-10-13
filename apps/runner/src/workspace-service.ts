@@ -254,6 +254,16 @@ export class WorkspaceService {
       }
     });
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
+    // A running terminal is active work: reads, input, and resizes refresh the lease (throttled by the
+    // operation manager). `touch` keeps the existing wall-clock cap, so a terminal never outlives it.
+    this.operations.onTerminalActivity = (wsId) => {
+      const workspace = this.store.byId(wsId);
+      if (workspace) this.touch(workspace);
+    };
+    this.operations.terminalWorkspaceLease = (wsId) => {
+      const workspace = this.store.byId(wsId);
+      return workspace ? { expiresAt: workspace.expiresAt, hardExpiresAt: workspace.hardExpiresAt } : undefined;
+    };
     // Metadata only: terminal input and output bytes never reach the audit log.
     this.operations.onTerminalEnd = ({ ownerId, view }) => {
       const workspace = this.store.byId(view.workspaceId);
@@ -533,6 +543,7 @@ export class WorkspaceService {
       if (record.status === 'ACTIVE' && (record.expiresAt <= now || record.hardExpiresAt <= now)) {
         const claimed = this.store.claimForExpiry(record.id, record.generation);
         if (claimed) {
+          this.operations.stopWorkspaceTerminals(claimed.id, 'workspace expired');
           if (claimed.containerName) {
             await removeContainer(claimed.containerName).catch(() => undefined);
           }
@@ -1387,6 +1398,7 @@ export class WorkspaceService {
       const now = Date.now();
       const claimed = this.store.claimForExpiry(record.id, record.generation);
       if (claimed) {
+        this.operations.stopWorkspaceTerminals(claimed.id, 'workspace expired');
         if (claimed.containerName) {
           void removeContainer(claimed.containerName).catch(() => undefined);
         }
@@ -4259,14 +4271,14 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return { ok: true, message: 'Terminal output', data: page, truncated: false };
     }
     if (parsed.operation === 'terminal_input') {
-      const record = this.touch(this.requireWorkspace(ownerId, parsed.input.workspaceId));
+      const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
       const bytes = Buffer.from(parsed.input.data, 'base64');
       if (bytes.length > TERMINAL_MAX_INPUT_BYTES) throw new HarnessError('INVALID_INPUT', 'terminal input is too large', 400, false);
       const terminal = this.operations.writeTerminal(ownerId, record.id, parsed.input.terminalId, bytes);
       return { ok: true, message: 'Terminal input accepted', data: terminal, truncated: false };
     }
     if (parsed.operation === 'terminal_resize') {
-      const record = this.touch(this.requireWorkspace(ownerId, parsed.input.workspaceId));
+      const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
       const terminal = await this.operations.resizeTerminal(ownerId, record.id, parsed.input.terminalId, parsed.input.cols, parsed.input.rows);
       return { ok: true, message: 'Terminal resized', data: terminal, truncated: false };
     }
@@ -4451,6 +4463,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               error: `host firewall policy drift detected: ${attestation.reason}`
             });
             if (!fenced) continue;
+            this.operations.stopWorkspaceTerminals(fenced.id, 'workspace quarantined');
 
             // 2. Stop and remove all containers carrying this workspace's label, including privileged ephemerals
             const labeled = await runDocker([
@@ -4513,6 +4526,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (record.status === 'ACTIVE' && (record.expiresAt <= now || record.hardExpiresAt <= now)) {
         const claimed = this.store.claimForExpiry(record.id, record.generation);
         if (claimed) {
+          this.operations.stopWorkspaceTerminals(claimed.id, 'workspace expired');
           if (claimed.containerName) {
             await removeContainer(claimed.containerName).catch(() => undefined);
           }

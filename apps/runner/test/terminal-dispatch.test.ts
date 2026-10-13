@@ -62,6 +62,7 @@ import { WorkspaceService } from '../src/workspace-service.js';
 const directories: string[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   pty.state.connections.length = 0;
   pty.state.killed.length = 0;
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
@@ -202,5 +203,64 @@ describe('internal terminal dispatch', () => {
     expect(pty.state.connections[0]!.closed).toBe(true);
     expect((await service.executeInternal(principalA, 'terminal_list', {})).data).toEqual({ terminals: [] });
     await expectCode(service.executeInternal(principalA, 'terminal_read', { workspaceId: ws.id, terminalId: view.terminalId }), 'EXPIRED', 409);
+  });
+
+  it('keeps the workspace alive while a running terminal is only read, with throttled lease writes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { service, store, ownerA, workspace } = fixture();
+    const ws = workspace('a', ownerA);
+    const view = TerminalViewSchema.parse((await service.executeInternal(principalA, 'terminal_open', { workspaceId: ws.id })).data);
+    const read = async () => TerminalReadResultSchema.parse((await service.executeInternal(principalA, 'terminal_read', { workspaceId: ws.id, terminalId: view.terminalId })).data);
+    const openedExpiry = store.byId(ws.id)!.expiresAt;
+
+    vi.setSystemTime(Date.now() + 10_000);
+    await read();
+    expect(store.byId(ws.id)!.expiresAt).toBe(openedExpiry);
+
+    // Past the idle lease (180 s here) the workspace survives because reads refreshed it every 30 s.
+    for (let step = 0; step < 8; step += 1) {
+      vi.setSystemTime(Date.now() + 30_000);
+      await read();
+    }
+    const refreshed = store.byId(ws.id)!;
+    expect(refreshed.status).toBe('ACTIVE');
+    expect(refreshed.expiresAt).toBeGreaterThan(openedExpiry);
+    expect(refreshed.expiresAt).toBe(Math.min(ws.createdAt + 300_000, Date.now() + 180_000));
+
+    vi.setSystemTime(Date.now() + 5_000);
+    await read();
+    expect(store.byId(ws.id)!.expiresAt).toBe(refreshed.expiresAt);
+
+    // The view reports the workspace's own, earlier deadlines instead of the 15 min / 8 h terminal limits.
+    const page = await read();
+    expect(page.terminal.idleExpiresAt).toBe(new Date(refreshed.expiresAt).toISOString());
+    expect(page.terminal.hardExpiresAt).toBe(new Date(refreshed.hardExpiresAt).toISOString());
+  });
+
+  it('never extends a workspace past its wall-clock cap through terminal reads', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { service, store, ownerA, workspace } = fixture();
+    const ws = workspace('a', ownerA);
+    const view = TerminalViewSchema.parse((await service.executeInternal(principalA, 'terminal_open', { workspaceId: ws.id })).data);
+    for (let step = 0; step < 9; step += 1) {
+      vi.setSystemTime(Date.now() + 30_000);
+      await service.executeInternal(principalA, 'terminal_read', { workspaceId: ws.id, terminalId: view.terminalId });
+    }
+    // 270 s in, with a 300 s wall clock: the lease stops at createdAt + wall, not at now + idle.
+    expect(store.byId(ws.id)!.expiresAt).toBe(ws.createdAt + 300_000);
+    vi.setSystemTime(ws.createdAt + 300_000);
+    await expectCode(service.executeInternal(principalA, 'terminal_read', { workspaceId: ws.id, terminalId: view.terminalId }), 'EXPIRED', 410);
+  });
+
+  it('ends and forgets the terminals of a workspace that expires', async () => {
+    const { service, store, ownerA, workspace } = fixture();
+    const ws = workspace('a', ownerA);
+    const view = TerminalViewSchema.parse((await service.executeInternal(principalA, 'terminal_open', { workspaceId: ws.id })).data);
+    await service.executeInternal(principalA, 'terminal_close', { workspaceId: ws.id, terminalId: view.terminalId });
+    const running = TerminalViewSchema.parse((await service.executeInternal(principalA, 'terminal_open', { workspaceId: ws.id })).data);
+    store.update(ws.id, { expiresAt: Date.now() - 1 });
+    await expectCode(service.executeInternal(principalA, 'terminal_read', { workspaceId: ws.id, terminalId: running.terminalId }), 'EXPIRED', 410);
+    expect(pty.state.connections[1]!.closed).toBe(true);
+    expect((await service.executeInternal(principalA, 'terminal_list', {})).data).toEqual({ terminals: [] });
   });
 });

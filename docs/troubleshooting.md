@@ -150,7 +150,13 @@ a lost response; do not create a second key until the first result is resolved.
 - Dashboard Terminal shows "no longer available" (the runner answered
   `NOT_FOUND`): the runner restarted, or the terminal was closed, timed out, or
   pruned after ending. Terminals are never resumed; open a new session. See
-  [operations](operations.md#dashboard-terminals).
+  [operations](operations.md#dashboard-terminals). If it says the terminal
+  ended with its workspace (the runner answered `410`), the workspace was
+  closed or expired; renew or recover it, then open a new session.
+- Dashboard Terminal echo lags by one key (for example `g` appears only after
+  the next key): the typed text matches the start of an injected secret value,
+  and the redactor holds it until the next bytes rule a secret out. This is
+  intended; see [ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md).
 - Opening a Dashboard Terminal returns `429` with "too many open terminals":
   the workspace already holds the configured number of live terminals. Close
   one from the workspace tab or `/dashboard/terminals`, or raise the limit

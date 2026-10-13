@@ -7,7 +7,16 @@ import {
   TerminalViewSchema
 } from '@cloud-harness/contracts';
 import { DockerPtyClient, resolveDockerSocketPath, type PtyConnection, type PtyEnd, type PtyExecState, type PtyOpenRequest, type PtyTransport } from '../src/docker-pty.js';
-import { OperationManager, type TerminalLimits } from '../src/operation-manager.js';
+import { Readable } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
+import { readBody } from '../src/docker-pty.js';
+import {
+  OperationManager,
+  TERMINAL_CLEANUP_RETRY_DELAYS_MS,
+  TERMINAL_WORKSPACE_TOUCH_INTERVAL_MS,
+  TerminalOutput,
+  type TerminalLimits
+} from '../src/operation-manager.js';
 import { SecretSnapshotRedactor } from '../src/output-redactor.js';
 
 class FakeConnection implements PtyConnection {
@@ -56,6 +65,9 @@ class FakeTransport implements PtyTransport {
   execState: PtyExecState = { running: false, exitCode: 0 };
   inspectError: Error | undefined;
   openError: Error | undefined;
+  /** Kills that fail before one succeeds; `Infinity` makes every kill fail. */
+  killFailures = 0;
+  killAttempts = 0;
 
   async open(request: PtyOpenRequest): Promise<PtyConnection> {
     if (this.openError) throw this.openError;
@@ -74,6 +86,11 @@ class FakeTransport implements PtyTransport {
   }
 
   async killSession(container: string, terminalId: string): Promise<void> {
+    this.killAttempts += 1;
+    if (this.killFailures > 0) {
+      this.killFailures -= 1;
+      throw new HarnessError('UNAVAILABLE', 'terminal session could not be terminated', 503, true);
+    }
     this.killed.push([container, terminalId]);
   }
 }
@@ -383,5 +400,184 @@ describe('Docker Engine socket resolution for terminals', () => {
     }
     const client = new DockerPtyClient('tcp://10.0.0.5:2375');
     await expectHarnessError(client.open({ container: 'c', terminalId: 't', workingDir: '/workspace/', cols: 80, rows: 24 }), 'UNAVAILABLE', 503);
+  });
+});
+
+describe('terminal output retention', () => {
+  it('keeps the chunk count small under a flood of one-byte writes', () => {
+    const output = new TerminalOutput(1_048_576);
+    for (let index = 0; index < 100_000; index += 1) output.append(Buffer.of(0x61 + (index % 26)));
+    expect(output.chunkCount).toBeLessThanOrEqual(8);
+    expect(output).toMatchObject({ start: 0, length: 100_000 });
+    const tail = output.read(99_974, 26).toString('latin1');
+    expect(tail).toBe('abcdefghijklmnopqrstuvwxyz'.slice(99_974 % 26) + 'abcdefghijklmnopqrstuvwxyz'.slice(0, 99_974 % 26));
+  });
+
+  it('trims by index and keeps absolute cursors when one-byte writes overflow the window', () => {
+    const output = new TerminalOutput(1_000);
+    for (let index = 0; index < 100_000; index += 1) output.append(Buffer.of(index % 256));
+    expect(output.chunkCount).toBeLessThanOrEqual(2);
+    expect(output).toMatchObject({ start: 99_000, length: 1_000, end: 100_000 });
+    const page = output.read(99_000, 1_000);
+    expect([...page]).toEqual(Array.from({ length: 1_000 }, (_, index) => (99_000 + index) % 256));
+  });
+
+  it('stores large writes without copying them into blocks and still trims across both kinds', () => {
+    const output = new TerminalOutput(40_000);
+    output.append(Buffer.alloc(30_000, 0x61));
+    output.append(Buffer.from('xyz'));
+    output.append(Buffer.alloc(20_000, 0x62));
+    expect(output).toMatchObject({ start: 10_003, length: 40_000 });
+    const all = output.read(output.start, 40_000).toString('latin1');
+    expect(all).toBe('a'.repeat(20_000 - 3) + 'xyz' + 'b'.repeat(20_000));
+  });
+});
+
+describe('terminal lifecycle hardening', () => {
+  it('refreshes the workspace lease from reads and input of a running terminal, at most once per interval', async () => {
+    vi.useFakeTimers();
+    const { manager, open, last } = setup();
+    const activity = vi.fn();
+    manager.onTerminalActivity = activity;
+    const { terminalId } = await open();
+    await manager.readTerminal(OWNER, WORKSPACE, terminalId, '0', 0);
+    expect(activity).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(TERMINAL_WORKSPACE_TOUCH_INTERVAL_MS);
+    await manager.readTerminal(OWNER, WORKSPACE, terminalId, '0', 0);
+    await manager.readTerminal(OWNER, WORKSPACE, terminalId, '0', 0);
+    manager.writeTerminal(OWNER, WORKSPACE, terminalId, Buffer.from('a'));
+    expect(activity).toHaveBeenCalledTimes(1);
+    expect(activity).toHaveBeenLastCalledWith(WORKSPACE);
+
+    await vi.advanceTimersByTimeAsync(TERMINAL_WORKSPACE_TOUCH_INTERVAL_MS);
+    manager.writeTerminal(OWNER, WORKSPACE, terminalId, Buffer.from('b'));
+    expect(activity).toHaveBeenCalledTimes(2);
+    expect(Buffer.concat(last().written).toString()).toBe('ab');
+
+    await manager.closeTerminal(OWNER, WORKSPACE, terminalId);
+    await vi.advanceTimersByTimeAsync(TERMINAL_WORKSPACE_TOUCH_INTERVAL_MS);
+    await manager.readTerminal(OWNER, WORKSPACE, terminalId, '0', 0);
+    expect(activity).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses the request when the workspace lease can no longer be refreshed', async () => {
+    vi.useFakeTimers();
+    const { manager, open, last } = setup();
+    const { terminalId } = await open();
+    manager.onTerminalActivity = () => { throw new HarnessError('EXPIRED', 'workspace lifecycle changed', 410, false); };
+    await vi.advanceTimersByTimeAsync(TERMINAL_WORKSPACE_TOUCH_INTERVAL_MS);
+    await expectHarnessError(() => manager.writeTerminal(OWNER, WORKSPACE, terminalId, Buffer.from('a')), 'EXPIRED', 410);
+    expect(last().written).toEqual([]);
+  });
+
+  it('clamps the reported expiries to the workspace lease when it ends sooner', async () => {
+    const { manager, open } = setup({ idleTimeoutMs: 900_000, maxLifetimeMs: 28_800_000 });
+    const view = await open();
+    const created = Date.parse(view.createdAt);
+    expect(Date.parse(view.idleExpiresAt)).toBe(created + 900_000);
+    expect(Date.parse(view.hardExpiresAt)).toBe(created + 28_800_000);
+
+    const lease = { expiresAt: created + 300_000, hardExpiresAt: created + 900_000 };
+    manager.terminalWorkspaceLease = (workspaceId) => (workspaceId === WORKSPACE ? lease : undefined);
+    const [clamped] = manager.listTerminals(OWNER, WORKSPACE);
+    expect(clamped!.idleExpiresAt).toBe(new Date(lease.expiresAt).toISOString());
+    expect(clamped!.hardExpiresAt).toBe(new Date(lease.hardExpiresAt).toISOString());
+
+    lease.expiresAt = created + 3_600_000;
+    lease.hardExpiresAt = created + 86_400_000;
+    const [unclamped] = manager.listTerminals(OWNER, WORKSPACE);
+    expect(Date.parse(unclamped!.idleExpiresAt)).toBe(created + 900_000);
+    expect(Date.parse(unclamped!.hardExpiresAt)).toBe(created + 28_800_000);
+  });
+
+  it('retries a failed session kill with bounded backoff', async () => {
+    vi.useFakeTimers();
+    const { manager, open, transport } = setup({ idleTimeoutMs: 1_000 });
+    const { terminalId } = await open();
+    transport.killFailures = 2;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(manager.listTerminals(OWNER, WORKSPACE)[0]).toMatchObject({ status: 'timed_out' });
+    expect(transport.killAttempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(TERMINAL_CLEANUP_RETRY_DELAYS_MS[0]!);
+    expect(transport.killAttempts).toBe(2);
+    await vi.advanceTimersByTimeAsync(TERMINAL_CLEANUP_RETRY_DELAYS_MS[1]!);
+    expect(transport.killAttempts).toBe(3);
+    expect(transport.killed).toEqual([[`container-${WORKSPACE}`, terminalId]]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(transport.killAttempts).toBe(3);
+  });
+
+  it('gives up after the last retry and keeps the uncleaned record until it is cleaned or the workspace stops', async () => {
+    vi.useFakeTimers();
+    const { manager, open, transport } = setup({ idleTimeoutMs: 1_000, endedRetentionMs: 1_000, maxEndedPerWorkspace: 0 });
+    const { terminalId } = await open();
+    transport.killFailures = Infinity;
+    await vi.advanceTimersByTimeAsync(1_000);
+    const totalBackoff = TERMINAL_CLEANUP_RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0);
+    await vi.advanceTimersByTimeAsync(totalBackoff + 60_000);
+    expect(transport.killAttempts).toBe(TERMINAL_CLEANUP_RETRY_DELAYS_MS.length + 1);
+    // Past its retention window and over the ended cap, yet still tracked: its session may still be running.
+    expect(manager.listTerminals(OWNER, WORKSPACE).map((view) => view.terminalId)).toEqual([terminalId]);
+
+    // An explicit close is the operator's retry; once it succeeds the record prunes normally.
+    await expectHarnessError(manager.closeTerminal(OWNER, WORKSPACE, terminalId), 'UNAVAILABLE', 503);
+    transport.killFailures = 0;
+    await expect(manager.closeTerminal(OWNER, WORKSPACE, terminalId)).resolves.toMatchObject({ status: 'timed_out' });
+    expect(manager.listTerminals(OWNER, WORKSPACE)).toEqual([]);
+
+    const second = await open();
+    transport.killFailures = Infinity;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await manager.stopWorkspace(WORKSPACE, OWNER);
+    const attempts = transport.killAttempts;
+    await vi.advanceTimersByTimeAsync(totalBackoff);
+    expect(transport.killAttempts).toBe(attempts);
+    await expectHarnessError(manager.readTerminal(OWNER, WORKSPACE, second.terminalId, '0', 0), 'NOT_FOUND', 404);
+  });
+
+  it('still kills the session when inspecting the ended exec fails', async () => {
+    const { manager, open, transport } = setup();
+    const { terminalId } = await open();
+    transport.inspectError = new HarnessError('TIMEOUT', 'Docker Engine request timed out', 504, true);
+    transport.connections[0]!.end();
+    await vi.waitFor(() => expect(transport.killed).toEqual([[`container-${WORKSPACE}`, terminalId]]));
+    expect(manager.listTerminals(OWNER, WORKSPACE)[0]).toMatchObject({ status: 'failed', endReason: 'workspace executor stopped' });
+  });
+
+  it('kills whatever a failed open may have started', async () => {
+    const { manager, transport, open } = setup();
+    transport.openError = new HarnessError('TIMEOUT', 'Docker Engine did not start the terminal in time', 504, true);
+    await expectHarnessError(open(), 'TIMEOUT', 504);
+    await vi.waitFor(() => expect(transport.killed).toHaveLength(1));
+    expect(transport.killed[0]![0]).toBe(`container-${WORKSPACE}`);
+    expect(manager.listTerminals(OWNER)).toEqual([]);
+  });
+
+  it('drops output that arrives after the terminal ended instead of bypassing the flushed redactor', async () => {
+    const { manager, open, last } = setup();
+    manager.redactorProvider = () => new SecretSnapshotRedactor({ API_TOKEN: 'tok-s3cr3t-value' });
+    const { terminalId } = await open();
+    // FakeConnection keeps its data listeners after close, like a socket that delivers a late chunk.
+    const connection = last();
+    connection.emit('before ');
+    await manager.closeTerminal(OWNER, WORKSPACE, terminalId);
+    connection.emit('tok-s3cr3t-value after');
+    const text = decode((await manager.readTerminal(OWNER, WORKSPACE, terminalId, '0', 0)).data);
+    expect(text).toBe('before ');
+  });
+});
+
+describe('Docker Engine response bodies for terminals', () => {
+  const response = (chunks: Buffer[]) => Readable.from(chunks) as unknown as IncomingMessage;
+
+  it('parses JSON and treats an empty body as undefined', async () => {
+    await expect(readBody(response([Buffer.from('{"Running":true}')]))).resolves.toEqual({ Running: true });
+    await expect(readBody(response([]))).resolves.toBeUndefined();
+  });
+
+  it('rejects an oversized or malformed body as a retryable UNAVAILABLE', async () => {
+    await expectHarnessError(readBody(response([Buffer.alloc(40_000, 0x20), Buffer.alloc(40_000, 0x20)])), 'UNAVAILABLE', 503, true);
+    await expectHarnessError(readBody(response([Buffer.from('{"Running":')])), 'UNAVAILABLE', 503, true);
   });
 });

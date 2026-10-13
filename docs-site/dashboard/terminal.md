@@ -41,21 +41,31 @@ unchanged. A terminal also ends when it has been idle too long, when it reaches 
 maximum lifetime, when the shell exits, or when the workspace stops. Its status pill
 says which, and **New session** starts a fresh one.
 
+While a terminal is running in an open tab, the workspace counts as active, so it is not
+expired for idleness. It still ends at the workspace's maximum lifetime; the idle and
+lifetime expiry the dashboard shows are never later than the workspace's own. If the
+workspace is closed or expires, the terminal shows **No longer available** and stops
+polling.
+
 Terminals are not resumed. If the harness restarts, every open terminal ends and shows
 **No longer available**; start a new session to continue. Use a background task (for
 example `tasks_run` from an AI tool) for long-running work that must survive a restart.
 
 ## All terminals
 
-`/dashboard/terminals` lists every live terminal across your workspaces with its size,
-age, and idle expiry. Each row links to the workspace's Terminal tab, and **Close** ends
-that terminal after a confirmation.
+`/dashboard/terminals` lists your terminals across workspaces with their size, age, and
+idle expiry. Ended terminals stay listed briefly with their final status. Each row links
+to the workspace's Terminal tab, and **Close** ends a running terminal after a
+confirmation.
 
 ## Privacy and audit
 
 Secret values that the harness injected into the workspace are redacted from terminal
 output before it is kept or shown, the same as for agent command output. Redaction
 matches exact values only, so avoid printing secrets in an encoded or partial form.
+If a typed character only appears after the next key (for example `g` when a `ghp_…`
+token is injected), that is redaction holding back text that could begin a secret
+until the following bytes show it is not one.
 
 The [audit log](/dashboard/audit) records only that a terminal was opened and how it
 ended. What you type and what the shell prints are never written to the audit log.

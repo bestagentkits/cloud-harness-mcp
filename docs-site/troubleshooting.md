@@ -249,6 +249,8 @@ If an agent started but followed the wrong files, read the `repository_context` 
 | :--- | :--- |
 | **No longer available** on an open terminal | The runner restarted, or the terminal was closed, timed out, or ended long enough ago to be discarded. Choose **New session**. Use a background task for work that must survive a restart. |
 | **Timed out** | The terminal reached its idle timeout or maximum lifetime. Choose **New session**. |
+| **No longer available**, "ended with its workspace" | The workspace was closed or expired, and its terminals ended with it. Renew or recover the workspace, then choose **New session**. |
+| "Output stopped" under the terminal | The harness refused the output request, or it stayed unreachable through about a minute of retries. Reload the page, then re-attach the terminal from the Terminal tab if it is still running. |
 | Opening fails with HTTP `429` and "too many open terminals" | The workspace already holds its limit of live terminals. Close one from the Terminal tab or [`/dashboard/terminals`](/dashboard/terminal#all-terminals), or ask the operator to raise `TERMINAL_MAX_PER_WORKSPACE` (see the [environment variables reference](/reference/environment-variables)). |
 | "Unsent keystrokes were dropped" while typing or pasting | Input arrived faster than the shell accepted it, and in-order retries ran out. Wait for the shell to catch up, then send the rest again. |
 | Opening fails with HTTP `503` while other workspace actions work | The workspace executor is not running, or the runner cannot reach Docker over a unix socket. Recover the workspace first. Operators: terminals require the runner's `DOCKER_HOST` to be unset or a `unix://` path. |

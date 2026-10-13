@@ -32,7 +32,10 @@ export interface PtyConnection {
   onData(listener: (chunk: Buffer) => void): void;
   /** Fires exactly once, when the stream ends or fails. */
   onEnd(listener: (end: PtyEnd) => void): void;
-  /** Hang up: closing the attached stream gives the session a PTY hangup (SIGHUP). */
+  /**
+   * Detach from the stream. This does NOT end the shell: the Engine keeps the exec and its PTY alive after
+   * the attach connection closes, so `PtyTransport.killSession` is what actually ends the session.
+   */
   close(): void;
 }
 
@@ -95,26 +98,36 @@ function engineError(status: number, body: unknown): HarnessError {
   return new HarnessError('UNAVAILABLE', `Docker Engine request failed: ${detail}`, 503, true);
 }
 
-function readBody(response: IncomingMessage): Promise<unknown> {
+/** An empty body is `undefined`; an oversized, unreadable, or non-JSON body is a retryable UNAVAILABLE. */
+export function readBody(response: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let failed = false;
+    const fail = (message: string) => {
+      if (failed) return;
+      failed = true;
+      reject(new HarnessError('UNAVAILABLE', message, 503, true));
+    };
     response.on('data', (chunk: Buffer) => {
+      if (failed) return;
       size += chunk.length;
       if (size > MAX_RESPONSE_BYTES) {
-        response.destroy(new Error('Docker Engine response too large'));
+        fail('Docker Engine response was too large');
+        response.destroy();
         return;
       }
       chunks.push(chunk);
     });
-    response.on('error', reject);
+    response.on('error', () => fail('Docker Engine response could not be read'));
     response.on('end', () => {
+      if (failed) return;
       const text = Buffer.concat(chunks).toString('utf8');
       if (text.trim() === '') return resolve(undefined);
       try {
         resolve(JSON.parse(text) as unknown);
       } catch {
-        resolve(undefined);
+        fail('Docker Engine returned a malformed response');
       }
     });
   });
@@ -166,7 +179,8 @@ class SocketPtyConnection implements PtyConnection {
 
   close(): void {
     try { this.socket.end(); } catch { /* already closed */ }
-    // A half-closed upgrade socket can linger; force it so the daemon tears the attach down.
+    // A half-closed upgrade socket can linger; force it so neither side keeps the attach connection open.
+    // The exec's processes survive this; the caller ends them with `killSession`.
     setTimeout(() => { try { this.socket.destroy(); } catch { /* already closed */ } }, 250).unref();
   }
 

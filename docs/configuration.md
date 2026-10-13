@@ -358,10 +358,13 @@ and [`apps/runner/src/api-key-store.ts`](../apps/runner/src/api-key-store.ts).
 
 The Dashboard Terminal runs a real PTY inside the owned workspace executor. PTYs
 live in runner memory, are never resumed after a runner restart, and end with
-their workspace. The runner reaches the Docker Engine API over its unix socket
-for this, so a non-unix `DOCKER_HOST` makes terminals unavailable. Exact ranges
-are owned by [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts);
-the lifecycle by [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
+their workspace. A running terminal's reads and input refresh the workspace's
+idle lease (`WORKSPACE_IDLE_TTL_SECONDS`) at most every 30 s, but never past its
+wall-clock cap (`WORKSPACE_WALL_TTL_SECONDS`). The runner reaches the Docker
+Engine API over its unix socket for this, so a non-unix `DOCKER_HOST` makes
+terminals unavailable. Exact ranges are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts); the
+lifecycle by [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
 
 | Variable | Default | Decision |
 |---|---|---|

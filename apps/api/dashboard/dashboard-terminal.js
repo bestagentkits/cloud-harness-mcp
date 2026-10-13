@@ -14,7 +14,12 @@ export const TERMINAL_WAIT_MS = 25_000;
 /** Raw bytes per input request: a large paste is split, in order, well under the request body limit. */
 export const TERMINAL_INPUT_CHUNK_BYTES = 16_384;
 const INPUT_RETRY_LIMIT = 6;
-const RETRYABLE_STATUSES = new Set([0, 429, 502, 503, 504]);
+/** Consecutive transient read failures (about a minute of backoff) before the pane stops polling. */
+export const READ_RETRY_LIMIT = 8;
+/** Network failure (0) and throttling; every 5xx is retried as well. */
+const RETRYABLE_STATUSES = new Set([0, 429]);
+/** The workspace behind the terminal ended (closed, expired, or reaped): the PTY went with its executor. */
+export const TERMINAL_WORKSPACE_ENDED_MESSAGE = 'This terminal ended with its workspace, which was closed or expired. Renew or recover the workspace, then start a new session.';
 const RESIZE_DEBOUNCE_MS = 150;
 /** A read that returns empty this quickly means the long-poll is not parking; back off instead of spinning. */
 const EMPTY_READ_FLOOR_MS = 250;
@@ -41,7 +46,8 @@ export const encodeTerminalBinary = (binary) => Uint8Array.from(String(binary ??
 
 /** A visible, dim line telling the operator the replay is incomplete instead of silently skipping output. */
 export function missedOutputNotice(missedBytes) {
-  return `\x1b[2m[${Number(missedBytes).toLocaleString('en-US')} bytes of earlier output are no longer retained and were skipped]\x1b[0m\r\n`;
+  // Reset first so attributes left by earlier output never restyle the notice.
+  return `\x1b[0m\x1b[2m[${Number(missedBytes).toLocaleString('en-US')} bytes of earlier output are no longer retained and were skipped]\x1b[0m\r\n`;
 }
 
 /** Take up to `limit` bytes from the front of the queue, preserving order and splitting the last chunk. */
@@ -80,11 +86,17 @@ export function createTerminalClient(api, workspaceId) {
 const defaultDelay = (ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 const statusOf = (error) => (Number.isInteger(error?.status) ? error.status : 0);
 const isAbort = (error) => error?.name === 'AbortError';
+/** A `retryable` flag from the server wins when present; otherwise only throttling, 5xx, and network errors retry. */
+const isRetryable = (error) => (typeof error?.retryable === 'boolean' ? error.retryable : RETRYABLE_STATUSES.has(statusOf(error)) || statusOf(error) >= 500);
+/** 404: the runner forgot the terminal. 410: its workspace ended. Neither can come back. */
+const isGone = (status) => status === 404 || status === 410;
 
 /**
- * One terminal session. States are only ever derived from what the runner reported: a NOT_FOUND turns the
- * session `lost` and stops every loop, because a PTY the runner forgot (including every PTY from before a
- * runner restart) cannot be reconnected. There is no automatic re-open.
+ * One terminal session. States are only ever derived from what the runner reported: a 404 (terminal gone) or
+ * 410 (workspace ended) turns the session `lost` and stops every loop, because a PTY the runner forgot
+ * (including every PTY from before a runner restart) cannot be reconnected. A refused read (another 4xx) or
+ * a transient failure that outlasts the bounded backoff stops polling in the `error` state instead of
+ * retrying forever. There is no automatic re-open.
  */
 export function createTerminalSession({ client, sink, onChange = () => {}, delay = defaultDelay, now = () => Date.now(), waitMs = TERMINAL_WAIT_MS }) {
   let state = { phase: 'idle' };
@@ -105,10 +117,10 @@ export function createTerminalSession({ client, sink, onChange = () => {}, delay
     update({ phase, terminal: view, exitCode: view.exitCode });
     if (phase !== 'running') queue.length = 0;
   }
-  function lose() {
+  function lose(status) {
     readController?.abort();
     queue.length = 0;
-    update({ phase: 'lost', message: undefined, interrupted: false });
+    update({ phase: 'lost', message: status === 410 ? TERMINAL_WORKSPACE_ENDED_MESSAGE : undefined, interrupted: false });
   }
 
   async function readLoop() {
@@ -126,9 +138,17 @@ export function createTerminalSession({ client, sink, onChange = () => {}, delay
         } catch (error) {
           if (!live() || isAbort(error) || id !== terminalId) return;
           const status = statusOf(error);
-          if (status === 404) { lose(); return; }
+          if (isGone(status)) { lose(status); return; }
           if (status === 401) { update({ phase: 'error', message: 'Your dashboard session ended. Sign in again.' }); return; }
+          if (!isRetryable(error)) {
+            update({ phase: 'error', interrupted: false, message: `Output stopped: ${error?.message ?? 'the request was refused.'} Reload the page or start a new session.` });
+            return;
+          }
           failures += 1;
+          if (failures > READ_RETRY_LIMIT) {
+            update({ phase: 'error', interrupted: false, message: 'Output stopped after repeated connection failures. Reload the page to reconnect.' });
+            return;
+          }
           const wait = Math.min(15_000, 500 * 2 ** (failures - 1));
           update({ interrupted: true, message: `Output connection interrupted. Retrying in ${Math.ceil(wait / 1_000)} s.` });
           await delay(wait);
@@ -163,8 +183,8 @@ export function createTerminalSession({ client, sink, onChange = () => {}, delay
           if (result?.data?.terminal) adoptView(result.data.terminal);
         } catch (error) {
           const status = statusOf(error);
-          if (status === 404) { lose(); return; }
-          if (RETRYABLE_STATUSES.has(status) && attempt < INPUT_RETRY_LIMIT) {
+          if (isGone(status)) { lose(status); return; }
+          if (isRetryable(error) && attempt < INPUT_RETRY_LIMIT) {
             // Retried chunks go back to the front, so keystrokes are delivered in order or not at all.
             queue.unshift(chunk);
             attempt += 1;
@@ -223,7 +243,7 @@ export function createTerminalSession({ client, sink, onChange = () => {}, delay
         const result = await client.resize(terminalId, cols, rows);
         if (result?.data?.terminal) adoptView(result.data.terminal);
       } catch (error) {
-        if (statusOf(error) === 404) lose();
+        if (isGone(statusOf(error))) lose(statusOf(error));
         else lastSize = '';
       }
     },
@@ -234,7 +254,7 @@ export function createTerminalSession({ client, sink, onChange = () => {}, delay
         adoptView(result?.data?.terminal ?? { ...state.terminal, status: 'closed' });
         readController?.abort();
       } catch (error) {
-        if (statusOf(error) === 404) { lose(); return; }
+        if (isGone(statusOf(error))) { lose(statusOf(error)); return; }
         throw error;
       }
     },

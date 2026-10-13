@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  TERMINAL_INPUT_CHUNK_BYTES, base64ToBytes, bytesToBase64, createTerminalClient, createTerminalSession, encodeTerminalBinary,
-  encodeTerminalText, missedOutputNotice, takeInputChunk
+  READ_RETRY_LIMIT, TERMINAL_INPUT_CHUNK_BYTES, TERMINAL_WORKSPACE_ENDED_MESSAGE, base64ToBytes, bytesToBase64, createTerminalClient,
+  createTerminalSession, encodeTerminalBinary, encodeTerminalText, installCspStyleAdapter, missedOutputNotice, takeInputChunk
 } from '../dashboard/dashboard-terminal.js';
 import {
   TERMINAL_LOST_MESSAGE, renderTerminalPanel, renderTerminalsIndex, renderWorkspaceTabs, terminalStatusDetail, terminalStatusLabel
@@ -71,7 +71,9 @@ describe('terminal byte helpers', () => {
 
   it('describes skipped output in a dim, visible line', () => {
     expect(missedOutputNotice(12_345)).toContain('12,345 bytes of earlier output are no longer retained');
-    expect(missedOutputNotice(1).startsWith('\x1b[2m')).toBe(true);
+    // Attributes left by earlier output are reset before the dim notice, and reset again after it.
+    expect(missedOutputNotice(1).startsWith('\x1b[0m\x1b[2m')).toBe(true);
+    expect(missedOutputNotice(1).endsWith('\x1b[0m\r\n')).toBe(true);
   });
 });
 
@@ -153,6 +155,73 @@ describe('terminal session', () => {
       await vi.waitFor(() => expect(h.session.state.phase, action).toBe('lost'));
       h.session.dispose();
     }
+  });
+
+  it('turns a 410 (workspace closed or expired) into the lost state with a workspace message', async () => {
+    const h = harness([() => { throw failure(410, 'Workspace expired.'); }]);
+    await h.session.open({ cols: 80, rows: 24 });
+    await vi.waitFor(() => expect(h.session.state.phase).toBe('lost'));
+    expect(h.reads).toHaveLength(1);
+    expect(terminalStatusLabel(h.session.state)).toBe('No longer available');
+    expect(terminalStatusDetail(h.session.state)).toBe(TERMINAL_WORKSPACE_ENDED_MESSAGE);
+    expect(h.session.send(encodeTerminalText('x'))).toBe(false);
+  });
+
+  it('turns a 410 on input, resize, or close into the lost state', async () => {
+    for (const action of ['input', 'resize', 'close'] as const) {
+      const h = harness();
+      await h.session.open({ cols: 80, rows: 24 });
+      h.client[action].mockRejectedValueOnce(failure(410));
+      if (action === 'input') h.session.send(encodeTerminalText('x'));
+      if (action === 'resize') await h.session.resize(81, 24);
+      if (action === 'close') await h.session.close();
+      await vi.waitFor(() => expect(h.session.state.phase, action).toBe('lost'));
+      expect(h.session.state.message, action).toBe(TERMINAL_WORKSPACE_ENDED_MESSAGE);
+      h.session.dispose();
+    }
+  });
+
+  it('stops polling with a clear message on a non-retryable refusal', async () => {
+    for (const status of [400, 403, 409]) {
+      const delays: number[] = [];
+      const h = harness([() => { throw failure(status, 'This item changed after you opened it.'); }], { delay: async (ms) => { delays.push(ms); } });
+      await h.session.open({ cols: 80, rows: 24 });
+      await vi.waitFor(() => expect(h.session.state.phase, String(status)).toBe('error'));
+      expect(h.reads, String(status)).toHaveLength(1);
+      expect(delays, String(status)).toEqual([]);
+      expect(h.session.state.message).toContain('Output stopped: This item changed after you opened it.');
+      expect(h.session.state.interrupted).toBe(false);
+      expect(h.session.send(encodeTerminalText('x'))).toBe(false);
+    }
+  });
+
+  it('retries a refusal the server marks retryable, and honours a non-retryable 5xx', async () => {
+    const retryable = harness([
+      () => { throw Object.assign(failure(409), { retryable: true }); },
+      () => page({ data: btoa('ok'), nextCursor: '2' })
+    ]);
+    await retryable.session.open({ cols: 80, rows: 24 });
+    await vi.waitFor(() => expect(retryable.written).toEqual(['ok']));
+    expect(retryable.session.state.phase).toBe('running');
+    retryable.session.dispose();
+
+    const refused = harness([() => { throw Object.assign(failure(503), { retryable: false }); }]);
+    await refused.session.open({ cols: 80, rows: 24 });
+    await vi.waitFor(() => expect(refused.session.state.phase).toBe('error'));
+    expect(refused.reads).toHaveLength(1);
+  });
+
+  it('caps the backoff for throttling and server errors, then stops polling', async () => {
+    const delays: number[] = [];
+    const statuses = [429, 500, 502, 503, 504, 0];
+    const script = Array.from({ length: READ_RETRY_LIMIT + 1 }, (_, index) => () => { throw failure(statuses[index % statuses.length]!); });
+    const h = harness(script, { delay: async (ms) => { delays.push(ms); } });
+    await h.session.open({ cols: 80, rows: 24 });
+    await vi.waitFor(() => expect(h.session.state.phase).toBe('error'));
+    expect(h.reads).toHaveLength(READ_RETRY_LIMIT + 1);
+    expect(delays).toHaveLength(READ_RETRY_LIMIT);
+    expect(Math.max(...delays)).toBe(15_000);
+    expect(h.session.state.message).toBe('Output stopped after repeated connection failures. Reload the page to reconnect.');
   });
 
   it('marks an interrupted output stream and recovers without changing state', async () => {
@@ -278,7 +347,7 @@ describe('terminal rendering', () => {
     expect(markup).toContain('80×24');
   });
 
-  it('lists live terminals for the operator with links, size, age, expiry, and a guarded close', () => {
+  it('lists terminals for the operator with links, size, age, expiry, and a guarded close', () => {
     const markup = renderTerminalsIndex({
       terminals: [view(), view({ terminalId: `term_${'y'.repeat(24)}`, status: 'timed_out' })],
       workspaces: [{ workspaceId, repositoryUrl: 'https://github.com/example/project.git' }],
@@ -291,6 +360,8 @@ describe('terminal rendering', () => {
     expect(markup).toContain(`class="danger close-terminal" type="button" data-terminal-id="${terminalId}" data-workspace-id="${workspaceId}">Close`);
     expect(markup).toMatch(new RegExp(`data-terminal-id="term_${'y'.repeat(24)}"[^>]*disabled`));
     expect(markup).toContain('Timed out');
+    expect(markup).toContain('<h2 id="terminals-heading">Terminals</h2>');
+    expect(markup).toContain('Ended terminals stay listed briefly');
     expect(renderTerminalsIndex({ terminals: [] })).toContain('No terminals are running.');
   });
 
@@ -298,5 +369,85 @@ describe('terminal rendering', () => {
     const markup = renderTerminalsIndex({ terminals: [view({ terminalId: '<img src=x>', workspaceId: '"><script>' })] });
     expect(markup).not.toContain('<img src=x>');
     expect(markup).not.toContain('<script>');
+  });
+});
+
+describe('CSP style adapter', () => {
+  /** The smallest document the adapter touches: custom elements, CSSOM sheets, and element creation. */
+  function fakeDocument() {
+    class FakeElement {
+      readonly attributes = new Map<string, string>();
+      readonly style = { cssText: '' };
+      hidden = false;
+      ownerDocument: unknown;
+      constructor(readonly tagName: string) {}
+      setAttribute(name: string, value: string) { this.attributes.set(name, value); }
+    }
+    class FakeSheet {
+      css = '';
+      replaceSync(text: string) { this.css = text; }
+    }
+    const registry = new Map<string, new () => FakeElement>();
+    const documentRef: Record<string, unknown> & { adoptedStyleSheets: FakeSheet[] } = {
+      adoptedStyleSheets: [],
+      defaultView: {
+        HTMLElement: class extends FakeElement { constructor() { super('custom'); } },
+        CSSStyleSheet: FakeSheet,
+        customElements: {
+          get: (name: string) => registry.get(name),
+          define: (name: string, constructor: new () => FakeElement) => { registry.set(name, constructor); }
+        }
+      },
+      createElement(name: string) {
+        const Custom = registry.get(name);
+        const element = Custom ? new Custom() : new FakeElement(name);
+        element.ownerDocument = documentRef;
+        return element;
+      }
+    };
+    return { documentRef, registry };
+  }
+
+  it('turns a script-created style element into an adopted stylesheet while it is connected', () => {
+    const { documentRef, registry } = fakeDocument();
+    installCspStyleAdapter(documentRef);
+    expect(registry.has('ch-cssom-style')).toBe(true);
+    const style = (documentRef.createElement as (name: string) => {
+      textContent: string; hidden: boolean; connectedCallback(): void; disconnectedCallback(): void;
+    })('STYLE');
+    style.textContent = '.xterm { color: #fff; }';
+    expect(style.textContent).toBe('.xterm { color: #fff; }');
+    style.connectedCallback();
+    expect(style.hidden).toBe(true);
+    expect(documentRef.adoptedStyleSheets).toHaveLength(1);
+    expect(documentRef.adoptedStyleSheets[0]!.css).toBe('.xterm { color: #fff; }');
+    style.textContent = '.xterm { color: #000; }';
+    expect(documentRef.adoptedStyleSheets[0]!.css).toBe('.xterm { color: #000; }');
+    style.connectedCallback();
+    expect(documentRef.adoptedStyleSheets).toHaveLength(1);
+    style.disconnectedCallback();
+    expect(documentRef.adoptedStyleSheets).toEqual([]);
+  });
+
+  it('maps setAttribute("style") to style.cssText and leaves other attributes alone', () => {
+    const { documentRef } = fakeDocument();
+    installCspStyleAdapter(documentRef);
+    const element = (documentRef.createElement as (name: string) => {
+      style: { cssText: string }; attributes: Map<string, string>; setAttribute(name: string, value: string): void;
+    })('span');
+    element.setAttribute('Style', 'color: #abcdef');
+    element.setAttribute('class', 'xterm-fg-1');
+    expect(element.style.cssText).toBe('color: #abcdef');
+    expect(element.attributes.has('Style')).toBe(false);
+    expect(element.attributes.get('class')).toBe('xterm-fg-1');
+  });
+
+  it('installs once per document', () => {
+    const { documentRef } = fakeDocument();
+    installCspStyleAdapter(documentRef);
+    const patched = documentRef.createElement;
+    installCspStyleAdapter(documentRef);
+    expect(documentRef.createElement).toBe(patched);
+    expect(documentRef.chCspStyleAdapter).toBe(true);
   });
 });

@@ -508,7 +508,7 @@ export function terminalStatusLabel(state = {}) {
 /** The sentence under the pill: what happened and what the operator can do next. */
 export function terminalStatusDetail(state = {}) {
   const phase = String(state.phase ?? 'idle');
-  if (phase === 'lost') return TERMINAL_LOST_MESSAGE;
+  if (phase === 'lost') return state.message ?? TERMINAL_LOST_MESSAGE;
   if (phase === 'timed_out') return 'The terminal reached its idle or lifetime limit and was ended. Start a new session to continue.';
   if (phase === 'failed') return `The terminal could not be kept running${state.terminal?.endReason ? `: ${state.terminal.endReason}` : '.'} Start a new session to continue.`;
   if (phase === 'exited') return 'The shell ended. Start a new session to continue.';
@@ -556,13 +556,13 @@ export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Da
  */
 export function renderTerminalsIndex({ terminals = [], workspaces = [], now = Date.now() } = {}) {
   const names = new Map(workspaces.map((workspace) => [workspace.workspaceId, repositoryName(workspace.repositoryUrl)]));
-  if (!terminals.length) return '<section class="panel" aria-labelledby="terminals-heading"><h2 id="terminals-heading">Live terminals</h2><div class="empty"><h3>No terminals are running.</h3><p>Open one from a workspace\'s Terminal tab.</p></div></section>';
+  if (!terminals.length) return '<section class="panel" aria-labelledby="terminals-heading"><h2 id="terminals-heading">Terminals</h2><div class="empty"><h3>No terminals are running.</h3><p>Open one from a workspace\'s Terminal tab.</p></div></section>';
   const workspaceLink = (terminal) => `<a href="/dashboard/workspaces/${encodeURIComponent(terminal.workspaceId)}/terminal">${escape(names.get(terminal.workspaceId) ?? terminal.workspaceId)}</a>`;
   const closeButton = (terminal) => `<button class="danger close-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}" data-workspace-id="${escape(terminal.workspaceId)}"${terminal.status === 'running' ? '' : ' disabled'}>Close</button>`;
   const pill = (terminal) => `<span class="status ${escape(String(terminal.status ?? 'unknown'))}">${escape(terminalStatusLabel({ phase: terminal.status, exitCode: terminal.exitCode }))}</span>`;
   const rows = terminals.map((terminal) => `<tr><th scope="row">${workspaceLink(terminal)}<small class="mono">${escape(terminal.terminalId)}</small></th><td>${pill(terminal)}</td><td>${escape(terminalSize(terminal))}</td><td>${escape(terminalAge(terminal.createdAt, now))}</td><td>${terminalTime(terminal.idleExpiresAt)}</td><td><div class="row-actions">${closeButton(terminal)}</div></td></tr>`).join('');
   const cards = terminals.map((terminal) => `<li><h3>${workspaceLink(terminal)}</h3><p class="mono">${escape(terminal.terminalId)}</p><dl><dt>Status</dt><dd>${pill(terminal)}</dd><dt>Size</dt><dd>${escape(terminalSize(terminal))}</dd><dt>Age</dt><dd>${escape(terminalAge(terminal.createdAt, now))}</dd><dt>Idle expiry</dt><dd>${terminalTime(terminal.idleExpiresAt)}</dd></dl><div class="row-actions">${closeButton(terminal)}</div></li>`).join('');
-  return `<section class="panel" aria-labelledby="terminals-heading"><h2 id="terminals-heading">Live terminals</h2><p class="page-note">Terminals live in runner memory: they end on idle expiry, at their lifetime limit, or when the runner restarts, and are never resumed.</p><div class="desktop-table"><table><caption>${terminals.length} terminal(s)</caption><thead><tr><th>Workspace</th><th>Status</th><th>Size</th><th>Age</th><th>Idle expiry</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`;
+  return `<section class="panel" aria-labelledby="terminals-heading"><h2 id="terminals-heading">Terminals</h2><p class="page-note">Terminals live in runner memory: they end on idle expiry, at their lifetime limit, or when the runner restarts, and are never resumed. Ended terminals stay listed briefly so their final status can be read.</p><div class="desktop-table"><table><caption>${terminals.length} terminal(s)</caption><thead><tr><th>Workspace</th><th>Status</th><th>Size</th><th>Age</th><th>Idle expiry</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`;
 }
 
 /** Git posture: branch, upstream, ahead/behind, and the index/working-tree summary. */

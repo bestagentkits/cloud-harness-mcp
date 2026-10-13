@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { TerminalReadResultSchema, type TerminalView } from '@cloud-harness/contracts';
 import { removeContainer, runDocker } from '../../apps/runner/src/docker-engine.js';
+import { DockerPtyClient } from '../../apps/runner/src/docker-pty.js';
 import { OperationManager } from '../../apps/runner/src/operation-manager.js';
 
 /**
@@ -202,6 +203,39 @@ describe('real PTY terminals in a hardened executor', () => {
     expect(leftovers.stdout.trim()).toBe('');
     await expect(exec('test', '-e', `/tmp/cloud-harness-shells/${session.view.terminalId}.pid`)).resolves.toMatchObject({ exitCode: 1 });
   });
+
+  it('keeps the session alive when only the attach stream is destroyed, so the session kill is mandatory', async () => {
+    // Drive the transport directly: the manager always kills after hanging up, which would hide the point.
+    const transport = new DockerPtyClient();
+    const terminalId = `term_detach_${randomBytes(6).toString('hex')}`;
+    const connection = await transport.open({ container, terminalId, workingDir: '/workspace/', cols: 80, rows: 24 });
+    let text = '';
+    connection.onData((chunk) => { text += chunk.toString('utf8'); });
+    const ended = new Promise<void>((resolveEnd) => connection.onEnd(() => resolveEnd()));
+    const until = async (pattern: RegExp) => {
+      const deadline = Date.now() + 20_000;
+      while (!pattern.test(text)) {
+        if (Date.now() > deadline) throw new Error(`output did not match ${String(pattern)}; tail: ${JSON.stringify(text.slice(-200))}`);
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+      }
+    };
+    await until(/\$ $/m);
+    connection.write(Buffer.from('sleep 300 &\r'));
+    await until(/\[1\] [0-9]+/);
+    const sid = await sessionPid(terminalId);
+
+    connection.close();
+    await ended;
+    // Give the daemon well past the 250 ms forced destroy to react to the closed connection.
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 2_000));
+    const survivors = await sessionProcesses(sid);
+    expect(survivors).toMatch(/\bbash\b/);
+    expect(survivors).toMatch(/\bsleep\b/);
+
+    await transport.killSession(container, terminalId);
+    expect(await sessionProcesses(sid)).toBe('');
+    await expect(exec('test', '-e', `/tmp/cloud-harness-shells/${terminalId}.pid`)).resolves.toMatchObject({ exitCode: 1 });
+  }, 40_000);
 
   it('reports the shell exit code when the shell exits', async () => {
     const session = await open();

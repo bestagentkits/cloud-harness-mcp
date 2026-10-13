@@ -51,12 +51,21 @@ never talks to the runner or Docker and never receives a control-plane token.
   cursors. Reads long-poll, and a reader that fell behind is told how many
   bytes it missed. The per-workspace secret redactor filters output before it
   is retained, so injected secret values never reach the browser or the
-  retained window. Input has a per-call size cap and a backpressure limit.
+  retained window. Echo of characters that match the start of a secret value
+  is held until the following bytes disambiguate it; that visible lag is a
+  deliberate trade-off so a secret is never sent, not even split across reads.
+  Input has a per-call size cap and a backpressure limit.
 - Lifetime is bounded: there is a maximum number of live terminals per
-  workspace, an idle timeout, and a maximum lifetime. Close ends the whole PTY
-  session, including job-control children.
-- Terminals live in runner memory. A runner restart ends them; the PTY hangs
-  up, so no process is left behind. The UI then shows the terminal as lost and
+  workspace, an idle timeout, and a maximum lifetime. A running terminal is
+  active work: its reads and input refresh the workspace lease (at most every
+  30 s), but never past the workspace's wall-clock cap, and its reported
+  expiries are clamped to the workspace's own. Close ends the whole PTY
+  session, including job-control children. Closing the attach stream alone
+  does not end the shell, so every end path kills the session by its recorded
+  pid, retries a failed kill with bounded backoff, and keeps the terminal
+  tracked until the kill succeeds or the workspace stops.
+- Terminals live in runner memory. A runner restart ends them; startup
+  reconciliation restarts each executor, so no process is left behind. The UI then shows the terminal as lost and
   offers a new session. It never pretends to resume a dead PTY.
 - Audit records contain lifecycle metadata only: open, close, and the end
   reason. Keystrokes and output are never written to the audit log.
