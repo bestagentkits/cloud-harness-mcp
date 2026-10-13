@@ -1,3 +1,10 @@
+## [0.64.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.64.0...v0.64.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* bound repository guidance by the gateway's per-byte input accounting ([#306](https://github.com/bestagentkits/cloud-harness-mcp/issues/306)) ([6acff32](https://github.com/bestagentkits/cloud-harness-mcp/commit/6acff327dc9466a568e45350a8e02177d5dfb3f5))
+
 # [0.64.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.3...v0.64.0) (2026-10-13)
 
 
