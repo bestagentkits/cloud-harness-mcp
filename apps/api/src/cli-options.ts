@@ -5,6 +5,7 @@ export type CliTransport = 'http' | 'stdio';
 export type CliOptions = {
   transport: CliTransport;
   workspace?: string;
+  workspaceConfig?: string;
   gitNetwork: boolean;
   gitPush: boolean;
   env: string[];
@@ -20,6 +21,7 @@ export function parseCliOptions(argv: string[]): ParseCliResult {
   let transport: CliTransport = 'http';
   let transportExplicit = false;
   let workspace: string | undefined = undefined;
+  let workspaceConfig: string | undefined = undefined;
   let gitNetwork = false;
   let gitPush = false;
   const env: string[] = [];
@@ -73,6 +75,18 @@ export function parseCliOptions(argv: string[]): ParseCliResult {
       continue;
     }
 
+    if (arg === '--workspace-config') {
+      const next = argv[++i];
+      if (next === undefined) return { ok: false, error: 'missing argument for --workspace-config' };
+      workspaceConfig = next;
+      continue;
+    }
+
+    if (arg.startsWith('--workspace-config=')) {
+      workspaceConfig = arg.slice('--workspace-config='.length);
+      continue;
+    }
+
     if (arg === '--git-network') {
       gitNetwork = true;
       continue;
@@ -105,6 +119,7 @@ export function parseCliOptions(argv: string[]): ParseCliResult {
   const options: CliOptions = {
     transport,
     ...(workspace !== undefined ? { workspace } : {}),
+    ...(workspaceConfig !== undefined ? { workspaceConfig } : {}),
     gitNetwork,
     gitPush,
     env,
@@ -116,11 +131,18 @@ export function parseCliOptions(argv: string[]): ParseCliResult {
     return { ok: true, options };
   }
 
+  if (workspace && workspaceConfig) {
+    return { ok: false, error: '--workspace and --workspace-config are mutually exclusive' };
+  }
+  if (workspaceConfig !== undefined && !isAbsolute(workspaceConfig)) {
+    return { ok: false, error: `--workspace-config path must be absolute (received: "${workspaceConfig}")` };
+  }
+
   if (transport === 'stdio') {
-    if (!workspace) {
-      return { ok: false, error: 'stdio transport requires an explicit --workspace <absolute-path>' };
+    if (!workspace && !workspaceConfig) {
+      return { ok: false, error: 'stdio transport requires an explicit --workspace <absolute-path> or --workspace-config <absolute-path>' };
     }
-    if (!isAbsolute(workspace)) {
+    if (workspace && !isAbsolute(workspace)) {
       return { ok: false, error: `--workspace path must be absolute (received: "${workspace}")` };
     }
   } else if (workspace && !transportExplicit) {
@@ -148,7 +170,10 @@ Usage:
 
 Options:
   --transport <http|stdio>   Transport protocol: http (default) or stdio
-  --workspace <path>         Absolute path to local project folder (required for stdio)
+  --workspace <path>         Absolute path to one local project folder (stdio)
+  --workspace-config <path>  Absolute path to a YAML/JSON registry of named local workspaces;
+                             serves them all from one stdio process, or with --transport http
+                             from one authenticated local HTTP endpoint (needs MCP_BEARER_TOKEN)
   --git-network              Enable network Git operations (fetch, pull, clone) in local mode
   --git-push                 Enable Git push operations in local mode (implies --git-network)
   --env <NAME>               Forward additional host environment variable (repeatable)
@@ -161,6 +186,12 @@ Examples:
 
   # Start local stdio MCP server for a folder:
   cloud-harness-mcp --transport stdio --workspace /path/to/my-project
+
+  # Serve several persistent local workspaces from one stdio process:
+  cloud-harness-mcp --transport stdio --workspace-config /etc/cloud-harness/workspaces.yaml
+
+  # Serve them from one authenticated local HTTP endpoint:
+  MCP_BEARER_TOKEN=... cloud-harness-mcp --transport http --workspace-config /etc/cloud-harness/workspaces.yaml
 
   # Start local stdio with network Git and custom environment variable:
   cloud-harness-mcp --transport stdio --workspace /path/to/my-project --git-network --env GITHUB_TOKEN

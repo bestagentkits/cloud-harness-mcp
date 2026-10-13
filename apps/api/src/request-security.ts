@@ -11,7 +11,7 @@ function hostnameFromHost(raw: string): string {
   return raw.split(':', 1)[0]!.toLowerCase();
 }
 
-export function requestSecurity(config: ApiConfig) {
+export function requestSecurity(config: Pick<ApiConfig, 'publicHosts' | 'allowedOrigins'>) {
   const hosts = new Set(config.publicHosts.map((host) => host.toLowerCase()));
   const origins = new Set(config.allowedOrigins.map((origin) => new URL(origin).origin));
 

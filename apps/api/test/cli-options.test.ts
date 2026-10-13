@@ -156,5 +156,32 @@ describe('parseCliOptions', () => {
     expect(help).toContain('--git-network');
     expect(help).toContain('--git-push');
     expect(help).toContain('--env');
+    expect(help).toContain('--workspace-config');
+  });
+});
+
+describe('parseCliOptions --workspace-config', () => {
+  const config = '/etc/cloud-harness/workspaces.yaml';
+
+  it('accepts a workspace registry for stdio and http', () => {
+    for (const argv of [
+      ['--transport', 'stdio', '--workspace-config', config],
+      ['--transport', 'http', `--workspace-config=${config}`],
+      ['--workspace-config', config]
+    ]) {
+      const result = parseCliOptions(argv);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.options.workspaceConfig).toBe(config);
+    }
+  });
+
+  it('rejects a relative registry path, a missing value, and combining it with --workspace', () => {
+    expect(parseCliOptions(['--transport', 'stdio', '--workspace-config', 'workspaces.yaml'])).toMatchObject({ ok: false, error: expect.stringContaining('must be absolute') });
+    expect(parseCliOptions(['--transport', 'stdio', '--workspace-config'])).toMatchObject({ ok: false });
+    expect(parseCliOptions(['--transport', 'stdio', '--workspace', '/a', '--workspace-config', config])).toMatchObject({ ok: false, error: expect.stringContaining('mutually exclusive') });
+  });
+
+  it('still requires a workspace source for stdio', () => {
+    expect(parseCliOptions(['--transport', 'stdio'])).toMatchObject({ ok: false, error: expect.stringContaining('--workspace-config') });
   });
 });
