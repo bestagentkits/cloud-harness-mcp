@@ -488,9 +488,9 @@ li.empty { padding: var(--space-6); }
 .status::before { content: ""; width: .375rem; height: .375rem; border-radius: var(--radius-pill); background: currentColor; flex: 0 0 auto; }
 .status.active, .status.enabled, .status.succeeded, .status.connected, .status.ready, .status.healthy, .status.approved, .status.open { background: var(--success-soft); color: var(--success); border-color: var(--success-line); }
 .status.reaping, .status.expired, .status.pending, .status.cancelling, .status.degraded, .status.stale { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-line); }
-.status.failed, .status.error, .status.timed_out, .status.timedout, .status.limit_exceeded, .status.interrupted, .status.network_quarantined, .status.revoked, .status.rejected, .status.disconnected { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-line); }
+.status.failed, .status.error, .status.timed_out, .status.timedout, .status.limit_exceeded, .status.interrupted, .status.network_quarantined, .status.revoked, .status.rejected, .status.disconnected, .status.lost { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-line); }
 /* Neutral in-progress state. Emitted by MCP_STATUS.connecting in dashboard-render.js. */
-.status.info, .status.running, .status.spawning, .status.creating, .status.queued { background: var(--info-soft); color: var(--info); border-color: var(--info-line); }
+.status.info, .status.running, .status.spawning, .status.creating, .status.queued, .status.connecting { background: var(--info-soft); color: var(--info); border-color: var(--info-line); }
 /* A library skill is on, off, or set aside. `enabled` shares the success pill and `archived` the neutral
    info pill, so the State column of the Skills library reads at a glance; a disabled skill keeps the
    quiet base pill, because being switched off is a deliberate state rather than a fault. */
@@ -1095,6 +1095,21 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 /* ───────────────────────── Density on precise pointers ───────────────────────── */
 /* A mouse can hit a 36px control reliably, so the desktop console tightens to a working density;
    coarse pointers keep the 44px floor declared on the base rules above. */
+/* Dashboard Terminal. The emulator paints inside .terminal-surface; its colours come from these tokens
+   through dashboard-terminal.js, so the surface and the cells agree in both themes. */
+.terminal-panel { display: grid; gap: var(--space-3); }
+.terminal-panel > .page-note { margin: 0; }
+.terminal-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4); }
+.terminal-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; min-width: 0; color: var(--ink-muted); font-size: var(--text-13); }
+.terminal-status > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.terminal-reattach { display: grid; gap: var(--space-2); margin: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); }
+.terminal-reattach ul { list-style: none; display: grid; gap: var(--space-2); margin: 0; padding: 0; }
+.terminal-reattach li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
+.terminal-surface { position: relative; width: 100%; min-width: 0; height: min(32rem, 62dvh); min-height: 14rem; overflow: hidden; padding: var(--space-2); background: var(--code-bg); border: 1px solid var(--line-strong); border-radius: var(--radius-md); }
+.terminal-surface:focus-visible, .terminal-surface:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.terminal-surface .xterm { height: 100%; }
+.terminal-surface .xterm-viewport { background: transparent; }
+
 @media (pointer: fine) {
   :root { --control-h: 2.25rem; }
   button, input, select, .accent-btn:not(.danger), .button, .secondary, .icon-btn, .profile-chip, details.row-edit > summary, .cockpit-actions details.row-edit > summary { min-height: 2.25rem; }
@@ -1210,6 +1225,13 @@ dialog .stack-form { margin-block: 0; max-width: none; }
   .facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .facts dd { margin-block-end: var(--space-2); }
   .agent-node .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 47.9375rem) {
+  .terminal-toolbar { align-items: stretch; }
+  .terminal-toolbar .row-actions { width: 100%; }
+  .terminal-toolbar .row-actions > button { flex: 1 1 0; }
+  .terminal-surface { height: 55dvh; min-height: 12rem; padding: var(--space-1); }
 }
 
 @media (prefers-reduced-motion: reduce) {

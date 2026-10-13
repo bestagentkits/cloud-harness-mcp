@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { accessSync, constants, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Router, type Request } from 'express';
 import { serverVersion } from './version.js';
@@ -11,8 +13,27 @@ const DASHBOARD_ASSETS = new Set([
   'dashboard-api.js',
   'dashboard-render.js',
   'dashboard-pages.js',
-  'dashboard.js'
+  'dashboard.js',
+  'dashboard-terminal.js'
 ]);
+
+/**
+ * Third-party browser modules the Terminal pane loads, served from the installed packages rather than a
+ * vendored copy, so the bytes the browser runs are always the pinned dependency in `package.json` (and in
+ * the production image, which keeps production `node_modules`). Resolution happens once at startup: a
+ * missing package fails the process instead of serving a Terminal tab that cannot load its emulator.
+ * Each name maps to one fixed file; no request value reaches a filesystem path.
+ */
+const requirePackage = createRequire(import.meta.url);
+const packageDirectory = (name: string) => dirname(requirePackage.resolve(`${name}/package.json`));
+const xtermDirectory = packageDirectory('@xterm/xterm');
+const xtermFitDirectory = packageDirectory('@xterm/addon-fit');
+export const DASHBOARD_VENDOR_ASSETS: ReadonlyMap<string, string> = new Map([
+  ['xterm.mjs', join(xtermDirectory, 'lib', 'xterm.mjs')],
+  ['xterm.css', join(xtermDirectory, 'css', 'xterm.css')],
+  ['xterm-addon-fit.mjs', join(xtermFitDirectory, 'lib', 'addon-fit.mjs')]
+]);
+for (const path of DASHBOARD_VENDOR_ASSETS.values()) accessSync(path, constants.R_OK);
 
 /**
  * The server version, immutable asset namespace and the three theme variants are
@@ -62,6 +83,7 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
   '/workspaces/:workspaceId/deploy',
   '/workspaces/:workspaceId/artifacts',
   '/workspaces/:workspaceId/activity',
+  '/workspaces/:workspaceId/terminal',
   '/agents',
   '/agents/:agentId',
   '/projects',
@@ -78,6 +100,7 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
   '/integrations/github',
   '/activity',
   '/approvals',
+  '/terminals',
   '/mcp-servers',
   '/mcp-servers/:serverId',
   '/settings',
@@ -106,10 +129,10 @@ export function createDashboardAssetsRouter(): Router {
   // imports inherit that namespace, so every module in a release can be cached
   // indefinitely without serving stale code after the next deploy.
   router.get('/assets/:version/:asset', (request, response) => {
-    if (request.params.version !== serverVersion || !DASHBOARD_ASSETS.has(request.params.asset)) {
-      response.sendStatus(404);
-      return;
-    }
+    if (request.params.version !== serverVersion) { response.sendStatus(404); return; }
+    const vendor = DASHBOARD_VENDOR_ASSETS.get(request.params.asset);
+    if (vendor) { response.sendFile(vendor, { headers: immutableOptions.headers }); return; }
+    if (!DASHBOARD_ASSETS.has(request.params.asset)) { response.sendStatus(404); return; }
     response.sendFile(request.params.asset, immutableOptions);
   });
 
@@ -120,6 +143,10 @@ export function createDashboardAssetsRouter(): Router {
   router.get('/assets/dashboard-render.js', (_request, response) => response.sendFile('dashboard-render.js', legacyOptions));
   router.get('/assets/dashboard-pages.js', (_request, response) => response.sendFile('dashboard-pages.js', legacyOptions));
   router.get('/assets/dashboard.js', (_request, response) => response.sendFile('dashboard.js', legacyOptions));
+  router.get('/assets/dashboard-terminal.js', (_request, response) => response.sendFile('dashboard-terminal.js', legacyOptions));
+  for (const [name, path] of DASHBOARD_VENDOR_ASSETS) {
+    router.get(`/assets/${name}`, (_request, response) => response.sendFile(path, { headers: legacyOptions.headers }));
+  }
   // Each redirect is registered with a literal destination rather than by looping
   // over the exported table: no request value can reach the destination, and
   // `dashboard-app-mount.test.ts` asserts the behaviour of every table entry, so a

@@ -21,9 +21,9 @@ const base = {
 };
 
 describe('workspace cockpit', () => {
-  it('carries the nine contextual sections in operator order', () => {
+  it('carries the ten contextual sections in operator order', () => {
     expect(WORKSPACE_TABS.map((tab) => tab.id)).toEqual([
-      'summary', 'agents', 'runtime', 'files', 'git', 'automation', 'deploy', 'artifacts', 'activity'
+      'summary', 'agents', 'runtime', 'terminal', 'files', 'git', 'automation', 'deploy', 'artifacts', 'activity'
     ]);
     const tabs = renderWorkspaceTabs(workspaceId, 'git');
     expect(tabs).toContain(`href="/dashboard/workspaces/${workspaceId}/summary"`);
@@ -57,7 +57,7 @@ describe('workspace cockpit', () => {
     expect(workspaceHasAction(failed, 'workspace_context')).toBe(false);
     expect(workspaceHasAction(failed, 'workspace_recover')).toBe(false);
     expect(workspaceHasAction(failed, 'workspace_open')).toBe(true);
-    for (const tab of ['runtime', 'files', 'git', 'automation', 'deploy']) {
+    for (const tab of ['runtime', 'terminal', 'files', 'git', 'automation', 'deploy']) {
       expect(workspaceTabAvailable(failed, tab), tab).toBe(false);
     }
     for (const tab of ['summary', 'agents', 'artifacts', 'activity']) {

@@ -92,6 +92,7 @@ export const WORKSPACE_TABS = [
   { id: 'summary', label: 'Summary' },
   { id: 'agents', label: 'Agents' },
   { id: 'runtime', label: 'Runtime' },
+  { id: 'terminal', label: 'Terminal' },
   { id: 'files', label: 'Files' },
   { id: 'git', label: 'Git' },
   { id: 'automation', label: 'Automation' },
@@ -100,7 +101,7 @@ export const WORKSPACE_TABS = [
   { id: 'activity', label: 'Activity' }
 ];
 
-const LIVE_WORKSPACE_TABS = new Set(['runtime', 'files', 'git', 'automation', 'deploy']);
+const LIVE_WORKSPACE_TABS = new Set(['runtime', 'terminal', 'files', 'git', 'automation', 'deploy']);
 
 /** The runner is the source of truth for lifecycle actions exposed to the browser. */
 export function workspaceHasAction(workspace, action) {
@@ -480,6 +481,88 @@ export function renderRuntimePanel({ tasks = [], graph = {}, sessions = [], io }
     note: '<div class="page-note"><strong>Live workspace runtime.</strong> Tasks and sessions are volatile: they disappear when the workspace is reaped, unlike retained artifacts.</div>',
     body: `<section aria-labelledby="tasks-heading"><h2 id="tasks-heading">Tasks</h2>${renderTaskList(tasks, now)}</section><section aria-labelledby="graph-heading"><h2 id="graph-heading">Task dependency graph</h2>${renderTaskGraph(graph, now)}</section>`
   })}${renderSessionsPanel({ sessions, io })}`;
+}
+
+/**
+ * Dashboard Terminal states, in the words the status line uses. The runner's lifecycle states map one to
+ * one; `connecting`, `lost` and `error` are browser-side states. `lost` is the runner answering NOT_FOUND:
+ * the PTY is gone (closed, timed out, or lost to a runner restart) and is never silently reconnected.
+ */
+export const TERMINAL_LOST_MESSAGE = 'This terminal is no longer available — it was closed, timed out, or the runner restarted. Terminals are not resumed after a runner restart.';
+/** Moves keyboard focus out of the emulator; Tab and Escape themselves belong to the shell. */
+export const TERMINAL_RELEASE_SHORTCUT = 'Ctrl+Shift+F6';
+
+export function terminalStatusLabel(state = {}) {
+  const phase = String(state.phase ?? state.status ?? 'idle');
+  if (phase === 'connecting') return 'Connecting…';
+  if (phase === 'running') return 'Running';
+  if (phase === 'exited') return Number.isInteger(state.exitCode) ? `Exited (code ${state.exitCode})` : 'Exited';
+  if (phase === 'closed') return 'Closed';
+  if (phase === 'timed_out') return 'Timed out';
+  if (phase === 'failed') return 'Failed';
+  if (phase === 'lost') return 'No longer available';
+  if (phase === 'error') return 'Could not connect';
+  return 'Not started';
+}
+
+/** The sentence under the pill: what happened and what the operator can do next. */
+export function terminalStatusDetail(state = {}) {
+  const phase = String(state.phase ?? 'idle');
+  if (phase === 'lost') return TERMINAL_LOST_MESSAGE;
+  if (phase === 'timed_out') return 'The terminal reached its idle or lifetime limit and was ended. Start a new session to continue.';
+  if (phase === 'failed') return `The terminal could not be kept running${state.terminal?.endReason ? `: ${state.terminal.endReason}` : '.'} Start a new session to continue.`;
+  if (phase === 'exited') return 'The shell ended. Start a new session to continue.';
+  if (phase === 'closed') return 'This terminal was closed. Start a new session to continue.';
+  if (phase === 'error') return state.message ? `${state.message}` : 'The terminal could not be opened.';
+  if (phase === 'connecting') return 'Opening a shell in this workspace.';
+  if (phase === 'running') return state.message ?? '';
+  return 'Open a terminal to run commands in this workspace.';
+}
+
+const terminalAge = (value, now) => {
+  const started = Date.parse(value ?? '');
+  if (!Number.isFinite(started)) return 'Unknown';
+  const minutes = Math.max(0, Math.round((now - started) / 60_000));
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+};
+const terminalTime = (value) => (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? time(value) : 'Unknown');
+const terminalSize = (terminal) => (Number.isInteger(terminal?.cols) && Number.isInteger(terminal?.rows) ? `${terminal.cols}×${terminal.rows}` : 'Unknown');
+
+/**
+ * The cockpit Terminal tab. The emulator mounts into `#terminal-surface` only after the operator opens or
+ * re-attaches a session, so visiting the tab never starts a shell by itself. Running terminals of this
+ * workspace are offered for re-attach: output is replayed from the runner's bounded retention.
+ */
+export function renderTerminalPanel({ workspaceId = '', terminals = [], now = Date.now() } = {}) {
+  const running = terminals.filter((terminal) => terminal?.status === 'running');
+  const offers = running.length
+    ? `<div id="terminal-reattach" class="terminal-reattach"><h3 id="terminal-reattach-heading">Running terminals</h3><p class="page-note">These shells are still running in this workspace. Re-attach to continue one; recent output is replayed.</p><ul class="record-list" aria-labelledby="terminal-reattach-heading">${running.map((terminal) => `<li><span><span class="mono">${escape(terminal.terminalId)}</span> <small>${escape(terminalSize(terminal))} · started ${escape(terminalAge(terminal.createdAt, now))} ago · idle expiry ${terminalTime(terminal.idleExpiresAt)}</small></span><button class="reattach-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}">Re-attach</button></li>`).join('')}</ul></div>`
+    : '';
+  return `<section id="terminal-panel" class="panel terminal-panel" aria-labelledby="terminal-heading" data-workspace-id="${escape(workspaceId)}">`
+    + '<h2 id="terminal-heading">Terminal</h2>'
+    + `<p class="page-note">An interactive shell inside this workspace's executor, with the same limits as agent commands. Keys typed in the terminal go to the shell, including Tab and Escape; press <kbd>${escape(TERMINAL_RELEASE_SHORTCUT)}</kbd> to move focus out of the terminal. <a href="/dashboard/terminals">All terminals</a></p>`
+    + '<div class="terminal-toolbar">'
+    + `<p class="terminal-status" role="status" aria-live="polite"><span id="terminal-state" class="status idle">${escape(terminalStatusLabel({ phase: 'idle' }))}</span> <span id="terminal-detail">${escape(terminalStatusDetail({ phase: 'idle' }))}</span></p>`
+    + '<div class="row-actions"><button id="terminal-close" class="danger" type="button" disabled>Close</button><button id="terminal-new" class="accent-btn" type="button">New session</button></div>'
+    + '</div>'
+    + offers
+    + '<div id="terminal-surface" class="terminal-surface" role="group" aria-label="Terminal" hidden></div>'
+    + '</section>';
+}
+
+/**
+ * The operator view: every live terminal across the principal's workspaces. Close confirms in the shared
+ * dialog first; only a running terminal can be closed.
+ */
+export function renderTerminalsIndex({ terminals = [], workspaces = [], now = Date.now() } = {}) {
+  const names = new Map(workspaces.map((workspace) => [workspace.workspaceId, repositoryName(workspace.repositoryUrl)]));
+  if (!terminals.length) return '<section class="panel" aria-labelledby="terminals-heading"><h2 id="terminals-heading">Live terminals</h2><div class="empty"><h3>No terminals are running.</h3><p>Open one from a workspace\'s Terminal tab.</p></div></section>';
+  const workspaceLink = (terminal) => `<a href="/dashboard/workspaces/${encodeURIComponent(terminal.workspaceId)}/terminal">${escape(names.get(terminal.workspaceId) ?? terminal.workspaceId)}</a>`;
+  const closeButton = (terminal) => `<button class="danger close-terminal" type="button" data-terminal-id="${escape(terminal.terminalId)}" data-workspace-id="${escape(terminal.workspaceId)}"${terminal.status === 'running' ? '' : ' disabled'}>Close</button>`;
+  const pill = (terminal) => `<span class="status ${escape(String(terminal.status ?? 'unknown'))}">${escape(terminalStatusLabel({ phase: terminal.status, exitCode: terminal.exitCode }))}</span>`;
+  const rows = terminals.map((terminal) => `<tr><th scope="row">${workspaceLink(terminal)}<small class="mono">${escape(terminal.terminalId)}</small></th><td>${pill(terminal)}</td><td>${escape(terminalSize(terminal))}</td><td>${escape(terminalAge(terminal.createdAt, now))}</td><td>${terminalTime(terminal.idleExpiresAt)}</td><td><div class="row-actions">${closeButton(terminal)}</div></td></tr>`).join('');
+  const cards = terminals.map((terminal) => `<li><h3>${workspaceLink(terminal)}</h3><p class="mono">${escape(terminal.terminalId)}</p><dl><dt>Status</dt><dd>${pill(terminal)}</dd><dt>Size</dt><dd>${escape(terminalSize(terminal))}</dd><dt>Age</dt><dd>${escape(terminalAge(terminal.createdAt, now))}</dd><dt>Idle expiry</dt><dd>${terminalTime(terminal.idleExpiresAt)}</dd></dl><div class="row-actions">${closeButton(terminal)}</div></li>`).join('');
+  return `<section class="panel" aria-labelledby="terminals-heading"><h2 id="terminals-heading">Live terminals</h2><p class="page-note">Terminals live in runner memory: they end on idle expiry, at their lifetime limit, or when the runner restarts, and are never resumed.</p><div class="desktop-table"><table><caption>${terminals.length} terminal(s)</caption><thead><tr><th>Workspace</th><th>Status</th><th>Size</th><th>Age</th><th>Idle expiry</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul></section>`;
 }
 
 /** Git posture: branch, upstream, ahead/behind, and the index/working-tree summary. */

@@ -56,8 +56,10 @@ import {
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
-  renderActivityCenter, renderApprovals
+  renderActivityCenter, renderApprovals,
+  renderTerminalPanel, renderTerminalsIndex
 } from './dashboard-render.js';
+import { mountTerminalPane } from './dashboard-terminal.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -1133,6 +1135,7 @@ export function initializeDashboard() {
     agents: loadAgents,
     activity: loadActivity,
     approvals: loadApprovals,
+    terminals: loadTerminals,
     artifacts: loadArtifacts,
     'api-keys': loadApiKeys,
     settings: loadSettings,
@@ -1142,6 +1145,7 @@ export function initializeDashboard() {
   let loadController;
   function load() {
     loadController?.abort();
+    disposeTerminalPane();
     const controller = new globalThis.AbortController();
     loadController = controller;
     const queued = loadQueue.catch(() => undefined).then(async () => {
@@ -1156,7 +1160,7 @@ export function initializeDashboard() {
     alertBox.hidden = true; setBusy(true);
     try {
       const pathname = location.pathname;
-      const pathMatch = pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|files|git|automation|deploy|artifacts|activity))?$/);
+      const pathMatch = pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})(?:\/(summary|agents|runtime|terminal|files|git|automation|deploy|artifacts|activity))?$/);
       const projectMatch = pathname.match(/^\/dashboard\/projects\/(prj_[A-Za-z0-9_-]{20,80})$/);
       const knowledgeMatch = pathname.match(/^\/dashboard\/knowledge\/(kn_[A-Za-z0-9_-]{10,80})$/);
       const mcpServerMatch = pathname.match(/^\/dashboard\/mcp-servers\/(mcps_[A-Za-z0-9_-]{20,80})$/);
@@ -3232,13 +3236,14 @@ export function initializeDashboard() {
   async function loadWorkspace(id, tab = 'summary', io) {
     selectNavigation('workspaces');
     document.querySelector('#command-surface').hidden = true; detail.hidden = true;
+    disposeTerminalPane();
     const item = await workspace(id);
     // Context is an executor-backed operation. Terminal workspaces must not emit
     // predictable 409s merely because the cockpit shell rendered.
     const contextResult = workspaceHasAction(item, 'workspace_context')
       ? await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined)
       : undefined;
-    setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, files, git, automation, deploy, artifacts, and activity.');
+    setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, terminal, files, git, automation, deploy, artifacts, and activity.');
     const body = await cockpitTabBody(id, tab, item, contextResult?.data, io);
     // A tab body may need to bind controls once it is in the document, so the Files tab
     // returns its markup plus that hook instead of reaching into the DOM early.
@@ -3258,6 +3263,7 @@ export function initializeDashboard() {
     if (tab === 'agents') return renderWorkspaceAgents(workspaceId);
     if (!workspaceTabAvailable(workspace, tab)) return renderWorkspaceUnavailableTab(workspace, tab);
     if (tab === 'runtime') return runtimePanel(workspaceId, io);
+    if (tab === 'terminal') return terminalPanel(workspaceId);
     if (tab === 'files') return filesPanel(workspaceId);
     // The diff toggle is a URL parameter, so a staged/unstaged view is shareable and
     // the back button behaves.
@@ -3279,6 +3285,55 @@ export function initializeDashboard() {
     }
     const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/files?path=${encodeURIComponent(path)}`);
     return { markup: renderFileList(workspaceId, result.data), afterRender: () => bindFileOperations(workspaceId) };
+  }
+  /**
+   * The Terminal tab. Running terminals of this workspace are offered for re-attach (their retained
+   * output replays from the start); nothing opens until the operator asks, so visiting the tab never
+   * starts a shell. The pane is disposed on navigation, which stops its loops but leaves the PTY running.
+   */
+  let activeTerminalPane;
+  function disposeTerminalPane() {
+    activeTerminalPane?.dispose();
+    activeTerminalPane = undefined;
+  }
+  async function terminalPanel(workspaceId) {
+    const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/terminals`).catch(() => undefined);
+    const terminals = Array.isArray(result?.data?.terminals) ? result.data.terminals : [];
+    return {
+      markup: renderTerminalPanel({ workspaceId, terminals }),
+      afterRender: () => {
+        const root = content.querySelector('#terminal-panel');
+        if (!root) return;
+        disposeTerminalPane();
+        activeTerminalPane = mountTerminalPane({ root, workspaceId, api, announce, onError: showError, terminals });
+      }
+    };
+  }
+  /** Operator view of every live terminal; closing one ends its shell after a confirm. */
+  async function loadTerminals() {
+    selectNavigation('workspaces');
+    document.querySelector('#command-surface').hidden = true;
+    const [terminalsResult, workspacesResult] = await Promise.all([
+      api('/terminals'),
+      api('/workspaces').catch(() => undefined)
+    ]);
+    const terminals = Array.isArray(terminalsResult?.data?.terminals) ? terminalsResult.data.terminals : [];
+    const workspaces = Array.isArray(workspacesResult?.data?.workspaces) ? workspacesResult.data.workspaces : [];
+    insertRendered(content, renderTerminalsIndex({ terminals, workspaces }));
+    for (const button of content.querySelectorAll('.close-terminal')) button.addEventListener('click', (event) => {
+      const terminalId = button.dataset.terminalId ?? '';
+      const workspaceId = button.dataset.workspaceId ?? '';
+      void confirmAction({
+        title: 'Close this terminal?',
+        description: 'The shell and every process it started end now. Unsaved work in that shell is lost; the workspace itself is unchanged.',
+        target: terminalId, label: 'Close terminal', pendingLabel: 'Closing…',
+        action: async () => {
+          await api(`/workspaces/${encodeURIComponent(workspaceId)}/terminals/${encodeURIComponent(terminalId)}/close`, { method: 'POST', body: requestBody({}) });
+          announce('Terminal closed.');
+          await loadTerminals();
+        }
+      }, event.currentTarget);
+    });
   }
   /** The workspace's retained snapshots, scoped by each record's own workspaceId. */
   async function artifactsPanel(workspaceId) {
@@ -3768,6 +3823,8 @@ export function initializeDashboard() {
   openPaletteButton.addEventListener('click', (event) => openPalette(event.currentTarget));
   document.addEventListener('keydown', (event) => {
     if (!isPaletteHotkey(event)) return;
+    // Inside the terminal, Ctrl+K belongs to the shell (kill to end of line); the release chord leaves it first.
+    if (event.target?.closest?.('.terminal-surface')) return;
     event.preventDefault();
     if (paletteDialog.open) { closePalette(); return; }
     openPalette(openPaletteButton);

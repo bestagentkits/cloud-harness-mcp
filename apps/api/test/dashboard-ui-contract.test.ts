@@ -181,6 +181,23 @@ describe('dashboard static UI contract', () => {
     expect([...script.matchAll(/\.style\.[A-Za-z]+/g)].map((m) => m[0])).toEqual(['.style.transform', '.style.transform', '.style.transform']);
   });
 
+  it('confines the terminal emulator to local assets and one audited CSSOM adapter', () => {
+    // The emulator is served from this release's asset namespace: no CDN, no font, no remote stylesheet.
+    const terminal = asset('dashboard-terminal.js');
+    expect(terminal).not.toMatch(/https?:\/\//);
+    expect([...terminal.matchAll(/import\('([^']+)'\)/g)].map((m) => m[1])).toEqual(['./xterm.mjs', './xterm-addon-fit.mjs']);
+    expect([...terminal.matchAll(/new URL\('([^']+)', import\.meta\.url\)/g)].map((m) => m[1])).toEqual(['./xterm.css']);
+    // xterm writes its theme into script-created <style> elements and true-colour cells through
+    // setAttribute('style'); both are blocked by `style-src 'self'`. The adapter reroutes exactly those
+    // script paths through CSSOM, so the only inline-style write in this file is that one cssText.
+    expect([...terminal.matchAll(/\.style\.[A-Za-z]+/g)].map((m) => m[0])).toEqual(['.style.cssText']);
+    expect(terminal).toContain('replaceSync');
+    expect(terminal).toContain('adoptedStyleSheets');
+    // The terminal never borrows a nonce to slip inline styles past the policy, and renders no style markup.
+    expect(terminal).not.toMatch(/\.nonce\b|'nonce'/);
+    expect(terminal).not.toMatch(/style=/);
+  });
+
   it('keeps every spacing step on the marketing 4px rhythm', () => {
     const steps = [...css.matchAll(/--space-(\d+):\s*([\d.]+)rem;/g)].map((m) => [Number(m[1]), Number(m[2])]);
     expect(steps.length).toBeGreaterThan(0);

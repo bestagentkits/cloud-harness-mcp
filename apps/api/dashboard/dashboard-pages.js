@@ -93,6 +93,19 @@ export const DASHBOARD_PAGES = [
     icon: '<path d="M9 12l2 2 4-4"/><path d="M12 3l8 4v6c0 4.5-3.2 7.3-8 8-4.8-.7-8-3.5-8-8V7z"/>'
   },
   {
+    id: 'terminals',
+    route: '/dashboard/terminals',
+    label: 'Terminals',
+    group: 'operate',
+    title: 'Terminals',
+    help: 'Every live workspace terminal, with its size, age, and idle expiry.',
+    palette: true,
+    paletteHint: 'Live workspace terminals and their idle expiry',
+    nav: false,
+    navParent: 'workspaces',
+    icon: '<path d="M4 5h16v14H4z"/><path d="M8 10l3 2-3 2"/><path d="M13 15h3"/>'
+  },
+  {
     id: 'audit',
     route: '/dashboard/audit',
     label: 'Audit',
