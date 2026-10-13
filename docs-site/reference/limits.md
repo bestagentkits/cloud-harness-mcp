@@ -19,3 +19,6 @@ To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MC
 | **Workspace Idle TTL** | 300s (5 min) | `WORKSPACE_IDLE_TTL_SECONDS` |
 | **Max File List Entries** | 500 entries / page | `files_list.limit` |
 | **Max Active API Keys** | 10 per identity | Hard bound |
+| **Skill Size (Skills over MCP, ZIP import)** | 512 files and 16 MiB per skill | Hard bound |
+| **`skills/list` Page Size** | 100 skills / page | Hard bound |
+| **Skills over MCP Cache Hint** | `ttlMs: 30000`, `cacheScope: private` | Hard bound |

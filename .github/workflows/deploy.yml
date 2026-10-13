@@ -99,8 +99,12 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
+        # Keepalives stop an idle middlebox from dropping the session during a
+        # silent image build. The deploy itself runs as a host systemd unit, so a
+        # dropped session only loses this log stream, never the release.
         run: |
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes "$VPS_USER@$VPS_HOST" \
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "$VPS_USER@$VPS_HOST" \
             "sudo -n /usr/local/sbin/cloud-harness-deploy '$RELEASE_SHA'"
       - name: Remove SSH material
         if: always()

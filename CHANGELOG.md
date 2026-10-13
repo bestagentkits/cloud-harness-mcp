@@ -1,3 +1,36 @@
+## [0.63.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.2...v0.63.3) (2026-10-13)
+
+
+### Bug Fixes
+
+* **deploy:** recover a deploy killed after stopping the release, and never downgrade the deploy tooling ([#294](https://github.com/bestagentkits/cloud-harness-mcp/issues/294)) ([9d2764e](https://github.com/bestagentkits/cloud-harness-mcp/commit/9d2764e177ee8007c26e315f4ffbb4d0cf6b7826))
+
+## [0.63.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.1...v0.63.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* **deploy:** run deploys as a detached systemd unit so a dropped SSH session cannot strand a stopped release ([#293](https://github.com/bestagentkits/cloud-harness-mcp/issues/293)) ([9be6315](https://github.com/bestagentkits/cloud-harness-mcp/commit/9be63152544f0793dda8928f7d8e87c4fe880636))
+
+## [0.63.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.63.0...v0.63.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* **deploy:** build release images before stopping the serving release ([#292](https://github.com/bestagentkits/cloud-harness-mcp/issues/292)) ([639a924](https://github.com/bestagentkits/cloud-harness-mcp/commit/639a9248b14ef7059ce1c9ad2ef38ed308f0a00c))
+
+# [0.63.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.8...v0.63.0) (2026-10-12)
+
+
+### Bug Fixes
+
+* **deploy:** roll back an interrupted deploy on HUP, INT, TERM and PIPE ([#289](https://github.com/bestagentkits/cloud-harness-mcp/issues/289)) ([4c87277](https://github.com/bestagentkits/cloud-harness-mcp/commit/4c87277712c55dbeec9c1d2c5e48e7c5050bd05a)), closes [#262](https://github.com/bestagentkits/cloud-harness-mcp/issues/262)
+
+
+### Features
+
+* **mcp:** serve skills over the SEP-2640 Skills extension, including workspace-bound skills ([#288](https://github.com/bestagentkits/cloud-harness-mcp/issues/288)) ([c972f39](https://github.com/bestagentkits/cloud-harness-mcp/commit/c972f393e7f1fc47bc3531a34641ac1d6f56a732))
+
 ## [0.62.8](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.62.7...v0.62.8) (2026-09-29)
 
 

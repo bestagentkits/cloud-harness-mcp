@@ -198,13 +198,42 @@ It is fail-closed. If the restore itself fails, `contain_failed_release` in
 `compose down --remove-orphans`, deliberately leaving the release **stopped**
 rather than serving a half-promoted one.
 
-It does not run when the deploy is interrupted. The automatic path is
-`trap rollback ERR` in `deploy/scripts/deploy-release.sh`, and `ERR` does not
-fire on a signal, so a deploy cut short by a dropped SSH connection (`SIGHUP`)
-stops without restoring anything. The deploy stops the running release before it
-compiles the new images and promotes them only after the canary passes, so an
-interrupted run can leave the release stopped with no automatic recovery. Check
-the state and use the manual rollback below.
+It cannot run when the deploy process is killed outright. The deploy therefore
+never runs inside the caller's session: `cloud-harness-deploy` starts it as the
+transient unit `cloud-harness-deploy-<sha>` and only follows its journal. A
+dropped SSH connection used to stop the release and then lose the deploy,
+because `sudo` (with `use_pty`) answers a dead connection by sending the
+command's process group `SIGHUP`, `SIGTERM` and, two seconds later, `SIGKILL`,
+before the signal trap could start the rollback. Inside the unit the deploy also
+traps `ERR` plus `HUP`, `INT`, `TERM` and `PIPE`, and writes signal-path output
+to `/var/lib/cloud-harness/deploy-interrupt.log`.
+
+A `SIGKILL`, OOM kill, or host reboot bypasses every in-process trap, so the
+deploy records `/var/lib/cloud-harness/deploy-in-progress` (the previous
+release, plus the snapshot once it is complete) before it stops the release and
+removes it on every normal exit. A marker left behind means a killed deploy:
+the deploy unit's `ExecStopPost` runs `cloud-harness-deploy --recover` after a
+kill, and the enabled `cloud-harness-deploy-recover.service` runs it at boot.
+Recovery takes the deploy lock and performs the ordinary rollback to the
+recorded release and snapshot. A shutdown signal skips the in-process rollback
+and leaves the marker for the boot recovery, because Docker is stopping too.
+Check `journalctl -u cloud-harness-deploy-recover` after an unplanned reboot.
+
+The deploy script installs itself into `/usr/local/sbin` only after a
+successful promotion, so every deploy runs the script of the release it
+replaces, and a change to `deploy-release.sh` takes effect from the deploy after
+the one that ships it. The installed tooling only moves forward:
+`/var/lib/cloud-harness/deploy-tooling-release` records the release it came
+from, and promoting a release that is not its descendant (a rollback to an
+older commit) keeps the newer scripts and recovery unit.
+
+The deploy compiles the target images while the current release keeps serving,
+then stops it, so the outage lasts for the backup and the cached rebuild and
+start, not for a cold image build. A failed or interrupted build never stops the
+current release: the deploy puts the checkout and the `:local` image tags back
+on the recorded release and exits. During that build the checkout and the
+`:local` tags already point at the target, so a host reboot in that window
+starts the target release without a pre-deploy backup.
 A manual:
 
 ```bash

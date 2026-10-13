@@ -1268,6 +1268,25 @@ export class WorkspaceService {
   }
 
   /**
+   * The canonical host path of one workspace's checkout, for serving its files without the executor.
+   * The workspace is looked up by explicit id within the owner's records only, never as an implicit
+   * "active" workspace, and must be ACTIVE with an unexpired lease. A missing, foreign, closing, closed,
+   * failed, quarantined, or expired workspace all fail with the same NOT_FOUND, so the answer never says
+   * whether another principal's workspace exists. Reading does not count as activity: the lease is untouched.
+   */
+  async readableCheckoutRoot(ownerId: string, workspaceId: string): Promise<string> {
+    const unavailable = () => new HarnessError('NOT_FOUND', `workspace ${workspaceId} is not available`, 404, false);
+    const record = this.store.byOwnerAndId(ownerId, workspaceId);
+    const now = Date.now();
+    if (!record || record.status !== 'ACTIVE' || record.expiresAt <= now || record.hardExpiresAt <= now) throw unavailable();
+    try {
+      return await realpath(join(record.workspacePath, 'repo'));
+    } catch {
+      throw unavailable();
+    }
+  }
+
+  /**
    * The roster the suggestion engine ranks against. It runs in the workspace's own executor, which is
    * where the skills are, so the control plane reads the inventory instead of guessing at it.
    */

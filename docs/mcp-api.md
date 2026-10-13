@@ -158,6 +158,87 @@ writes. Any active agent from a prior runner epoch is reconciled: its model
 lease is revoked, its container is removed, and its status transitions to
 `INTERRUPTED` with `outcomeUnknown: true`.
 
+## Skills over MCP extension
+
+The Streamable HTTP `/mcp` root also serves the official
+[Skills extension](https://modelcontextprotocol.io/extensions/skills)
+(`io.modelcontextprotocol/skills`, SEP-2640), declared in the server
+capabilities as written for protocol revision `2026-07-28` (`server/discover`).
+It is a protocol surface beside the tools, not a tool: `tools/list` and the
+`skills_list`, `skills_read`, and `skills_run` tools are unchanged. Local stdio
+mode and `/mcp-gateway` do not advertise it.
+
+Decisions that are easy to misread:
+
+- **Scope.** The `/mcp` root serves only `built-in` skills and the
+  authenticated principal's own enabled library skills (the `owner` tier),
+  because its caller is a principal, not a workspace. The workspace-bound
+  endpoint `/mcp/workspaces/<workspaceId>` additionally serves that one
+  workspace's `workspace` tier (`.cloud-harness/skills`, where workspace
+  toolkits are applied) and `repository` tier (`.agents/skills`,
+  `.codex/skills`, `.claude/skills`), read from its checkout. Every call there
+  re-checks that the workspace belongs to the caller and is `ACTIVE` with an
+  unexpired lease, so access stops on the next call after a close or expiry; a
+  missing, foreign, closed, failed, or expired workspace is the same `-32602`
+  "workspace is not available", and reading does not extend the lease.
+  Workspace-tier URIs are refused (`-32602`) on the root endpoint and on any
+  other workspace's endpoint. Precedence follows the executor's resolver: a
+  name present in several tiers is served at each tier-qualified URI. Within
+  the `workspace` and `repository` tiers a skill is keyed by its directory
+  name, which must equal its frontmatter `name` or the skill is not served;
+  the highest-ranked root holding a skill directory of a name decides it, and
+  if that copy cannot be served the name is not served from a lower-ranked
+  root. Only the first 60 directories of each such root, by name, are
+  considered. In the `built-in` and `owner` tiers, same-named skills with
+  differing content are a conflict served under neither, as a launch would
+  refuse it.
+- **Methods.** `skills/list`, `skills/get`, and `resources/read`. Skills are
+  discovered only through `skills/list`: `resources/list` and
+  `resources/templates/list` answer empty so the declared `resources`
+  capability is complete. The optional `resources/directory/read` is not
+  implemented, so `directoryRead` is not declared.
+- **Addressing.** `skill://cloud-harness/<tier>/<name>/<file>` for `built-in`
+  and `owner`, `skill://cloud-harness/<tier>/<workspaceId>/<name>/<file>` for
+  `workspace` and `repository`; a skill is addressed by its `SKILL.md` URI,
+  and only the canonical encoding of a file this server listed is accepted.
+- **Manifests.** Every entry carries the verbatim frontmatter and a complete
+  per-file manifest (`uri`, `sha256:<hex>` digest, byte size) computed from the
+  bytes on disk. Manifests are cached: an owner skill's for as long as its
+  immutable bundle, a built-in skill's only while its directory and `SKILL.md`
+  are unchanged and for a few seconds at most, so a listing can briefly lag an
+  in-place edit of a nested built-in file. A read checks the bytes it returns
+  against the manifest and rebuilds the manifest from disk on a mismatch; it
+  never returns bytes that disagree with it. Workspace and repository content
+  is mutable and repository-controlled, so it is never cached: each call
+  hashes it afresh, and a read whose bytes differ from the manifest built in
+  the same call fails as changed rather than returning them. Only the head of
+  a `SKILL.md` (the 64 KiB frontmatter bound plus its fences) is parsed; the
+  whole document is still hashed and served. A skill with a
+  symlink, a special file, a file name that is not UTF-8, unusable frontmatter, more than 512
+  files or 16 MiB, directories nested deeper than 32 levels, or a resource URI
+  longer than 1024 characters is omitted rather than served partially.
+- **Pages.** A `skills/list` page ends early, with a `nextCursor`, before its
+  serialized entries outgrow a fixed byte bound, so a page of large manifests
+  is split rather than refused.
+- **Caching.** Results carry `ttlMs: 30000` and `cacheScope: "private"`,
+  because the data is per-principal.
+- **Errors.** An invalid, unknown, or unserved URI or cursor, and an
+  unavailable bound workspace, are `-32602`; a file that changed since its
+  manifest was computed is `-32603` asking the client to re-run `skills/get`;
+  other runner or verification failures are `-32603` with a generic message.
+- **Reading is not activation.** These methods reach only read-only runner
+  operations. Loading, approving, and activating a skill is the host's
+  decision, and running a script still goes through `skills_run` with its
+  own digest pin and privilege grant; the extension's per-file digests are not
+  a `skills_run` approval.
+
+Executable owners:
+[`apps/api/src/skills-extension.ts`](../apps/api/src/skills-extension.ts),
+[`apps/runner/src/skill-extension-service.ts`](../apps/runner/src/skill-extension-service.ts),
+[`packages/contracts/src/skills-extension.ts`](../packages/contracts/src/skills-extension.ts),
+and
+[`test/integration/skills-extension-http.test.ts`](../test/integration/skills-extension-http.test.ts).
+
 ## Semantics that are easy to misread
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
@@ -374,7 +455,8 @@ lease is revoked, its container is removed, and its status transitions to
 - Skills resolve deterministically with 4-source precedence: `built-in > owner > workspace > repository`
   (and repository sub-roots `.agents/skills > .codex/skills > .claude/skills`). Each result includes
   immutable provenance, selected candidate, and shadowed alternatives. Execution requires matching
-  the approved bundle SHA-256 digest.
+  the approved bundle SHA-256 digest. Native MCP skill reads are described in
+  [Skills over MCP extension](#skills-over-mcp-extension).
 - Hooks support declarative JSON format in `.cloud-harness/hooks.json` with named lifecycle events
   (`on_workspace_open`, `post_checkout`, `pre_commit`, `post_commit`, `manual`). Automatic lifecycle
   execution requires explicit owner activation (`hooks_activate`) pinned to the manifest SHA-256 digest.

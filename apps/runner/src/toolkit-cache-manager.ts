@@ -49,14 +49,17 @@ export class ToolkitCacheManager {
    */
   async publishLocalBundle(
     ownerId: string,
-    files: Record<string, string>
+    files: Record<string, string | Buffer>
   ): Promise<{ bundleSha256: string; byteCount: number; fileCount: number; bundlePath: string }> {
     const entries = Object.entries(files);
     if (entries.length === 0) throw new Error('a local bundle needs at least one file');
     for (const [relativePath] of entries) {
       // The bundle is published into the cache root, so a traversing or absolute member would write
-      // outside the directory belonging to this owner.
-      if (relativePath.startsWith('/') || relativePath.includes('..') || relativePath.includes('\\') || relativePath.endsWith('/')) {
+      // outside the directory belonging to this owner. Checking whole segments keeps a file such as
+      // `notes..md` publishable while still refusing every `..`, `.`, and empty segment.
+      const segments = relativePath.split('/');
+      if (relativePath.startsWith('/') || relativePath.includes('\\') || relativePath.includes('\0')
+        || segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
         throw new Error(`unsafe bundle member path: ${relativePath}`);
       }
     }
