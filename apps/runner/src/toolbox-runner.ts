@@ -211,6 +211,8 @@ export async function runToolboxCommand(
         reject(unavailable('toolbox container could not start', error.message));
       });
       child.on('close', (code) => {
+        // The command has ended: a deadline that passes from here on must not report it as timed out.
+        clearTimeout(timer);
         requestStop = undefined;
         void (stopping ?? Promise.resolve()).then(() => resolve({ output, code, stopped: stopping !== undefined }));
       });
@@ -221,9 +223,10 @@ export async function runToolboxCommand(
     // The harness stopped the container with `docker rm -f`, which delivers SIGKILL: report that, not an exit code.
     if (attached.stopped) return { output, exitCode: null, signal: 'SIGKILL', truncated, timedOut };
     const state = await containerState(spec.name);
-    // A start the daemon refused never ran the command, so its CLI status is not the command's exit code.
-    if (state ? !state.started : attached.code === 125) throw unavailable('toolbox container could not start', output.slice(0, 500));
-    return { output, exitCode: state?.exitCode ?? attached.code, signal: null, truncated, timedOut };
+    // A start the daemon refused never ran the command, so its CLI status is not the command's exit code. When
+    // the state cannot be read, the CLI status cannot be told apart from a refusal either, so it is not reported.
+    if (!state || !state.started) throw unavailable('toolbox container could not start', output.slice(0, 500));
+    return { output, exitCode: state.exitCode, signal: null, truncated, timedOut };
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
@@ -260,8 +263,11 @@ export async function reapStaleToolboxContainers(instanceId: string, live: Reado
     const name = rawName.replace(/^\//, '');
     const createdAt = Date.parse(created);
     if (!names.includes(name) || !Number.isFinite(createdAt) || now - createdAt < TOOLBOX_STALE_AFTER_MS) continue;
-    await removeContainer(name);
-    removed.push(name);
+    // One container Docker will not remove must not block the sweep of the others; the next pass retries it.
+    try {
+      await removeContainer(name);
+      removed.push(name);
+    } catch { /* retried on the next sweep */ }
   }
   return removed;
 }

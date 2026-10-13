@@ -13,6 +13,7 @@ class FakeChild extends EventEmitter {
   readonly stderr = new EventEmitter();
   readonly stdin = { end: () => undefined };
   private closed = false;
+  private ended = false;
   kill(signal: NodeJS.Signals = 'SIGTERM'): boolean {
     this.close(null, signal);
     return true;
@@ -20,10 +21,15 @@ class FakeChild extends EventEmitter {
   close(code: number | null, signal: NodeJS.Signals | null = null): void {
     if (this.closed) return;
     this.closed = true;
-    setImmediate(() => this.emit('close', code, signal));
+    setImmediate(() => {
+      this.ended = true;
+      this.emit('close', code, signal);
+    });
   }
+  // Output queued before the close is delivered first, as a real pipe drains before the process closes, so a
+  // close scheduled on a timer can never overtake output the fake already wrote.
   write(stream: 'stdout' | 'stderr', text: string): void {
-    setImmediate(() => { if (!this.closed) this[stream].emit('data', Buffer.from(text)); });
+    setImmediate(() => { if (!this.ended) this[stream].emit('data', Buffer.from(text)); });
   }
 }
 const daemon = vi.hoisted(() => ({
@@ -35,7 +41,11 @@ const daemon = vi.hoisted(() => ({
   /** The command's output and when (if ever) it exits on its own. */
   run: { output: [] as string[], exitAfterMs: undefined as number | undefined, exitCode: 0 },
   /** Simulates a create the daemon finishes after the first removal: the name exists again once. */
-  reappearAfterRemoval: false
+  reappearAfterRemoval: false,
+  /** Makes the post-run state inspect fail, as when the daemon is unreachable. */
+  stateUnreadable: false,
+  /** Containers Docker refuses to remove. */
+  stuck: new Set<string>()
 }));
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof ChildProcess>()),
@@ -76,6 +86,11 @@ function fakeDocker(args: string[]): FakeChild {
       break;
     }
     case 'rm': {
+      if (daemon.stuck.has(name)) {
+        child.write('stderr', `Error response from daemon: removal of container ${name} is already in progress`);
+        setTimeout(() => child.close(1), 1);
+        break;
+      }
       const container = daemon.containers.get(name);
       daemon.containers.delete(name);
       container?.attach?.close(137);
@@ -100,6 +115,11 @@ function fakeDocker(args: string[]): FakeChild {
         break;
       }
       const container = daemon.containers.get(name);
+      if (format.includes('StartedAt') && daemon.stateUnreadable) {
+        child.write('stderr', 'Cannot connect to the Docker daemon');
+        setTimeout(() => child.close(1), 1);
+        break;
+      }
       if (!container) {
         child.write('stderr', `error: no such object: ${name}`);
         setTimeout(() => child.close(1), 1);
@@ -216,6 +236,7 @@ describe('toolbox command lifecycle against a fake Docker CLI', () => {
     daemon.refuseStart = false;
     daemon.run = { output: [], exitAfterMs: 5, exitCode: 0 };
     daemon.reappearAfterRemoval = false;
+    daemon.stateUnreadable = false;
   });
   afterEach(() => {
     // The invariant every path must keep.
@@ -289,6 +310,12 @@ describe('toolbox command lifecycle against a fake Docker CLI', () => {
     await expect(runToolboxCommand(spec(), limits)).rejects.toMatchObject({ code: 'UNAVAILABLE', status: 503, retryable: true, message: expect.stringMatching(/unable to find user/) });
   });
 
+  it('maps a run whose container state cannot be read to UNAVAILABLE instead of the CLI status', async () => {
+    daemon.run = { output: ['partial\n'], exitAfterMs: 5, exitCode: 0 };
+    daemon.stateUnreadable = true;
+    await expect(runToolboxCommand(spec(), limits)).rejects.toMatchObject({ code: 'UNAVAILABLE', status: 503, retryable: true });
+  });
+
   it('retries the removal until Docker reports the container gone', async () => {
     daemon.reappearAfterRemoval = true;
     await runToolboxCommand(spec(), limits);
@@ -318,5 +345,21 @@ describe('stale toolbox container sweep', () => {
       'ps', '-a', '--filter', 'label=cloud-harness.role=toolbox', '--filter', 'label=cloud-harness.ephemeral=true',
       '--filter', `label=cloud-harness.instance=${instanceId}`, '--format', '{{.Names}}'
     ]);
+  });
+
+  it('keeps sweeping past a container Docker refuses to remove', async () => {
+    const now = Date.now();
+    const stuck = toolboxContainerName();
+    const stale = toolboxContainerName();
+    daemon.containers.set(stuck, { started: true, exitCode: 0, createdAt: now - TOOLBOX_STALE_AFTER_MS - 1 });
+    daemon.containers.set(stale, { started: true, exitCode: 0, createdAt: now - TOOLBOX_STALE_AFTER_MS - 1 });
+    daemon.stuck.add(stuck);
+    try {
+      expect(await reapStaleToolboxContainers(instanceId, new Set(), now)).toEqual([stale]);
+      expect([...daemon.containers.keys()]).toEqual([stuck]);
+    } finally {
+      daemon.stuck.clear();
+      daemon.containers.clear();
+    }
   });
 });

@@ -341,15 +341,20 @@ and
   `timeout` deadline ends the command even if the runner dies. A timeout
   returns `ok: false` with `TIMEOUT` and keeps the partial output. A command the
   runner stopped (timeout, output bound) reports `exitCode: null` and
-  `signal: "SIGKILL"` rather than an exit code. A container Docker cannot
-  create or start is `UNAVAILABLE` (503, retryable), never an exit code. With
+  `signal: "SIGKILL"` rather than an exit code; a timeout reached while the
+  container is still being created reports `exitCode: null` and
+  `signal: null`, because no command ran. A container Docker cannot create or
+  start, or whose state the runner cannot read after the run, is
+  `UNAVAILABLE` (503, retryable), never an exit code. With
   `async: true` the toolbox returns an operation handle (`kind: "bash"`) for
   `operation_status`, `operation_wait`, and `operation_cancel`; the handle is
   visible only to the owner that started it, its result carries
-  `data.target`, and cancelling it removes the container before it returns.
-  At most `TOOLBOX_MAX_CONCURRENT` toolbox commands run at once per runner,
-  sync and async together; a call beyond that is `LIMIT_EXCEEDED` (429,
-  retryable). The toolbox target takes no `workspaceId` or `cwd`, and is
+  `data.target`, and cancelling it waits up to 15 seconds for the container
+  removal before it returns; a removal still running then finishes in the
+  background. At most `TOOLBOX_MAX_CONCURRENT` toolbox commands run at once
+  per runner, sync and async together, shared by every principal of the
+  instance (a single-owner pool, per the trust model); a call beyond that is
+  `LIMIT_EXCEEDED` (429, retryable). The toolbox target takes no `workspaceId` or `cwd`, and is
   refused with `FORBIDDEN` unless the operator sets `PACKAGES_ENABLED=true`
   ([configuration](configuration.md#managed-toolbox)). The schema is owned by
   [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts);
