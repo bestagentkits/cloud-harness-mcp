@@ -20,8 +20,13 @@ describe('internal runner API contract', () => {
     expect(InternalRunnerOperationSchema.options).toEqual([
       'workspace_detail', 'workspace_close_fenced', 'toolkits_list', 'toolkits_preview',
       'settings_get', 'settings_update', 'settings_network_check',
-      'oauth_settings_get', 'oauth_settings_update'
+      'oauth_settings_get', 'oauth_settings_update',
+      'terminal_open', 'terminal_read', 'terminal_input', 'terminal_resize', 'terminal_close', 'terminal_list'
     ]);
+    for (const operation of InternalRunnerOperationSchema.options.filter((name) => name.startsWith('terminal_'))) {
+      expect(RunnerOperationSchema.options).not.toContain(operation);
+      expect(TOOL_SPECS.map((tool) => tool.name)).not.toContain(operation);
+    }
     expect(RunnerOperationSchema.options).not.toContain('workspace_detail');
     expect(RunnerOperationSchema.options).not.toContain('workspace_close_fenced');
     expect(RunnerOperationSchema.options).not.toContain('toolkits_list');
