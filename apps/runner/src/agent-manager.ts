@@ -332,22 +332,33 @@ export class AgentManager {
       const reason = error instanceof HarnessError ? error.message : 'repository guidance could not be scanned';
       throw new HarnessError('UNAVAILABLE', `agent bootstrap failed: ${reason}; retry, or spawn with repositoryContext "none"`, 503, true);
     }
+    const promptBytes = Buffer.byteLength(prompt, 'utf8');
     const composed = composeAgentBootstrapPrompt({
       snapshot: resolved.snapshot,
       profile: repositoryContext,
       prompt,
-      // A quarter of the input tokens at ~4 bytes each, and never past the runtime's start-record
-      // prompt bound once the caller's task and the block framing are added.
-      budgetBytes: Math.min(record.budget.maxInputTokens, AGENT_START_PROMPT_MAX_BYTES - Buffer.byteLength(prompt, 'utf8') - 1_024)
+      // The gateway reserves one input token per request-body byte and every model turn re-sends the
+      // first message, so guidance and task together take at most a quarter of the input budget,
+      // and never pass the runtime's start-record prompt bound once the block framing is added.
+      budgetBytes: Math.max(0, Math.min(
+        Math.floor(record.budget.maxInputTokens / 4) - promptBytes,
+        AGENT_START_PROMPT_MAX_BYTES - promptBytes - 1_024
+      ))
     });
     const event = { ...composed.report, snapshotReused: resolved.reused };
+    // The report is charged to the caller's output bytes like any log event, so it is kept to a
+    // quarter of that budget and is dropped rather than ending the agent when it cannot fit.
+    const eventLimit = Math.min(this.config.limits.maxLogEventBytes, Math.floor(record.budget.maxOutputBytes / 4));
     let serialized = JSON.stringify(event);
-    if (Buffer.byteLength(serialized, 'utf8') > this.config.limits.maxLogEventBytes) {
-      // A small operator log-event bound keeps the digests and counts rather than failing the agent.
+    if (Buffer.byteLength(serialized, 'utf8') > eventLimit) {
       serialized = JSON.stringify({ ...event, injected: event.injected.length, skipped: event.skipped.length, listsOmitted: true });
     }
-    if (Buffer.byteLength(serialized, 'utf8') <= this.config.limits.maxLogEventBytes) {
-      this.appendLogOrLimit(record, 'repository_context', serialized);
+    if (Buffer.byteLength(serialized, 'utf8') <= eventLimit) {
+      try {
+        this.repository.appendLog(record.ownerId, record.workspaceId, record.id, record.generation, 'repository_context', serialized, this.now());
+      } catch (error) {
+        if (!(error instanceof HarnessError && error.code === 'LIMIT_EXCEEDED')) throw error;
+      }
     }
     return composed.prompt;
   }

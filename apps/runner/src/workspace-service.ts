@@ -1512,14 +1512,21 @@ export class WorkspaceService {
   async repositoryGuidance(record: WorkspaceRecord, signal?: AbortSignal): Promise<{ snapshot: RepositoryGuidanceSnapshot; reused: boolean }> {
     const cached = this.guidanceCache.get(record.id);
     const known = cached && cached.generation === record.generation ? cached : undefined;
-    const response = await this.runWorker(record, 'workspace_bootstrap_context', known ? { knownFingerprint: known.fingerprint } : {}, signal);
+    const response = await this.runWorker(
+      record, 'workspace_bootstrap_context', { timeoutMs: 10_000, ...(known ? { knownFingerprint: known.fingerprint } : {}) }, signal
+    );
     const data = response.ok && response.data && typeof response.data === 'object' ? response.data as Record<string, unknown> : undefined;
     const fingerprint = typeof data?.fingerprint === 'string' && /^[0-9a-f]{64}$/.test(data.fingerprint) ? data.fingerprint : undefined;
     if (!data || !fingerprint) throw new HarnessError('UNAVAILABLE', 'repository guidance could not be scanned', 503, true);
     if (data.unchanged === true && known && known.fingerprint === fingerprint) return { snapshot: known.snapshot, reused: true };
     if (data.unchanged === true) throw new HarnessError('UNAVAILABLE', 'repository guidance scan returned no snapshot', 503, true);
     const snapshot = buildRepositoryGuidanceSnapshot(data.manifest);
-    this.guidanceCache.set(record.id, { generation: record.generation, fingerprint, snapshot });
+    // A scan the clock cut short is used once but never cached, so a slow open cannot pin an
+    // incomplete snapshot for every later agent. A workspace closed mid-scan is not re-cached.
+    const current = this.store.byId(record.id);
+    if (!snapshot.truncationReasons.includes('time-limit') && current?.status === 'ACTIVE' && current.generation === record.generation) {
+      this.guidanceCache.set(record.id, { generation: record.generation, fingerprint, snapshot });
+    }
     return { snapshot, reused: false };
   }
 

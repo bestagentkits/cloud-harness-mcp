@@ -483,8 +483,10 @@ async function scanWorkspaceContext(input = {}) {
   const maxFiles = 256;
   const maxExcerptBytes = 8192;
   const maxPerFileBytes = 262_144; // 256 KiB max size to parse
-  const deadlineMs = 250;
   const contentMode = input.contentMode || 'none';
+  // A bootstrap snapshot is reused by every agent until a guidance file changes, so it gets more
+  // time than an interactive manifest rather than caching a scan the clock cut short.
+  const deadlineMs = contentMode === 'bootstrap' ? 2_000 : 250;
   // `bootstrap` is internal to the runner's repository-guidance snapshot; the public schema
   // offers only `none` and `excerpt`.
   const budgetBytes = contentMode === 'bootstrap'
@@ -510,6 +512,10 @@ async function scanWorkspaceContext(input = {}) {
   };
 
   const candidateInstructionPaths = include.has('instructions') ? await instructionCandidates(checkDeadline) : [];
+
+  // A guidance file may be a symlink to another guidance file (CLAUDE.md -> AGENTS.md), but bootstrap
+  // content is never read through a link whose target is not itself content-eligible guidance.
+  const contentEligiblePaths = new Set(candidateInstructionPaths.filter((cand) => cand.contentEligible !== false).map((cand) => cand.path));
 
   // Scan instruction candidates
   if (include.has('instructions')) {
@@ -556,7 +562,8 @@ async function scanWorkspaceContext(input = {}) {
         const rawContent = await readFile(fullPath);
         const hash = sha256(rawContent);
         const excerpt = contentMode === 'excerpt' ? rawContent.subarray(0, maxExcerptBytes).toString('utf8') : undefined;
-        const bootstrapContent = contentMode === 'bootstrap' && cand.contentEligible !== false
+        const target = relative(getWorkspaceRoot(), fullPath).split(sep).join('/');
+        const bootstrapContent = contentMode === 'bootstrap' && cand.contentEligible !== false && contentEligiblePaths.has(target)
           ? boundedUtf8(rawContent, BOOTSTRAP_DOCUMENT_MAX_BYTES)
           : undefined;
 
@@ -787,6 +794,12 @@ async function scanWorkspaceContext(input = {}) {
     if (accumulatedBytes + itemBytes > budgetBytes) {
       truncated = true;
       if (!truncationReasons.includes('byte-budget')) truncationReasons.push('byte-budget');
+      // A bootstrap snapshot keeps scanning so one large client-specific file cannot crowd out
+      // smaller shared guidance, and names each dropped file instead of losing it silently.
+      if (contentMode === 'bootstrap') {
+        warnings.push({ code: 'BUDGET_EXCEEDED', path: it.path, message: `omitted: the guidance snapshot budget of ${budgetBytes} bytes is spent` });
+        continue;
+      }
       break;
     }
     budgetedItems.push(it);
