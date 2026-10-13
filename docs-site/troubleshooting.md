@@ -254,3 +254,12 @@ If an agent started but followed the wrong files, read the `repository_context` 
 | Opening fails with HTTP `429` and "too many open terminals" | The workspace already holds its limit of live terminals. Close one from the Terminal tab or [`/dashboard/terminals`](/dashboard/terminal#all-terminals), or ask the operator to raise `TERMINAL_MAX_PER_WORKSPACE` (see the [environment variables reference](/reference/environment-variables)). |
 | "Unsent keystrokes were dropped" while typing or pasting | Input arrived faster than the shell accepted it, and in-order retries ran out. Wait for the shell to catch up, then send the rest again. |
 | Opening fails with HTTP `503` while other workspace actions work | The workspace executor is not running, or the runner cannot reach Docker over a unix socket. Recover the workspace first. Operators: terminals require the runner's `DOCKER_HOST` to be unset or a `unix://` path. |
+
+### 23. `bash` with `target: "toolbox"` returns `FORBIDDEN`, `LIMIT_EXCEEDED`, or `UNAVAILABLE`
+**Cause:** The toolbox target runs each command in a fresh, network-less container from the executor image. Each error has one meaning:
+
+| Error | Meaning and fix |
+| :--- | :--- |
+| `FORBIDDEN` | The operator has not enabled the toolbox. It is off unless `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). Use `target: "workspace"` meanwhile. |
+| `LIMIT_EXCEEDED` (HTTP `429`, retryable) | `TOOLBOX_MAX_CONCURRENT` toolbox commands are already running on this instance, sync and async together. Wait for one to finish, or cancel an async handle with `operation_cancel`, then retry. Operators can raise the limit. |
+| `UNAVAILABLE` (HTTP `503`, retryable) | Docker could not create or start the toolbox container, or the runner could not read its state afterwards; the command did not report an exit code. Retry. If it persists, operators should check that the executor image exists on the host and that the runner can reach Docker. |

@@ -47,6 +47,11 @@ type Managed = {
 export type TrackedOperation = {
   id: string;
   workspaceId?: string | undefined;
+  /**
+   * Owner of an operation that has no workspace (a toolbox `bash` run). A workspace operation is scoped
+   * through its workspace's owner instead; a handle with neither is never returned to any caller.
+   */
+  ownerId?: string | undefined;
   kind: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   createdAt: number;
@@ -60,6 +65,8 @@ export type TrackedOperation = {
   child?: ChildProcessWithoutNullStreams | undefined;
   container?: string | undefined;
   abortController?: AbortController | undefined;
+  /** Settles once the operation's own cleanup has finished; cancellation waits for it, up to a bound. Never rejects. */
+  completion?: Promise<void> | undefined;
 };
 type RedactionStream = { processChunk(chunk: Buffer): Buffer; flush(): Buffer };
 
@@ -94,6 +101,17 @@ export type TerminalOptions = {
 
 /** Small PTY writes are copied into blocks of this size, so retention holds a few dozen buffers, not one per write. */
 const TERMINAL_OUTPUT_BLOCK_BYTES = 16_384;
+/**
+ * Longest a cancel waits for the operation's own cleanup before answering. The cleanup keeps running after
+ * that, so a slow container removal never turns an accepted cancel into a client-side transport timeout.
+ */
+const CANCEL_CLEANUP_WAIT_MS = 15_000;
+
+async function settleWithin(work: Promise<void>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([work, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); timer.unref(); })]);
+  clearTimeout(timer);
+}
 const EMPTY_BUFFER = Buffer.alloc(0);
 
 /**
@@ -975,6 +993,7 @@ export class OperationManager {
   registerGenericOperation(op: {
     id: string;
     workspaceId?: string | undefined;
+    ownerId?: string | undefined;
     kind: string;
     deadlineMs?: number | undefined;
     container?: string | undefined;
@@ -995,6 +1014,7 @@ export class OperationManager {
     const tracked: TrackedOperation = {
       id: op.id,
       workspaceId: op.workspaceId,
+      ownerId: op.ownerId,
       kind: op.kind,
       status: 'running',
       createdAt: now,
@@ -1063,6 +1083,7 @@ export class OperationManager {
             await terminateContainerProcessGroup(op.container, `/tmp/cloud-harness-operations/${id}.pid`);
           } catch { /* container already stopped */ }
         }
+        if (op.completion) await settleWithin(op.completion, CANCEL_CLEANUP_WAIT_MS);
       }
       return op;
     }

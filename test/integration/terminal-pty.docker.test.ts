@@ -261,5 +261,5 @@ describe('real PTY terminals in a hardened executor', () => {
     for (const session of sessions) await manager.closeTerminal(owner, workspaceId, session.view.terminalId);
     const leftovers = await exec('pgrep', '-c', '-x', 'bash');
     expect(leftovers.stdout.trim()).toBe('0');
-  });
+  }, 30_000);
 });

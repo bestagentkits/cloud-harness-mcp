@@ -129,6 +129,12 @@ Details: [Repository automation](references/repository-automation.md#skills).
    - On `CONFLICT`, re-read the target file hash and rebuild the edit.
 6. **Execute deliberately and safely.**
    - Use `exec_run` for synchronous, bounded single commands.
+   - `bash` with the default `target: "workspace"` is the same path as
+     `exec_run` (add `async: true` for an operation handle). Use
+     `target: "toolbox"` only for work that needs no checkout, no network, and
+     no secrets (it also takes `async: true`); it is off unless the operator
+     enabled packages. `bash` has no
+     privileged mode, so privileged commands stay on `exec_run`.
    - The shipped executor includes `ak` separately from mounted AgentKit skills.
      Before following a skill's CLI steps, inspect `ak --version` and
      `ak plan --help` through `exec_run`. Do not run `ak init` or inject the
@@ -171,6 +177,7 @@ Details: [Repository automation](references/repository-automation.md#skills).
 | Known file inspection/edit | `files_*`, `grep_search`, `symbols_*` | `exec_run` |
 | Multi-file scaffolding | `files_write_batch` | multiple `files_write` or shell scripts |
 | Single command | `exec_run` | persistent shell/session |
+| Command with no checkout or network | `bash` with `target: "toolbox"` | `exec_run` in a workspace |
 | Long-running build / test suite | `tasks_run` | long synchronous command |
 | Branch isolation in workspace | `worktrees_*` | manual Git branching |
 | Stage, commit, preflight, push | `workspace_finalize` | sequence of manual `git_*` calls |

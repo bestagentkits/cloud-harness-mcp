@@ -32,6 +32,7 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 - Running with `privileged: true` requires an operator approval grant (`PRIVILEGE_APPROVAL_REQUIRED`), single-use, 60s TTL, bound to command and working directory hash.
 - Approval is performed by authenticated operators via the Dashboard control plane (`/api/v1/privilege-grants`). MCP clients cannot self-approve. The [Approvals](/dashboard/approvals) page shows each grant's real status and offers a decision only for an unexpired pending grant.
 - Approved privileged commands run in isolated ephemeral containers with root cleanup normalizers.
+- The `bash` tool has no privileged mode; privileged commands stay on `exec_run`. Its `toolbox` target (off unless the operator sets `PACKAGES_ENABLED=true`) runs each command in a fresh, hardened, no-network container with no checkout, mounts, or secrets. The runner removes it by exact name and verifies the removal; an in-container deadline and a periodic sweep cover a runner that dies mid-command, and `TOOLBOX_MAX_CONCURRENT` caps how many run at once.
 
 ### 4. Credential Safety
 

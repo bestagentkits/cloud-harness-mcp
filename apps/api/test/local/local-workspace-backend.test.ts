@@ -178,6 +178,22 @@ describe('LocalWorkspaceBackend', () => {
     expect(execData.output).toContain('hello');
   });
 
+  it('runs bash with the workspace target through exec_run and refuses the toolbox target', async () => {
+    const res = await backend.call('bash', {
+      workspaceId: backend.workspaceId,
+      target: 'workspace',
+      command: process.platform === 'win32' ? 'echo hello' : 'echo "hello from local bash"'
+    });
+    expect(res.ok).toBe(true);
+    expect(ExecRunDataSchema.parse(res.data).output).toContain('hello');
+    expect(res.data).toMatchObject({ target: 'workspace', exitCode: 0 });
+
+    const toolbox = await backend.call('bash', { target: 'toolbox', command: 'echo hello' });
+    expect(toolbox.ok).toBe(false);
+    expect(toolbox.error?.code).toBe('INVALID_INPUT');
+    expect(toolbox.message).toContain('toolbox target is unsupported in local mode');
+  });
+
   it('gates network Git and push according to startup options', async () => {
     // Disabled by default
     const fetchRes = await backend.call('git_fetch', { workspaceId: backend.workspaceId });
