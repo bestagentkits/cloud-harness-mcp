@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CliOptions } from '../../src/cli-options.js';
 import { loadLocalWorkspaceRegistry, type RegisteredLocalWorkspace } from '../../src/local/local-workspace-registry.js';
 import { LocalWorkspacePool, MultiLocalWorkspaceBackend } from '../../src/local/multi-local-workspace-backend.js';
@@ -182,5 +182,54 @@ describe('MultiLocalWorkspaceBackend', () => {
     router = new MultiLocalWorkspaceBackend(pool, 'client');
     const caps = await router.call('workspace_capabilities', { workspaceId: id('bwe') });
     expect((caps.data as { capabilities: { gitPush: boolean; gitNetwork: boolean } }).capabilities).toMatchObject({ gitPush: true, gitNetwork: true });
+  });
+
+  it('routes github tools by workspaceId to the structured local capability error', async () => {
+    await router.call('workspace_close', { workspaceId: id('vault') });
+    const result = await router.call('github_read', { workspaceId: id('bwe'), action: 'pr_list' });
+    expect(result.error?.code).toBe('REPOSITORY_OPERATION_NOT_AUTHORIZED');
+    expect(result.message).toContain('unsupported in local mode');
+  });
+
+  it('reports a closed root through workspace_status so clients can recover it', async () => {
+    await router.call('workspace_close', { workspaceId: id('bwe') });
+    const status = await router.call('workspace_status', { workspaceId: id('bwe') });
+    expect(status.ok).toBe(true);
+    expect(status.data).toMatchObject({ status: 'CLOSED', name: 'bwe', availableActions: ['workspace_recover'] });
+  });
+
+  it('keeps the first backend when concurrent recovers race, so no live backend is orphaned', async () => {
+    await router.call('workspace_close', { workspaceId: id('bwe') });
+    const [first, second] = await Promise.all([
+      router.call('workspace_recover', { workspaceId: id('bwe'), mode: 'resume' }),
+      new MultiLocalWorkspaceBackend(pool, 'explicit').call('workspace_recover', { workspaceId: id('bwe'), mode: 'resume' })
+    ]);
+    expect(first.ok && second.ok).toBe(true);
+    const reopened = pool.get(id('bwe'))!.backend;
+    const session = await router.call('sessions_open', { workspaceId: id('bwe'), name: 'probe', command: 'sleep 30', idempotencyKey: 'probe-session-1' });
+    expect(session.ok).toBe(true);
+    // A late recover on the now-active member must not replace it.
+    await router.call('workspace_recover', { workspaceId: id('bwe'), mode: 'resume' });
+    expect(pool.get(id('bwe'))!.backend).toBe(reopened);
+    expect(((await router.call('sessions_list', { workspaceId: id('bwe') })).data as { sessions: unknown[] }).sessions).toHaveLength(1);
+  });
+
+  it('reports a hung root as unavailable after a bounded wait without blocking other roots', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const member = pool.get(id('bwe'))!;
+      const checkRoot = vi.spyOn(pool as unknown as { checkRoot: (m: unknown) => Promise<boolean> }, 'checkRoot');
+      checkRoot.mockImplementation(async (m) => (m === member ? await new Promise<boolean>(() => {}) : true));
+      const pending = router.call('workspace_list', {});
+      await vi.advanceTimersByTimeAsync(2_000);
+      const listed = ((await pending).data as { workspaces: Listed[] }).workspaces;
+      expect(listed.find((w) => w.name === 'bwe')?.rootAvailable).toBe(false);
+      expect(listed.filter((w) => w.name !== 'bwe').every((w) => w.rootAvailable)).toBe(true);
+      const write = router.call('files_write', { workspaceId: id('bwe'), path: 'x.txt', content: 'x' });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect((await write).error?.code).toBe('UNAVAILABLE');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

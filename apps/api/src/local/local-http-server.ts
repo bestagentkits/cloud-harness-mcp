@@ -47,15 +47,16 @@ function localBearerAuth(expected: string) {
  * local backends as stdio mode. Each request gets its own router with `explicit` selection, so no
  * active-workspace default is shared between concurrent clients.
  */
-export function createLocalHttpApp(pool: LocalWorkspacePool, settings: LocalHttpSettings, bearerToken: string): Express {
+export function createLocalHttpApp(pool: LocalWorkspacePool, settings: LocalHttpSettings, bearerToken: string): { app: Express; close: () => Promise<void> } {
   const security = {
     publicHosts: ['localhost', '127.0.0.1', '::1', ...settings.publicHosts],
     allowedOrigins: settings.allowedOrigins
   };
-  const handler = toNodeHandler(createMcpHandler(
+  const mcpHandler = createMcpHandler(
     () => createCloudHarnessServer(new MultiLocalWorkspaceBackend(pool, 'explicit')),
     { legacy: 'stateless', responseMode: 'auto' }
-  ));
+  );
+  const handler = toNodeHandler(mcpHandler);
   const app = express();
   app.disable('x-powered-by');
   app.get('/healthz', (_request, response) => response.json({ status: 'ok' }));
@@ -68,5 +69,10 @@ export function createLocalHttpApp(pool: LocalWorkspacePool, settings: LocalHttp
     }
     await handler(request, response, request.body);
   });
-  return app;
+  return { app, close: () => mcpHandler.close() };
+}
+
+/** True for addresses that only accept connections from this host. */
+export function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
 }

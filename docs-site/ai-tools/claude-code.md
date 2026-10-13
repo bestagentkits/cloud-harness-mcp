@@ -47,3 +47,5 @@ claude mcp add cloud-harness-local \
   --transport stdio \
   -- node /path/to/cloud-harness-mcp/apps/api/dist/index.js --transport stdio --workspace /absolute/path/to/project
 ```
+
+To serve several local folders from one server, replace `--workspace <path>` with `--workspace-config <absolute-path>`; see [Several local workspaces from one server](/connect#several-local-workspaces-from-one-server).

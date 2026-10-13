@@ -72,6 +72,17 @@ docker compose --profile images build executor-image
 
 ---
 
+### 7a. Local `--workspace-config`: startup error, `CONFLICT`, or `UNAVAILABLE`
+**Cause and fix:**
+- **`failed to load --workspace-config`:** the file has an unknown field, duplicate key, YAML alias, invalid name, or wrong `version`, or a registered path is missing, not a directory, or nested inside another. Fix the named entry and restart.
+- **`CONFLICT` asking you to pass `workspaceId`:** more than one folder is registered and the call named none. Call `workspace_list` and pass the `workspaceId` on every call (over stdio, `workspace_set_active` can set a default; the local HTTP endpoint rejects it).
+- **Retryable `UNAVAILABLE` or `rootAvailable: false`:** the folder vanished or was replaced since startup, for example a dropped NFS mount. Restore the mount and retry.
+- **`local HTTP mode requires MCP_BEARER_TOKEN`:** set a 32-512 character token in `MCP_BEARER_TOKEN` or `MCP_BEARER_TOKEN_FILE`.
+
+See [Several local workspaces from one server](/connect#several-local-workspaces-from-one-server).
+
+---
+
 ### 8. ChatGPT: `FORBIDDEN: This conversation does not support developer MCPs`
 **Cause:** ChatGPT allows tool discovery, but blocks invocation because the active conversation surface (e.g. Custom GPT, Project chat, Canvas, Mobile app, or temporary chat) or user account restricts draft developer MCPs, or the connector is in draft state without workspace publishing.
 **Fix:**

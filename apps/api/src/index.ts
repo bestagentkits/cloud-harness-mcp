@@ -5,7 +5,7 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { createApiApp } from './app.js';
 import { loadApiConfig } from './config.js';
 import { parseCliOptions, getCliHelp } from './cli-options.js';
-import { createLocalHttpApp, readLocalBearerToken } from './local/local-http-server.js';
+import { createLocalHttpApp, isLoopbackHost, readLocalBearerToken } from './local/local-http-server.js';
 import { LocalWorkspaceBackend } from './local/local-workspace-backend.js';
 import { loadLocalWorkspaceRegistry, type LocalWorkspaceRegistry } from './local/local-workspace-registry.js';
 import { LocalWorkspacePool, MultiLocalWorkspaceBackend } from './local/multi-local-workspace-backend.js';
@@ -42,14 +42,16 @@ async function loadRegistryOrExit(configPath: string): Promise<LocalWorkspaceReg
   }
 }
 
+const isLocalMode = options.transport === 'stdio' || options.workspaceConfig !== undefined;
+if (isLocalMode && process.platform === 'win32' && process.env.HARNESS_ALLOW_WIN32_STDIO !== '1') {
+  process.stderr.write(
+    'Error: Cloud Harness MCP local stdio mode currently supports POSIX platforms (Linux and macOS).\n' +
+    'On Windows, please run within WSL (Windows Subsystem for Linux) or use Cloud Harness in cloud HTTP mode.\n'
+  );
+  process.exit(1);
+}
+
 if (options.transport === 'stdio') {
-  if (process.platform === 'win32' && process.env.HARNESS_ALLOW_WIN32_STDIO !== '1') {
-    process.stderr.write(
-      'Error: Cloud Harness MCP local stdio mode currently supports POSIX platforms (Linux and macOS).\n' +
-      'On Windows, please run within WSL (Windows Subsystem for Linux) or use Cloud Harness in cloud HTTP mode.\n'
-    );
-    process.exit(1);
-  }
 
   let backend: OperationBackend & { close(): Promise<void> };
   if (options.workspaceConfig) {
@@ -114,7 +116,11 @@ if (options.transport === 'stdio') {
   const registry = await loadRegistryOrExit(options.workspaceConfig);
   const pool = new LocalWorkspacePool(registry.workspaces, options);
   const { host, port } = registry.http;
-  const server = createServer(createLocalHttpApp(pool, registry.http, bearerToken));
+  const local = createLocalHttpApp(pool, registry.http, bearerToken);
+  const server = createServer(local.app);
+  if (!isLoopbackHost(host)) {
+    apiLogger.warn({ host }, 'Local multi-workspace MCP is bound to a non-loopback address: anyone who can reach it with the bearer token gets host-user execution, and plain HTTP sends the token in cleartext; put it behind TLS');
+  }
   server.listen(port, host, () =>
     apiLogger.info({ host, port, workspaces: registry.workspaces.length }, 'Local multi-workspace MCP listening')
   );
@@ -126,7 +132,7 @@ if (options.transport === 'stdio') {
     apiLogger.info({ signal }, 'Local multi-workspace MCP shutting down');
     server.close();
     try {
-      await pool.close();
+      await Promise.all([local.close(), pool.close()]);
     } catch (error) {
       apiLogger.error({ err: error }, 'Local workspace shutdown encountered an error');
     }

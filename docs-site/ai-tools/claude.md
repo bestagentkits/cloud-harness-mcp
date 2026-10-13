@@ -72,3 +72,5 @@ To operate directly on a local project directory without remote cloud hosting, c
   }
 }
 ```
+
+To serve several local folders from one server, replace `--workspace <path>` with `--workspace-config <absolute-path>`; see [Several local workspaces from one server](/connect#several-local-workspaces-from-one-server).

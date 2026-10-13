@@ -14,9 +14,16 @@ type Member = {
 /** Tools whose input schema carries no `workspaceId`; they pass through unchanged. */
 const WORKSPACELESS_OPERATIONS = new Set<RunnerOperation>([
   'operation_status', 'operation_cancel', 'operation_wait',
-  'artifacts_list', 'artifacts_read', 'artifacts_delete',
-  'github_action', 'github_read'
+  'artifacts_list', 'artifacts_read', 'artifacts_delete'
 ]);
+
+/**
+ * A hard-mounted network export can hang `stat` indefinitely. The check gives up after this long
+ * and reports the root unavailable, so one stuck mount never blocks the other workspaces. The
+ * stuck filesystem call itself cannot be cancelled and keeps a libuv threadpool thread until the
+ * mount recovers.
+ */
+const ROOT_CHECK_TIMEOUT_MS = 2_000;
 
 /** Lifecycle tools that must reach a workspace even when its root is unavailable. */
 const ROOT_INDEPENDENT_OPERATIONS = new Set<RunnerOperation>(['workspace_status', 'workspace_close']);
@@ -57,8 +64,14 @@ export class LocalWorkspacePool {
     return this.members.get(workspaceId);
   }
 
-  /** Replaces a closed member with a fresh backend that keeps the same stable workspace ID. */
+  /**
+   * Replaces a closed member with a fresh backend that keeps the same stable workspace ID. It is a
+   * compare-and-swap: when a concurrent recover already reopened the member, that backend is kept,
+   * so a live backend (and the detached processes it owns) is never orphaned.
+   */
   reopen(member: Member): Member {
+    const current = this.members.get(member.entry.workspaceId)!;
+    if (current.backend !== member.backend || !current.backend.closed) return current;
     const next: Member = {
       ...member,
       backend: new LocalWorkspaceBackend(member.entry.canonicalRoot, member.options, this.workerScriptPath, member.entry.workspaceId)
@@ -73,6 +86,19 @@ export class LocalWorkspacePool {
    * so execution never silently lands somewhere else.
    */
   async rootAvailable(member: Member): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ROOT_CHECK_TIMEOUT_MS);
+      timer.unref();
+    });
+    try {
+      return await Promise.race([this.checkRoot(member), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async checkRoot(member: Member): Promise<boolean> {
     try {
       const resolved = await realpath(member.entry.configuredPath);
       if (resolved !== member.entry.canonicalRoot) return false;
@@ -137,6 +163,13 @@ export class MultiLocalWorkspaceBackend implements OperationBackend {
 
     if (!ROOT_INDEPENDENT_OPERATIONS.has(operation) && !(await this.pool.rootAvailable(member))) {
       return failure('UNAVAILABLE', `workspace "${member.entry.name}" root ${member.entry.configuredPath} is unavailable or no longer the registered directory; restore the mount, then retry`, true);
+    }
+    // Another request may have closed or reopened this member while the root check awaited.
+    member = this.pool.get(member.entry.workspaceId)!;
+
+    if (operation === 'workspace_status' && member.backend.closed) {
+      // A closed registered root still exists and can be recovered, so report it rather than NOT_FOUND.
+      return { ok: true, message: 'Workspace status retrieved', data: await this.describe(member), truncated: false };
     }
 
     if (operation === 'workspace_recover' && member.backend.closed) {

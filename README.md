@@ -130,12 +130,22 @@ In local mode:
 - Network Git (`git_fetch`, `git_pull`) and Git push (`git_push`) are disabled by default and require explicit startup opt-in flags (`--git-network`, `--git-push`).
 - v1 supports POSIX (Linux and macOS); Windows process semantics are a documented follow-up (use WSL on Windows).
 
+To serve several persistent project folders from one process, register them in
+a versioned YAML/JSON file and pass `--workspace-config <absolute-path>` instead
+of `--workspace`. It works over stdio, or over `--transport http` as an
+authenticated local endpoint that needs no Docker runner. Each folder keeps its
+own path confinement, processes, and stable `workspaceId`. See
+[Several local workspaces from one server](docs-site/connect.md#several-local-workspaces-from-one-server)
+for the file format and client setup, and [MCP usage](docs/mcp-api.md#local-multi-workspace-mode)
+for selection and failure semantics.
+
 ### CLI options
 
 | Option | Description |
 |---|---|
 | `--transport <http\|stdio>` | Select transport protocol: `http` (default) or `stdio` |
-| `--workspace <path>` | Absolute path to the local project folder (required for stdio) |
+| `--workspace <path>` | Absolute path to one local project folder (stdio) |
+| `--workspace-config <path>` | Absolute path to a registry of named local folders (stdio or local HTTP); mutually exclusive with `--workspace` |
 | `--git-network` | Enable network Git operations (`git_fetch`, `git_pull`) |
 | `--git-push` | Enable Git push (`git_push`, implies `--git-network`) |
 | `--env <NAME>` | Forward additional host environment variable (repeatable) |

@@ -7,6 +7,27 @@ configured `MAX_ACTIVE_WORKSPACES_PER_OWNER` limit; each is removed by close or 
 expiry. Pass `workspaceId` on every operation whenever more than one workspace is
 counted: an implicit target is refused with `CONFLICT` when it would be ambiguous.
 
+## Local workspaces
+
+A local server executes on the host as the user who started it; path
+confinement is not a sandbox. Single-folder (`--workspace`) servers expose one
+pre-opened workspace. Multi-folder (`--workspace-config`) servers pre-open every
+operator-registered folder; no tool can add one.
+
+- `workspace_open` returns `INVALID_INPUT`. Use `workspace_list`; each entry adds
+  `name`, `root`, and `rootAvailable`.
+- IDs (`ws_local_...`) stay the same across restarts and change only if the
+  operator renames or moves a folder. A stale ID returns `NOT_FOUND`: re-list.
+- With more than one folder, omitting `workspaceId` returns `CONFLICT`. Over
+  stdio, `workspace_set_active` sets a default; the local HTTP endpoint rejects
+  it, so pass `workspaceId` on every call there.
+- Retryable `UNAVAILABLE` (and `rootAvailable: false`) means the folder vanished
+  or was replaced, for example a dropped mount. That workspace still answers
+  `workspace_status` and `workspace_close`; retry other tools after the operator
+  restores it.
+- `workspace_close` stops that folder's processes and never deletes files;
+  `workspace_recover` reopens it with the same ID.
+
 ## Result envelope
 
 MCP tool results provide formatted human-readable output and continuation markers
