@@ -84,7 +84,12 @@ instead of copying behavior, defaults, command inventories, or configuration.
   the process group before any rollback trap can run.
 - The installed `/usr/local/sbin/cloud-harness-deploy` is the previous
   release's script, so a fix to `deploy-release.sh` protects only later
-  deploys.
+  deploys. Deploying an older commit never downgrades it
+  (`/var/lib/cloud-harness/deploy-tooling-release`).
+- A leftover `/var/lib/cloud-harness/deploy-in-progress` means a deploy was
+  killed after stopping the release; `cloud-harness-deploy-recover.service`
+  (boot) or the deploy unit's `ExecStopPost` rolls it back. Do not delete the
+  marker by hand before reading its journal.
 
 ## Change workflow
 

@@ -177,6 +177,151 @@ describe.skipIf(process.platform === 'win32')('detached deployment launcher', ()
   });
 });
 
+function extractFunction(name: string) {
+  const source = readFileSync(deployScript, 'utf8');
+  const body = new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?\\n\\}\\n`, 'm').exec(source)?.[0] ?? '';
+  expect(body).not.toBe('');
+  return body;
+}
+
+function runRecovery(marker: string | null, shuttingDown = false) {
+  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-recover-'));
+  const trace = join(directory, 'trace');
+  const inProgress = join(directory, 'deploy-in-progress');
+  if (marker !== null) writeFileSync(inProgress, marker);
+  writeFileSync(join(directory, 'release-runtime.sh'), `rollback() { echo "rollback:$1:$previous_sha:$backup_dir" >> "$trace_path"; exit "$1"; }\n`);
+  const script = `
+set -euo pipefail
+in_progress="$1"; repo="$2"; trace_path="$3"
+mkdir -p "$repo/deploy/scripts"; cp "$2/release-runtime.sh" "$repo/deploy/scripts/release-runtime.sh"
+host_is_shutting_down() { ${shuttingDown ? 'true' : 'false'}; }
+${extractFunction('recover_interrupted_deploy')}
+recover_interrupted_deploy
+echo finished >> "$trace_path"
+`;
+  const result = spawnSync('bash', ['-c', script, 'bash', inProgress, directory, trace], { encoding: 'utf8' });
+  return {
+    ...result,
+    trace: existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n') : [],
+    markerKept: existsSync(inProgress)
+  };
+}
+
+function runToolingInstall(installed: string | null, options: { ancestor: boolean; hasRecoverUnit?: boolean }) {
+  const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-tooling-'));
+  const trace = join(directory, 'trace');
+  const record = join(directory, 'deploy-tooling-release');
+  if (installed !== null) writeFileSync(record, `${installed}\n`);
+  const script = `
+set -euo pipefail
+cd "$1"; tooling_release_file="$2"; trace_path="$3"; release_sha="$4"
+${options.hasRecoverUnit === false ? '' : 'mkdir -p deploy/systemd; touch deploy/systemd/cloud-harness-deploy-recover.service'}
+git() { echo "git:$*" >> "$trace_path"; ${options.ancestor ? 'return 0' : 'return 1'}; }
+install() { echo "install:\${@: -1}" >> "$trace_path"; }
+systemctl() { echo "systemctl:$*" >> "$trace_path"; }
+${extractFunction('install_deploy_tooling')}
+install_deploy_tooling
+`;
+  const releaseSha = 'c'.repeat(40);
+  const result = spawnSync('bash', ['-c', script, 'bash', directory, record, trace, releaseSha], { encoding: 'utf8' });
+  return {
+    ...result,
+    trace: existsSync(trace) ? readFileSync(trace, 'utf8').trim().split('\n') : [],
+    recorded: existsSync(record) ? readFileSync(record, 'utf8').trim() : null,
+    releaseSha
+  };
+}
+
+describe.skipIf(process.platform === 'win32')('killed-deploy recovery', () => {
+  const backup = '/var/lib/cloud-harness/backups/cloud-harness-20261012T000000Z';
+
+  it('does nothing when no deploy was killed after stopping the release', () => {
+    const result = runRecovery(null);
+    expect(result.status).toBe(0);
+    expect(result.trace).toEqual(['finished']);
+  });
+
+  it('rolls back to the recorded release and snapshot, then clears the marker', () => {
+    const result = runRecovery(`${previousSha}\n${backup}\n`);
+    expect(result.status).toBe(0);
+    expect(result.trace).toEqual([`rollback:0:${previousSha}:${backup}`]);
+    expect(result.markerKept).toBe(false);
+  });
+
+  it('restarts the previous release without a restore when the snapshot was incomplete', () => {
+    const result = runRecovery(`${previousSha}\n`);
+    expect(result.trace).toEqual([`rollback:0:${previousSha}:`]);
+  });
+
+  it('leaves the marker for the boot recovery while the host shuts down', () => {
+    const result = runRecovery(`${previousSha}\n${backup}\n`, true);
+    expect(result.trace).toEqual(['finished']);
+    expect(result.markerKept).toBe(true);
+  });
+
+  it('records the marker around the stop and clears it only after promotion', () => {
+    const source = readFileSync(deployScript, 'utf8');
+    const stop = source.indexOf('\nstop_release\n');
+    const firstMarker = source.indexOf(`printf '%s\\n' "$previous_sha" > "$in_progress"`);
+    const snapshotMarker = source.indexOf(`printf '%s\\n%s\\n' "$previous_sha" "$backup_dir" > "$in_progress"`);
+    expect(firstMarker).toBeGreaterThan(0);
+    expect(firstMarker).toBeLessThan(stop);
+    expect(snapshotMarker).toBeGreaterThan(source.indexOf('tar -C "$state/artifacts"'));
+    expect(snapshotMarker).toBeLessThan(source.indexOf('git checkout --detach --force "$release_sha"', stop));
+    expect(source.indexOf('rm -f "$in_progress"', snapshotMarker)).toBeGreaterThan(source.indexOf('> "$state/release-current"'));
+    expect(source).toContain('--property="ExecStopPost=$(readlink -f "${BASH_SOURCE[0]}") --recover"');
+  });
+
+  it('skips the rollback and keeps the marker when a signal comes from host shutdown', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-shutdown-'));
+    const trace = join(directory, 'trace');
+    const marker = join(directory, 'deploy-in-progress');
+    writeFileSync(marker, `${previousSha}\n`);
+    const script = `
+state="$1"; in_progress="$2"; trace_path="$3"
+host_is_shutting_down() { true; }
+rollback() { echo rollback >> "$trace_path"; exit 1; }
+trap 'rm -f "$in_progress"' EXIT
+${extractFunction('rollback_on_signal')}
+rollback_on_signal TERM 143
+`;
+    const result = spawnSync('bash', ['-c', script, 'bash', directory, marker, trace], { encoding: 'utf8' });
+    expect(result.status).toBe(143);
+    expect(existsSync(trace)).toBe(false);
+    expect(existsSync(marker)).toBe(true);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('forward-only deploy tooling', () => {
+  it('installs the tooling and recover unit for a newer release and records it', () => {
+    const result = runToolingInstall('d'.repeat(40), { ancestor: true });
+    expect(result.status).toBe(0);
+    expect(result.trace).toContain('install:/usr/local/sbin/cloud-harness-deploy');
+    expect(result.trace).toContain('install:/etc/systemd/system/cloud-harness-deploy-recover.service');
+    expect(result.trace).toContain('systemctl:enable cloud-harness-deploy-recover.service');
+    expect(result.recorded).toBe(result.releaseSha);
+  });
+
+  it('keeps newer tooling when promoting an older release', () => {
+    const installed = 'd'.repeat(40);
+    const result = runToolingInstall(installed, { ancestor: false });
+    expect(result.status).toBe(0);
+    expect(result.trace.some((line) => line.startsWith('install:'))).toBe(false);
+    expect(result.recorded).toBe(installed);
+  });
+
+  it('keeps the installed tooling for a release that predates crash recovery', () => {
+    const result = runToolingInstall(null, { ancestor: true, hasRecoverUnit: false });
+    expect(result.trace).toEqual([]);
+    expect(result.recorded).toBeNull();
+  });
+
+  it('installs on the first deploy that carries the record', () => {
+    const result = runToolingInstall(null, { ancestor: false });
+    expect(result.trace).toContain('install:/usr/local/sbin/cloud-harness-deploy');
+  });
+});
+
 describe.skipIf(process.platform === 'win32')('release rollback orchestration', () => {
   it('takes a nonblocking host lock before touching the shared deployment checkout', () => {
     const source = readFileSync(deployScript, 'utf8');
