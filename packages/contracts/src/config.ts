@@ -233,6 +233,12 @@ export const RunnerConfigSchema = z.object({
   wallTtlSeconds: z.coerce.number().int().min(60).max(86_400).default(900),
   idleTtlSeconds: z.coerce.number().int().min(30).max(43_200).default(300),
   maxOutputBytes: z.coerce.number().int().min(1_024).max(10_485_760).default(262_144),
+  // Dashboard Terminal PTYs live in runner memory: these bound how many a workspace holds, how much raw
+  // output each retains for reconnecting readers, and how long one may sit idle or live at all.
+  terminalMaxPerWorkspace: z.coerce.number().int().min(1).max(16).default(4),
+  terminalRetainedBytes: z.coerce.number().int().min(65_536).max(16_777_216).default(1_048_576),
+  terminalIdleTimeoutMs: z.coerce.number().int().min(60_000).max(86_400_000).default(900_000),
+  terminalMaxLifetimeMs: z.coerce.number().int().min(60_000).max(86_400_000).default(28_800_000),
   minFreeBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),

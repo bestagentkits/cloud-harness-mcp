@@ -25,7 +25,8 @@ import {
   type RunnerOperation,
   type RunnerResponse,
   type WorkspaceCapabilityResult,
-  type ToolkitSelection
+  type ToolkitSelection,
+  TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
@@ -244,8 +245,27 @@ export class WorkspaceService {
     this.instanceId = store.instanceId();
     this.store.reconcileRunningTasks(this.bootId, Date.now());
     this.store.reconcilePendingGitOperations(Date.now());
-    this.operations = new OperationManager(this.store, this.bootId);
+    this.operations = new OperationManager(this.store, this.bootId, {
+      limits: {
+        maxPerWorkspace: this.config.terminalMaxPerWorkspace,
+        retainedBytes: this.config.terminalRetainedBytes,
+        idleTimeoutMs: this.config.terminalIdleTimeoutMs,
+        maxLifetimeMs: this.config.terminalMaxLifetimeMs
+      }
+    });
     this.operations.redactorProvider = (wsId) => this.getRedactor(wsId);
+    // Metadata only: terminal input and output bytes never reach the audit log.
+    this.operations.onTerminalEnd = ({ ownerId, view }) => {
+      const workspace = this.store.byId(view.workspaceId);
+      if (!workspace) return;
+      this.auditWorkspaceMutation(ownerId, 'terminal.closed', workspace, {
+        terminalId: view.terminalId,
+        workspaceId: view.workspaceId,
+        status: view.status,
+        reason: view.endReason ?? view.status,
+        ...(view.exitCode !== undefined ? { exitCode: view.exitCode } : {})
+      });
+    };
     this.networkProfileManager = new NetworkProfileManager(this.config);
     this.repoCacheManager = new RepositoryCacheManager(this.config.repoCacheRoot, this.store, this.config.allowedGitHosts, this.config.executorImage, this.instanceId);
     const cacheRoot = this.config.toolkitCacheRoot || (this.config.jobsRoot && !this.config.jobsRoot.startsWith('/var/lib') ? join(this.config.jobsRoot, 'toolkit-cache') : '/var/lib/cloud-harness/cache/toolkits');
@@ -4205,6 +4225,54 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         data: { ready: readiness.ok, reason: readiness.reason ?? null },
         truncated: false
       };
+    }
+    if (parsed.operation === 'terminal_list') {
+      if (parsed.input.workspaceId !== undefined) this.requireWorkspace(ownerId, parsed.input.workspaceId);
+      return { ok: true, message: 'Terminals', data: { terminals: this.operations.listTerminals(ownerId, parsed.input.workspaceId) }, truncated: false };
+    }
+    if (parsed.operation === 'terminal_open') {
+      // Mirrors the shell_open path of execute(): an active, owned workspace with a live executor.
+      const record = this.touch(this.requireWorkspace(ownerId, parsed.input.workspaceId, true, false));
+      await this.enforceActiveLimits(record);
+      if (!record.containerName) throw new HarnessError('UNAVAILABLE', 'workspace executor is unavailable', 503, true);
+      const terminal = await this.operations.openTerminal({
+        ownerId,
+        workspaceId: record.id,
+        container: record.containerName,
+        cwd: parsed.input.cwd,
+        cols: parsed.input.cols,
+        rows: parsed.input.rows
+      });
+      this.auditWorkspaceMutation(ownerId, 'terminal.opened', record, {
+        terminalId: terminal.terminalId,
+        workspaceId: record.id,
+        cwd: terminal.cwd,
+        cols: terminal.cols,
+        rows: terminal.rows
+      });
+      return { ok: true, message: 'Terminal opened', data: terminal, truncated: false };
+    }
+    if (parsed.operation === 'terminal_read') {
+      const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
+      const page = await this.operations.readTerminal(ownerId, record.id, parsed.input.terminalId, parsed.input.cursor, parsed.input.waitMs);
+      return { ok: true, message: 'Terminal output', data: page, truncated: false };
+    }
+    if (parsed.operation === 'terminal_input') {
+      const record = this.touch(this.requireWorkspace(ownerId, parsed.input.workspaceId));
+      const bytes = Buffer.from(parsed.input.data, 'base64');
+      if (bytes.length > TERMINAL_MAX_INPUT_BYTES) throw new HarnessError('INVALID_INPUT', 'terminal input is too large', 400, false);
+      const terminal = this.operations.writeTerminal(ownerId, record.id, parsed.input.terminalId, bytes);
+      return { ok: true, message: 'Terminal input accepted', data: terminal, truncated: false };
+    }
+    if (parsed.operation === 'terminal_resize') {
+      const record = this.touch(this.requireWorkspace(ownerId, parsed.input.workspaceId));
+      const terminal = await this.operations.resizeTerminal(ownerId, record.id, parsed.input.terminalId, parsed.input.cols, parsed.input.rows);
+      return { ok: true, message: 'Terminal resized', data: terminal, truncated: false };
+    }
+    if (parsed.operation === 'terminal_close') {
+      const record = this.requireWorkspace(ownerId, parsed.input.workspaceId);
+      const terminal = await this.operations.closeTerminal(ownerId, record.id, parsed.input.terminalId);
+      return { ok: true, message: 'Terminal closed', data: terminal, truncated: false };
     }
     const workspaceInput = parsed.input as { workspaceId: string; expectedGeneration?: number };
     const record = this.requireWorkspace(ownerId, workspaceInput.workspaceId, false, true);

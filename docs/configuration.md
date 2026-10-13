@@ -354,6 +354,22 @@ schemas are owned by
 [`packages/contracts/src/api-key-api.ts`](../packages/contracts/src/api-key-api.ts)
 and [`apps/runner/src/api-key-store.ts`](../apps/runner/src/api-key-store.ts).
 
+## Dashboard Terminal
+
+The Dashboard Terminal runs a real PTY inside the owned workspace executor. PTYs
+live in runner memory, are never resumed after a runner restart, and end with
+their workspace. The runner reaches the Docker Engine API over its unix socket
+for this, so a non-unix `DOCKER_HOST` makes terminals unavailable. Exact ranges
+are owned by [`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts);
+the lifecycle by [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
+
+| Variable | Default | Decision |
+|---|---|---|
+| `TERMINAL_MAX_PER_WORKSPACE` | `4` | Bounds live PTYs per workspace; another open is refused with `LIMIT_EXCEEDED` (429). |
+| `TERMINAL_RETAINED_BYTES` | `1048576` | Raw output kept per terminal for reconnecting readers; older bytes are reported as `missedBytes`. |
+| `TERMINAL_IDLE_TIMEOUT_MS` | `900000` | Input, resize, and reads reset it; expiry ends the terminal as `timed_out`. |
+| `TERMINAL_MAX_LIFETIME_MS` | `28800000` | Absolute lifetime regardless of activity. |
+
 ## MCP gateway
 
 The `/mcp-gateway` composition root adds nine settings. Their exact defaults,

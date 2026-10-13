@@ -182,6 +182,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'sessions_open',
   'sessions_io',
   'sessions_close',
+  'terminal_open', 'terminal_read', 'terminal_input', 'terminal_resize', 'terminal_close', 'terminal_list',
   'git_status',
   'git_diff',
   'git_log',
@@ -267,6 +268,8 @@ const mcpToolKeys = ['id', 'serverId', 'qualifiedName', 'upstreamName', 'descrip
 const mcpTraceKeys = ['id', 'serverId', 'serverName', 'tool', 'operation', 'clientId', 'durationMs', 'status', 'errorCode', 'errorMessage', 'requestBytes', 'responseBytes', 'createdAt'] as const;
 const mcpCredentialKeys = ['allowed', 'reason'] as const;
 const mcpConnectionKeys = ['status', 'toolCount', 'error'] as const;
+/** The contract's TerminalView. No executor, container, or host-path field exists here to leak. */
+const terminalKeys = ['terminalId', 'workspaceId', 'status', 'cwd', 'cols', 'rows', 'createdAt', 'lastActivityAt', 'idleExpiresAt', 'hardExpiresAt', 'exitCode', 'endedAt', 'endReason'] as const;
 
 /** Projected from the `skill_sources` and `skill_revisions` columns Phase 1 created. */
 const skillKeys = ['id', 'slug', 'displayName', 'description', 'kind', 'provider', 'sourceRef', 'currentRevisionId', 'state', 'tags', 'generation', 'createdAt', 'updatedAt', 'version'] as const;
@@ -381,6 +384,9 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'sessions_io') {
     return { session: sessionProjection(data.session ?? data), ...(data.cursor !== undefined ? { cursor: data.cursor } : {}), truncated: data.truncated === true };
   }
+  if (operation === 'terminal_open' || operation === 'terminal_input' || operation === 'terminal_resize' || operation === 'terminal_close') return { terminal: pick(data, terminalKeys) };
+  if (operation === 'terminal_read') return { terminal: pick(data.terminal, terminalKeys), ...pick(data, ['data', 'cursor', 'nextCursor', 'missedBytes', 'more']) };
+  if (operation === 'terminal_list') return list(data, 'terminals', terminalKeys);
   if (operation === 'git_status') {
     return { ...parseGitStatus(data.output), output: boundedOutput(data.output) ?? '' };
   }
@@ -603,6 +609,12 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
     NOT_FOUND: 'GitHub installation not found.'
   },
   github_disconnect: { NOT_FOUND: 'GitHub installation not found.' },
+  // A terminal the runner no longer knows about, including every terminal from before a runner
+  // restart, answers NOT_FOUND. The browser turns that into its "no longer available" state.
+  terminal_read: { NOT_FOUND: 'This terminal is no longer available.' },
+  terminal_input: { NOT_FOUND: 'This terminal is no longer available.' },
+  terminal_resize: { NOT_FOUND: 'This terminal is no longer available.' },
+  terminal_close: { NOT_FOUND: 'This terminal is no longer available.' },
   mcp_server_list: { UNAVAILABLE: 'The MCP registry is temporarily unavailable.' },
   mcp_server_get: { NOT_FOUND: 'MCP server not found.' },
   mcp_gateway_trace_list: { NOT_FOUND: 'MCP server not found.' },

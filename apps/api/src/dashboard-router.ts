@@ -8,6 +8,7 @@ import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { registerDashboardControlRoutes } from './dashboard-control-router.js';
 import { registerDashboardGatewayRoutes } from './dashboard-gateway-router.js';
+import { registerDashboardTerminalRoutes } from './dashboard-terminal-router.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
 import { serverVersion } from './version.js';
 
@@ -123,6 +124,7 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   });
   registerDashboardControlRoutes(router, runner, principal, config, gateway);
   if (gateway) registerDashboardGatewayRoutes(router, gateway, principal, config);
+  registerDashboardTerminalRoutes(router, runner, principal, config.requestTimeoutMs);
 
   router.get('/api/v1/profile', (request: DashboardRequest, response) => {
     const selected = principal(request, response);
