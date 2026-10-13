@@ -417,6 +417,11 @@ and
   than continuing invisibly. Task log output is automatically spooled into retained
   artifact storage upon workspace closure. In contrast, interactive shells (`shell_*`)
   and named sessions (`sessions_*`) live in volatile runner memory only and are lost on restart.
+- The Dashboard Terminal is not part of this contract. Its `terminal_*`
+  operations are internal dashboard operations reached only through the
+  authenticated dashboard, and no MCP tool opens a PTY; agents keep `shell_*`,
+  `sessions_*`, and `exec_run`. Its boundary is in the
+  [security model](security-model.md#dashboard-terminal).
 - `workspace_lease_renew` and `workspace_recover` allow inspecting, extending,
   and restoring workspaces across their lifecycle states:
   - **`ACTIVE` → `EXPIRED_RECOVERABLE` → `CLOSED` Lifecycle:** When an active

@@ -444,6 +444,14 @@ When `exec_run` is invoked with `privileged: true`:
 2. In `cloudflare-access` mode, an unapproved request is rejected with `PRIVILEGE_APPROVAL_REQUIRED` and returns a single-use `grantId` bound to the command and working directory with a 60-second TTL.
 3. The operator must explicitly approve the grant via the authenticated Dashboard BFF API (`POST /api/v1/privilege-grants/:grantId/approve`). MCP clients cannot self-approve.
 4. The caller provides the `approvalGrantToken`. The runner validates the grant and command/cwd hash, atomically consumes it (single-use), and executes the command in an isolated ephemeral container with `try/finally` cleanup. The standard executor container remains permanently hardened and unmodified.
+
+The Dashboard Approvals page lists grants in every state the runner returns,
+labelled with their real status, and offers Approve and Reject only for an
+unexpired pending grant; only those count toward the rail badge. A decided,
+consumed, or expired grant is shown without actions, so the page never invites
+a decision the runner would refuse. The owner is `grantIsActionable` in
+[`apps/api/dashboard/dashboard-render.js`](../apps/api/dashboard/dashboard-render.js).
+
 The public contract fixes remote transfers to `origin`, permits only branch
 push refspecs, rejects deletion refspecs, and permits force only through
 force-with-lease. Private clone/fetch/pull require GitHub App Contents read
@@ -492,6 +500,63 @@ execute with the same unprivileged executor environment and network mode as
 other repository commands; the harness does not inject host or deployment
 credentials. Their manifest parsing and execution owner is
 [`worker/harness-worker.mjs`](../worker/harness-worker.mjs).
+
+### Dashboard Terminal
+
+The Dashboard Terminal gives the operator an interactive PTY without adding a
+new place where commands run. The decision and its rejected alternatives are
+recorded in
+[ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md); this section records
+the boundary it keeps.
+
+- **Same executor, no new authority.** The runner opens the PTY through the
+  Docker Engine API exec call on the socket it already holds, inside the
+  workspace's existing hardened executor, as uid 10001. Nothing runs in the
+  API, the runner, or on the host, and the executor gains no capability, mount,
+  or credential. Because the exec needs the Engine API directly, terminals
+  require a unix `DOCKER_HOST`; any other value makes them unavailable rather
+  than falling back to another transport. Owner:
+  [`apps/runner/src/docker-pty.ts`](../apps/runner/src/docker-pty.ts).
+- **Dashboard-only, re-authorized per call.** Terminal operations are internal
+  runner operations, not MCP tools; agents keep `shell_*` and `sessions_*`. The
+  browser reaches them only through the dashboard BFF, under the same session
+  principal, Origin, and CSRF checks as every other dashboard mutation, and
+  request bodies cannot name a workspace, terminal, or principal. The runner
+  re-checks that the workspace is owned and active on every call. Owners:
+  [`packages/contracts/src/terminal-schemas.ts`](../packages/contracts/src/terminal-schemas.ts),
+  [`apps/api/src/dashboard-terminal-router.ts`](../apps/api/src/dashboard-terminal-router.ts),
+  and the `terminal_*` dispatch in `executeInternal` of
+  [`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts).
+- **Bounded in memory.** A per-workspace terminal limit, an idle timeout, a
+  maximum lifetime, an input size cap with backpressure, and a retained output
+  window addressed by absolute cursors bound what one browser can hold open.
+  A reader that fell behind is told how many bytes it missed instead of
+  receiving a silently incomplete screen. Long-poll reads are capped and end
+  when the browser disconnects, so an abandoned tab does not park a runner
+  wait. Limits are configured as described in
+  [configuration](configuration.md#dashboard-terminal) and enforced in
+  [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts).
+- **Redaction and audit.** PTY output passes through the workspace's streaming
+  secret redactor before it is retained, so an injected secret value is neither
+  kept nor sent to the browser; the redaction limits in the previous section
+  still apply. The audit log records only `terminal.opened` and
+  `terminal.closed` with lifecycle metadata (status, end reason, exit code);
+  keystrokes and output are never audited, and the PTY transport never logs
+  payloads.
+- **No resumption.** PTYs live in runner memory. A runner restart forgets
+  them, the dashboard reports them as lost, and nothing is resumed. Close ends
+  the whole PTY session, including job-control children.
+- **Browser posture.** The emulator is the vendored `@xterm/xterm` and
+  `@xterm/addon-fit`, served same-origin from an explicit allow-list in
+  [`apps/api/src/dashboard-assets.ts`](../apps/api/src/dashboard-assets.ts)
+  from the pinned dependency, never from a CDN. The dashboard CSP is unchanged.
+  xterm writes styles from script, which `style-src 'self'` blocks, so
+  [`apps/api/dashboard/dashboard-terminal.js`](../apps/api/dashboard/dashboard-terminal.js)
+  installs a CSSOM adapter that turns script-created `<style>` elements and
+  `style` attributes into constructed stylesheets and `style.cssText`.
+  Markup-delivered styles stay blocked and no nonce or `'unsafe-inline'` is
+  introduced. The asset confinement is asserted by
+  [`apps/api/test/dashboard-ui-contract.test.ts`](../apps/api/test/dashboard-ui-contract.test.ts).
 
 ## Storage and state limits
 

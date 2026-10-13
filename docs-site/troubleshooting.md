@@ -239,3 +239,16 @@ If an agent started but followed the wrong files, read the `repository_context` 
 | `write_unconfirmed` | The update timed out or failed on Cloudflare's side and may or may not have landed. Reload before retrying. |
 | `readback_mismatch` | Cloudflare accepted the update but did not confirm it. Reload to see the values actually in effect. |
 | **Set outside Cloud Harness** / **Changed outside Cloud Harness** | The value was customised in Cloudflare. Cloud Harness never overwrites it; choose **Adopt default** or save a value to manage it. |
+
+---
+
+### 22. Dashboard Terminal is unavailable or "No longer available"
+**Cause:** [Dashboard terminals](/dashboard/terminal) live in the runner's memory and are never resumed. The most common causes are:
+
+| Symptom | Meaning and fix |
+| :--- | :--- |
+| **No longer available** on an open terminal | The runner restarted, or the terminal was closed, timed out, or ended long enough ago to be discarded. Choose **New session**. Use a background task for work that must survive a restart. |
+| **Timed out** | The terminal reached its idle timeout or maximum lifetime. Choose **New session**. |
+| Opening fails with HTTP `429` and "too many open terminals" | The workspace already holds its limit of live terminals. Close one from the Terminal tab or [`/dashboard/terminals`](/dashboard/terminal#all-terminals), or ask the operator to raise `TERMINAL_MAX_PER_WORKSPACE` (see the [environment variables reference](/reference/environment-variables)). |
+| "Unsent keystrokes were dropped" while typing or pasting | Input arrived faster than the shell accepted it, and in-order retries ran out. Wait for the shell to catch up, then send the rest again. |
+| Opening fails with HTTP `503` while other workspace actions work | The workspace executor is not running, or the runner cannot reach Docker over a unix socket. Recover the workspace first. Operators: terminals require the runner's `DOCKER_HOST` to be unset or a `unix://` path. |

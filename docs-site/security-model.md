@@ -23,13 +23,14 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 - **Hardened Standard Mode:** Standard executors strictly maintain `--read-only`, `--cap-drop ALL`, and `--security-opt no-new-privileges`.
 - **3-Zone Storage Partitioning:** Ephemeral secrets/config in RAM tmpfs (`/tmp/cloud-harness-home`), persistent user-space toolchains in `/opt/user-tools` & `/var/cache/harness`, and clean Git checkout in `/workspace`.
 - **No Docker Authority:** No socket mount or host filesystem access.
+- **Dashboard Terminal:** The [Terminal](/dashboard/terminal) opens a shell inside this same executor, as the same user and under the same limits; it never runs on the host or in the harness services. It is reachable only through the authenticated dashboard, is not an MCP tool, and its audit records only open and close, never keystrokes or output.
 - **Network Egress On by Default (`dependency-access`):** Workspace executors have outbound network access by default, so a workspace can reach the GitHub API and the bundled `gh` CLI. `dependency-access` permits only public DNS and TCP 80/443 while an attested Linux host firewall blocks loopback-to-host, Docker/control-plane, RFC 1918, link-local, and cloud-metadata ranges. It fails closed if attestation is unavailable and still permits public exfiltration. `network-none` blocks all egress and is the per-workspace or instance-wide opt-out.
 
 ### 3. Privileged Execution & Operator Grants
 
 - Privileged (`sudo`/root) commands are treated as an explicit threat model weakening and are supported in **Cloudflare Access** mode only.
 - Running with `privileged: true` requires an operator approval grant (`PRIVILEGE_APPROVAL_REQUIRED`), single-use, 60s TTL, bound to command and working directory hash.
-- Approval is performed by authenticated operators via the Dashboard control plane (`/api/v1/privilege-grants`). MCP clients cannot self-approve.
+- Approval is performed by authenticated operators via the Dashboard control plane (`/api/v1/privilege-grants`). MCP clients cannot self-approve. The [Approvals](/dashboard/approvals) page shows each grant's real status and offers a decision only for an unexpired pending grant.
 - Approved privileged commands run in isolated ephemeral containers with root cleanup normalizers.
 
 ### 4. Credential Safety
@@ -43,7 +44,7 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 
 - **Write-Only At Rest:** Global and project environment secrets are encrypted at rest with AES-256-GCM via the runner-held keyring (`SECRET_KEYRING_FILE`). Secret values and ciphertext are never returned over MCP or dashboard APIs.
 - **Scope Precedence:** Active global `runtime` secrets are automatically inherited by remote Docker workspaces; `runtime` environment secrets override colliding global keys when explicitly injected with `confirmEnvironmentInjection: true`.
-- **Stream & Output Redactor:** Streaming task, shell, and session stdout/stderr chunks are sanitized across stream boundaries to `[REDACTED_SECRET: <NAME>]` before retained buffering, while synchronous `exec_run` command outputs and error messages are sanitized after capture before return.
+- **Stream & Output Redactor:** Streaming task, shell, session, and Dashboard Terminal output chunks are sanitized across stream boundaries to `[REDACTED_SECRET: <NAME>]` before retained buffering, while synchronous `exec_run` command outputs and error messages are sanitized after capture before return.
 
 ### 6. Toolkit Provisioning Firewall & Content-Addressed Storage
 

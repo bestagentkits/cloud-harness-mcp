@@ -143,9 +143,25 @@ a lost response; do not create a second key until the first result is resolved.
   unified diff.
 - `EXPIRED` or a closed workspace: open a new workspace. The old job directory
   is intentionally removed.
-- Missing shell/session handle after a runner restart: interactive PTY streams
-  are in memory and cannot be reconnected. Background task metadata and output
-  logs persist across restarts and can be inspected via `tasks_status` or `tasks_list`.
+- Missing shell/session handle after a runner restart: interactive shell and
+  session streams are in memory and cannot be reconnected. Background task
+  metadata and output logs persist across restarts and can be inspected via
+  `tasks_status` or `tasks_list`.
+- Dashboard Terminal shows "no longer available" (the runner answered
+  `NOT_FOUND`): the runner restarted, or the terminal was closed, timed out, or
+  pruned after ending. Terminals are never resumed; open a new session. See
+  [operations](operations.md#dashboard-terminals).
+- Opening a Dashboard Terminal returns `429` with "too many open terminals":
+  the workspace already holds the configured number of live terminals. Close
+  one from the workspace tab or `/dashboard/terminals`, or raise the limit
+  described in [configuration](configuration.md#dashboard-terminal). A `429`
+  while typing means input is arriving faster than the PTY drains; the
+  dashboard retries in order, then reports dropped keystrokes rather than
+  queueing them without bound.
+- Opening a Dashboard Terminal returns `503` while other workspace actions
+  work: check that the workspace executor is running, and that the runner's
+  `DOCKER_HOST` is unset or a `unix://` path. Terminals use the Docker Engine
+  API over a unix socket and are unavailable with any other Docker host.
 - `workspace_open` fails with `DEPENDENCY_EGRESS_UNAVAILABLE` (HTTP 503): the
   effective profile is `dependency-access` — the shipped default — but the Linux
   host firewall is missing or drifted. Provision it with

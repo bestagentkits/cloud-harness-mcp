@@ -10,10 +10,11 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 ## Key Sections
 
 - **[Overview](/dashboard/):** Decision metrics first — Needs attention, Running now, Cost (with the scope it measured), and Expiring soon — then an Analytics section, then Access and Server information. Each figure links to the view behind it.
-- **[Workspaces](/dashboard/workspaces):** Open, inspect, and finalize TTL-limited workspaces. Each workspace opens as a cockpit with Summary, Agents, Runtime, Files, Git, Automation, Deploy, Artifacts, and Activity sections plus Renew lease, Finalize, recover and close actions.
+- **[Workspaces](/dashboard/workspaces):** Open, inspect, and finalize TTL-limited workspaces. Each workspace opens as a cockpit with Summary, Agents, Runtime, Terminal, Files, Git, Automation, Deploy, Artifacts, and Activity sections plus Renew lease, Finalize, recover and close actions.
+- **[Terminal](/dashboard/terminal):** An interactive shell inside a workspace, from the cockpit's Terminal tab, plus `/dashboard/terminals` for every live terminal across your workspaces.
 - **[Agents](/dashboard/agents):** Every coding agent across your workspaces with its parent-child hierarchy, status, model profile, age, TTL, tokens, cost, and budget utilisation; each agent opens into Overview, Usage, bounded Logs, and Messages (steer, follow-up, cancel).
 - **[Activity](/dashboard/activity):** One operational timeline with All, Agents, Tasks, MCP, Deployments, and Audit filters. Runtime rows are live; audit rows are retained and redacted, and every row says which it is.
-- **[Approvals](/dashboard/approvals):** Pending privilege grants with the requested command, workspace, working directory, and command digest, plus Approve and Reject. The rail shows a count only while something is pending.
+- **[Approvals](/dashboard/approvals):** Privilege grants with their real status, the requested command, workspace, working directory, and command digest. Approve and Reject appear only on unexpired pending grants, and the rail counts only those.
 - **[Projects](/dashboard/projects):** Track repositories and manage project-scoped environment configurations.
 - **[Secrets & Credentials](/dashboard/secrets):** Manage global and project-scoped credentials encrypted at rest with AES-256-GCM and automatic ingest-time output stream redaction. Creating a secret is a dialog; the value is write-only.
 - **[Models & Budgets](/dashboard/models):** Configure LLM provider credentials, model profiles, token pricing, and capability limits for coding agents.
@@ -38,4 +39,4 @@ Every dashboard page ends with the same footer crediting [AgentKit](https://agen
 
 - **Zero Secrets Rendered:** Container tokens, SSH private keys, and runner authentication credentials are never sent to or displayed in the dashboard. Dashboard search reads an allowlisted projection from seven resource endpoints and never indexes secret values, secret descriptions, or knowledge content.
 - **No Client Storage:** Theme preferences and session states are managed strictly via HttpOnly cookies and server session headers. Search results are cached in memory for the current page view only.
-- **Strict Content Security Policy (CSP):** Runs under `default-src 'none'` with no external CDN dependencies or tracking scripts.
+- **Strict Content Security Policy (CSP):** Runs under `default-src 'none'` with no external CDN dependencies or tracking scripts. The terminal emulator is a pinned copy served by the harness itself, under the same policy.

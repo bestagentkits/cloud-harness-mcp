@@ -58,10 +58,16 @@ copies the HUD's grammar. Constraints that shape what is possible:
 
 - **No web fonts, no external assets, no inline styles.** The dashboard document
   is served under a strict CSP set by `dashboardSecurity` in
-  `apps/api/src/dashboard-router.ts`: no `font-src`, so no self-hosted or web
+  `apps/api/src/dashboard-security.ts`: no `font-src`, so no self-hosted or web
   fonts, and no external assets, `style=` attributes, or storage. All styling
   lives in `dashboard.css`; behavior in the dashboard JS. The contract test
-  asserts the absence of `@font-face`, `@import`, `url(`, and `style=`. One limit
+  asserts the absence of `@font-face`, `@import`, `url(`, and `style=`. The one
+  third-party UI code is the vendored terminal emulator, served same-origin from
+  the allow-list in `apps/api/src/dashboard-assets.ts`; it styles itself from
+  script only through the CSSOM adapter in `dashboard-terminal.js`, which keeps
+  the policy unchanged (see the
+  [security model](security-model.md#dashboard-terminal)). Do not add another
+  vendor asset or a CSP exception for it. One limit
   worth knowing: that middleware runs on the router mounted at `/dashboard`, which
   sits after `accessAssertionAuth` in `apps/api/src/app.ts`, so an unauthenticated
   401 from a dashboard path carries no CSP or `X-Frame-Options`.
@@ -389,8 +395,9 @@ wired, so the visible one is never the only working one. Owners:
   and is focusable so its full `aria-label` is reachable from the keyboard, with the
   task table beside it as the text fallback (a cycle or an edge to an unknown node
   cannot break the layout); and sessions as named, closeable rows whose output is
-  read through a **read-only, bounded** call — the browser never supplies stdin, so
-  the dashboard cannot become a terminal — with truncation stated in the panel.
+  read through a **read-only, bounded** call — the browser never supplies stdin to
+  an agent's session; interactive input exists only in the Terminal tab — with
+  truncation stated in the panel.
   Owners: `taskStatusLabel`, `taskDuration`, `renderTaskList`, `taskGraphLayout`,
   `renderTaskGraph`, `renderSessionsPanel` and `renderRuntimePanel` in
   [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the adapters
@@ -399,6 +406,28 @@ wired, so the visible one is never the only working one. Owners:
   [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts), with
   the bounded task and session projections in
   [`apps/api/src/dashboard-response.ts`](../apps/api/src/dashboard-response.ts).
+- **Terminal:** the cockpit's Terminal tab
+  (`/dashboard/workspaces/:id/terminal`) is the only place the dashboard sends
+  keystrokes. Visiting the tab never starts a shell: the emulator mounts only
+  after the operator chooses **New session** or re-attaches a running terminal,
+  and a re-attach replays the retained output with a visible notice when earlier
+  bytes were dropped. Every state shown comes from what the runner reported, and
+  a terminal the runner no longer knows reads as lost with an offer of a new
+  session, never as reconnecting. Keys typed into the terminal, including Tab and
+  Escape, belong to the shell, so focus must stay escapable: the release
+  shortcut (`TERMINAL_RELEASE_SHORTCUT`, shown in the panel note) moves focus to
+  the toolbar, and that note must keep naming it. The emulator's palette is read
+  from the live dashboard tokens, not hard-coded, and follows theme changes while
+  open, so light, dark, and system stay consistent with the surrounding page.
+  The operator page `/dashboard/terminals` lists live terminals across
+  workspaces and closes one only behind the shared confirm dialog. Owners:
+  `renderTerminalPanel`, `renderTerminalsIndex`, and the terminal status labels
+  in [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js);
+  `mountTerminalPane`, `createTerminalSession`, and `readTerminalTheme` in
+  [`dashboard-terminal.js`](../apps/api/dashboard/dashboard-terminal.js); the
+  `.terminal-*` rules in
+  [`dashboard.css`](../apps/api/dashboard/dashboard.css); behavior evidence in
+  [`apps/api/test/dashboard-terminal.test.ts`](../apps/api/test/dashboard-terminal.test.ts).
 - **Git and Finalize:** the cockpit's Git tab keeps **Finalize** as the primary
   happy path — one confirmed action that stages, commits and pushes — and treats
   everything else as an advanced surface. The tab shows branch, upstream,

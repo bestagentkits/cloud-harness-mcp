@@ -36,7 +36,7 @@ The production defaults place:
   `/etc/cloud-harness-mcp`.
 
 The database persists workspace and task metadata across runner restarts.
-Interactive shell and session streams remain in-memory, while background tasks
+Interactive shell, session, and Dashboard Terminal streams remain in-memory, while background tasks
 and dependency graphs are durable in SQLite. Startup reconciles in-flight tasks
 from prior process boots to `FAILED` with `error_code: "RUNNER_RESTARTED"` while
 preserving completed task metadata and file logs.
@@ -132,6 +132,22 @@ Monitor free space because the workspace size setting is not a hard quota:
 df -h /var/lib/cloud-harness
 sudo du -sh /var/lib/cloud-harness/jobs/*
 ```
+
+## Dashboard terminals
+
+Dashboard Terminal PTYs are runner memory, not state. A runner restart or
+redeploy ends every open terminal; operators see them as lost and open a new
+session, and there is nothing to back up or restore. The executor restart that
+follows reconciliation ends any process those shells left behind. Closing a
+terminal from `/dashboard/terminals` or the workspace tab ends its whole shell
+session without touching the workspace.
+
+Terminals need the runner to reach Docker over a unix socket, which the
+production Compose topology provides. The per-workspace limit, idle timeout,
+lifetime, and retained output are runner settings documented in
+[configuration](configuration.md#dashboard-terminal). Their lifecycle appears
+in the audit log only as `terminal.opened` and `terminal.closed`; input and
+output are never retained there, so the audit log cannot reconstruct a session.
 
 ## Managed API-key lifecycle
 
