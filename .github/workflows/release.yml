@@ -6,6 +6,7 @@ on:
     types: [completed]
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -58,3 +59,37 @@ jobs:
         run: |
           test "$(git branch --show-current)" = "$RELEASE_BRANCH"
           env -u GITHUB_ACTIONS npm exec semantic-release
+      # The version commit carries [skip ci], so push CI never tests it and the
+      # deploy that follows CI never sees it. Request CI for it explicitly: the
+      # dispatched run is not a push, so Release skips it, and Deploy production
+      # deploys the tagged tree once that run passes. The PAT is preferred
+      # because its dispatch behaves like an owner's; the workflow token is the
+      # fallback when the PAT is absent or lacks Actions write access.
+      - name: Request CI for the release commit
+        if: github.event.workflow_run.head_branch == 'main'
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          WORKFLOW_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_commit="$(git rev-parse HEAD)"
+          if [[ "$release_commit" == "$RELEASE_SHA" ]]; then
+            echo "No version commit was created; push CI already deployed $RELEASE_SHA."
+            exit 0
+          fi
+          main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$main_sha" != "$release_commit" ]]; then
+            echo "::notice::main moved to $main_sha after release commit $release_commit; that push's CI deploys both."
+            exit 0
+          fi
+          for token in "$RELEASE_TOKEN" "$WORKFLOW_TOKEN"; do
+            [[ -n "$token" ]] || continue
+            if GH_TOKEN="$token" gh workflow run ci.yml --ref main --repo "$GITHUB_REPOSITORY"; then
+              echo "Requested CI for release commit $release_commit."
+              exit 0
+            fi
+          done
+          echo "::error::Could not request CI for release commit $release_commit. Run: gh workflow run ci.yml --ref main"
+          exit 1

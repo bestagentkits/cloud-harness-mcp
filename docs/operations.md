@@ -178,11 +178,14 @@ remains the fallback instead of retrying a downgrade that does not complete.
 
 ## Release rollback
 
-The automatic GitHub Actions deploy skips the semantic-release version commit
-(`chore(release): … [skip ci]`) because the merged code is already live, so one
-merge opens a single container-recreation window instead of two. Run **Deploy
-production** manually (`workflow_dispatch`, optionally with an explicit
-40-character commit SHA) to force a deploy.
+Each merge to `main` deploys once. When Release cuts a version, it requests CI
+for its `chore(release)` commit and the merge deploy is skipped, so production
+runs the tagged tree; otherwise the merge commit deploys. If the version
+commit's CI fails, neither commit deploys until a fix merges or you dispatch
+CI again (`gh workflow run ci.yml --ref main`). Run **Deploy production**
+manually (`workflow_dispatch`, optionally with an explicit 40-character commit
+SHA) to force a deploy; [`docs/deployment.md`](deployment.md) owns the decision
+rule.
 
 An automatic deployment failure restores the prior recorded commit, the
 quiesced database/artifact state, the last healthy runtime configuration and

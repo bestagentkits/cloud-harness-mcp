@@ -127,7 +127,9 @@ the stable release. Pull-request runs never release.
 The release workflow commits the generated [`CHANGELOG.md`](../CHANGELOG.md)
 and synchronized workspace/runtime versions, then tags that metadata-only
 release commit. CI proves the preceding source commit; the tag is derived from
-that exact tested source plus the generated metadata. Before enabling the first
+that exact tested source plus the generated metadata. On `main`, Release then
+dispatches CI for the release commit so production deploys the tagged tree
+(see [`docs/deployment.md`](deployment.md)). Before enabling the first
 automated release, create and protect `dev`, and either seed the intended
 `v0.2.0` baseline tag or accept `1.0.0` as the first generated version. Branch
 rules must allow the repository's `GITHUB_TOKEN` to write these generated

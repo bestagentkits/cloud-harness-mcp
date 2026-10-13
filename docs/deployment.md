@@ -430,20 +430,31 @@ pins the SSH host key, passes an exact commit SHA to the fixed sudo command,
 uses a forced-command deployment key, and removes ephemeral SSH files. Protect the `production` environment and
 restrict who may approve or modify these secrets.
 
-A `classify` job skips the deploy when CI completed on a semantic-release
-version commit (`chore(release): … [skip ci]`). The code for the merged commit
-is already live, so redeploying only changes version strings and the changelog
-while recreating every container again. Skipping it avoids a second
-container-recreation window per merge. A manual **Deploy production** run
-(`workflow_dispatch`, optionally with an explicit 40-character commit SHA)
-always deploys and remains the override.
+A `classify` job, owned by
+[`scripts/classify-production-deploy.mjs`](../scripts/classify-production-deploy.mjs),
+decides whether a CI-triggered run deploys. It waits for the Release run started
+by the same CI completion, then skips only a merge commit that Release
+superseded with a version commit (`chore(release): …`, whose parent is that
+merge) while that version commit has a queued, running, or successful CI run.
+That CI run deploys the tagged tree, so one merge still opens one
+container-recreation window and production reports the newest release. Every
+other case deploys, including any API error, a Release run still busy after ten
+minutes, or a version commit without a usable CI run. A manual **Deploy
+production** run (`workflow_dispatch`, optionally with an explicit 40-character
+commit SHA) always deploys and remains the override.
 
 GitHub release automation is separate from deployment. After successful CI,
 `dev` produces beta releases and `main` produces stable releases from
 Conventional Commit history; it requires `contents: write` for the workflow
 token and branch protection that permits its generated version/changelog
-commit. Production deployment remains tied to successful `main` CI, so a
-release tag is not itself production-deployment evidence.
+commit. The version commit carries `[skip ci]`, so on `main` the Release
+workflow then requests CI for it (`gh workflow run ci.yml --ref main`, with
+`RELEASE_TOKEN` or the workflow token as fallback) when it is still the head of
+`main`. Release ignores that dispatched run, and **Deploy production** deploys
+the version commit once it passes. Production deployment remains tied to
+successful `main` CI, so a release tag is not itself production-deployment
+evidence until that run and its deploy succeed. If the Release job fails at that
+step, run the same command by hand.
 
 ## Rollback or disable the route
 
