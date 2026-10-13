@@ -31,7 +31,8 @@ inventory.
 - `cloudflare-access` trusts only a verified Cloudflare Access assertion for
   identity. Configure the issuer, application audience, and JWKS URL from the
   same Access application, remove the owner bearer, and protect both `/mcp`
-  and `/dashboard` at the Access edge. GitHub and Google are Access identity
+  (including the workspace-bound `/mcp/workspaces/<workspaceId>` paths) and
+  `/dashboard` at the Access edge. GitHub and Google are Access identity
   providers; Cloud Harness does not integrate their login tokens directly.
 
 The exact required/forbidden combinations are owned by

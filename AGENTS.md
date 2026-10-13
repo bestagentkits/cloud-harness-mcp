@@ -77,6 +77,19 @@ instead of copying behavior, defaults, command inventories, or configuration.
   read or print the canary credentials file while diagnosing.
 - The `curl ... port 3100` lines before the canary are the expected readiness
   wait loop, not the failure.
+- `client_loop: send disconnect: Broken pipe` mid-build means the CI session
+  dropped. Check the host with `systemctl status cloud-harness-deploy-<sha>`
+  and its journal, not the CI log: the deploy runs as that systemd unit and
+  keeps going. Never move the deploy back into the SSH/sudo session; sudo kills
+  the process group before any rollback trap can run.
+- The installed `/usr/local/sbin/cloud-harness-deploy` is the previous
+  release's script, so a fix to `deploy-release.sh` protects only later
+  deploys. Deploying an older commit never downgrades it
+  (`/var/lib/cloud-harness/deploy-tooling-release`).
+- A leftover `/var/lib/cloud-harness/deploy-in-progress` means a deploy was
+  killed after stopping the release; `cloud-harness-deploy-recover.service`
+  (boot) or the deploy unit's `ExecStopPost` rolls it back. Do not delete the
+  marker by hand before reading its journal.
 
 ## Change workflow
 

@@ -36,6 +36,7 @@ install -m 0755 "$project_root/deploy/scripts/rollback-release.sh" /usr/local/sb
 install -m 0755 "$project_root/deploy/scripts/upgrade-nginx-dashboard.sh" /usr/local/sbin/cloud-harness-upgrade-nginx
 install -m 0755 "$project_root/deploy/scripts/deploy-ssh-wrapper.sh" /usr/local/sbin/cloud-harness-deploy-ssh
 install -m 0644 "$project_root/deploy/systemd/cloud-harness-mcp.service" /etc/systemd/system/cloud-harness-mcp.service
+install -m 0644 "$project_root/deploy/systemd/cloud-harness-deploy-recover.service" /etc/systemd/system/cloud-harness-deploy-recover.service
 install -m 0644 "$project_root/deploy/nginx/cloud-harness-mcp.conf" /etc/nginx/sites-available/cloud-harness-mcp.conf
 ln -sfn /etc/nginx/sites-available/cloud-harness-mcp.conf /etc/nginx/sites-enabled/cloud-harness-mcp.conf
 
@@ -45,6 +46,6 @@ EOF
 chmod 0440 /etc/sudoers.d/cloud-harness-mcp-deploy
 visudo -cf /etc/sudoers.d/cloud-harness-mcp-deploy
 systemctl daemon-reload
-systemctl enable cloud-harness-mcp.service
+systemctl enable cloud-harness-mcp.service cloud-harness-deploy-recover.service
 nginx -t
 systemctl reload nginx

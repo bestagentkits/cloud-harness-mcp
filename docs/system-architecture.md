@@ -95,6 +95,7 @@ gateway root owns its own constant five-tool contract.
 1. **Streamable HTTP mode (default):**
    `cloud-harness-mcp --transport http` (or default without flags).
    Assembles Express routes, bearer/Access authentication, and translates requests through `RunnerClient` to the isolated Docker runner on a private network.
+   The [Skills over MCP extension](mcp-api.md#skills-over-mcp-extension) rides the same root: the API only validates and maps JSON-RPC, while the runner resolves, hashes, and reads skills for the bound principal through read-only internal operations. Local stdio mode has no such backend and does not advertise it.
 
 2. **MCP gateway mode:**
    `https://<host>/mcp-gateway`.
@@ -276,10 +277,12 @@ runner remains the single cleanup authority.
 Production Compose binds the credential-free ingress proxy to
 `127.0.0.1:3100`; the API and runner have no published host ports. Runner
 egress does not expose an ingress port. Existing
-nginx is the only intended origin host listener and proxies `/mcp`,
+nginx is the only intended origin host listener and proxies `/mcp`, the
+workspace-bound `/mcp/workspaces/<workspaceId>` prefix,
 `/mcp-gateway`, `/mcp-api-key`, `/dashboard`,
 `/healthz`, and `/readyz` to loopback. In Access mode the owned public hostname
-uses one Access application for `/mcp`, `/mcp-gateway`, and `/dashboard`, plus a
+uses one Access application for `/mcp` (including its workspace-bound paths),
+`/mcp-gateway`, and `/dashboard`, plus a
 separate application scoped exactly to `/mcp-api-key`. The external Worker owns
 the public static-key hostname and cannot proxy dashboard or arbitrary origin
 traffic. The

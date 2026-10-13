@@ -2,11 +2,11 @@ import express, { type Express, type Request, type Response } from 'express';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FetchLike } from '@modelcontextprotocol/client';
-import type { ApiConfig } from '@cloud-harness/contracts';
-import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth } from './auth.js';
+import { WorkspaceIdSchema, type ApiConfig } from '@cloud-harness/contracts';
+import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth, type AuthenticatedRequest } from './auth.js';
 import { createDashboardAssetsRouter } from './dashboard-assets.js';
 import { createDashboardRouter } from './dashboard-router.js';
-import { createCloudHarnessServerFactory } from './mcp-server.js';
+import { bindWorkspace, createCloudHarnessServerFactory, createWorkspaceBoundServerFactory } from './mcp-server.js';
 import { createMcpGateway } from './mcp-gateway/index.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
 import { preAuthRequestLimits, principalRequestLimits, requestSecurity } from './request-security.js';
@@ -30,6 +30,8 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
   const runnerClient = overrides.runnerClient ?? new RunnerClient(config);
   const handler = createMcpHandler(createCloudHarnessServerFactory(runnerClient), { legacy: 'stateless', responseMode: 'auto' });
   const nodeHandler = toNodeHandler(handler);
+  const boundHandler = createMcpHandler(createWorkspaceBoundServerFactory(runnerClient), { legacy: 'stateless', responseMode: 'auto' });
+  const boundNodeHandler = toNodeHandler(boundHandler);
   const gateway = createMcpGateway(config, runnerClient, {
     ...(overrides.gatewayFetchImpl ? { fetchImpl: overrides.gatewayFetchImpl } : {})
   });
@@ -49,6 +51,26 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
       return;
     }
     await nodeHandler(request, response, request.body);
+  });
+  // The `app.use('/mcp', ...)` chain above is a prefix mount, so this route is already behind
+  // the same host/origin checks, authentication, rate limits, and body parser. The exact
+  // `app.all('/mcp')` route does not match it. The binding comes only from this path segment.
+  app.all('/mcp/workspaces/:workspaceId', async (request: AuthenticatedRequest, response: Response) => {
+    const workspaceId = WorkspaceIdSchema.safeParse(request.params.workspaceId);
+    if (!workspaceId.success) {
+      response.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (request.method === 'POST' && !request.is('application/json')) {
+      response.status(415).json({ error: 'unsupported_media_type' });
+      return;
+    }
+    if (!request.auth) {
+      response.status(401).json({ error: 'authentication_required' });
+      return;
+    }
+    request.auth = bindWorkspace(request.auth, workspaceId.data);
+    await boundNodeHandler(request, response, request.body);
   });
   // Express `app.use('/mcp', ...)` does not match `/mcp-gateway` (the next character
   // must be `/` or end), so the two chains cannot interfere.
@@ -85,7 +107,7 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
   return {
     app,
     close: async () => {
-      await Promise.all([handler.close(), gatewayHandler.close(), gateway.service.close()]);
+      await Promise.all([handler.close(), boundHandler.close(), gatewayHandler.close(), gateway.service.close()]);
     },
     runnerClient,
     gateway: gateway.service

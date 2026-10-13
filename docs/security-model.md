@@ -324,6 +324,61 @@ Skills are resolved across four deterministic precedence tiers (`built-in > owne
 1. **Built-in & Owner Tiers (`/opt/cloud-harness/skills:ro`, `/opt/cloud-harness/owner-skills:ro`)**: Mounted read-only (`:ro`) at the container boundary. Because they reside on immutable host mounts, processes within the executor (including any process running as UID 10001) cannot modify these skill files.
 2. **Workspace & Repository Tiers (`/workspace/.cloud-harness/skills`, `/workspace/.agents/skills`)**: Reside on the mutable working tree volume. Execution creates an isolated snapshot under `/tmp/cloud-harness-exec/<runId>` and validates the full-tree bundle digest and script SHA before invocation to prevent unintentional concurrent filesystem race conditions. Within the single-tenant container boundary, all processes share UID 10001; users requiring kernel-enforced mount immutability should install skills into the `owner` scope. A skill revision that carries instructions but no scripts is refused with `NO_EXECUTABLE_ASSETS` rather than a generic miss, because the revision exists and simply has nothing to run. Where those bytes execute is a deliberate choice, not an accident: the script runs in a disposable helper container launched through `runPrivilegedEphemeralExec`, which is gated on an owner privilege grant. Without a grant the runner returns `PRIVILEGE_APPROVAL_REQUIRED` naming the grant it needs, and it never falls back to running the script locally, so a caller cannot read a stronger isolation guarantee into the result than the run actually had. The response reports `executionMode: 'helper-container'`. The helper container reuses the worker's one-shot entry point, so the isolated snapshot, the full-tree bundle digest, and the script SHA checks described here still happen before the script is invoked; only the process that finally runs it moves into a container of its own.
 
+### Skills served over MCP
+
+The [Skills over MCP extension](mcp-api.md#skills-over-mcp-extension) is a
+read-only distribution channel, not an execution or approval path:
+
+- **Owner scoping.** The API forwards only the authenticated principal, and the
+  runner reads owner skills through a store query scoped to that principal, so
+  another principal's library is never a candidate. Unauthenticated requests
+  are refused before reaching the runner. Built-in skills are served to every
+  authenticated principal, as they are mounted into every executor.
+- **Workspace binding.** Workspace and repository skills are served only on
+  the workspace-bound endpoint, and only from the one workspace it names. The
+  runner re-authorizes that workspace on every call by an owner-scoped lookup
+  of its explicit id, never the caller's implicit "active" workspace, and
+  requires it to be `ACTIVE` with an unexpired lease. Missing, foreign, and
+  ended workspaces get one identical error, so the endpoint does not reveal
+  whether another principal's workspace exists, and access stops on the next
+  call after a close or expiry; a call already in progress is not interrupted.
+  A URI naming another workspace is refused.
+- **Repository-controlled bytes.** Workspace and repository skills are read
+  from a checkout the executor can rewrite at any moment, so they are treated
+  as hostile input: a skill root or skill reached through a symlink is
+  ignored, and every directory and file is opened without following a final
+  link and then checked, through the kernel's record of the open descriptor
+  (`/proc/self/fd`), to be exactly its canonical path inside the checkout, so
+  a parent directory swapped for a link during the walk cannot redirect a
+  read; directory entries are read through the verified descriptor. Where that
+  check is unavailable these tiers serve nothing. A skill is keyed by its
+  directory name, which must match its frontmatter `name`, only the first 60
+  directories of each root are considered, only a bounded head of each
+  `SKILL.md` is parsed, and the same file-count, size, depth, and URI bounds
+  apply. These manifests are never cached, and a read whose bytes differ from
+  a manifest built in the same call is refused as stale instead of answered.
+- **Untrusted content.** Served frontmatter and files are passed through
+  verbatim. Owner and imported skills are owner- or third-party-authored text,
+  and repository skills are whatever the checked-out repository contains, so
+  hosts and agents must treat them as untrusted input. Digests prove
+  consistency with the manifest, not trust in the content.
+- **Verified reads.** Manifests are hashed from the bytes on disk on every
+  call, files are opened without following symlinks, and a read whose bytes no
+  longer match the manifest fails instead of returning them. A skill containing
+  a symlink or special file is not served at all, so a published manifest
+  always describes the whole directory. Filesystem errors are reported without
+  host paths.
+- **No activation.** Reading a skill never loads it into a workspace or runs a
+  script. `skills_run` keeps its own bundle-digest pin and privilege grant.
+
+Dashboard ZIP import publishes each skill's whole directory, so scripts and
+assets become owner-tier content and the revision records whether it carries
+executable assets. The importer refuses archives with symlink or special-file
+entries, ignores platform metadata and files outside a skill directory, and
+rejects a single skill over the served per-skill bounds with a per-item
+`LIMIT_EXCEEDED` result instead of publishing it partially. The executable
+owner is [`apps/runner/src/skill-archive.ts`](../apps/runner/src/skill-archive.ts).
+
 ### Privileged execution and operator approval grants
 
 Standard executors strictly preserve `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, and user `10001:10001`. Sudo/root execution is treated as an explicit owner-approved threat model weakening (similar to `networkMode: bridge`).

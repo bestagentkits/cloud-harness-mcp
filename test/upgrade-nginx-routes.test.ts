@@ -56,6 +56,19 @@ const gatewayRoute = `
         proxy_read_timeout 3600s;
         add_header X-Accel-Buffering no always;
     }`;
+const workspaceRoute = `
+    location ^~ /mcp/workspaces/ {
+        proxy_pass http://127.0.0.1:3100/mcp/workspaces/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        add_header X-Accel-Buffering no always;
+    }`;
 
 function createFixture(extraRoutes = legacyDashboardRoutes) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-nginx-'));
@@ -106,6 +119,7 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     expect(readFileSync(fixture.site, 'utf8')).toContain(dashboardRoutes);
     expect(readFileSync(fixture.site, 'utf8')).toContain(apiKeyRoute);
     expect(readFileSync(fixture.site, 'utf8')).toContain(gatewayRoute);
+    expect(readFileSync(fixture.site, 'utf8')).toContain(workspaceRoute);
     expect(backups(fixture.root)).toHaveLength(1);
 
     const second = runUpgrade(fixture.root);
@@ -129,6 +143,34 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     expect(second.status).toBe(0);
     expect(second.stdout).toContain('already installed');
     expect((readFileSync(fixture.site, 'utf8').match(/location = \/mcp-gateway \{/g) ?? [])).toHaveLength(1);
+  });
+
+  it('adds only the missing workspace MCP route to an install that has every other route', () => {
+    const fixture = createFixture(`${dashboardRoutes}\n${apiKeyRoute}\n${gatewayRoute}`);
+    const first = runUpgrade(fixture.root);
+    expect(first.status, first.stderr).toBe(0);
+    const installed = readFileSync(fixture.site, 'utf8');
+    expect(installed).toContain(workspaceRoute);
+    expect((installed.match(/location \^~ \/mcp\/workspaces\/ \{/g) ?? [])).toHaveLength(1);
+    expect((installed.match(/location = \/mcp-gateway \{/g) ?? [])).toHaveLength(1);
+
+    const second = runUpgrade(fixture.root);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('already installed');
+    expect(backups(fixture.root)).toHaveLength(1);
+  });
+
+  it('rejects an unmanaged workspace MCP route without touching the site', () => {
+    const malformed = `${dashboardRoutes}
+    location /mcp/ {
+        proxy_pass http://127.0.0.1:9999/mcp/;
+    }`;
+    const fixture = createFixture(malformed);
+    const result = runUpgrade(fixture.root);
+    expect(result.status, result.stderr).toBe(9);
+    expect(result.stderr).toContain('not the managed shape');
+    expect(readFileSync(fixture.site, 'utf8')).toBe(fixture.source);
+    expect(backups(fixture.root)).toHaveLength(0);
   });
 
   it('rejects a commented canonical route with an active wrong upstream', () => {

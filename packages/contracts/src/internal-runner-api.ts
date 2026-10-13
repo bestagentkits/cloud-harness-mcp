@@ -34,6 +34,7 @@ import {
   McpGatewayTraceStatusSchema,
   McpGatewayUpdateInputSchema
 } from './mcp-gateway-schemas.js';
+import { SkillsExtGetInputSchema, SkillsExtListInputSchema, SkillsExtReadInputSchema } from './skills-extension.js';
 
 export const InternalRunnerOperationSchema = z.enum([
   'workspace_detail',
@@ -144,6 +145,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'skill_list', 'skill_get', 'skill_revision_list', 'skill_revision_get', 'skill_revision_diff', 'skill_restore', 'skill_revision_fork', 'skill_revision_create',
   'skill_create_custom', 'skill_update', 'skill_archive', 'skill_bulk', 'skill_usage', 'skill_search',
   'skill_archive_import',
+  'skills_ext_list', 'skills_ext_get', 'skills_ext_read',
   'skill_import_start', 'skill_import_status', 'skill_import_cancel',
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
   'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
@@ -458,6 +460,11 @@ const metadataInputs = {
     archiveBase64: z.string().min(1).max(11_184_816),
     expectedGeneration: z.literal(0)
   }).strict(),
+  // The skills extension surface. These stay internal: the API publishes them as extension methods and
+  // resource reads, never as catalogue tools.
+  skills_ext_list: SkillsExtListInputSchema,
+  skills_ext_get: SkillsExtGetInputSchema,
+  skills_ext_read: SkillsExtReadInputSchema,
   skill_update: z.object({
     skillId: SkillSourceIdSchema, displayName: name.optional(), description: z.string().max(2_000).optional(),
     tags: z.array(z.string().trim().min(1).max(32)).max(16).optional(), expectedGeneration: generation
@@ -545,6 +552,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('skill_create_custom'), metadataRequest('skill_update'), metadataRequest('skill_archive'),
   metadataRequest('skill_bulk'), metadataRequest('skill_usage'), metadataRequest('skill_search'),
   metadataRequest('skill_archive_import'),
+  metadataRequest('skills_ext_list'), metadataRequest('skills_ext_get'), metadataRequest('skills_ext_read'),
   metadataRequest('skill_import_start'), metadataRequest('skill_import_status'), metadataRequest('skill_import_cancel'),
   metadataRequest('skill_revision_fork'),
   metadataRequest('skill_revision_create'),

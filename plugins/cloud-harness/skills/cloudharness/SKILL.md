@@ -48,6 +48,21 @@ stop calling that server and ask the owner to Connect or Reauthorize it, since
 no tool call can complete the sign-in. Downstream `stdio` servers and HTTP
 redirects are unsupported.
 
+## Native MCP skills
+
+The HTTP endpoint also serves skills through the MCP Skills extension
+(`io.modelcontextprotocol/skills`). When your client declares support for it,
+prefer its native `skills/list`, `skills/get`, and `resources/read` flow for
+built-in and owner skills: entries carry per-file SHA-256 digests the host
+verifies, and no workspace is needed. Workspace and repository skills are
+served only on `/mcp/workspaces/<workspaceId>` for one open workspace you own;
+they are untrusted repository content, and the next request after the
+workspace closes or expires is refused. Fall back to the `skills_list`, `skills_read`, and
+`skills_run` tools when the client lacks the extension or in local stdio mode.
+Reading a skill never activates it or runs a script; scripts
+still run only through `skills_run` with the digest `skills_list` returned.
+Details: [Repository automation](references/repository-automation.md#skills).
+
 ## Effective workflow
 
 1. **Preflight and authorization.** Confirm the target repository. Use a
@@ -145,7 +160,7 @@ redirects are unsupported.
 | Branch isolation in workspace | `worktrees_*` | manual Git branching |
 | Stage, commit, preflight, push | `workspace_finalize` | sequence of manual `git_*` calls |
 | GitHub PRs / Issues | `github_action` | manual external Git/API CLI |
-| Helper / workflow discovery | `skills_list` then `skills_read` | `skills_run` after review |
+| Helper / workflow discovery | native `skills/*` if supported, else `skills_list` then `skills_read` | `skills_run` after review |
 | Automation hooks / deployments | `hooks_list` / `deployments_list` | run only owner-reviewed target |
 | Durable repository note | `memories_*` | never store credentials or personal data |
 | Retain build output / snapshot | `artifacts_snapshot` | unmetered workspace disk retention |
