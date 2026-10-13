@@ -192,13 +192,47 @@ Under **Allowed redirect URIs**, configure the exact callback URLs required by t
 2. **Loopback Port Pinning & Dynamic Subpaths:** Native desktop clients (such as Codex App using the `rmcp` engine) generate an ephemeral unique transaction ID per login attempt (e.g. `http://127.0.0.1:3118/callback/<TX_ID>`). Pinning the callback port (`mcp_oauth_callback_port = 3118` in `~/.codex/config.toml`) and adding wildcard subpaths (`/*`) in the Zero Trust Allowed redirect URIs allows these dynamic transaction subpaths to match and succeed without compromising security.
 3. **ChatGPT Connector Subpaths & Least-Privilege Scoping:** ChatGPT Web generates per-connector callback URLs under `https://chatgpt.com/connector/oauth/<CALLBACK_ID>`. Allowlisting `https://chatgpt.com/connector/oauth/*` covers all dynamic connector instances while avoiding overly broad wildcards (such as `https://chatgpt.com/*`) that could risk authorization code leakage on arbitrary parameter-reflecting endpoints.
 
-#### Managed OAuth Grant Session Duration vs Access Session Duration
+#### Managed OAuth grant, access token, and browser session
 
-Cloudflare Access governs OAuth clients and browser dashboard sessions through separate settings:
+Cloudflare Access governs OAuth clients and browser dashboard sessions through
+separate settings. The decision behind keeping them apart is recorded in the
+[security model](security-model.md#inbound-mcp-oauth-session-lifetimes).
 
-1. **Managed OAuth Grant session duration (AI OAuth Clients):** Under **Advanced settings → Managed OAuth → Grant session duration**, configure the desired continuity interval (Cloudflare recommends 1–2 weeks for CLI/agent clients, or longer up to 1 month where supported by the tenant). This sets how long the client's refresh token remains valid before requiring interactive browser re-authentication. Keep the **Access token lifetime** short (5–15 minutes, default 15 minutes) so silent refresh and policy re-evaluation continue normally.
-2. **Access Application & Policy session duration (Dashboard Browser):** In the application and policy settings, configure **Session Duration** (up to 1 month) to control application token lifetime and when Access re-evaluates access. If the global Access session remains valid, Cloudflare can issue a new application token without requiring another interactive IdP login; interactive re-authentication is governed by the remaining global/IdP session state.
-3. **Static Client Zero-Reauth Alternative:** For IDE/CLI coding agents (Claude Code, Cursor, Codex, etc.) that support static headers, configure them against the API-key gateway (`https://api.harness.zuey.me/mcp`) using a dashboard-managed API key (valid for up to 3,650 days, approximately 10 years) to avoid OAuth grant expirations entirely.
+1. **Managed OAuth grant session duration and access-token lifetime (AI OAuth
+   clients):** the grant decides how long a client stays signed in; the access
+   token stays short so each silent refresh re-checks the Access policy. With
+   the optional Cloudflare API integration below, manage both from
+   **Dashboard → Settings → MCP OAuth sessions**. Without it, set them under
+   **Advanced settings → Managed OAuth** in Cloudflare Zero Trust.
+2. **Access application and policy session duration (dashboard browser):** the
+   application and policy **Session Duration** controls the browser
+   application token and when Access re-evaluates access. Cloud Harness never
+   changes it.
+3. **Static client alternative:** IDE/CLI coding agents that support static
+   headers can use the API-key gateway (`https://api.harness.zuey.me/mcp`) with
+   a dashboard-managed API key and avoid OAuth grant expiry entirely.
+
+To enable the Dashboard controls after the Access cutover is healthy:
+
+1. In Cloudflare, create an account API token limited to the one account with
+   **Access: Apps and Policies Write** (or **Read** for a read-only panel).
+   Record the account ID and the Access application ID of the hostname-wide
+   `/mcp` and `/dashboard` application. Do not use the separate API-key
+   gateway application.
+2. Install the token as a root-owned `0600` file at
+   `/etc/cloud-harness-mcp/cloudflare-access-api-token`. Production Compose
+   already mounts that directory read-only into the runner only.
+3. Set the runner variables listed in
+   [configuration](configuration.md#managed-oauth-session-settings), using
+   `CLOUDFLARE_ACCESS_API_TOKEN_FILE=/run/cloud-harness-secrets/cloudflare-access-api-token`,
+   then deploy or restart through the normal release path.
+4. Open **Dashboard → Settings** and confirm the panel shows the provider and a
+   successful last sync. A new install whose grant was never set explicitly
+   receives the provider maximum on startup; an existing customised value is
+   left unchanged until an operator chooses **Adopt** or saves a new value.
+
+Release rollback restores Cloud Harness state but not the Cloudflare value, so
+check the panel after a rollback and save again if it reports drift.
 
 Configure the origin from that same application's issuer, audience, and JWKS
 material, remove the owner bearer, and pin any legacy owner mapping to the

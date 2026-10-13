@@ -62,7 +62,10 @@ const oauthGrantSettings = new OAuthGrantSettingsService(
 await service.start();
 // New installs default to the provider-maximum grant. This never blocks startup and
 // never overwrites a value an operator set explicitly; failures surface in Settings.
-void oauthGrantSettings.reconcileDefault().then((outcome) => logger.info({ outcome }, 'inbound OAuth grant default reconciled'));
+void oauthGrantSettings.reconcileDefault().then(
+  (outcome) => logger.info({ outcome }, 'inbound OAuth grant default reconciled'),
+  () => logger.warn({ outcome: 'failed' }, 'inbound OAuth grant default reconcile failed')
+);
 const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
   settings: oauthGrantSettings,
   resolvePrincipal: (principal) => store.resolvePrincipal(principal)

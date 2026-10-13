@@ -915,14 +915,17 @@ export function renderOAuthSettings(view, loadError) {
   const maximumLabel = capabilities.supportsUnboundedGrant ? 'until revoked' : maxSeconds ? oauthDurationLabel(maxSeconds) : 'provider maximum';
   const grantFact = effective
     ? effective.grantSeconds === null
-      ? 'Provider default (not set explicitly)'
+      ? effective.grantExplicitlyConfigured ? 'Set in the provider (format not recognised)' : 'Provider default (not set explicitly)'
       : `${escape(oauthDurationLabel(effective.grantSeconds))}${effective.grantIsProviderMaximum ? ' — provider maximum' : ''}`
     : 'Not available';
   const tokenFact = effective ? (effective.tokenLifetimeSeconds === null ? 'Provider default' : escape(oauthDurationLabel(effective.tokenLifetimeSeconds))) : 'Not available';
+  const managedNote = management.updatedAt
+    ? ` — ${management.updatedBy === 'startup-default' ? 'default applied automatically at first start' : 'last saved here'} ${time(management.updatedAt)}`
+    : '';
   const lastSync = view.lastSync
     ? `${time(view.lastSync.at)} — ${view.lastSync.ok ? 'OK' : `failed (<span class="mono">${escape(view.lastSync.errorCode ?? 'unknown')}</span>)`}`
     : 'Never';
-  const facts = `<dl class="facts"><dt>Provider</dt><dd>${escape(view.provider?.label ?? 'Not configured')}</dd><dt>Stay signed in</dt><dd>${effective?.grantIsProviderMaximum ? 'On — provider maximum' : effective ? 'Custom duration' : 'Not available'}</dd><dt>Grant duration (effective)</dt><dd>${grantFact}</dd><dt>Access-token lifetime (effective)</dt><dd>${tokenFact}</dd><dt>Management</dt><dd>${escape(OAUTH_STATE_LABELS[management.state] ?? 'Unknown')}</dd><dt>Last provider sync</dt><dd>${lastSync}</dd></dl>`;
+  const facts = `<dl class="facts"><dt>Provider</dt><dd>${escape(view.provider?.label ?? 'Not configured')}</dd><dt>Stay signed in</dt><dd>${effective?.grantIsProviderMaximum ? 'On — provider maximum' : effective ? 'Custom duration' : 'Not available'}</dd><dt>Grant duration (effective)</dt><dd>${grantFact}</dd><dt>Access-token lifetime (effective)</dt><dd>${tokenFact}</dd><dt>Management</dt><dd>${escape(OAUTH_STATE_LABELS[management.state] ?? 'Unknown')}${managedNote}</dd><dt>Last provider sync</dt><dd>${lastSync}</dd></dl>`;
   const notice = view.readOnlyReason ? `<p class="warning">${escape(view.readOnlyReason)}</p>` : '';
   const intro = '<p>How long an MCP client such as ChatGPT or Claude stays connected after one sign-in. Access tokens stay short and refresh silently; every refresh re-checks your access policy, so revoking access still takes effect at the next refresh. This is separate from the browser session for this dashboard.</p>';
   let form = '';

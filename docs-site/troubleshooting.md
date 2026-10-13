@@ -52,17 +52,14 @@ docker compose --profile images build executor-image
 ---
 
 ### 6. Frequent MCP Sign-out or Re-authentication Prompts in AI Tools
-**Cause:** When connecting via Managed OAuth (`https://harness.zuey.me/mcp`), client continuity depends on Cloudflare Access's **Grant session duration** (refresh token lifetime). When the grant expires, the client prompts for interactive browser re-authentication.
+**Cause:** A client on the Managed OAuth lane (`https://harness.zuey.me/mcp`) must sign in again in the browser when its OAuth grant (refresh session) expires. The short access-token lifetime is not the cause: tokens refresh silently while the grant is valid.
 
 **Fix:**
-1. **Adjust Managed OAuth Grant Session Duration (OAuth Clients):**
-   - Log into [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications**.
-   - Edit the MCP application → **Advanced settings** → **Managed OAuth**.
-   - Set **Grant session duration** to your preferred continuity interval (Cloudflare recommends 1–2 weeks for CLI/agent clients, or longer up to 1 month where supported by the tenant).
-   - Keep the **Access token lifetime** short (5–15 minutes, default 15 minutes) so silent refresh and policy re-evaluation continue normally.
-2. **Switch to Static API Key Gateway (Zero-Reauth for Coding Tools):**
+1. **Lengthen the grant:** open **Dashboard → [Settings](/dashboard/settings#mcp-oauth-sessions) → MCP OAuth sessions** and turn on **Stay signed in** (the provider maximum), or choose a longer duration. Keep the access-token lifetime short; a longer token does not reduce sign-ins.
+   - If the panel is read-only because no provider integration is configured, set **Grant session duration** in [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Access controls** → **Applications** → the MCP application → **Advanced settings** → **Managed OAuth** instead.
+2. **Switch to the Static API Key Gateway (coding tools):**
    - For IDE/CLI coding agents (Claude Code, Cursor, Codex, etc.) that support static headers, generate an API key from the Dashboard at `https://harness.zuey.me/dashboard/api-keys` (configurable for 1 to 3,650 days, approximately 10 years).
-   - Configure the tool to connect directly to `https://api.harness.zuey.me/mcp` with `Authorization: Bearer <api-key>` to eliminate interactive OAuth prompts entirely.
+   - Configure the tool to connect directly to `https://api.harness.zuey.me/mcp` with `Authorization: Bearer <api-key>` to avoid OAuth sign-in prompts entirely.
 
 ---
 
@@ -173,3 +170,25 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 5. Remove symbolic links and special files from the skill directory, keep it within 512 files, 16 MiB, and 32 nested directory levels, use UTF-8 file names, and keep every encoded file URI within 1024 characters (non-ASCII and spaces are percent-encoded, so long non-Latin paths reach it sooner).
 6. Two skills with the same name and different content in the same tier conflict, and neither is served; the same applies when one of them cannot be read. In the `repository` tier, `.agents/skills` outranks `.codex/skills`, which outranks `.claude/skills`, so only same-root duplicates conflict. A same name in different tiers is served at each tier-qualified URI. A repository skill root reached through a symbolic link (for example `.agents` linked elsewhere) is ignored.
 7. `-32603` asking you to re-run `skills/get` means a workspace or repository file changed after its manifest was computed; fetch the entry again and re-read. Any other `-32603` is a transient runner failure; retry. Clients may cache results for up to 30 seconds.
+
+---
+
+### 18. MCP OAuth sessions panel is read-only or shows a sync error
+**Cause:** Dashboard → Settings → **MCP OAuth sessions** reads and writes the grant through the operator's Cloudflare API integration. **Last provider sync** shows a reason code when that fails; nothing is changed by a failed save unless the reason is `write_unconfirmed` or `readback_mismatch`.
+
+**Fix:**
+
+| Reason or state | What to do |
+| :--- | :--- |
+| No provider integration is configured | The grant is managed in Cloudflare Zero Trust only. An operator can add the runner-only `CLOUDFLARE_ACCESS_*` variables from the [environment-variable reference](/reference/environment-variables). |
+| `provider_unreachable`, `provider_invalid_response` | Cloudflare could not be reached or answered unexpectedly. Wait, then use **Reload from provider**. |
+| `provider_permission_denied`, `provider_write_denied` | The API token lacks **Access: Apps and Policies** Read or Write on the account. Replace the token and restart the runner. |
+| `provider_application_not_found` | The configured account or Access application ID is wrong. |
+| `provider_rejected` | Cloudflare refused the update. Try a shorter duration, or review the application in Cloudflare Zero Trust. |
+| Configured read-only | Set `CLOUDFLARE_ACCESS_OAUTH_ACCESS=read-write` with a Write token to save here. |
+| `provider_unsupported_application` | The application uses SCIM or is not self-hosted, so Cloud Harness will not rewrite it. Change the grant in Cloudflare Zero Trust. |
+| `managed_oauth_disabled` | Turn on Managed OAuth for the application in Cloudflare Zero Trust. |
+| `revision_conflict` | Someone changed the OAuth settings in Cloudflare after the page loaded. Reload and review before saving. |
+| `write_unconfirmed` | The update timed out or failed on Cloudflare's side and may or may not have landed. Reload before retrying. |
+| `readback_mismatch` | Cloudflare accepted the update but did not confirm it. Reload to see the values actually in effect. |
+| **Set outside Cloud Harness** / **Changed outside Cloud Harness** | The value was customised in Cloudflare. Cloud Harness never overwrites it; choose **Adopt default** or save a value to manage it. |

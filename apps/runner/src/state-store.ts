@@ -358,8 +358,9 @@ function normalizeSkillTags(tags: string[]): string {
   return JSON.stringify([...new Set(normalized)]);
 }
 
+export type OAuthGrantChangeSource = 'dashboard' | 'startup-default';
 export type OAuthGrantSettingsRecord = {
-  desired?: { grantMode: 'provider-maximum' | 'custom'; grantSeconds: number; tokenLifetimeSeconds: number; managedAt: number } | undefined;
+  desired?: { grantMode: 'provider-maximum' | 'custom'; grantSeconds: number; tokenLifetimeSeconds: number; managedAt: number; managedBy: OAuthGrantChangeSource } | undefined;
   lastSync?: { at: number; ok: boolean; errorCode: string | null } | undefined;
 };
 
@@ -456,6 +457,7 @@ export class StateStore {
         desired_grant_seconds INTEGER,
         desired_token_lifetime_seconds INTEGER,
         managed_at INTEGER,
+        managed_by TEXT CHECK(managed_by IN ('dashboard','startup-default')),
         last_sync_at INTEGER,
         last_sync_ok INTEGER,
         last_sync_error TEXT
@@ -941,12 +943,12 @@ export class StateStore {
   getOAuthGrantSettings(): OAuthGrantSettingsRecord {
     const row = this.database.prepare('SELECT * FROM oauth_grant_settings WHERE id = 1').get() as {
       desired_grant_mode: string | null; desired_grant_seconds: number | null; desired_token_lifetime_seconds: number | null;
-      managed_at: number | null; last_sync_at: number | null; last_sync_ok: number | null; last_sync_error: string | null;
+      managed_at: number | null; managed_by: string | null; last_sync_at: number | null; last_sync_ok: number | null; last_sync_error: string | null;
     } | undefined;
     const stored = row?.desired_grant_mode;
     const mode: 'provider-maximum' | 'custom' | undefined = stored === 'provider-maximum' ? 'provider-maximum' : stored === 'custom' ? 'custom' : undefined;
     const desired = mode && row?.desired_grant_seconds != null && row.desired_token_lifetime_seconds != null
-      ? { grantMode: mode, grantSeconds: Number(row.desired_grant_seconds), tokenLifetimeSeconds: Number(row.desired_token_lifetime_seconds), managedAt: Number(row.managed_at ?? 0) }
+      ? { grantMode: mode, grantSeconds: Number(row.desired_grant_seconds), tokenLifetimeSeconds: Number(row.desired_token_lifetime_seconds), managedAt: Number(row.managed_at ?? 0), managedBy: row.managed_by === 'startup-default' ? 'startup-default' as const : 'dashboard' as const }
       : undefined;
     const lastSync = row?.last_sync_at != null
       ? { at: Number(row.last_sync_at), ok: row.last_sync_ok === 1, errorCode: row.last_sync_error ?? null }
@@ -955,13 +957,13 @@ export class StateStore {
   }
 
   /** Record values confirmed by provider read-back together with the successful sync. */
-  setOAuthGrantDesired(desired: { grantMode: 'provider-maximum' | 'custom'; grantSeconds: number; tokenLifetimeSeconds: number }, at: number = Date.now()): void {
-    this.database.prepare(`INSERT INTO oauth_grant_settings(id, desired_grant_mode, desired_grant_seconds, desired_token_lifetime_seconds, managed_at, last_sync_at, last_sync_ok, last_sync_error)
-      VALUES (1, ?, ?, ?, ?, ?, 1, NULL)
+  setOAuthGrantDesired(desired: { grantMode: 'provider-maximum' | 'custom'; grantSeconds: number; tokenLifetimeSeconds: number; managedBy: OAuthGrantChangeSource }, at: number = Date.now()): void {
+    this.database.prepare(`INSERT INTO oauth_grant_settings(id, desired_grant_mode, desired_grant_seconds, desired_token_lifetime_seconds, managed_at, managed_by, last_sync_at, last_sync_ok, last_sync_error)
+      VALUES (1, ?, ?, ?, ?, ?, ?, 1, NULL)
       ON CONFLICT(id) DO UPDATE SET desired_grant_mode = excluded.desired_grant_mode, desired_grant_seconds = excluded.desired_grant_seconds,
-        desired_token_lifetime_seconds = excluded.desired_token_lifetime_seconds, managed_at = excluded.managed_at,
+        desired_token_lifetime_seconds = excluded.desired_token_lifetime_seconds, managed_at = excluded.managed_at, managed_by = excluded.managed_by,
         last_sync_at = excluded.last_sync_at, last_sync_ok = 1, last_sync_error = NULL`)
-      .run(desired.grantMode, desired.grantSeconds, desired.tokenLifetimeSeconds, at, at);
+      .run(desired.grantMode, desired.grantSeconds, desired.tokenLifetimeSeconds, at, desired.managedBy, at);
   }
 
   /** Record a provider sync outcome without touching the managed values. */

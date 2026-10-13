@@ -21,7 +21,7 @@ export type OAuthProviderId = z.infer<typeof OAuthProviderIdSchema>;
 export const OAUTH_GRANT_SECONDS_CEILING = 315_360_000;
 export const OAUTH_GRANT_SECONDS_FLOOR = 3_600;
 export const OAUTH_TOKEN_LIFETIME_SECONDS_FLOOR = 60;
-export const OAUTH_TOKEN_LIFETIME_SECONDS_CEILING = 86_400;
+export const OAUTH_TOKEN_LIFETIME_SECONDS_CEILING = 3_600;
 
 const GO_DURATION_UNIT_SECONDS: Record<string, number> = {
   ns: 1e-9,
@@ -122,6 +122,8 @@ export const OAuthGrantSettingsViewSchema = z.object({
   effective: z.object({
     oauthEnabled: z.boolean(),
     grantSeconds: z.number().int().nonnegative().nullable(),
+    /** True when the provider holds a grant value, even one Cloud Harness cannot parse. */
+    grantExplicitlyConfigured: z.boolean(),
     grantIsProviderMaximum: z.boolean(),
     tokenLifetimeSeconds: z.number().int().nonnegative().nullable()
   }).strict().nullable(),
@@ -131,7 +133,9 @@ export const OAuthGrantSettingsViewSchema = z.object({
       grant: OAuthGrantSelectionSchema,
       tokenLifetimeSeconds: z.number().int().positive()
     }).strict().nullable(),
-    updatedAt: z.string().datetime().nullable()
+    updatedAt: z.string().datetime().nullable(),
+    /** Who applied the managed value: a Dashboard save, or the first-start provider-maximum default. */
+    updatedBy: z.enum(['dashboard', 'startup-default']).nullable()
   }).strict(),
   revision: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   lastSync: z.object({

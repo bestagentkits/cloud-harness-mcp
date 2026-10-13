@@ -7,6 +7,8 @@ export type OAuthGrantProviderSnapshot = {
   /** True when an operator (or Cloud Harness) set the grant duration explicitly. */
   grantExplicitlyConfigured: boolean;
   tokenLifetimeSeconds: number | null;
+  /** True when the provider holds an access-token lifetime value, parseable or not. */
+  tokenLifetimeExplicitlyConfigured: boolean;
   /** Fingerprint of the provider's OAuth configuration, used to detect concurrent edits. */
   revision: string;
   /** Set when the provider configuration cannot be written safely; the value is a reason code. */

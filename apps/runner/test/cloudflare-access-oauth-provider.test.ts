@@ -21,6 +21,14 @@ function application(grant: Record<string, unknown> | null = { access_token_life
     type: 'self_hosted',
     name: 'Cloud Harness MCP',
     domain: 'harness.example.com/mcp',
+    // Fields a self-hosted application GET also returns; a write must echo them unchanged.
+    self_hosted_domains: ['harness.example.com/mcp'],
+    destinations: [{ type: 'public', uri: 'harness.example.com/mcp' }],
+    allowed_idps: ['idp-1'],
+    auto_redirect_to_identity: false,
+    app_launcher_visible: false,
+    tags: ['cloud-harness'],
+    cors_headers: { allowed_methods: ['GET', 'POST'], allowed_origins: ['https://claude.ai'], max_age: 600 },
     session_duration: '24h',
     policies: [{ id: 'policy-1', precedence: 1, name: 'Owner', decision: 'allow', include: [{ email: { email: 'owner@example.com' } }] }],
     oauth_configuration: {
@@ -34,7 +42,7 @@ function application(grant: Record<string, unknown> | null = { access_token_life
 type Call = { method: string; url: string; body?: Record<string, unknown>; authorization?: string };
 
 /** An in-memory Access application behind the Cloudflare API shape. */
-function fakeCloudflare(initial: Record<string, unknown>, options: { putStatus?: number; ignorePut?: boolean; getStatus?: number; failGetAfterPut?: boolean } = {}) {
+function fakeCloudflare(initial: Record<string, unknown>, options: { putStatus?: number; putThrows?: boolean; ignorePut?: boolean; getStatus?: number; failGetAfterPut?: boolean } = {}) {
   let stored: Record<string, unknown> = structuredClone(initial);
   const calls: Call[] = [];
   let putDone = false;
@@ -44,6 +52,7 @@ function fakeCloudflare(initial: Record<string, unknown>, options: { putStatus?:
     calls.push({ method, url: String(input), ...(body ? { body } : {}), authorization: new Headers(init?.headers).get('authorization') ?? undefined });
     if (String(input) !== APP_URL) return new Response('{}', { status: 404 });
     if (method === 'PUT') {
+      if (options.putThrows) throw new DOMException('timed out', 'TimeoutError');
       if (options.putStatus) return new Response(JSON.stringify({ success: false, errors: [{ message: `secret detail ${TOKEN}` }] }), { status: options.putStatus });
       putDone = true;
       if (!options.ignorePut) stored = { ...stored, ...body, updated_at: '2026-02-01T00:00:00Z' };
@@ -129,12 +138,15 @@ describe('Cloudflare Access Managed OAuth provider', () => {
     expect(await reason(new CloudflareAccessOAuthProvider(config, fakeCloudflare(application(), { getStatus: 500 }).request).read())).toBe('provider_unreachable');
     expect(await reason(new CloudflareAccessOAuthProvider(config, (async () => { throw new TypeError('offline'); }) as typeof fetch).read())).toBe('provider_unreachable');
     expect(await reason(new CloudflareAccessOAuthProvider(config, (async () => new Response('not json')) as typeof fetch).read())).toBe('provider_invalid_response');
-    for (const [status, expected] of [[403, 'provider_write_denied'], [400, 'provider_rejected'], [422, 'provider_rejected']] as const) {
+    // A PUT that fails in transit or with a server error may still have landed, so it is never reported as unchanged.
+    for (const [status, expected] of [[403, 'provider_write_denied'], [400, 'provider_rejected'], [422, 'provider_rejected'], [500, 'write_unconfirmed']] as const) {
       const cloudflare = fakeCloudflare(application(), { putStatus: status });
       const provider = new CloudflareAccessOAuthProvider(config, cloudflare.request);
       const seen = await provider.read();
       expect(await reason(provider.write({ grantSeconds: 86_400, tokenLifetimeSeconds: 900 }, seen.revision))).toBe(expected);
     }
+    const timedOut = new CloudflareAccessOAuthProvider(config, fakeCloudflare(application(), { putThrows: true }).request);
+    expect(await reason(timedOut.write({ grantSeconds: 86_400, tokenLifetimeSeconds: 900 }, (await timedOut.read()).revision))).toBe('write_unconfirmed');
   });
 
   it('never writes when read-only, disabled, or holding state a PUT cannot round-trip', async () => {
@@ -159,7 +171,11 @@ describe('Cloudflare Access Managed OAuth provider', () => {
 
     const saas = fakeCloudflare({ ...application(), type: 'saas' });
     expect((await new CloudflareAccessOAuthProvider(config, saas.request).read()).unsupportedReason).toBe('provider_unsupported_application');
-    for (const cloudflare of [disabledCloudflare, scimCloudflare, saas]) expect(cloudflare.calls.some((call) => call.method === 'PUT')).toBe(false);
+    const untyped: Record<string, unknown> = application();
+    delete untyped.type;
+    const unknownType = fakeCloudflare(untyped);
+    expect((await new CloudflareAccessOAuthProvider(config, unknownType.request).read()).unsupportedReason).toBe('provider_unsupported_application');
+    for (const cloudflare of [disabledCloudflare, scimCloudflare, saas, unknownType]) expect(cloudflare.calls.some((call) => call.method === 'PUT')).toBe(false);
   });
 
   it('honours an operator-configured provider maximum', () => {

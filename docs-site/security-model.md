@@ -36,6 +36,7 @@ Cloud Harness MCP is intentionally a **private, single-owner remote coding harne
 
 - Private clone, push, and GitHub CLI operations use short-lived GitHub App tokens passed exclusively over `stdin` into ephemeral helpers.
 - When no GitHub App token is available, an operator-supplied `GH_TOKEN`/`GITHUB_TOKEN` fallback is used instead: the runner environment credential (owner-bearer mode only), then the requesting principal's global runtime secret. The fallback is also passed only over `stdin`.
+- The optional Cloudflare API token that lets Dashboard Settings manage MCP OAuth session lifetimes is runner-only: the API, ingress, browser, and workspace executors never receive it. Scope it to one account with **Access: Apps and Policies Write** (or **Read**).
 - Tokens are never stored in configuration files, MCP results, audit payloads, or repository commit history. The one documented exception is an operator-created GitHub runtime secret, which is deliberately injected into executor environments to authenticate the workspace `gh` CLI. Because egress is the default posture, repository-controlled code can exfiltrate such a credential; prefer a fine-grained token scoped to the repositories the workspace needs, or keep the instance or workspace on `network-none`.
 
 ### 5. Secrets Management & Ingest-Time Redaction

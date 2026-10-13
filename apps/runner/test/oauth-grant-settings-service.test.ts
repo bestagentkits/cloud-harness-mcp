@@ -41,6 +41,7 @@ class FakeProvider implements OAuthGrantProvider {
       grantSeconds: this.state.grantSeconds,
       grantExplicitlyConfigured: this.state.explicit,
       tokenLifetimeSeconds: this.state.tokenLifetimeSeconds,
+      tokenLifetimeExplicitlyConfigured: this.state.tokenLifetimeSeconds !== null,
       revision: (`${this.state.grantSeconds}-${this.state.tokenLifetimeSeconds}`).padEnd(64, '0').replace(/[^a-f0-9]/g, 'a').slice(0, 64),
       unsupportedReason: null
     };
@@ -82,8 +83,8 @@ describe('inbound OAuth grant settings', () => {
     expect(await settings.reconcileDefault()).toBe('applied-provider-maximum');
     expect(provider.state).toMatchObject({ grantSeconds: MAX, tokenLifetimeSeconds: 900 });
     const view = OAuthGrantSettingsViewSchema.parse(await settings.view());
-    expect(view.effective).toEqual({ oauthEnabled: true, grantSeconds: MAX, grantIsProviderMaximum: true, tokenLifetimeSeconds: 900 });
-    expect(view.management).toMatchObject({ state: 'managed', desired: { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900 } });
+    expect(view.effective).toEqual({ oauthEnabled: true, grantSeconds: MAX, grantExplicitlyConfigured: true, grantIsProviderMaximum: true, tokenLifetimeSeconds: 900 });
+    expect(view.management).toMatchObject({ state: 'managed', updatedBy: 'startup-default', desired: { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 900 } });
     expect(view.capabilities).toMatchObject({ canWriteGrantConfiguration: true, maxGrantSeconds: MAX, supportsUnboundedGrant: false });
     expect(view.capabilities.grantPresetsSeconds).toEqual([86_400, 604_800, 1_209_600]);
     // A second start does nothing: the value is already managed.
@@ -96,6 +97,46 @@ describe('inbound OAuth grant settings', () => {
     const { settings } = service(provider);
     await settings.reconcileDefault();
     expect(provider.state.tokenLifetimeSeconds).toBe(300);
+  });
+
+  it('leaves an explicit token lifetime outside the panel bounds unmanaged instead of replacing it', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: null, tokenLifetimeSeconds: 7_200, explicit: false });
+    const { settings } = service(provider);
+    expect(await settings.reconcileDefault()).toBe('left-unmanaged');
+    expect(provider.writes).toEqual([]);
+    expect(provider.state.tokenLifetimeSeconds).toBe(7_200);
+  });
+
+  it('runs writes one at a time so the startup default never replaces a concurrent Dashboard save', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: null, tokenLifetimeSeconds: null, explicit: false });
+    const { settings, store } = service(provider);
+    const { revision } = await settings.view();
+    const [saved, outcome] = await Promise.all([
+      settings.update('owner-1', { grant: { mode: 'custom', seconds: 86_400 }, tokenLifetimeSeconds: 900, expectedRevision: revision }),
+      settings.reconcileDefault()
+    ]);
+    expect(saved.effective).toMatchObject({ grantSeconds: 86_400 });
+    expect(outcome).toBe('already-managed');
+    expect(provider.writes).toHaveLength(1);
+    expect(provider.state.grantSeconds).toBe(86_400);
+    expect(store.getOAuthGrantSettings().desired).toMatchObject({ grantMode: 'custom', grantSeconds: 86_400, managedBy: 'dashboard' });
+
+    // Two overlapping saves against the same revision: the second is refused, not applied over the first.
+    const current = (await settings.view()).revision;
+    const results = await Promise.allSettled([
+      settings.update('owner-1', { grant: { mode: 'custom', seconds: 172_800 }, tokenLifetimeSeconds: 900, expectedRevision: current }),
+      settings.update('owner-1', { grant: { mode: 'custom', seconds: 259_200 }, tokenLifetimeSeconds: 900, expectedRevision: current })
+    ]);
+    expect(results.map((result) => result.status)).toEqual(['fulfilled', 'rejected']);
+    expect(provider.state.grantSeconds).toBe(172_800);
+  });
+
+  it('records only provider availability failures as a failed sync', async () => {
+    const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: 604_800, tokenLifetimeSeconds: 900, explicit: true });
+    const { settings, store } = service(provider);
+    await settings.view();
+    await expect(settings.update('owner', { grant: { mode: 'custom', seconds: 86_400 }, tokenLifetimeSeconds: 900, expectedRevision: 'f'.repeat(64) })).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(store.getOAuthGrantSettings().lastSync).toMatchObject({ ok: true });
   });
 
   it('never overwrites an explicitly customised grant on upgrade', async () => {
@@ -134,11 +175,11 @@ describe('inbound OAuth grant settings', () => {
     const provider = new FakeProvider({ oauthEnabled: true, grantSeconds: MAX, tokenLifetimeSeconds: 900, explicit: true });
     const { settings } = service(provider);
     const { revision } = await settings.view();
-    for (const input of [
-      { grant: { mode: 'custom', seconds: MAX + 3_600 }, tokenLifetimeSeconds: 900, expectedRevision: revision },
-      { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: 7_200, expectedRevision: revision }
-    ]) {
-      await expect(settings.update('owner', input)).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(settings.update('owner', { grant: { mode: 'custom', seconds: MAX + 3_600 }, tokenLifetimeSeconds: 900, expectedRevision: revision }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    // The contract itself bounds the access-token lifetime, so a value outside it fails schema validation.
+    for (const tokenLifetimeSeconds of [59, 3_601]) {
+      await expect(settings.update('owner', { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds, expectedRevision: revision })).rejects.toThrow();
     }
     expect(provider.writes).toEqual([]);
   });
