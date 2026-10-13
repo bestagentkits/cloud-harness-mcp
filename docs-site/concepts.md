@@ -36,11 +36,14 @@ Output files generated during workspace execution (logs, test reports, build out
 An ephemeral container spawned by the Runner to handle `git_fetch`, `git_pull`, and `git_push`. It mounts the workspace repository as a sibling, receives a 10-minute GitHub App installation token via `stdin`, talks only to `github.com`, and is immediately destroyed.
 
 ### Context Manifest & Provenance
-A bounded, vendor-neutral overview of allowlisted instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and test declarations produced by `workspace_context`. Every item carries immutable provenance (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) stamped by the trusted Runner:
+A bounded, vendor-neutral overview of allowlisted instruction files (such as `AGENTS.md`, `CLAUDE.md`, `REVIEW.md`, `DESIGN.md`, and client rule directories), language manifests, and test declarations produced by `workspace_context`. Every item carries immutable provenance (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) stamped by the trusted Runner:
 - `built-in`: release-packaged built-ins (`trust: trusted-control-plane`, `mutableBy: release`)
 - `owner`: runner-managed principal catalog (`trust: owner-controlled`, `mutableBy: owner`)
 - `workspace`: workspace-managed tools overlay (`trust: untrusted-executor`, `mutableBy: workspace-process`)
 - `repository`: checkout files (`trust: untrusted-executor`, `mutableBy: repository-commit`)
+
+### Repository Guidance Bootstrap
+Agents started with `agent_spawn` receive the workspace's applicable instruction files automatically, in a delimited `untrusted-executor` block ahead of the caller's verbatim task. `repositoryContext` picks the guidance family (`codex` when omitted, `claude`, `cursor`, `aider`, `all`, or `none` to send the task alone). `workspace_open` returns a content-free `repositoryContext` summary, and `workspace_context` marks each instruction file `activeForClient` with an `inactiveReason` using the same selection, so external clients see what a managed agent would receive. Client configuration such as `.aider.conf.yml` is listed but never injected.
 
 ### Scoped Memories
 Persistent notes stored in SQLite `StateStore` v5 isolated by `principal_id` across 3 scopes:

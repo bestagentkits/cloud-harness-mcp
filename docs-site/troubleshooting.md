@@ -196,3 +196,12 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
    - `exchange_failed` — the provider rejected the sign-in completion. The **OAuth** panel shows the sanitized error; a wrong manual client ID or secret is a common cause.
 3. If **Connect** reports that MCP OAuth is unavailable, the operator must set `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` (see the [environment variables reference](/reference/environment-variables)).
 4. If **Connect** fails before the provider's page opens, the provider may not support automatic client registration. Register a client with the provider and enter its **Client ID** (and a client-secret global secret, if it issued one) in the server form.
+
+### 19. A managed agent ends `FAILED` with `agent bootstrap failed ... repositoryContext "none"`
+**Cause:** Before an `agent_spawn` agent's first turn, the runner reads the workspace's repository guidance (`AGENTS.md`, `CLAUDE.md`, `REVIEW.md`, `DESIGN.md`, client rule files) and places the applicable files ahead of the task. When that scan cannot complete (for example the executor is unavailable, or the workspace was closed or recreated meanwhile), the agent fails closed with an `UNAVAILABLE` reason instead of starting without guidance. No model lease or container was created for it.
+**Fix:**
+1. Check the workspace with `workspace_status`; recover or reopen it if it is not `ACTIVE`.
+2. Retry `agent_spawn` with a new idempotency key. Replaying the failed key returns the failed record.
+3. If the agent does not need repository guidance, spawn with `repositoryContext: "none"` to send the task alone.
+
+If an agent started but followed the wrong files, read the `repository_context` event in `agent_logs`: it lists the injected and skipped paths with reasons (`not-targeted`, `overridden-by:...`, `duplicate-of:...`, `unreadable`, `client-configuration`, `context-budget`) and digests, never content. Choose the `repositoryContext` that matches the agent's guidance family, and compare with `workspace_context` for the same `clientProfile`, which applies the same selection. Rule files under `.claude/rules/` apply only to `claude`, and `.cursor/rules/` only to `cursor`.

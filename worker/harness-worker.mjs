@@ -404,16 +404,94 @@ async function deploymentEntries() {
   }).sort((left, right) => left.name.localeCompare(right.name));
 }
 
+/**
+ * Repository guidance candidates in scan order. Shared cross-agent guidance precedes the
+ * per-directory rule files so a byte-budget cut drops rule files first. Which discovered files are
+ * active for a client is decided by `selectRepositoryGuidance` in the contracts package, not here.
+ */
+const INSTRUCTION_CANDIDATES = [
+  { path: 'AGENTS.md', kind: 'instruction', format: 'codex', clients: ['codex'] },
+  { path: 'AGENTS.override.md', kind: 'instruction', format: 'codex', clients: ['codex'] },
+  { path: 'CLAUDE.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
+  { path: '.claude/CLAUDE.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
+  { path: 'CLAUDE.local.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
+  { path: '.cursorrules', kind: 'instruction', format: 'cursor', clients: ['cursor'] },
+  // Client configuration, not prose: listed for visibility but never read as content.
+  { path: '.aider.conf.yml', kind: 'instruction', format: 'aider', clients: ['aider'], contentEligible: false },
+  { path: 'CONVENTIONS.md', kind: 'instruction', format: 'aider', clients: ['aider'] },
+  { path: '.github/copilot-instructions.md', kind: 'instruction', format: 'copilot', clients: ['all'] },
+  { path: 'REVIEW.md', kind: 'instruction', format: 'shared', clients: ['all'] },
+  { path: 'DESIGN.md', kind: 'instruction', format: 'shared', clients: ['all'] }
+];
+const INSTRUCTION_RULE_DIRECTORIES = [
+  { directory: '.claude/rules', extension: '.md', format: 'claude' },
+  { directory: '.cursor/rules', extension: '.mdc', format: 'cursor' }
+];
+const INSTRUCTION_RULE_DIRECTORY_MAX_ENTRIES = 32;
+const BOOTSTRAP_DOCUMENT_MAX_BYTES = 32_768;
+const BOOTSTRAP_BUDGET_BYTES = 262_144;
+
+function boundedUtf8(buffer, maxBytes) {
+  if (buffer.length <= maxBytes) return { text: buffer.toString('utf8'), truncated: false };
+  let text = buffer.subarray(0, maxBytes).toString('utf8');
+  // A cut inside a multi-byte sequence decodes to a trailing replacement character.
+  while (text.endsWith('\uFFFD')) text = text.slice(0, -1);
+  return { text, truncated: true };
+}
+
+async function instructionCandidates(checkDeadline = () => false) {
+  const candidates = INSTRUCTION_CANDIDATES.map((candidate) => ({ ...candidate }));
+  for (const rule of INSTRUCTION_RULE_DIRECTORIES) {
+    if (checkDeadline()) break;
+    try {
+      const fullPath = await safePath(rule.directory);
+      const entries = (await readdir(fullPath, { withFileTypes: true }))
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .slice(0, INSTRUCTION_RULE_DIRECTORY_MAX_ENTRIES);
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.endsWith(rule.extension)) {
+          // A rule file targets the client that reads its directory, not every client.
+          candidates.push({ path: `${rule.directory}/${entry.name}`, kind: 'instruction', format: rule.format, clients: [rule.format] });
+        }
+      }
+    } catch { /* rule directory absent */ }
+  }
+  return candidates;
+}
+
+/**
+ * A cheap identity of every guidance candidate: path, type, size, inode, and change times. Any
+ * write, rename, or replacement of a candidate changes it, so an unchanged fingerprint lets the
+ * runner reuse its snapshot without reading or hashing file content again.
+ */
+async function instructionFingerprint() {
+  const lines = [];
+  for (const candidate of await instructionCandidates()) {
+    try {
+      const fullPath = await safePath(candidate.path);
+      const st = await lstat(fullPath, { bigint: true });
+      lines.push([candidate.path, st.isFile() ? 'f' : 'o', st.size, st.ino, st.mtimeNs, st.ctimeNs].join('\u0000'));
+    } catch (error) {
+      lines.push([candidate.path, error?.code === 'ENOENT' ? 'missing' : 'error'].join('\u0000'));
+    }
+  }
+  return sha256(lines.join('\n'));
+}
+
 async function scanWorkspaceContext(input = {}) {
   const startTime = Date.now();
   const maxFiles = 256;
   const maxExcerptBytes = 8192;
   const maxPerFileBytes = 262_144; // 256 KiB max size to parse
   const deadlineMs = 250;
-  const budgetBytes = Math.min(Math.max(Number(input.maxBytes || 32768), 4096), 131072);
+  const contentMode = input.contentMode || 'none';
+  // `bootstrap` is internal to the runner's repository-guidance snapshot; the public schema
+  // offers only `none` and `excerpt`.
+  const budgetBytes = contentMode === 'bootstrap'
+    ? BOOTSTRAP_BUDGET_BYTES
+    : Math.min(Math.max(Number(input.maxBytes || 32768), 4096), 131072);
   const clientProfile = input.clientProfile || 'all';
   const include = new Set(input.include || ['instructions', 'languages', 'test_commands', 'skills']);
-  const contentMode = input.contentMode || 'none';
 
   const items = [];
   const warnings = [];
@@ -431,39 +509,7 @@ async function scanWorkspaceContext(input = {}) {
     return false;
   };
 
-  // Known instruction paths
-  const candidateInstructionPaths = [
-    { path: 'AGENTS.md', kind: 'instruction', format: 'codex', clients: ['codex'] },
-    { path: 'AGENTS.override.md', kind: 'instruction', format: 'codex', clients: ['codex'] },
-    { path: 'CLAUDE.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
-    { path: '.claude/CLAUDE.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
-    { path: 'CLAUDE.local.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
-    { path: '.cursorrules', kind: 'instruction', format: 'cursor', clients: ['cursor'] },
-    { path: '.aider.conf.yml', kind: 'instruction', format: 'aider', clients: ['aider'] },
-    { path: 'CONVENTIONS.md', kind: 'instruction', format: 'aider', clients: ['aider'] },
-    { path: '.github/copilot-instructions.md', kind: 'instruction', format: 'copilot', clients: ['all'] }
-  ];
-
-  // Check .claude/rules/*.md and .cursor/rules/*.mdc with entry caps
-  for (const ruleDir of ['.claude/rules', '.cursor/rules']) {
-    if (checkDeadline()) break;
-    try {
-      const fullPath = await safePath(ruleDir);
-      const entries = (await readdir(fullPath, { withFileTypes: true })).slice(0, 32);
-      for (const entry of entries) {
-        if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.mdc'))) {
-          const rel = `${ruleDir}/${entry.name}`;
-          const format = entry.name.endsWith('.mdc') ? 'cursor' : 'claude';
-          candidateInstructionPaths.push({
-            path: rel,
-            kind: 'instruction',
-            format,
-            clients: [format, 'all']
-          });
-        }
-      }
-    } catch { /* rule directory absent */ }
-  }
+  const candidateInstructionPaths = include.has('instructions') ? await instructionCandidates(checkDeadline) : [];
 
   // Scan instruction candidates
   if (include.has('instructions')) {
@@ -510,6 +556,9 @@ async function scanWorkspaceContext(input = {}) {
         const rawContent = await readFile(fullPath);
         const hash = sha256(rawContent);
         const excerpt = contentMode === 'excerpt' ? rawContent.subarray(0, maxExcerptBytes).toString('utf8') : undefined;
+        const bootstrapContent = contentMode === 'bootstrap' && cand.contentEligible !== false
+          ? boundedUtf8(rawContent, BOOTSTRAP_DOCUMENT_MAX_BYTES)
+          : undefined;
 
         const item = {
           id: `ctx_inst_${sha256(cand.path).slice(0, 12)}`,
@@ -521,6 +570,7 @@ async function scanWorkspaceContext(input = {}) {
           contentSha256: hash,
           byteCount: st.size,
           excerpt,
+          ...(bootstrapContent ? { content: bootstrapContent.text, contentTruncated: bootstrapContent.truncated } : {}),
           provenance: {
             source: 'repository',
             trust: 'untrusted-executor',
@@ -808,6 +858,18 @@ const handlers = {
   async workspace_context_scan(input) {
     const manifest = await scanWorkspaceContext(input);
     return ok('Workspace context scanned', { manifest });
+  },
+  /**
+   * Runner-internal: the repository-guidance snapshot behind agent bootstrap. A matching
+   * `knownFingerprint` means no candidate changed, so content is neither read nor returned.
+   */
+  async workspace_bootstrap_context(input) {
+    const fingerprint = await instructionFingerprint();
+    if (typeof input.knownFingerprint === 'string' && input.knownFingerprint === fingerprint) {
+      return ok('Repository guidance unchanged', { fingerprint, unchanged: true });
+    }
+    const manifest = await scanWorkspaceContext({ include: ['instructions'], clientProfile: 'all', contentMode: 'bootstrap' });
+    return ok('Repository guidance scanned', { fingerprint, unchanged: false, manifest });
   },
   async files_list(input) {
     const target = await safePath(input.path ?? '.');

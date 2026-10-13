@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { RunnerAgentsConfigSchema, type RunnerOperation } from '@cloud-harness/contracts';
+import { RunnerAgentsConfigSchema, buildRepositoryGuidanceSnapshot, type RunnerOperation } from '@cloud-harness/contracts';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../src/agent-manager.js';
 import type { AgentGatewayControl, AgentLeaseGrant } from '../src/agent-gateway-control.js';
@@ -515,5 +516,60 @@ describe('AgentManager', () => {
     await secondManager.stop();
     await manager.stop();
     store.close();
+  });
+});
+
+describe('agent repository guidance bootstrap', () => {
+  function guidedSetup(repositoryGuidance: ConstructorParameters<typeof AgentManager>[2]['repositoryGuidance'], config = agentsConfig) {
+    const directory = mkdtempSync(join(tmpdir(), 'agent-manager-guidance-'));
+    directories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+    const record = workspace('network-none', ownerId);
+    store.create(record);
+    const repository = new AgentStateRepository(store.database, config.limits);
+    const launcher = new FakeLauncher();
+    const gateway = new FakeGateway();
+    const toolExecutor = vi.fn(async () => ({ ok: true as const, message: 'read', data: {}, truncated: false }));
+    const manager = new AgentManager(config, store, { repository, launcher, gateway, toolExecutor, repositoryGuidance });
+    return { store, record, repository, launcher, gateway, manager };
+  }
+
+  it('fails closed before any lease or container exists when the guidance scan fails', async () => {
+    const { manager, record, repository, launcher, gateway } = guidedSetup(async () => { throw new Error('scan exceeded its deadline'); });
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const agentId = (spawned.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('FAILED'));
+    expect(gateway.issued).toHaveLength(0);
+    expect(launcher.launches).toHaveLength(0);
+    const agent = repository.findAgent(record.ownerId, record.id, agentId)!;
+    expect(`${agent.cleanupReason ?? ''} ${agent.terminalReason ?? ''}`).toContain('repositoryContext "none"');
+    await manager.stop();
+  });
+
+  it('records only counts when the injected-document report would exceed the log event bound', async () => {
+    const items = Array.from({ length: 60 }, (_, index) => {
+      const content = `rule ${index}`;
+      return {
+        kind: 'instruction', path: `.claude/rules/${'r'.repeat(200)}-${index}.md`, format: 'claude', clients: ['claude'],
+        contentSha256: createHash('sha256').update(content).digest('hex'), byteCount: content.length, content
+      };
+    });
+    const snapshot = buildRepositoryGuidanceSnapshot({ items, warnings: [], truncated: false });
+    const config = RunnerAgentsConfigSchema.parse({ ...agentsConfig, limits: { ...agentsConfig.limits, maxLogEventBytes: 4_096 } });
+    const { manager, record, repository, launcher } = guidedSetup(async () => ({ snapshot, reused: true }), config);
+    const spawned = await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record, { repositoryContext: 'claude' }));
+    const agentId = (spawned.data as { agentId: string }).agentId;
+    await vi.waitFor(() => expect(launcher.inputs).toHaveLength(1));
+    const agent = repository.findAgent(record.ownerId, record.id, agentId)!;
+    const page = repository.readLogs(record.ownerId, record.id, agentId, agent.generation, '0', 262_144);
+    const report = JSON.parse(page.events.find((event) => event.type === 'repository_context')!.content) as Record<string, unknown>;
+    expect(report).toMatchObject({ profile: 'claude', listsOmitted: true, snapshotReused: true, snapshotDigest: snapshot.digest, truncated: true });
+    // The profile's input budget bounds the injected guidance, so the remainder is reported as skipped.
+    expect((report.injected as number) + (report.skipped as number)).toBe(60);
+    expect(report.injectedBytes as number).toBeLessThanOrEqual(10_000);
+    expect(report.skipped as number).toBeGreaterThan(0);
+    await manager.stop();
   });
 });

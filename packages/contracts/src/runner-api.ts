@@ -179,6 +179,7 @@ export const ContextManifestItemSchema = z.object({
   path: z.string().optional(),
   appliesTo: z.string().max(256).optional(),
   activeForClient: z.boolean().default(true),
+  inactiveReason: z.string().max(300).optional(),
   contentSha256: z.string().length(64),
   byteCount: z.number().int().min(0),
   excerpt: z.string().max(8192).optional(),

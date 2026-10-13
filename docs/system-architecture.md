@@ -177,7 +177,8 @@ outside that contract.
 Cloud Harness MCP provides a portable coding context plane across agent clients without elevating repository text or scripts to trusted policy:
 
 1. **Passive Context Scanner:**
-   `worker/harness-worker.mjs` executes bounded passive discovery of allowlisted instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and test declarations. The scanner performs zero dynamic execution and enforces strict byte budgets (32 KiB default, 128 KiB max) and a 250ms deadline.
+   `worker/harness-worker.mjs` executes bounded passive discovery of allowlisted instruction files (`INSTRUCTION_CANDIDATES` and the client rule directories), language manifests, and test declarations. The scanner performs zero dynamic execution and enforces strict byte budgets (32 KiB default, 128 KiB max) and a 250ms deadline.
+   The runner reuses the same discovery, through a runner-internal worker operation, for a per-workspace repository-guidance snapshot: `workspace_open` returns its content-free summary and `agent_spawn` composes it into a managed agent's first message. The selection lives in the contracts package so `workspace_context` and agent bootstrap agree; see [repository guidance bootstrap](mcp-api.md#repository-guidance-bootstrap).
 
 2. **Runner Provenance Resolver:**
    The trusted Runner control plane (`apps/runner/src/workspace-service.ts`) stamps canonical provenance metadata (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) based on physical isolation boundaries:
