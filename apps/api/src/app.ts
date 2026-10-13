@@ -3,7 +3,7 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FetchLike } from '@modelcontextprotocol/client';
 import { WorkspaceIdSchema, type ApiConfig } from '@cloud-harness/contracts';
-import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth, type AuthenticatedRequest } from './auth.js';
+import { accessAssertionAuth, apiKeyGatewayAuth, bearerAuth, type AuthenticatedRequest, type VerifierOverrides } from './auth.js';
 import { createDashboardAssetsRouter } from './dashboard-assets.js';
 import { createDashboardRouter } from './dashboard-router.js';
 import { bindWorkspace, createCloudHarnessServerFactory, createWorkspaceBoundServerFactory } from './mcp-server.js';
@@ -20,10 +20,15 @@ export type ApiRuntime = {
 };
 
 /**
- * `overrides` is a test-only seam: it injects a fake runner and a fake downstream
- * fetch so the gateway suites run offline. It defaults to today's behaviour exactly.
+ * `overrides` is a test-only seam: it injects a fake runner, a fake downstream fetch,
+ * and an offline Access JWKS source so the gateway suites run offline. It defaults to
+ * today's behaviour exactly.
  */
-export type ApiAppOverrides = { runnerClient?: RunnerClient; gatewayFetchImpl?: FetchLike };
+export type ApiAppOverrides = {
+  runnerClient?: RunnerClient;
+  gatewayFetchImpl?: FetchLike;
+  accessVerifier?: VerifierOverrides;
+};
 
 export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {}): ApiRuntime {
   const app = express();
@@ -43,7 +48,8 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     const ready = await runnerClient.ready();
     response.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable' });
   });
-  app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config), principalRequestLimits());
+  const verifierOverrides = overrides.accessVerifier ?? {};
+  app.use('/mcp', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config, verifierOverrides), principalRequestLimits());
   app.use('/mcp', express.json({ limit: config.maxBodyBytes, strict: true }));
   app.all('/mcp', async (request: Request, response: Response) => {
     if (request.method === 'POST' && !request.is('application/json')) {
@@ -74,7 +80,7 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
   });
   // Express `app.use('/mcp', ...)` does not match `/mcp-gateway` (the next character
   // must be `/` or end), so the two chains cannot interfere.
-  app.use('/mcp-gateway', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config), principalRequestLimits());
+  app.use('/mcp-gateway', requestSecurity(config), preAuthRequestLimits(), bearerAuth(config, verifierOverrides), principalRequestLimits());
   app.use('/mcp-gateway', express.json({ limit: config.maxBodyBytes, strict: true }));
   app.all('/mcp-gateway', async (request: Request, response: Response) => {
     if (request.method === 'POST' && !request.is('application/json')) {
@@ -84,7 +90,13 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
     await gatewayNodeHandler(request, response, request.body);
   });
   if (config.authMode === 'cloudflare-access' && config.apiKeyAuthEnabled) {
-    app.use('/mcp-api-key', requestSecurity(config), preAuthRequestLimits(), apiKeyGatewayAuth(config, runnerClient), principalRequestLimits());
+    app.use(
+      '/mcp-api-key',
+      requestSecurity(config),
+      preAuthRequestLimits(),
+      apiKeyGatewayAuth(config, runnerClient, verifierOverrides),
+      principalRequestLimits()
+    );
     app.use('/mcp-api-key', express.json({ limit: config.maxBodyBytes, strict: true }));
     app.all('/mcp-api-key', async (request: Request, response: Response) => {
       if (request.method === 'POST' && !request.is('application/json')) {
@@ -92,6 +104,17 @@ export function createApiApp(config: ApiConfig, overrides: ApiAppOverrides = {})
         return;
       }
       await nodeHandler(request, response, request.body);
+    });
+    // The prefix mount above already applies the host/origin checks, the dual-credential
+    // verification (Worker service assertion and principal-bound managed key), rate limits,
+    // and the body parser. Keeping the gateway under `/mcp-api-key/` keeps it inside the
+    // path-scoped Access application that protects the API-key lane.
+    app.all('/mcp-api-key/gateway', async (request: Request, response: Response) => {
+      if (request.method === 'POST' && !request.is('application/json')) {
+        response.status(415).json({ error: 'unsupported_media_type' });
+        return;
+      }
+      await gatewayNodeHandler(request, response, request.body);
     });
   }
   if (config.authMode === 'cloudflare-access') {
