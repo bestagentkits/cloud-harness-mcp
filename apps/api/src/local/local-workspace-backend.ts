@@ -22,9 +22,10 @@ export class LocalWorkspaceBackend implements OperationBackend {
   constructor(
     public readonly canonicalRoot: string,
     public readonly options: CliOptions,
-    workerScriptPath?: string
+    workerScriptPath?: string,
+    workspaceId?: string
   ) {
-    this.workspaceId = opaqueId('ws_local');
+    this.workspaceId = workspaceId ?? opaqueId('ws_local');
     this.createdAt = Date.now();
     this.lastActivityAt = Date.now();
     this.pathPolicy = new LocalPathPolicy(canonicalRoot);
@@ -36,7 +37,11 @@ export class LocalWorkspaceBackend implements OperationBackend {
     return `This is a Cloud Harness local stdio workspace. Operations execute against the selected project folder (${this.canonicalRoot}) with host-user permissions. The workspace is already open (workspaceId: "${this.workspaceId}"). Path confinement prevents tool path escapes; commands run with host authority.`;
   }
 
-  private getPublicRecord() {
+  get closed(): boolean {
+    return this.status === 'CLOSED';
+  }
+
+  getPublicRecord() {
     return {
       workspaceId: this.workspaceId,
       repositoryUrl: `local://${this.canonicalRoot}`,

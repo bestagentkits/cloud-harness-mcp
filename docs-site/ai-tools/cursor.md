@@ -40,3 +40,5 @@ For editing a local project folder directly without uploading to a remote VPS, c
   }
 }
 ```
+
+To serve several local folders from one server, replace `--workspace <path>` with `--workspace-config <absolute-path>`; see [Several local workspaces from one server](/connect#several-local-workspaces-from-one-server).

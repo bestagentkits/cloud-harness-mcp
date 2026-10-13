@@ -47,6 +47,10 @@ URLs, or raw command content into tickets or shared logs.
 | Local stdio: Windows platform notice | Local stdio v1 currently supports POSIX platforms (Linux and macOS) due to POSIX process-group semantics. On Windows, run the command within WSL (Windows Subsystem for Linux) or use Cloud Harness over Streamable HTTP. |
 | Local stdio: `workspace_open is unsupported in local stdio mode` | In local stdio mode, the workspace is already selected and pre-opened at startup. Do not call `workspace_open`; proceed directly to file, search, exec, session, or Git tools using the active workspace ID. |
 | Local stdio: `network Git operations are disabled` or `Git push operations are disabled` | In local mode, remote network fetch/pull and push are disabled by default. Pass `--git-network` to enable network fetch/pull, and `--git-push` to enable push. |
+| Local `--workspace-config`: `failed to load --workspace-config` at startup | The file or a root failed validation: unknown field, duplicate key, alias, invalid name, wrong `version`, or a root that is missing, not a directory, or overlaps another root. Fix the named entry; the server never starts with a partial registry. |
+| Local multi-workspace: `CONFLICT` ... `pass workspaceId explicitly` | More than one root is registered and the call named none. Call `workspace_list` and pass the `workspaceId`; over stdio, `workspace_set_active` can set a default. |
+| Local multi-workspace: retryable `UNAVAILABLE` ... `root ... is unavailable`, or `rootAvailable: false` | The root disappeared or was replaced since startup (for example a dropped NFS mount). Restore the mount, then retry; do not repoint the path at another directory, which changes the root's identity. |
+| Local HTTP: `local HTTP mode requires MCP_BEARER_TOKEN` | `--transport http --workspace-config` needs a 32-512 character, non-placeholder token in `MCP_BEARER_TOKEN` or `MCP_BEARER_TOKEN_FILE`. |
 
 The request policy is owned by
 [`apps/api/src/request-security.ts`](../apps/api/src/request-security.ts) and

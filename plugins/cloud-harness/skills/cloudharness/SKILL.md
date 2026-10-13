@@ -98,6 +98,14 @@ Details: [Repository automation](references/repository-automation.md#skills).
    records. Anything else returns `CONFLICT` naming the candidates.
    `workspace_open` never moves that preference, so repin deliberately when you
    switch repositories.
+   On a local server (its instructions say "local stdio workspace" or "local
+   multi-workspace server"), workspaces are already open and `workspace_open`
+   is refused: call `workspace_list`, choose by `name`/`root`, and pass that
+   `workspaceId` on every call. The local HTTP endpoint rejects
+   `workspace_set_active`. A retryable `UNAVAILABLE` or `rootAvailable: false`
+   means the folder's mount is gone; stop and report rather than retrying in a
+   loop. Details:
+   [Workspace lifecycle](references/workspace-lifecycle-and-results.md#local-workspaces).
    **Repository guidance.** The open result's `repositoryContext` summary lists
    the guidance files the repository ships (`AGENTS.md`, `CLAUDE.md`,
    `REVIEW.md`, `DESIGN.md`, rule files). As an external client, call

@@ -90,8 +90,8 @@ Third-party agent toolkits are acquired and normalized via disposable clone help
 
 ## Composition roots and transports
 
-Cloud Harness MCP supports three distinct composition roots. The two
-coding-harness roots share the public `TOOL_SPECS` and result envelopes; the
+Cloud Harness MCP supports four distinct composition roots. The coding-harness
+roots share the public `TOOL_SPECS` and result envelopes; the
 gateway root owns its own constant five-tool contract.
 
 1. **Streamable HTTP mode (default):**
@@ -111,6 +111,16 @@ gateway root owns its own constant five-tool contract.
 3. **Local stdio mode:**
    `cloud-harness-mcp --transport stdio --workspace <path>`.
    Assembles `serveStdio` directly connected to `LocalWorkspaceBackend`. Binds to one canonical local project directory, manages host subprocesses via `LocalOperationManager`, and parameterizes `worker/harness-worker.mjs` via `HARNESS_WORKSPACE_ROOT`.
+
+4. **Local multi-workspace mode:**
+   `cloud-harness-mcp --transport stdio|http --workspace-config <path>`.
+   Loads an operator-owned root registry and keeps one `LocalWorkspaceBackend`
+   per root in a pool; `MultiLocalWorkspaceBackend` routes each call by
+   `workspaceId`. Over stdio it is served by `serveStdio`; over HTTP by a
+   separate local Express app that never creates a runner client. Owners:
+   [`apps/api/src/local/`](../apps/api/src/local/) and
+   [`apps/api/src/index.ts`](../apps/api/src/index.ts). Semantics:
+   [local multi-workspace mode](mcp-api.md#local-multi-workspace-mode).
 
 Executable owners:
 

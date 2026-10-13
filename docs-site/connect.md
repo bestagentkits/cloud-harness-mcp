@@ -60,6 +60,82 @@ cloud-harness-mcp --transport stdio --workspace /absolute/path/to/project
 
 Local mode exposes the full tool surface directly to the local folder with host-user authority. Closing the workspace terminates processes without deleting the project folder.
 
+### Several local workspaces from one server
+
+To serve several persistent project folders, for example on a dev VM or a host
+with mounted volumes, register them in one operator-owned config file and pass
+its absolute path with `--workspace-config` instead of `--workspace`:
+
+```yaml
+# /etc/cloud-harness/workspaces.yaml (JSON with the same shape also works)
+version: 1
+workspaces:
+  api:
+    path: /srv/projects/api
+  web:
+    path: /mnt/volumes/web
+    gitNetwork: true   # optional per-workspace override of --git-network
+    gitPush: false     # optional per-workspace override of --git-push
+http:                  # optional; used only with --transport http
+  host: 127.0.0.1
+  port: 3100
+```
+
+The file is the only way to register a folder: no tool can add, move, or rename
+one. The server refuses to start when the file has unknown fields, duplicate
+keys, YAML aliases, or invalid names, or when a path is missing, not a
+directory, registered twice, or nested inside another registered path. The
+exact schema and defaults are owned by
+[`local-workspace-registry.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/apps/api/src/local/local-workspace-registry.ts).
+
+Every registered folder is already open. Call `workspace_list` to get each
+entry's `name`, `root`, `rootAvailable`, and `workspaceId`. The ID is derived
+from the name and the resolved folder, so it stays the same across restarts and
+changes only when you rename the entry or move the folder. Pass `workspaceId` on
+every call whenever more than one folder is registered.
+
+**Stdio (one client):**
+
+```bash
+claude mcp add cloud-harness-local --transport stdio -- \
+  node /path/to/cloud-harness-mcp/apps/api/dist/index.js \
+  --transport stdio --workspace-config /etc/cloud-harness/workspaces.yaml
+```
+
+Over stdio, `workspace_set_active` picks a default folder for that one process.
+
+**Local HTTP (several clients, one long-running process):**
+
+```bash
+MCP_BEARER_TOKEN_FILE=/etc/cloud-harness/local-token \
+  node /path/to/cloud-harness-mcp/apps/api/dist/index.js \
+  --transport http --workspace-config /etc/cloud-harness/workspaces.yaml
+
+claude mcp add --transport http cloud-harness-local http://127.0.0.1:3100/mcp \
+  --header "Authorization: Bearer $(cat /etc/cloud-harness/local-token)"
+```
+
+This serves the registered folders at `/mcp` and needs a bearer token of 32 to
+512 characters in `MCP_BEARER_TOKEN` or `MCP_BEARER_TOKEN_FILE`. It does not use
+Docker or the runner. Because requests share no session, `workspace_set_active`
+is rejected and every call must name its `workspaceId`, unless only one folder
+is registered. Keep the default loopback bind; if a client reaches it through
+another host name or a browser origin, add that name to `http.publicHosts` or
+the origin to `http.allowedOrigins`.
+
+If a folder disappears or is replaced (for example an NFS mount drops), calls to
+it fail with a retryable `UNAVAILABLE` error and `workspace_list` reports
+`rootAvailable: false` until the mount returns. `workspace_close` stops that
+folder's processes without deleting files, and `workspace_recover` reopens it
+with the same ID.
+
+::: warning Host authority
+Every registered folder runs commands as the host user that started the server.
+Path confinement stops tool paths from escaping a folder, but it is not a
+sandbox. Use this mode only for one trusted operator. See the
+[security model](https://github.com/bestagentkits/cloud-harness-mcp/blob/main/docs/security-model.md#local-stdio-security-model).
+:::
+
 ---
 
 ## Managing API Keys

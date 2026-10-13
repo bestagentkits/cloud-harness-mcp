@@ -540,6 +540,47 @@ When running Cloud Harness MCP over local stdio (`--transport stdio --workspace 
 4. **Gated capabilities:** `git_fetch` and `git_pull` require `--git-network`. `git_push` requires `--git-push`. `github_action` and `exec_run.privileged=true` return structured unsupported errors.
 5. **Filesystem operations:** File reading, writing, patching, deletion, and searching apply within the canonical workspace root. Traversal escapes are rejected.
 
+### Local multi-workspace mode
+
+`--workspace-config <absolute-path>` replaces `--workspace` with an
+operator-owned registry of named roots, served from one stdio process or, with
+`--transport http`, from one authenticated local Streamable HTTP endpoint at
+`/mcp`. The registry file is the only way to add a root, so a client can never
+point host execution at a path the operator did not list. Each root gets its own
+single-root local backend, so path policy, processes, tasks, sessions, and
+output never cross roots. The file format and client setup are in the
+[user guide](../docs-site/connect.md#several-local-workspaces-from-one-server).
+
+- **Stable identity.** Every root is pre-opened with a `ws_local_` ID derived
+  from its name and canonical path. The ID survives restarts; renaming the entry
+  or moving the root yields a new ID, and the old ID fails closed with
+  `NOT_FOUND`. `workspace_list` entries add `name`, `root`, and `rootAvailable`.
+- **Selection fails closed.** An explicit `workspaceId` always wins. Without
+  one, stdio uses its `workspace_set_active` preference, then a sole registered
+  root; anything else returns `CONFLICT` listing the candidates instead of
+  guessing. The HTTP endpoint keeps no preference because requests share no
+  session: `workspace_set_active` returns `INVALID_INPUT` there, so pass
+  `workspaceId` on every call unless only one root is registered.
+  `workspace_open` returns `INVALID_INPUT` in both transports.
+- **Root availability.** If a root's canonical path or device/inode identity
+  changes (a dropped network mount leaving an empty mount point, a retargeted
+  symlink, a replaced directory), calls to it return retryable `UNAVAILABLE`
+  rather than executing somewhere else. A root check that hangs (a stuck
+  hard-mounted export) gives up after a short bound and reports the same, so one
+  stuck mount never blocks the other roots. `workspace_status` and
+  `workspace_close` still work so a client can inspect and stop it; a closed root
+  reports `status: CLOSED` with `workspace_recover` as its next action.
+- **Close and recover.** `workspace_close` stops that root's processes and never
+  touches its files; `workspace_recover` reopens a closed root with the same ID.
+- **Unchanged modes.** Single-root `--workspace` stdio and the remote
+  runner-backed HTTP service behave as before.
+
+The executable owners are
+[`local-workspace-registry.ts`](../apps/api/src/local/local-workspace-registry.ts),
+[`multi-local-workspace-backend.ts`](../apps/api/src/local/multi-local-workspace-backend.ts),
+[`local-http-server.ts`](../apps/api/src/local/local-http-server.ts), and
+[`test/integration/mcp-local-multi-workspace.test.ts`](../test/integration/mcp-local-multi-workspace.test.ts).
+
 ## Repository opening policy
 
 The runner accepts credential-free HTTPS URLs on configured allowlisted hosts,

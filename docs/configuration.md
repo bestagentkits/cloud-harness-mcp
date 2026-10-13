@@ -428,6 +428,26 @@ transfer leak check. The broker and transfer boundary are described in
 grant least-privilege repository access, install the key, and verify the
 integration.
 
+## Local multi-workspace registry
+
+`--workspace-config` reads an operator-owned, versioned YAML or JSON file that
+names each local root, optional per-root Git network/push overrides of the CLI
+flags, and optional local HTTP bind settings. It is parsed strictly (unknown
+fields, duplicate keys, and aliases are errors) and every root is validated at
+startup, because a typo must stop the server rather than silently expose or
+drop a directory. Registration is file-only by design: no tool can change the
+set of roots. Local HTTP mode reads its bearer token from `MCP_BEARER_TOKEN` or
+`MCP_BEARER_TOKEN_FILE`, like the remote API, but uses none of the Compose or
+runner settings in this document.
+
+The schema and defaults are owned by
+[`apps/api/src/local/local-workspace-registry.ts`](../apps/api/src/local/local-workspace-registry.ts);
+the token rule by
+[`apps/api/src/local/local-http-server.ts`](../apps/api/src/local/local-http-server.ts);
+flag parsing by [`apps/api/src/cli-options.ts`](../apps/api/src/cli-options.ts).
+An example file is in the
+[user guide](../docs-site/connect.md#several-local-workspaces-from-one-server).
+
 ## Compose and logging overrides
 
 `CLOUD_HARNESS_ENV_FILE` selects the runtime environment file. `API_HOST_PORT`

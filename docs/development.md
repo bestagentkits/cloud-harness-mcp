@@ -39,6 +39,12 @@ After building packages with `npm run build`, you can test local stdio mode dire
 node apps/api/dist/index.js --transport stdio --workspace /path/to/test-folder
 ```
 
+For the multi-root registry, pass `--workspace-config /abs/path/workspaces.yaml`
+instead (add `--transport http` and `MCP_BEARER_TOKEN` for the local HTTP
+endpoint). Its focused suites are
+[`apps/api/test/local/`](../apps/api/test/local/) and
+[`test/integration/mcp-local-multi-workspace.test.ts`](../test/integration/mcp-local-multi-workspace.test.ts).
+
 ## Skill and plugin packaging
 
 The installable `cloudharness` skill is authored under

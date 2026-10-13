@@ -531,6 +531,30 @@ Local stdio mode intentionally alters the trust boundary compared to the remote 
 
 - `exec_run` with `privileged: true`, `github_action`, and `github_read` are unsupported in local v1 and return immediate structured capability errors.
 
+### Local multi-workspace mode
+
+`--workspace-config` keeps the same host-user trust boundary for every
+registered root; it adds roots, not isolation. It is for one trusted operator,
+never for mutually untrusted users.
+
+- Only the operator-owned registry file can register a root. No MCP operation
+  adds, moves, or renames one, and overlapping or nested roots are refused at
+  startup so path confinement of one root cannot reach into another.
+- Each root has its own path policy and process manager. A command in one root
+  still runs with host authority and can read the others; confinement applies to
+  tool-supplied paths only.
+- A root is pinned to its canonical path and device/inode at startup. A replaced
+  or unmounted root fails closed with `UNAVAILABLE` instead of running against
+  whatever now occupies the path.
+- Network Git and push stay off unless the operator enables them, globally with
+  `--git-network`/`--git-push` or per root in the registry.
+- The local HTTP endpoint requires the owner bearer token, applies the same
+  host, origin, and rate-limit checks as the remote API
+  ([`request-security.ts`](../apps/api/src/request-security.ts)), binds to
+  loopback by default, and keeps no shared active-workspace state between
+  requests. Binding it to a non-loopback address exposes host-user execution to
+  anyone holding the token.
+
 ## Repository capability introspection and authorization preflight
 
 To prevent late-stage workflow failures where an agent completes extensive edits before discovering that pushing or publishing is unauthorized, Cloud Harness exposes preflight authorization state:
