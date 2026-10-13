@@ -160,7 +160,8 @@ function policyReference(policy: unknown): unknown {
   return typeof policy.precedence === 'number' ? { id: policy.id, precedence: policy.precedence } : { id: policy.id };
 }
 
-function canonicalJson(value: unknown): string {
+/** Sorted-key JSON serializer: equal values always serialize to equal strings, so their digests match. */
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (isRecord(value)) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
