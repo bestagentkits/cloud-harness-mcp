@@ -79,7 +79,7 @@ export function createCloudHarnessServer(
   }
 
   const server = new McpServer(
-    { name: 'cloud-harness-mcp', version: '0.63.3' },
+    { name: 'cloud-harness-mcp', version: '0.64.0' },
     { instructions }
   );
 
