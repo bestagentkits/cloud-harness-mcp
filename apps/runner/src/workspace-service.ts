@@ -499,13 +499,7 @@ export class WorkspaceService {
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
     await this.reconcileContainers();
     // After leftover containers are gone, so no builder can still be writing below the packages root.
-    if (this.config.packagesEnabled === true) {
-      // A filesystem failure here must not keep the runner from starting; leftovers stay inert and the
-      // hourly collection re-verifies missing releases.
-      await this.packages.reconcileStartup().catch((error: unknown) => {
-        console.warn('[runner] managed package startup reconcile failed', error instanceof Error ? error.message : String(error));
-      });
-    }
+    if (this.config.packagesEnabled === true) await this.packages.reconcileStartup();
     await this.reconcileJobDirectories();
     await this.agentManager?.start();
     this.reaper = setInterval(() => {
@@ -2212,8 +2206,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     const name = toolboxContainerName();
     const timeoutMs = validated.timeoutMs as number;
-    const toolboxPackages = this.packages.toolboxMounts(ownerId);
     const run = (runSignal?: AbortSignal) => {
+      // Held until the container is gone, so an uninstall cannot remove a release the command still reads.
+      const held = this.packages.holdToolboxMounts(ownerId);
+      const toolboxPackages = held.profile;
       this.liveToolboxContainers.add(name);
       return runToolboxCommand({
         name,
@@ -2225,7 +2221,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }, {
         timeoutMs,
         maxOutputBytes: Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes)
-      }, runSignal).finally(() => { this.liveToolboxContainers.delete(name); });
+      }, runSignal).finally(() => {
+        held.release();
+        this.liveToolboxContainers.delete(name);
+      });
     };
     if (validated.async !== true) return toolboxResponse(await run(signal));
 

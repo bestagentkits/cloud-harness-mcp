@@ -307,6 +307,8 @@ describe('builder output parsers', () => {
     expect(() => parseNpmPlanOutput(npmPlanOutput(unversioned), 'chm-hello', registry)).toThrow(/has no version/);
     const orphan = npmLock({ 'node_modules/chm-bundled': { version: '3.1.0', inBundle: true } });
     expect(() => parseNpmPlanOutput(npmPlanOutput(orphan), 'chm-hello', registry)).toThrow(/no parent package/);
+    const detached = npmLock({ 'node_modules/chm-missing/node_modules/chm-bundled': { version: '3.1.0', inBundle: true } });
+    expect(() => parseNpmPlanOutput(npmPlanOutput(detached), 'chm-hello', registry)).toThrow(/no parent package/);
     // The root package is never exempt from pinning, even if it claims to be bundled.
     const bundledRoot = npmLock({ 'node_modules/chm-hello': { version: '1.0.0', inBundle: true, bin: { 'chm-hello': 'bin/chm-hello.mjs' } } });
     expect(() => parseNpmPlanOutput(npmPlanOutput(bundledRoot), 'chm-hello', registry)).toThrow(/not pinned/);

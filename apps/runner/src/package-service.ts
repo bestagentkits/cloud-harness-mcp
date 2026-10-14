@@ -147,6 +147,8 @@ type ApplyJob = { controller: AbortController; done: Promise<void> };
 type Resolution = {
   id: string;
   ownerId: string;
+  /** Identifies an identical request, so a retried `packages_plan` joins the running resolution. */
+  key: string;
   ecosystem: BuildablePackageEcosystem;
   name: string;
   state: PackageResolutionState;
@@ -261,6 +263,8 @@ export class PackageService {
   private readonly builds = new Semaphore(PACKAGE_BUILD_SLOTS);
   private readonly jobs = new Map<string, ApplyJob>();
   private readonly resolutions = new Map<string, Resolution>();
+  /** Releases a running toolbox command mounts; collection skips them until the command ends. */
+  private readonly heldReleases = new Map<string, number>();
   private readonly waiters = new Map<string, Set<() => void>>();
   private readonly workspaces: PackageWorkspaceDirectory;
   private readonly clock: () => number;
@@ -319,16 +323,22 @@ export class PackageService {
       throw harness('NOT_FOUND', 'workspace not found or not active', 404);
     }
     this.requireRunning();
-    if (!this.builds.tryAcquire()) {
-      throw harness('LIMIT_EXCEEDED', `package build limit reached: ${PACKAGE_BUILD_SLOTS} builds are already running on this instance; retry after one finishes`, 429, true);
-    }
-    this.pruneResolutions();
-    const resolution = this.startResolution(ownerId, {
+    const spec = {
       ecosystem, name: request.name, scope: request.scope, workspaceId, lifecycleScripts,
       // npm defaults to the `latest` tag; an empty uv specifier means the newest release.
       requestedSpec: request.version ?? (ecosystem === 'npm' ? 'latest' : ''),
       ...(request.python !== undefined ? { python: request.python } : {})
-    });
+    };
+    const key = JSON.stringify([ownerId, ecosystem, spec.name, spec.requestedSpec, spec.scope, workspaceId, spec.python ?? null, lifecycleScripts]);
+    // A retry of a request whose resolution is still running joins it instead of taking another build slot.
+    let resolution = [...this.resolutions.values()].find((entry) => entry.key === key && entry.state === 'RESOLVING');
+    if (resolution === undefined) {
+      if (!this.builds.tryAcquire()) {
+        throw harness('LIMIT_EXCEEDED', `package build limit reached: ${PACKAGE_BUILD_SLOTS} builds are already running on this instance; retry after one finishes`, 429, true);
+      }
+      this.pruneResolutions();
+      resolution = this.startResolution(ownerId, key, spec);
+    }
     if (resolution.state === 'RESOLVING') await this.waitForChange(resolution.id, this.options.planInlineWaitMs ?? PACKAGES_PLAN_INLINE_WAIT_MS, signal);
     if (resolution.state === 'READY') return resolution.plan!;
     if (resolution.state === 'FAILED') throw resolution.error!;
@@ -336,7 +346,7 @@ export class PackageService {
   }
 
   /** Runs one resolution in a build slot the caller already acquired; the slot is released when it settles. */
-  private startResolution(ownerId: string, spec: {
+  private startResolution(ownerId: string, key: string, spec: {
     ecosystem: BuildablePackageEcosystem; name: string; scope: 'owner' | 'workspace'; workspaceId: string | null;
     requestedSpec: string; python?: string; lifecycleScripts: boolean;
   }): Resolution {
@@ -348,7 +358,7 @@ export class PackageService {
     }, this.config.packagesBuildTimeoutMs + BUILD_TIMEOUT_GRACE_MS);
     timer.unref();
     const resolution: Resolution = {
-      id: opaqueId('pkq'), ownerId, ecosystem: spec.ecosystem, name: spec.name, state: 'RESOLVING', controller,
+      id: opaqueId('pkq'), ownerId, key, ecosystem: spec.ecosystem, name: spec.name, state: 'RESOLVING', controller,
       done: Promise.resolve()
     };
     const scratchId = opaqueId('pkp');
@@ -520,7 +530,7 @@ export class PackageService {
     if (request.resolutionId !== undefined) {
       const resolution = this.resolutions.get(request.resolutionId);
       if (!resolution || resolution.ownerId !== ownerId) {
-        throw harness('NOT_FOUND', 'plan resolution not found: it finished more than 30 minutes ago or the runner restarted; run packages_plan again', 404);
+        throw harness('NOT_FOUND', 'plan resolution not found: it finished more than 30 minutes ago, newer resolutions replaced it, or the runner restarted; run packages_plan again', 404);
       }
       if (request.waitMs > 0 && resolution.state === 'RESOLVING') await this.waitForChange(resolution.id, request.waitMs, signal);
       return { resolution: this.resolutionView(resolution) };
@@ -577,6 +587,8 @@ export class PackageService {
     });
     let collectedReleases = 0;
     for (const releaseId of releaseIds) {
+      // A release a running toolbox command mounts is collected by a later pass instead.
+      if (this.heldReleases.has(releaseId)) continue;
       const collected = this.store.markCollected(releaseId, now);
       if (!collected) continue;
       // A failed removal leaves a directory without a live row, which startup reconciliation removes.
@@ -609,6 +621,28 @@ export class PackageService {
     return this.buildProfile(this.effectiveBindings(ownerId, null));
   }
 
+  /**
+   * The toolbox mounts, held so an uninstall or collection pass does not remove a release while the command
+   * still runs; call `release` once the toolbox container is gone, and a later collection pass removes it.
+   */
+  holdToolboxMounts(ownerId: string): { profile: PackageProfile; release: () => void } {
+    const profile = this.toolboxMounts(ownerId);
+    for (const releaseId of profile.releaseIds) this.heldReleases.set(releaseId, (this.heldReleases.get(releaseId) ?? 0) + 1);
+    let released = false;
+    return {
+      profile,
+      release: () => {
+        if (released) return;
+        released = true;
+        for (const releaseId of profile.releaseIds) {
+          const count = (this.heldReleases.get(releaseId) ?? 1) - 1;
+          if (count > 0) this.heldReleases.set(releaseId, count);
+          else this.heldReleases.delete(releaseId);
+        }
+      }
+    };
+  }
+
   /* Recovery and garbage collection. */
 
   /**
@@ -628,6 +662,17 @@ export class PackageService {
     this.store.expirePlans(now);
     const summary: PackageReconcileSummary = { interruptedApplies: interrupted.length, removedEntries: 0, unpublishedReleases: 0, missingReleases: 0, restoredReleases: 0 };
     if (!isDirectory(this.paths.root)) return summary;
+    // The fences are released above; a filesystem failure below must not keep the runner from starting.
+    // Leftover entries stay inert, and the hourly collection re-verifies missing releases.
+    try {
+      await this.reconcileDirectories(summary, now);
+    } catch (error) {
+      console.warn('[runner] managed package startup reconcile failed', error instanceof Error ? error.message : String(error));
+    }
+    return summary;
+  }
+
+  private async reconcileDirectories(summary: PackageReconcileSummary, now: number): Promise<void> {
     for (const [area, pathOf] of [['staging', (id: string) => this.paths.staging(id)], ['scratch', (id: string) => this.paths.scratch(id)]] as const) {
       for (const name of await listNames(join(this.paths.root, area))) {
         if (!PACKAGE_STORE_ID_PATTERN.test(name)) continue;
@@ -651,7 +696,6 @@ export class PackageService {
       .filter((release) => release.status === 'VERIFIED' && !isDirectory(this.paths.release(release.relPath)))
       .map((release) => release.id);
     summary.missingReleases = this.store.markReleasesMissing(missing);
-    return summary;
   }
 
   /**
@@ -690,6 +734,7 @@ export class PackageService {
     summary.restoredReleases = await this.restoreMissingReleases(now);
     summary.deletedBindings = this.store.deleteOrphanBindings().length;
     for (const candidate of this.store.collectibleReleases()) {
+      if (this.heldReleases.has(candidate.id)) continue;
       const collected = this.store.markCollected(candidate.id, now);
       if (!collected) continue;
       // A failed removal leaves a directory without a VERIFIED row, which startup reconciliation removes.
@@ -820,7 +865,11 @@ export class PackageService {
         this.store.failApply(applyId, { code: failure.code, message: failure.message, outputTail, now: this.clock() });
         return;
       } catch (error) {
-        if (attempt >= FAIL_APPLY_ATTEMPTS) throw error;
+        if (attempt >= FAIL_APPLY_ATTEMPTS) {
+          // The binding stays fenced until the next startup reconcile, so leave the operator a signal.
+          console.warn('[runner] could not record a failed package apply', applyId, failure.code, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
         await new Promise((wake) => setTimeout(wake, 250 * attempt));
       }
     }

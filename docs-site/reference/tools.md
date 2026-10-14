@@ -468,7 +468,7 @@ Wait for a long-running operation to reach a terminal state with a timeout.
 
 ## Managed Packages
 
-Plan, approve, apply, inspect, and roll back pinned CLI packages kept across workspaces and redeploys (off unless the operator enables managed packages).
+Plan, approve, apply, inspect, roll back, and uninstall pinned CLI packages kept across workspaces and redeploys (off unless the operator enables managed packages).
 
 ### `packages_plan`
 
@@ -541,6 +541,19 @@ Point a managed package binding back to an earlier verified release from its his
 |---|---|---|---|
 | `bindingId` | `string` | **Yes** | pattern: `^pkb_[A-Za-z0-9_-]{20,80}$` |
 | `releaseId` | `string` | **Yes** | pattern: `^pkr_[A-Za-z0-9_-]{20,80}$` |
+| `expectedGeneration` | `integer` | **Yes** | range: 0–9007199254740991 |
+
+### `packages_remove`
+
+**Uninstall managed package**
+
+Uninstall a managed package from one scope: deletes the binding (bindingId from packages_list, with its current generation as expectedGeneration) and its rollback history, and collects releases no retained workspace still mounts. A moved generation returns STALE_GENERATION; a running apply returns CONFLICT. Needs no approval. New workspaces and the bash toolbox stop seeing the tool at once; existing workspaces keep it until recreated. Reinstalling needs a new plan.
+
+**Attributes:** <span class="badge-destructive">destructive</span>
+
+| Parameter | Type | Required | Constraints & Notes |
+|---|---|---|---|
+| `bindingId` | `string` | **Yes** | pattern: `^pkb_[A-Za-z0-9_-]{20,80}$` |
 | `expectedGeneration` | `integer` | **Yes** | range: 0–9007199254740991 |
 
 ## Sessions and Tasks
@@ -1239,19 +1252,6 @@ Delete a principal-owned retained artifact snapshot before its retention expiry.
 | `expectedGeneration` | `integer` | No | range: 0–9007199254740991, default: `1` |
 
 ## Additional Tools
-
-### `packages_remove`
-
-**Uninstall managed package**
-
-Uninstall a managed package from one scope: deletes the binding (bindingId from packages_list, with its current generation as expectedGeneration) and its rollback history, and collects releases no retained workspace still mounts. A moved generation returns STALE_GENERATION; a running apply returns CONFLICT. Needs no approval. New workspaces and the bash toolbox stop seeing the tool at once; existing workspaces keep it until recreated. Reinstalling needs a new plan.
-
-**Attributes:** <span class="badge-destructive">destructive</span>
-
-| Parameter | Type | Required | Constraints & Notes |
-|---|---|---|---|
-| `bindingId` | `string` | **Yes** | pattern: `^pkb_[A-Za-z0-9_-]{20,80}$` |
-| `expectedGeneration` | `integer` | **Yes** | range: 0–9007199254740991 |
 
 ### `skill_suggest`
 

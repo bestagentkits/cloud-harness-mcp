@@ -435,7 +435,10 @@ export function parseNpmLock(packageJson: string, lockText: string, name: string
     if (entry.inBundle && key !== rootKey) {
       // Bundled dependencies ship inside their parent's tarball, whose pinned integrity already covers them, so
       // they are only accepted nested under that parent and are never fetched on their own.
-      if (!key.includes('/node_modules/')) throw buildFailed(`npm lockfile entry ${quote(key)} is bundled but has no parent package`);
+      const parentKey = key.includes('/node_modules/') ? key.slice(0, key.lastIndexOf('/node_modules/')) : undefined;
+      if (parentKey === undefined || !Object.hasOwn(parsed.data.packages, parentKey)) {
+        throw buildFailed(`npm lockfile entry ${quote(key)} is bundled but has no parent package`);
+      }
       if (!entry.version) throw buildFailed(`npm lockfile entry ${quote(key)} has no version`);
       dependencyCount += 1;
       sbom.push({ name: entry.name ?? segment, version: entry.version });

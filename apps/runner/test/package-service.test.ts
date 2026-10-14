@@ -749,6 +749,24 @@ describe('PackageService asynchronous resolution', () => {
     await expectCode(packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }), 'UNAVAILABLE');
     await expectCode(packages.execute(f.owner, 'packages_apply', { planId: planned.planId, planDigest: planned.planDigest }), 'UNAVAILABLE');
   });
+  it('joins an identical running resolution instead of starting another build', async () => {
+    const f = fixture();
+    f.builder.resolveGate = deferred();
+    const packages = f.service(f.builder, { planInlineWaitMs: 10 });
+    const first = PackagesPlanOutputSchema.parse(await packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }));
+    const again = PackagesPlanOutputSchema.parse(await packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }));
+    expect((again as { resolutionId: string }).resolutionId).toBe((first as { resolutionId: string }).resolutionId);
+    // A different version, or another owner, is its own resolution.
+    const pinned = PackagesPlanOutputSchema.parse(await packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello', version: '1.0.0' }));
+    expect((pinned as { resolutionId: string }).resolutionId).not.toBe((first as { resolutionId: string }).resolutionId);
+    await expectCode(packages.execute(f.foreign, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }), 'LIMIT_EXCEEDED');
+    expect(f.builder.calls.resolve).toBe(2);
+    f.builder.resolveGate.resolve();
+    await packages.drain();
+    // A finished resolution is not joined: the next request resolves again.
+    expect(PackagePlanResultSchema.parse(await packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' })).planId).toMatch(/^pkp_/);
+    expect(f.builder.calls.resolve).toBe(3);
+  });
 });
 
 describe('PackageService approval policy changes', () => {
@@ -806,6 +824,23 @@ describe('PackageService uninstall', () => {
     await expectCode(f.packages.execute(f.owner, 'packages_remove', { bindingId: binding.id, expectedGeneration: binding.generation }), 'CONFLICT');
     f.builder.gate.resolve();
     await f.packages.drain();
+  });
+  it('keeps releases a running toolbox command mounts until it finishes', async () => {
+    const f = fixture();
+    const installed = await install(f);
+    const binding = f.store.listBindings(f.owner)[0]!;
+    const dir = join(f.root, packageReleaseRelativePath(f.owner, installed.applied.releaseId));
+    const held = f.packages.holdToolboxMounts(f.owner);
+    expect(held.profile.releaseIds).toEqual([installed.applied.releaseId]);
+
+    const removed = PackagesRemoveResultSchema.parse(await f.packages.execute(f.owner, 'packages_remove', { bindingId: binding.id, expectedGeneration: binding.generation }));
+    expect(removed).toMatchObject({ removed: true, collectedReleases: 0 });
+    expect((await f.packages.collectGarbage(NOW)).collectedReleases).toBe(0);
+    expect(existsSync(dir)).toBe(true);
+
+    held.release();
+    expect((await f.packages.collectGarbage(NOW + PACKAGE_GC_INTERVAL_MS)).collectedReleases).toBe(1);
+    expect(existsSync(dir)).toBe(false);
   });
 });
 

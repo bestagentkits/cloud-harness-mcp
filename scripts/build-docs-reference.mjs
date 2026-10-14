@@ -34,8 +34,8 @@ const CATEGORIES = [
   },
   {
     title: 'Managed Packages',
-    description: 'Plan, approve, apply, inspect, and roll back pinned CLI packages kept across workspaces and redeploys (off unless the operator enables managed packages).',
-    names: ['packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback']
+    description: 'Plan, approve, apply, inspect, roll back, and uninstall pinned CLI packages kept across workspaces and redeploys (off unless the operator enables managed packages).',
+    names: ['packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove']
   },
   {
     title: 'Sessions and Tasks',

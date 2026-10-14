@@ -64,8 +64,8 @@ uninstalls.
   `state` `RESOLVING`, `READY` (with `plan`), or `FAILED` (with `errorCode`
   and `errorMessage`); `waitMs` works the same way. Pass `applyId` or
   `resolutionId`, never both. Resolutions live in runner memory: after a
-  runner restart, or about 30 minutes after it finished, the id returns
-  `NOT_FOUND`; run `packages_plan` again.
+  runner restart, about 30 minutes after it finished, or once many newer
+  resolutions finished, the id returns `NOT_FOUND`; run `packages_plan` again.
 - Without either id, summarizes in-flight applies, plans waiting for approval,
   missing releases, and workspaces that need recreation.
 - `UNAVAILABLE` from a plan or apply while the runner shuts down is
