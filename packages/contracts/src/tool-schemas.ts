@@ -160,7 +160,8 @@ const isoInstant = z.union([z.iso.datetime({ offset: true }), z.iso.date()]);
 
 /** Read-only GitHub actions: they never mutate the repository or its issues and pull requests. */
 export const GITHUB_READ_ACTIONS = [
-  'pr_list', 'pr_view', 'pr_review_threads', 'issue_list', 'issue_view', 'commit_list', 'compare', 'release_list', 'tag_list'
+  'pr_list', 'pr_view', 'pr_review_threads', 'pr_reviews', 'issue_list', 'issue_view', 'commit_list', 'compare', 'release_list', 'tag_list',
+  'ref_get', 'commit_status_get', 'check_runs_list', 'workflow_runs_list', 'workflow_run_view'
 ] as const;
 /** Mutating GitHub actions that stay on the destructive-annotated github_action tool. */
 export const GITHUB_WRITE_ACTIONS = [
@@ -168,7 +169,8 @@ export const GITHUB_WRITE_ACTIONS = [
   'label_create', 'issue_labels_add', 'issue_labels_remove', 'issue_update', 'issue_publish',
   'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_review_thread_resolve', 'pr_review_thread_unresolve',
   'pr_reviewers_request', 'pr_reviewers_remove', 'pr_ready', 'pr_convert_to_draft',
-  'pr_merge', 'pr_auto_merge_enable', 'pr_auto_merge_disable'
+  'pr_merge', 'pr_auto_merge_enable', 'pr_auto_merge_disable',
+  'commit_status_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
 ] as const;
 
 const reviewBody = z.string().min(1).max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes');
@@ -180,6 +182,31 @@ const reviewThreadId = z.string().regex(/^PRRT_[A-Za-z0-9_-]{4,200}$/, 'threadId
 const reviewSide = z.enum(['LEFT', 'RIGHT']);
 const mergeMethod = z.enum(['merge', 'squash', 'rebase']);
 const reviewerList = <T extends z.ZodType<string>>(item: T) => z.array(item).max(15);
+// A fully qualified branch or tag ref, placed in a REST path like a revision.
+const githubRef = githubRevision.refine((value) => /^refs\/(?:heads|tags)\/./.test(value), 'ref must be a fully qualified refs/heads/... or refs/tags/... name');
+// A workflow is addressed by its numeric ID or its file name under .github/workflows.
+const workflowRef = z.union([
+  z.number().int().positive(),
+  z.string().regex(/^(?:[1-9][0-9]{0,18}|[A-Za-z0-9._-]{1,200}\.ya?ml)$/, 'workflow must be a numeric ID or a workflow file name such as ci.yml')
+]);
+const workflowRunId = z.number().int().positive();
+const commitStatusState = z.enum(['error', 'failure', 'pending', 'success']);
+const commitStatusContext = z.string().min(1).max(255).refine((val) => !val.includes('\0') && !val.includes('\n'), 'context cannot contain null bytes or newlines');
+const commitStatusDescription = z.string().max(140).refine((val) => !val.includes('\0'), 'description cannot contain null bytes');
+const commitStatusTargetUrl = z.url({ protocol: /^https$/ }).max(2_048);
+const workflowRunStatus = z.enum([
+  'queued', 'in_progress', 'completed', 'requested', 'waiting', 'pending',
+  'success', 'failure', 'cancelled', 'skipped', 'timed_out', 'action_required', 'neutral', 'stale'
+]);
+const workflowEvent = z.string().regex(/^[a-z_]{1,64}$/, 'event must be a GitHub event name such as push or workflow_dispatch');
+const workflowInputs = z.record(
+  z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,99}$/, 'input names must be workflow_dispatch input identifiers'),
+  z.string().max(65_536).refine((val) => !val.includes('\0'), 'input values cannot contain null bytes')
+).refine((inputs) => Object.keys(inputs).length <= 25, 'workflow_dispatch accepts at most 25 inputs')
+  // GitHub caps the dispatch inputs payload at 65,535 characters; the bound also keeps the helper argument small.
+  .refine((inputs) => new TextEncoder().encode(JSON.stringify(inputs)).length <= 65_535, 'workflow_dispatch inputs must serialize to at most 65,535 bytes');
+// The dispatch API runs a workflow on a branch or tag, never on a bare commit.
+const workflowDispatchRef = githubRevision.refine((value) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value), 'workflow_dispatch ref must be a branch or tag, not a commit SHA');
 
 const githubReadActionSchemas = [
   z.object({
@@ -198,6 +225,11 @@ const githubReadActionSchemas = [
     action: z.literal('pr_review_threads'),
     prNumber: z.number().int().positive(),
     limit: z.number().int().min(1).max(100).default(50)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('pr_reviews'),
+    prNumber: z.number().int().positive()
   }),
   z.object({
     ...workspace,
@@ -235,6 +267,40 @@ const githubReadActionSchemas = [
     ...workspace,
     action: z.literal('tag_list'),
     limit: z.number().int().min(1).max(100).default(30)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('ref_get'),
+    ref: githubRef
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('commit_status_get'),
+    sha: githubRevision,
+    limit: z.number().int().min(1).max(100).default(100)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('check_runs_list'),
+    sha: githubRevision,
+    checkName: z.string().min(1).max(255).refine((val) => !val.includes('\0'), 'checkName cannot contain null bytes').optional(),
+    limit: z.number().int().min(1).max(100).default(100)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('workflow_runs_list'),
+    workflow: workflowRef.optional(),
+    headSha: gitObjectId.optional(),
+    branch: githubRevision.optional(),
+    event: workflowEvent.optional(),
+    status: workflowRunStatus.optional(),
+    limit: z.number().int().min(1).max(100).default(20)
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('workflow_run_view'),
+    runId: workflowRunId,
+    limit: z.number().int().min(1).max(100).default(100)
   })
 ] as const;
 
@@ -386,6 +452,30 @@ const githubActionUnion = z.discriminatedUnion('action', [
   }),
   z.object({
     ...workspace,
+    action: z.literal('commit_status_create'),
+    sha: gitObjectId,
+    state: commitStatusState,
+    context: commitStatusContext,
+    description: commitStatusDescription.optional(),
+    targetUrl: commitStatusTargetUrl.optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('workflow_dispatch'),
+    workflow: workflowRef,
+    ref: workflowDispatchRef,
+    inputs: workflowInputs.optional(),
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
+    action: z.literal('workflow_run_rerun_failed'),
+    runId: workflowRunId,
+    idempotencyKey: IdempotencyKeySchema.optional()
+  }),
+  z.object({
+    ...workspace,
     action: z.literal('issue_create'),
     title: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'title cannot contain null bytes'),
     body: z.string().max(65_536).refine((val) => !val.includes('\0'), 'body cannot contain null bytes').default(''),
@@ -492,14 +582,22 @@ const githubReadInput = z.object({
   since: isoInstant.optional(),
   until: isoInstant.optional(),
   base: githubRevision.optional(),
-  head: githubRevision.optional()
+  head: githubRevision.optional(),
+  ref: githubRef.optional(),
+  checkName: z.string().min(1).max(255).optional(),
+  workflow: workflowRef.optional(),
+  headSha: gitObjectId.optional(),
+  branch: githubRevision.optional(),
+  event: workflowEvent.optional(),
+  status: workflowRunStatus.optional(),
+  runId: workflowRunId.optional()
 });
 
 const githubActionInput = z.object({
   ...workspace,
   action: z.enum([...GITHUB_READ_ACTIONS, ...GITHUB_WRITE_ACTIONS]),
   limit: z.number().int().min(1).max(250).optional(),
-  state: z.enum(['open', 'closed', 'all']).optional(),
+  state: z.union([z.enum(['open', 'closed', 'all']), commitStatusState]).optional(),
   prNumber: z.number().int().positive().optional(),
   issueNumber: z.number().int().positive().optional(),
   commentId: z.number().int().positive().optional(),
@@ -524,7 +622,7 @@ const githubActionInput = z.object({
   path: githubHistoryPath.optional(),
   since: isoInstant.optional(),
   until: isoInstant.optional(),
-  event: z.enum(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']).optional(),
+  event: z.union([z.enum(['COMMENT', 'APPROVE', 'REQUEST_CHANGES']), workflowEvent]).optional(),
   line: z.number().int().positive().optional(),
   startLine: z.number().int().positive().optional(),
   side: reviewSide.optional(),
@@ -537,6 +635,16 @@ const githubActionInput = z.object({
   commitTitle: z.string().min(1).max(256).refine((val) => !val.includes('\0'), 'commitTitle cannot contain null bytes').optional(),
   commitBody: z.string().max(65_536).refine((val) => !val.includes('\0'), 'commitBody cannot contain null bytes').optional(),
   matchHeadCommit: gitObjectId.optional(),
+  ref: z.string().min(1).max(255).optional(),
+  checkName: z.string().min(1).max(255).optional(),
+  workflow: workflowRef.optional(),
+  headSha: gitObjectId.optional(),
+  branch: githubRevision.optional(),
+  status: workflowRunStatus.optional(),
+  runId: workflowRunId.optional(),
+  context: commitStatusContext.optional(),
+  targetUrl: commitStatusTargetUrl.optional(),
+  inputs: workflowInputs.optional(),
   idempotencyKey: IdempotencyKeySchema.optional()
 });
 
@@ -765,11 +873,20 @@ const schemas = {
     refspec: gitRefspec.optional(),
     forceWithLease: z.boolean().default(false),
     expectedRemoteOid: gitObjectId.optional(),
+    expectedAbsent: z.boolean().default(false).describe('With forceWithLease, create the destination branch only if it does not exist yet.'),
+    delete: z.boolean().default(false).describe('With forceWithLease and expectedRemoteOid, delete the refspec branch only if it still points at expectedRemoteOid.'),
     idempotencyKey: z.string().min(1).max(256).optional()
   }).superRefine((input, context) => {
-    if (input.forceWithLease && !input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid is required with forceWithLease' });
+    if (input.expectedRemoteOid && input.expectedAbsent) context.addIssue({ code: 'custom', path: ['expectedAbsent'], message: 'choose either expectedRemoteOid or expectedAbsent, not both' });
+    if (input.forceWithLease && !input.expectedRemoteOid && !input.expectedAbsent) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid or expectedAbsent is required with forceWithLease' });
     if (!input.forceWithLease && input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['expectedRemoteOid'], message: 'expectedRemoteOid is only valid with forceWithLease' });
-    if (input.forceWithLease && input.refspec && !input.refspec.includes(':')) context.addIssue({ code: 'custom', path: ['refspec'], message: 'an explicit destination branch is required with forceWithLease' });
+    if (!input.forceWithLease && input.expectedAbsent) context.addIssue({ code: 'custom', path: ['expectedAbsent'], message: 'expectedAbsent is only valid with forceWithLease' });
+    if (input.delete) {
+      if (!input.forceWithLease || !input.expectedRemoteOid) context.addIssue({ code: 'custom', path: ['delete'], message: 'delete requires forceWithLease and expectedRemoteOid' });
+      if (!input.refspec || input.refspec.includes(':') || input.refspec === 'HEAD') context.addIssue({ code: 'custom', path: ['refspec'], message: 'delete requires refspec to name only the branch to delete' });
+    } else if (input.forceWithLease && input.refspec && !input.refspec.includes(':')) {
+      context.addIssue({ code: 'custom', path: ['refspec'], message: 'an explicit destination branch is required with forceWithLease' });
+    }
   }),
   git_merge: z.object({ ...workspace, ref: gitArgument, fastForward: z.enum(['allow', 'only', 'never']).default('allow'), message: z.string().min(1).max(10_000).optional() }),
   git_rebase: z.object({ ...workspace, action: z.enum(['start', 'continue', 'abort']), upstream: gitArgument.optional() }).superRefine((input, context) => {
@@ -1055,8 +1172,8 @@ const titles: Record<RunnerOperation, string> = {
   knowledge_create: 'Create knowledge note or journal', knowledge_read: 'Read knowledge item', knowledge_update: 'Update knowledge item', knowledge_delete: 'Delete knowledge item', knowledge_list: 'List knowledge items', knowledge_search: 'Hybrid search knowledge items', knowledge_link: 'Link knowledge items', knowledge_unlink: 'Unlink knowledge items', knowledge_graph: 'Query knowledge neighborhood graph',
   deployments_list: 'List deployment targets', deployments_run: 'Run deployment target',
   artifacts_snapshot: 'Preserve workspace file snapshot', artifacts_list: 'List retained artifacts', artifacts_read: 'Read retained artifact chunk', artifacts_restore: 'Restore artifact to workspace', artifacts_delete: 'Delete retained artifact',
-  github_action: 'Create and manage GitHub issues, pull requests, native PR reviews, review threads, reviewers, and merges',
-  github_read: 'Read GitHub pull requests, review threads, issues, commits, comparisons, releases, and tags',
+  github_action: 'Create and manage GitHub issues, pull requests, native PR reviews, review threads, reviewers, merges, commit statuses, and Actions workflow runs',
+  github_read: 'Read GitHub pull requests, reviews, review threads, issues, commits, comparisons, releases, tags, refs, commit statuses, check runs, and Actions workflow runs',
   secrets_list: 'List available secrets',
   agent_spawn: 'Spawn coding agent',
   agent_status: 'Read coding agent status',
@@ -1122,7 +1239,7 @@ const descriptions: Record<RunnerOperation, string> = {
   git_identity_set: 'Configure default Git author name and email for workspace commits.',
   git_fetch: 'Fetch a constrained source ref from origin through the trusted repository broker.',
   git_pull: 'Integrate an origin branch using ff-only, merge, or rebase strategy.',
-  git_push: 'Push a constrained branch refspec to origin, with optional explicit force-with-lease.',
+  git_push: 'Push a constrained branch refspec to origin, with an optional atomic lease: forceWithLease with expectedRemoteOid (compare-and-swap), expectedAbsent (create only if the branch does not exist), or delete with expectedRemoteOid (delete only if the branch still points at it).',
   git_merge: 'Merge a Git ref with an explicit fast-forward policy and optional message.',
   git_rebase: 'Start, continue, or abort a local Git rebase with constrained ref arguments.',
   worktrees_list: 'List managed Git worktrees and their current branch or HEAD state.',
@@ -1157,8 +1274,8 @@ const descriptions: Record<RunnerOperation, string> = {
   artifacts_read: 'Read a bounded base64 byte chunk from a principal-owned retained artifact with hash and EOF verification.',
   artifacts_restore: 'Restore an unexpired principal-owned artifact into an active workspace file with overwrite protection.',
   artifacts_delete: 'Delete a principal-owned retained artifact snapshot before its retention expiry.',
-  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, and pullRequestMerge; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_list, compare, release_list, tag_list. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
-  github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list. Maps to operations.pullRequestList, pullRequestView, issueList, issueView, commitList, compare, releaseList, and tagList. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_action: 'Create GitHub issues (action: "issue_create"), list, view, comment on, update, and publish issues, manage labels, and list, view, create, update, comment on, review (native COMMENT/APPROVE/REQUEST_CHANGES reviews, inline file/line comments, review-thread reply/resolve/unresolve), assign reviewers, toggle draft/ready, merge, and auto-merge pull requests; create commit statuses on a SHA (commit_status_create: state, context, description, targetUrl); dispatch a workflow on a ref with inputs (workflow_dispatch) and re-run only the failed jobs of a run (workflow_run_rerun_failed), in the repository bound to an owner-authorized workspace. Maps to advertised capabilities like operations.issueCreate, issueComment, pullRequestCreate, pullRequestReview, pullRequestMerge, commitStatusCreate, workflowDispatch, and workflowRunRerun; workspace_capabilities.githubActions is the authoritative action list. Supported actions: issue_create, issue_list, issue_view, issue_comment, issue_comment_update, issue_update, issue_publish, label_create, issue_labels_add, issue_labels_remove, pr_list, pr_view, pr_reviews, pr_review_threads, pr_create, pr_update, pr_comment, pr_review, pr_review_comment, pr_review_reply, pr_review_thread_resolve, pr_review_thread_unresolve, pr_reviewers_request, pr_reviewers_remove, pr_ready, pr_convert_to_draft, pr_merge, pr_auto_merge_enable, pr_auto_merge_disable, commit_status_create, workflow_dispatch, workflow_run_rerun_failed, commit_list, compare, release_list, tag_list, ref_get, commit_status_get, check_runs_list, workflow_runs_list, workflow_run_view. Writes that can duplicate a side effect accept an idempotencyKey. Prefer github_read for read-only actions: this tool is annotated destructive, so clients may ask for approval on every call. Atomic ref creation, compare-and-swap, and delete-if-match go through git_push leases, not this tool. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
+  github_read: 'Read-only GitHub access for the repository bound to an owner-authorized workspace, without per-call approval prompts. Supported actions: pr_list, pr_view, pr_reviews (every review with its state and the latest state per reviewer, including CHANGES_REQUESTED), pr_review_threads (review threads with stable thread IDs), issue_list, issue_view, commit_list (history with sha, path, since, until filters), compare (base...head commits and changed files), release_list, tag_list, ref_get (current OID of refs/heads/... or refs/tags/..., or exists: false), commit_status_get (combined status and every status context for a SHA or ref), check_runs_list (check runs for a SHA or ref), workflow_runs_list (Actions runs filtered by workflow, headSha, branch, event, status), and workflow_run_view (one run with its jobs and conclusions). Maps to operations.pullRequestList, pullRequestView, pullRequestReviewList, issueList, issueView, commitList, compare, releaseList, tagList, refGet, commitStatusRead, checkRunList, and workflowRunRead. Uses broker-managed GitHub App credentials via an ephemeral helper; GitHub tokens are never exposed to the workspace.',
   secrets_list: 'List available global and environment secret names and descriptions without revealing secret values. Reference credentials by name in commands.',
   agent_spawn: 'Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container.',
   agent_status: 'Read the execution state, budgets, and terminal summary of one coding agent.',

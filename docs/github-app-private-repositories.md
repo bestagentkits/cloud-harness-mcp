@@ -52,6 +52,10 @@ choose the narrowest permission level:
 | Create, comment on, label, or close issues; comment on or update pull requests; create pull requests | **Issues: Read and write**, **Pull requests: Read and write**, and **Contents: Read-only** |
 | Submit reviews, inline comments, thread replies or resolution, reviewer requests, and draft/ready changes on pull requests | **Pull requests: Read and write** and **Contents: Read-only** |
 | Merge pull requests or enable auto-merge (`pr_merge`, `pr_auto_merge_enable`) | **Pull requests: Read and write** and **Contents: Read and write** |
+| Read or post commit statuses (`commit_status_get`, `commit_status_create`) | **Commit statuses: Read-only** or **Read and write**, and **Contents: Read-only** |
+| List check runs for a commit (`check_runs_list`) | **Checks: Read-only** and **Contents: Read-only** |
+| List or view workflow runs; dispatch a workflow or re-run failed jobs (`workflow_runs_list`, `workflow_run_view`, `workflow_dispatch`, `workflow_run_rerun_failed`) | **Actions: Read-only** or **Read and write**, and **Contents: Read-only** |
+| Use a branch as a create-only, compare-and-swap, or delete-if-match lock through `git_push` leases | **Contents: Read and write** |
 
 Every other repository, organization, and account permission can stay at **No
 access**. `Contents` is the permission for HTTP Git access and is also required

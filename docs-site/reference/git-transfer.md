@@ -29,7 +29,7 @@ Cloud Harness solves this with an **ephemeral sibling Git helper**:
 [ Sibling Git Helper ] ──(token over stdin)──► [ github.com:owner/repo.git ]
 ```
 
-1. The agent invokes `git_push(refspec, forceWithLease?, expectedRemoteOid?, idempotencyKey?)`.
+1. The agent invokes `git_push(refspec, forceWithLease?, expectedRemoteOid?, expectedAbsent?, delete?, idempotencyKey?)`.
 2. The Runner starts an ephemeral Alpine container with network access scoped only to `github.com`.
 3. The Runner streams an installation token over `stdin` into the helper's `git-credential` helper.
 4. The helper executes the push against the remote origin and immediately exits.
@@ -38,7 +38,18 @@ Cloud Harness solves this with an **ephemeral sibling Git helper**:
 ## Compare-and-Swap (CAS) & Concurrency Control
 
 - **`git_commit` HEAD Guard (`expectedHeadOid`):** Prevents commits on top of unexpected intermediate state. If the workspace HEAD has moved, the commit is rejected with `STALE_HEAD`.
-- **`git_push` Force-with-Lease (`expectedRemoteOid`):** Pushes with `forceWithLease: true` require `expectedRemoteOid`. If the remote branch has diverged, the push fails with `CONFLICT` to prevent silent overwrites.
+- **`git_push` Force-with-Lease (`expectedRemoteOid`):** Pushes with `forceWithLease: true` require `expectedRemoteOid` or `expectedAbsent`. If the remote branch has diverged, the push fails with `CONFLICT` to prevent silent overwrites.
+- **Atomic branch locks:** The lease is checked by GitHub's receiving server, so a branch works as a distributed lock:
+
+  | Operation | Input | Fails with `CONFLICT` when |
+  | --- | --- | --- |
+  | Create only | `refspec: "merge-lock-holder:merge-lock"`, `forceWithLease: true`, `expectedAbsent: true` | the branch already exists, even at the pushed commit |
+  | Compare-and-swap | `refspec: "merge-lock-holder:merge-lock"`, `forceWithLease: true`, `expectedRemoteOid: "<oid>"` | the branch no longer points at `<oid>` |
+  | Delete if match | `refspec: "merge-lock"`, `delete: true`, `forceWithLease: true`, `expectedRemoteOid: "<oid>"` | the branch no longer points at `<oid>` |
+
+  Push a commit unique to the holder (for example an empty commit naming the holder on a local `merge-lock-holder` branch), not a shared `HEAD`: an `idempotencyKey` retry after `UNKNOWN_REMOTE_STATE` recognises its own acquire by comparing the lock with the refspec source's commit, and a delete retry reports success whenever the branch is absent.
+
+- **Refspec policy:** the source is `HEAD` or a branch name; the destination is a branch name or `refs/heads/...`. Tags, notes, other `refs/` namespaces, `+` force refspecs, `..`, `@{`, option-like values, and `:`-prefixed delete refspecs are rejected; deletion is possible only through `delete` with a lease. A push GitHub refuses by policy (`[remote rejected]` or a `GH0xx` error: branch protection, rulesets, hooks) returns non-retryable `FORBIDDEN`, or `GITHUB_PERMISSION_MISSING` when it changes `.github/workflows` without the Workflows permission. Fast-forwarding a protected branch such as `dev` succeeds only when GitHub's rules allow it (required checks already passing on the commit, and no pull-request requirement unless the App may bypass it).
 
 ## Idempotency & Unknown-Outcome Recovery
 

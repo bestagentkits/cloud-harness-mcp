@@ -447,9 +447,11 @@ and
   The boundary is in the
   [security model](security-model.md#managed-toolbox-packages).
 - `github_read` is a read-only, non-destructive tool sharing the same broker
-  and handler as `github_action`, restricted to `pr_list`, `pr_view`,
-  `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, and
-  `tag_list`. It exists because MCP client approval prompts key off tool-level
+  and handler as `github_action`, restricted to the read actions (`pr_list`,
+  `pr_view`, `pr_review_threads`, `pr_reviews`, `issue_list`, `issue_view`,
+  `commit_list`, `compare`, `release_list`, `tag_list`, `ref_get`,
+  `commit_status_get`, `check_runs_list`, `workflow_runs_list`, and
+  `workflow_run_view`). It exists because MCP client approval prompts key off tool-level
   annotations: `github_action` is annotated destructive as a whole (there is no
   per-action server approval gate), so every action on it — including reads —
   could trigger an approval prompt. Prefer `github_read` for any read so
@@ -464,7 +466,9 @@ and
   `pr_reviewers_remove`, `pr_ready`, `pr_convert_to_draft`, `pr_merge`, `pr_auto_merge_enable`,
   `pr_auto_merge_disable`, `issue_list`, `issue_view`, `issue_create`, `issue_comment`,
   `issue_comment_update`, `label_create`, `issue_labels_add`, `issue_labels_remove`,
-  `issue_update`, `issue_publish`, `commit_list`, `compare`, `release_list`, `tag_list`) through an
+  `issue_update`, `issue_publish`, `commit_list`, `compare`, `release_list`, `tag_list`,
+  `commit_status_create`, `workflow_dispatch`, `workflow_run_rerun_failed`, and the
+  `github_read` actions) through an
   ephemeral helper container using short-lived tokens
   minted from the configured GitHub App. `pr_create` supports draft PRs and labels; `pr_update` supports
   updating title, body, base branch, and closing or reopening PRs; `pr_comment` adds comments with
@@ -481,11 +485,33 @@ and
   `pullRequestReviewThread`, `pullRequestReviewerManage`, `pullRequestReady`,
   `pullRequestMerge`, `pullRequestAutoMerge`) and the authoritative action split under
   `githubActions`. The schemas in `packages/contracts/src/tool-schemas.ts` own the inputs.
+  The merge-train actions let an automated routine coordinate without running CI itself:
+  `commit_status_create` posts a commit status (`state`, `context`, optional `description`
+  and https `targetUrl`) on a full commit SHA; `commit_status_get` returns the combined
+  status and `check_runs_list` the latest check runs for a SHA; `pr_reviews` returns
+  every review plus each reviewer's latest verdict (`latestByReviewer`,
+  `changesRequestedBy`, `approvedBy`; a later `COMMENTED` review does not clear an
+  earlier verdict); `ref_get` reads a fully qualified ref and reports `exists: false`
+  instead of failing when it is absent. `workflow_dispatch` triggers a
+  `workflow_dispatch` workflow on a branch or tag (not a commit SHA) with string
+  inputs that serialize to at most 65,535 bytes. GitHub returns no run ID
+  for a dispatch, so the result carries the ref's resolved `headSha` and a
+  `runLookup` for `workflow_runs_list` (filters `workflow`, `headSha`, `branch`,
+  `event`, `status`); the run can appear a few seconds after the dispatch, so poll
+  that lookup. `workflow_run_view` returns a run with its latest jobs and failed step
+  names, and `workflow_run_rerun_failed` re-runs only the failed jobs and reports
+  `rerunRequested: true` once GitHub accepts the request, even if the follow-up read
+  of the run fails. These need the
+  App's Commit statuses, Checks, and Actions permissions; GitHub enforces them when the
+  token is minted, and `workspace_capabilities` reports them as `commitStatusRead`,
+  `commitStatusCreate`, `checkRunList`, `workflowRunRead`, `workflowDispatch`,
+  `workflowRunRerun`, `pullRequestReviewList`, and `refGet`.
   `issue_publish` provides a single brokered request
   that posts a comment and adds or removes labels (with automatic missing-label creation).
   The runner mints the installation token with the permission scope the action
   family needs (`issues` for issue and label actions, `pull_requests` for
-  pull-request actions), then checks the permissions GitHub actually granted that
+  pull-request actions, `statuses`, `checks`, or `actions` for the merge-train
+  actions, `contents` for history and ref reads), then checks the permissions GitHub actually granted that
   token before executing. When the App installation cannot satisfy the action, it
   falls back to the requesting principal's configured credential: the
   runner-environment `GH_TOKEN`/`GITHUB_TOKEN` in `owner-bearer` mode (refused in
@@ -507,7 +533,7 @@ and
   `GITHUB_REVIEWER_UNASSIGNABLE`, `GITHUB_MERGE_BLOCKED`, `GITHUB_MERGE_CONFLICT`,
   `GITHUB_AUTO_MERGE_UNAVAILABLE`);
   a `403` from the helper is never retried.
-  Comment, label, publish, review, reviewer-request, and merge mutations support idempotency keys with a 24-hour
+  Comment, label, publish, review, reviewer-request, merge, commit-status, dispatch, and re-run mutations support idempotency keys with a 24-hour
   retention window; retries within 24 hours replay the cached result or reject
   payload mismatches with `CONFLICT`, after which the key expires and the request
   executes anew.
@@ -537,6 +563,40 @@ and
   remote OID before pushing, returning `alreadyFinalized: true` if the earlier push
   landed. Force-with-lease (`forceWithLease: true`) requires `expectedRemoteOid` and
   an explicit destination branch, rejecting diverged remote state with `CONFLICT`.
+  Leases are the atomic compare-and-swap of the Git push protocol, applied by the
+  receiving server, so a branch can serve as a distributed lock:
+  - create only: `forceWithLease: true, expectedAbsent: true` with
+    `refspec: "<source>:<branch>"` succeeds only while the branch does not exist,
+    including when it already holds the pushed commit;
+  - compare-and-swap: `forceWithLease: true, expectedRemoteOid: <oid>` updates the
+    branch only while it still points at `<oid>`;
+  - delete if match: `delete: true, forceWithLease: true, expectedRemoteOid: <oid>`
+    with `refspec: "<branch>"` deletes the branch only while it still points at
+    `<oid>`.
+
+  A lost lease returns `CONFLICT` (not retryable). With an `idempotencyKey`, a retry
+  after `UNKNOWN_REMOTE_STATE` probes the branch: a create whose branch now holds
+  the refspec source's commit, or a delete whose branch is absent (whoever deleted
+  it), returns `alreadyFinalized: true`; any value other than the lease expectation
+  returns `CONFLICT` with `currentRemoteOid`. Because that probe compares commits,
+  a branch used as a lock must hold a commit unique to its holder, such as an
+  empty commit naming the holder on a local branch pushed as
+  `<holder-branch>:<lock>`. GitHub's REST ref endpoints have no
+  compare-and-swap, which is why the lock uses the push protocol. Refspec policy:
+  the source is `HEAD` or a branch-like name and the destination is a branch name or
+  `refs/heads/...`; `+` force refspecs, tags, notes, other `refs/` namespaces,
+  option-like values, `..`, `@{`, and `:`-prefixed delete refspecs are rejected, so
+  deletion is possible only through `delete` with a lease. A push the remote accepts
+  but refuses by policy (`[remote rejected]` or a `GH0xx` error: branch protection,
+  a ruleset, a pre-receive hook) returns `FORBIDDEN`, or `GITHUB_PERMISSION_MISSING` when it
+  changes `.github/workflows` without the App's Workflows permission; neither is
+  retryable. A refspec source that is not a local branch, tag, or `HEAD` (for example
+  `origin/<branch>`) returns non-retryable `INVALID_INPUT`. Whether a fast-forward push to a protected branch such as `dev` is
+  allowed is decided by GitHub: required status checks must already pass on the
+  pushed commit, and a "require a pull request" rule or ruleset refuses direct pushes
+  unless the App is on its bypass list. A lease push to another collaborator's
+  same-repository branch is allowed with `contents: write` when that branch is not
+  protected against force pushes.
 - `tasks_run`, `tasks_status`, and `tasks_list` manage detached dependency-aware tasks.
   Task metadata, dependency DAGs, and status are durable in SQLite (`durable_tasks`),
   while task output streams are written to 0600 log files on disk. Surviving task
@@ -568,6 +628,13 @@ and
   - **`workspace_lease_renew`:** Explicitly extends the idle lease of an `ACTIVE` or
     `EXPIRED_RECOVERABLE` workspace (clamped to the maximum `hardExpiresAt` limit),
     reactivating the executor container if previously reaped.
+  - **Long routines:** renewal extends only the idle lease and never passes
+    `hardExpiresAt`, which `WORKSPACE_WALL_TTL_SECONDS` sets when the workspace opens
+    (shipped default 15 minutes). A routine that holds one workspace for about an hour
+    needs an instance wall TTL of at least `3600`, or should open a fresh workspace per
+    phase and keep its state in GitHub (statuses, refs, comments). Brokered
+    `github_action`/`github_read` calls do not read local history, so a
+    `fetchDepth: 1` checkout is enough for a coordination-only workspace.
   - **`availableActions` Metadata:** `workspace_status` and `workspace_list` responses
     expose an `availableActions` string array listing valid lifecycle operations
     (e.g., `['workspace_recover', 'workspace_lease_renew', 'workspace_close']` for
