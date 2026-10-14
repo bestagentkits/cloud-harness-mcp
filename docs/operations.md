@@ -180,7 +180,8 @@ PACKAGES_PROXY_HOSTS=registry.npmjs.org,pypi.org,files.pythonhosted.org
 ```
 
 Use `registry.npmjs.org` for npm, and `pypi.org` plus `files.pythonhosted.org`
-for uv. The value is a comma-separated list of lowercase DNS hostnames; IP
+for uv. A uv build also downloads its managed Python from GitHub releases, so
+add `github.com` and `release-assets.githubusercontent.com` as well. The value is a comma-separated list of lowercase DNS hostnames; IP
 literals, wildcards, ports, and other non-hostnames are logged on the proxy's
 stderr and ignored, and the proxy still starts. Apply a change by restarting
 the service, which recreates the stack through the installed Compose wrapper

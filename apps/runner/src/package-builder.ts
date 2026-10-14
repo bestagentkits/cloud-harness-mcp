@@ -56,6 +56,8 @@ export const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org/';
 export const DEFAULT_PYPI_INDEX = 'https://pypi.org/simple';
 /** Host uv downloads managed Python builds from when no mirror is configured. */
 const DEFAULT_PYTHON_DOWNLOAD_HOST = 'github.com';
+/** GitHub release downloads redirect here, so the default managed-Python download needs both hosts. */
+const GITHUB_RELEASE_ASSET_HOST = 'release-assets.githubusercontent.com';
 const PYPI_FILES_HOST = 'files.pythonhosted.org';
 const PROBE_TIMEOUT_MS = 10_000;
 const HELPER_TIMEOUT_MS = 60_000;
@@ -696,8 +698,8 @@ export class PackageBuilder implements PackageBuilderPort {
   registryHosts(ecosystem: BuildablePackageEcosystem): string[] {
     if (ecosystem === 'npm') return [new URL(this.npmRegistry).hostname];
     const index = new URL(this.pypiIndex).hostname;
-    const python = this.options.pythonMirror ? new URL(this.options.pythonMirror).hostname : DEFAULT_PYTHON_DOWNLOAD_HOST;
-    return [...new Set([index, ...(index === 'pypi.org' ? [PYPI_FILES_HOST] : []), python])];
+    const python = this.options.pythonMirror ? [new URL(this.options.pythonMirror).hostname] : [DEFAULT_PYTHON_DOWNLOAD_HOST, GITHUB_RELEASE_ASSET_HOST];
+    return [...new Set([index, ...(index === 'pypi.org' ? [PYPI_FILES_HOST] : []), ...python])];
   }
 
   async probeRegistries(ecosystem: BuildablePackageEcosystem): Promise<void> {

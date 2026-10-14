@@ -528,7 +528,7 @@ describe('PackageBuilder against a fake Docker CLI', () => {
 
   it('probes the registry hosts through the proxy, and skips the probe without a proxy', async () => {
     expect(builder().registryHosts('npm')).toEqual(['registry.npmjs.org']);
-    expect(builder().registryHosts('uv')).toEqual(['pypi.org', 'files.pythonhosted.org', 'github.com']);
+    expect(builder().registryHosts('uv')).toEqual(['pypi.org', 'files.pythonhosted.org', 'github.com', 'release-assets.githubusercontent.com']);
     expect(builder({ pypiIndex: 'http://fake-registry:4873/simple', pythonMirror: 'http://fake-registry:4873/python' }).registryHosts('uv')).toEqual(['fake-registry']);
     await expect(builder({ proxy: undefined }).probeRegistries('npm')).resolves.toBeUndefined();
   });
