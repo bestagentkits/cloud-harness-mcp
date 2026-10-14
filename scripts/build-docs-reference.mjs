@@ -29,8 +29,13 @@ const CATEGORIES = [
   },
   {
     title: 'Commands and Shells',
-    description: 'Tools for running isolated non-root commands, operations, and persistent interactive PTY shell sessions.',
+    description: 'Tools for running isolated non-root commands, operations, and persistent interactive pipe shell sessions.',
     names: ['exec_run', 'bash', 'shell_open', 'shell_io', 'shell_close', 'operation_status', 'operation_cancel', 'operation_wait']
+  },
+  {
+    title: 'Managed Packages',
+    description: 'Plan, approve, apply, inspect, roll back, and uninstall pinned CLI packages kept across workspaces and redeploys (off unless the operator enables managed packages).',
+    names: ['packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove']
   },
   {
     title: 'Sessions and Tasks',
@@ -345,7 +350,7 @@ const llmsTxt = `# Cloud Harness MCP Documentation
 - [Tools Reference](https://docs.harness.agentkit.best/reference/tools.md): Complete catalog of ${toolCount} MCP tools.
 - [Environment Variables](https://docs.harness.agentkit.best/reference/environment-variables.md): Configuration reference.
 - [Git Transfer Semantics](https://docs.harness.agentkit.best/reference/git-transfer.md): Origin-only push/fetch/pull helper.
-- [Sessions & Tasks](https://docs.harness.agentkit.best/reference/sessions-and-tasks.md): PTY shells, sessions, and task DAGs.
+- [Sessions & Tasks](https://docs.harness.agentkit.best/reference/sessions-and-tasks.md): pipe shells, sessions, and task DAGs.
 - [Limits & Bounds](https://docs.harness.agentkit.best/reference/limits.md): Buffer limits, pagination, and timeouts.
 - [Troubleshooting](https://docs.harness.agentkit.best/troubleshooting.md): Diagnosis and recovery playbooks.
 - [Agent Skill (cloudharness)](https://docs.harness.agentkit.best/agent-skill.md): Installing and using the companion skill.

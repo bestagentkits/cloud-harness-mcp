@@ -47,6 +47,9 @@ before calling them. Prefer one bounded command over persistent process state.
 {"target":"toolbox","command":"node --version && jq --version","timeoutMs":30000}
 -->
 
+For durable CLI tools across workspaces, see
+[managed packages](managed-packages.md).
+
 ## Ephemeral interactive shell
 
 <!-- cloudharness-tool:shell_open -->

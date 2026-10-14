@@ -162,6 +162,14 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     terminalMaxLifetimeMs: process.env.TERMINAL_MAX_LIFETIME_MS,
     packagesEnabled: process.env.PACKAGES_ENABLED,
     toolboxMaxConcurrent: process.env.TOOLBOX_MAX_CONCURRENT,
+    packagesRoot: process.env.PACKAGES_ROOT,
+    packagesEcosystems: process.env.PACKAGES_ECOSYSTEMS === undefined ? undefined : csv(process.env.PACKAGES_ECOSYSTEMS, ''),
+    packagesApprovalMode: process.env.PACKAGES_APPROVAL_MODE,
+    packagesNpmLifecycleScripts: process.env.PACKAGES_NPM_LIFECYCLE_SCRIPTS,
+    packagesMaxReleaseBytes: process.env.PACKAGES_MAX_RELEASE_BYTES,
+    packagesMaxOwnerBytes: process.env.PACKAGES_MAX_OWNER_BYTES,
+    packagesMaxBindings: process.env.PACKAGES_MAX_BINDINGS,
+    packagesBuildTimeoutMs: process.env.PACKAGES_BUILD_TIMEOUT_MS,
     minFreeBytes: process.env.MIN_FREE_BYTES,
     maxWorkspaceBytes: process.env.MAX_WORKSPACE_BYTES,
     maxActiveWorkspacesPerOwner: process.env.MAX_ACTIVE_WORKSPACES_PER_OWNER,
@@ -230,7 +238,19 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
       }
     } : undefined
   });
+  if (packageApprovalUnavailable(config)) {
+    console.warn('[runner-config] PACKAGES_APPROVAL_MODE=required has no Dashboard approver in owner-bearer mode: packages_apply is refused until PACKAGES_APPROVAL_MODE=none');
+  }
   return { config, ...(secretReadinessError ? { secretReadinessError } : {}) };
+}
+
+/**
+ * Package plans need a Dashboard approval by default, and the Dashboard exists only in
+ * `cloudflare-access` mode. The runner still starts in that combination (the toolbox is opt-in and
+ * refusing to boot would break unrelated features); apply is refused instead.
+ */
+export function packageApprovalUnavailable(config: Pick<RunnerConfig, 'authMode' | 'packagesEnabled' | 'packagesApprovalMode'>): boolean {
+  return config.packagesEnabled && config.packagesApprovalMode === 'required' && (config.authMode ?? 'owner-bearer') === 'owner-bearer';
 }
 
 export const loadRunnerConfig = (): RunnerConfig => loadRunnerConfigWithReadiness().config;

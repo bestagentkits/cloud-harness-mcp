@@ -263,3 +263,25 @@ If an agent started but followed the wrong files, read the `repository_context` 
 | `FORBIDDEN` | The operator has not enabled the toolbox. It is off unless `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). Use `target: "workspace"` meanwhile. |
 | `LIMIT_EXCEEDED` (HTTP `429`, retryable) | `TOOLBOX_MAX_CONCURRENT` toolbox commands are already running on this instance, sync and async together. Wait for one to finish, or cancel an async handle with `operation_cancel`, then retry. Operators can raise the limit. |
 | `UNAVAILABLE` (HTTP `503`, retryable) | Docker could not create or start the toolbox container, or the runner could not read its state afterwards; the command did not report an exit code. Retry. If it persists, operators should check that the executor image exists on the host and that the runner can reach Docker. |
+
+### 24. `packages_plan`, `packages_apply`, or `packages_remove` fails
+**Cause:** Managed packages are planned, approved for one exact plan digest, then built in an isolated builder. Each error points to one step:
+
+| Error | Meaning and fix |
+| :--- | :--- |
+| `FORBIDDEN`, "disabled on this instance" | Managed packages are off. Operators enable them with `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). |
+| `FORBIDDEN`, "has no Dashboard in owner-bearer mode" | `PACKAGES_APPROVAL_MODE=required` needs a Dashboard approver, and owner-bearer deployments have none. Operators either run with Cloudflare Access or set `PACKAGES_APPROVAL_MODE=none` deliberately. |
+| `PACKAGE_APPROVAL_REQUIRED` | The plan is waiting for approval. Approve it on the Dashboard **Packages** page, then call `packages_apply` again with the same `planId` and `planDigest`. |
+| `NOT_SUPPORTED` | `apt` and other system packages are not managed packages. Bake them into an executor image variant instead. |
+| `UNAVAILABLE` naming a registry host | The provisioning proxy refused that host. Operators add it to `PACKAGES_PROXY_HOSTS` in the provisioning-proxy environment and restart the proxy. |
+| `packages_plan` returns `state: "RESOLVING"` with a `resolutionId` | Not an error. Resolution took longer than the plan call waits (a cold uv toolchain or a large npm tree) and keeps running. Poll `packages_status` with that `resolutionId` and a `waitMs` until it is `READY` (the plan is included) or `FAILED` (with `errorCode` and `errorMessage`). |
+| `NOT_FOUND`, "plan resolution not found" | Resolutions are kept only in runner memory: the runner restarted, the resolution finished more than 30 minutes ago, or enough newer resolutions finished to replace it. Run `packages_plan` again. |
+| `UNAVAILABLE`, "the runner is shutting down" | The runner is restarting (for example during a deploy). Retry the plan or apply once it is back. |
+| `STALE_GENERATION` | The `planDigest` does not match the current plan, the executor image changed since the plan was made (for example after a redeploy), or the plan was approved by policy and the operator has since switched `PACKAGES_APPROVAL_MODE` to `required`. For `packages_rollback` or `packages_remove`, the binding changed since you read it. Review the plan or list packages again, then retry with current values. |
+| `EXPIRED` | Plans expire 30 minutes after they are made. Create a new plan. |
+| `CONFLICT`, "binaries collide" | Another binding in the same scope already provides a command with that name. Roll back, replace, or uninstall that binding (`packages_remove`) first. |
+| `CONFLICT`, "an apply for this package and scope is in progress" | `packages_remove` waits for no build. Let the apply finish (`packages_status`), then remove. |
+| `LIMIT_EXCEEDED`, "package build limit reached" (HTTP `429`, retryable) | Two builds are already running. Wait for one to finish, then retry. |
+| `LIMIT_EXCEEDED`, "owner package storage quota would be exceeded" or "maximum of … package bindings" | The owner's release bytes or binding count are used up. Uninstall packages you no longer need with `packages_remove` (or **Uninstall** on the Dashboard [Packages](/dashboard/packages) page), then plan again. |
+| `PACKAGE_BUILD_FAILED`, "only wheels are supported" | uv installs pre-built wheels only and never builds a source distribution, so planning runs no package code. The package or one of its dependencies has no wheel for the managed Python. Pin a version that ships wheels, or install it in a workspace with `uv` instead. |
+| `PACKAGE_BUILD_FAILED` / `PACKAGE_VERIFICATION_FAILED` | The install failed, or the built tree or a binary's launch check did not pass. `packages_status` shows the redacted output tail. Pin a different version or ask for lifecycle scripts only when the package truly needs them. |

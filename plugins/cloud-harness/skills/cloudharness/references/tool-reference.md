@@ -29,6 +29,13 @@ See [execution and tasks](execution-and-tasks.md).
 `tasks_status` `tasks_cancel` `tasks_graph` `operation_status`
 `operation_cancel` `operation_wait`
 
+## Managed toolbox packages
+
+See [managed packages](managed-packages.md).
+
+`packages_plan` `packages_apply` `packages_status` `packages_list`
+`packages_rollback` `packages_remove`
+
 ## Git and worktrees
 
 See [Git and worktrees](git-and-worktrees.md).

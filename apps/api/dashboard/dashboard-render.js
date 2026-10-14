@@ -727,7 +727,7 @@ export function grantIsActionable(grant, now = Date.now()) {
   const expiresAt = Date.parse(String(grant?.expiresAt ?? ''));
   return Number.isNaN(expiresAt) || expiresAt > now;
 }
-export function renderApprovals({ grants = [], now = Date.now() } = {}) {
+export function renderApprovals({ grants = [], plans = [], packages = { enabled: false }, now = Date.now() } = {}) {
   const rows = grants.length
     ? grants.map((grant) => {
       const id = String(grant.id ?? '');
@@ -740,8 +740,219 @@ export function renderApprovals({ grants = [], now = Date.now() } = {}) {
     : '<li class="empty"><h3>No approvals are waiting.</h3><p>Privilege requests appear here while they are pending. Decided and expired requests stay listed briefly, without actions.</p></li>';
   return `${renderResourcePage({
     note: '<div class="page-note"><strong>Privilege grants.</strong> Approving lets one command run in a workspace under your identity. Both decisions are audited.</div>',
-    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Privilege requests</h2><ul class="record-list approval-list">${rows}</ul></section>`
+    body: `<section aria-labelledby="approvals-heading"><h2 id="approvals-heading">Privilege requests</h2><ul class="record-list approval-list">${rows}</ul></section>${renderPackagePlans({ plans, enabled: packages.enabled === true, approvalMode: packages.approvalMode, now })}`
   })}`;
+}
+
+/*
+ * Managed toolbox packages. Plans are decided on the Approvals page; installed releases, applies,
+ * and rollback live on the Packages page. A plan approval is bound to its digest, so the digest the
+ * operator sees is the one the approve action posts.
+ */
+export const PACKAGES_DISABLED_COPY = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
+const PLAN_STATUS_LABELS = {
+  PENDING_APPROVAL: ['Pending', 'pending'], APPROVED: ['Approved, awaiting apply', 'approved'], REJECTED: ['Rejected', 'rejected'],
+  EXPIRED: ['Expired', 'expired'], CONSUMED: ['Applied', 'consumed']
+};
+const APPLY_STEPS = ['QUEUED', 'BUILDING', 'VERIFYING', 'PUBLISHING'];
+const APPLY_STEP_LABELS = { QUEUED: 'Queued', BUILDING: 'Building', VERIFYING: 'Verifying', PUBLISHING: 'Publishing', SUCCEEDED: 'Succeeded', FAILED: 'Failed' };
+const ECOSYSTEM_LABELS = { npm: 'npm', uv: 'Python (uv)' };
+
+/** Binary units, because quotas are configured in powers of two. */
+export function formatPackageBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let amount = bytes;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+  return `${unit === 0 ? amount : amount.toFixed(amount >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+/** The leading and trailing characters identify a digest at a glance; the full value stays one focus away. */
+export function shortDigest(value) {
+  const digest = String(value ?? '');
+  return digest.length > 20 ? `${digest.slice(0, 12)}…${digest.slice(-6)}` : digest;
+}
+
+function digestMarkup(value, label) {
+  const digest = String(value ?? '');
+  if (!digest) return 'Not reported';
+  return `<code class="digest" tabindex="0" title="${escape(`${label}: ${digest}`)}"><span class="digest-short" aria-hidden="true">${escape(shortDigest(digest))}</span><span class="digest-full">${escape(digest)}</span></code>`;
+}
+
+const scopeLabel = (scope, workspaceId) => scope === 'workspace'
+  ? `Workspace <span class="mono wrap">${escape(String(workspaceId ?? 'not reported'))}</span>`
+  : 'Owner (every workspace)';
+const workspaceCount = (ids) => {
+  const count = Array.isArray(ids) ? ids.length : 0;
+  return `${count} ${count === 1 ? 'workspace' : 'workspaces'}`;
+};
+const runtimeText = (runtime) => {
+  if (!runtime || typeof runtime !== 'object') return 'Not reported';
+  const parts = [['Node', runtime.node], ['npm', runtime.npm], ['Python', runtime.python], ['uv', runtime.uv]]
+    .filter(([, version]) => typeof version === 'string' && version)
+    .map(([name, version]) => `${name} ${version}`);
+  return parts.length ? parts.join(' · ') : 'Not reported';
+};
+const listText = (values, empty) => Array.isArray(values) && values.length ? values.map((value) => escape(String(value))).join(', ') : empty;
+
+/** Only an unexpired plan still waiting for a decision offers Approve and counts toward the badge. */
+export function planIsActionable(plan, now = Date.now()) {
+  if (String(plan?.status ?? '') !== 'PENDING_APPROVAL') return false;
+  const expiresAt = Date.parse(String(plan?.expiresAt ?? ''));
+  return Number.isNaN(expiresAt) || expiresAt > now;
+}
+
+/** An approved plan that is not yet applied can still be withdrawn. */
+const planIsWithdrawable = (plan, now) => String(plan?.status ?? '') === 'APPROVED'
+  && (Number.isNaN(Date.parse(String(plan?.expiresAt ?? ''))) || Date.parse(String(plan.expiresAt)) > now);
+
+function planRisks(plan) {
+  const risks = [];
+  if (plan.lifecycleScripts) risks.push('Runs npm lifecycle scripts while building. Install scripts execute package code in the builder.');
+  const conflicts = Array.isArray(plan.conflicts) ? plan.conflicts : [];
+  if (conflicts.length) {
+    risks.push(`Binary name collisions: ${conflicts.map((conflict) => `${conflict.binary} (already provided by ${conflict.name}${conflict.scope === 'workspace' ? ' in a workspace' : ''})`).join(', ')}. The apply is refused until they are resolved.`);
+  }
+  if (plan.stale) risks.push('The package changed after this plan was made. Approval will be refused; create a new plan.');
+  return risks;
+}
+
+function renderPlanRow(plan, now) {
+  const planId = String(plan.planId ?? '');
+  const actionable = planIsActionable(plan, now);
+  const status = String(plan.status ?? '');
+  const expiredOpen = (status === 'PENDING_APPROVAL' || status === 'APPROVED') && !actionable && !planIsWithdrawable(plan, now);
+  const [label, tone] = expiredOpen ? PLAN_STATUS_LABELS.EXPIRED : PLAN_STATUS_LABELS[status] ?? ['Unknown', 'unknown'];
+  const name = String(plan.name ?? 'package');
+  const version = String(plan.version ?? '');
+  const current = plan.currentRelease;
+  const compare = current
+    ? `<p class="package-compare"><span>Current <strong>${escape(String(current.version ?? 'unknown'))}</strong></span><span aria-hidden="true">→</span><span>Planned <strong>${escape(version)}</strong></span></p>`
+    : `<p class="package-compare"><span>New install</span><span aria-hidden="true">→</span><span>Planned <strong>${escape(version)}</strong></span></p>`;
+  const risks = planRisks(plan);
+  const riskMarkup = risks.length ? `<ul class="package-risks" aria-label="Risks for ${escape(name)}">${risks.map((risk) => `<li>${escape(risk)}</li>`).join('')}</ul>` : '';
+  const source = plan.source && typeof plan.source === 'object' ? plan.source : {};
+  const actionData = `data-plan-id="${escape(planId)}" data-plan-digest="${escape(String(plan.planDigest ?? ''))}" data-plan-name="${escape(`${name}@${version}`)}"`;
+  const actions = actionable
+    ? `<div class="row-actions"><button class="accent-btn approve-plan" type="button" ${actionData}>Approve</button><button class="danger reject-plan" type="button" ${actionData}>Reject</button></div>`
+    : planIsWithdrawable(plan, now) ? `<div class="row-actions"><button class="danger reject-plan" type="button" ${actionData}>Withdraw approval</button></div>` : '';
+  return `<li class="panel approval-row package-plan"><div class="record-heading"><div><h3>${escape(name)}<span class="package-version">@${escape(version)}</span></h3><p>${escape(ECOSYSTEM_LABELS[plan.ecosystem] ?? String(plan.ecosystem ?? ''))} · ${scopeLabel(plan.scope, plan.workspaceId)}</p></div><span class="status ${tone}">${escape(label)}</span></div>${compare}${riskMarkup}<dl class="facts"><dt>Plan digest</dt><dd>${digestMarkup(plan.planDigest, 'Plan digest')}</dd><dt>Requested</dt><dd class="mono wrap">${escape(String(plan.requestedSpec ?? version))}</dd><dt>Source</dt><dd class="mono wrap">${escape(String(source.resolved ?? source.registry ?? 'Not reported'))}</dd><dt>Integrity</dt><dd>${plan.integrity ? digestMarkup(plan.integrity, 'Integrity') : 'Not reported by the registry'}</dd><dt>Dependencies</dt><dd>${escape(String(plan.dependencyCount ?? 'Not reported'))}</dd><dt>Estimated size</dt><dd>${escape(formatPackageBytes(plan.sizeEstimateBytes))}</dd><dt>Binaries</dt><dd class="mono wrap">${listText(plan.binaries, 'None')}</dd><dt>Lifecycle scripts</dt><dd>${plan.lifecycleScripts ? 'Allowed' : 'Not run'}</dd><dt>Affected</dt><dd>${escape(workspaceCount(plan.affectedWorkspaces))}</dd><dt>Runtime</dt><dd>${escape(runtimeText(plan.runtime))}</dd><dt>Created</dt><dd>${plan.createdAt ? time(plan.createdAt) : 'Not reported'}</dd><dt>Expires</dt><dd>${plan.expiresAt ? time(plan.expiresAt) : 'Not reported'}</dd>${plan.decidedBy ? `<dt>Decided by</dt><dd>${plan.decidedBy === 'policy' ? 'Policy (approval not required)' : 'Dashboard'}</dd>` : ''}</dl>${actions}</li>`;
+}
+
+/** The "Package plans" section of the Approvals page. */
+export function renderPackagePlans({ plans = [], enabled = true, approvalMode = 'required', now = Date.now() } = {}) {
+  if (!enabled) {
+    return `<section aria-labelledby="package-plans-heading"><h2 id="package-plans-heading">Package plans</h2><p class="empty-note">${escape(PACKAGES_DISABLED_COPY)}</p></section>`;
+  }
+  const modeNote = approvalMode === 'not_required'
+    ? '<div class="page-note"><strong>Approval not required.</strong> PACKAGES_APPROVAL_MODE=none, so plans are approved by policy and listed here for the record.</div>'
+    : approvalMode === 'unavailable'
+      ? '<div class="page-note"><strong>Approval unavailable.</strong> This runner cannot record Dashboard approvals, so applies are refused until PACKAGES_APPROVAL_MODE=none.</div>'
+      : '<div class="page-note"><strong>Package plans.</strong> Approving lets an agent apply exactly the plan whose digest is shown. A changed plan is refused. Both decisions are audited.</div>';
+  const rows = plans.length
+    ? plans.map((plan) => renderPlanRow(plan, now)).join('')
+    : '<li class="empty"><h3>No package plans are waiting.</h3><p>An agent creates a plan with packages_plan. It appears here until it is decided, applied, or expires.</p></li>';
+  return `<section aria-labelledby="package-plans-heading"><h2 id="package-plans-heading">Package plans</h2>${modeNote}<ul class="record-list approval-list">${rows}</ul></section>`;
+}
+
+function releaseHealth(release) {
+  if (!release) return ['Missing release', 'failed'];
+  if (release.status === 'MISSING') return ['Missing on disk', 'failed'];
+  if (release.stale) return ['Stale image', 'stale'];
+  if (release.status === 'VERIFIED') return ['Verified', 'healthy'];
+  return [String(release.status ?? 'Unknown'), 'unknown'];
+}
+
+function applySteps(state) {
+  const failed = state === 'FAILED';
+  const reached = state === 'SUCCEEDED' ? APPLY_STEPS.length : APPLY_STEPS.indexOf(state);
+  return `<ol class="package-steps" aria-label="Apply progress">${APPLY_STEPS.map((step, index) => {
+    const done = index < reached;
+    const currentStep = index === reached && !failed;
+    return `<li class="${done ? 'done' : currentStep ? 'current' : ''}"${currentStep ? ' aria-current="step"' : ''}>${escape(APPLY_STEP_LABELS[step])}</li>`;
+  }).join('')}</ol>`;
+}
+
+function applyRow(apply, live) {
+  const state = String(apply.state ?? '');
+  const tone = state === 'SUCCEEDED' ? 'succeeded' : state === 'FAILED' ? 'failed' : 'running';
+  const title = apply.name ? `${apply.name}@${apply.version ?? ''}` : String(apply.applyId ?? 'Apply');
+  const error = state === 'FAILED' ? `<p class="status-error">${escape(String(apply.errorCode ?? 'FAILED'))}${apply.errorMessage ? `: ${escape(String(apply.errorMessage))}` : ''}</p>` : '';
+  return `<li class="panel package-apply"><div class="record-heading"><div><h3>${escape(title)}</h3><p class="mono wrap">${escape(String(apply.applyId ?? ''))}</p></div><span class="status ${tone}">${escape(APPLY_STEP_LABELS[state] ?? state)}</span></div>${live ? applySteps(state) : ''}${error}<dl class="facts"><dt>Started</dt><dd>${apply.createdAt ? time(apply.createdAt) : 'Not reported'}</dd><dt>${apply.finishedAt ? 'Finished' : 'Updated'}</dt><dd>${time(apply.finishedAt ?? apply.updatedAt ?? apply.createdAt)}</dd></dl></li>`;
+}
+
+function historyTable(binding) {
+  const history = Array.isArray(binding.history) ? binding.history : [];
+  if (!history.length) return '<p class="empty-note">No history yet.</p>';
+  const currentId = binding.release?.releaseId;
+  const rows = history.map((entry) => {
+    const isCurrent = entry.releaseId === currentId;
+    const action = isCurrent
+      ? '<span class="status active">Current</span>'
+      : entry.available
+        ? `<button class="danger rollback-package" type="button" data-binding-id="${escape(String(binding.bindingId ?? ''))}" data-release-id="${escape(String(entry.releaseId ?? ''))}" data-generation="${escape(String(binding.generation ?? ''))}" data-package="${escape(String(binding.name ?? ''))}" data-from-version="${escape(String(binding.release?.version ?? 'unknown'))}" data-to-version="${escape(String(entry.version ?? 'unknown'))}" data-affected="${escape(String(Array.isArray(binding.affectedWorkspaces) ? binding.affectedWorkspaces.length : 0))}">Roll back to ${escape(String(entry.version ?? 'this release'))}</button>`
+        : '<span class="status">Unavailable</span>';
+    return `<tr><th scope="row">${escape(String(entry.version ?? 'Unknown'))}<small class="mono wrap">${escape(String(entry.releaseId ?? ''))}</small></th><td>${escape(String(entry.generation ?? ''))}</td><td>${entry.reason === 'rollback' ? 'Rollback' : 'Apply'} · ${entry.actor === 'dashboard' ? 'Dashboard' : 'Agent'}</td><td>${entry.createdAt ? time(entry.createdAt) : 'Not reported'}</td><td>${action}</td></tr>`;
+  }).join('');
+  return `<div class="package-table package-history"><table><caption>History of ${escape(String(binding.name ?? 'this package'))}</caption><thead><tr><th scope="col">Version</th><th scope="col">Generation</th><th scope="col">Change</th><th scope="col">When</th><th scope="col">Action</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function bindingRow(binding, releases) {
+  const release = binding.release ?? null;
+  const detail = releases.find((candidate) => candidate.releaseId === release?.releaseId) ?? release ?? {};
+  const [health, tone] = releaseHealth(release);
+  const risks = [];
+  if (detail.lifecycleScripts) risks.push('Built with npm lifecycle scripts enabled.');
+  if (release?.status === 'MISSING') risks.push('The release directory is missing. New workspaces start without this tool until it is re-applied or rolled back.');
+  if (release?.stale) risks.push('Built against an older executor image. Re-plan and apply to rebuild it.');
+  const riskMarkup = risks.length ? `<ul class="package-risks" aria-label="Risks for ${escape(String(binding.name ?? ''))}">${risks.map((risk) => `<li>${escape(risk)}</li>`).join('')}</ul>` : '';
+  return `<li class="panel package-binding"><div class="record-heading"><div><h3>${escape(String(binding.name ?? 'package'))}<span class="package-version">@${escape(String(release?.version ?? 'unknown'))}</span></h3><p>${escape(ECOSYSTEM_LABELS[binding.ecosystem] ?? String(binding.ecosystem ?? ''))} · ${scopeLabel(binding.scope, binding.workspaceId)}</p></div><span class="status ${tone}">${escape(health)}</span></div>${riskMarkup}<dl class="facts"><dt>Active release</dt><dd class="mono wrap">${escape(String(release?.releaseId ?? 'None'))}</dd><dt>Generation</dt><dd>${escape(String(binding.generation ?? ''))}</dd><dt>Disk usage</dt><dd>${escape(formatPackageBytes(detail.sizeBytes))}${Number.isFinite(detail.fileCount) && detail.fileCount > 0 ? ` · ${escape(String(detail.fileCount))} files` : ''}</dd><dt>Dependencies</dt><dd>${escape(String(detail.dependencyCount ?? 'Not reported'))}</dd><dt>Binaries</dt><dd class="mono wrap">${listText(release?.binaries, 'None')}</dd><dt>Source</dt><dd class="mono wrap">${escape(String(detail.source?.resolved ?? detail.source?.registry ?? 'Not reported'))}</dd><dt>Tree digest</dt><dd>${digestMarkup(release?.treeDigest, 'Tree digest')}</dd><dt>Runtime</dt><dd>${escape(runtimeText(detail.runtime))}</dd><dt>Affected</dt><dd>${escape(workspaceCount(binding.affectedWorkspaces))}</dd><dt>Installed</dt><dd>${release?.createdAt ? time(release.createdAt) : 'Not reported'}</dd></dl><div class="row-actions"><button class="danger remove-package" type="button" data-binding-id="${escape(String(binding.bindingId ?? ''))}" data-generation="${escape(String(binding.generation ?? ''))}" data-package="${escape(String(binding.name ?? ''))}" data-scope="${escape(String(binding.scope ?? ''))}" data-affected="${escape(String(Array.isArray(binding.affectedWorkspaces) ? binding.affectedWorkspaces.length : 0))}">Uninstall ${escape(String(binding.name ?? 'package'))}</button></div>${historyTable(binding)}</li>`;
+}
+
+export function renderPackages({ overview = {}, now = Date.now() } = {}) {
+  if (!overview.enabled) {
+    return renderResourcePage({
+      note: `<div class="page-note"><strong>Managed packages are off.</strong> Operators enable them with PACKAGES_ENABLED=true.</div>`,
+      body: '<ul class="record-list"><li class="empty"><h3>No managed packages.</h3><p>When the feature is on, agents plan installs with packages_plan and you approve them on the Approvals page.</p></li></ul>'
+    });
+  }
+  const bindings = Array.isArray(overview.bindings) ? overview.bindings : [];
+  const releases = Array.isArray(overview.releases) ? overview.releases : [];
+  const inFlight = Array.isArray(overview.inFlight) ? overview.inFlight : [];
+  const recent = Array.isArray(overview.recentApplies) ? overview.recentApplies : [];
+  const pending = (Array.isArray(overview.pendingPlans) ? overview.pendingPlans : []).filter((plan) => planIsActionable(plan, now));
+  const quotas = overview.quotas ?? {};
+  const usage = overview.usage ?? {};
+  const approval = overview.approvalMode === 'not_required' ? 'Not required (policy)' : overview.approvalMode === 'unavailable' ? 'Unavailable' : 'Required';
+  const tiles = [
+    ['Installed', `${Number(usage.bindings ?? bindings.length)} / ${escape(String(quotas.maxBindings ?? '?'))}`, 'Bindings in use'],
+    ['Disk used', escape(formatPackageBytes(usage.ownerBytes)), `of ${escape(formatPackageBytes(quotas.maxOwnerBytes))} quota`],
+    ['Applies running', String(inFlight.length), 'Builds in progress'],
+    ['Plans waiting', String(pending.length), pending.length ? 'Review on Approvals' : 'Nothing to decide', pending.length ? '/dashboard/approvals' : '']
+  ].map(([label, value, note, href]) => {
+    const body = `<span class="metric-label">${escape(label)}</span><span class="metric-value">${value}</span><span class="metric-note">${note}</span>`;
+    return `<li class="metric">${href ? `<a href="${href}">${body}</a>` : body}</li>`;
+  }).join('');
+  const note = `<div class="page-note"><strong>Managed packages.</strong> Approval: ${escape(approval)}. Ecosystems: ${escape((overview.ecosystems ?? []).join(', ') || 'none')}. npm lifecycle scripts: ${overview.lifecycleScripts === 'allow' ? 'allowed on request' : 'denied'}. Per-release limit ${escape(formatPackageBytes(quotas.maxReleaseBytes))}. A change reaches a running workspace only when it is recreated.</div>`;
+  const inFlightSection = `<section aria-labelledby="package-applies-heading"><h2 id="package-applies-heading">Applies</h2><ul class="record-list">${inFlight.length || recent.length
+    ? `${inFlight.map((apply) => applyRow(apply, true)).join('')}${recent.map((apply) => applyRow(apply, false)).join('')}`
+    : '<li class="empty"><h3>No applies yet.</h3><p>An approved plan is applied by an agent with packages_apply; its progress appears here.</p></li>'}</ul></section>`;
+  const installed = `<section aria-labelledby="package-bindings-heading"><h2 id="package-bindings-heading">Installed packages</h2><ul class="record-list">${bindings.length
+    ? bindings.map((binding) => bindingRow(binding, releases)).join('')
+    : '<li class="empty"><h3>No packages installed.</h3><p>Installed releases, their health, and their rollback history appear here.</p></li>'}</ul></section>`;
+  const releaseRows = releases.map((release) => {
+    const [health, tone] = releaseHealth(release);
+    return `<tr><th scope="row">${escape(String(release.name ?? ''))}<small class="mono wrap">${escape(String(release.releaseId ?? ''))}</small></th><td>${escape(String(release.version ?? ''))}</td><td>${escape(formatPackageBytes(release.sizeBytes))}</td><td><span class="status ${tone}">${escape(health)}</span></td><td>${release.createdAt ? time(release.createdAt) : 'Not reported'}</td></tr>`;
+  }).join('');
+  const releaseSection = releases.length
+    ? `<section aria-labelledby="package-releases-heading"><h2 id="package-releases-heading">Retained releases</h2><div class="package-table"><table><caption class="sr-only">Retained package releases</caption><thead><tr><th scope="col">Package</th><th scope="col">Version</th><th scope="col">Size</th><th scope="col">Health</th><th scope="col">Built</th></tr></thead><tbody>${releaseRows}</tbody></table></div></section>`
+    : '';
+  return renderResourcePage({
+    note,
+    body: `<div class="packages-page"><ul class="metric-grid">${tiles}</ul>${inFlightSection}${installed}${releaseSection}</div>`
+  });
 }
 
 /**

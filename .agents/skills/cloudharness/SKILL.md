@@ -20,6 +20,7 @@ network isolation.
 | Open, recover, inspect, or close a workspace; interpret results/errors | [Workspace lifecycle and results](references/workspace-lifecycle-and-results.md) |
 | List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |
 | Run a command, interactive shell, coding session, or dependency task | [Execution and tasks](references/execution-and-tasks.md) |
+| Install, update, roll back, or uninstall a durable CLI tool for every workspace | [Managed packages](references/managed-packages.md) |
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
@@ -178,6 +179,7 @@ Details: [Repository automation](references/repository-automation.md#skills).
 | Multi-file scaffolding | `files_write_batch` | multiple `files_write` or shell scripts |
 | Single command | `exec_run` | persistent shell/session |
 | Command with no checkout or network | `bash` with `target: "toolbox"` | `exec_run` in a workspace |
+| CLI tool kept across workspaces and redeploys | `packages_plan` then `packages_apply` (operator approves) | `npm install -g` in one workspace |
 | Long-running build / test suite | `tasks_run` | long synchronous command |
 | Branch isolation in workspace | `worktrees_*` | manual Git branching |
 | Stage, commit, preflight, push | `workspace_finalize` | sequence of manual `git_*` calls |

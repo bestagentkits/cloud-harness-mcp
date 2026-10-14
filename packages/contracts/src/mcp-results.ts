@@ -32,7 +32,11 @@ export const ErrorCodeSchema = z.enum([
   'DEPENDENCY_EGRESS_UNAVAILABLE',
   'HOOK_FAILED',
   'EXECUTION_FAILED',
-  'AUTHORIZATION_REQUIRED'
+  'AUTHORIZATION_REQUIRED',
+  'NOT_SUPPORTED',
+  'PACKAGE_APPROVAL_REQUIRED',
+  'PACKAGE_BUILD_FAILED',
+  'PACKAGE_VERIFICATION_FAILED'
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export const ToolResultSchema = z.object({

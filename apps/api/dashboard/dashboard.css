@@ -447,6 +447,29 @@ li.empty { padding: var(--space-6); }
 #alert { margin-block-start: var(--space-4); animation: rise-in var(--motion-state) var(--ease-out); }
 .status-error { color: var(--danger); }
 
+/* ───────────────────────── Managed packages ───────────────────────── */
+.packages-page { display: grid; gap: var(--space-6); }
+.packages-page section { display: grid; gap: var(--space-3); min-width: 0; }
+.packages-page h2, #package-plans-heading { margin: 0; }
+#package-plans-heading { margin-block-start: var(--space-6); }
+section[aria-labelledby="package-plans-heading"] { display: grid; gap: var(--space-3); }
+.package-version { color: var(--ink-muted); font-weight: 500; }
+.package-compare { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); margin: var(--space-3) 0; font-size: var(--text-13); color: var(--ink-muted); }
+.package-compare strong { color: var(--ink); font-family: var(--font-mono); }
+.package-risks { margin: var(--space-3) 0; padding: var(--space-3) var(--space-4) var(--space-3) var(--space-8); background: var(--warning-soft); border: 1px solid var(--warning-line); border-radius: var(--radius-md); color: var(--ink); font-size: var(--text-13); display: grid; gap: var(--space-1); }
+.package-steps { list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-3) 0; padding: 0; font-size: var(--text-12); }
+.package-steps li { padding: var(--space-1) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-pill); color: var(--ink-faint); background: var(--surface-raised); }
+.package-steps li.done { color: var(--success); border-color: var(--success-line); background: var(--success-soft); }
+.package-steps li.current { color: var(--info); border-color: var(--info-line); background: var(--info-soft); font-weight: 600; }
+.package-table { margin-block-start: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); overflow-x: auto; background: var(--surface); }
+.package-table table { min-width: 36rem; }
+.package-table caption { padding: var(--space-2) var(--space-4); text-align: start; font-size: var(--text-12); color: var(--ink-muted); }
+.package-table td .danger { white-space: nowrap; }
+/* The short form is what the eye reads; the full digest stays in the accessibility tree and replaces it on focus. */
+.digest { position: relative; cursor: help; overflow-wrap: anywhere; }
+.digest:not(:focus) .digest-full { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.digest:focus .digest-short { display: none; }
+
 /* ───────────────────────── Buttons, secondary ───────────────────────── */
 /* Explicit primary control. The positional `button[type="submit"]:not(.danger)`
    rule stays the default primary for form submits; this adds the same treatment
@@ -772,6 +795,7 @@ td details.row-edit pre { max-height: 12rem; max-width: 36rem; font-size: var(--
 .approval-row { display: grid; gap: var(--space-4); border-inline-start: .1875rem solid var(--warning-line); }
 .approval-row h3 { font-family: var(--font-mono); font-size: var(--text-13); font-weight: 600; overflow-wrap: anywhere; }
 .approval-row .row-actions { justify-content: flex-start; padding-block-start: var(--space-3); border-block-start: 1px solid var(--line); }
+.package-binding > .row-actions { justify-content: flex-start; margin-block: var(--space-3); }
 .deploy-target { display: grid; gap: var(--space-4); }
 .session-row { display: grid; gap: var(--space-3); }
 .session-row .row-actions { justify-content: flex-start; }

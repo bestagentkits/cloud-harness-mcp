@@ -19,7 +19,8 @@ export const EXECUTOR_HARDENING_ARGS: readonly string[] = Object.freeze([
 /**
  * The executor's `--env PATH`, minus the checkout-local `node_modules/.bin` the toolbox does not have. The
  * command runs in a login shell (`bash -lc`, as `exec_run` does), so the image's `/etc/profile.d/harness.sh`
- * then puts `/opt/harness/bin` and the user-tools directories first, exactly as in a workspace.
+ * then puts `/opt/harness/bin`, the user-tools directories, and the managed release directories first, exactly
+ * as in a workspace.
  */
 export const TOOLBOX_PATH = '/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
@@ -43,6 +44,11 @@ export type ToolboxRunSpec = {
   instanceId: string;
   command: string;
   mounts?: readonly ToolboxMount[];
+  /**
+   * Managed release `bin` directories to put on PATH. Each one must be `<target>/bin` of a mount in
+   * `mounts`, so PATH can only ever name a directory from a read-only release the caller supplied.
+   */
+  binDirs?: readonly string[];
 };
 
 export type ToolboxRunResult = {
@@ -68,10 +74,49 @@ function hasUnsafeMountCharacter(path: string): boolean {
   return false;
 }
 
+/**
+ * True when `path` can be used as one side of a `--mount` bind: absolute, free of `..`, and free of the
+ * comma, quote, and control characters that could inject options into the comma-separated `--mount` value.
+ */
+export function isSafeBindPath(path: string): boolean {
+  return isAbsolute(path) && !hasUnsafeMountCharacter(path) && !path.split('/').includes('..');
+}
+
+/** First image PATH entry managed release `bin` directories precede; everything before it still wins. */
+const MANAGED_BINS_BEFORE = '/usr/local/sbin';
+
+/**
+ * Inserts managed release `bin` directories into `basePath` right before `/usr/local/sbin`, so they come
+ * after the workspace-local and user-tool directories (local installs still win) and before the image's
+ * own tool directories (managed releases win over image tools). An empty list returns `basePath` unchanged.
+ */
+export function withManagedBins(basePath: string, binDirs: readonly string[]): string {
+  if (binDirs.length === 0) return basePath;
+  for (const directory of binDirs) {
+    // A colon would split one entry into two PATH entries; the other checks keep it a plain absolute path.
+    if (!isSafeBindPath(directory) || directory.includes(':')) {
+      throw new HarnessError('INTERNAL_ERROR', 'managed bin directory is invalid', 500, false);
+    }
+  }
+  const entries = basePath.split(':');
+  const index = entries.indexOf(MANAGED_BINS_BEFORE);
+  if (index < 0) throw new HarnessError('INTERNAL_ERROR', `PATH has no ${MANAGED_BINS_BEFORE} entry to anchor managed bin directories`, 500, false);
+  return [...entries.slice(0, index), ...binDirs, ...entries.slice(index)].join(':');
+}
+
+/**
+ * A login shell (`bash -lc`, used by the toolbox and `exec_run`) runs Debian's /etc/profile, which replaces
+ * PATH for a non-root user. The image's /etc/profile.d/harness.sh puts these managed release `bin` directories
+ * back, after the user-tool directories and before the image's own, so precedence matches the `--env PATH`.
+ */
+export function managedPathEnvArgs(binDirs: readonly string[]): string[] {
+  return binDirs.length === 0 ? [] : ['--env', `CLOUD_HARNESS_MANAGED_PATH=${binDirs.join(':')}`];
+}
+
 function mountArgs(mount: ToolboxMount): string[] {
   for (const path of [mount.source, mount.target]) {
     // `--mount` is comma-separated, so a comma, quote, or control character could inject options.
-    if (!isAbsolute(path) || hasUnsafeMountCharacter(path) || path.split('/').includes('..')) {
+    if (!isSafeBindPath(path)) {
       throw new HarnessError('INTERNAL_ERROR', 'toolbox mount path is invalid', 500, false);
     }
   }
@@ -98,6 +143,13 @@ export function toolboxDeadlineSeconds(timeoutMs: number): number {
 export function buildToolboxCreateArgs(spec: ToolboxRunSpec, timeoutMs: number): string[] {
   if (!CONTAINER_NAME.test(spec.name)) throw new HarnessError('INTERNAL_ERROR', 'toolbox container name is invalid', 500, false);
   if (!INSTANCE_ID.test(spec.instanceId)) throw new HarnessError('INTERNAL_ERROR', 'toolbox instance label is invalid', 500, false);
+  const mounts = spec.mounts ?? [];
+  const binDirs = spec.binDirs ?? [];
+  for (const directory of binDirs) {
+    if (!mounts.some((mount) => directory === `${mount.target}/bin`)) {
+      throw new HarnessError('INTERNAL_ERROR', 'toolbox bin directory is not the bin directory of a provided mount', 500, false);
+    }
+  }
   return [
     'create', '--pull', 'never', '--name', spec.name,
     '--label', 'cloud-harness.role=toolbox', '--label', 'cloud-harness.ephemeral=true',
@@ -105,12 +157,13 @@ export function buildToolboxCreateArgs(spec: ToolboxRunSpec, timeoutMs: number):
     ...EXECUTOR_HARDENING_ARGS,
     '--network', 'none',
     '--workdir', '/tmp',
-    ...(spec.mounts ?? []).flatMap(mountArgs),
+    ...mounts.flatMap(mountArgs),
     '--env', 'HOME=/tmp/cloud-harness-home',
     '--env', 'GIT_CONFIG_NOSYSTEM=1',
     '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
     '--env', 'XDG_CACHE_HOME=/tmp/cloud-harness-home/.cache',
-    '--env', `PATH=${TOOLBOX_PATH}`,
+    '--env', `PATH=${withManagedBins(TOOLBOX_PATH, binDirs)}`,
+    ...managedPathEnvArgs(binDirs),
     spec.image,
     '/usr/bin/timeout', '-k', `${DEADLINE_KILL_AFTER_SECONDS}s`, `${toolboxDeadlineSeconds(timeoutMs)}s`,
     '/bin/bash', '-lc', spec.command
@@ -129,16 +182,17 @@ async function containerAbsent(name: string): Promise<boolean> {
 
 /**
  * Removes the container by exact name and retries with a short backoff until Docker reports it gone. The
- * retry covers a daemon that finishes a create after an earlier removal attempt. A container that survives
- * the bound is left to the periodic toolbox sweep rather than failing the caller's result.
+ * retry covers a daemon that finishes a create after an earlier removal attempt. Resolves true only once
+ * Docker positively reports the container absent; false when it survives the bound. The toolbox leaves such
+ * a container to the periodic sweep rather than failing the caller's result.
  */
-async function removeUntilGone(name: string): Promise<void> {
+export async function removeContainerUntilGone(name: string): Promise<boolean> {
   const deadline = Date.now() + REMOVAL_VERIFY_MS;
   let delay = 50;
   for (;;) {
     await removeContainer(name).catch(() => undefined);
-    if (await containerAbsent(name).catch(() => false)) return;
-    if (Date.now() + delay > deadline) return;
+    if (await containerAbsent(name).catch(() => false)) return true;
+    if (Date.now() + delay > deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, delay));
     delay = Math.min(delay * 2, 1_000);
   }
@@ -230,7 +284,7 @@ export async function runToolboxCommand(
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
-    await removeUntilGone(spec.name);
+    await removeContainerUntilGone(spec.name);
   }
 }
 

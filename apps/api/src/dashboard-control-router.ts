@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import express, { type NextFunction, type Response, type Router } from 'express';
-import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
@@ -179,6 +179,15 @@ export function registerDashboardControlRoutes(
   router.get('/api/v1/privilege-grants', endpoint('privilege_grant_list', (request) => ({ ...(request.query.workspaceId ? { workspaceId: String(request.query.workspaceId) } : {}) })));
   router.post('/api/v1/privilege-grants/:grantId/approve', endpoint('privilege_grant_approve', (request) => ({ grantId: request.params.grantId })));
   router.post('/api/v1/privilege-grants/:grantId/reject', endpoint('privilege_grant_reject', (request) => ({ grantId: request.params.grantId })));
+  // Managed packages. Approval posts the digest the operator was shown, so a plan that changed is refused.
+  router.get('/api/v1/packages', endpoint('package_overview', () => ({})));
+  router.get('/api/v1/package-plans', endpoint('package_plan_list', () => ({})));
+  router.post('/api/v1/package-plans/:planId/approve', endpoint('package_plan_approve', (request) => PackagePlanApproveInputSchema.parse({
+    planId: request.params.planId, ...z.object({ planDigest: z.string() }).strict().parse(request.body)
+  })));
+  router.post('/api/v1/package-plans/:planId/reject', endpoint('package_plan_reject', (request) => PackagePlanRejectInputSchema.parse({ planId: request.params.planId })));
+  router.post('/api/v1/packages/rollback', endpoint('package_rollback', (request) => PackageRollbackInputSchema.parse(request.body)));
+  router.post('/api/v1/packages/remove', endpoint('package_remove', (request) => PackageRemoveInputSchema.parse(request.body)));
   router.get('/api/v1/api-keys', apiKeyEndpoint('api_key_list', () => ({})));
   router.post('/api/v1/api-keys', apiKeyEndpoint('api_key_create', (request) => z.object({
     name: z.string().trim().min(1).max(100), expiresInDays: z.number().int().min(1).max(API_KEY_MAX_EXPIRY_DAYS)

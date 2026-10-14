@@ -82,6 +82,10 @@ describe('MultiLocalWorkspaceBackend', () => {
     const toolbox = await router.call('bash', { target: 'toolbox', command: 'pwd' });
     expect(toolbox.error?.code).toBe('INVALID_INPUT');
     expect(toolbox.message).toContain('toolbox target is unsupported in local mode');
+
+    const packages = await router.call('packages_plan', { ecosystem: 'npm', name: 'prettier', scope: 'workspace', workspaceId: id('netforge') });
+    expect(packages.error?.code).toBe('INVALID_INPUT');
+    expect(packages.message).toContain('packages_plan is unsupported in local mode');
   });
 
   it('fails closed on a missing ID with multiple workspaces and on an unknown ID', async () => {

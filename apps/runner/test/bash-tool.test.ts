@@ -52,6 +52,8 @@ function setup(overrides: Partial<RunnerConfig> = {}) {
     maxOutputBytes: 262_144,
     maxWorkspaceBytes: 104_857_600,
     minFreeBytes: 1_048_576,
+    packagesRoot: join(directory, 'packages'),
+    packagesBuildTimeoutMs: 600_000,
     ...overrides
   } as RunnerConfig;
   const store = new StateStore(config.stateDb);

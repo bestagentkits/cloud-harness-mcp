@@ -53,6 +53,11 @@ import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './s
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
 import type { AgentGatewayControl } from './agent-gateway-control.js';
+import { packageApprovalUnavailable } from './config.js';
+import {
+  PACKAGE_HISTORY_DEPTH, PackageStore, packageApplyView, packagePlanSummary,
+  type PackageApplyRecord, type PackagePlanRecord, type PackageReleaseRecord
+} from './package-store.js';
 
 export class DashboardControlService {
   private lastGatewaySync?: { synced: boolean; bootId: string | null; time: number; error: string | null };
@@ -433,6 +438,42 @@ export class DashboardControlService {
             throw new HarnessError('NOT_FOUND', 'privilege grant not found or not in pending state', 404, false);
           }
           return ok('Privilege grant rejected', { grant: rejectedGrant });
+        }
+        case 'package_overview': return ok('Managed packages listed', this.packageOverview(principalId, await this.currentPackageImageId()));
+        case 'package_plan_list': return ok('Package plans listed', this.packagePlanList(principalId));
+        case 'package_plan_approve': {
+          const plan = this.requirePackages().approvePlan({
+            ownerId: principalId, planId: parsed.input.planId, planDigest: parsed.input.planDigest,
+            decidedBy: principalId, now: Date.now()
+          });
+          return ok('Package plan approved', { plan: this.packagePlanView(principalId, plan, Date.now()) });
+        }
+        case 'package_plan_reject': {
+          const plan = this.requirePackages().rejectPlan({
+            ownerId: principalId, planId: parsed.input.planId, decidedBy: principalId, now: Date.now()
+          });
+          return ok('Package plan rejected', { plan: this.packagePlanView(principalId, plan, Date.now()) });
+        }
+        case 'package_rollback': {
+          const { binding, replayed } = this.requirePackages().rollback({
+            ownerId: principalId, bindingId: parsed.input.bindingId, releaseId: parsed.input.releaseId,
+            expectedGeneration: parsed.input.expectedGeneration, actor: 'dashboard', now: Date.now(),
+            releasePresent: (release) => this.packageReleasePresent(release)
+          });
+          return ok(replayed ? 'Package rollback already applied' : 'Package rolled back', {
+            binding: {
+              bindingId: binding.id, scope: binding.scope, ...(binding.workspaceId ? { workspaceId: binding.workspaceId } : {}),
+              ecosystem: binding.ecosystem, name: binding.packageName, generation: binding.generation, releaseId: binding.releaseId
+            },
+            replayed
+          });
+        }
+        case 'package_remove': {
+          this.requirePackages();
+          const removed = await this.workspaces.packages.removeBinding(principalId, {
+            bindingId: parsed.input.bindingId, expectedGeneration: parsed.input.expectedGeneration
+          }, 'dashboard');
+          return ok('Package uninstalled', removed);
         }
         case 'model_credential_list': return ok('Model provider credentials listed', { credentials: this.models().listCredentials(principalId) });
         case 'model_credential_create': {
@@ -1390,7 +1431,185 @@ export class DashboardControlService {
       }
     }
   }
+
+  /* Managed toolbox packages. The store shares the state database with the MCP package tools. */
+
+  private packageStoreInstance?: PackageStore;
+
+  private packageStore(): PackageStore {
+    this.packageStoreInstance ??= new PackageStore(
+      this.principals.database,
+      (database, principalId, action, subjectType, subjectId, generation, details) => this.metadata.recordAuditInTransaction(
+        database, principalId, action, subjectType, subjectId, generation, details
+      )
+    );
+    return this.packageStoreInstance;
+  }
+
+  /** A decision or rollback while the feature is off is refused rather than silently recorded. */
+  private requirePackages(): PackageStore {
+    if (!this.config.packagesEnabled) throw new HarnessError('FORBIDDEN', PACKAGES_DISABLED_MESSAGE, 403, false);
+    return this.packageStore();
+  }
+
+  /** A release is usable only while its verified tree is still on disk under the packages root. */
+  private packageReleasePresent(release: PackageReleaseRecord): boolean {
+    try {
+      return statSync(join(this.config.packagesRoot, release.relPath)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  private packageSettings() {
+    const approvalMode = packageApprovalUnavailable(this.config)
+      ? 'unavailable'
+      : this.config.packagesApprovalMode === 'none' ? 'not_required' : 'required';
+    return {
+      enabled: this.config.packagesEnabled,
+      approvalMode,
+      ecosystems: [...(this.config.packagesEcosystems ?? [])],
+      lifecycleScripts: this.config.packagesNpmLifecycleScripts,
+      quotas: {
+        maxReleaseBytes: this.config.packagesMaxReleaseBytes,
+        maxOwnerBytes: this.config.packagesMaxOwnerBytes,
+        maxBindings: this.config.packagesMaxBindings
+      }
+    };
+  }
+
+  /** An owner-scoped package reaches every retained workspace; a workspace-scoped one reaches only its own. */
+  private packageAffectedWorkspaces(ownerId: string, scope: string, workspaceId: string | null, retained?: string[]): string[] {
+    if (scope === 'workspace') return workspaceId ? [workspaceId] : [];
+    return retained ?? this.packageStore().retainedWorkspaceIds(ownerId);
+  }
+
+  /**
+   * The plan as an operator reviews it. The owner identity is never projected, and a decision is shown in
+   * role terms (`policy` or `dashboard`) rather than as the raw principal.
+   */
+  private packagePlanView(ownerId: string, plan: PackagePlanRecord, now: number, retained?: string[]) {
+    const store = this.packageStore();
+    const binding = store.findBinding(ownerId, plan.scope, plan.workspaceId, plan.ecosystem, plan.packageName);
+    const current = binding?.releaseId ? store.getRelease(ownerId, binding.releaseId) : undefined;
+    const open = plan.status === 'PENDING_APPROVAL' || plan.status === 'APPROVED';
+    const bindingMoved = (binding?.generation ?? 0) !== plan.bindingGeneration
+      || (plan.bindingId !== null && binding !== undefined && binding.id !== plan.bindingId);
+    const body = plan.body;
+    return {
+      ...packagePlanSummary(plan),
+      status: open && plan.expiresAt <= now ? 'EXPIRED' : plan.status,
+      requestedSpec: plan.requestedSpec,
+      source: body.source,
+      integrity: body.integrity,
+      dependencyCount: body.dependencyCount,
+      sizeEstimateBytes: body.sizeEstimateBytes,
+      binaries: body.binaries,
+      conflicts: body.conflicts.map((conflict) => ({
+        binary: conflict.binary, scope: conflict.scope, ...(conflict.workspaceId ? { workspaceId: conflict.workspaceId } : {}),
+        ecosystem: conflict.ecosystem, name: conflict.name
+      })),
+      lifecycleScripts: body.lifecycleScripts,
+      runtime: { node: body.runtime.node, npm: body.runtime.npm, uv: body.runtime.uv, python: body.runtime.python },
+      bindingGeneration: plan.bindingGeneration,
+      currentRelease: binding && current ? { releaseId: current.id, version: current.version, generation: binding.generation } : null,
+      stale: open && bindingMoved,
+      affectedWorkspaces: this.packageAffectedWorkspaces(ownerId, plan.scope, plan.workspaceId, retained),
+      ...(plan.decidedAt !== null ? { decidedAt: new Date(plan.decidedAt).toISOString() } : {}),
+      ...(plan.decidedBy !== null ? { decidedBy: plan.decidedBy === 'policy' ? 'policy' : 'dashboard' } : {}),
+      ...(plan.applyId ? { applyId: plan.applyId } : {})
+    };
+  }
+
+  private packagePlanList(ownerId: string) {
+    const settings = this.packageSettings();
+    if (!settings.enabled) return { enabled: false, approvalMode: settings.approvalMode, plans: [] };
+    const now = Date.now();
+    const retained = this.packageStore().retainedWorkspaceIds(ownerId);
+    const plans = this.packageStore().listPlans(ownerId, undefined, PACKAGE_DASHBOARD_PLAN_LIMIT)
+      .map((plan) => this.packagePlanView(ownerId, plan, now, retained));
+    return { enabled: true, approvalMode: settings.approvalMode, plans };
+  }
+
+  /** The executor image releases are compared with; undefined when it cannot be read, so nothing is marked stale. */
+  private async currentPackageImageId(): Promise<string | undefined> {
+    if (!this.config.packagesEnabled) return undefined;
+    return await this.workspaces.packages.currentImageId();
+  }
+
+  private packageOverview(ownerId: string, currentImageId?: string) {
+    const settings = this.packageSettings();
+    if (!settings.enabled) {
+      return {
+        ...settings, usage: { ownerBytes: 0, bindings: 0 },
+        bindings: [], releases: [], inFlight: [], recentApplies: [], pendingPlans: []
+      };
+    }
+    const store = this.packageStore();
+    const now = Date.now();
+    const retained = store.retainedWorkspaceIds(ownerId);
+    const listed = store.overview(ownerId, { includeHistory: true, ...(currentImageId !== undefined ? { currentImageId } : {}) });
+    const records = new Map<string, PackageReleaseRecord>();
+    const record = (releaseId: string) => {
+      if (!records.has(releaseId)) {
+        const found = store.getRelease(ownerId, releaseId);
+        if (found) records.set(releaseId, found);
+      }
+      return records.get(releaseId);
+    };
+    const bindings = listed.bindings.map((binding) => ({
+      ...binding,
+      affectedWorkspaces: this.packageAffectedWorkspaces(ownerId, binding.scope, binding.workspaceId ?? null, retained),
+      history: store.history(ownerId, binding.bindingId).slice(0, PACKAGE_HISTORY_DEPTH).map((entry) => {
+        const release = record(entry.releaseId);
+        return {
+          generation: entry.generation, releaseId: entry.releaseId, version: release?.version ?? null,
+          reason: entry.reason, actor: entry.actor, createdAt: new Date(entry.createdAt).toISOString(),
+          available: release?.status === 'VERIFIED'
+        };
+      })
+    }));
+    const releases = listed.releases.map((release) => {
+      const stored = record(release.releaseId);
+      const plan = stored ? store.getPlan(ownerId, stored.planId) : undefined;
+      return {
+        releaseId: release.releaseId, ecosystem: release.ecosystem, name: release.name, version: release.version,
+        treeDigest: release.treeDigest, sizeBytes: release.sizeBytes, fileCount: stored?.fileCount ?? 0,
+        binaries: release.binaries, createdAt: release.createdAt, status: release.status, stale: release.stale,
+        runtime: { node: release.runtime.node, npm: release.runtime.npm, uv: release.runtime.uv, python: release.runtime.python },
+        dependencyCount: plan?.body.dependencyCount ?? null,
+        lifecycleScripts: plan?.body.lifecycleScripts ?? false,
+        source: plan?.body.source ?? null,
+        integrity: plan?.body.integrity ?? null
+      };
+    });
+    const describeApply = (apply: PackageApplyRecord) => {
+      const plan = store.getPlan(ownerId, apply.planId);
+      return {
+        ...packageApplyView(apply),
+        ...(plan ? { scope: plan.scope, ecosystem: plan.ecosystem, name: plan.packageName, version: plan.version } : {})
+      };
+    };
+    const inFlight = store.inFlightApplies(ownerId).map(describeApply);
+    const inFlightIds = new Set(inFlight.map((apply) => apply.applyId));
+    const recentApplies = store.listPlans(ownerId, ['CONSUMED'], PACKAGE_DASHBOARD_RECENT_APPLIES).flatMap((plan) => {
+      const apply = plan.applyId ? store.getApply(ownerId, plan.applyId) : undefined;
+      return apply && !inFlightIds.has(apply.id) ? [describeApply(apply)] : [];
+    });
+    const pendingPlans = store.pendingPlans(ownerId, now).map((plan) => this.packagePlanView(ownerId, plan, now, retained));
+    const used = this.principals.database.prepare(`SELECT COALESCE(SUM(size_bytes), 0) AS bytes FROM package_releases
+      WHERE owner_id = ? AND status = 'VERIFIED'`).get(ownerId) as { bytes: number | bigint };
+    return {
+      ...settings,
+      usage: { ownerBytes: Number(used.bytes), bindings: store.listBindings(ownerId).length },
+      bindings, releases, inFlight, recentApplies, pendingPlans
+    };
+  }
 }
+
+const PACKAGES_DISABLED_MESSAGE = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
+const PACKAGE_DASHBOARD_PLAN_LIMIT = 100;
+const PACKAGE_DASHBOARD_RECENT_APPLIES = 20;
 
 const ok = (message: string, data: unknown, cursor?: string): RunnerResponse => ({ ok: true, message, data, truncated: false, ...(cursor ? { cursor } : {}) });
 

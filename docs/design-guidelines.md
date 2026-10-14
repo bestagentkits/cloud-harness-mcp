@@ -428,6 +428,23 @@ wired, so the visible one is never the only working one. Owners:
   `.terminal-*` rules in
   [`dashboard.css`](../apps/api/dashboard/dashboard.css); behavior evidence in
   [`apps/api/test/dashboard-terminal.test.ts`](../apps/api/test/dashboard-terminal.test.ts).
+- **Packages and package plans:** the Packages page shows an apply as a row of
+  step pills (done, current, pending) rather than a spinner, so a durable apply
+  reads the same after a reload. Release health uses words (Verified, Missing on
+  disk, Stale image), never colour alone. A plan digest is shown shortened, and
+  the full value appears on focus and in the title, so the operator can compare
+  exactly what they approve. Approve posts the digest that was shown, and
+  rollback goes through the shared destructive confirm naming both versions and
+  the affected workspaces. Uninstall is a per-package action through the same
+  destructive confirm, naming the scope, the affected workspace count, and the
+  expected generation, and stating that running workspaces keep the tool until
+  they are recreated. Package tables keep a minimum width and scroll
+  horizontally at phone width instead of squeezing columns. Owners:
+  `renderPackages` and `planIsActionable` in
+  [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the
+  `.package-steps`, `.package-table`, and `.digest` rules in
+  [`dashboard.css`](../apps/api/dashboard/dashboard.css); behavior evidence in
+  [`apps/api/test/dashboard-ui-contract.test.ts`](../apps/api/test/dashboard-ui-contract.test.ts).
 - **Git and Finalize:** the cockpit's Git tab keeps **Finalize** as the primary
   happy path — one confirmed action that stages, commits and pushes — and treats
   everything else as an advanced surface. The tab shows branch, upstream,

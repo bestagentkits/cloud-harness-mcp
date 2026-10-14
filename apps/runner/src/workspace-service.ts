@@ -29,7 +29,10 @@ import {
   TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
-import { EXECUTOR_HARDENING_ARGS, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, type ToolboxRunResult } from './toolbox-runner.js';
+import { EXECUTOR_HARDENING_ARGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
+import { PackageBuilder } from './package-builder.js';
+import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
+import { PackageStore } from './package-store.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
 import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
@@ -64,6 +67,37 @@ import {
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+/** The executor PATH before managed package `bin` directories are inserted ahead of `/usr/local/sbin`. */
+const EXECUTOR_PATH = '/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+const PACKAGE_OPERATION_SET: ReadonlySet<string> = new Set(PACKAGE_OPERATIONS);
+
+function isPackageOperation(operation: RunnerOperation): operation is PackageOperation {
+  return PACKAGE_OPERATION_SET.has(operation);
+}
+
+function packageMessage(operation: PackageOperation, data: unknown): string {
+  const record = data as Record<string, unknown>;
+  switch (operation) {
+    case 'packages_plan':
+      if (record.state === 'RESOLVING') return `Package resolution ${String(record.resolutionId)} is still running; poll packages_status with its resolutionId`;
+      if (record.approval === 'not_required') return 'Package plan created; call packages_apply with its planId and planDigest';
+      if (record.approval === 'required') return 'Package plan created; approve it on the Dashboard, then call packages_apply with its planId and planDigest';
+      return 'Package plan created, but this instance has no Dashboard approver, so packages_apply is refused';
+    case 'packages_apply':
+      return `Package apply ${String(record.applyId)} is ${String(record.state)}; poll packages_status with its applyId`;
+    case 'packages_list':
+      return `${(record.bindings as unknown[]).length} package bindings`;
+    case 'packages_status':
+      if ('apply' in record) return `Package apply is ${String((record.apply as { state?: string }).state)}`;
+      if ('resolution' in record) return `Package resolution is ${String((record.resolution as { state?: string }).state)}`;
+      return 'Package status';
+    case 'packages_rollback':
+      return 'Package binding rolled back; workspaces pick it up when their executor is recreated';
+    case 'packages_remove':
+      return `Package binding removed; ${String(record.collectedReleases)} releases collected; workspaces drop it when their executor is recreated`;
+  }
+}
+
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
 /**
  * Statuses that occupy a counted capacity slot. `REAPING` is excluded because it
@@ -209,6 +243,7 @@ export class WorkspaceService {
   private readonly liveToolboxContainers = new Set<string>();
   readonly toolkitCacheManager: ToolkitCacheManager;
   readonly toolkitService: ToolkitService;
+  private packageService?: PackageService | undefined;
 
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
@@ -463,6 +498,8 @@ export class WorkspaceService {
     }
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
     await this.reconcileContainers();
+    // After leftover containers are gone, so no builder can still be writing below the packages root.
+    if (this.config.packagesEnabled === true) await this.packages.reconcileStartup();
     await this.reconcileJobDirectories();
     await this.agentManager?.start();
     this.reaper = setInterval(() => {
@@ -473,6 +510,32 @@ export class WorkspaceService {
     this.reaper.unref();
   }
 
+  /**
+   * Managed toolbox packages: plans, durable applies, releases, and the per-workspace mount profiles.
+   * Built on first use so a runner with managed packages off never validates their paths.
+   */
+  get packages(): PackageService {
+    if (!this.packageService) {
+      const builder = new PackageBuilder({
+        executorImage: this.config.executorImage,
+        instanceId: this.instanceId,
+        packagesRoot: this.config.packagesRoot,
+        provisioningNetwork: this.config.provisioningNetwork || 'cloud-harness-mcp_provisioning',
+        proxy: this.config.toolkitEgressProxy,
+        planTimeoutMs: this.config.packagesBuildTimeoutMs
+      });
+      this.packageService = new PackageService({
+        database: this.store.database,
+        config: this.config,
+        builder,
+        ...(this.metadata ? { audit: this.metadata.recordAuditInTransaction.bind(this.metadata) } : {}),
+        instanceId: this.instanceId,
+        workspaces: databaseWorkspaceDirectory(this.store.database, new PackageStore(this.store.database))
+      });
+    }
+    return this.packageService;
+  }
+
   beginShutdown(): void {
     this.agentManager?.fence();
   }
@@ -481,6 +544,7 @@ export class WorkspaceService {
     this.beginShutdown();
     clearInterval(this.reaper);
     await this.agentManager?.stop();
+    await this.packageService?.shutdown();
   }
   private async reconcileContainers(): Promise<void> {
     const managed = await runDocker([
@@ -754,6 +818,10 @@ export class WorkspaceService {
     const name = `cloud-harness-ws-${record.id.slice(3, 19).toLowerCase()}`;
     await removeContainer(name).catch(() => undefined);
     const { toolsPath, cachePath, ownerSkillsPath } = await this.provisionMountDirectories(record);
+    // Recorded as the workspace's profile; later binding changes apply only when the executor is recreated.
+    const packageProfile = this.config.packagesEnabled === true
+      ? this.packages.profileFor(record.ownerId, record.id)
+      : { mounts: [], binDirs: [] };
     const envEntries = Object.entries(environment);
     const envFilePath = join(record.workspacePath, `.env.injected-${randomBytes(6).toString('hex')}`);
     let useEnvFile = false;
@@ -776,6 +844,7 @@ export class WorkspaceService {
         '--volume', `${cachePath}:/var/cache/harness:rw`,
         '--volume', `${ownerSkillsPath}:/opt/cloud-harness/owner-skills:ro`,
         ...builtinSkillsMountArgs(this.config.builtinSkillsRoot),
+        ...packageProfile.mounts.flatMap((mount) => ['--volume', `${mount.source}:${mount.target}:ro`]),
         '--env', 'HOME=/tmp/cloud-harness-home',
         '--env', 'GIT_CONFIG_NOSYSTEM=1',
         '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
@@ -787,7 +856,8 @@ export class WorkspaceService {
         '--env', 'BUN_INSTALL=/opt/user-tools/bun',
         '--env', 'PNPM_HOME=/opt/user-tools/pnpm',
         '--env', 'UV_TOOL_BIN_DIR=/opt/user-tools/bin',
-        '--env', 'PATH=/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        '--env', `PATH=${withManagedBins(EXECUTOR_PATH, packageProfile.binDirs)}`,
+        ...managedPathEnvArgs(packageProfile.binDirs),
         ...(useEnvFile ? ['--env-file', envFilePath] : []),
         this.config.executorImage
       ];
@@ -2138,18 +2208,24 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const name = toolboxContainerName();
     const timeoutMs = validated.timeoutMs as number;
     const run = (runSignal?: AbortSignal) => {
+      // Held until the container is gone, so an uninstall cannot remove a release the command still reads.
+      const held = this.packages.holdToolboxMounts(ownerId);
+      const toolboxPackages = held.profile;
       this.liveToolboxContainers.add(name);
       return runToolboxCommand({
         name,
         image: this.config.executorImage,
         instanceId: this.instanceId,
         command: validated.command as string,
-        // Managed package releases will be mounted here, read-only.
-        mounts: []
+        mounts: toolboxPackages.mounts,
+        binDirs: toolboxPackages.binDirs
       }, {
         timeoutMs,
         maxOutputBytes: Math.min(validated.maxOutputBytes as number, this.config.maxOutputBytes)
-      }, runSignal).finally(() => { this.liveToolboxContainers.delete(name); });
+      }, runSignal).finally(() => {
+        held.release();
+        this.liveToolboxContainers.delete(name);
+      });
     };
     if (validated.async !== true) return toolboxResponse(await run(signal));
 
@@ -2422,6 +2498,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
   }
 
+  private async runPackageOperation(ownerId: string, operation: PackageOperation, validated: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
+    const data = await this.packages.execute(ownerId, operation, validated, signal);
+    return { ok: true, message: packageMessage(operation, data), data, truncated: false };
+  }
+
   /**
    * An operation handle is visible only to its owner: through its workspace's owner, or through the owner
    * recorded on a workspace-less (toolbox) handle. Any other handle reads as not found.
@@ -2443,6 +2524,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (operation === 'workspace_list') return this.list(ownerId, validated);
     if (operation === 'secrets_list') return this.secretsList(ownerId, validated);
     if (operation === 'bash' && validated.target === 'toolbox') return await this.runToolbox(ownerId, validated, signal);
+    // Package operations are owner-scoped and never take a workspace mutation lock.
+    if (isPackageOperation(operation)) return await this.runPackageOperation(ownerId, operation, validated, signal);
     if (operation === 'operation_status') {
       const op = this.ownedOperation(ownerId, validated.operationId as string);
       const offset = validated.cursor ? Number(validated.cursor) : 0;
@@ -4505,6 +4588,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   private async reapExpired(): Promise<void> {
     const now = Date.now();
     await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).catch(() => undefined);
+    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
     const hasDependencyWorkspaces = this.store.active().some((r) => r.status === 'ACTIVE' && r.networkProfile === 'dependency-access');
     if (hasDependencyWorkspaces) {
       const attestation = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));
