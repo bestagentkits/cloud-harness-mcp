@@ -135,11 +135,18 @@ case $mode in
       push_output=$(git_clean --git-dir="$transfer_path" push --porcelain \
         "--force-with-lease=${destination}:${lease_value}" origin "$argument") || push_status=$?
       printf '%s\n' "$push_output"
-      # git reports "already up to date" before it checks a lease, so a create-only push of the commit the
-      # branch already holds exits 0. That is someone else's branch, not a create, so it must not succeed.
-      if [[ $push_status -eq 0 && $expected_remote_oid == absent ]] && grep -q $'^=\t' <<<"$push_output"; then
-        printf 'create-only lease rejected: %s already exists on the remote\n' "$destination" >&2
-        exit 1
+      # git reports "already up to date" before it checks a lease, so a push of the commit the branch
+      # already holds exits 0 whatever the lease said. It succeeds only when the lease expected exactly that
+      # commit; a create-only lease, or one naming an older commit, lost to whoever pushed it first.
+      if [[ $push_status -eq 0 ]] && grep -q $'^=\t' <<<"$push_output"; then
+        source_oid=
+        if [[ $expected_remote_oid != absent ]]; then
+          source_oid=$(git_clean --git-dir="$transfer_path" rev-parse --verify --quiet "${argument%%:*}^{commit}" || true)
+        fi
+        if [[ -z $source_oid || $source_oid != "$lease_value" ]]; then
+          printf 'lease rejected: %s already holds the pushed commit\n' "$destination" >&2
+          exit 1
+        fi
       fi
       exit "$push_status"
     else

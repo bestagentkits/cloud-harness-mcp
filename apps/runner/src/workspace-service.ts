@@ -1804,7 +1804,7 @@ export class WorkspaceService {
         if (mode === 'push') {
           // The remote received the push and refused it by policy (branch protection, a ruleset, a
           // pre-receive hook, or a missing App permission), so retrying the same push cannot succeed.
-          if (/\[remote rejected\]|\bGH0\d\d\b|protected branch/i.test(errText)) {
+          if (/\[remote rejected\]|^remote: error: GH0\d\d:/m.test(errText)) {
             const missingWorkflowsPermission = /without [`'"]?workflows[`'"]? permission|create or update workflow/i.test(errText);
             throw new HarnessError(
               missingWorkflowsPermission ? 'GITHUB_PERMISSION_MISSING' : 'FORBIDDEN',
@@ -1816,7 +1816,12 @@ export class WorkspaceService {
               { expectedRemoteOid }
             );
           }
-          if (/\[rejected\]|\(stale info\)|create-only lease rejected|non-fast-forward|fetch first/.test(errText)) {
+          // The staged clone holds only branches and tags, so a source such as a remote-tracking ref never
+          // reaches the remote; retrying cannot help.
+          if (/src refspec .* does not match any/.test(errText)) {
+            throw new HarnessError('INVALID_INPUT', `Git push source does not name a local branch, tag, or HEAD (${errText})`.slice(0, 2_000), 400, false);
+          }
+          if (/\[rejected\]|\(stale info\)|lease rejected:|non-fast-forward|fetch first/.test(errText)) {
             throw new HarnessError('CONFLICT', `Git push rejected: remote ref has diverged or force-with-lease failed (${errText})`.slice(0, 2_000), 409, false, {
               expectedRemoteOid,
               resumeAction: 'reconcile_push'

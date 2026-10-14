@@ -590,7 +590,8 @@ and
   but refuses by policy (`[remote rejected]` or a `GH0xx` error: branch protection,
   a ruleset, a pre-receive hook) returns `FORBIDDEN`, or `GITHUB_PERMISSION_MISSING` when it
   changes `.github/workflows` without the App's Workflows permission; neither is
-  retryable. Whether a fast-forward push to a protected branch such as `dev` is
+  retryable. A refspec source that is not a local branch, tag, or `HEAD` (for example
+  `origin/<branch>`) returns non-retryable `INVALID_INPUT`. Whether a fast-forward push to a protected branch such as `dev` is
   allowed is decided by GitHub: required status checks must already pass on the
   pushed commit, and a "require a pull request" rule or ruleset refuses direct pushes
   unless the App is on its bypass list. A lease push to another collaborator's

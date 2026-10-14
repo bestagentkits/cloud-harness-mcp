@@ -216,7 +216,7 @@ describe('git_push atomic ref leases', () => {
 
   it('reports a create-only push onto a branch that already holds the commit as CONFLICT', async () => {
     const { service, workspaceId, principalSelector } = fixture();
-    docker.pushResults = [{ stdout: 'To https://github.com/acme/widgets.git\n=\tHEAD:refs/heads/merge-lock\t[up to date]\nDone\n', stderr: 'create-only lease rejected: refs/heads/merge-lock already exists on the remote\n', exitCode: 1, truncated: false }];
+    docker.pushResults = [{ stdout: 'To https://github.com/acme/widgets.git\n=\tHEAD:refs/heads/merge-lock\t[up to date]\nDone\n', stderr: 'lease rejected: refs/heads/merge-lock already holds the pushed commit\n', exitCode: 1, truncated: false }];
     await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'HEAD:merge-lock', forceWithLease: true, expectedAbsent: true }))
       .rejects.toMatchObject({ code: 'CONFLICT', retryable: false });
   });
@@ -231,6 +231,25 @@ describe('git_push atomic ref leases', () => {
     }];
     await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'HEAD:release/1.2' }))
       .rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
+  });
+
+  it('keeps a lease conflict on a GH-numbered branch in a gh-named repository a CONFLICT', async () => {
+    const { service, workspaceId, principalSelector } = fixture();
+    docker.pushResults = [{
+      stdout: 'To https://github.com/acme/gh007.git\n!\tHEAD:refs/heads/GH001-lock\t[rejected] (stale info)\nDone\n',
+      stderr: 'error: failed to push some refs to \'https://github.com/acme/gh007.git\'\n',
+      exitCode: 1,
+      truncated: false
+    }];
+    await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'HEAD:GH001-lock', forceWithLease: true, expectedAbsent: true }))
+      .rejects.toMatchObject({ code: 'CONFLICT', retryable: false });
+  });
+
+  it('reports a push source missing from the staged clone as non-retryable INVALID_INPUT', async () => {
+    const { service, workspaceId, principalSelector } = fixture();
+    docker.pushResults = [{ stdout: '', stderr: 'error: src refspec origin/feature does not match any\nerror: failed to push some refs\n', exitCode: 1, truncated: false }];
+    await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'origin/feature:feature' }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT', retryable: false });
   });
 
   it('reconciles a lock pushed from a branch other than HEAD against that branch commit', async () => {

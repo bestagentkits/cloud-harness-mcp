@@ -64,8 +64,19 @@ describe('git-transfer-helper push leases', () => {
 
     const sameCommit = push('refs/heads/main:refs/heads/merge-lock', 'absent');
     expect(sameCommit.status).not.toBe(0);
-    expect(sameCommit.stderr).toContain('create-only lease rejected');
+    expect(sameCommit.stderr).toContain('lease rejected');
     expect(remoteRef('refs/heads/merge-lock')).toBe(base);
+  });
+
+  it('rejects a compare-and-swap push whose stale lease names an older commit than the branch already holds', () => {
+    const { base, next, push, remoteRef } = fixture();
+    expect(push('refs/heads/feature:refs/heads/main', base).status).toBe(0);
+
+    const stale = push('refs/heads/feature:refs/heads/main', base);
+    expect(stale.status).not.toBe(0);
+    expect(stale.stderr).toContain('lease rejected');
+    expect(push('refs/heads/feature:refs/heads/main', next).status).toBe(0);
+    expect(remoteRef('refs/heads/main')).toBe(next);
   });
 
   it('reports a lost lease as a porcelain status line on stdout', () => {
