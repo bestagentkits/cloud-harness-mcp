@@ -109,6 +109,23 @@ ordinary dashboard requests. [ADR 0003](adr/0003-terminal-bash-and-managed-toolb
 the decision; the [security model](security-model.md#dashboard-terminal) records
 its boundary.
 
+Managed toolbox packages split orchestration from building. The `packages_*`
+MCP tools reach the runner like every other tool, but the runner dispatches
+them before workspace resolution, so they take no workspace mutation lock.
+[`apps/runner/src/package-service.ts`](../apps/runner/src/package-service.ts)
+owns the plan, approval, durable apply, rollback, startup reconciliation, and
+hourly garbage collection over the SQLite records in
+[`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts).
+[`apps/runner/src/package-builder.ts`](../apps/runner/src/package-builder.ts)
+runs resolution and builds in short-lived executor-image containers on the
+provisioning network and verifies each release tree below `PACKAGES_ROOT`.
+When the runner starts an executor or a `bash` toolbox container, it mounts
+the owner's and workspace's bound releases read-only and puts their `bin`
+directories on PATH. The Dashboard lists packages and approves plans through
+internal runner operations behind the BFF. The
+[security model](security-model.md#managed-toolbox-packages) records the
+boundary.
+
 Third-party agent toolkits are acquired and normalized via disposable clone helpers running on a dedicated internal Docker network (`cloud-harness-provisioning`). All helper egress routes through the dual-homed `provisioning-proxy` (port 3128) with DNS destination allowlists. Normalized bundles are published to runner Content-Addressed Storage (`TOOLKIT_CACHE_ROOT`) and mounted into executors read-only at `/opt/cloud-harness/owner-skills:ro` or staged into `.cloud-harness/skills` under explicit confirmation.
 
 ## Composition roots and transports

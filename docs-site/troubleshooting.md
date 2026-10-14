@@ -263,3 +263,19 @@ If an agent started but followed the wrong files, read the `repository_context` 
 | `FORBIDDEN` | The operator has not enabled the toolbox. It is off unless `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). Use `target: "workspace"` meanwhile. |
 | `LIMIT_EXCEEDED` (HTTP `429`, retryable) | `TOOLBOX_MAX_CONCURRENT` toolbox commands are already running on this instance, sync and async together. Wait for one to finish, or cancel an async handle with `operation_cancel`, then retry. Operators can raise the limit. |
 | `UNAVAILABLE` (HTTP `503`, retryable) | Docker could not create or start the toolbox container, or the runner could not read its state afterwards; the command did not report an exit code. Retry. If it persists, operators should check that the executor image exists on the host and that the runner can reach Docker. |
+
+### 24. `packages_plan` or `packages_apply` fails
+**Cause:** Managed packages are planned, approved for one exact plan digest, then built in an isolated builder. Each error points to one step:
+
+| Error | Meaning and fix |
+| :--- | :--- |
+| `FORBIDDEN`, "disabled on this instance" | Managed packages are off. Operators enable them with `PACKAGES_ENABLED=true` (see the [environment variables reference](/reference/environment-variables)). |
+| `FORBIDDEN`, "has no Dashboard in owner-bearer mode" | `PACKAGES_APPROVAL_MODE=required` needs a Dashboard approver, and owner-bearer deployments have none. Operators either run with Cloudflare Access or set `PACKAGES_APPROVAL_MODE=none` deliberately. |
+| `PACKAGE_APPROVAL_REQUIRED` | The plan is waiting for approval. Approve it on the Dashboard **Packages** page, then call `packages_apply` again with the same `planId` and `planDigest`. |
+| `NOT_SUPPORTED` | `apt` and other system packages are not managed packages. Bake them into an executor image variant instead. |
+| `UNAVAILABLE` naming a registry host | The provisioning proxy refused that host. Operators add it to `PACKAGES_PROXY_HOSTS` in the provisioning-proxy environment and restart the proxy. |
+| `STALE_GENERATION` | The `planDigest` does not match the current plan, or the executor image changed since the plan was made (for example after a redeploy). Review the plan, or create a new one. |
+| `EXPIRED` | Plans expire 30 minutes after they are made. Create a new plan. |
+| `CONFLICT`, "binaries collide" | Another binding in the same scope already provides a command with that name. Roll back or replace that binding first. |
+| `LIMIT_EXCEEDED` (HTTP `429`, retryable) | Two builds are already running, or the owner's release bytes or binding count are used up. Wait, or roll back unused packages. |
+| `PACKAGE_BUILD_FAILED` / `PACKAGE_VERIFICATION_FAILED` | The install failed, or the built tree or a binary's launch check did not pass. `packages_status` shows the redacted output tail. Pin a different version or ask for lifecycle scripts only when the package truly needs them. |

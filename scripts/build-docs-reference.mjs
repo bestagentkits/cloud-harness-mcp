@@ -33,6 +33,11 @@ const CATEGORIES = [
     names: ['exec_run', 'bash', 'shell_open', 'shell_io', 'shell_close', 'operation_status', 'operation_cancel', 'operation_wait']
   },
   {
+    title: 'Managed Packages',
+    description: 'Plan, approve, apply, inspect, and roll back pinned CLI packages kept across workspaces and redeploys (off unless the operator enables managed packages).',
+    names: ['packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback']
+  },
+  {
     title: 'Sessions and Tasks',
     description: 'Tools for long-running agent sessions and directed acyclic task graph workflows.',
     names: ['sessions_list', 'sessions_open', 'sessions_io', 'sessions_close', 'tasks_list', 'tasks_run', 'tasks_status', 'tasks_cancel', 'tasks_graph']
