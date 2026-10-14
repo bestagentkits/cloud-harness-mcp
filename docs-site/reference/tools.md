@@ -346,7 +346,7 @@ Find bounded lexical whole-word occurrences of a symbol in workspace text.
 
 ## Commands and Shells
 
-Tools for running isolated non-root commands, operations, and persistent interactive PTY shell sessions.
+Tools for running isolated non-root commands, operations, and persistent interactive pipe shell sessions.
 
 ### `exec_run`
 
