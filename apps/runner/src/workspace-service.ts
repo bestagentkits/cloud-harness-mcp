@@ -238,8 +238,7 @@ export class WorkspaceService {
   private readonly liveToolboxContainers = new Set<string>();
   readonly toolkitCacheManager: ToolkitCacheManager;
   readonly toolkitService: ToolkitService;
-  /** Managed toolbox packages: plans, durable applies, releases, and the per-workspace mount profiles. */
-  readonly packages: PackageService;
+  private packageService?: PackageService | undefined;
 
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
@@ -315,22 +314,6 @@ export class WorkspaceService {
     const cacheRoot = this.config.toolkitCacheRoot || (this.config.jobsRoot && !this.config.jobsRoot.startsWith('/var/lib') ? join(this.config.jobsRoot, 'toolkit-cache') : '/var/lib/cloud-harness/cache/toolkits');
     const provNet = this.config.provisioningNetwork || 'cloud-harness-mcp_provisioning';
     this.toolkitCacheManager = new ToolkitCacheManager(cacheRoot, this.store);
-    const packageBuilder = new PackageBuilder({
-      executorImage: this.config.executorImage,
-      instanceId: this.instanceId,
-      packagesRoot: this.config.packagesRoot,
-      provisioningNetwork: provNet,
-      proxy: this.config.toolkitEgressProxy,
-      planTimeoutMs: this.config.packagesBuildTimeoutMs
-    });
-    this.packages = new PackageService({
-      database: this.store.database,
-      config: this.config,
-      builder: packageBuilder,
-      ...(this.metadata ? { audit: this.metadata.recordAuditInTransaction.bind(this.metadata) } : {}),
-      instanceId: this.instanceId,
-      workspaces: databaseWorkspaceDirectory(this.store.database, new PackageStore(this.store.database))
-    });
     const proxyOpts = this.config.toolkitEgressProxy ? { toolkitEgressProxy: this.config.toolkitEgressProxy } : {};
     this.toolkitService = new ToolkitService({
       cacheManager: this.toolkitCacheManager,
@@ -522,6 +505,32 @@ export class WorkspaceService {
     this.reaper.unref();
   }
 
+  /**
+   * Managed toolbox packages: plans, durable applies, releases, and the per-workspace mount profiles.
+   * Built on first use so a runner with managed packages off never validates their paths.
+   */
+  get packages(): PackageService {
+    if (!this.packageService) {
+      const builder = new PackageBuilder({
+        executorImage: this.config.executorImage,
+        instanceId: this.instanceId,
+        packagesRoot: this.config.packagesRoot,
+        provisioningNetwork: this.config.provisioningNetwork || 'cloud-harness-mcp_provisioning',
+        proxy: this.config.toolkitEgressProxy,
+        planTimeoutMs: this.config.packagesBuildTimeoutMs
+      });
+      this.packageService = new PackageService({
+        database: this.store.database,
+        config: this.config,
+        builder,
+        ...(this.metadata ? { audit: this.metadata.recordAuditInTransaction.bind(this.metadata) } : {}),
+        instanceId: this.instanceId,
+        workspaces: databaseWorkspaceDirectory(this.store.database, new PackageStore(this.store.database))
+      });
+    }
+    return this.packageService;
+  }
+
   beginShutdown(): void {
     this.agentManager?.fence();
   }
@@ -530,7 +539,7 @@ export class WorkspaceService {
     this.beginShutdown();
     clearInterval(this.reaper);
     await this.agentManager?.stop();
-    await this.packages.shutdown();
+    await this.packageService?.shutdown();
   }
   private async reconcileContainers(): Promise<void> {
     const managed = await runDocker([
@@ -805,7 +814,9 @@ export class WorkspaceService {
     await removeContainer(name).catch(() => undefined);
     const { toolsPath, cachePath, ownerSkillsPath } = await this.provisionMountDirectories(record);
     // Recorded as the workspace's profile; later binding changes apply only when the executor is recreated.
-    const packageProfile = this.packages.profileFor(record.ownerId, record.id);
+    const packageProfile = this.config.packagesEnabled === true
+      ? this.packages.profileFor(record.ownerId, record.id)
+      : { mounts: [], binDirs: [] };
     const envEntries = Object.entries(environment);
     const envFilePath = join(record.workspacePath, `.env.injected-${randomBytes(6).toString('hex')}`);
     let useEnvFile = false;
@@ -4566,7 +4577,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
   private async reapExpired(): Promise<void> {
     const now = Date.now();
     await reapStaleToolboxContainers(this.instanceId, this.liveToolboxContainers, now).catch(() => undefined);
-    await this.packages.collectGarbage(now).catch(() => undefined);
+    if (this.config.packagesEnabled === true) await this.packages.collectGarbage(now).catch(() => undefined);
     const hasDependencyWorkspaces = this.store.active().some((r) => r.status === 'ACTIVE' && r.networkProfile === 'dependency-access');
     if (hasDependencyWorkspaces) {
       const attestation = await this.networkProfileManager.checkAttestation().catch(() => ({ ok: false, reason: 'attestation probe failed' }));

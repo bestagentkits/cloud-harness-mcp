@@ -386,9 +386,14 @@ export class PackageService {
     return { applyId: apply.id, planId: apply.planId, releaseId: apply.releaseId, state: apply.state };
   }
 
+  /** The executor image releases are pinned to, or undefined when Docker cannot report it. */
+  async currentImageId(): Promise<string | undefined> {
+    return await this.builder.imageId().catch(() => undefined);
+  }
+
   private async list(ownerId: string, input: unknown): Promise<PackagesListResult> {
     const request = parseInput(PackagesListInputSchema, input);
-    const currentImageId = await this.builder.imageId().catch(() => undefined);
+    const currentImageId = await this.currentImageId();
     return this.store.overview(ownerId, {
       ...(request.scope !== undefined ? { scope: request.scope } : {}),
       ...(request.workspaceId !== undefined ? { workspaceId: request.workspaceId } : {}),

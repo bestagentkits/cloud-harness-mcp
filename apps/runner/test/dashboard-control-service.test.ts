@@ -25,6 +25,9 @@ afterEach(() => {
   }
 });
 
+/** The executor image the stubbed workspace service reports to the package overview. */
+let currentPackageImageId: string | undefined = 'sha256:executor-image';
+
 function setup(withKeyring = true, config: Partial<RunnerConfig> | ((root: string) => Partial<RunnerConfig>) = {}) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-controls-')); roots.push(root);
   const databasePath = join(root, 'state.db'); const principals = new StateStore(databasePath);
@@ -36,6 +39,7 @@ function setup(withKeyring = true, config: Partial<RunnerConfig> | ((root: strin
   });
   const artifacts = new ArtifactStore(principals.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 });
   const workspaces = {
+    packages: { currentImageId: async () => currentPackageImageId },
     toolkitCacheManager: new ToolkitCacheManager(join(root, 'toolkits'), principals),
     readArtifactSource: async (p: PrincipalSelector) => ({ ownerId: principals.resolvePrincipal(p), content: Buffer.from('snapshot') }),
     snapshotArtifact: async (p: PrincipalSelector, input: { workspaceId?: string; path: string; logicalName: string; retentionSeconds?: number; projectId?: string; environmentId?: string }) => {
@@ -803,6 +807,12 @@ describe('dashboard managed packages', () => {
     expect(data.recentApplies.map((apply) => [apply.state, apply.name])).toEqual([['SUCCEEDED', 'chm-hello'], ['SUCCEEDED', 'chm-hello']]);
     expect(JSON.stringify(overview.data)).not.toContain(ownerId);
     expect(JSON.stringify(overview.data)).not.toContain('releases/');
+    expect((overview.data as { releases: { stale: boolean }[] }).releases.map((release) => release.stale)).toEqual([false, false]);
+
+    currentPackageImageId = 'sha256:newer-executor-image';
+    const afterRedeploy = await controls.execute(request('package_overview', {}));
+    expect((afterRedeploy.data as { releases: { stale: boolean }[] }).releases.map((release) => release.stale)).toEqual([true, true]);
+    currentPackageImageId = 'sha256:executor-image';
   });
 
   it('rolls back from the dashboard and refuses a stale generation or a release that left the disk', async () => {

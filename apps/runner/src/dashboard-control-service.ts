@@ -439,7 +439,7 @@ export class DashboardControlService {
           }
           return ok('Privilege grant rejected', { grant: rejectedGrant });
         }
-        case 'package_overview': return ok('Managed packages listed', this.packageOverview(principalId));
+        case 'package_overview': return ok('Managed packages listed', this.packageOverview(principalId, await this.currentPackageImageId()));
         case 'package_plan_list': return ok('Package plans listed', this.packagePlanList(principalId));
         case 'package_plan_approve': {
           const plan = this.requirePackages().approvePlan({
@@ -1524,7 +1524,13 @@ export class DashboardControlService {
     return { enabled: true, approvalMode: settings.approvalMode, plans };
   }
 
-  private packageOverview(ownerId: string) {
+  /** The executor image releases are compared with; undefined when it cannot be read, so nothing is marked stale. */
+  private async currentPackageImageId(): Promise<string | undefined> {
+    if (!this.config.packagesEnabled) return undefined;
+    return await this.workspaces.packages.currentImageId();
+  }
+
+  private packageOverview(ownerId: string, currentImageId?: string) {
     const settings = this.packageSettings();
     if (!settings.enabled) {
       return {
@@ -1535,7 +1541,7 @@ export class DashboardControlService {
     const store = this.packageStore();
     const now = Date.now();
     const retained = store.retainedWorkspaceIds(ownerId);
-    const listed = store.overview(ownerId, { includeHistory: true });
+    const listed = store.overview(ownerId, { includeHistory: true, ...(currentImageId !== undefined ? { currentImageId } : {}) });
     const records = new Map<string, PackageReleaseRecord>();
     const record = (releaseId: string) => {
       if (!records.has(releaseId)) {
