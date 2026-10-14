@@ -167,8 +167,13 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
     for (const op of ['pullRequestUpdate', 'pullRequestComment', 'pullRequestReview', 'pullRequestReviewComment', 'pullRequestReviewThread', 'pullRequestReviewerManage', 'pullRequestReady', 'pullRequestMerge', 'pullRequestAutoMerge']) {
       expect(operations[op], op).toBe(true);
     }
+    for (const op of ['pullRequestReviewList', 'refGet', 'refCreateIfAbsent', 'refCompareAndSwap', 'refDeleteIfMatch', 'commitStatusRead', 'commitStatusCreate', 'checkRunList', 'workflowRunRead', 'workflowDispatch', 'workflowRunRerun']) {
+      expect(operations[op], op).toBe(true);
+    }
     const githubActions = data.githubActions as { readOnly: string[]; gated: string[] };
     expect(githubActions.readOnly).toContain('pr_review_threads');
+    expect(githubActions.readOnly).toEqual(expect.arrayContaining(['pr_reviews', 'ref_get', 'commit_status_get', 'check_runs_list', 'workflow_runs_list', 'workflow_run_view']));
+    expect(githubActions.gated).toEqual(expect.arrayContaining(['commit_status_create', 'workflow_dispatch', 'workflow_run_rerun_failed']));
     expect(githubActions.gated).toEqual(expect.arrayContaining(['pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_review_thread_resolve', 'pr_review_thread_unresolve', 'pr_reviewers_request', 'pr_reviewers_remove', 'pr_ready', 'pr_convert_to_draft', 'pr_merge', 'pr_auto_merge_enable', 'pr_auto_merge_disable']));
   });
 
@@ -195,6 +200,9 @@ describe('Workspace Capabilities and Authorization Preflight', () => {
     expect(operations.pullRequestCreate).toBe(false);
     expect(operations.pullRequestReview).toBe(false);
     expect(operations.pullRequestMerge).toBe(false);
+    for (const op of ['refCreateIfAbsent', 'refCompareAndSwap', 'refDeleteIfMatch', 'commitStatusCreate', 'commitStatusRead', 'workflowDispatch', 'workflowRunRerun', 'workflowRunRead', 'checkRunList']) {
+      expect(operations[op], op).toBe(false);
+    }
   });
 
   it('enforces structured error when git_push is attempted without write authorization', async () => {

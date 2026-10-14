@@ -193,6 +193,49 @@ describe('contracts', () => {
     expect(() => TOOL_SCHEMA_BY_NAME.git_push.parse({ workspaceId, refspec: ':main' })).toThrow();
   });
 
+  it('accepts git_push create-only and delete-if-match leases and rejects incomplete or ambiguous ones', () => {
+    const workspaceId = `ws_${'a'.repeat(24)}`;
+    const oid = 'a'.repeat(40);
+    const push = TOOL_SCHEMA_BY_NAME.git_push;
+    expect(push.parse({ workspaceId, refspec: 'HEAD:merge-lock', forceWithLease: true, expectedAbsent: true })).toMatchObject({ expectedAbsent: true, delete: false });
+    expect(push.parse({ workspaceId, refspec: 'merge-lock', forceWithLease: true, expectedRemoteOid: oid, delete: true })).toMatchObject({ delete: true });
+    expect(() => push.parse({ workspaceId, refspec: 'HEAD:merge-lock', expectedAbsent: true })).toThrow();
+    expect(() => push.parse({ workspaceId, refspec: 'HEAD:merge-lock', forceWithLease: true, expectedAbsent: true, expectedRemoteOid: oid })).toThrow();
+    expect(() => push.parse({ workspaceId, refspec: 'merge-lock', forceWithLease: true, expectedAbsent: true, delete: true })).toThrow();
+    expect(() => push.parse({ workspaceId, refspec: 'merge-lock', delete: true })).toThrow();
+    expect(() => push.parse({ workspaceId, refspec: 'HEAD:merge-lock', forceWithLease: true, expectedRemoteOid: oid, delete: true })).toThrow();
+    expect(() => push.parse({ workspaceId, refspec: 'HEAD', forceWithLease: true, expectedRemoteOid: oid, delete: true })).toThrow();
+    expect(() => push.parse({ workspaceId, forceWithLease: true, expectedRemoteOid: oid, delete: true })).toThrow();
+  });
+
+  it('validates the merge-train GitHub actions on their tool surfaces', () => {
+    const workspaceId = `ws_${'a'.repeat(24)}`;
+    const sha = 'b'.repeat(40);
+    const action = TOOL_SCHEMA_BY_NAME.github_action;
+    const read = TOOL_SCHEMA_BY_NAME.github_read;
+    expect(action.parse({ workspaceId, action: 'commit_status_create', sha, state: 'pending', context: 'merge-train', targetUrl: 'https://ci.example.test/1', idempotencyKey: 'status-key-1' }))
+      .toMatchObject({ action: 'commit_status_create', state: 'pending' });
+    expect(() => action.parse({ workspaceId, action: 'commit_status_create', sha: 'main', state: 'pending', context: 'x' })).toThrow();
+    expect(() => action.parse({ workspaceId, action: 'commit_status_create', sha, state: 'neutral', context: 'x' })).toThrow();
+    expect(() => action.parse({ workspaceId, action: 'commit_status_create', sha, state: 'success', context: 'a\nb' })).toThrow();
+    expect(() => action.parse({ workspaceId, action: 'commit_status_create', sha, state: 'success', context: 'x', targetUrl: 'http://insecure.test' })).toThrow();
+    expect(() => action.parse({ workspaceId, action: 'commit_status_create', sha, state: 'success', context: 'x', description: 'd'.repeat(141) })).toThrow();
+
+    expect(action.parse({ workspaceId, action: 'workflow_dispatch', workflow: 'ci.yml', ref: 'refs/heads/dev', inputs: { train: '7' } })).toMatchObject({ workflow: 'ci.yml' });
+    expect(action.parse({ workspaceId, action: 'workflow_dispatch', workflow: 1234, ref: 'dev' })).toMatchObject({ workflow: 1234 });
+    expect(() => action.parse({ workspaceId, action: 'workflow_dispatch', workflow: '../ci.yml', ref: 'dev' })).toThrow();
+    expect(() => action.parse({ workspaceId, action: 'workflow_dispatch', workflow: 'ci.yml', ref: 'dev', inputs: Object.fromEntries(Array.from({ length: 26 }, (_, i) => [`k${i}`, 'v'])) })).toThrow();
+    expect(action.parse({ workspaceId, action: 'workflow_run_rerun_failed', runId: 9001 })).toMatchObject({ runId: 9001 });
+
+    expect(read.parse({ workspaceId, action: 'workflow_runs_list', headSha: sha, event: 'workflow_dispatch' })).toMatchObject({ limit: 20 });
+    expect(read.parse({ workspaceId, action: 'commit_status_get', sha })).toMatchObject({ limit: 100 });
+    expect(read.parse({ workspaceId, action: 'ref_get', ref: 'refs/heads/merge-lock' })).toMatchObject({ ref: 'refs/heads/merge-lock' });
+    expect(() => read.parse({ workspaceId, action: 'ref_get', ref: 'merge-lock' })).toThrow();
+    expect(read.parse({ workspaceId, action: 'pr_reviews', prNumber: 12 })).toMatchObject({ prNumber: 12 });
+    expect(() => read.parse({ workspaceId, action: 'workflow_dispatch', workflow: 'ci.yml', ref: 'dev' })).toThrow();
+    expect(() => read.parse({ workspaceId, action: 'commit_status_create', sha, state: 'success', context: 'x' })).toThrow();
+  });
+
 
   it('rejects workspace-root file mutations and validates dependency handles', () => {
     const workspaceId = `ws_${'a'.repeat(24)}`;

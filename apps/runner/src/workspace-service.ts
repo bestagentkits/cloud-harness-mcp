@@ -34,7 +34,7 @@ import { PackageBuilder } from './package-builder.js';
 import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
 import { PackageStore } from './package-store.js';
 import { readVerifiedWorkspaceFile } from './bounded-workspace-file-reader.js';
-import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions } from './github-app-broker.js';
+import { mintPrincipalRepositoryScopedToken, mintPrincipalRepositoryToken, mintRepositoryToken, requiredGitHubPermissions, type GitHubPermissionScope } from './github-app-broker.js';
 import type { GitHubBindingService } from './github-binding-service.js';
 import { ArtifactStoreError, type ArtifactMetadata, type ArtifactStore } from './artifact-store.js';
 import type { GitHubInstallationRecord, GitHubInstallationStore } from './github-installation-store.js';
@@ -1259,6 +1259,9 @@ export class WorkspaceService {
     let issuesWrite = false;
     let pullRequestsRead = false;
     let pullRequestsWrite = false;
+    // A GitHub credential the broker can use exists. Statuses, checks, and Actions levels are not
+    // recorded per installation, so those operations are advertised on this and GitHub decides per call.
+    let githubBrokered = false;
 
     if (authMode === 'cloudflare-access') {
       if (this.githubInstallations && isGitHub && owner && repository) {
@@ -1270,6 +1273,7 @@ export class WorkspaceService {
             installation.status === 'active' &&
             String(this.config.githubApp?.appId) === installation.appId
           ) {
+            githubBrokered = true;
             contentsRead = true;
             contentsWrite = grant.contents === 'write';
             // The installation's granted levels are the authority for issue and
@@ -1292,6 +1296,7 @@ export class WorkspaceService {
       // unknown to the harness, so these flags mean "a credential exists and is
       // expected to be able to perform this", not "the harness verified it".
       if (fallbackAvailable) {
+        githubBrokered = true;
         contentsRead = true;
         contentsWrite = true;
         issuesRead = true;
@@ -1310,6 +1315,7 @@ export class WorkspaceService {
         // keeps the previous optimistic value, and a verified grant decides.
         const grantedIssues = installation?.issues ?? null;
         const grantedPullRequests = installation?.pullRequests ?? null;
+        githubBrokered = true;
         contentsRead = true;
         contentsWrite = true;
         issuesRead = fallbackAvailable || grantedIssues === null || grantedIssues !== 'none';
@@ -1385,6 +1391,17 @@ export class WorkspaceService {
         compare: isGitHub && contentsRead,
         releaseList: isGitHub && contentsRead,
         tagList: isGitHub && contentsRead,
+        pullRequestReviewList: pullRequestsRead,
+        refGet: isGitHub && contentsRead,
+        refCreateIfAbsent: contentsWrite,
+        refCompareAndSwap: contentsWrite,
+        refDeleteIfMatch: contentsWrite,
+        commitStatusRead: githubBrokered,
+        commitStatusCreate: githubBrokered,
+        checkRunList: githubBrokered,
+        workflowRunRead: githubBrokered,
+        workflowDispatch: githubBrokered,
+        workflowRunRerun: githubBrokered,
         execRun: true,
         privilegedExec: privileged,
         deploymentsRun: true
@@ -1789,6 +1806,20 @@ export class WorkspaceService {
               resumeAction: 'reconcile_push'
             });
           }
+          // The remote received the push and refused it by policy (branch protection, a ruleset, a
+          // pre-receive hook, or a missing App permission), so retrying the same push cannot succeed.
+          if (errText.includes('[remote rejected]')) {
+            const missingWorkflowsPermission = /without [`'"]?workflows[`'"]? permission|create or update workflow/i.test(errText);
+            throw new HarnessError(
+              missingWorkflowsPermission ? 'GITHUB_PERMISSION_MISSING' : 'FORBIDDEN',
+              (missingWorkflowsPermission
+                ? `Git push rejected: the credential lacks the GitHub workflows permission needed to change .github/workflows (${errText})`
+                : `Git push rejected by the remote's branch protection, ruleset, or hook (${errText})`).slice(0, 2_000),
+              403,
+              false,
+              { expectedRemoteOid }
+            );
+          }
           if (errText.includes('Connection timed out') || errText.includes('Connection reset') || errText.includes('timed out') || errText.includes('Could not resolve host')) {
             throw new HarnessError('UNKNOWN_REMOTE_STATE', `Git push was interrupted by network failure (${errText})`.slice(0, 2_000), 504, true, {
               expectedRemoteOid,
@@ -1872,7 +1903,8 @@ export class WorkspaceService {
     }
   }
 
-  private async probeRemoteRefOid(record: WorkspaceRecord, branch: string, token?: string, signal?: AbortSignal): Promise<string | undefined> {
+  /** The branch's remote object ID, `null` when the remote answered that the branch does not exist, or `undefined` when the probe failed. */
+  private async probeRemoteRefOid(record: WorkspaceRecord, branch: string, token?: string, signal?: AbortSignal): Promise<string | null | undefined> {
     const repositoryUrl = await validateRepositoryUrl(record.repositoryUrl, this.config.allowedGitHosts);
     const helperName = `chm-probe-${randomBytes(6).toString('hex')}`;
     try {
@@ -1909,7 +1941,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (result.exitCode === 0) {
         const line = result.stdout.trim().split('\n')[0];
         const oid = line?.split(/\s+/)[0];
-        return oid || undefined;
+        return oid || null;
       }
       return undefined;
     } catch {
@@ -1963,11 +1995,23 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const requestedRefspec = input.refspec as string | undefined;
     const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
     if (!requestedRefspec && !branch) throw new HarnessError('CONFLICT', 'git_push requires refspec when HEAD is detached', 409, false);
-    const refspec = normalizePushRefspec(requestedRefspec, branch);
+    const deleteRef = input.delete === true;
+    const expectedAbsent = input.expectedAbsent === true;
+    const refspec = deleteRef
+      ? `:refs/heads/${requestedRefspec!.replace(/^refs\/heads\//, '')}`
+      : normalizePushRefspec(requestedRefspec, branch);
     const expectedRemoteOid = input.expectedRemoteOid as string | undefined;
     const forceWithLease = Boolean(input.forceWithLease);
+    // The transfer helper reads `absent` as the create-only lease and an object ID as compare-and-swap.
+    const lease = expectedAbsent ? 'absent' : expectedRemoteOid;
     const requestFingerprint = createHash('sha256')
-      .update(JSON.stringify({ refspec, expectedRemoteOid: expectedRemoteOid ?? null, forceWithLease }))
+      .update(JSON.stringify({
+        refspec,
+        expectedRemoteOid: expectedRemoteOid ?? null,
+        forceWithLease,
+        ...(expectedAbsent ? { expectedAbsent } : {}),
+        ...(deleteRef ? { delete: deleteRef } : {})
+      }))
       .digest('hex');
     const currentLocalHead = await this.currentHead(record, signal);
 
@@ -1999,30 +2043,50 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (existingOp.status === 'UNKNOWN_REMOTE_STATE') {
           const targetBranchName = branch || (refspec.includes(':') ? refspec.split(':')[1]?.replace(/^refs\/heads\//, '') : refspec.replace(/^refs\/heads\//, '')) || 'main';
           const remoteOid = await this.probeRemoteRefOid(record, targetBranchName, token, signal);
-          if (remoteOid && existingOp.localCommitSha && remoteOid === existingOp.localCommitSha) {
-            const successResponse: RunnerResponse = {
-              ok: true,
-              message: 'Git push complete (reconciled from remote state)',
-              data: { refspec, alreadyFinalized: true },
-              truncated: false
-            };
+          const reconciled = (message: string): RunnerResponse => {
+            const successResponse: RunnerResponse = { ok: true, message, data: { refspec, alreadyFinalized: true }, truncated: false };
             this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(successResponse), null, existingOp.localCommitSha);
             return successResponse;
-          }
-          if (expectedRemoteOid && remoteOid && remoteOid !== expectedRemoteOid && remoteOid !== existingOp.localCommitSha) {
-            throw new HarnessError('CONFLICT', `Remote branch moved to ${remoteOid} during push retry (expected ${expectedRemoteOid})`, 409, false, {
-              currentRemoteOid: remoteOid,
-              expectedRemoteOid,
-              resumeAction: 'reconcile_push'
-            });
-          }
-          if (!remoteOid) {
+          };
+          if (remoteOid === undefined) {
             throw new HarnessError('UNKNOWN_REMOTE_STATE', 'Remote state could not be determined during reconciliation probe; please retry after verifying connection', 504, true, {
               expectedRemoteOid,
               resumeAction: 'reconcile_push'
             });
           }
-          this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
+          // A lease names the only remote value the retry may act on, so any other value is a conflict.
+          if (deleteRef || expectedAbsent) {
+            if (deleteRef && remoteOid === null) return reconciled('Git branch delete complete (reconciled from remote state)');
+            if (expectedAbsent && remoteOid !== null && remoteOid === existingOp.localCommitSha) {
+              return reconciled('Git push complete (reconciled from remote state)');
+            }
+            if (remoteOid !== (deleteRef ? expectedRemoteOid : null)) {
+              throw new HarnessError('CONFLICT', `Remote branch is ${remoteOid ?? 'absent'} during push retry (expected ${deleteRef ? expectedRemoteOid : 'absent'})`, 409, false, {
+                ...(remoteOid ? { currentRemoteOid: remoteOid } : {}),
+                expectedRemoteOid,
+                resumeAction: 'reconcile_push'
+              });
+            }
+            this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
+          } else {
+            if (remoteOid && existingOp.localCommitSha && remoteOid === existingOp.localCommitSha) {
+              return reconciled('Git push complete (reconciled from remote state)');
+            }
+            if (expectedRemoteOid && remoteOid && remoteOid !== expectedRemoteOid && remoteOid !== existingOp.localCommitSha) {
+              throw new HarnessError('CONFLICT', `Remote branch moved to ${remoteOid} during push retry (expected ${expectedRemoteOid})`, 409, false, {
+                currentRemoteOid: remoteOid,
+                expectedRemoteOid,
+                resumeAction: 'reconcile_push'
+              });
+            }
+            if (!remoteOid) {
+              throw new HarnessError('UNKNOWN_REMOTE_STATE', 'Remote state could not be determined during reconciliation probe; please retry after verifying connection', 504, true, {
+                expectedRemoteOid,
+                resumeAction: 'reconcile_push'
+              });
+            }
+            this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
+          }
         } else {
           this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'PENDING');
         }
@@ -2040,7 +2104,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       let pushed: { exitCode: number; stdout: string; stderr: string; truncated: boolean };
       try {
-        pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, expectedRemoteOid, signal);
+        pushed = await this.runGitTransferHelper(record, 'push', transferName, refspec, token, lease, signal);
       } catch (err: unknown) {
         if (err instanceof HarnessError && (err.code === 'TIMEOUT' || err.code === 'UNAVAILABLE')) {
           throw new HarnessError('UNKNOWN_REMOTE_STATE', `Git push interrupted by timeout or transport failure (${err.message})`.slice(0, 2_000), 504, true, {
@@ -2328,9 +2392,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     const permissionScope = requirement.scope;
     const requiredCapability = permissionScope === 'contents'
       ? (isWrite ? 'repository.push' : 'repository.read')
-      : permissionScope === 'pull_requests'
-        ? (isWrite ? 'repository.pullRequestsWrite' : 'repository.pullRequestsRead')
-        : (isWrite ? 'repository.issuesWrite' : 'repository.issuesRead');
+      : `repository.${GITHUB_SCOPE_CAPABILITY[permissionScope]}${isWrite ? 'Write' : 'Read'}`;
     let repoUrl: URL;
     try {
       repoUrl = new URL(record.repositoryUrl);
@@ -3811,6 +3873,32 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         case 'compare': args = [validated.base as string, validated.head as string, String(validated.limit ?? 100)]; break;
         case 'release_list': args = [String(validated.limit ?? 20)]; break;
         case 'tag_list': args = [String(validated.limit ?? 30)]; break;
+        case 'pr_reviews': args = [String(validated.prNumber)]; break;
+        case 'ref_get': args = [validated.ref as string]; break;
+        case 'commit_status_get': args = [validated.sha as string, String(validated.limit ?? 100)]; break;
+        case 'check_runs_list': args = [validated.sha as string, String(validated.limit ?? 100), (validated.checkName as string) ?? '']; break;
+        case 'workflow_runs_list': args = [
+          String(validated.limit ?? 20),
+          validated.workflow === undefined ? '' : String(validated.workflow),
+          (validated.headSha as string) ?? '',
+          (validated.branch as string) ?? '',
+          (validated.event as string) ?? '',
+          (validated.status as string) ?? ''
+        ]; break;
+        case 'workflow_run_view': args = [String(validated.runId), String(validated.limit ?? 100)]; break;
+        case 'commit_status_create': args = [
+          validated.sha as string,
+          validated.state as string,
+          validated.context as string,
+          (validated.description as string) ?? '',
+          (validated.targetUrl as string) ?? ''
+        ]; break;
+        case 'workflow_dispatch': args = [
+          String(validated.workflow),
+          validated.ref as string,
+          JSON.stringify(validated.inputs ?? {})
+        ]; break;
+        case 'workflow_run_rerun_failed': args = [String(validated.runId)]; break;
         case 'issue_create': args = [
           validated.title as string,
           (validated.body as string) ?? '',
@@ -3854,6 +3942,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (typeof validated.state === 'string') details.state = validated.state;
         if (typeof validated.idempotencyKey === 'string') details.idempotencyKey = validated.idempotencyKey;
         if (typeof validated.name === 'string' && action === 'label_create') details.labelName = validated.name;
+        if (typeof validated.sha === 'string' && action === 'commit_status_create') details.sha = validated.sha;
+        if (typeof validated.context === 'string') details.statusContext = validated.context;
+        if (typeof validated.runId === 'number') details.runId = validated.runId;
+        if (validated.workflow !== undefined) details.workflow = String(validated.workflow);
+        if (typeof validated.ref === 'string' && action === 'workflow_dispatch') details.ref = validated.ref;
         if (result.ok && (action === 'pr_create' || action === 'issue_create')) {
           const match = String((result.data as Record<string, unknown>)?.output ?? '').match(/\/(?:pull|issues)\/(\d+)/);
           if (match && match[1]) {
@@ -4811,8 +4904,18 @@ const GITHUB_CHECKOUT_FREE_ACTIONS: ReadonlySet<string> = new Set(['pr_merge', '
 /** Mutations that can duplicate a visible side effect, so an `idempotencyKey` replays the first result. */
 const GITHUB_IDEMPOTENT_ACTIONS: ReadonlySet<string> = new Set([
   'pr_comment', 'issue_comment', 'issue_labels_add', 'issue_publish',
-  'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_reviewers_request', 'pr_merge', 'pr_auto_merge_enable'
+  'pr_review', 'pr_review_comment', 'pr_review_reply', 'pr_reviewers_request', 'pr_merge', 'pr_auto_merge_enable',
+  'commit_status_create', 'workflow_dispatch', 'workflow_run_rerun_failed'
 ]);
+
+/** The capability noun each non-contents scope reports in `requiredCapability`, such as `repository.statusesWrite`. */
+const GITHUB_SCOPE_CAPABILITY: Record<Exclude<GitHubPermissionScope, 'contents'>, string> = {
+  issues: 'issues',
+  pull_requests: 'pullRequests',
+  statuses: 'statuses',
+  checks: 'checks',
+  actions: 'actions'
+};
 
 function isMutationOperation(operation: RunnerOperation, validated: Record<string, unknown>): boolean {
   if (operation === 'bash') {

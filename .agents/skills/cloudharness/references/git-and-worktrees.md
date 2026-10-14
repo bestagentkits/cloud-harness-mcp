@@ -135,18 +135,31 @@ URL. Network access for these tools is separate from executor egress.
 ### `git_push`
 
 - Required: `workspaceId`; `remote` is fixed to `origin`; optional branch-only
-  `refspec`; `forceWithLease` defaults to `false`.
-- A refspec source is `HEAD` or a branch-like ref; an optional destination must
-  be `refs/heads/...`. Deletion, tags, option injection, ranges, and reflog
-  syntax are rejected.
-- Force-with-lease requires `expectedRemoteOid`, a lowercase 40- or 64-hex
-  object ID. With a refspec it also requires an explicit destination branch.
+  `refspec`; `forceWithLease`, `expectedAbsent`, and `delete` default to `false`.
+- A refspec source is `HEAD` or a branch-like ref; an optional destination is a
+  branch name or `refs/heads/...`. `:`-prefixed deletion, `+` force, tags,
+  notes, option injection, ranges, and reflog syntax are rejected.
+- Force-with-lease requires exactly one of `expectedRemoteOid` (a lowercase 40-
+  or 64-hex object ID) or `expectedAbsent: true`. With a refspec it also
+  requires an explicit destination branch.
+- `expectedAbsent` creates a branch only if it is absent, and `delete: true`
+  (refspec names only the branch) deletes it only if it still matches
+  `expectedRemoteOid`. A lost lease is `CONFLICT`, not retryable. Using a branch
+  as a lock: [GitHub merge train](github-merge-train.md#atomic-branch-locks).
+- A push GitHub refuses by policy (`[remote rejected]`: branch protection,
+  ruleset, or hook) returns `FORBIDDEN`; a commit that changes
+  `.github/workflows` without the App's Workflows permission returns
+  `GITHUB_PERMISSION_MISSING`. Neither is retryable. A fast-forward to a
+  protected branch succeeds only when its required checks already pass on the
+  commit and no pull-request rule applies to the App.
 - Supply `idempotencyKey` on the initial push, not only after a failure. If the
   network drops mid-push the result is `UNKNOWN_REMOTE_STATE` with
   `resumeAction: "reconcile_push"`; retry the identical request with the same
   key. The service checks the destination ref's remote OID before deciding
   whether another push is needed, returning `alreadyFinalized: true` when the
-  earlier push had already landed.
+  earlier push had already landed. For a create-only lease it succeeds only when
+  the branch holds this workspace's `HEAD`; for a delete, when the branch is
+  gone. Any other value returns `CONFLICT` with `currentRemoteOid`.
 - Push changes an external repository. Verify the target ref and inspect the
   returned result; a local commit is not evidence of a successful push.
 
@@ -206,7 +219,8 @@ gate), so MCP clients may prompt for approval on every call, including reads;
 Read-only GitHub access with no approval prompts, sharing `github_action`'s broker and helper.
 
 - Required: `workspaceId`, `action` — one of `pr_list`, `pr_view`,
-  `pr_review_threads`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`. Mutating
+  `pr_review_threads`, `pr_reviews`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`,
+  `ref_get`, `commit_status_get`, `check_runs_list`, `workflow_runs_list`, `workflow_run_view`. Mutating
   actions are rejected.
 - `pr_list` / `issue_list`: optional `limit` (default 20, max 100), `state`
   (`open`, `closed`, or `all`).
@@ -217,8 +231,12 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
   optional `limit` (default 100, max 250). Returns commits and a changed-file
   summary between the two revisions.
 - `release_list` / `tag_list`: optional `limit` (default 20/30, max 100).
-- Mints a `contents: read`-scoped token via the same broker as `github_action`;
-  tokens are never exposed to workspace files.
+- `pr_reviews`, `ref_get`, `commit_status_get`, `check_runs_list`,
+  `workflow_runs_list`, `workflow_run_view`: inputs and results in
+  [GitHub merge train](github-merge-train.md#reads).
+- History and ref reads mint a `contents: read`-scoped token; other reads mint
+  the narrowest scope their action needs, via the same broker as `github_action`.
+  Tokens are never exposed to workspace files.
 
 <!-- cloudharness-example:github_read
 {"workspaceId":"ws_abcdefghijklmnopqrstuvwxyz012345","action":"commit_list","limit":10}
@@ -248,6 +266,8 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
   - `pr_merge`: required `prNumber`, `method` (`merge` | `squash` | `rebase`); optional `commitTitle`, `commitBody` (not for `rebase`), `matchHeadCommit` (full SHA; refuses to merge if the head moved), `idempotencyKey`. Needs `contents: write` as well as `pull_requests: write`. Blocked merges return `GITHUB_MERGE_BLOCKED` (checks, approvals, branch protection) or `GITHUB_MERGE_CONFLICT`; inspect `pr_view` (`mergeStateStatus`, `reviewDecision`) first.
   - `pr_auto_merge_enable`: same `prNumber`, `method`, `commitTitle`, `commitBody`, `idempotencyKey` as `pr_merge`; `pr_auto_merge_disable`: required `prNumber`. A repository that disallows auto-merge, or a PR already in clean status (merge it with `pr_merge`), returns `GITHUB_AUTO_MERGE_UNAVAILABLE`; the helper never merges immediately on this action. Merging a PR that edits `.github/workflows/**` with an App token needs the App's **Workflows** permission and otherwise returns `GITHUB_PERMISSION_MISSING`.
   - Review workflow: `pr_view` → `pr_review` `REQUEST_CHANGES` → author pushes fixes → `pr_view` → `pr_review` `APPROVE` → `pr_merge` `squash`. Check `workspace_capabilities` (`operations.pullRequestReview`, `pullRequestMerge`, and `githubActions`) before relying on an action.
+- Merge-train mutations `commit_status_create`, `workflow_dispatch`, and
+  `workflow_run_rerun_failed`: see [GitHub merge train](github-merge-train.md#writes).
 - Issue and label mutations:
   - `issue_create`: required `title`; optional `body`, `labels` array (max 50), `assignees` array (max 10).
   - `issue_update`: required `issueNumber`; optional `title`, `body`, `state` (`open` | `closed`), `stateReason` (`completed` | `not_planned` | `reopened`).
@@ -257,7 +277,7 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
   - `issue_labels_remove`: required `issueNumber`, `label`.
   - `label_create`: required `name`; optional `color` (6-hex), `description`.
   - `issue_publish`: required `issueNumber`; optional `comment`, `addLabels` array (max 50), `removeLabels` array (max 50), `createMissingLabels` (default true), `idempotencyKey`.
-- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`, `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`, and `pr_auto_merge_enable` cache their successful result and replay it on a same-key retry with identical payload within a 24-hour retention window; reusing the key with a different request payload is rejected with `CONFLICT`. After 24 hours the record expires and the request executes anew.
+- Idempotency and replay: with `idempotencyKey`, the mutation actions `pr_comment`, `issue_comment`, `issue_labels_add`, `issue_publish`, `pr_review`, `pr_review_comment`, `pr_review_reply`, `pr_reviewers_request`, `pr_merge`, `pr_auto_merge_enable`, `commit_status_create`, `workflow_dispatch`, and `workflow_run_rerun_failed` cache their successful result and replay it on a same-key retry with identical payload within a 24-hour retention window; reusing the key with a different request payload is rejected with `CONFLICT`. After 24 hours the record expires and the request executes anew.
 <!-- cloudharness-example:github_action
 {
   "workspaceId": "ws_abcdefghijklmnopqrstuvwxyz012345",
