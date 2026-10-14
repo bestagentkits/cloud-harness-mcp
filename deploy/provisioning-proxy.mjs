@@ -1,4 +1,4 @@
-import { connect } from 'node:net';
+import { connect, isIP } from 'node:net';
 import http from 'node:http';
 import { lookup } from 'node:dns/promises';
 
@@ -10,7 +10,35 @@ const rawAllowedHosts = (process.env.ALLOWED_HOSTS ?? 'github.com,api.github.com
   .map((h) => h.trim().toLowerCase())
   .filter(Boolean);
 
-const allowedHostSet = new Set(rawAllowedHosts);
+const HOSTNAME_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/**
+ * Parse the operator's managed-toolbox registry opt-in (`PACKAGES_PROXY_HOSTS`, from the dedicated
+ * provisioning-proxy.env file). Only plain DNS hostnames with at least two labels are accepted: an IP
+ * literal, a wildcard, a port, a scheme, or any other shape is reported through `warn` and ignored, so a
+ * typo can never widen the allow-list beyond a named host and its subdomains.
+ */
+export function parsePackagesProxyHosts(raw, warn = (message) => process.stderr.write(`${message}\n`)) {
+  const accepted = [];
+  for (const entry of String(raw ?? '').split(',')) {
+    const host = entry.trim().toLowerCase();
+    if (!host) continue;
+    const labels = host.split('.');
+    const valid = host.length <= 253
+      && isIP(host) === 0
+      && labels.length >= 2
+      && labels.every((label) => HOSTNAME_LABEL.test(label))
+      && !/^[0-9]+$/.test(labels[labels.length - 1]);
+    if (!valid) {
+      warn(`provisioning proxy ignored invalid PACKAGES_PROXY_HOSTS entry: ${JSON.stringify(entry.trim().slice(0, 100))}`);
+      continue;
+    }
+    if (!accepted.includes(host)) accepted.push(host);
+  }
+  return accepted;
+}
+
+const allowedHostSet = new Set([...rawAllowedHosts, ...parsePackagesProxyHosts(process.env.PACKAGES_PROXY_HOSTS)]);
 
 export function isForbiddenIp(ip) {
   if (!ip || typeof ip !== 'string') return true;
