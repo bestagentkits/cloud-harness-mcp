@@ -10,7 +10,9 @@ import { PACKAGE_OPERATIONS, PackageService } from '../src/package-service.js';
 import { PackageStore } from '../src/package-store.js';
 
 const docker = vi.hoisted(() => ({
-  runDocker: vi.fn(async (_args: string[]) => ({ stdout: '', stderr: '', exitCode: 0, truncated: false })),
+  runDocker: vi.fn<(args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number; truncated: boolean }>>(
+    async () => ({ stdout: '', stderr: '', exitCode: 0, truncated: false })
+  ),
   removeContainer: vi.fn(async () => undefined),
   inspectContainer: vi.fn(async () => undefined),
   terminateContainerProcessGroup: vi.fn(async () => undefined),
