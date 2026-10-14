@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,6 +9,7 @@ import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { GitHubBindingService, GitHubSetupStateStore } from '../src/github-binding-service.js';
 import { InMemoryGitHubInstallationStore } from '../src/github-installation-store.js';
 import { MetadataStore } from '../src/metadata-store.js';
+import { PackageStore } from '../src/package-store.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 import { ToolkitCacheManager } from '../src/toolkit-cache-manager.js';
@@ -24,7 +25,7 @@ afterEach(() => {
   }
 });
 
-function setup(withKeyring = true) {
+function setup(withKeyring = true, config: Partial<RunnerConfig> | ((root: string) => Partial<RunnerConfig>) = {}) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-controls-')); roots.push(root);
   const databasePath = join(root, 'state.db'); const principals = new StateStore(databasePath);
   const keyring = withKeyring ? new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]) : undefined;
@@ -84,11 +85,11 @@ function setup(withKeyring = true) {
     }
   } as unknown as WorkspaceService;
   const controls = new DashboardControlService(
-    { artifactRetentionSeconds: 60 } as RunnerConfig,
+    { artifactRetentionSeconds: 60, ...(typeof config === 'function' ? config(root) : config) } as RunnerConfig,
     principals, metadata, artifacts, workspaces,
     undefined, undefined, undefined, undefined, keyring
   );
-  return { controls, principals, metadata, artifacts, keyring, workspaces };
+  return { controls, principals, metadata, artifacts, keyring, workspaces, root };
 }
 
 describe('skill revisions', () => {
@@ -673,5 +674,160 @@ describe('dashboard control service', () => {
 
     const audit = await controls.execute(request('audit_list', { limit: 50 }));
     expect(JSON.stringify(audit)).toContain('artifact.restored');
+  });
+});
+
+describe('dashboard managed packages', () => {
+  const packageLimits = { maxBindings: 32, maxOwnerBytes: 4_294_967_296, maxReleaseBytes: 536_870_912, minFreeBytes: 0 };
+  const runtime = { imageId: 'sha256:executor-image', node: 'v24.11.0', npm: '11.6.0', uv: null, python: null };
+
+  function packagesSetup() {
+    const context = setup(true, (root) => ({
+      authMode: 'cloudflare-access', packagesEnabled: true, packagesApprovalMode: 'required', packagesEcosystems: ['npm', 'uv'],
+      packagesNpmLifecycleScripts: 'deny', packagesMaxReleaseBytes: 536_870_912, packagesMaxOwnerBytes: 4_294_967_296,
+      packagesMaxBindings: 32, packagesRoot: join(root, 'packages')
+    }));
+    const packagesRoot = join(context.root, 'packages');
+    const store = new PackageStore(context.principals.database, (...args) => context.metadata.recordAuditInTransaction(...args));
+    const ownerId = context.principals.resolvePrincipal(principal);
+    const plan = (owner: string, version: string, approvalMode: 'required' | 'none' = 'required', now = Date.now(), lifecycleScripts = false) => store.createPlan({
+      ownerId: owner, scope: 'owner', workspaceId: null, ecosystem: 'npm', packageName: 'chm-hello', version,
+      requestedSpec: version, lockText: '{"lockfileVersion":3}', approvalMode, now,
+      content: {
+        source: { registry: 'https://registry.npmjs.org/', resolved: `https://registry.npmjs.org/chm-hello/-/chm-hello-${version}.tgz` },
+        integrity: 'sha512-abc', dependencyCount: 2, sizeEstimateBytes: 8_192, binaries: ['hello'], conflicts: [],
+        lifecycleScripts, runtime
+      }
+    });
+    /** Drives a plan through a successful apply and puts its release tree on disk. */
+    const install = (version: string) => {
+      const approved = plan(ownerId, version, 'none');
+      const { apply } = store.startApply({ ownerId, planId: approved.id, planDigest: approved.digest, now: Date.now(), limits: packageLimits });
+      for (const step of ['BUILDING', 'VERIFYING', 'PUBLISHING'] as const) store.advanceApply(apply.id, step, { now: Date.now() });
+      const published = store.publish(apply.id, {
+        treeDigest: createHash('sha256').update(approved.id).digest('hex'), sizeBytes: 2_048, fileCount: 4, binaries: ['hello'],
+        runtime, provenance: { registry: 'https://registry.npmjs.org/' }, sbom: [{ name: 'chm-hello', version }]
+      }, { now: Date.now() });
+      mkdirSync(join(packagesRoot, published.release.relPath), { recursive: true });
+      return published;
+    };
+    return { ...context, store, ownerId, plan, install, packagesRoot };
+  }
+
+  it('answers an empty overview and refuses every decision while the feature is off', async () => {
+    const { controls, metadata, principals } = setup(true, { packagesEnabled: false, packagesApprovalMode: 'required' });
+    const overview = await controls.execute(request('package_overview', {}));
+    expect(overview.data).toMatchObject({ enabled: false, bindings: [], releases: [], inFlight: [], recentApplies: [], pendingPlans: [] });
+    const plans = await controls.execute(request('package_plan_list', {}));
+    expect(plans.data).toMatchObject({ enabled: false, plans: [] });
+    const planId = `pkp_${'a'.repeat(24)}`;
+    for (const [operation, input] of [
+      ['package_plan_approve', { planId, planDigest: 'a'.repeat(64) }],
+      ['package_plan_reject', { planId }],
+      ['package_rollback', { bindingId: `pkb_${'a'.repeat(24)}`, releaseId: `pkr_${'a'.repeat(24)}`, expectedGeneration: 1 }]
+    ] as const) {
+      await expect(controls.execute(request(operation, input))).rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('PACKAGES_ENABLED=true') });
+    }
+    expect(metadata.listAudit(principals.resolvePrincipal(principal)).filter((event) => event.action.startsWith('package'))).toEqual([]);
+  });
+
+  it('approves only the digest the operator saw and records the dashboard decision', async () => {
+    const { controls, plan, ownerId, metadata, store } = packagesSetup();
+    const pending = plan(ownerId, '1.0.0', 'required', Date.now(), true);
+
+    const listed = await controls.execute(request('package_plan_list', {}));
+    const listedPlan = (listed.data as { plans: Record<string, unknown>[] }).plans[0];
+    expect(listedPlan).toMatchObject({
+      planId: pending.id, planDigest: pending.digest, status: 'PENDING_APPROVAL', lifecycleScripts: true,
+      dependencyCount: 2, binaries: ['hello'], currentRelease: null, stale: false
+    });
+    expect(listedPlan).not.toHaveProperty('ownerId');
+    expect(JSON.stringify(listed.data)).not.toContain(ownerId);
+
+    await expect(controls.execute(request('package_plan_approve', { planId: pending.id, planDigest: 'f'.repeat(64) })))
+      .rejects.toMatchObject({ code: 'STALE_GENERATION' });
+    expect(store.getPlan(ownerId, pending.id)?.status).toBe('PENDING_APPROVAL');
+
+    const approved = await controls.execute(request('package_plan_approve', { planId: pending.id, planDigest: pending.digest }));
+    expect(approved.data).toMatchObject({ plan: { planId: pending.id, status: 'APPROVED', decidedBy: 'dashboard' } });
+    expect(store.getPlan(ownerId, pending.id)).toMatchObject({ status: 'APPROVED', decidedBy: ownerId });
+    expect(metadata.listAudit(ownerId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'package_plan.approved', subjectType: 'package_plan', subjectId: pending.id })
+    ]));
+  });
+
+  it('hides a plan owned by another principal and refuses an expired plan', async () => {
+    const { controls, plan, principals, store, ownerId } = packagesSetup();
+    const foreignOwner = principals.resolvePrincipal({ kind: 'external', issuer: 'https://access.example.com', subject: 'operator-b' });
+    const foreign = plan(foreignOwner, '1.0.0');
+    await expect(controls.execute(request('package_plan_approve', { planId: foreign.id, planDigest: foreign.digest })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(controls.execute(request('package_plan_reject', { planId: foreign.id }))).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(store.getPlan(foreignOwner, foreign.id)?.status).toBe('PENDING_APPROVAL');
+
+    const expired = plan(ownerId, '1.0.0', 'required', Date.now() - 60 * 60_000);
+    const listed = await controls.execute(request('package_plan_list', {}));
+    expect((listed.data as { plans: { planId: string; status: string }[] }).plans.find((entry) => entry.planId === expired.id)?.status).toBe('EXPIRED');
+    await expect(controls.execute(request('package_plan_approve', { planId: expired.id, planDigest: expired.digest })))
+      .rejects.toMatchObject({ code: 'EXPIRED' });
+  });
+
+  it('rejects a pending plan with an audit row', async () => {
+    const { controls, plan, ownerId, metadata, store } = packagesSetup();
+    const pending = plan(ownerId, '1.0.0');
+    const rejected = await controls.execute(request('package_plan_reject', { planId: pending.id }));
+    expect(rejected.data).toMatchObject({ plan: { planId: pending.id, status: 'REJECTED', decidedBy: 'dashboard' } });
+    expect(store.getPlan(ownerId, pending.id)?.status).toBe('REJECTED');
+    expect(metadata.listAudit(ownerId).some((event) => event.action === 'package_plan.rejected' && event.subjectId === pending.id)).toBe(true);
+  });
+
+  it('summarizes installed releases, history, applies, quotas, and pending plans', async () => {
+    const { controls, install, plan, ownerId } = packagesSetup();
+    install('1.0.0');
+    const second = install('1.1.0');
+    const pending = plan(ownerId, '1.2.0');
+
+    const overview = await controls.execute(request('package_overview', {}));
+    const data = overview.data as {
+      bindings: { history: { version: string; available: boolean }[] }[];
+      releases: unknown[]; recentApplies: { state: string; name: string }[];
+    };
+    expect(overview.data).toMatchObject({
+      enabled: true, approvalMode: 'required', ecosystems: ['npm', 'uv'], quotas: { maxBindings: 32 },
+      usage: { ownerBytes: 4_096, bindings: 1 },
+      bindings: [{ bindingId: second.binding.id, generation: 2, release: { version: '1.1.0', status: 'VERIFIED' } }],
+      pendingPlans: [{ planId: pending.id, currentRelease: { version: '1.1.0' } }]
+    });
+    expect(data.bindings[0].history.map((entry) => [entry.version, entry.available])).toEqual([['1.1.0', true], ['1.0.0', true]]);
+    expect(data.releases).toHaveLength(2);
+    expect(data.recentApplies.map((apply) => [apply.state, apply.name])).toEqual([['SUCCEEDED', 'chm-hello'], ['SUCCEEDED', 'chm-hello']]);
+    expect(JSON.stringify(overview.data)).not.toContain(ownerId);
+    expect(JSON.stringify(overview.data)).not.toContain('releases/');
+  });
+
+  it('rolls back from the dashboard and refuses a stale generation or a release that left the disk', async () => {
+    const { controls, install, ownerId, metadata, store, packagesRoot } = packagesSetup();
+    const first = install('1.0.0');
+    const second = install('1.1.0');
+    const bindingId = second.binding.id;
+
+    await expect(controls.execute(request('package_rollback', { bindingId, releaseId: first.release.id, expectedGeneration: 1 })))
+      .rejects.toMatchObject({ code: 'STALE_GENERATION' });
+    await expect(controls.execute(request('package_rollback', { bindingId, releaseId: second.release.id, expectedGeneration: 2 })))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(controls.execute(request('package_rollback', { bindingId: `pkb_${'z'.repeat(24)}`, releaseId: first.release.id, expectedGeneration: 2 })))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    rmSync(join(packagesRoot, first.release.relPath), { recursive: true, force: true });
+    await expect(controls.execute(request('package_rollback', { bindingId, releaseId: first.release.id, expectedGeneration: 2 })))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('no longer available') });
+    mkdirSync(join(packagesRoot, first.release.relPath), { recursive: true });
+
+    const rolled = await controls.execute(request('package_rollback', { bindingId, releaseId: first.release.id, expectedGeneration: 2 }));
+    expect(rolled.data).toMatchObject({ binding: { bindingId, generation: 3, releaseId: first.release.id }, replayed: false });
+    expect(store.history(ownerId, bindingId)[0]).toMatchObject({ reason: 'rollback', actor: 'dashboard', releaseId: first.release.id });
+    expect(metadata.listAudit(ownerId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'package.rollback', subjectId: bindingId, subjectGeneration: 3 })
+    ]));
   });
 });

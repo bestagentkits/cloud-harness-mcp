@@ -132,6 +132,7 @@ export default defineConfig({
           { text: 'Agents', link: '/dashboard/agents' },
           { text: 'Activity', link: '/dashboard/activity' },
           { text: 'Approvals', link: '/dashboard/approvals' },
+          { text: 'Packages', link: '/dashboard/packages' },
           { text: 'Projects', link: '/dashboard/projects' },
           { text: 'Secrets & Credentials', link: '/dashboard/secrets' },
           { text: 'Models & Budgets', link: '/dashboard/models' },

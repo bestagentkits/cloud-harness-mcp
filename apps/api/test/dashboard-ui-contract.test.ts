@@ -10,6 +10,7 @@ import {
 import { renderSkillsSkeleton, renderTypesafeSkeleton } from '../dashboard/dashboard-render.js';
 import { DASHBOARD_PAGES } from '../dashboard/dashboard-pages.js';
 import { renderSkillRevisions, renderSkillsLibraryRows } from '../dashboard/dashboard-render.js';
+import { planIsActionable, renderApprovals, renderPackages, shortDigest } from '../dashboard/dashboard-render.js';
 
 describe('skills version surfacing', () => {
   const skill = (overrides = {}) => ({
@@ -540,5 +541,111 @@ describe('dashboard secret-name policy parity', () => {
       expect(validateSecretClient(name, 'ghp_example_value'), name).not.toBeNull();
       expect(validateSecretName(name).ok, name).toBe(false);
     }
+  });
+});
+
+describe('managed packages surfaces', () => {
+  const now = Date.parse('2026-10-14T00:10:00.000Z');
+  const digest = '0123456789abcdef'.repeat(4);
+  const plan = (overrides = {}) => ({
+    planId: `pkp_${'a'.repeat(24)}`, planDigest: digest, status: 'PENDING_APPROVAL', scope: 'owner', ecosystem: 'npm',
+    name: 'chm-hello', version: '1.1.0', requestedSpec: '^1.1.0',
+    source: { registry: 'https://registry.npmjs.org/', resolved: 'https://registry.npmjs.org/chm-hello/-/chm-hello-1.1.0.tgz' },
+    integrity: 'sha512-abc', dependencyCount: 2, sizeEstimateBytes: 8_192, binaries: ['hello'], conflicts: [], lifecycleScripts: false,
+    runtime: { node: 'v24.11.0', npm: '11.6.0', uv: null, python: null }, bindingGeneration: 1, stale: false,
+    affectedWorkspaces: ['ws_1', 'ws_2'], currentRelease: { releaseId: `pkr_${'d'.repeat(24)}`, version: '1.0.0', generation: 1 },
+    createdAt: '2026-10-14T00:00:00.000Z', expiresAt: '2026-10-14T00:30:00.000Z', ...overrides
+  });
+  const binding = {
+    bindingId: `pkb_${'c'.repeat(24)}`, scope: 'owner', ecosystem: 'npm', name: 'chm-hello', generation: 2, affectedWorkspaces: ['ws_1'],
+    release: { releaseId: `pkr_${'e'.repeat(24)}`, version: '1.1.0', treeDigest: digest, sizeBytes: 2_048, binaries: ['hello'], status: 'VERIFIED', stale: false, createdAt: '2026-10-14T00:00:00.000Z' },
+    history: [
+      { generation: 2, releaseId: `pkr_${'e'.repeat(24)}`, version: '1.1.0', reason: 'apply', actor: 'mcp', createdAt: '2026-10-14T00:05:00.000Z', available: true },
+      { generation: 1, releaseId: `pkr_${'d'.repeat(24)}`, version: '1.0.0', reason: 'apply', actor: 'mcp', createdAt: '2026-10-14T00:00:00.000Z', available: true },
+      { generation: 0, releaseId: `pkr_${'f'.repeat(24)}`, version: '0.9.0', reason: 'apply', actor: 'mcp', createdAt: '2026-10-13T00:00:00.000Z', available: false }
+    ]
+  };
+
+  it('shows a plan digest shortened with the full value kept for focus, and posts that digest on approve', () => {
+    const markup = renderApprovals({ grants: [], plans: [plan()], packages: { enabled: true, approvalMode: 'required' }, now });
+    expect(markup).toContain('Package plans');
+    expect(markup).toContain(shortDigest(digest));
+    expect(shortDigest(digest).length).toBeLessThan(digest.length);
+    expect(markup).toContain(`<span class="digest-full">${digest}</span>`);
+    expect(markup).toContain(`title="Plan digest: ${digest}"`);
+    expect(markup).toContain(`data-plan-digest="${digest}"`);
+    expect(markup).toContain('approve-plan');
+    expect(markup).toContain('reject-plan');
+    for (const fact of ['Current <strong>1.0.0</strong>', 'Planned <strong>1.1.0</strong>', 'sha512-abc', '8.0 KiB', '2 workspaces', 'Node v24.11.0']) expect(markup).toContain(fact);
+    expect(markup).not.toMatch(/\sstyle=/);
+  });
+
+  it('warns about lifecycle scripts, binary collisions, and a moved binding', () => {
+    const markup = renderApprovals({
+      plans: [plan({ lifecycleScripts: true, stale: true, conflicts: [{ binary: 'hello', scope: 'owner', ecosystem: 'npm', name: 'other' }] })],
+      packages: { enabled: true, approvalMode: 'required' }, now
+    });
+    expect(markup).toContain('package-risks');
+    expect(markup).toContain('lifecycle scripts');
+    expect(markup).toContain('hello (already provided by other)');
+    expect(markup).toContain('changed after this plan was made');
+  });
+
+  it('offers decisions only on an unexpired pending plan', () => {
+    expect(planIsActionable(plan(), now)).toBe(true);
+    expect(planIsActionable(plan({ expiresAt: '2026-10-14T00:05:00.000Z' }), now)).toBe(false);
+    expect(planIsActionable(plan({ status: 'APPROVED' }), now)).toBe(false);
+    const expired = renderApprovals({ plans: [plan({ expiresAt: '2026-10-14T00:05:00.000Z' })], packages: { enabled: true }, now });
+    expect(expired).toContain('<span class="status expired">Expired</span>');
+    expect(expired).not.toContain('approve-plan');
+    const approved = renderApprovals({ plans: [plan({ status: 'APPROVED', decidedBy: 'dashboard' })], packages: { enabled: true }, now });
+    expect(approved).not.toContain('approve-plan');
+    expect(approved).toContain('Withdraw approval');
+  });
+
+  it('states the disabled copy on both surfaces', () => {
+    const copy = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
+    expect(renderApprovals({ grants: [], packages: { enabled: false } })).toContain(copy);
+    expect(renderPackages({ overview: { enabled: false } })).toContain('Operators enable them with PACKAGES_ENABLED=true.');
+  });
+
+  it('renders health, apply progress, quotas, and a rollback that carries the expected generation', () => {
+    const markup = renderPackages({
+      now,
+      overview: {
+        enabled: true, approvalMode: 'required', ecosystems: ['npm', 'uv'], lifecycleScripts: 'deny',
+        quotas: { maxReleaseBytes: 536_870_912, maxOwnerBytes: 4_294_967_296, maxBindings: 32 }, usage: { ownerBytes: 2_048, bindings: 1 },
+        bindings: [binding], releases: [{ ...binding.release, ecosystem: 'npm', name: 'chm-hello', fileCount: 4, dependencyCount: 2 }],
+        inFlight: [{ applyId: `pka_${'b'.repeat(24)}`, state: 'VERIFYING', name: 'chm-hello', version: '1.2.0', createdAt: '2026-10-14T00:09:00.000Z', updatedAt: '2026-10-14T00:09:30.000Z' }],
+        recentApplies: [], pendingPlans: [plan()]
+      }
+    });
+    expect(markup).toContain('<span class="status healthy">Verified</span>');
+    expect(markup).toContain('aria-current="step">Verifying</li>');
+    expect(markup).toContain('2.0 KiB');
+    expect(markup).toContain('4.0 GiB');
+    expect(markup).toContain('1 / 32');
+    expect(markup).toContain('href="/dashboard/approvals"');
+    expect(markup).toContain(`data-release-id="pkr_${'d'.repeat(24)}"`);
+    expect(markup).toContain('data-generation="2"');
+    expect(markup).toContain('Roll back to 1.0.0');
+    // The current release and a release that left the disk offer no rollback.
+    expect(markup).not.toContain('Roll back to 1.1.0');
+    expect(markup).not.toContain('Roll back to 0.9.0');
+    expect(markup).toContain('Unavailable');
+    const missing = renderPackages({ overview: { enabled: true, bindings: [{ ...binding, release: { ...binding.release, status: 'MISSING' } }] } });
+    expect(missing).toContain('Missing on disk');
+    const stale = renderPackages({ overview: { enabled: true, bindings: [{ ...binding, release: { ...binding.release, stale: true } }] } });
+    expect(stale).toContain('Stale image');
+  });
+
+  it('routes the Packages page through the registry and wires decisions to the shown values', () => {
+    const page = DASHBOARD_PAGES.find((candidate) => candidate.id === 'packages');
+    expect(page).toMatchObject({ route: '/dashboard/packages', group: 'operate', nav: true });
+    const script = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+    expect(script).toContain('packages: loadPackages');
+    expect(script).toContain("api('/packages/rollback'");
+    expect(script).toContain('requestBody(approving ? { planDigest } : {})');
+    expect(script).toContain('pendingApprovals(grants, plans)');
   });
 });

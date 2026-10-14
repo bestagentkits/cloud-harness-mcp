@@ -56,7 +56,7 @@ import {
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
-  renderActivityCenter, renderApprovals, grantIsActionable,
+  renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
   renderTerminalPanel, renderTerminalsIndex
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
@@ -1135,6 +1135,7 @@ export function initializeDashboard() {
     agents: loadAgents,
     activity: loadActivity,
     approvals: loadApprovals,
+    packages: loadPackages,
     terminals: loadTerminals,
     artifacts: loadArtifacts,
     'api-keys': loadApiKeys,
@@ -3511,14 +3512,28 @@ export function initializeDashboard() {
     insertRendered(content, renderActivityCenter({ events, filter }));
     await refreshApprovalsBadge();
   }
-  /** The approvals inbox: pending privilege grants and the two decisions. */
+  /**
+   * Package plans are read alongside the grants. A failed plan read leaves the grants usable and
+   * renders the section as off rather than hiding the whole inbox.
+   */
+  async function readPackagePlans() {
+    const result = await api('/package-plans').catch(() => undefined);
+    const data = result?.data ?? {};
+    return {
+      plans: Array.isArray(data.plans) ? data.plans : [],
+      packages: { enabled: data.enabled === true, approvalMode: typeof data.approvalMode === 'string' ? data.approvalMode : 'required' }
+    };
+  }
+  const pendingApprovals = (grants, plans) => grants.filter((grant) => grantIsActionable(grant)).length
+    + plans.filter((plan) => planIsActionable(plan)).length;
+  /** The approvals inbox: pending privilege grants, package plans, and their decisions. */
   async function loadApprovals() {
     selectNavigation('approvals');
     document.querySelector('#command-surface').hidden = true;
-    const result = await api('/privilege-grants');
+    const [result, { plans, packages }] = await Promise.all([api('/privilege-grants'), readPackagePlans()]);
     const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
-    insertRendered(content, renderApprovals({ grants }));
-    updateApprovalsBadge(grants.filter((grant) => grantIsActionable(grant)).length);
+    insertRendered(content, renderApprovals({ grants, plans, packages }));
+    updateApprovalsBadge(pendingApprovals(grants, plans));
     for (const button of document.querySelectorAll('.approve-grant, .reject-grant')) button.addEventListener('click', (event) => {
       const approving = button.classList.contains('approve-grant');
       const grantId = button.dataset.grantId ?? '';
@@ -3533,6 +3548,51 @@ export function initializeDashboard() {
         }
       }, event.currentTarget);
     });
+    for (const button of document.querySelectorAll('.approve-plan, .reject-plan')) button.addEventListener('click', (event) => {
+      const approving = button.classList.contains('approve-plan');
+      const planId = button.dataset.planId ?? '';
+      // The digest is the one rendered on this row, so an approval can never cover a plan the operator did not see.
+      const planDigest = button.dataset.planDigest ?? '';
+      const name = button.dataset.planName ?? 'this package';
+      void confirmAction({
+        title: approving ? `Approve the plan for ${name}?` : `Reject the plan for ${name}?`,
+        description: approving
+          ? 'An agent may then apply exactly this plan. The runner refuses the approval if the plan digest no longer matches. The decision is audited.'
+          : 'The plan can no longer be applied; an agent must create a new plan. The decision is audited.',
+        target: `Plan digest ${planDigest}`, label: approving ? 'Approve plan' : 'Reject plan', pendingLabel: approving ? 'Approving…' : 'Rejecting…',
+        action: async () => {
+          await api(`/package-plans/${encodeURIComponent(planId)}/${approving ? 'approve' : 'reject'}`, {
+            method: 'POST', body: requestBody(approving ? { planDigest } : {})
+          });
+          announce(approving ? `Plan for ${name} approved.` : `Plan for ${name} rejected.`);
+          await loadApprovals();
+        }
+      }, event.currentTarget);
+    });
+  }
+  /** Installed toolbox packages, apply progress, and rollback to a release from the history. */
+  async function loadPackages() {
+    selectNavigation('packages');
+    document.querySelector('#command-surface').hidden = true;
+    const result = await api('/packages');
+    const overview = result?.data ?? {};
+    insertRendered(content, renderPackages({ overview }));
+    for (const button of document.querySelectorAll('.rollback-package')) button.addEventListener('click', (event) => {
+      const { bindingId = '', releaseId = '', generation = '', fromVersion = 'unknown', toVersion = 'unknown' } = button.dataset;
+      const name = button.dataset.package ?? 'this package';
+      const affected = Number(button.dataset.affected ?? 0);
+      const expectedGeneration = Number(generation);
+      void confirmAction({
+        title: `Roll back ${name} from ${fromVersion} to ${toVersion}?`,
+        description: `This replaces the active release for ${affected} ${affected === 1 ? 'workspace' : 'workspaces'}. Workspaces created or recreated afterwards get ${toVersion}; running workspaces keep ${fromVersion} until they are recreated. The rollback is refused if the package changed after this page loaded (expected generation ${expectedGeneration}). It is audited.`,
+        target: `${name} ${toVersion} · ${releaseId}`, label: 'Roll back', pendingLabel: 'Rolling back…',
+        action: async () => {
+          await api('/packages/rollback', { method: 'POST', body: requestBody({ bindingId, releaseId, expectedGeneration }) });
+          announce(`${name} rolled back to ${toVersion}.`);
+          await loadPackages();
+        }
+      }, event.currentTarget);
+    });
   }
   /** The badge appears only while something is pending. */
   function updateApprovalsBadge(count) {
@@ -3542,9 +3602,9 @@ export function initializeDashboard() {
     badge.hidden = count === 0;
   }
   async function refreshApprovalsBadge() {
-    const result = await api('/privilege-grants').catch(() => undefined);
+    const [result, { plans }] = await Promise.all([api('/privilege-grants').catch(() => undefined), readPackagePlans()]);
     const grants = Array.isArray(result?.data?.grants) ? result.data.grants : [];
-    updateApprovalsBadge(grants.filter((grant) => grantIsActionable(grant)).length);
+    updateApprovalsBadge(pendingApprovals(grants, plans));
   }
   /**
    * Global Agents page and the workspace-scoped tab share one renderer and one
