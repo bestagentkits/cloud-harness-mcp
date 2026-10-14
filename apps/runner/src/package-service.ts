@@ -366,7 +366,8 @@ export class PackageService {
       let resolved;
       try {
         await this.builder.probeRegistries(spec.ecosystem);
-        await this.createExecutorDirectory(this.paths.scratch(scratchId));
+        // The builder provisions the scratch directory itself: it writes its inputs there before handing it to the
+        // executor user, which a runner without CHOWN could not do in a directory already given away.
         resolved = await this.builder.resolvePlan({
           scratchId, ecosystem: spec.ecosystem, name: spec.name, requestedSpec: spec.requestedSpec,
           ...(spec.python !== undefined ? { python: spec.python } : {}),
@@ -797,7 +798,6 @@ export class PackageService {
     timer.unref();
     try {
       if (controller.signal.aborted) throw harness('CANCELLED', 'package apply was cancelled', 499);
-      await this.createExecutorDirectory(scratch);
       await this.createExecutorDirectory(staging);
       advance('BUILDING');
       const result = await this.builder.build({
@@ -830,7 +830,7 @@ export class PackageService {
       advance('PUBLISHING');
       const releaseDir = this.paths.release(packageReleaseRelativePath(apply.ownerId, apply.releaseId));
       await mkdir(join(releaseDir, '..'), { recursive: true, mode: 0o755 });
-      await rename(staging, releaseDir);
+      await this.moveExact(staging, releaseDir);
       published = releaseDir;
       // No await separates the final conflict check from the publish transaction, so no other binding
       // of this runner can take a binary name in between.
@@ -1023,31 +1023,65 @@ export class PackageService {
     } catch {
       // Fall through to the helper container.
     }
-    const relativePath = path.slice(this.paths.root.length + 1);
-    const helperName = `chm-pkgchown-${randomBytes(8).toString('hex')}`;
+    await this.rootHelper('chown 10001:10001 "/packages/$1" && chmod 0755 "/packages/$1"', [path], 'package directory provisioning');
+  }
+
+  /**
+   * Moves a built staging tree to its release path. The tree belongs to the executor user, and moving a directory
+   * to another parent needs write access to it, so a runner without that right uses the root helper.
+   */
+  private async moveExact(from: string, to: string): Promise<void> {
     try {
-      const result = await runDocker([
-        'run', '--rm', '--pull', 'never', '--name', helperName,
-        '--label', 'cloud-harness.role=chown-helper', '--label', 'cloud-harness.ephemeral=true',
-        '--label', `cloud-harness.instance=${this.options.instanceId}`,
-        '--network', 'none', '--user', '0:0',
-        '--volume', `${this.paths.root}:/packages`,
-        '--entrypoint', '/bin/sh', this.config.executorImage,
-        '-c', 'chown 10001:10001 "/packages/$1" && chmod 0755 "/packages/$1"', 'chown-helper', relativePath
-      ], { timeoutMs: 30_000, maxBytes: 8_192 });
-      if (result.exitCode !== 0) {
-        throw harness('UNAVAILABLE', `package directory provisioning failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
-      }
-    } finally {
-      await removeContainer(helperName).catch(() => undefined);
+      await rename(from, to);
+    } catch (error) {
+      if (!isPermissionError(error)) throw error;
+      await this.rootHelper('mv -T -- "/packages/$1" "/packages/$2"', [from, to], 'package release publishing');
     }
   }
 
   /** Removes one exact path that `PackagePaths` produced; never the root. */
   private async removeExact(path: string): Promise<void> {
-    if (!path.startsWith(this.paths.root + sep)) throw harness('INTERNAL_ERROR', 'refusing to remove a path outside the packages root', 500);
-    await rm(path, { recursive: true, force: true });
+    this.relativeToRoot(path);
+    try {
+      await rm(path, { recursive: true, force: true });
+    } catch (error) {
+      // Trees the executor user wrote can be beyond a runner without DAC_OVERRIDE.
+      if (!isPermissionError(error)) throw error;
+      await this.rootHelper('rm -rf -- "/packages/$1"', [path], 'package directory removal');
+    }
   }
+
+  private relativeToRoot(path: string): string {
+    if (!path.startsWith(this.paths.root + sep)) throw harness('INTERNAL_ERROR', 'refusing to touch a path outside the packages root', 500);
+    return path.slice(this.paths.root.length + 1);
+  }
+
+  /** Runs `script` as root with no network in a helper that sees only the packages root, given paths inside it. */
+  private async rootHelper(script: string, paths: readonly string[], what: string): Promise<void> {
+    const relativePaths = paths.map((path) => this.relativeToRoot(path));
+    const helperName = `chm-pkghelper-${randomBytes(8).toString('hex')}`;
+    try {
+      const result = await runDocker([
+        'run', '--rm', '--pull', 'never', '--name', helperName,
+        '--label', 'cloud-harness.role=package-helper', '--label', 'cloud-harness.ephemeral=true',
+        '--label', `cloud-harness.instance=${this.options.instanceId}`,
+        '--network', 'none', '--user', '0:0',
+        '--volume', `${this.paths.root}:/packages`,
+        '--entrypoint', '/bin/sh', this.config.executorImage,
+        '-c', script, 'package-helper', ...relativePaths
+      ], { timeoutMs: 120_000, maxBytes: 8_192 });
+      if (result.exitCode !== 0) {
+        throw harness('UNAVAILABLE', `${what} failed: ${result.stderr || result.stdout}`.slice(0, 2_000), 502, true);
+      }
+    } finally {
+      await removeContainer(helperName).catch(() => undefined);
+    }
+  }
+}
+
+function isPermissionError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EACCES' || code === 'EPERM';
 }
 
 function compareBindings(left: PackageBindingRecord, right: PackageBindingRecord): number {

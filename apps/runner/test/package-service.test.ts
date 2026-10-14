@@ -236,7 +236,9 @@ describe('PackageService plan, apply, list, status', () => {
 
     const job = f.builder.jobs[0]!;
     expect(job.stagingDir).toBe(join(f.root, 'staging', applied.releaseId));
-    expect(f.owned).toEqual(expect.arrayContaining([job.stagingDir, join(f.root, 'scratch', applied.applyId)]));
+    expect(f.owned).toContain(job.stagingDir);
+    // The builder writes its inputs into scratch before giving it to the executor user, so the service must not.
+    expect(f.owned).not.toContain(join(f.root, 'scratch', applied.applyId));
     const releaseDir = join(f.root, packageReleaseRelativePath(f.owner, applied.releaseId));
     expect(existsSync(join(releaseDir, 'bin', 'hello'))).toBe(true);
     expect(entries(join(f.root, 'staging'))).toEqual([]);
