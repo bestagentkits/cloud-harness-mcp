@@ -194,6 +194,22 @@ describe('LocalWorkspaceBackend', () => {
     expect(toolbox.message).toContain('toolbox target is unsupported in local mode');
   });
 
+  it('refuses every managed package tool in local mode', async () => {
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ['packages_plan', { ecosystem: 'npm', name: 'prettier' }],
+      ['packages_apply', { planId: 'pkp_0123456789abcdefghijklmn', planDigest: 'a'.repeat(64) }],
+      ['packages_list', {}],
+      ['packages_status', {}],
+      ['packages_rollback', { bindingId: 'pkb_0123456789abcdefghijklmn', releaseId: 'pkr_0123456789abcdefghijklmn', expectedGeneration: 1 }]
+    ];
+    for (const [operation, input] of calls) {
+      const res = await backend.call(operation as Parameters<typeof backend.call>[0], input);
+      expect(res.ok, operation).toBe(false);
+      expect(res.error?.code, operation).toBe('INVALID_INPUT');
+      expect(res.message, operation).toContain('unsupported in local mode');
+    }
+  });
+
   it('gates network Git and push according to startup options', async () => {
     // Disabled by default
     const fetchRes = await backend.call('git_fetch', { workspaceId: backend.workspaceId });

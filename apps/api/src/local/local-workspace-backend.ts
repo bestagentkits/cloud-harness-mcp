@@ -153,6 +153,11 @@ export class LocalWorkspaceBackend implements OperationBackend {
       return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
     }
 
+    if (operation.startsWith('packages_')) {
+      const message = `${operation} is unsupported in local mode because managed toolbox packages need the remote runner's isolated builder and release store; install project tools in the workspace instead`;
+      return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
+    }
+
     if (operation === 'workspace_open') {
       return {
         ok: false,

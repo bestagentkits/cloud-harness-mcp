@@ -22,6 +22,7 @@ export const RunnerOperationSchema = z.enum([
   'artifacts_snapshot', 'artifacts_list', 'artifacts_read', 'artifacts_restore', 'artifacts_delete',
   'github_action', 'github_read',
   'secrets_list',
+  'packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback',
   'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
 ]);
 
