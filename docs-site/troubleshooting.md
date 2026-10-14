@@ -180,7 +180,7 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Cause:** `workspace_open` clones a single commit by default, so a fresh workspace's history is one commit deep until deepened. Separately, MCP client approval prompts key off tool-level annotations: `github_action` is annotated destructive as a whole tool because it also performs mutations, so a client can prompt even for a read action like `pr_list` since there is no per-action server approval gate.
 **Fix:**
 1. For history depth, pass `fetchDepth` (0 for full history, or a commit count) or `shallowSince` (an ISO date/datetime) to `workspace_open`, or call `git_fetch` afterward with `depth`, `unshallow`, or `shallowSince`.
-2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `pr_review_threads`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
+2. For GitHub reads, call the dedicated `github_read` tool (`pr_list`, `pr_view`, `pr_review_threads`, `pr_reviews`, `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, `tag_list`, `ref_get`, `commit_status_get`, `check_runs_list`, `workflow_runs_list`, `workflow_run_view`) instead of `github_action`. It is annotated read-only/idempotent/non-destructive, so compliant clients do not prompt per call. `github_action` still accepts the same read actions for compatibility.
 
 ### 18. A skill is missing from `skills/list`, or `skills/get` returns `-32602`
 **Cause:** The [Skills over MCP](/agent-toolkits#skills-over-mcp-native-client-skills) extension serves `built-in` skills and your own enabled library skills, adds one workspace's `workspace` and `repository` skills only on that workspace's `/mcp/workspaces/<workspaceId>` endpoint, and omits any skill it cannot serve whole and verified.
@@ -239,3 +239,13 @@ If an agent started but followed the wrong files, read the `repository_context` 
 | `write_unconfirmed` | The update timed out or failed on Cloudflare's side and may or may not have landed. Reload before retrying. |
 | `readback_mismatch` | Cloudflare accepted the update but did not confirm it. Reload to see the values actually in effect. |
 | **Set outside Cloud Harness** / **Changed outside Cloud Harness** | The value was customised in Cloudflare. Cloud Harness never overwrites it; choose **Adopt default** or save a value to manage it. |
+
+---
+
+### 22. A merge-train routine: `git_push` lock returns `CONFLICT`/`FORBIDDEN`, or a dispatched run cannot be found
+**Cause:** Leased `git_push` calls are atomic on GitHub's side, so they report the remote's real state instead of retrying. Workflow dispatch is asynchronous and GitHub returns no run ID for it.
+**Fix:**
+1. `CONFLICT` on `expectedAbsent: true` means another holder created the lock branch first; on `expectedRemoteOid` (update or `delete: true`) it means the branch moved. Read the branch with `github_read` `ref_get`, then wait or take the new value as your next lease. `CONFLICT` on a create-only push also appears when the lock already holds the very commit you pushed: two holders pushing the same `HEAD` cannot both win, so push a commit unique to the holder (see [Git transfer](/reference/git-transfer)). After `UNKNOWN_REMOTE_STATE`, retry with the same `idempotencyKey`: a lock that already holds your refspec source's commit returns `alreadyFinalized: true`, and `CONFLICT` carries `currentRemoteOid` to compare with the commit you pushed.
+2. `FORBIDDEN` "rejected by the remote's branch protection, ruleset, or hook" (`[remote rejected]`, `GH006`, `GH013`) is a policy refusal and is not retryable: the target branch requires passing checks, a pull request, or a bypass entry for the App. `GITHUB_PERMISSION_MISSING` on a push means the commit changes `.github/workflows` and the App lacks **Workflows: Read and write**.
+3. After `workflow_dispatch`, poll `github_read` `workflow_runs_list` with the returned `runLookup` (`workflow`, `headSha`, `event: "workflow_dispatch"`) for a few seconds until the run appears.
+4. A routine that keeps one workspace for about an hour needs `WORKSPACE_WALL_TTL_SECONDS` of at least `3600`, because `workspace_lease_renew` never extends past the wall-clock deadline. Alternatively open a fresh workspace (a `fetchDepth: 1` checkout is enough for brokered GitHub calls) for each phase.

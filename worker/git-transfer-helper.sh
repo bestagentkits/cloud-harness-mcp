@@ -102,6 +102,13 @@ case $mode in
     configure_auth
     git_clean --git-dir="$transfer_path" remote remove origin 2>/dev/null || true
     git_clean --git-dir="$transfer_path" remote add origin "$repository_url"
+    # A lease is the atomic compare-and-swap of the push protocol: the server applies the update only
+    # while the ref still holds the expected value. `absent` expects no ref (create only), an object ID
+    # expects that value (update, or delete with an empty source), and nothing means a plain push.
+    if [[ $argument == :* && -z $expected_remote_oid ]]; then
+      printf 'deleting a remote branch requires an expected object ID lease\n' >&2
+      exit 2
+    fi
     if [[ -n $expected_remote_oid ]]; then
       if [[ $argument != *:* ]]; then
         printf 'force-with-lease requires an explicit destination ref\n' >&2
@@ -112,8 +119,36 @@ case $mode in
         printf 'force-with-lease destination must be a branch\n' >&2
         exit 2
       fi
-      git_clean --git-dir="$transfer_path" push --porcelain \
-        "--force-with-lease=${destination}:${expected_remote_oid}" origin "$argument"
+      if [[ $expected_remote_oid == absent ]]; then
+        if [[ $argument == :* ]]; then
+          printf 'a create-only lease cannot delete a branch\n' >&2
+          exit 2
+        fi
+        lease_value=
+      elif [[ $expected_remote_oid =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+        lease_value=$expected_remote_oid
+      else
+        printf 'invalid expected remote object ID\n' >&2
+        exit 2
+      fi
+      push_status=0
+      push_output=$(git_clean --git-dir="$transfer_path" push --porcelain \
+        "--force-with-lease=${destination}:${lease_value}" origin "$argument") || push_status=$?
+      printf '%s\n' "$push_output"
+      # git reports "already up to date" before it checks a lease, so a push of the commit the branch
+      # already holds exits 0 whatever the lease said. It succeeds only when the lease expected exactly that
+      # commit; a create-only lease, or one naming an older commit, lost to whoever pushed it first.
+      if [[ $push_status -eq 0 ]] && grep -q $'^=\t' <<<"$push_output"; then
+        source_oid=
+        if [[ $expected_remote_oid != absent ]]; then
+          source_oid=$(git_clean --git-dir="$transfer_path" rev-parse --verify --quiet "${argument%%:*}^{commit}" || true)
+        fi
+        if [[ -z $source_oid || $source_oid != "$lease_value" ]]; then
+          printf 'lease rejected: %s already holds the pushed commit\n' "$destination" >&2
+          exit 1
+        fi
+      fi
+      exit "$push_status"
     else
       git_clean --git-dir="$transfer_path" push --porcelain origin "$argument"
     fi

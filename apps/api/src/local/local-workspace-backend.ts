@@ -512,9 +512,15 @@ export class LocalWorkspaceBackend implements OperationBackend {
 
     if (operation === 'github_action' || operation === 'github_read') {
       const action = typeof input.action === 'string' ? input.action : '';
+      const scope = action.startsWith('pr_') ? 'pullRequests'
+        : action.startsWith('issue_') || action === 'label_create' ? 'issues'
+          : action.startsWith('commit_status_') ? 'statuses'
+            : action.startsWith('check_runs_') ? 'checks'
+              : action.startsWith('workflow_') ? 'actions'
+                : undefined;
       const requiredCapability = operation === 'github_read'
-        ? (action.startsWith('pr_') ? 'repository.pullRequestsRead' : action.startsWith('issue_') ? 'repository.issuesRead' : 'repository.read')
-        : action.startsWith('pr_') ? 'repository.pullRequestsWrite' : 'repository.issuesWrite';
+        ? (scope ? `repository.${scope}Read` : 'repository.read')
+        : `repository.${scope ?? 'issues'}Write`;
       return {
         ok: false,
         message: `${operation} is unsupported in local mode`,

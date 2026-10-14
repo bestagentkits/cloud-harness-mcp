@@ -21,6 +21,7 @@ network isolation.
 | List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |
 | Run a command, interactive shell, coding session, or dependency task | [Execution and tasks](references/execution-and-tasks.md) |
 | Inspect or change Git state, transfer origin refs, or use worktrees | [Git and worktrees](references/git-and-worktrees.md) |
+| Run an automated merge train: branch locks, commit statuses, check runs, review state, workflow dispatch and re-runs | [GitHub merge train](references/github-merge-train.md) |
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
 
@@ -156,7 +157,11 @@ Details: [Repository automation](references/repository-automation.md#skills).
      returning `STALE_HEAD` on mismatch; `git_push` `expectedRemoteOid`
      (force-with-lease) returns `CONFLICT` with current/expected remote OIDs
      when the remote ref has moved.
-   - Use `github_action` for brokered issue and pull request operations.
+   - Use `github_action` for brokered issue and pull request operations, and
+     `github_read` for reads. For an automated merge train, use the
+     `git_push` lease modes (`expectedAbsent` create-only lock, compare-and-swap,
+     `delete` if match) and the commit-status, check-run, review-state, and
+     workflow dispatch/run actions in `references/github-merge-train.md`.
 8. **Manage lifecycle and lease.** If work approaches the idle timeout, call
    `workspace_lease_renew`. If disconnected or recovering unpushed work, call
    `workspace_recover(mode: "resume" | "status" | "patch" | "export")`.
@@ -174,7 +179,7 @@ Details: [Repository automation](references/repository-automation.md#skills).
 | Long-running build / test suite | `tasks_run` | long synchronous command |
 | Branch isolation in workspace | `worktrees_*` | manual Git branching |
 | Stage, commit, preflight, push | `workspace_finalize` | sequence of manual `git_*` calls |
-| GitHub PRs / Issues | `github_action` | manual external Git/API CLI |
+| GitHub PRs / Issues / statuses / workflow runs | `github_read`, then `github_action` for writes | manual external Git/API CLI |
 | Helper / workflow discovery | native `skills/*` if supported, else `skills_list` then `skills_read` | `skills_run` after review |
 | Automation hooks / deployments | `hooks_list` / `deployments_list` | run only owner-reviewed target |
 | Durable repository note | `memories_*` | never store credentials or personal data |

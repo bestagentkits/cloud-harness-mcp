@@ -12,6 +12,29 @@ require_number() {
   fi
 }
 
+# Revisions and refs are placed in REST paths, so traversal, range syntax, and option-like values are refused.
+require_revision() {
+  if ! [[ "${1:-}" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ $1 == -* || $1 == /* || $1 == */ || $1 == *..* ]]; then
+    echo "Revision must be a branch, tag, or commit SHA" >&2
+    exit 1
+  fi
+}
+
+require_ref() {
+  require_revision "${1:-}"
+  if ! [[ $1 =~ ^refs/(heads|tags)/. ]]; then
+    echo "Ref must be a fully qualified refs/heads/... or refs/tags/... name" >&2
+    exit 1
+  fi
+}
+
+require_workflow() {
+  if ! [[ "${1:-}" =~ ^([1-9][0-9]{0,18}|[A-Za-z0-9._-]{1,200}\.ya?ml)$ ]]; then
+    echo "Workflow must be a numeric ID or a workflow file name such as ci.yml" >&2
+    exit 1
+  fi
+}
+
 action="${1:-}"
 if [ -z "$action" ]; then
   echo "GitHub action required" >&2
@@ -278,6 +301,152 @@ case "$action" in
   tag_list)
     limit="${1:-30}"
     exec gh api -X GET "repos/{owner}/{repo}/tags" -f "per_page=$limit" --jq '[.[] | { name, sha: .commit.sha }]'
+    ;;
+  pr_reviews)
+    pr_number="${1:-}"
+    require_number "$pr_number" "Pull request number"
+    # Reviews arrive oldest first, so every page is read before taking each reviewer's latest state.
+    # A COMMENTED review never replaces an earlier verdict, matching how GitHub computes review state.
+    gh api --paginate --slurp "repos/{owner}/{repo}/pulls/$pr_number/reviews?per_page=100" | jq '
+      (add // []) | map({ id, author: .user.login, state, submittedAt: .submitted_at, commitId: .commit_id, url: .html_url }) as $reviews
+      | ([$reviews[] | select(.author != null and .state != "PENDING")] | group_by(.author)
+          | map({ key: .[0].author, value: ((map(select(.state != "COMMENTED")) | last | .state) // "COMMENTED") })
+          | from_entries) as $latest
+      | { totalCount: ($reviews | length), reviews: $reviews, latestByReviewer: $latest,
+          changesRequestedBy: [$latest | to_entries[] | select(.value == "CHANGES_REQUESTED") | .key],
+          approvedBy: [$latest | to_entries[] | select(.value == "APPROVED") | .key] }'
+    ;;
+  ref_get)
+    ref="${1:-}"
+    require_ref "$ref"
+    error_file=$(mktemp)
+    if output=$(gh api "repos/{owner}/{repo}/git/ref/${ref#refs/}" --jq '{ ref, oid: .object.sha, objectType: .object.type }' 2>"$error_file"); then
+      rm -f "$error_file"
+      printf '%s\n' "$output" | jq '. + { exists: true }'
+      exit 0
+    fi
+    errors=$(cat "$error_file")
+    rm -f "$error_file"
+    # The singular ref endpoint matches exactly, so 404 means this ref does not exist.
+    if [[ $errors == *"HTTP 404"* ]]; then
+      jq -n --arg ref "$ref" '{ ref: $ref, exists: false }'
+      exit 0
+    fi
+    printf '%s\n' "$errors" >&2
+    exit 1
+    ;;
+  commit_status_get)
+    sha="${1:-}"
+    limit="${2:-100}"
+    require_revision "$sha"
+    require_number "$limit" "Status limit"
+    exec gh api -X GET "repos/{owner}/{repo}/commits/${sha}/status" -f "per_page=$limit" \
+      --jq '{ sha, state, totalCount: .total_count, statuses: [.statuses[] | { context, state, description, targetUrl: .target_url, creator: .creator.login, createdAt: .created_at, updatedAt: .updated_at }] }'
+    ;;
+  check_runs_list)
+    sha="${1:-}"
+    limit="${2:-100}"
+    check_name="${3:-}"
+    require_revision "$sha"
+    require_number "$limit" "Check run limit"
+    cmd=(gh api -X GET "repos/{owner}/{repo}/commits/${sha}/check-runs" -f "per_page=$limit" -f "filter=latest")
+    if [ -n "$check_name" ]; then cmd+=(-f "check_name=$check_name"); fi
+    exec "${cmd[@]}" --jq '{ totalCount: .total_count, checkRuns: [.check_runs[] | { id, name, status, conclusion, headSha: .head_sha, startedAt: .started_at, completedAt: .completed_at, detailsUrl: .details_url, url: .html_url, app: .app.slug }] }'
+    ;;
+  workflow_runs_list)
+    limit="${1:-20}"
+    workflow="${2:-}"
+    head_sha="${3:-}"
+    branch="${4:-}"
+    event="${5:-}"
+    status="${6:-}"
+    require_number "$limit" "Run limit"
+    if [ -n "$workflow" ]; then
+      require_workflow "$workflow"
+      path="repos/{owner}/{repo}/actions/workflows/${workflow}/runs"
+    else
+      path="repos/{owner}/{repo}/actions/runs"
+    fi
+    cmd=(gh api -X GET "$path" -f "per_page=$limit")
+    if [ -n "$head_sha" ]; then cmd+=(-f "head_sha=$head_sha"); fi
+    if [ -n "$branch" ]; then cmd+=(-f "branch=$branch"); fi
+    if [ -n "$event" ]; then cmd+=(-f "event=$event"); fi
+    if [ -n "$status" ]; then cmd+=(-f "status=$status"); fi
+    exec "${cmd[@]}" --jq '{ totalCount: .total_count, runs: [.workflow_runs[] | { id, name, workflowId: .workflow_id, path, event, status, conclusion, headSha: .head_sha, headBranch: .head_branch, runNumber: .run_number, runAttempt: .run_attempt, createdAt: .created_at, updatedAt: .updated_at, url: .html_url }] }'
+    ;;
+  workflow_run_view)
+    run_id="${1:-}"
+    limit="${2:-100}"
+    require_number "$run_id" "Workflow run ID"
+    require_number "$limit" "Job limit"
+    # Each response is reduced by gh first and the two are joined on stdin: raw run and job payloads can
+    # exceed the per-argument size limit of a command line.
+    {
+      gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq '{ id, name, workflowId: .workflow_id, path, event,
+        status, conclusion, headSha: .head_sha, headBranch: .head_branch, runNumber: .run_number, runAttempt: .run_attempt,
+        createdAt: .created_at, updatedAt: .updated_at, url: .html_url }'
+      gh api -X GET "repos/{owner}/{repo}/actions/runs/$run_id/jobs" -f "per_page=$limit" -f "filter=latest" --jq '{ jobsTotal: .total_count,
+        jobs: [.jobs[] | { id, name, status, conclusion, startedAt: .started_at, completedAt: .completed_at, url: .html_url,
+          failedSteps: [(.steps // [])[] | select(.conclusion == "failure") | .name] }] }'
+    } | jq -s '.[0] + .[1]'
+    ;;
+  commit_status_create)
+    sha="${1:-}"
+    state="${2:-}"
+    context="${3:-}"
+    description="${4:-}"
+    target_url="${5:-}"
+    if ! [[ $sha =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+      echo "Commit status SHA must be a full lowercase commit ID" >&2
+      exit 1
+    fi
+    case "$state" in
+      error|failure|pending|success) ;;
+      *) echo "Commit status state must be error, failure, pending, or success" >&2; exit 1 ;;
+    esac
+    if [ -z "$context" ]; then
+      echo "Commit status context required" >&2
+      exit 1
+    fi
+    cmd=(gh api -X POST "repos/{owner}/{repo}/statuses/$sha" -f "state=$state" -f "context=$context")
+    if [ -n "$description" ]; then cmd+=(-f "description=$description"); fi
+    if [ -n "$target_url" ]; then cmd+=(-f "target_url=$target_url"); fi
+    "${cmd[@]}" | jq --arg sha "$sha" '{ id, sha: $sha, state, context, description, targetUrl: .target_url, creator: .creator.login, createdAt: .created_at }'
+    ;;
+  workflow_dispatch)
+    workflow="${1:-}"
+    ref="${2:-}"
+    inputs="${3:-}"
+    require_workflow "$workflow"
+    require_revision "$ref"
+    if [[ $ref =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+      echo "Workflow dispatch ref must be a branch or tag, not a commit SHA" >&2
+      exit 1
+    fi
+    if [ -z "$inputs" ]; then inputs='{}'; fi
+    # The dispatch API answers 204 without a run ID, so the ref's commit is resolved first and
+    # returned for a workflow_runs_list lookup by headSha and event workflow_dispatch.
+    # The commits endpoint takes heads/NAME or tags/NAME, so a fully qualified ref drops its refs/ prefix.
+    if ! head_sha=$(gh api "repos/{owner}/{repo}/commits/${ref#refs/}" --jq .sha); then
+      echo "Ref $ref could not be resolved to a commit" >&2
+      exit 1
+    fi
+    dispatched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq -n --arg ref "$ref" --argjson inputs "$inputs" '{ ref: $ref, inputs: $inputs }' \
+      | gh api -X POST "repos/{owner}/{repo}/actions/workflows/${workflow}/dispatches" --input - >/dev/null
+    jq -n --arg workflow "$workflow" --arg ref "$ref" --arg headSha "$head_sha" --arg dispatchedAt "$dispatched_at" \
+      '{ dispatched: true, workflow: $workflow, ref: $ref, headSha: $headSha, dispatchedAt: $dispatchedAt,
+         runLookup: { action: "workflow_runs_list", workflow: $workflow, headSha: $headSha, event: "workflow_dispatch" } }'
+    ;;
+  workflow_run_rerun_failed)
+    run_id="${1:-}"
+    require_number "$run_id" "Workflow run ID"
+    gh api -X POST "repos/{owner}/{repo}/actions/runs/$run_id/rerun-failed-jobs" >/dev/null
+    # The rerun has started once the POST succeeds, so a failed follow-up read must not report failure:
+    # a retry would POST again and GitHub refuses to re-run a run that is already in progress.
+    if ! gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq '{ id, status, conclusion, runAttempt: .run_attempt, url: .html_url, rerunRequested: true }' 2>/dev/null; then
+      jq -n --argjson id "$run_id" '{ id: $id, rerunRequested: true }'
+    fi
     ;;
   issue_create)
     title="${1:-}"
