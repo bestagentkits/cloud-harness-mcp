@@ -1,3 +1,10 @@
+# [0.66.0-beta.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.2...v0.66.0-beta.3) (2026-10-14)
+
+
+### Features
+
+* **packages:** durable managed toolbox packages with async plans, uninstall, and Dashboard management ([#321](https://github.com/bestagentkits/cloud-harness-mcp/issues/321)) ([de5028b](https://github.com/bestagentkits/cloud-harness-mcp/commit/de5028b8ce64515bcd64d440b33d24f6363f41df)), closes [#319](https://github.com/bestagentkits/cloud-harness-mcp/issues/319) [#320](https://github.com/bestagentkits/cloud-harness-mcp/issues/320)
+
 # [0.66.0-beta.2](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.1...v0.66.0-beta.2) (2026-10-13)
 
 
