@@ -1,3 +1,10 @@
+## [0.65.1](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.65.0...v0.65.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **site:** stop haas and support pages overflowing on phones ([#318](https://github.com/bestagentkits/cloud-harness-mcp/issues/318)) ([a4449ce](https://github.com/bestagentkits/cloud-harness-mcp/commit/a4449ce05bb7bf01682cfbd3c2815ef0e8ef2b4c))
+
 # [0.65.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.64.1...v0.65.0) (2026-10-13)
 
 
