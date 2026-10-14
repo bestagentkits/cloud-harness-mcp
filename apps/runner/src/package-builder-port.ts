@@ -65,7 +65,7 @@ export type PackageBuildResult = {
 
 /**
  * Boundary between `PackageService` (orchestration, state) and `PackageBuilder` (containers, filesystem).
- * Errors are `ToolError`s carrying the contract codes: `UNAVAILABLE` (proxy host blocked, builder failed to
+ * Errors are `HarnessError`s carrying the contract codes: `UNAVAILABLE` (proxy host blocked, builder failed to
  * start), `PACKAGE_BUILD_FAILED`, `PACKAGE_VERIFICATION_FAILED`, `LIMIT_EXCEEDED`, `TIMEOUT`, `CANCELLED`.
  */
 export interface PackageBuilderPort {
