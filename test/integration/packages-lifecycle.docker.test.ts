@@ -85,8 +85,13 @@ function approve(planned: { planId: string; planDigest: string }): void {
   new PackageStore(store.database).approvePlan({ ownerId, planId: planned.planId, planDigest: planned.planDigest, decidedBy: ownerId, now: Date.now() });
 }
 
+/** The `packages_apply` input for a plan: only its id and the digest the operator approved. */
+function applyInput(planned: { planId: string; planDigest: string }) {
+  return { planId: planned.planId, planDigest: planned.planDigest };
+}
+
 async function applyAndWait(planned: { planId: string; planDigest: string }) {
-  const applied = PackageApplyResultSchema.parse((await service.execute(ownerId, 'packages_apply', planned)).data);
+  const applied = PackageApplyResultSchema.parse((await service.execute(ownerId, 'packages_apply', applyInput(planned))).data);
   await packages.drain();
   const status = PackagesStatusResultSchema.parse((await service.execute(ownerId, 'packages_status', { applyId: applied.applyId })).data);
   if (!('apply' in status)) throw new Error('expected an apply status');
@@ -160,7 +165,7 @@ describe.skipIf(prerequisiteIssue !== undefined)('managed packages through the w
   it('waits for approval, installs, and runs the release from the toolbox', async () => {
     const planned = await plan('chm-hello', '1.0.0');
     expect(planned).toMatchObject({ approval: 'required', package: { name: 'chm-hello', version: '1.0.0' }, binaries: ['chm-hello'] });
-    expect(await code(service.execute(ownerId, 'packages_apply', planned))).toBe('PACKAGE_APPROVAL_REQUIRED');
+    expect(await code(service.execute(ownerId, 'packages_apply', applyInput(planned)))).toBe('PACKAGE_APPROVAL_REQUIRED');
 
     approve(planned);
     const apply = await applyAndWait(planned);
@@ -174,7 +179,7 @@ describe.skipIf(prerequisiteIssue !== undefined)('managed packages through the w
   it('refuses a package whose binary collides with an existing binding', async () => {
     const planned = await plan('chm-clash', '1.0.0');
     approve(planned);
-    expect(await code(service.execute(ownerId, 'packages_apply', planned))).toBe('CONFLICT');
+    expect(await code(service.execute(ownerId, 'packages_apply', applyInput(planned)))).toBe('CONFLICT');
   });
 
   it('keeps the binding on its release when an upgrade fails verification, then rolls back', async () => {
@@ -206,7 +211,7 @@ describe.skipIf(prerequisiteIssue !== undefined)('managed packages through the w
   it('fails an apply interrupted by a runner stop and leaves no staging behind after restart', async () => {
     const planned = await plan('chm-hello', '1.0.0');
     approve(planned);
-    const applied = PackageApplyResultSchema.parse((await service.execute(ownerId, 'packages_apply', planned)).data);
+    const applied = PackageApplyResultSchema.parse((await service.execute(ownerId, 'packages_apply', applyInput(planned))).data);
     await packages.shutdown();
 
     useService(packageService());
