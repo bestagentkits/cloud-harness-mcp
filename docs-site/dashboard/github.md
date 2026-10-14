@@ -79,6 +79,10 @@ Before creating the App in GitHub, choose the minimum required permission level:
 | **Review pull requests (reviews, inline comments, threads, reviewers, draft/ready)** | **Pull requests: Read and write** + **Contents: Read-only** |
 | **Merge pull requests or enable auto-merge** | **Pull requests: Read and write** + **Contents: Read and write** |
 | **List/compare commits, releases, and tags through `github_read`/`github_action`** | **Contents: Read-only** |
+| **Read or post commit statuses (`commit_status_get`, `commit_status_create`)** | **Commit statuses: Read-only** or **Read and write** + **Contents: Read-only** |
+| **List check runs for a commit (`check_runs_list`)** | **Checks: Read-only** + **Contents: Read-only** |
+| **Read workflow runs, dispatch workflows, re-run failed jobs** | **Actions: Read-only** or **Read and write** + **Contents: Read-only** |
+| **Use a branch as a merge-train lock (`git_push` leases)** | **Contents: Read and write** |
 
 ::: tip Principle of Least Privilege
 Leave every other repository, organization, and user permission set to **No access**.
@@ -106,6 +110,7 @@ issue and pull-request permissions cannot mint an action-scoped token.
 5. **Repository permissions:**
    - Set **Contents** to **Read and write** (or Read-only).
    - (Optional) Set **Workflows** to **Read and write** if your agents need to edit GitHub Actions.
+   - (Optional) Set **Commit statuses**, **Checks**, or **Actions** when an automated routine posts statuses, reads check runs, or dispatches and re-runs workflows.
 6. **Where can this GitHub App be installed?:**
    - Select **Only on this account**.
 7. Click **Create GitHub App**.
@@ -224,6 +229,8 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 | **`Repository clone failed: unauthorized (404/401)`** | Repository not selected in GitHub App installation. | Go to [github.com/settings/installations](https://github.com/settings/installations), click **Configure** on your App, and add the repository to **Repository access**. |
 | **`Push failed: 403 Forbidden`** | App has Read-only permissions for `Contents`. | In App settings → **Permissions**, change **Contents** to **Read and write**. Then accept the permission update under your installation settings. |
 | **`Push touching workflows failed: 403`** | Missing `Workflows` permission when editing `.github/workflows/*`. | Add **Workflows: Read and write** to Repository Permissions in GitHub App settings. |
+| **`git_push` returns `FORBIDDEN` "rejected by the remote's branch protection"** | The push reached GitHub and a branch protection rule, ruleset, or hook refused it (required checks not passing on the commit, or a rule requiring pull requests). Retrying cannot help. | Let required checks pass first, add the App to the rule's bypass list, or merge through a pull request (`pr_merge`). |
+| **`commit_status_create`, `check_runs_list`, or `workflow_*` returns `FORBIDDEN` with `permission_not_granted`** | The installation does not grant **Commit statuses**, **Checks**, or **Actions**. | Add the permission to the App, then approve the updated permissions on the installation. |
 | **`Token minting: UNAVAILABLE`** | App ID or Private Key mismatch. | Verify `GITHUB_APP_ID` matches GitHub App ID, and that the `.pem` file corresponds to that exact App. |
 | **Key rotation** | Need to rotate an existing key. | Generate a second key in GitHub first, update the `.pem` file on host, restart runner, then delete the old key in GitHub. |
 

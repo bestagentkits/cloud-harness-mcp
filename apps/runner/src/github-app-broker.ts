@@ -2,7 +2,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { HarnessError, type RunnerConfig } from '@cloud-harness/contracts';
 import type { GitHubInstallationStore } from './github-installation-store.js';
 
-export type GitHubPermissionScope = 'issues' | 'pull_requests' | 'contents';
+export type GitHubPermissionScope = 'issues' | 'pull_requests' | 'contents' | 'statuses' | 'checks' | 'actions';
 
 export type GitHubAuthorizationFailureReason = 'permission_not_granted' | 'repository_not_authorized';
 
@@ -30,6 +30,7 @@ const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
   pr_update: { scope: 'pull_requests', write: true },
   pr_comment: { scope: 'pull_requests', write: true },
   pr_review_threads: { scope: 'pull_requests', write: false },
+  pr_reviews: { scope: 'pull_requests', write: false },
   pr_review: { scope: 'pull_requests', write: true },
   pr_review_comment: { scope: 'pull_requests', write: true },
   pr_review_reply: { scope: 'pull_requests', write: true },
@@ -45,7 +46,15 @@ const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
   commit_list: { scope: 'contents', write: false },
   compare: { scope: 'contents', write: false },
   release_list: { scope: 'contents', write: false },
-  tag_list: { scope: 'contents', write: false }
+  tag_list: { scope: 'contents', write: false },
+  ref_get: { scope: 'contents', write: false },
+  commit_status_get: { scope: 'statuses', write: false },
+  commit_status_create: { scope: 'statuses', write: true },
+  check_runs_list: { scope: 'checks', write: false },
+  workflow_runs_list: { scope: 'actions', write: false },
+  workflow_run_view: { scope: 'actions', write: false },
+  workflow_dispatch: { scope: 'actions', write: true },
+  workflow_run_rerun_failed: { scope: 'actions', write: true }
 };
 
 export function requiredGitHubPermissions(
