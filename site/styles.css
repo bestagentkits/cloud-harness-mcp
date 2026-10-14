@@ -934,6 +934,7 @@ nav a,
 .policy-content p, .policy-content li { color: var(--ice-300); }
 .policy-content li + li { margin-top: var(--s2); }
 .policy-content strong { color: var(--ice-100); }
+.policy-content code { overflow-wrap: anywhere; }
 
 @media (max-width: 1200px) {
   .hero-trace {
@@ -990,7 +991,8 @@ nav a,
     max-width: 52ch;
   }
   .policy-main {
-    grid-template-columns: 1fr;
+    /* minmax(0, …) lets the single column shrink below its widest unbreakable string. */
+    grid-template-columns: minmax(0, 1fr);
   }
   .policy-intro {
     position: static;
