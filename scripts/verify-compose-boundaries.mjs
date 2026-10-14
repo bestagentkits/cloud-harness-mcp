@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 
 // The provisioning proxy's optional opt-in file is pointed at a path that never exists, so the rendered
 // configuration is the shipped default rather than whatever this host has in /etc.
@@ -92,17 +93,20 @@ const defaultProxyHosts = String(proxy.environment.ALLOWED_HOSTS ?? '').split(',
 requireBoundary(defaultProxyHosts.length > 0, 'provisioning-proxy default allow-list is empty');
 requireBoundary(!defaultProxyHosts.some((host) => /npmjs|yarnpkg|pypi|pythonhosted/u.test(host)), 'provisioning-proxy default allow-list must not contain an npm or PyPI host');
 
-const rawResult = spawnSync('docker', [
-  'compose', '-f', 'compose.yaml', '-f', 'compose.production.yaml', 'config', '--no-interpolate', '--no-normalize', '--format', 'json'
-], {
-  cwd: process.cwd(),
-  encoding: 'utf8',
-  env: { ...process.env, CLOUD_HARNESS_ENV_FILE: '.env.example' }
-});
-if (rawResult.status !== 0) throw new Error(rawResult.stderr || 'uninterpolated Compose config failed');
-const rawServices = JSON.parse(rawResult.stdout).services;
-const envFilePaths = (service) => (service.env_file ?? []).map((entry) => (typeof entry === 'string' ? entry : entry.path));
-const proxyEnvFiles = rawServices['provisioning-proxy'].env_file ?? [];
+// Compose drops env_file from rendered output, so the env-file boundary is checked on the source files.
+// Later files override earlier ones per service, as Compose merges them.
+const rawServices = {};
+for (const file of ['compose.yaml', 'compose.production.yaml']) {
+  for (const [name, service] of Object.entries(parseYaml(readFileSync(file, 'utf8')).services ?? {})) {
+    rawServices[name] = { ...rawServices[name], ...service };
+  }
+}
+const envFileEntries = (service) => {
+  const entries = service.env_file ?? [];
+  return Array.isArray(entries) ? entries : [entries];
+};
+const envFilePaths = (service) => envFileEntries(service).map((entry) => (typeof entry === 'string' ? entry : entry.path));
+const proxyEnvFiles = envFileEntries(rawServices['provisioning-proxy']);
 requireBoundary(proxyEnvFiles.length === 1 && proxyEnvFiles[0].required === false, 'provisioning-proxy must have exactly one optional env file');
 const proxyEnvFile = envFilePaths(rawServices['provisioning-proxy'])[0];
 requireBoundary(proxyEnvFile.includes('${PROVISIONING_PROXY_ENV_FILE:-/etc/cloud-harness-mcp/provisioning-proxy.env}'), 'provisioning-proxy env file must be the dedicated provisioning-proxy.env');
