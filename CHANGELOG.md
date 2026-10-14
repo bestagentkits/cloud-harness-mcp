@@ -1,3 +1,10 @@
+# [0.66.0-beta.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.3...v0.66.0-beta.4) (2026-10-14)
+
+
+### Features
+
+* **github:** merge-train statuses, Actions runs, review state, and atomic branch leases ([#324](https://github.com/bestagentkits/cloud-harness-mcp/issues/324)) ([8ac2cd6](https://github.com/bestagentkits/cloud-harness-mcp/commit/8ac2cd683353683f499995d685bede8d94e0d15f)), closes [#322](https://github.com/bestagentkits/cloud-harness-mcp/issues/322) [#323](https://github.com/bestagentkits/cloud-harness-mcp/issues/323) [#325](https://github.com/bestagentkits/cloud-harness-mcp/issues/325)
+
 # [0.66.0-beta.3](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.2...v0.66.0-beta.3) (2026-10-14)
 
 
