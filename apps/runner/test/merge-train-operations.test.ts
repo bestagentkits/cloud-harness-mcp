@@ -185,6 +185,16 @@ describe('git_push atomic ref leases', () => {
     expect(helperArgs('/opt/harness/git-transfer-helper.sh', 'push')?.slice(-3, -1)).toEqual([':refs/heads/merge-lock', REMOTE_OID]);
   });
 
+  it('pushes a fully qualified source without a destination to the same branch', async () => {
+    const { service, workspaceId, principalSelector } = fixture();
+    await service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'refs/heads/feature' });
+    expect(helperArgs('/opt/harness/git-transfer-helper.sh', 'push')?.at(-3)).toBe('refs/heads/feature:refs/heads/feature');
+
+    docker.runDocker.mockClear();
+    await service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'feature' });
+    expect(helperArgs('/opt/harness/git-transfer-helper.sh', 'push')?.at(-3)).toBe('feature:refs/heads/feature');
+  });
+
   it('reports a lease collision as a non-retryable CONFLICT', async () => {
     const { service, workspaceId, principalSelector } = fixture();
     docker.pushResults = [{ stdout: '', stderr: ' ! [rejected]        HEAD -> merge-lock (stale info)\n', exitCode: 1, truncated: false }];

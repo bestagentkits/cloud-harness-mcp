@@ -4996,9 +4996,11 @@ function shellQuote(value: string): string {
 
 function normalizePushRefspec(refspec: string | undefined, defaultBranch: string | undefined): string {
   if (!refspec) return `${defaultBranch}:refs/heads/${defaultBranch}`;
-  if (!refspec.includes(':')) return `${refspec}:refs/heads/${refspec}`;
+  // A destination derived from a fully qualified source names the same branch, not refs/heads/refs/heads/<name>.
+  const sameBranch = (source: string) => `${source}:refs/heads/${source.replace(/^refs\/heads\//, '')}`;
+  if (!refspec.includes(':')) return sameBranch(refspec);
   const [source, destination] = refspec.split(':');
-  if (!destination) return `${source}:refs/heads/${source}`;
+  if (!destination) return sameBranch(source!);
   const normalizedDestination = destination.startsWith('refs/heads/')
     ? destination
     : `refs/heads/${destination}`;
