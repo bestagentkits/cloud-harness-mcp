@@ -143,7 +143,8 @@ function fakeDocker(args: string[]): FakeChild {
 }
 
 import {
-  EXECUTOR_HARDENING_ARGS, TOOLBOX_STALE_AFTER_MS, buildToolboxCreateArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName
+  EXECUTOR_HARDENING_ARGS, TOOLBOX_PATH, TOOLBOX_STALE_AFTER_MS, buildToolboxCreateArgs, reapStaleToolboxContainers, runToolboxCommand,
+  toolboxContainerName, withManagedBins
 } from '../src/toolbox-runner.js';
 
 const instanceId = 'a'.repeat(36);
@@ -220,6 +221,60 @@ describe('toolbox container argv', () => {
     expect(toolboxContainerName()).not.toBe(toolboxContainerName());
     expect(() => buildToolboxCreateArgs({ name: 'other', image: 'i', instanceId, command: 'true' }, 1_000)).toThrow();
     expect(() => buildToolboxCreateArgs({ name: toolboxContainerName(), image: 'i', instanceId: 'x\ny', command: 'true' }, 1_000)).toThrow();
+  });
+});
+
+describe('managed release bin directories', () => {
+  const release = { source: '/var/lib/cloud-harness/packages/releases/k/pkr_aaaaaaaaaaaaaaaaaaaa', target: '/opt/chm-packages/pkr_aaaaaaaaaaaaaaaaaaaa' };
+  const other = { source: '/var/lib/cloud-harness/packages/releases/k/pkr_bbbbbbbbbbbbbbbbbbbb', target: '/opt/chm-packages/pkr_bbbbbbbbbbbbbbbbbbbb' };
+  const pathOf = (args: string[]) => flagValues(args, '--env').find((entry) => entry.startsWith('PATH='))!.slice('PATH='.length);
+
+  it('puts managed bins after the workspace-local and user-tool directories and before the image tools', () => {
+    const args = buildToolboxCreateArgs({
+      name: 'chm-toolbox-0123456789abcdef', image: 'cloud-harness-executor:local', instanceId, command: 'true',
+      mounts: [release, other], binDirs: [`${release.target}/bin`, `${other.target}/bin`]
+    }, 30_000);
+    const entries = pathOf(args).split(':');
+    const local = entries.indexOf('/tmp/cloud-harness-home/.local/bin');
+    const sbin = entries.indexOf('/usr/local/sbin');
+    expect(entries.slice(local + 1, sbin)).toEqual([`${release.target}/bin`, `${other.target}/bin`]);
+    expect(entries.indexOf('/opt/user-tools/bin')).toBeLessThan(local);
+    expect(entries.indexOf('/usr/local/bin')).toBeGreaterThan(sbin);
+    // Releases stay read-only even when their bin directory is on PATH.
+    expect(flagValues(args, '--mount').every((value) => value.endsWith(',readonly'))).toBe(true);
+  });
+
+  it('keeps the toolbox PATH identical when there are no managed bins', () => {
+    expect(pathOf(argv())).toBe(TOOLBOX_PATH);
+    expect(pathOf(argv([release]))).toBe(TOOLBOX_PATH);
+    expect(withManagedBins(TOOLBOX_PATH, [])).toBe(TOOLBOX_PATH);
+  });
+
+  it('inserts into an executor PATH that starts with the checkout-local bin', () => {
+    const executorPath = `/workspace/node_modules/.bin:${TOOLBOX_PATH}`;
+    expect(withManagedBins(executorPath, ['/opt/chm-packages/r/bin'])).toBe(
+      executorPath.replace(':/usr/local/sbin:', ':/opt/chm-packages/r/bin:/usr/local/sbin:')
+    );
+  });
+
+  it('refuses a bin directory that is not the bin directory of a provided mount', () => {
+    const spec = (mounts: Array<{ source: string; target: string }>, binDirs: string[]) => () => buildToolboxCreateArgs({
+      name: 'chm-toolbox-0123456789abcdef', image: 'i', instanceId, command: 'true', mounts, binDirs
+    }, 1_000);
+    expect(spec([], [`${release.target}/bin`])).toThrow(HarnessError);
+    expect(spec([release], [release.target])).toThrow(HarnessError);
+    expect(spec([release], [`${release.target}/bin/..`])).toThrow(HarnessError);
+    expect(spec([release], ['/usr/bin'])).toThrow(HarnessError);
+    expect(spec([release], [`${other.target}/bin`])).toThrow(HarnessError);
+    expect(spec([release], [`${release.target}/bin`])).not.toThrow();
+  });
+
+  it('refuses entries that could split or escape a PATH entry, and a PATH without its anchor', () => {
+    expect(() => withManagedBins(TOOLBOX_PATH, ['relative/bin'])).toThrow(HarnessError);
+    expect(() => withManagedBins(TOOLBOX_PATH, ['/opt/a:/opt/b'])).toThrow(HarnessError);
+    expect(() => withManagedBins(TOOLBOX_PATH, ['/opt/a/../../etc'])).toThrow(HarnessError);
+    expect(() => withManagedBins(TOOLBOX_PATH, ['/opt/a\nb'])).toThrow(HarnessError);
+    expect(() => withManagedBins('/usr/bin:/bin', ['/opt/a/bin'])).toThrow(HarnessError);
   });
 });
 
