@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -402,7 +402,7 @@ describe('release tree verification', () => {
     ] as const) {
       symlinkSync(target, join(staging, path));
       await expect(verify(), path).rejects.toMatchObject({ code: 'PACKAGE_VERIFICATION_FAILED', message: expect.stringMatching(/outside the release/) });
-      rmSync(join(staging, path));
+      unlinkSync(join(staging, path));
     }
   });
 
