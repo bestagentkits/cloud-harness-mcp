@@ -360,6 +360,67 @@ and
   [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts);
   the container arguments by
   [`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts).
+- `packages_plan`, `packages_apply`, `packages_list`, `packages_status`, and
+  `packages_rollback` manage durable CLI tools (npm packages and uv tools) for
+  the owner or for one workspace. All five return `FORBIDDEN` unless
+  `PACKAGES_ENABLED=true`; local stdio modes refuse them with `INVALID_INPUT`.
+  The flow, the approval binding, and the failure codes are easy to misread:
+  - **Plan resolves, never installs.** `packages_plan` resolves exact
+    versions and a lockfile in an isolated builder and stores an immutable plan
+    whose `planDigest` covers the owner, scope, package, version, source,
+    integrity, lockfile hash, binaries, conflicts, executor image ID, binding
+    generation, and expiry (30 minutes). `ecosystem: "apt"` returns
+    `NOT_SUPPORTED`: system packages need a reviewed executor image variant.
+    The `instance` scope does not exist; `owner` covers the single owner.
+  - **Approval binds the digest.** With `PACKAGES_APPROVAL_MODE=required` (the
+    default) an operator approves the plan on the Dashboard Approvals page,
+    which submits the digest it displayed. A plan whose digest, binding
+    generation, or executor image changed returns `STALE_GENERATION` at apply;
+    an expired plan returns `EXPIRED`; a pending one returns
+    `PACKAGE_APPROVAL_REQUIRED`; a rejected one returns `CONFLICT`. In
+    `owner-bearer` mode, which has no Dashboard, `required` makes
+    `packages_plan` report `approval: "unavailable"` and `packages_apply`
+    return `FORBIDDEN`; the operator opts into `PACKAGES_APPROVAL_MODE=none`
+    to apply without separate approval.
+  - **Apply is durable, not an operation handle.** `packages_apply` returns an
+    `applyId` at once, and replaying the same plan returns the same apply.
+    `packages_status` reads the stored apply (`QUEUED`, `BUILDING`,
+    `VERIFYING`, `PUBLISHING`, `SUCCEEDED`, `FAILED`) and can wait up to 30
+    seconds for its next change. Only `SUCCEEDED` means installed: the release
+    was built, its file tree verified (no special files, no set-ID bits, no
+    symlinks leaving the release, the declared binaries only, within
+    `PACKAGES_MAX_RELEASE_BYTES`), every binary launch-checked with
+    `--version` or `--help` in a container without network, then published by
+    rename and one generation-fenced transaction. A failure leaves the previous
+    release in place and reports `PACKAGE_BUILD_FAILED`,
+    `PACKAGE_VERIFICATION_FAILED`, `LIMIT_EXCEEDED`, `TIMEOUT`, `UNAVAILABLE`
+    (registry host not allowed by the provisioning proxy, or Docker failure),
+    or `RUNNER_RESTARTED` (the runner restarted mid-apply). One apply runs per
+    binding at a time (`CONFLICT` otherwise) and at most two builds run per
+    runner; a plan while both slots are busy is `LIMIT_EXCEEDED` (retryable).
+  - **Releases are pinned per workspace.** New and recreated workspace
+    executors mount every release bound for them read-only at
+    `/opt/chm-packages/<releaseId>` with its `bin` on `PATH` after the
+    workspace's own tools and before the image's; the `bash` toolbox target
+    mounts the owner-scope releases the same way. Existing workspaces keep the
+    releases they started with until they are recreated, and
+    `packages_status` without `applyId` lists the ones that would change. A
+    workspace-scope binding overrides the owner binding of the same package;
+    any other binary-name collision is a `CONFLICT` listed in the plan.
+  - **Rollback needs no approval.** `packages_rollback` points a binding back
+    to a verified release from its last five history entries, guarded by
+    `expectedGeneration` (`STALE_GENERATION` if it moved).
+
+  Schemas are owned by
+  [`packages/contracts/src/package-schemas.ts`](../packages/contracts/src/package-schemas.ts);
+  orchestration by
+  [`apps/runner/src/package-service.ts`](../apps/runner/src/package-service.ts);
+  durable state by
+  [`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts); the
+  builder, verification, and launch check by
+  [`apps/runner/src/package-builder.ts`](../apps/runner/src/package-builder.ts).
+  The boundary is in the
+  [security model](security-model.md#managed-toolbox-packages).
 - `github_read` is a read-only, non-destructive tool sharing the same broker
   and handler as `github_action`, restricted to `pr_list`, `pr_view`,
   `issue_list`, `issue_view`, `commit_list`, `compare`, `release_list`, and

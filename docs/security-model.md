@@ -578,6 +578,60 @@ the boundary it keeps.
   introduced. The asset confinement is asserted by
   [`apps/api/test/dashboard-ui-contract.test.ts`](../apps/api/test/dashboard-ui-contract.test.ts).
 
+### Managed toolbox packages
+
+Managed packages let an agent keep a CLI tool across workspaces and redeploys
+without changing the executor image. They are off unless the operator sets
+`PACKAGES_ENABLED`, and they stay inside the trust domain the owner already
+accepts: a package runs with exactly the authority of any other command in a
+workspace executor, never more. The decision and rejected alternatives are in
+[ADR 0003](adr/0003-terminal-bash-and-managed-toolbox.md).
+
+- **Plan, then digest-bound approval.** `packages_plan` resolves an exact
+  version, lock, dependency count, size, and binaries without writing a release.
+  `packages_apply` accepts only that plan's digest. With
+  `PACKAGES_APPROVAL_MODE=required` the plan must first be approved on the
+  Dashboard; any change to the plan changes the digest and invalidates the
+  approval. Owner-bearer deployments have no Dashboard approver, so the runner
+  refuses applies in that mode until the operator chooses `none` explicitly.
+- **Isolated builder.** Resolution and builds run in a short-lived container
+  from the pinned executor image with the same hardening as an executor
+  (non-root, dropped capabilities, read-only root, resource bounds). Its only
+  network is the provisioning network, and the provisioning proxy reaches only
+  the registry hosts the operator listed in `PACKAGES_PROXY_HOSTS`; a refused
+  host fails the plan as `UNAVAILABLE` naming that host. The builder receives no
+  control-plane credential, workspace secret, or GitHub token, and user values
+  reach it only as positional arguments. npm lifecycle scripts stay off unless
+  `PACKAGES_NPM_LIFECYCLE_SCRIPTS` allows them.
+- **Verified, immutable releases.** After the build the runner removes the
+  builder, walks the staged tree (rejecting links that leave it, special files,
+  and trees over `PACKAGES_MAX_RELEASE_BYTES`), records its digest and SBOM,
+  and launch-checks every binary in a container with no network. Only then is
+  the release published and bound. Executors and toolbox containers mount
+  releases read-only under `/opt/chm-packages/<releaseId>`, so a workspace
+  cannot alter a release another workspace uses.
+- **PATH order.** Managed `bin` directories come after the workspace user's
+  own `~/.local/bin` and before the image's system directories, so a managed
+  package can add a command but a binary-name conflict between bindings is
+  refused at plan and again at publish.
+- **Crash recovery and cleanup.** Applies are durable rows. On startup the
+  runner fails applies a crash interrupted, removes their staging trees, and
+  marks releases whose tree is missing; hourly garbage collection removes only
+  releases no binding, profile, or retained history references, under the
+  packages root. Profiles record which releases each running workspace mounts.
+- **Residual risk.** A malicious or compromised package runs with workspace
+  authority in every workspace bound to it. Approval, pinning, the network
+  boundary, and rollback narrow that risk; they do not make untrusted packages
+  safe.
+
+Owners:
+[`apps/runner/src/package-service.ts`](../apps/runner/src/package-service.ts),
+[`apps/runner/src/package-store.ts`](../apps/runner/src/package-store.ts),
+[`apps/runner/src/package-builder.ts`](../apps/runner/src/package-builder.ts),
+and [`deploy/provisioning-proxy.mjs`](../deploy/provisioning-proxy.mjs).
+Configuration is described in
+[configuration](configuration.md#managed-toolbox).
+
 ## Storage and state limits
 
 Workspace paths are server-generated and checked beneath the configured jobs
