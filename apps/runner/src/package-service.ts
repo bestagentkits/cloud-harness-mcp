@@ -6,9 +6,11 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { z } from 'zod';
 import {
   HarnessError,
+  PACKAGES_PLAN_INLINE_WAIT_MS,
   PackagesApplyInputSchema,
   PackagesListInputSchema,
   PackagesPlanInputSchema,
+  PackagesRemoveInputSchema,
   PackagesRollbackInputSchema,
   PackagesStatusInputSchema,
   type BuildablePackageEcosystem,
@@ -17,17 +19,23 @@ import {
   type PackageApplyState,
   type PackageBindingView,
   type PackagePlanResult,
+  type PackageResolutionState,
+  type PackageResolutionView,
   type PackagesListResult,
+  type PackagesPlanOutput,
+  type PackagesRemoveResult,
   type PackagesRollbackResult,
   type PackagesStatusResult,
   type RunnerConfig
 } from '@cloud-harness/contracts';
+import { computeFullTreeDigestAsync } from './adapters/mattpocock-adapter.js';
 import { packageApprovalUnavailable } from './config.js';
 import { removeContainer, runDocker } from './docker-engine.js';
 import { opaqueId } from './metadata-records.js';
 import type { PackageBuilderPort } from './package-builder-port.js';
 import {
   PACKAGE_MAX_OUTPUT_TAIL_BYTES,
+  PACKAGE_PLAN_TTL_MS,
   PACKAGE_STORE_ID_PATTERN,
   PackageStore,
   packageApplyView,
@@ -65,16 +73,20 @@ const EXECUTOR_UID = 10001;
 const OWNER_KEY_PATTERN = /^[a-f0-9]{32}$/;
 const RELEASE_REL_PATH_PATTERN = /^releases\/([a-f0-9]{32})\/(pkr_[A-Za-z0-9_-]{20,80})$/;
 const TERMINAL_APPLY_STATES: readonly PackageApplyState[] = ['SUCCEEDED', 'FAILED'];
+/** Finished plan resolutions kept in memory for `packages_status`, beyond which the oldest are dropped. */
+const MAX_RETAINED_RESOLUTIONS = 64;
+const FAIL_APPLY_ATTEMPTS = 3;
 const APT_NOT_SUPPORTED = 'apt packages are not supported by the managed toolbox: system packages change only through an executor image variant built and deployed by the operator';
 
-export const PACKAGE_OPERATIONS = ['packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback'] as const;
+export const PACKAGE_OPERATIONS = ['packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove'] as const;
 export type PackageOperation = typeof PACKAGE_OPERATIONS[number];
 export type PackageOperationResults = {
-  packages_plan: PackagePlanResult;
+  packages_plan: PackagesPlanOutput;
   packages_apply: PackageApplyResult;
   packages_list: PackagesListResult;
   packages_status: PackagesStatusResult;
   packages_rollback: PackagesRollbackResult;
+  packages_remove: PackagesRemoveResult;
 };
 
 export type PackageServiceConfig = Pick<RunnerConfig,
@@ -108,6 +120,8 @@ export type PackageServiceOptions = {
    * uses `chown`, then falls back to a no-network root helper container when the runner lacks the right.
    */
   setExecutorOwnership?: (path: string) => Promise<void>;
+  /** How long `packages_plan` waits for its resolution before answering RESOLVING; tests shorten it. */
+  planInlineWaitMs?: number;
 };
 
 export type PackageMount = { source: string; target: string };
@@ -121,10 +135,27 @@ export type PackageProfile = {
   missingReleaseIds: string[];
 };
 
-export type PackageReconcileSummary = { interruptedApplies: number; removedEntries: number; unpublishedReleases: number; missingReleases: number };
-export type PackageGcSummary = { skipped: boolean; expiredPlans: number; deletedBindings: number; collectedReleases: number };
+export type PackageReconcileSummary = {
+  interruptedApplies: number; removedEntries: number; unpublishedReleases: number; missingReleases: number; restoredReleases: number;
+};
+export type PackageGcSummary = {
+  skipped: boolean; expiredPlans: number; purgedPlans: number; deletedBindings: number; collectedReleases: number; restoredReleases: number;
+};
 
 type ApplyJob = { controller: AbortController; done: Promise<void> };
+/** A `packages_plan` resolution, held in memory: it runs detached from the request that started it. */
+type Resolution = {
+  id: string;
+  ownerId: string;
+  ecosystem: BuildablePackageEcosystem;
+  name: string;
+  state: PackageResolutionState;
+  plan?: PackagePlanResult;
+  error?: HarnessError;
+  controller: AbortController;
+  done: Promise<void>;
+  finishedAt?: number;
+};
 type ResolvedBinding = { binding: PackageBindingRecord; release: PackageReleaseRecord | undefined; present: boolean };
 
 const EMPTY_PROFILE: PackageProfile = { releaseIds: [], mounts: [], binDirs: [], missingReleaseIds: [] };
@@ -229,6 +260,7 @@ export class PackageService {
   private readonly paths: PackagePaths;
   private readonly builds = new Semaphore(PACKAGE_BUILD_SLOTS);
   private readonly jobs = new Map<string, ApplyJob>();
+  private readonly resolutions = new Map<string, Resolution>();
   private readonly waiters = new Map<string, Set<() => void>>();
   private readonly workspaces: PackageWorkspaceDirectory;
   private readonly clock: () => number;
@@ -260,7 +292,8 @@ export class PackageService {
       packages_apply: () => this.apply(ownerId, input),
       packages_list: () => this.list(ownerId, input),
       packages_status: () => this.status(ownerId, input, signal),
-      packages_rollback: () => this.rollback(ownerId, input)
+      packages_rollback: () => this.rollback(ownerId, input),
+      packages_remove: () => this.remove(ownerId, input)
     } satisfies { [K in PackageOperation]: () => Promise<PackageOperationResults[K]> };
     const handler = run[operation] as (() => Promise<PackageOperationResults[O]>) | undefined;
     if (!handler) throw harness('INVALID_INPUT', 'unknown package operation', 400);
@@ -269,7 +302,12 @@ export class PackageService {
 
   /* Operations. */
 
-  private async plan(ownerId: string, input: unknown, signal?: AbortSignal): Promise<PackagePlanResult> {
+  /**
+   * Starts a resolution and waits up to `PACKAGES_PLAN_INLINE_WAIT_MS` for it. A resolution that needs longer
+   * (a cold uv toolchain, a large npm tree) keeps running detached from this request, which the API would
+   * otherwise abort at its request timeout, and the caller polls `packages_status` with the resolutionId.
+   */
+  private async plan(ownerId: string, input: unknown, signal?: AbortSignal): Promise<PackagesPlanOutput> {
     const request = parseInput(PackagesPlanInputSchema, input);
     if (request.ecosystem === 'apt') throw harness('NOT_SUPPORTED', APT_NOT_SUPPORTED, 400);
     const ecosystem: BuildablePackageEcosystem = request.ecosystem;
@@ -280,47 +318,96 @@ export class PackageService {
     if (workspaceId !== null && !this.workspaces.isActive(ownerId, workspaceId)) {
       throw harness('NOT_FOUND', 'workspace not found or not active', 404);
     }
-
+    this.requireRunning();
     if (!this.builds.tryAcquire()) {
       throw harness('LIMIT_EXCEEDED', `package build limit reached: ${PACKAGE_BUILD_SLOTS} builds are already running on this instance; retry after one finishes`, 429, true);
     }
-    // npm defaults to the `latest` tag; an empty uv specifier means the newest release.
-    const requestedSpec = request.version ?? (ecosystem === 'npm' ? 'latest' : '');
-    const scratchId = opaqueId('pkp');
-    const timeout = AbortSignal.timeout(this.config.packagesBuildTimeoutMs + BUILD_TIMEOUT_GRACE_MS);
-    let resolved;
-    try {
-      await this.builder.probeRegistries(ecosystem);
-      await this.createExecutorDirectory(this.paths.scratch(scratchId));
-      resolved = await this.builder.resolvePlan({
-        scratchId, ecosystem, name: request.name,
-        requestedSpec,
-        ...(request.python !== undefined ? { python: request.python } : {}),
-        lifecycleScripts,
-        signal: signal ? AbortSignal.any([signal, timeout]) : timeout
-      });
-    } catch (error) {
-      if (timeout.aborted && !(error instanceof HarnessError && error.code === 'TIMEOUT')) {
-        throw harness('TIMEOUT', 'package resolution exceeded the build timeout', 504, true);
-      }
-      throw this.sanitized(error);
-    } finally {
-      await this.removeExact(this.paths.scratch(scratchId)).catch(() => undefined);
-      this.builds.release();
-    }
+    this.pruneResolutions();
+    const resolution = this.startResolution(ownerId, {
+      ecosystem, name: request.name, scope: request.scope, workspaceId, lifecycleScripts,
+      // npm defaults to the `latest` tag; an empty uv specifier means the newest release.
+      requestedSpec: request.version ?? (ecosystem === 'npm' ? 'latest' : ''),
+      ...(request.python !== undefined ? { python: request.python } : {})
+    });
+    if (resolution.state === 'RESOLVING') await this.waitForChange(resolution.id, this.options.planInlineWaitMs ?? PACKAGES_PLAN_INLINE_WAIT_MS, signal);
+    if (resolution.state === 'READY') return resolution.plan!;
+    if (resolution.state === 'FAILED') throw resolution.error!;
+    return { resolutionId: resolution.id, state: 'RESOLVING', package: { ecosystem, name: request.name } };
+  }
 
-    const binding = this.store.findBinding(ownerId, request.scope, workspaceId, ecosystem, request.name);
+  /** Runs one resolution in a build slot the caller already acquired; the slot is released when it settles. */
+  private startResolution(ownerId: string, spec: {
+    ecosystem: BuildablePackageEcosystem; name: string; scope: 'owner' | 'workspace'; workspaceId: string | null;
+    requestedSpec: string; python?: string; lifecycleScripts: boolean;
+  }): Resolution {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.config.packagesBuildTimeoutMs + BUILD_TIMEOUT_GRACE_MS);
+    timer.unref();
+    const resolution: Resolution = {
+      id: opaqueId('pkq'), ownerId, ecosystem: spec.ecosystem, name: spec.name, state: 'RESOLVING', controller,
+      done: Promise.resolve()
+    };
+    const scratchId = opaqueId('pkp');
+    const run = async (): Promise<PackagePlanResult> => {
+      let resolved;
+      try {
+        await this.builder.probeRegistries(spec.ecosystem);
+        await this.createExecutorDirectory(this.paths.scratch(scratchId));
+        resolved = await this.builder.resolvePlan({
+          scratchId, ecosystem: spec.ecosystem, name: spec.name, requestedSpec: spec.requestedSpec,
+          ...(spec.python !== undefined ? { python: spec.python } : {}),
+          lifecycleScripts: spec.lifecycleScripts,
+          signal: controller.signal
+        });
+        // A builder that finished after a timeout or shutdown abort must not still record a plan.
+        if (controller.signal.aborted) throw harness('CANCELLED', 'package resolution was cancelled', 499);
+      } finally {
+        clearTimeout(timer);
+        await this.removeExact(this.paths.scratch(scratchId)).catch(() => undefined);
+        this.builds.release();
+      }
+      return this.recordPlan(ownerId, spec, resolved);
+    };
+    resolution.done = run().then((plan) => {
+      resolution.state = 'READY';
+      resolution.plan = plan;
+    }, (error: unknown) => {
+      resolution.state = 'FAILED';
+      resolution.error = timedOut && !(error instanceof HarnessError && error.code === 'TIMEOUT')
+        ? harness('TIMEOUT', 'package resolution exceeded the build timeout', 504, true)
+        : this.stopping
+          ? harness('RUNNER_RESTARTED', 'the runner stopped during this resolution; run packages_plan again', 503, true)
+          : this.sanitized(error);
+    }).finally(() => {
+      resolution.finishedAt = this.clock();
+      this.notify(resolution.id);
+    });
+    this.resolutions.set(resolution.id, resolution);
+    return resolution;
+  }
+
+  /** Stores the resolved plan and returns the plan result. */
+  private recordPlan(ownerId: string, spec: {
+    ecosystem: BuildablePackageEcosystem; name: string; scope: 'owner' | 'workspace'; workspaceId: string | null;
+    requestedSpec: string; lifecycleScripts: boolean;
+  }, resolved: Awaited<ReturnType<PackageBuilderPort['resolvePlan']>>): PackagePlanResult {
+    const { ecosystem, workspaceId } = spec;
+    const binding = this.store.findBinding(ownerId, spec.scope, workspaceId, ecosystem, spec.name);
     const conflicts = this.store.binaryConflicts(ownerId, {
-      bindingId: binding?.id ?? null, scope: request.scope, workspaceId, ecosystem, name: request.name, binaries: resolved.binaries
+      bindingId: binding?.id ?? null, scope: spec.scope, workspaceId, ecosystem, name: spec.name, binaries: resolved.binaries
     });
     const plan = this.store.createPlan({
-      ownerId, scope: request.scope, workspaceId, ecosystem, packageName: request.name, version: resolved.version,
-      requestedSpec, lockText: resolved.lockText,
+      ownerId, scope: spec.scope, workspaceId, ecosystem, packageName: spec.name, version: resolved.version,
+      requestedSpec: spec.requestedSpec, lockText: resolved.lockText,
       approvalMode: this.config.packagesApprovalMode,
       now: this.clock(),
       content: {
         source: resolved.source, integrity: resolved.integrity, dependencyCount: resolved.dependencyCount,
-        sizeEstimateBytes: resolved.sizeEstimateBytes, binaries: resolved.binaries, conflicts, lifecycleScripts,
+        sizeEstimateBytes: resolved.sizeEstimateBytes, binaries: resolved.binaries, conflicts, lifecycleScripts: spec.lifecycleScripts,
         runtime: resolved.runtime
       }
     });
@@ -347,8 +434,29 @@ export class PackageService {
     };
   }
 
+  /** Drops finished resolutions older than the plan lifetime, then the oldest finished ones beyond the cap. */
+  private pruneResolutions(): void {
+    const now = this.clock();
+    const finished = [...this.resolutions.values()].filter((entry) => entry.finishedAt !== undefined)
+      .sort((left, right) => left.finishedAt! - right.finishedAt!);
+    for (const [index, entry] of finished.entries()) {
+      if (now - entry.finishedAt! > PACKAGE_PLAN_TTL_MS || finished.length - index > MAX_RETAINED_RESOLUTIONS) this.resolutions.delete(entry.id);
+    }
+  }
+
+  private resolutionView(resolution: Resolution): PackageResolutionView {
+    return {
+      resolutionId: resolution.id,
+      state: resolution.state,
+      package: { ecosystem: resolution.ecosystem, name: resolution.name },
+      ...(resolution.plan ? { plan: resolution.plan } : {}),
+      ...(resolution.error ? { errorCode: resolution.error.code, errorMessage: resolution.error.message } : {})
+    };
+  }
+
   private async apply(ownerId: string, input: unknown): Promise<PackageApplyResult> {
     const request = parseInput(PackagesApplyInputSchema, input);
+    this.requireRunning();
     if (packageApprovalUnavailable(this.config)) {
       throw harness('FORBIDDEN', 'Package plans need a Dashboard approval, and this instance has no Dashboard in owner-bearer mode; the operator can opt out of approvals with PACKAGES_APPROVAL_MODE=none', 403);
     }
@@ -360,6 +468,9 @@ export class PackageService {
     if (plan.status === 'APPROVED' && plan.digest === request.planDigest && plan.expiresAt > now) {
       this.requireEcosystem(plan.ecosystem);
       this.requireLifecycleScriptsAllowed(plan.body.lifecycleScripts);
+      if (plan.decidedBy === 'policy' && this.config.packagesApprovalMode !== 'none') {
+        throw harness('STALE_GENERATION', 'this plan was approved by policy, but the instance now requires Dashboard approval; create a new plan', 409);
+      }
       const imageId = await this.builder.imageId();
       if (imageId !== plan.body.runtime.imageId) {
         throw harness('STALE_GENERATION', 'the executor image changed since this plan was made; create a new plan', 409);
@@ -372,6 +483,8 @@ export class PackageService {
       const info = await statfs(this.paths.root);
       availableBytes = Number(info.bavail) * Number(info.bsize);
     }
+    // The awaits above can span a shutdown; no apply may start once it began.
+    this.requireRunning();
     const { apply, replayed } = this.store.startApply({
       ownerId, planId: plan.id, planDigest: request.planDigest, now: this.clock(),
       limits: {
@@ -404,6 +517,14 @@ export class PackageService {
 
   private async status(ownerId: string, input: unknown, signal?: AbortSignal): Promise<PackagesStatusResult> {
     const request = parseInput(PackagesStatusInputSchema, input);
+    if (request.resolutionId !== undefined) {
+      const resolution = this.resolutions.get(request.resolutionId);
+      if (!resolution || resolution.ownerId !== ownerId) {
+        throw harness('NOT_FOUND', 'plan resolution not found: it finished more than 30 minutes ago or the runner restarted; run packages_plan again', 404);
+      }
+      if (request.waitMs > 0 && resolution.state === 'RESOLVING') await this.waitForChange(resolution.id, request.waitMs, signal);
+      return { resolution: this.resolutionView(resolution) };
+    }
     if (request.applyId !== undefined) {
       let apply = this.store.getApply(ownerId, request.applyId);
       if (!apply) throw harness('NOT_FOUND', 'package apply not found', 404);
@@ -441,6 +562,33 @@ export class PackageService {
     };
   }
 
+  private async remove(ownerId: string, input: unknown): Promise<PackagesRemoveResult> {
+    return await this.removeBinding(ownerId, parseInput(PackagesRemoveInputSchema, input), 'mcp');
+  }
+
+  /**
+   * Uninstalls a package from one scope; shared by MCP (`mcp`) and the Dashboard (`dashboard`). Releases that
+   * a retained workspace profile still mounts stay until garbage collection finds them unreferenced.
+   */
+  async removeBinding(ownerId: string, request: { bindingId: string; expectedGeneration: number }, actor: PackageActor): Promise<PackagesRemoveResult> {
+    const now = this.clock();
+    const { binding, releaseIds } = this.store.removeBinding({
+      ownerId, bindingId: request.bindingId, expectedGeneration: request.expectedGeneration, actor, now
+    });
+    let collectedReleases = 0;
+    for (const releaseId of releaseIds) {
+      const collected = this.store.markCollected(releaseId, now);
+      if (!collected) continue;
+      // A failed removal leaves a directory without a live row, which startup reconciliation removes.
+      await this.removeExact(this.paths.release(collected.relPath)).catch(() => undefined);
+      collectedReleases += 1;
+    }
+    return {
+      bindingId: binding.id, removed: true, releaseIds, collectedReleases,
+      affectedWorkspaces: this.affectedWorkspaces(ownerId, binding.scope, binding.workspaceId, binding.ecosystem, binding.packageName)
+    };
+  }
+
   /* Profiles. */
 
   /**
@@ -466,19 +614,20 @@ export class PackageService {
   /**
    * Startup recovery. It must run after the runner removed its leftover ephemeral containers, so no
    * builder can still be writing below the root. Interrupted applies fail with RUNNER_RESTARTED and
-   * release their fences; staging and scratch entries are removed; a release directory without a
-   * VERIFIED row (renamed but never committed, or collected) is removed; a VERIFIED row without its
-   * directory becomes MISSING.
+   * release their fences; staging and scratch entries are removed; a release directory without a live
+   * (VERIFIED or MISSING) row, which was renamed but never committed or was collected, is removed; a
+   * VERIFIED row without its directory becomes MISSING, and a MISSING row whose directory is back and
+   * still matches its tree digest becomes VERIFIED again.
+   *
+   * When the packages root itself is absent (storage not mounted yet), nothing is marked or removed:
+   * profiles skip any release they cannot find, and a later collection pass restores what returns.
    */
   async reconcileStartup(now = this.clock()): Promise<PackageReconcileSummary> {
     if (this.jobs.size > 0) throw harness('CONFLICT', 'package reconciliation runs only before any apply starts', 409);
     const interrupted = this.store.failInterruptedApplies(now);
     this.store.expirePlans(now);
-    const summary: PackageReconcileSummary = { interruptedApplies: interrupted.length, removedEntries: 0, unpublishedReleases: 0, missingReleases: 0 };
-    if (!isDirectory(this.paths.root)) {
-      summary.missingReleases = this.store.markReleasesMissing(this.store.verifiedReleases().map((release) => release.id));
-      return summary;
-    }
+    const summary: PackageReconcileSummary = { interruptedApplies: interrupted.length, removedEntries: 0, unpublishedReleases: 0, missingReleases: 0, restoredReleases: 0 };
+    if (!isDirectory(this.paths.root)) return summary;
     for (const [area, pathOf] of [['staging', (id: string) => this.paths.staging(id)], ['scratch', (id: string) => this.paths.scratch(id)]] as const) {
       for (const name of await listNames(join(this.paths.root, area))) {
         if (!PACKAGE_STORE_ID_PATTERN.test(name)) continue;
@@ -486,20 +635,43 @@ export class PackageService {
         summary.removedEntries += 1;
       }
     }
-    const verified = new Map(this.store.verifiedReleases().map((release) => [release.relPath, release]));
+    const live = this.store.liveReleasesByPath();
     for (const ownerKey of await listNames(join(this.paths.root, 'releases'))) {
       if (!OWNER_KEY_PATTERN.test(ownerKey)) continue;
       for (const name of await listNames(this.paths.releasesOf(ownerKey))) {
         if (!name.startsWith('pkr_') || !PACKAGE_STORE_ID_PATTERN.test(name)) continue;
         const relPath = `releases/${ownerKey}/${name}`;
-        if (verified.has(relPath)) continue;
+        if (live.has(relPath)) continue;
         await this.removeExact(this.paths.release(relPath));
         summary.unpublishedReleases += 1;
       }
     }
-    const missing = [...verified.values()].filter((release) => !isDirectory(this.paths.release(release.relPath))).map((release) => release.id);
+    summary.restoredReleases = await this.restoreMissingReleases(now);
+    const missing = [...live.values()]
+      .filter((release) => release.status === 'VERIFIED' && !isDirectory(this.paths.release(release.relPath)))
+      .map((release) => release.id);
     summary.missingReleases = this.store.markReleasesMissing(missing);
     return summary;
+  }
+
+  /**
+   * Re-verifies every MISSING release whose directory is present again. A matching tree digest restores it to
+   * VERIFIED; a mismatching tree is not the release that was verified, so its directory is removed.
+   */
+  private async restoreMissingReleases(now: number): Promise<number> {
+    if (!isDirectory(this.paths.root)) return 0;
+    let restored = 0;
+    for (const release of this.store.missingReleases()) {
+      const path = this.paths.release(release.relPath);
+      if (!isDirectory(path)) continue;
+      const digest = await computeFullTreeDigestAsync(path).catch(() => undefined);
+      if (digest?.bundleSha256 === release.treeDigest) {
+        if (this.store.restoreRelease(release.id, now)) restored += 1;
+      } else if (digest) {
+        await this.removeExact(path).catch(() => undefined);
+      }
+    }
+    return restored;
   }
 
   /**
@@ -508,12 +680,14 @@ export class PackageService {
    * apply references is marked COLLECTED and its exact directory removed.
    */
   async collectGarbage(now = this.clock()): Promise<PackageGcSummary> {
-    const summary: PackageGcSummary = { skipped: true, expiredPlans: 0, deletedBindings: 0, collectedReleases: 0 };
+    const summary: PackageGcSummary = { skipped: true, expiredPlans: 0, purgedPlans: 0, deletedBindings: 0, collectedReleases: 0, restoredReleases: 0 };
     if (this.config.packagesEnabled !== true) return summary;
     if (this.lastGcAt !== undefined && now - this.lastGcAt < PACKAGE_GC_INTERVAL_MS) return summary;
     this.lastGcAt = now;
     summary.skipped = false;
     summary.expiredPlans = this.store.expirePlans(now);
+    summary.purgedPlans = this.store.purgePlans(now).deleted;
+    summary.restoredReleases = await this.restoreMissingReleases(now);
     summary.deletedBindings = this.store.deleteOrphanBindings().length;
     for (const candidate of this.store.collectibleReleases()) {
       const collected = this.store.markCollected(candidate.id, now);
@@ -527,13 +701,20 @@ export class PackageService {
 
   /** Waits for every running apply job to settle. */
   async drain(): Promise<void> {
-    await Promise.allSettled([...this.jobs.values()].map((job) => job.done));
+    await Promise.allSettled([
+      ...[...this.jobs.values()].map((job) => job.done),
+      ...[...this.resolutions.values()].map((resolution) => resolution.done)
+    ]);
   }
 
-  /** Aborts running apply jobs; each fails with RUNNER_RESTARTED and cleans its staging directory. */
+  /**
+   * Refuses new plans and applies, then aborts running apply jobs and resolutions; each apply fails with
+   * RUNNER_RESTARTED and cleans its staging directory.
+   */
   async shutdown(): Promise<void> {
     this.stopping = true;
     for (const job of this.jobs.values()) job.controller.abort();
+    for (const resolution of this.resolutions.values()) resolution.controller.abort();
     await this.drain();
   }
 
@@ -620,12 +801,28 @@ export class PackageService {
       if (published) await this.removeExact(published).catch(() => undefined);
       await this.removeExact(staging).catch(() => undefined);
       const failure = this.applyFailure(error, timedOut);
-      this.store.failApply(apply.id, { code: failure.code, message: failure.message, outputTail: tail(), now: this.clock() });
+      await this.recordApplyFailure(apply.id, failure, tail());
       throw failure;
     } finally {
       clearTimeout(timer);
       await this.removeExact(scratch).catch(() => undefined);
       this.builds.release();
+    }
+  }
+
+  /**
+   * Records the failure and releases the binding fence, retrying a transient database error a few times so
+   * the binding does not stay fenced until the next restart.
+   */
+  private async recordApplyFailure(applyId: string, failure: HarnessError, outputTail: string): Promise<void> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        this.store.failApply(applyId, { code: failure.code, message: failure.message, outputTail, now: this.clock() });
+        return;
+      } catch (error) {
+        if (attempt >= FAIL_APPLY_ATTEMPTS) throw error;
+        await new Promise((wake) => setTimeout(wake, 250 * attempt));
+      }
     }
   }
 
@@ -671,6 +868,10 @@ export class PackageService {
 
   private get builder(): PackageBuilderPort {
     return this.options.builder;
+  }
+
+  private requireRunning(): void {
+    if (this.stopping) throw harness('UNAVAILABLE', 'the runner is shutting down; retry after it restarts', 503, true);
   }
 
   private requireEcosystem(ecosystem: BuildablePackageEcosystem): void {

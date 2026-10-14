@@ -34,6 +34,8 @@ import { opaqueId, transaction } from './metadata-records.js';
 
 export const PACKAGE_PLAN_SCHEMA = 'cloud-harness.package-plan/v1';
 export const PACKAGE_PLAN_TTL_MS = 30 * 60_000;
+/** How long expired and rejected plans, and the lock text of applied plans, are kept after they stop mattering. */
+export const PACKAGE_PLAN_RETENTION_MS = 7 * 24 * 3_600_000;
 /** Rollback history entries kept per binding, including the current release. */
 export const PACKAGE_HISTORY_DEPTH = 5;
 export const PACKAGE_MAX_PLAN_JSON_BYTES = 65_536;
@@ -824,6 +826,35 @@ export class PackageStore {
     });
   }
 
+  /**
+   * Uninstalls a package from one scope: deletes the binding and its rollback history in one transaction and
+   * returns every release they referenced, so the caller can collect the ones nothing else still references.
+   */
+  removeBinding(input: { ownerId: string; bindingId: string; expectedGeneration: number; actor: PackageActor; now: number }): {
+    binding: PackageBindingRecord; releaseIds: string[];
+  } {
+    return transaction(this.database, () => {
+      const binding = this.bindingById(input.ownerId, input.bindingId);
+      if (!binding) throw failure('NOT_FOUND', 'package binding not found', 404);
+      if (binding.fenceApplyId) throw failure('CONFLICT', 'an apply for this package and scope is in progress', 409, true);
+      if (binding.generation !== input.expectedGeneration) throw failure('STALE_GENERATION', 'package binding changed; list packages and retry with the current generation', 409);
+      const releaseIds = [...new Set([
+        ...(binding.releaseId ? [binding.releaseId] : []),
+        ...this.history(input.ownerId, binding.id).map((entry) => entry.releaseId)
+      ])];
+      this.database.prepare('DELETE FROM package_binding_history WHERE binding_id = ?').run(binding.id);
+      const removed = this.database.prepare('DELETE FROM package_bindings WHERE id = ? AND generation = ? AND fence_apply_id IS NULL')
+        .run(binding.id, binding.generation);
+      if (Number(removed.changes) !== 1) throw failure('CONFLICT', 'package binding changed while removing it', 409, true);
+      const release = binding.releaseId ? this.getRelease(input.ownerId, binding.releaseId) : undefined;
+      this.audit(this.database, input.ownerId, 'package.removed', 'package_binding', binding.id, binding.generation, {
+        actor: input.actor, ecosystem: binding.ecosystem, name: binding.packageName, scope: binding.scope,
+        releaseId: binding.releaseId ?? '', version: release?.version ?? ''
+      });
+      return { binding, releaseIds };
+    });
+  }
+
   /* Releases and listing. */
 
   getRelease(ownerId: string, releaseId: string): PackageReleaseRecord | undefined {
@@ -972,6 +1003,45 @@ export class PackageStore {
     return rows.map(releaseRecord);
   }
 
+  /** Every release that still owns its directory path (VERIFIED or MISSING), keyed by `relPath`. */
+  liveReleasesByPath(): Map<string, PackageReleaseRecord> {
+    const rows = this.database.prepare(`SELECT * FROM package_releases WHERE status IN ('VERIFIED','MISSING') ORDER BY created_at, id`).all() as ReleaseRow[];
+    return new Map(rows.map((row) => [row.rel_path, releaseRecord(row)]));
+  }
+
+  /** Every MISSING release, oldest first. */
+  missingReleases(): PackageReleaseRecord[] {
+    const rows = this.database.prepare(`SELECT * FROM package_releases WHERE status = 'MISSING' ORDER BY created_at, id`).all() as ReleaseRow[];
+    return rows.map(releaseRecord);
+  }
+
+  /** Returns a MISSING release to VERIFIED after its directory reappeared and its tree digest matched again. */
+  restoreRelease(releaseId: string, now: number): boolean {
+    return transaction(this.database, () => {
+      const row = this.database.prepare(`SELECT * FROM package_releases WHERE id = ? AND status = 'MISSING'`).get(releaseId) as ReleaseRow | undefined;
+      if (!row) return false;
+      this.database.prepare(`UPDATE package_releases SET status = 'VERIFIED' WHERE id = ? AND status = 'MISSING'`).run(releaseId);
+      this.audit(this.database, row.owner_id, 'package.release.restored', 'package_release', releaseId, 0, {
+        ecosystem: row.ecosystem, name: row.package_name, version: row.version, at: now
+      });
+      return true;
+    });
+  }
+
+  /**
+   * Deletes expired and rejected plans once `retentionMs` has passed since they expired, and drops the lock
+   * text of applied plans whose apply finished that long ago (the release keeps its own SBOM and digest).
+   */
+  purgePlans(now: number, retentionMs = PACKAGE_PLAN_RETENTION_MS): { deleted: number; trimmed: number } {
+    const cutoff = now - retentionMs;
+    return transaction(this.database, () => {
+      const deleted = this.database.prepare(`DELETE FROM package_plans WHERE status IN ('EXPIRED','REJECTED') AND expires_at <= ?`).run(cutoff);
+      const trimmed = this.database.prepare(`UPDATE package_plans SET lock_text = '' WHERE status = 'CONSUMED' AND lock_text <> ''
+        AND EXISTS (SELECT 1 FROM package_applies a WHERE a.id = package_plans.apply_id AND a.finished_at IS NOT NULL AND a.finished_at <= ?)`).run(cutoff);
+      return { deleted: Number(deleted.changes), trimmed: Number(trimmed.changes) };
+    });
+  }
+
   /** Marks VERIFIED releases whose directory is gone as MISSING. */
   markReleasesMissing(releaseIds: readonly string[]): number {
     if (releaseIds.length === 0) return 0;
@@ -1022,7 +1092,7 @@ export class PackageStore {
     const { inFlight } = this.database.prepare(`SELECT COUNT(*) AS inFlight FROM package_applies
       WHERE owner_id = ? AND state IN (${IN_FLIGHT_SQL})`).get(ownerId) as { inFlight: number };
     if (used + (inFlight + 1) * limits.maxReleaseBytes > limits.maxOwnerBytes) {
-      throw failure('LIMIT_EXCEEDED', 'owner package storage quota would be exceeded; roll back or let unused releases be collected', 507);
+      throw failure('LIMIT_EXCEEDED', 'owner package storage quota would be exceeded; uninstall packages you no longer need with packages_remove', 507);
     }
     if (limits.availableBytes !== undefined && limits.availableBytes - limits.maxReleaseBytes < limits.minFreeBytes) {
       throw failure('LIMIT_EXCEEDED', 'host free-space reserve would be violated', 507, true);

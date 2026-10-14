@@ -360,9 +360,10 @@ and
   [`packages/contracts/src/tool-schemas.ts`](../packages/contracts/src/tool-schemas.ts);
   the container arguments by
   [`apps/runner/src/toolbox-runner.ts`](../apps/runner/src/toolbox-runner.ts).
-- `packages_plan`, `packages_apply`, `packages_list`, `packages_status`, and
-  `packages_rollback` manage durable CLI tools (npm packages and uv tools) for
-  the owner or for one workspace. All five return `FORBIDDEN` unless
+- `packages_plan`, `packages_apply`, `packages_list`, `packages_status`,
+  `packages_rollback`, and `packages_remove` manage durable CLI tools (npm
+  packages and uv tools) for the owner or for one workspace. All six return
+  `FORBIDDEN` unless
   `PACKAGES_ENABLED=true`; local stdio modes refuse them with `INVALID_INPUT`.
   The flow, the approval binding, and the failure codes are easy to misread:
   - **Plan resolves, never installs.** `packages_plan` resolves exact
@@ -372,6 +373,19 @@ and
     generation, and expiry (30 minutes). `ecosystem: "apt"` returns
     `NOT_SUPPORTED`: system packages need a reviewed executor image variant.
     The `instance` scope does not exist; `owner` covers the single owner.
+    Resolution never runs package code: uv resolves and installs pre-built
+    wheels only (`--no-build`), so a package or dependency available only as
+    a source distribution fails with `PACKAGE_BUILD_FAILED`.
+  - **Plan may answer before resolution finishes.** The API aborts runner
+    calls at `REQUEST_TIMEOUT_MS`, and a cold uv toolchain or a large npm tree
+    can take longer. `packages_plan` therefore waits inline only up to
+    `PACKAGES_PLAN_INLINE_WAIT_MS` and otherwise returns
+    `{resolutionId, state: "RESOLVING", package}`; `packages_status` with that
+    `resolutionId` (and optional `waitMs`) returns `RESOLVING`, `READY` with
+    the plan, or `FAILED` with its error. `applyId` and `resolutionId` are
+    mutually exclusive. Resolutions are runner memory, not durable rows: a
+    runner restart, or the bounded retention of finished resolutions, turns
+    the id into `NOT_FOUND`, and the caller plans again.
   - **Approval binds the digest.** With `PACKAGES_APPROVAL_MODE=required` (the
     default) an operator approves the plan on the Dashboard Approvals page,
     which submits the digest it displayed. A plan whose digest, binding
@@ -381,7 +395,10 @@ and
     `owner-bearer` mode, which has no Dashboard, `required` makes
     `packages_plan` report `approval: "unavailable"` and `packages_apply`
     return `FORBIDDEN`; the operator opts into `PACKAGES_APPROVAL_MODE=none`
-    to apply without separate approval.
+    to apply without separate approval. A plan approved by that policy
+    returns `STALE_GENERATION` at apply if the mode was switched back to
+    `required` in the meantime. While the runner shuts down, new plans and
+    applies return `UNAVAILABLE` (503, retryable).
   - **Apply is durable, not an operation handle.** `packages_apply` returns an
     `applyId` at once, and replaying the same plan returns the same apply.
     `packages_status` reads the stored apply (`QUEUED`, `BUILDING`,
@@ -410,6 +427,14 @@ and
   - **Rollback needs no approval.** `packages_rollback` points a binding back
     to a verified release from its last five history entries, guarded by
     `expectedGeneration` (`STALE_GENERATION` if it moved).
+  - **Remove uninstalls one scope.** `packages_remove` (destructive, no
+    approval) deletes a binding and its rollback history, guarded by
+    `expectedGeneration`, and is refused with `CONFLICT` while an apply for
+    that binding is in flight. Releases nothing else references are collected
+    at once; a release a retained workspace profile still mounts is collected
+    by later garbage collection, and running workspaces keep the tool until
+    they are recreated. Reinstalling needs a new plan. It is audited as
+    `package.removed`, and the Dashboard Packages page offers the same action.
 
   Schemas are owned by
   [`packages/contracts/src/package-schemas.ts`](../packages/contracts/src/package-schemas.ts);

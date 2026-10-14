@@ -146,9 +146,24 @@ rows in the same database, owned by
 Retention is reference-based. A release stays while a binding points at it,
 while it is among the last five entries of a binding's rollback history, or
 while a retained workspace's profile references it. Workspace bindings go
-away with their workspace once it is closed or failed. Collection of
-unreferenced releases is scoped to the recorded release path, and a release
-directory found missing at startup is marked `MISSING` rather than rebuilt.
+away with their workspace once it is closed or failed. Uninstalling a package
+(`packages_remove` or **Uninstall** on the Dashboard Packages page, audited as
+`package.removed`) deletes its binding and history and frees releases nothing
+else references at once; releases a retained workspace still mounts wait for
+the hourly collection. That is the way to recover from the per-owner storage
+quota. Collection of unreferenced releases is scoped to the recorded release
+path. Expired and rejected plans are purged, and applied plans lose their lock
+text, after a fixed retention owned by `package-store.ts`.
+
+A release directory found missing at startup is marked `MISSING` rather than
+rebuilt. If the packages root itself is absent (storage not mounted yet),
+startup marks and removes nothing. When a `MISSING` release's directory comes
+back, startup or the hourly collection restores it to `VERIFIED` if its tree
+digest still matches (audited as `package.release.restored`) and removes the
+directory if it does not. A filesystem failure during this startup reconcile
+is logged as a runner warning (`managed package startup reconcile failed`)
+and does not stop the runner; check the mount and permissions of
+`PACKAGES_ROOT`.
 
 Releases are rebuildable from their locked plans, so they are not part of the
 deploy script's recovery set. If you back them up, treat the state database
@@ -181,7 +196,10 @@ PACKAGES_PROXY_HOSTS=registry.npmjs.org,pypi.org,files.pythonhosted.org
 
 Use `registry.npmjs.org` for npm, and `pypi.org` plus `files.pythonhosted.org`
 for uv. A uv build also downloads its managed Python from GitHub releases, so
-add `github.com` and `release-assets.githubusercontent.com` as well. The value is a comma-separated list of lowercase DNS hostnames; IP
+it needs `github.com` and `release-assets.githubusercontent.com` as well. The
+proxy's Compose-set `ALLOWED_HOSTS` (the Git and toolkit hosts, which normally
+include `github.com`) apply to package builders too, and these registry hosts
+apply to toolkit helpers too, because both share the one proxy. The value is a comma-separated list of lowercase DNS hostnames; IP
 literals, wildcards, ports, and other non-hostnames are logged on the proxy's
 stderr and ignored, and the proxy still starts. Apply a change by restarting
 the service, which recreates the stack through the installed Compose wrapper

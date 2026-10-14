@@ -226,7 +226,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
-  'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback',
+  'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
   'model_config_status',
@@ -531,6 +531,14 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (operation === 'package_rollback') {
     return { binding: pick(data.binding, ['bindingId', 'scope', 'workspaceId', 'ecosystem', 'name', 'generation', 'releaseId']), replayed: data.replayed === true };
   }
+  if (operation === 'package_remove') {
+    return {
+      ...pick(data, ['bindingId', 'collectedReleases']),
+      removed: data.removed === true,
+      releaseIds: Array.isArray(data.releaseIds) ? data.releaseIds.filter((id) => typeof id === 'string') : [],
+      affectedWorkspaces: Array.isArray(data.affectedWorkspaces) ? data.affectedWorkspaces.filter((id) => typeof id === 'string') : []
+    };
+  }
   if (operation === 'knowledge_dashboard_list') return { items: Array.isArray(data.items) ? data.items.map((item) => pick(item, knowledgeItemKeys)) : [] };
   if (operation === 'knowledge_dashboard_get' || operation === 'knowledge_dashboard_create' || operation === 'knowledge_dashboard_update') return pick(data, knowledgeItemKeys);
   if (operation === 'knowledge_dashboard_delete') return pick(data, ['deleted']);
@@ -654,8 +662,9 @@ const descriptiveOperations = new Set<string>([
   'skill_set_create', 'skill_set_update', 'skill_set_delete',
   'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete',
   'skill_suggest',
-  // Package decisions answer with the store's plain refusal (digest mismatch, expired, rollback target gone).
-  'package_plan_approve', 'package_plan_reject', 'package_rollback'
+  // Package decisions answer with the store's plain refusal (digest mismatch, expired, rollback target gone,
+  // stale generation, apply in flight).
+  'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove'
 ]);
 
 const githubUnavailable = 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.';
@@ -682,6 +691,7 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   package_plan_approve: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
   package_rollback: { FORBIDDEN: packagesDisabled },
+  package_remove: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package binding not found.' },
   // A terminal the runner no longer knows about, including every terminal from before a runner
   // restart, answers NOT_FOUND. The browser turns that into its "no longer available" state.
   terminal_read: { NOT_FOUND: 'This terminal is no longer available.' },

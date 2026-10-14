@@ -79,6 +79,7 @@ function packageMessage(operation: PackageOperation, data: unknown): string {
   const record = data as Record<string, unknown>;
   switch (operation) {
     case 'packages_plan':
+      if (record.state === 'RESOLVING') return `Package resolution ${String(record.resolutionId)} is still running; poll packages_status with its resolutionId`;
       if (record.approval === 'not_required') return 'Package plan created; call packages_apply with its planId and planDigest';
       if (record.approval === 'required') return 'Package plan created; approve it on the Dashboard, then call packages_apply with its planId and planDigest';
       return 'Package plan created, but this instance has no Dashboard approver, so packages_apply is refused';
@@ -87,9 +88,13 @@ function packageMessage(operation: PackageOperation, data: unknown): string {
     case 'packages_list':
       return `${(record.bindings as unknown[]).length} package bindings`;
     case 'packages_status':
-      return 'apply' in record ? `Package apply is ${String((record.apply as { state?: string }).state)}` : 'Package status';
+      if ('apply' in record) return `Package apply is ${String((record.apply as { state?: string }).state)}`;
+      if ('resolution' in record) return `Package resolution is ${String((record.resolution as { state?: string }).state)}`;
+      return 'Package status';
     case 'packages_rollback':
       return 'Package binding rolled back; workspaces pick it up when their executor is recreated';
+    case 'packages_remove':
+      return `Package binding removed; ${String(record.collectedReleases)} releases collected; workspaces drop it when their executor is recreated`;
   }
 }
 
@@ -494,7 +499,13 @@ export class WorkspaceService {
     await this.toolkitCacheManager.reconcileStartup().catch(() => undefined);
     await this.reconcileContainers();
     // After leftover containers are gone, so no builder can still be writing below the packages root.
-    if (this.config.packagesEnabled === true) await this.packages.reconcileStartup();
+    if (this.config.packagesEnabled === true) {
+      // A filesystem failure here must not keep the runner from starting; leftovers stay inert and the
+      // hourly collection re-verifies missing releases.
+      await this.packages.reconcileStartup().catch((error: unknown) => {
+        console.warn('[runner] managed package startup reconcile failed', error instanceof Error ? error.message : String(error));
+      });
+    }
     await this.reconcileJobDirectories();
     await this.agentManager?.start();
     this.reaper = setInterval(() => {

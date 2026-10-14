@@ -27,13 +27,16 @@ export const UV_PACKAGE_NAME_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])
 export const UV_PACKAGE_NAME_MAX_LENGTH = 128;
 /** Debian package names; only checked so an `apt` request is well-formed before NOT_SUPPORTED. */
 export const APT_PACKAGE_NAME_PATTERN = /^[a-z0-9][a-z0-9+.-]{1,127}$/;
-export const PACKAGE_BINARY_NAME_PATTERN = /^[A-Za-z0-9._+-]{1,64}$/;
+/** A file name in `bin/`: no path separators, and no leading `.` or `-`, so `.`, `..`, and option-like names are refused. */
+export const PACKAGE_BINARY_NAME_PATTERN = /^[A-Za-z0-9_+][A-Za-z0-9._+-]{0,63}$/;
 export const PACKAGE_VERSION_SPEC_MAX_LENGTH = 128;
 /** Characters an npm range/tag or a PEP 440 specifier needs; `:`, `/`, `@`, and `;` are deliberately absent. */
 const VERSION_SPEC_CHARACTERS = /^[A-Za-z0-9.*+^~<>=!|,_ -]+$/;
 export const PACKAGE_PYTHON_VERSION_PATTERN = /^3\.\d{1,2}(\.\d{1,2})?$/;
 export const PACKAGE_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 export const PACKAGES_STATUS_MAX_WAIT_MS = 30_000;
+/** How long `packages_plan` waits for its resolution before returning a `resolutionId` to poll instead. */
+export const PACKAGES_PLAN_INLINE_WAIT_MS = 20_000;
 
 const packageId = (prefix: string) =>
   z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9_-]{20,80}$`), `invalid ${prefix} identifier`);
@@ -41,6 +44,7 @@ export const PackagePlanIdSchema = packageId('pkp');
 export const PackageApplyIdSchema = packageId('pka');
 export const PackageBindingIdSchema = packageId('pkb');
 export const PackageReleaseIdSchema = packageId('pkr');
+export const PackageResolutionIdSchema = packageId('pkq');
 export const PackageDigestSchema = z.string().regex(PACKAGE_DIGEST_PATTERN, 'digest must be 64 lowercase hexadecimal characters');
 export const PackageBinaryNameSchema = z.string().regex(PACKAGE_BINARY_NAME_PATTERN, 'invalid binary name');
 
@@ -124,10 +128,14 @@ export type PackagesListInput = z.infer<typeof PackagesListInputSchema>;
 
 export const PackagesStatusInputSchema = z.object({
   applyId: PackageApplyIdSchema.optional(),
+  resolutionId: PackageResolutionIdSchema.optional(),
   waitMs: z.number().int().min(0).max(PACKAGES_STATUS_MAX_WAIT_MS).default(0)
 }).strict().superRefine((input, context) => {
-  if (input.waitMs > 0 && input.applyId === undefined) {
-    context.addIssue({ code: 'custom', path: ['waitMs'], message: 'waitMs requires applyId' });
+  if (input.applyId !== undefined && input.resolutionId !== undefined) {
+    context.addIssue({ code: 'custom', path: ['resolutionId'], message: 'pass applyId or resolutionId, not both' });
+  }
+  if (input.waitMs > 0 && input.applyId === undefined && input.resolutionId === undefined) {
+    context.addIssue({ code: 'custom', path: ['waitMs'], message: 'waitMs requires applyId or resolutionId' });
   }
 });
 export type PackagesStatusInput = z.infer<typeof PackagesStatusInputSchema>;
@@ -138,6 +146,13 @@ export const PackagesRollbackInputSchema = z.object({
   expectedGeneration: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
 }).strict();
 export type PackagesRollbackInput = z.infer<typeof PackagesRollbackInputSchema>;
+
+/** Uninstalls a package from one scope: the binding and its rollback history are deleted. */
+export const PackagesRemoveInputSchema = z.object({
+  bindingId: PackageBindingIdSchema,
+  expectedGeneration: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+}).strict();
+export type PackagesRemoveInput = z.infer<typeof PackagesRemoveInputSchema>;
 
 /** Dashboard (BFF to runner) inputs. Approval is bound to the digest the operator was shown. */
 export const PackageOverviewInputSchema = z.object({}).strict();
@@ -151,6 +166,8 @@ export const PackagePlanRejectInputSchema = z.object({ planId: PackagePlanIdSche
 export type PackagePlanRejectInput = z.infer<typeof PackagePlanRejectInputSchema>;
 export const PackageRollbackInputSchema = PackagesRollbackInputSchema;
 export type PackageRollbackInput = PackagesRollbackInput;
+export const PackageRemoveInputSchema = PackagesRemoveInputSchema;
+export type PackageRemoveInput = PackagesRemoveInput;
 
 /* Result views. */
 
@@ -206,6 +223,28 @@ export const PackagePlanResultSchema = z.object({
   runtime: z.object({ imageId: z.string(), node: z.string().optional(), python: z.string().optional() }).strict()
 }).strict();
 export type PackagePlanResult = z.infer<typeof PackagePlanResultSchema>;
+
+/** A resolution still running when `packages_plan` stopped waiting; poll `packages_status` with its resolutionId. */
+export const PackagePlanPendingSchema = z.object({
+  resolutionId: PackageResolutionIdSchema,
+  state: z.literal('RESOLVING'),
+  package: z.object({ ecosystem: BuildablePackageEcosystemSchema, name: PackageNameFieldSchema }).strict()
+}).strict();
+export type PackagePlanPending = z.infer<typeof PackagePlanPendingSchema>;
+export const PackagesPlanOutputSchema = z.union([PackagePlanResultSchema, PackagePlanPendingSchema]);
+export type PackagesPlanOutput = z.infer<typeof PackagesPlanOutputSchema>;
+
+export const PackageResolutionStateSchema = z.enum(['RESOLVING', 'READY', 'FAILED']);
+export type PackageResolutionState = z.infer<typeof PackageResolutionStateSchema>;
+export const PackageResolutionViewSchema = z.object({
+  resolutionId: PackageResolutionIdSchema,
+  state: PackageResolutionStateSchema,
+  package: z.object({ ecosystem: BuildablePackageEcosystemSchema, name: PackageNameFieldSchema }).strict(),
+  plan: PackagePlanResultSchema.optional(),
+  errorCode: z.string().optional(),
+  errorMessage: z.string().max(2_000).optional()
+}).strict();
+export type PackageResolutionView = z.infer<typeof PackageResolutionViewSchema>;
 
 export const PackageApplyResultSchema = z.object({
   applyId: PackageApplyIdSchema,
@@ -278,6 +317,7 @@ export type PackagePlanSummary = z.infer<typeof PackagePlanSummarySchema>;
 
 export const PackagesStatusResultSchema = z.union([
   z.object({ apply: PackageApplyViewSchema }).strict(),
+  z.object({ resolution: PackageResolutionViewSchema }).strict(),
   z.object({
     inFlight: z.array(PackageApplyViewSchema),
     pendingPlans: z.array(PackagePlanSummarySchema),
@@ -292,3 +332,13 @@ export const PackagesRollbackResultSchema = z.object({
   affectedWorkspaces: z.array(z.string())
 }).strict();
 export type PackagesRollbackResult = z.infer<typeof PackagesRollbackResultSchema>;
+
+export const PackagesRemoveResultSchema = z.object({
+  bindingId: PackageBindingIdSchema,
+  removed: z.literal(true),
+  /** Releases the binding or its history referenced; ones no retained workspace still mounts were collected. */
+  releaseIds: z.array(PackageReleaseIdSchema),
+  collectedReleases: z.number().int().min(0),
+  affectedWorkspaces: z.array(z.string())
+}).strict();
+export type PackagesRemoveResult = z.infer<typeof PackagesRemoveResultSchema>;

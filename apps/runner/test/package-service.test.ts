@@ -8,11 +8,14 @@ import {
   PackageApplyResultSchema,
   PackagePlanResultSchema,
   PackagesListResultSchema,
+  PackagesPlanOutputSchema,
+  PackagesRemoveResultSchema,
   PackagesRollbackResultSchema,
   PackagesStatusResultSchema,
   type ErrorCode,
   type PackageApplyView
 } from '@cloud-harness/contracts';
+import { computeFullTreeDigest } from '../src/adapters/mattpocock-adapter.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import type { PackageBuildJob, PackageBuildResult, PackageBuilderPort, ResolvePackagePlanSpec, ResolvedPackagePlan } from '../src/package-builder-port.js';
 import { PACKAGE_GC_INTERVAL_MS, PackageService, type PackageServiceConfig, type PackageServiceOptions } from '../src/package-service.js';
@@ -50,6 +53,9 @@ class FakeBuilder implements PackageBuilderPort {
   buildStarted: Deferred = deferred();
   resolveSpecs: ResolvePackagePlanSpec[] = [];
   jobs: PackageBuildJob[] = [];
+  /** When set, `resolvePlan` waits for it, then throws `resolveError` if that is set. */
+  resolveGate: Deferred | undefined;
+  resolveError: unknown;
 
   imageId(): Promise<string> {
     this.calls.imageId += 1;
@@ -61,12 +67,14 @@ class FakeBuilder implements PackageBuilderPort {
     return this.probeError ? Promise.reject(this.probeError) : Promise.resolve();
   }
 
-  resolvePlan(spec: ResolvePackagePlanSpec): Promise<ResolvedPackagePlan> {
+  async resolvePlan(spec: ResolvePackagePlanSpec): Promise<ResolvedPackagePlan> {
     this.calls.resolve += 1;
     this.resolveSpecs.push(spec);
+    if (this.resolveGate) await this.resolveGate.promise;
+    if (this.resolveError) throw this.resolveError;
     const version = this.versions[spec.name] ?? '1.0.0';
     const lockText = JSON.stringify({ name: spec.name, version });
-    return Promise.resolve({
+    return {
       version,
       source: { registry: 'https://registry.npmjs.org/', resolved: `https://registry.npmjs.org/${spec.name}/-/${spec.name}-${version}.tgz` },
       integrity: 'sha512-abc',
@@ -76,7 +84,7 @@ class FakeBuilder implements PackageBuilderPort {
       sizeEstimateBytes: 2_048,
       binaries: [...(this.binaries[spec.name] ?? ['tool'])].sort(),
       runtime: { imageId: this.image, node: 'v24.11.0', npm: '11.6.0', uv: null, python: null }
-    });
+    };
   }
 
   async build(job: PackageBuildJob): Promise<PackageBuildResult> {
@@ -469,6 +477,20 @@ describe('PackageService publish atomicity and recovery', () => {
     expect(f.store.listBindings(f.owner)[0]).toMatchObject({ releaseId: null, generation: 0, fenceApplyId: null });
   });
 
+  it('retries recording a failed apply so a transient database error does not leave the binding fenced', async () => {
+    let failures = 1;
+    const f = fixture({
+      audit: (sink) => (database, principalId, action, ...rest) => {
+        if (action === 'package.apply.failed' && failures-- > 0) throw new Error('database is locked');
+        sink(database, principalId, action, ...rest);
+      }
+    });
+    f.builder.buildError = new HarnessError('PACKAGE_BUILD_FAILED', 'npm install failed', 422);
+    const { apply } = await install(f);
+    expect(apply).toMatchObject({ state: 'FAILED', errorCode: 'PACKAGE_BUILD_FAILED' });
+    expect(f.store.listBindings(f.owner)[0]?.fenceApplyId).toBeNull();
+  });
+
   it.each(['QUEUED', 'BUILDING', 'VERIFYING', 'PUBLISHING'] as const)('recovers a runner that crashed in %s', async (crashState) => {
     const f = fixture();
     const kept = await install(f, { name: 'chm-other' });
@@ -653,5 +675,190 @@ describe('PackageService garbage collection', () => {
     f.setWorkspaceStatus(ws, 'EXPIRED_RECOVERABLE');
     expect((await f.packages.collectGarbage(NOW)).collectedReleases).toBe(0);
     expect(f.store.getRelease(f.owner, releases[0]!)?.status).toBe('VERIFIED');
+  });
+});
+
+describe('PackageService asynchronous resolution', () => {
+  it('answers RESOLVING when the resolution outlasts the inline wait, then reports the plan through status', async () => {
+    const f = fixture();
+    f.builder.resolveGate = deferred();
+    const packages = f.service(f.builder, { planInlineWaitMs: 20 });
+    const pending = PackagesPlanOutputSchema.parse(await packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }));
+    expect(pending).toMatchObject({ state: 'RESOLVING', package: { ecosystem: 'npm', name: 'chm-hello' } });
+    const resolutionId = (pending as { resolutionId: string }).resolutionId;
+    expect(resolutionId).toMatch(/^pkq_/);
+
+    const running = PackagesStatusResultSchema.parse(await packages.execute(f.owner, 'packages_status', { resolutionId }));
+    expect(running).toEqual({ resolution: { resolutionId, state: 'RESOLVING', package: { ecosystem: 'npm', name: 'chm-hello' } } });
+    await expectCode(packages.execute(f.foreign, 'packages_status', { resolutionId }), 'NOT_FOUND');
+    await expectCode(packages.execute(f.owner, 'packages_status', { resolutionId: `pkq_${'a'.repeat(24)}` }), 'NOT_FOUND');
+
+    const waiting = packages.execute(f.owner, 'packages_status', { resolutionId, waitMs: 30_000 });
+    f.builder.resolveGate.resolve();
+    const ready = PackagesStatusResultSchema.parse(await waiting);
+    if (!('resolution' in ready)) throw new Error('expected a resolution status');
+    expect(ready.resolution.state).toBe('READY');
+    const planned = PackagePlanResultSchema.parse(ready.resolution.plan);
+    expect(planned.package).toMatchObject({ name: 'chm-hello', version: '1.0.0' });
+    // The scratch directory and the build slot are released once the resolution settles.
+    expect(entries(join(f.root, 'scratch'))).toEqual([]);
+    const applied = PackageApplyResultSchema.parse(await packages.execute(f.owner, 'packages_apply', { planId: planned.planId, planDigest: planned.planDigest }));
+    await packages.drain();
+    expect((await applyView(f, applied.applyId, f.owner, packages)).state).toBe('SUCCEEDED');
+  });
+
+  it('reports a failed resolution with its redacted error and frees the build slot', async () => {
+    const f = fixture();
+    f.builder.resolveGate = deferred();
+    f.builder.resolveError = new HarnessError('PACKAGE_BUILD_FAILED', `resolve failed with token ${SECRET}`, 422);
+    const packages = f.service(f.builder, { planInlineWaitMs: 10 });
+    const pending = PackagesPlanOutputSchema.parse(await packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }));
+    const resolutionId = (pending as { resolutionId: string }).resolutionId;
+    f.builder.resolveGate.resolve();
+    await packages.drain();
+    const failed = PackagesStatusResultSchema.parse(await packages.execute(f.owner, 'packages_status', { resolutionId }));
+    expect(failed).toMatchObject({ resolution: { state: 'FAILED', errorCode: 'PACKAGE_BUILD_FAILED' } });
+    expect(JSON.stringify(failed)).not.toContain(SECRET);
+
+    // An inline failure is thrown to the caller, and the slots stay available for later plans.
+    f.builder.resolveGate = undefined;
+    await expectCode(packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }), 'PACKAGE_BUILD_FAILED');
+    await expectCode(packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }), 'PACKAGE_BUILD_FAILED');
+    f.builder.resolveError = undefined;
+    expect(PackagePlanResultSchema.parse(await packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' })).planId).toMatch(/^pkp_/);
+  });
+
+  it('refuses a status request naming both an apply and a resolution', async () => {
+    const f = fixture();
+    await expectCode(f.packages.execute(f.owner, 'packages_status', { applyId: `pka_${'a'.repeat(24)}`, resolutionId: `pkq_${'a'.repeat(24)}` }), 'INVALID_INPUT');
+    await expectCode(f.packages.execute(f.owner, 'packages_status', { waitMs: 100 }), 'INVALID_INPUT');
+  });
+
+  it('fails a resolution interrupted by shutdown and refuses new plans and applies while stopping', async () => {
+    const f = fixture();
+    const planned = await plan(f);
+    f.builder.resolveGate = deferred();
+    const packages = f.service(f.builder, { planInlineWaitMs: 10 });
+    const pending = PackagesPlanOutputSchema.parse(await packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-other' }));
+    const resolutionId = (pending as { resolutionId: string }).resolutionId;
+    const stopping = packages.shutdown();
+    f.builder.resolveGate.resolve();
+    await stopping;
+    const status = PackagesStatusResultSchema.parse(await packages.execute(f.owner, 'packages_status', { resolutionId }));
+    expect(status).toMatchObject({ resolution: { state: 'FAILED', errorCode: 'RUNNER_RESTARTED' } });
+    await expectCode(packages.execute(f.owner, 'packages_plan', { ecosystem: 'npm', name: 'chm-hello' }), 'UNAVAILABLE');
+    await expectCode(packages.execute(f.owner, 'packages_apply', { planId: planned.planId, planDigest: planned.planDigest }), 'UNAVAILABLE');
+  });
+});
+
+describe('PackageService approval policy changes', () => {
+  it('refuses a policy-approved plan once the instance requires Dashboard approval', async () => {
+    const f = fixture();
+    const planned = await plan(f);
+    const strict = f.service(f.builder, {
+      config: { ...f.config, packagesApprovalMode: 'required' }
+    });
+    await expectCode(strict.execute(f.owner, 'packages_apply', { planId: planned.planId, planDigest: planned.planDigest }), 'STALE_GENERATION');
+    expect(f.builder.calls.build).toBe(0);
+  });
+});
+
+describe('PackageService uninstall', () => {
+  it('removes a binding with its history, collects unreferenced releases, and keeps one a workspace still mounts', async () => {
+    const f = fixture();
+    const ws = f.workspace(f.owner);
+    const first = await install(f);
+    f.packages.profileFor(f.owner, ws);
+    f.builder.versions['chm-hello'] = '2.0.0';
+    const second = await install(f);
+    const binding = f.store.listBindings(f.owner)[0]!;
+    const dir = (releaseId: string) => join(f.root, packageReleaseRelativePath(f.owner, releaseId));
+
+    await expectCode(f.packages.execute(f.owner, 'packages_remove', { bindingId: binding.id, expectedGeneration: 1 }), 'STALE_GENERATION');
+    await expectCode(f.packages.execute(f.foreign, 'packages_remove', { bindingId: binding.id, expectedGeneration: 2 }), 'NOT_FOUND');
+    const removed = PackagesRemoveResultSchema.parse(await f.packages.execute(f.owner, 'packages_remove', { bindingId: binding.id, expectedGeneration: 2 }));
+    expect(removed).toMatchObject({ bindingId: binding.id, removed: true, collectedReleases: 1, affectedWorkspaces: [ws] });
+    expect(removed.releaseIds.sort()).toEqual([first.applied.releaseId, second.applied.releaseId].sort());
+    expect(f.store.listBindings(f.owner)).toEqual([]);
+    expect(f.audits('package.removed')).toBe(1);
+    // The workspace profile still mounts the first release, so only the second is collected now.
+    expect(existsSync(dir(second.applied.releaseId))).toBe(false);
+    expect(f.store.getRelease(f.owner, second.applied.releaseId)?.status).toBe('COLLECTED');
+    expect(existsSync(dir(first.applied.releaseId))).toBe(true);
+    expect(f.packages.profileFor(f.owner, ws).releaseIds).toEqual([]);
+    expect((await f.packages.collectGarbage(NOW)).collectedReleases).toBe(1);
+    expect(existsSync(dir(first.applied.releaseId))).toBe(false);
+    await expectCode(f.packages.execute(f.owner, 'packages_remove', { bindingId: binding.id, expectedGeneration: 2 }), 'NOT_FOUND');
+
+    // The package can be installed again from a new plan.
+    expect((await install(f)).apply.state).toBe('SUCCEEDED');
+  });
+
+  it('refuses to remove a binding while an apply holds its fence', async () => {
+    const f = fixture();
+    await install(f);
+    f.builder.versions['chm-hello'] = '2.0.0';
+    f.builder.gate = deferred();
+    const planned = await plan(f);
+    await f.packages.execute(f.owner, 'packages_apply', { planId: planned.planId, planDigest: planned.planDigest });
+    await f.builder.buildStarted.promise;
+    const binding = f.store.listBindings(f.owner)[0]!;
+    await expectCode(f.packages.execute(f.owner, 'packages_remove', { bindingId: binding.id, expectedGeneration: binding.generation }), 'CONFLICT');
+    f.builder.gate.resolve();
+    await f.packages.drain();
+  });
+});
+
+describe('PackageService release restoration and plan retention', () => {
+  it('leaves releases untouched when the packages root is absent at startup', async () => {
+    const f = fixture();
+    const { applied } = await install(f);
+    rmSync(f.root, { recursive: true });
+    const summary = await f.service(new FakeBuilder()).reconcileStartup(NOW);
+    expect(summary).toMatchObject({ missingReleases: 0, removedEntries: 0, unpublishedReleases: 0, restoredReleases: 0 });
+    expect(f.store.getRelease(f.owner, applied.releaseId)?.status).toBe('VERIFIED');
+  });
+
+  it('restores a MISSING release whose matching tree returns and removes a tree that no longer matches', async () => {
+    const f = fixture();
+    const kept = await install(f);
+    f.builder.versions['chm-other'] = '1.0.0';
+    const changed = await install(f, { name: 'chm-other' });
+    const dir = (releaseId: string) => join(f.root, packageReleaseRelativePath(f.owner, releaseId));
+    // The fake builder reports a synthetic digest, so record the real tree digest the restore check compares.
+    for (const releaseId of [kept.applied.releaseId, changed.applied.releaseId]) {
+      f.state.database.prepare('UPDATE package_releases SET tree_digest = ? WHERE id = ?').run(computeFullTreeDigest(dir(releaseId)).bundleSha256, releaseId);
+    }
+    f.store.markReleasesMissing([kept.applied.releaseId, changed.applied.releaseId]);
+    writeFileSync(join(dir(changed.applied.releaseId), 'bin', 'other'), '#!/bin/sh\necho tampered\n', { mode: 0o755 });
+
+    const summary = await f.service(new FakeBuilder()).reconcileStartup(NOW);
+    expect(summary.restoredReleases).toBe(1);
+    expect(f.store.getRelease(f.owner, kept.applied.releaseId)?.status).toBe('VERIFIED');
+    expect(f.audits('package.release.restored')).toBe(1);
+    expect(f.store.getRelease(f.owner, changed.applied.releaseId)?.status).toBe('MISSING');
+    expect(existsSync(dir(changed.applied.releaseId))).toBe(false);
+    expect(existsSync(dir(kept.applied.releaseId))).toBe(true);
+  });
+
+  it('purges expired and rejected plans and trims consumed lock text after the retention period', async () => {
+    const f = fixture({ config: { packagesApprovalMode: 'required' } });
+    const rejected = await plan(f);
+    f.store.rejectPlan({ ownerId: f.owner, planId: rejected.planId, decidedBy: f.owner, now: NOW });
+    const expired = await plan(f, { name: 'chm-other' });
+    const consumed = await plan(f, { name: 'chm-third' });
+    f.store.approvePlan({ ownerId: f.owner, planId: consumed.planId, planDigest: consumed.planDigest, decidedBy: f.owner, now: NOW });
+    await f.packages.execute(f.owner, 'packages_apply', { planId: consumed.planId, planDigest: consumed.planDigest });
+    await f.packages.drain();
+    const lockText = (planId: string) => (f.state.database.prepare('SELECT lock_text FROM package_plans WHERE id = ?').get(planId) as { lock_text: string } | undefined)?.lock_text;
+
+    const later = NOW + 8 * 24 * 3_600_000;
+    f.setNow(later);
+    const summary = await f.packages.collectGarbage(later);
+    expect(summary).toMatchObject({ expiredPlans: 1, purgedPlans: 2 });
+    expect(lockText(rejected.planId)).toBeUndefined();
+    expect(lockText(consumed.planId)).toBe('');
+    expect(lockText(expired.planId)).toBeUndefined();
+    expect(f.store.purgePlans(later)).toEqual({ deleted: 0, trimmed: 0 });
   });
 });

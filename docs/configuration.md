@@ -133,7 +133,12 @@ required for local health or smoke checks.
 
 `REQUEST_TIMEOUT_MS` bounds API-to-runner work and `MAX_BODY_BYTES` bounds JSON
 request bodies. If a client tool timeout is increased, the server-side timeout
-must still be large enough for the intended operation.
+must still be large enough for the intended operation. Keep it above the
+inline wait of `packages_plan` (`PACKAGES_PLAN_INLINE_WAIT_MS` in
+[`packages/contracts/src/package-schemas.ts`](../packages/contracts/src/package-schemas.ts)):
+a slower plan resolution continues in the runner and is polled through
+`packages_status`, but a timeout below the inline wait aborts the call before
+the plan or its `resolutionId` comes back.
 
 ## Workspace and repository policy
 
@@ -412,7 +417,8 @@ Registry egress for builds is not a runner variable. The provisioning proxy's
 default allow-list contains no package registry; the owner opts registries in
 through `PACKAGES_PROXY_HOSTS` in the proxy-only
 `/etc/cloud-harness-mcp/provisioning-proxy.env`, as described in
-[operations](operations.md#package-registry-egress).
+[operations](operations.md#package-registry-egress). The proxy is shared with
+toolkit helpers, so its Compose-set `ALLOWED_HOSTS` reach builders as well.
 
 ## MCP gateway
 

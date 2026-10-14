@@ -435,7 +435,10 @@ wired, so the visible one is never the only working one. Owners:
   the full value appears on focus and in the title, so the operator can compare
   exactly what they approve. Approve posts the digest that was shown, and
   rollback goes through the shared destructive confirm naming both versions and
-  the affected workspaces. Package tables keep a minimum width and scroll
+  the affected workspaces. Uninstall is a per-package action through the same
+  destructive confirm, naming the scope, the affected workspace count, and the
+  expected generation, and stating that running workspaces keep the tool until
+  they are recreated. Package tables keep a minimum width and scroll
   horizontally at phone width instead of squeezing columns. Owners:
   `renderPackages` and `planIsActionable` in
   [`dashboard-render.js`](../apps/api/dashboard/dashboard-render.js); the

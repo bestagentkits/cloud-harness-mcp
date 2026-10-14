@@ -14,7 +14,7 @@ import {
   type BuildablePackageEcosystem,
   type PackageRuntime
 } from '@cloud-harness/contracts';
-import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
+import { computeFullTreeDigestAsync } from './adapters/mattpocock-adapter.js';
 import { removeContainer, runDocker, spawnDocker } from './docker-engine.js';
 import type {
   PackageBuildJob,
@@ -108,8 +108,15 @@ node -e 'process.stdout.write(JSON.stringify({ node: process.versions.node, npm:
 `;
 
 /**
+ * Printed after uv fails to resolve or install with `--no-build`, so the build failure names the wheel-only rule
+ * even when uv's own resolver explanation scrolls out of the bounded output tail.
+ */
+export const UV_WHEELS_ONLY_MESSAGE = 'uv could not resolve or install the requirement from pre-built wheels: only wheels are supported, and source distributions are never built';
+
+/**
  * uv plan: install a managed Python into scratch, compile a hash-pinned lock, trial-sync it into a probe venv,
- * and read the root distribution's console scripts.
+ * and read the root distribution's console scripts. Every uv pip call passes `--no-build`, so no source
+ * distribution's build backend ever runs: resolution happens before approval and must not execute package code.
  */
 export const UV_PLAN_SCRIPT = `set -euo pipefail
 name=$1
@@ -125,9 +132,15 @@ else
   interpreter=$(uv python find)
 fi
 printf '%s\\n' "$requirement" > /work/requirements.in
-uv pip compile --python "$interpreter" --generate-hashes --no-header --quiet --output-file /work/requirements.lock /work/requirements.in >&2
+if ! uv pip compile --python "$interpreter" --no-build --generate-hashes --no-header --quiet --output-file /work/requirements.lock /work/requirements.in >&2; then
+  echo "${UV_WHEELS_ONLY_MESSAGE}" >&2
+  exit 4
+fi
 uv venv --python "$interpreter" /work/probe >&2
-uv pip sync --python /work/probe/bin/python --require-hashes /work/requirements.lock >&2
+if ! uv pip sync --python /work/probe/bin/python --no-build --require-hashes /work/requirements.lock >&2; then
+  echo "${UV_WHEELS_ONLY_MESSAGE}" >&2
+  exit 4
+fi
 python_version=$(/work/probe/bin/python -c 'import platform; print(platform.python_version())')
 size=$(du -sbc /work/probe /work/python | tail -n 1 | cut -f1)
 node -e 'const fs = require("fs"); const path = require("path"); const [name, pythonVersion, uvVersion, size] = process.argv.slice(1); const normalize = (value) => value.toLowerCase().replace(/[-_.]+/g, "_"); const lib = "/work/probe/lib"; const pythonDir = fs.readdirSync(lib).find((entry) => entry.startsWith("python")); if (!pythonDir) { process.stderr.write("probe environment has no site-packages\\n"); process.exit(3); } const sitePackages = path.join(lib, pythonDir, "site-packages"); const info = fs.readdirSync(sitePackages).find((entry) => { if (!entry.endsWith(".dist-info")) return false; const stem = entry.slice(0, -10); const dash = stem.lastIndexOf("-"); return dash > 0 && normalize(stem.slice(0, dash)) === normalize(name); }); if (!info) { process.stderr.write("root distribution metadata was not found\\n"); process.exit(3); } const scripts = []; const entryPoints = path.join(sitePackages, info, "entry_points.txt"); if (fs.existsSync(entryPoints)) { let inSection = false; for (const raw of fs.readFileSync(entryPoints, "utf8").split(/\\r?\\n/)) { const line = raw.trim(); if (line.startsWith("[")) { inSection = line === "[console_scripts]"; continue; } if (!inSection || !line || line.startsWith("#") || line.startsWith(";")) continue; const equals = line.indexOf("="); if (equals > 0) scripts.push(line.slice(0, equals).trim()); } } process.stdout.write(JSON.stringify({ lock: fs.readFileSync("/work/requirements.lock", "utf8"), pythonVersion, uvVersion, scripts, sizeBytes: Number(size) }));' "$name" "$python_version" "$(uv --version)" "$size"
@@ -135,7 +148,8 @@ node -e 'const fs = require("fs"); const path = require("path"); const [name, py
 
 /**
  * uv apply: install the managed Python into the release itself (the executor image has none), create the
- * venv at its final path, sync the hash-pinned lock, and link the root distribution's console scripts.
+ * venv at its final path, sync the hash-pinned lock from wheels only (`--no-build`), and link the root
+ * distribution's console scripts.
  */
 export const UV_APPLY_SCRIPT = `set -euo pipefail
 release=$1
@@ -153,7 +167,10 @@ else
 fi
 cp /work/input/requirements.lock "$dest/requirements.lock"
 uv venv --python "$interpreter" "$dest/venv" >&2
-uv pip sync --python "$dest/venv/bin/python" --require-hashes "$dest/requirements.lock" >&2
+if ! uv pip sync --python "$dest/venv/bin/python" --no-build --require-hashes "$dest/requirements.lock" >&2; then
+  echo "${UV_WHEELS_ONLY_MESSAGE}" >&2
+  exit 4
+fi
 for bin in "$@"; do
   if [ ! -x "$dest/venv/bin/$bin" ]; then echo "binary $bin was not installed" >&2; exit 3; fi
   ln -s "../venv/bin/$bin" "$dest/bin/$bin"
@@ -341,7 +358,8 @@ const NpmLockEntrySchema = z.object({
   integrity: z.string().optional(),
   bin: z.record(z.string(), z.string()).optional(),
   dev: z.boolean().optional(),
-  link: z.boolean().optional()
+  link: z.boolean().optional(),
+  inBundle: z.boolean().optional()
 }).passthrough();
 const NpmLockSchema = z.object({
   lockfileVersion: z.number().int().min(2),
@@ -392,7 +410,8 @@ export type ParsedNpmLock = {
 /**
  * Validates an npm lock against the registry it was resolved from. Every installed package must come from the
  * registry's exact origin and carry a sha512 integrity that `npm ci` will enforce; links, git, file, and
- * foreign-host tarballs are refused. Only the root package's binaries are exposed.
+ * foreign-host tarballs are refused. Bundled (`inBundle`) entries are covered by their parent's integrity and are
+ * recorded without one. Only the root package's binaries are exposed.
  */
 export function parseNpmLock(packageJson: string, lockText: string, name: string, registry: string): ParsedNpmLock {
   const registryUrl = parseServiceUrl(registry, 'npm registry');
@@ -412,6 +431,16 @@ export function parseNpmLock(packageJson: string, lockText: string, name: string
     if (key === '') continue;
     if (entry.link) throw buildFailed(`npm lockfile links ${quote(key)} instead of installing it from the registry`);
     if (entry.dev) continue;
+    const segment = key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    if (entry.inBundle && key !== rootKey) {
+      // Bundled dependencies ship inside their parent's tarball, whose pinned integrity already covers them, so
+      // they are only accepted nested under that parent and are never fetched on their own.
+      if (!key.includes('/node_modules/')) throw buildFailed(`npm lockfile entry ${quote(key)} is bundled but has no parent package`);
+      if (!entry.version) throw buildFailed(`npm lockfile entry ${quote(key)} has no version`);
+      dependencyCount += 1;
+      sbom.push({ name: entry.name ?? segment, version: entry.version });
+      continue;
+    }
     if (!entry.resolved || !entry.integrity || !entry.version) throw buildFailed(`npm lockfile entry ${quote(key)} is not pinned to a registry tarball`);
     let resolved: URL;
     try {
@@ -424,7 +453,6 @@ export function parseNpmLock(packageJson: string, lockText: string, name: string
     }
     if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity)) throw buildFailed(`npm lockfile entry ${quote(key)} has no sha512 integrity`);
     if (key !== rootKey) dependencyCount += 1;
-    const segment = key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
     sbom.push({ name: entry.name ?? segment, version: entry.version, integrity: entry.integrity });
   }
   const root = parsed.data.packages[rootKey];
@@ -631,7 +659,7 @@ export async function verifyReleaseTree(
     const target = resolved ? await lstat(join(stagingDir, ...resolved)).catch(() => undefined) : undefined;
     if (!target?.isFile() || (target.mode & 0o111) === 0) throw verificationFailed(`release binary ${quote(name)} does not resolve to an executable file in the release`);
   }
-  const digest = computeFullTreeDigest(stagingDir);
+  const digest = await computeFullTreeDigestAsync(stagingDir);
   if (digest.byteCount > maxReleaseBytes) {
     throw new HarnessError('LIMIT_EXCEEDED', `release exceeds PACKAGES_MAX_RELEASE_BYTES (${maxReleaseBytes} bytes)`, 507, false);
   }

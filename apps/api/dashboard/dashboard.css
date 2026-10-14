@@ -795,6 +795,7 @@ td details.row-edit pre { max-height: 12rem; max-width: 36rem; font-size: var(--
 .approval-row { display: grid; gap: var(--space-4); border-inline-start: .1875rem solid var(--warning-line); }
 .approval-row h3 { font-family: var(--font-mono); font-size: var(--text-13); font-weight: 600; overflow-wrap: anywhere; }
 .approval-row .row-actions { justify-content: flex-start; padding-block-start: var(--space-3); border-block-start: 1px solid var(--line); }
+.package-binding > .row-actions { justify-content: flex-start; margin-block: var(--space-3); }
 .deploy-target { display: grid; gap: var(--space-4); }
 .session-row { display: grid; gap: var(--space-3); }
 .session-row .row-actions { justify-content: flex-start; }

@@ -36,7 +36,7 @@ import {
 } from './mcp-gateway-schemas.js';
 import { OAuthGrantSettingsUpdateInputSchema } from './oauth-grant-settings.js';
 import {
-  PackageOverviewInputSchema, PackagePlanApproveInputSchema, PackagePlanListInputSchema, PackagePlanRejectInputSchema, PackageRollbackInputSchema
+  PackageOverviewInputSchema, PackagePlanApproveInputSchema, PackagePlanListInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema
 } from './package-schemas.js';
 import { SkillsExtGetInputSchema, SkillsExtListInputSchema, SkillsExtReadInputSchema } from './skills-extension.js';
 import {
@@ -188,7 +188,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
-  'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback',
+  'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
   'model_config_status',
@@ -298,6 +298,7 @@ const metadataInputs = {
   package_plan_approve: PackagePlanApproveInputSchema,
   package_plan_reject: PackagePlanRejectInputSchema,
   package_rollback: PackageRollbackInputSchema,
+  package_remove: PackageRemoveInputSchema,
   model_credential_list: z.object({}).strict(),
   model_credential_create: ProviderCredentialInputSchema,
   model_credential_rotate: z.object({
@@ -599,7 +600,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('github_status'), metadataRequest('github_setup_begin'), metadataRequest('github_setup_complete'), metadataRequest('github_reconcile'), metadataRequest('github_disconnect'),
   metadataRequest('privilege_grant_list'), metadataRequest('privilege_grant_approve'), metadataRequest('privilege_grant_reject'),
   metadataRequest('package_overview'), metadataRequest('package_plan_list'), metadataRequest('package_plan_approve'),
-  metadataRequest('package_plan_reject'), metadataRequest('package_rollback'),
+  metadataRequest('package_plan_reject'), metadataRequest('package_rollback'), metadataRequest('package_remove'),
   metadataRequest('model_credential_list'), metadataRequest('model_credential_create'), metadataRequest('model_credential_rotate'), metadataRequest('model_credential_delete'),
   metadataRequest('model_profile_list'), metadataRequest('model_profile_create'), metadataRequest('model_profile_update'), metadataRequest('model_profile_activate'), metadataRequest('model_profile_disable'), metadataRequest('model_profile_delete'),
   metadataRequest('model_config_status'),

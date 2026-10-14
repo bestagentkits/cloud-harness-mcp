@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { AgentIdSchema, ExecutorNetworkProfileSchema, IdempotencyKeySchema, OperationIdSchema, SessionIdSchema, ShellIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, TaskIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { AgentProxyOperationSchema, AgentStatusSchema, HookEventSchema, MemoryScopeSchema, ProvenanceSourceSchema, type RunnerOperation } from './runner-api.js';
 import { SkillSuggestInputSchema } from './typesafe-schemas.js';
-import { PackagesApplyInputSchema, PackagesListInputSchema, PackagesPlanInputSchema, PackagesRollbackInputSchema, PackagesStatusInputSchema } from './package-schemas.js';
+import { PackagesApplyInputSchema, PackagesListInputSchema, PackagesPlanInputSchema, PackagesRemoveInputSchema, PackagesRollbackInputSchema, PackagesStatusInputSchema } from './package-schemas.js';
 import {
   JournalTypeSchema,
   KnowledgeItemIdSchema,
@@ -715,6 +715,7 @@ const schemas = {
   packages_list: PackagesListInputSchema,
   packages_status: PackagesStatusInputSchema,
   packages_rollback: PackagesRollbackInputSchema,
+  packages_remove: PackagesRemoveInputSchema,
   shell_open: z.object({ ...workspace, cwd: relativePath.default('.'), idempotencyKey: IdempotencyKeySchema }),
   shell_io: z.object({ ...workspace, shellId: ShellIdSchema, input: z.string().max(65_536).optional(), cursor: z.string().max(256).optional(), waitMs: z.number().int().min(0).max(5_000).default(100) }),
   shell_close: z.object({ ...workspace, shellId: ShellIdSchema }),
@@ -1041,7 +1042,7 @@ const titles: Record<RunnerOperation, string> = {
   files_list: 'List files', files_read: 'Read file', files_write: 'Write file', files_write_batch: 'Write batch files', files_apply_patch: 'Apply text patch', files_delete: 'Delete file or directory', files_move: 'Move file or directory', files_mkdir: 'Create directory', grep_search: 'Search workspace',
   symbols_search: 'Find symbol definitions', symbols_references: 'Find lexical symbol references',
   exec_run: 'Run command', bash: 'Run bash command',
-  packages_plan: 'Plan managed package change', packages_apply: 'Apply managed package plan', packages_list: 'List managed packages', packages_status: 'Managed package status', packages_rollback: 'Roll back managed package', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
+  packages_plan: 'Plan managed package change', packages_apply: 'Apply managed package plan', packages_list: 'List managed packages', packages_status: 'Managed package status', packages_rollback: 'Roll back managed package', packages_remove: 'Uninstall managed package', shell_open: 'Open shell', shell_io: 'Use shell', shell_close: 'Close shell', tasks_list: 'List tasks', tasks_run: 'Run task', tasks_status: 'Task status', tasks_cancel: 'Cancel task',
   sessions_list: 'List coding sessions', sessions_open: 'Open coding session', sessions_io: 'Use coding session', sessions_close: 'Close coding session',
   tasks_graph: 'Read task dependency graph',
   operation_status: 'Read operation status', operation_cancel: 'Cancel operation', operation_wait: 'Wait for operation',
@@ -1088,11 +1089,12 @@ const descriptions: Record<RunnerOperation, string> = {
   symbols_search: 'Find bounded indexed symbol definitions by case-insensitive substring.',
   symbols_references: 'Find bounded lexical whole-word occurrences of a symbol in workspace text.',
   exec_run: 'Run one bounded shell command in the workspace and return captured output.',
-  packages_plan: 'Resolve one managed toolbox package change into an immutable plan without installing anything. ecosystem "npm" or "uv" (uv tools get their own managed Python); "apt" is not supported and returns NOT_SUPPORTED because system packages need a reviewed executor image variant. scope "owner" (default) makes the tool available to all your new workspaces and the bash toolbox target; scope "workspace" needs workspaceId and overrides the owner binding there. "instance" scope does not exist. The result lists the exact version, source, integrity, dependency count, size, binaries, conflicts, affected workspaces, and planDigest. approval "required" means an operator approves the plan in the Dashboard first; "unavailable" means this instance cannot approve plans. Use for durable CLI tools; use npm install or uv in a workspace for project dependencies. Off unless the operator sets PACKAGES_ENABLED=true.',
+  packages_plan: 'Resolve one managed toolbox package change into an immutable plan without installing anything and without running package code (uv accepts wheels only; npm lifecycle scripts stay off unless allowed). ecosystem "npm" or "uv" (uv tools get their own managed Python); "apt" is not supported and returns NOT_SUPPORTED because system packages need a reviewed executor image variant. scope "owner" (default) makes the tool available to all your new workspaces and the bash toolbox target; scope "workspace" needs workspaceId and overrides the owner binding there. "instance" scope does not exist. If resolution is still running after about 20 seconds, the result is { resolutionId, state: "RESOLVING" } instead: poll packages_status with that resolutionId (and waitMs) until it is READY with the plan or FAILED. The plan lists the exact version, source, integrity, dependency count, size, binaries, conflicts, affected workspaces, and planDigest. approval "required" means an operator approves the plan in the Dashboard first; "unavailable" means this instance cannot approve plans. Use for durable CLI tools; use npm install or uv in a workspace for project dependencies. Off unless the operator sets PACKAGES_ENABLED=true.',
   packages_apply: 'Build an approved plan (planId with the exact planDigest from packages_plan) into an immutable release in an isolated builder, verify its file tree, and launch-check every binary without network. Returns an applyId immediately; poll packages_status with applyId. Replaying the same plan returns the same apply. A release is installed only when the apply reaches SUCCEEDED. Existing workspaces keep their mounted releases until they are recreated; new workspaces and the bash toolbox target use the new release.',
   packages_list: 'List managed package bindings (what each scope uses now) and verified releases, with versions, digests, sizes, binaries, and whether a release was built for an older executor image (stale). Set includeHistory to see earlier releases you can roll back to.',
-  packages_status: 'Read a managed package apply by applyId (state, error code, bounded output tail, release id), optionally waiting up to waitMs for it to change. Without applyId, summarize in-flight applies, plans waiting for approval, missing releases, and workspaces that need recreation to pick up a change.',
+  packages_status: 'Read a managed package apply by applyId (state, error code, bounded output tail, release id) or a plan resolution by resolutionId (RESOLVING, READY with the plan, or FAILED with its error), optionally waiting up to waitMs for it to change. Without either, summarize in-flight applies, plans waiting for approval, missing releases, and workspaces that need recreation to pick up a change.',
   packages_rollback: 'Point a managed package binding back to an earlier verified release from its history. Needs bindingId, releaseId, and the binding generation you last read (expectedGeneration); a moved generation returns STALE_GENERATION. Needs no new approval. Workspaces pick up the change when recreated.',
+  packages_remove: 'Uninstall a managed package from one scope: deletes the binding (bindingId from packages_list, with its current generation as expectedGeneration) and its rollback history, and collects releases no retained workspace still mounts. A moved generation returns STALE_GENERATION; a running apply returns CONFLICT. Needs no approval. New workspaces and the bash toolbox stop seeing the tool at once; existing workspaces keep it until recreated. Reinstalling needs a new plan.',
   bash: 'Run one bounded bash command. target "workspace" (default) uses the exec_run path in the workspace executor. target "toolbox" runs in a disposable no-network container with no workspace checkout, no secrets, and no workspaceId; it is available only when the operator enables packages. Both targets accept async: true for an operation handle. bash has no privileged mode: use exec_run with its approval flow for privileged commands.',
   shell_open: 'Open an idempotent ephemeral interactive shell in the workspace.',
   shell_io: 'Send input to or poll bounded output from an open interactive shell.',
@@ -1187,7 +1189,7 @@ const destructive = new Set<RunnerOperation>([
   'worktrees_remove', 'skills_run', 'hooks_run', 'hooks_activate', 'hooks_deactivate', 'memories_write', 'memories_delete',
   'knowledge_create', 'knowledge_update', 'knowledge_delete', 'knowledge_link', 'knowledge_unlink',
   'deployments_run', 'artifacts_restore', 'artifacts_delete', 'github_action',
-  'packages_rollback',
+  'packages_rollback', 'packages_remove',
   'agent_spawn', 'agent_message', 'agent_cancel'
 ]);
 const idempotent = new Set<RunnerOperation>([

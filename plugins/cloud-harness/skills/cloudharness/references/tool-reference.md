@@ -34,7 +34,7 @@ See [execution and tasks](execution-and-tasks.md).
 See [managed packages](managed-packages.md).
 
 `packages_plan` `packages_apply` `packages_status` `packages_list`
-`packages_rollback`
+`packages_rollback` `packages_remove`
 
 ## Git and worktrees
 

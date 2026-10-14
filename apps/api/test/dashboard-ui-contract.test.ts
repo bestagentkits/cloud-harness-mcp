@@ -633,6 +633,9 @@ describe('managed packages surfaces', () => {
     expect(markup).not.toContain('Roll back to 1.1.0');
     expect(markup).not.toContain('Roll back to 0.9.0');
     expect(markup).toContain('Unavailable');
+    expect(markup).toContain('class="danger remove-package"');
+    expect(markup).toContain('Uninstall chm-hello');
+    expect(markup).toMatch(/class="danger remove-package"[^>]*data-generation="2"/);
     const missing = renderPackages({ overview: { enabled: true, bindings: [{ ...binding, release: { ...binding.release, status: 'MISSING' } }] } });
     expect(missing).toContain('Missing on disk');
     const stale = renderPackages({ overview: { enabled: true, bindings: [{ ...binding, release: { ...binding.release, stale: true } }] } });
@@ -645,6 +648,7 @@ describe('managed packages surfaces', () => {
     const script = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
     expect(script).toContain('packages: loadPackages');
     expect(script).toContain("api('/packages/rollback'");
+    expect(script).toContain("api('/packages/remove', { method: 'POST', body: requestBody({ bindingId, expectedGeneration }) })");
     expect(script).toContain('requestBody(approving ? { planDigest } : {})');
     expect(script).toContain('pendingApprovals(grants, plans)');
   });

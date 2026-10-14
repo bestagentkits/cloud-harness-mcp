@@ -8,6 +8,8 @@ import {
   PackageApplyResultSchema,
   PackagePlanResultSchema,
   PackagesListResultSchema,
+  PackagesPlanOutputSchema,
+  PackagesRemoveResultSchema,
   PackagesStatusResultSchema,
   type RunnerConfig
 } from '@cloud-harness/contracts';
@@ -66,9 +68,16 @@ function useService(next: PackageService): void {
   (service as unknown as { packageService: PackageService }).packageService = next;
 }
 
+/** Plans, polling the resolution when it outlasts the inline wait, as an agent would. */
 async function plan(name: string, version: string) {
-  const result = await service.execute(ownerId, 'packages_plan', { ecosystem: 'npm', name, version });
-  return PackagePlanResultSchema.parse(result.data);
+  const result = PackagesPlanOutputSchema.parse((await service.execute(ownerId, 'packages_plan', { ecosystem: 'npm', name, version })).data);
+  if (!('resolutionId' in result)) return PackagePlanResultSchema.parse(result);
+  for (;;) {
+    const status = PackagesStatusResultSchema.parse((await service.execute(ownerId, 'packages_status', { resolutionId: result.resolutionId, waitMs: 30_000 })).data);
+    if (!('resolution' in status)) throw new Error('expected a resolution status');
+    if (status.resolution.state === 'READY') return PackagePlanResultSchema.parse(status.resolution.plan);
+    if (status.resolution.state === 'FAILED') throw new HarnessError(status.resolution.errorCode ?? 'INTERNAL_ERROR', status.resolution.errorMessage ?? 'resolution failed');
+  }
 }
 
 /** The operator's Dashboard decision, bound to the digest it was shown. */
@@ -211,5 +220,17 @@ describe.skipIf(prerequisiteIssue !== undefined)('managed packages through the w
     expect(containers.stdout.trim()).toBe('');
     // The fence is cleared, so the binding accepts a new apply.
     expect((await install('chm-hello', '1.0.0')).state).toBe('SUCCEEDED');
+  });
+
+  it('uninstalls the package so the toolbox no longer finds it', async () => {
+    const current = (await binding('chm-hello'))!;
+    const removed = PackagesRemoveResultSchema.parse((await service.execute(ownerId, 'packages_remove', {
+      bindingId: current.bindingId, expectedGeneration: current.generation
+    })).data);
+    expect(removed).toMatchObject({ bindingId: current.bindingId, removed: true });
+    expect(removed.collectedReleases).toBeGreaterThan(0);
+    expect(await binding('chm-hello')).toBeUndefined();
+    const run = await service.execute(ownerId, 'bash', { target: 'toolbox', command: 'command -v chm-hello || echo absent' });
+    expect((run.data as { output: string }).output).toContain('absent');
   });
 });

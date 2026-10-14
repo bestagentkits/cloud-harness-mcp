@@ -468,6 +468,13 @@ export class DashboardControlService {
             replayed
           });
         }
+        case 'package_remove': {
+          this.requirePackages();
+          const removed = await this.workspaces.packages.removeBinding(principalId, {
+            bindingId: parsed.input.bindingId, expectedGeneration: parsed.input.expectedGeneration
+          }, 'dashboard');
+          return ok('Package uninstalled', removed);
+        }
         case 'model_credential_list': return ok('Model provider credentials listed', { credentials: this.models().listCredentials(principalId) });
         case 'model_credential_create': {
           const created = this.models().createCredential(principalId, parsed.input);

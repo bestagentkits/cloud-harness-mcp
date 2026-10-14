@@ -61,7 +61,8 @@ beforeEach(async () => {
     package_plan_list: success({ enabled: true, approvalMode: 'required', plans: [runnerPlan] }),
     package_plan_approve: success({ plan: { ...runnerPlan, status: 'APPROVED', decidedBy: 'dashboard' } }),
     package_plan_reject: success({ plan: { ...runnerPlan, status: 'REJECTED', decidedBy: 'dashboard' } }),
-    package_rollback: success({ binding: { bindingId, scope: 'owner', ecosystem: 'npm', name: 'chm-hello', generation: 3, releaseId, ownerId: 'owner' }, replayed: false })
+    package_rollback: success({ binding: { bindingId, scope: 'owner', ecosystem: 'npm', name: 'chm-hello', generation: 3, releaseId, ownerId: 'owner' }, replayed: false }),
+    package_remove: success({ bindingId, removed: true, releaseIds: [releaseId], collectedReleases: 1, affectedWorkspaces: [], ownerId: 'owner', relPath: 'releases/abc/pkr' })
   };
   const runner: DashboardRunnerClient = {
     call: vi.fn(),
@@ -173,6 +174,10 @@ describe('Dashboard managed package routes', () => {
       method: 'POST', body: { bindingId, releaseId, expectedGeneration: 1 }, headers: { ...headers, origin: 'https://evil.example' }
     });
     expect(rollback.status).toBe(403);
+    const remove = await request('/api/v1/packages/remove', {
+      method: 'POST', body: { bindingId, expectedGeneration: 1 }, headers: { origin: headers.origin, cookie: headers.cookie }
+    });
+    expect(remove.status).toBe(403);
     expect(mutations()).toEqual([]);
   });
 
@@ -185,7 +190,9 @@ describe('Dashboard managed package routes', () => {
       ['/api/v1/package-plans/not-a-plan/approve', { planDigest }],
       ['/api/v1/package-plans/not-a-plan/reject', { reason: 'x' }],
       ['/api/v1/packages/rollback', { bindingId, releaseId, expectedGeneration: -1 }],
-      ['/api/v1/packages/rollback', { bindingId, releaseId: 'pkr_short', expectedGeneration: 1 }]
+      ['/api/v1/packages/rollback', { bindingId, releaseId: 'pkr_short', expectedGeneration: 1 }],
+      ['/api/v1/packages/remove', { bindingId, expectedGeneration: -1 }],
+      ['/api/v1/packages/remove', { bindingId, expectedGeneration: 1, releaseId }]
     ] as const) {
       const reply = await request(path, { method: 'POST', body, headers });
       expect(reply.status, `${path} ${JSON.stringify(body)}`).toBe(400);
@@ -217,5 +224,18 @@ describe('Dashboard managed package routes', () => {
     answers.package_rollback = { ok: false, message: 'refused', truncated: false, error: { code: 'FORBIDDEN', message: 'internal detail', retryable: false } };
     const disabled = await request('/api/v1/packages/rollback', { method: 'POST', body: { bindingId, releaseId, expectedGeneration: 1 }, headers });
     expect(disabled.json.message).toBe('Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.');
+  });
+
+  it('uninstalls a binding with the expected generation and projects only the public fields', async () => {
+    const headers = await csrfHeaders();
+    const removed = await request('/api/v1/packages/remove', { method: 'POST', body: { bindingId, expectedGeneration: 1 }, headers });
+    expect(removed.status).toBe(200);
+    expect(removed.json.data).toEqual({ bindingId, removed: true, releaseIds: [releaseId], collectedReleases: 1, affectedWorkspaces: [] });
+    expect(mutations()).toEqual([{ operation: 'package_remove', input: { bindingId, expectedGeneration: 1 }, principal }]);
+
+    answers.package_remove = { ok: false, message: 'refused', truncated: false, error: { code: 'CONFLICT', message: 'an apply for this package and scope is in progress', retryable: true } };
+    const busy = await request('/api/v1/packages/remove', { method: 'POST', body: { bindingId, expectedGeneration: 1 }, headers });
+    expect(busy.status).toBe(409);
+    expect(busy.json.message).toBe('an apply for this package and scope is in progress');
   });
 });

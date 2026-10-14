@@ -200,7 +200,8 @@ describe('LocalWorkspaceBackend', () => {
       ['packages_apply', { planId: 'pkp_0123456789abcdefghijklmn', planDigest: 'a'.repeat(64) }],
       ['packages_list', {}],
       ['packages_status', {}],
-      ['packages_rollback', { bindingId: 'pkb_0123456789abcdefghijklmn', releaseId: 'pkr_0123456789abcdefghijklmn', expectedGeneration: 1 }]
+      ['packages_rollback', { bindingId: 'pkb_0123456789abcdefghijklmn', releaseId: 'pkr_0123456789abcdefghijklmn', expectedGeneration: 1 }],
+      ['packages_remove', { bindingId: 'pkb_0123456789abcdefghijklmn', expectedGeneration: 1 }]
     ];
     for (const [operation, input] of calls) {
       const res = await backend.call(operation as Parameters<typeof backend.call>[0], input);

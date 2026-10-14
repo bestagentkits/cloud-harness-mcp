@@ -3,11 +3,13 @@
 Use these for a CLI tool you want in every new workspace and in the `bash`
 toolbox target, kept across workspace recreation and redeploys. For a
 project dependency, run `npm install` or `uv` in the workspace instead. All
-five tools return `FORBIDDEN` unless the operator set `PACKAGES_ENABLED=true`.
+six tools return `FORBIDDEN` unless the operator set `PACKAGES_ENABLED=true`.
 
-Flow: `packages_plan` → (operator approves in the Dashboard when `approval` is
+Flow: `packages_plan` (→ `packages_status` with its `resolutionId` while it
+is `RESOLVING`) → (operator approves in the Dashboard when `approval` is
 `required`) → `packages_apply` → `packages_status` until `SUCCEEDED` → recreate
-a workspace or use `bash` with `target: "toolbox"`.
+a workspace or use `bash` with `target: "toolbox"`. `packages_remove`
+uninstalls.
 
 <!-- cloudharness-tool:packages_plan -->
 ### `packages_plan`
@@ -19,6 +21,13 @@ a workspace or use `bash` with `target: "toolbox"`.
   the owner binding for the same package in that workspace only.
 - `apt` returns `NOT_SUPPORTED`: system packages need a reviewed executor image
   variant, not an install.
+- Planning never runs package code. uv installs pre-built wheels only: a
+  package or dependency published only as a source distribution fails with
+  `PACKAGE_BUILD_FAILED` ("only wheels are supported"); pick a version that
+  ships wheels or install it in the workspace instead.
+- A slow resolution (cold uv toolchain, large npm tree) returns
+  `{resolutionId, state: "RESOLVING", package}` after about 20 seconds instead
+  of the plan. Poll `packages_status` with that `resolutionId` and `waitMs`.
 - Nothing is installed yet. Read `binaries`, `conflicts`, `sizeEstimateBytes`,
   and `affectedWorkspaces` before applying. Keep `planId` and `planDigest`.
 - `approval: "required"` means ask the operator to approve the plan on the
@@ -34,7 +43,9 @@ a workspace or use `bash` with `target: "toolbox"`.
 
 - Required: `planId` and the exact `planDigest` from the plan. A different
   digest, an expired plan, or a binding that changed since planning returns
-  `STALE_GENERATION` or `EXPIRED`: plan again.
+  `STALE_GENERATION` or `EXPIRED`: plan again. A plan approved by policy
+  also returns `STALE_GENERATION` once the operator switched to required
+  approval.
 - Returns an `applyId` at once. Calling it again for the same plan returns the
   same apply.
 - `PACKAGE_APPROVAL_REQUIRED` means the plan still waits for the operator.
@@ -49,11 +60,23 @@ a workspace or use `bash` with `target: "toolbox"`.
   `PACKAGE_VERIFICATION_FAILED` (for example a binary that fails `--version`
   and `--help` without network), and `RUNNER_RESTARTED` leave the previous
   release in place.
-- Without `applyId`, summarizes in-flight applies, plans waiting for approval,
+- With `resolutionId` (from a `RESOLVING` plan), returns `resolution` with
+  `state` `RESOLVING`, `READY` (with `plan`), or `FAILED` (with `errorCode`
+  and `errorMessage`); `waitMs` works the same way. Pass `applyId` or
+  `resolutionId`, never both. Resolutions live in runner memory: after a
+  runner restart, or about 30 minutes after it finished, the id returns
+  `NOT_FOUND`; run `packages_plan` again.
+- Without either id, summarizes in-flight applies, plans waiting for approval,
   missing releases, and workspaces that need recreation.
+- `UNAVAILABLE` from a plan or apply while the runner shuts down is
+  retryable once it is back.
 
 <!-- cloudharness-example:packages_status
 {"applyId":"pka_0123456789abcdefghijklmn","waitMs":10000}
+-->
+
+<!-- cloudharness-example:packages_status
+{"resolutionId":"pkq_0123456789abcdefghijklmn","waitMs":20000}
 -->
 
 <!-- cloudharness-tool:packages_list -->
@@ -71,3 +94,20 @@ a workspace or use `bash` with `target: "toolbox"`.
   generation returns `STALE_GENERATION`; list again and retry deliberately.
 - Needs no new approval. Existing workspaces keep their mounts until they are
   recreated.
+
+<!-- cloudharness-tool:packages_remove -->
+### `packages_remove`
+
+- Uninstalls a package from one scope. Required: `bindingId` and the binding
+  `generation` you last read as `expectedGeneration`. Destructive and needs no
+  approval; the binding and its rollback history are deleted, so reinstalling
+  needs a new plan.
+- `STALE_GENERATION` means the binding moved; list again. `CONFLICT` means an
+  apply for it is still running; wait for it to finish.
+- New workspaces and the `bash` toolbox stop seeing the tool at once; running
+  workspaces keep it until recreated. Use it to free quota when a plan or
+  apply returns `LIMIT_EXCEEDED`.
+
+<!-- cloudharness-example:packages_remove
+{"bindingId":"pkb_0123456789abcdefghijklmn","expectedGeneration":3}
+-->

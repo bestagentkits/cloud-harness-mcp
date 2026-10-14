@@ -3570,7 +3570,7 @@ export function initializeDashboard() {
       }, event.currentTarget);
     });
   }
-  /** Installed toolbox packages, apply progress, and rollback to a release from the history. */
+  /** Installed toolbox packages, apply progress, rollback to a release from the history, and uninstall. */
   async function loadPackages() {
     selectNavigation('packages');
     document.querySelector('#command-surface').hidden = true;
@@ -3589,6 +3589,22 @@ export function initializeDashboard() {
         action: async () => {
           await api('/packages/rollback', { method: 'POST', body: requestBody({ bindingId, releaseId, expectedGeneration }) });
           announce(`${name} rolled back to ${toVersion}.`);
+          await loadPackages();
+        }
+      }, event.currentTarget);
+    });
+    for (const button of document.querySelectorAll('.remove-package')) button.addEventListener('click', (event) => {
+      const { bindingId = '', generation = '', scope = '' } = button.dataset;
+      const name = button.dataset.package ?? 'this package';
+      const affected = Number(button.dataset.affected ?? 0);
+      const expectedGeneration = Number(generation);
+      void confirmAction({
+        title: `Uninstall ${name}?`,
+        description: `This removes the ${scope === 'workspace' ? 'workspace' : 'owner'} binding and its release history for ${affected} ${affected === 1 ? 'workspace' : 'workspaces'}. Workspaces created or recreated afterwards start without ${name}; running workspaces keep it until they are recreated, and releases they still mount are collected later. Installing it again needs a new plan and apply. The uninstall is refused while an apply is running or if the package changed after this page loaded (expected generation ${expectedGeneration}). It is audited.`,
+        target: `${name} · ${bindingId}`, label: 'Uninstall', pendingLabel: 'Uninstalling…',
+        action: async () => {
+          await api('/packages/remove', { method: 'POST', body: requestBody({ bindingId, expectedGeneration }) });
+          announce(`${name} uninstalled.`);
           await loadPackages();
         }
       }, event.currentTarget);

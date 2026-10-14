@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync } from 'node:fs';
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createReadStream, lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync } from 'node:fs';
+import { cp, lstat, mkdir, readFile, readdir, readlink, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import { HarnessError } from '@cloud-harness/contracts';
 import type { RepositoryCacheManager } from '../repository-cache-manager.js';
@@ -18,8 +18,63 @@ export type ToolkitAdapterResult = {
   };
 };
 
-export function computeFullTreeDigest(rootDir: string): { bundleSha256: string; byteCount: number; fileCount: number } {
-  const fileEntries: Array<{ relPath: string; contentHash: string; size: number; mode: number }> = [];
+export type TreeDigest = { bundleSha256: string; byteCount: number; fileCount: number };
+type TreeDigestEntry = { relPath: string; contentHash: string; size: number; mode: number };
+
+/** Read size for streamed file hashing; bounds the memory one file can pin while it is digested. */
+const TREE_DIGEST_CHUNK_BYTES = 1_048_576;
+
+/** Folds per-entry hashes into the tree digest; shared so the sync and async walks cannot drift apart. */
+function summarizeTreeDigest(fileEntries: TreeDigestEntry[]): TreeDigest {
+  fileEntries.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  const manifestLines = fileEntries.map((e) => `${e.relPath}:${e.size}:${e.mode.toString(8)}:${e.contentHash}`);
+  const bundleSha256 = createHash('sha256').update(manifestLines.join('\n')).digest('hex');
+  const byteCount = fileEntries.reduce((sum, e) => sum + e.size, 0);
+  return { bundleSha256, byteCount, fileCount: fileEntries.length };
+}
+
+/**
+ * The same digest as {@link computeFullTreeDigest}, computed with async fs and streamed file reads so a large
+ * tree neither blocks the event loop nor loads any whole file into memory.
+ */
+export async function computeFullTreeDigestAsync(rootDir: string): Promise<TreeDigest> {
+  const fileEntries: TreeDigestEntry[] = [];
+  const directories = [rootDir];
+  while (directories.length > 0) {
+    const currentDir = directories.pop()!;
+    for (const item of await readdir(currentDir, { withFileTypes: true })) {
+      const fullPath = join(currentDir, item.name);
+      if (item.isSymbolicLink()) {
+        const relPath = relative(rootDir, fullPath).replaceAll('\\', '/');
+        const target = await readlink(fullPath);
+        const st = await lstat(fullPath);
+        fileEntries.push({
+          relPath: `${relPath} -> ${target}`,
+          contentHash: createHash('sha256').update(`symlink:${target}`).digest('hex'),
+          size: Buffer.byteLength(target),
+          mode: st.mode & 0o777
+        });
+      } else if (item.isDirectory()) {
+        directories.push(fullPath);
+      } else if (item.isFile()) {
+        const relPath = relative(rootDir, fullPath).replaceAll('\\', '/');
+        const hash = createHash('sha256');
+        let size = 0;
+        for await (const chunk of createReadStream(fullPath, { highWaterMark: TREE_DIGEST_CHUNK_BYTES })) {
+          const bytes = chunk as Buffer;
+          hash.update(bytes);
+          size += bytes.length;
+        }
+        const st = await lstat(fullPath);
+        fileEntries.push({ relPath, contentHash: hash.digest('hex'), size, mode: st.mode & 0o777 });
+      }
+    }
+  }
+  return summarizeTreeDigest(fileEntries);
+}
+
+export function computeFullTreeDigest(rootDir: string): TreeDigest {
+  const fileEntries: TreeDigestEntry[] = [];
 
   function walk(currentDir: string): void {
     const items = readdirSync(currentDir, { withFileTypes: true });
@@ -54,17 +109,7 @@ export function computeFullTreeDigest(rootDir: string): { bundleSha256: string; 
   }
 
   walk(rootDir);
-  fileEntries.sort((a, b) => a.relPath.localeCompare(b.relPath));
-
-  const manifestLines = fileEntries.map((e) => `${e.relPath}:${e.size}:${e.mode.toString(8)}:${e.contentHash}`);
-  const bundleSha256 = createHash('sha256').update(manifestLines.join('\n')).digest('hex');
-  const byteCount = fileEntries.reduce((sum, e) => sum + e.size, 0);
-
-  return {
-    bundleSha256,
-    byteCount,
-    fileCount: fileEntries.length
-  };
+  return summarizeTreeDigest(fileEntries);
 }
 
 export function validateStagingDir(stagingDir: string, maxFiles = 1000, maxBytes = 67_108_864): void {

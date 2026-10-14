@@ -153,7 +153,8 @@ describe('managed package dispatch', () => {
       packages_apply: { planId: `pkp_${'a'.repeat(24)}`, planDigest: 'a'.repeat(64) },
       packages_list: {},
       packages_status: {},
-      packages_rollback: { bindingId: `pkb_${'a'.repeat(24)}`, releaseId: `pkr_${'a'.repeat(24)}`, expectedGeneration: 1 }
+      packages_rollback: { bindingId: `pkb_${'a'.repeat(24)}`, releaseId: `pkr_${'a'.repeat(24)}`, expectedGeneration: 1 },
+      packages_remove: { bindingId: `pkb_${'a'.repeat(24)}`, expectedGeneration: 1 }
     };
     for (const operation of PACKAGE_OPERATIONS) {
       const error = await f.service.execute(f.ownerId, operation, inputs[operation]!).then(() => undefined, (caught: unknown) => caught);

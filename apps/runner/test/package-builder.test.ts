@@ -97,8 +97,9 @@ function fakeDocker(args: string[]): FakeChild {
 }
 
 import {
-  NPM_APPLY_SCRIPT, NPM_PLAN_SCRIPT, PACKAGE_BUILDER_MAX_OUTPUT_BYTES, PackageBuilder, UV_PLAN_SCRIPT, buildPackageBuilderArgs,
-  launchCheckCommand, parseApplyRuntime, parseNpmPlanOutput, parseUvLock, parseUvPlanOutput, probeHost, uvRequirement, verifyReleaseTree,
+  NPM_APPLY_SCRIPT, NPM_PLAN_SCRIPT, PACKAGE_BUILDER_MAX_OUTPUT_BYTES, PackageBuilder, UV_APPLY_SCRIPT, UV_PLAN_SCRIPT, UV_WHEELS_ONLY_MESSAGE,
+  buildPackageBuilderArgs,
+  launchCheckCommand, parseApplyRuntime, parseNpmLock, parseNpmPlanOutput, parseUvLock, parseUvPlanOutput, probeHost, uvRequirement, verifyReleaseTree,
   type PackageBuilderRunSpec
 } from '../src/package-builder.js';
 import { EXECUTOR_HARDENING_ARGS } from '../src/toolbox-runner.js';
@@ -208,11 +209,28 @@ describe('builder container argv', () => {
     expect(args[scriptIndex]).toBe(NPM_PLAN_SCRIPT);
     expect(args.slice(scriptIndex + 1)).toEqual(['package-builder', ...hostile]);
     // Every script reads its inputs from quoted positional parameters only.
-    for (const script of [NPM_PLAN_SCRIPT, NPM_APPLY_SCRIPT, UV_PLAN_SCRIPT]) {
+    for (const script of [NPM_PLAN_SCRIPT, NPM_APPLY_SCRIPT, UV_PLAN_SCRIPT, UV_APPLY_SCRIPT]) {
       expect(script).not.toContain('eval');
       expect(script.startsWith('set -euo pipefail\n')).toBe(true);
     }
     expect(NPM_PLAN_SCRIPT).toContain('-- "$name@$spec"');
+  });
+
+  it('never lets uv build a source distribution, and names the wheel-only rule when it fails', () => {
+    for (const script of [UV_PLAN_SCRIPT, UV_APPLY_SCRIPT]) {
+      const uvPipCalls = script.split('\n').filter((line) => /\buv pip (compile|sync|install)\b/.test(line));
+      expect(uvPipCalls.length).toBeGreaterThan(0);
+      for (const line of uvPipCalls) {
+        expect(line).toContain(' --no-build ');
+        expect(line.startsWith('if ! uv pip ')).toBe(true);
+      }
+      expect(script).toContain(`echo "${UV_WHEELS_ONLY_MESSAGE}" >&2`);
+    }
+    expect(UV_PLAN_SCRIPT.match(/\buv pip (compile|sync)\b/g)).toEqual(['uv pip compile', 'uv pip sync']);
+    expect(UV_APPLY_SCRIPT.match(/\buv pip (compile|sync)\b/g)).toEqual(['uv pip sync']);
+    // The message is embedded in a double-quoted shell string, so it must carry nothing the shell would expand.
+    expect(UV_WHEELS_ONLY_MESSAGE).toMatch(/^[A-Za-z0-9 ,.:-]+$/);
+    expect(UV_WHEELS_ONLY_MESSAGE).toMatch(/only wheels are supported/);
   });
 
   it('refuses names, networks, mounts, URLs, and arguments that could widen the container', () => {
@@ -270,6 +288,28 @@ describe('builder output parsers', () => {
     expect(() => parseNpmPlanOutput(npmPlanOutput(linked), 'chm-hello', registry)).toThrow(/links/);
     const unhashed = npmLock({ 'node_modules/chm-dep': { version: '1.0.0', resolved: `${registry}chm-dep.tgz`, integrity: 'sha1-abc=' } });
     expect(() => parseNpmPlanOutput(npmPlanOutput(unhashed), 'chm-hello', registry)).toThrow(/sha512/);
+  });
+
+  it('accepts bundled dependencies, which the parent tarball integrity covers, and records them without integrity', () => {
+    const bundled = npmLock({
+      'node_modules/chm-dep/node_modules/chm-bundled': { version: '3.1.0', inBundle: true, license: 'MIT' },
+      'node_modules/chm-dep/node_modules/chm-bundled/node_modules/chm-deep': { name: 'chm-deep', version: '0.2.0', inBundle: true }
+    });
+    expect(parseNpmPlanOutput(npmPlanOutput(bundled), 'chm-hello', registry).dependencyCount).toBe(3);
+    expect(parseNpmLock(JSON.parse(npmPlanOutput()).packageJson, bundled, 'chm-hello', registry).sbom).toEqual([
+      { name: 'chm-bundled', version: '3.1.0' },
+      { name: 'chm-deep', version: '0.2.0' },
+      { name: 'chm-dep', version: '1.0.0', integrity: sha512('d') },
+      { name: 'chm-hello', version: '1.0.0', integrity: sha512('h') }
+    ]);
+    // A bundled entry still needs a version and a parent whose tarball carries it.
+    const unversioned = npmLock({ 'node_modules/chm-dep/node_modules/chm-bundled': { inBundle: true } });
+    expect(() => parseNpmPlanOutput(npmPlanOutput(unversioned), 'chm-hello', registry)).toThrow(/has no version/);
+    const orphan = npmLock({ 'node_modules/chm-bundled': { version: '3.1.0', inBundle: true } });
+    expect(() => parseNpmPlanOutput(npmPlanOutput(orphan), 'chm-hello', registry)).toThrow(/no parent package/);
+    // The root package is never exempt from pinning, even if it claims to be bundled.
+    const bundledRoot = npmLock({ 'node_modules/chm-hello': { version: '1.0.0', inBundle: true, bin: { 'chm-hello': 'bin/chm-hello.mjs' } } });
+    expect(() => parseNpmPlanOutput(npmPlanOutput(bundledRoot), 'chm-hello', registry)).toThrow(/not pinned/);
   });
 
   it('refuses a package with no or unsupported binaries', () => {

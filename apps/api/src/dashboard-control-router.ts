@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import express, { type NextFunction, type Response, type Router } from 'express';
-import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
@@ -187,6 +187,7 @@ export function registerDashboardControlRoutes(
   })));
   router.post('/api/v1/package-plans/:planId/reject', endpoint('package_plan_reject', (request) => PackagePlanRejectInputSchema.parse({ planId: request.params.planId })));
   router.post('/api/v1/packages/rollback', endpoint('package_rollback', (request) => PackageRollbackInputSchema.parse(request.body)));
+  router.post('/api/v1/packages/remove', endpoint('package_remove', (request) => PackageRemoveInputSchema.parse(request.body)));
   router.get('/api/v1/api-keys', apiKeyEndpoint('api_key_list', () => ({})));
   router.post('/api/v1/api-keys', apiKeyEndpoint('api_key_create', (request) => z.object({
     name: z.string().trim().min(1).max(100), expiresInDays: z.number().int().min(1).max(API_KEY_MAX_EXPIRY_DAYS)

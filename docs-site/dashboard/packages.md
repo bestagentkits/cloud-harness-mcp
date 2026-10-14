@@ -1,6 +1,6 @@
 ---
 title: Packages
-description: Managed toolbox packages, their health, applies, and rollback.
+description: Managed toolbox packages, their health, applies, rollback, and uninstall.
 ---
 
 # Packages
@@ -8,7 +8,7 @@ description: Managed toolbox packages, their health, applies, and rollback.
 `/dashboard/packages` shows the **managed toolbox packages** agents have installed for
 you: CLI tools built into immutable, verified releases and mounted read-only into new
 workspaces. Agents plan and apply them with the package tools; you approve plans on the
-[Approvals](/dashboard/approvals) page and watch or roll back the result here.
+[Approvals](/dashboard/approvals) page and watch, roll back, or uninstall the result here.
 
 ::: info Off by default
 Managed packages are off. Operators enable them with `PACKAGES_ENABLED=true`. While the
@@ -45,7 +45,9 @@ Each installed package shows:
 - its health:
   - **Verified**: the release tree is on disk and matches its digest.
   - **Missing on disk**: the runner found the directory gone. New workspaces start without
-    the tool until it is re-applied or rolled back.
+    the tool until it is re-applied or rolled back. If the directory comes back unchanged
+    (for example once storage is mounted again), the runner verifies its digest and marks
+    it **Verified** again.
   - **Stale image**: the release was built against an older executor image. Re-plan and
     apply to rebuild it.
 - the active release, generation, disk usage and file count, dependency count, binaries,
@@ -80,3 +82,21 @@ The runner refuses the rollback when:
 Reload the page and decide again. Every rollback is audited with the Dashboard as the
 actor. Rollback needs no approval, because the target release was already approved and
 verified.
+
+## Uninstalling
+
+**Uninstall *name*** appears on every installed package. It removes the package from that
+one scope: the binding and its rollback history are deleted, and releases nothing else
+uses are deleted from disk. Use it to free the storage or binding quota. Agents can do
+the same with `packages_remove`.
+
+Uninstalling is destructive, so it asks for confirmation. The confirmation names the scope,
+how many workspaces are affected, and the expected generation.
+
+Workspaces created or recreated afterwards start without the tool. Running workspaces keep
+it until they are recreated, and releases they still use are deleted later, once nothing
+uses them. Installing the package again needs a new plan and apply.
+
+The runner refuses the uninstall when the package changed after the page loaded (the
+generation moved) or an apply for it is in progress. Reload the page and decide again.
+Every uninstall is audited with the Dashboard as the actor, and needs no approval.

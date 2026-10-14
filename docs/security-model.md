@@ -597,12 +597,19 @@ workspace executor, never more. The decision and rejected alternatives are in
 - **Isolated builder.** Resolution and builds run in a short-lived container
   from the pinned executor image with the same hardening as an executor
   (non-root, dropped capabilities, read-only root, resource bounds). Its only
-  network is the provisioning network, and the provisioning proxy reaches only
-  the registry hosts the operator listed in `PACKAGES_PROXY_HOSTS`; a refused
-  host fails the plan as `UNAVAILABLE` naming that host. The builder receives no
+  network is the provisioning network. The provisioning proxy is shared with
+  toolkit acquisition helpers and has one allow-list: its `ALLOWED_HOSTS`
+  (the Git and toolkit hosts set in Compose) plus the registry hosts the
+  operator lists in `PACKAGES_PROXY_HOSTS`, each including its subdomains. A
+  builder can therefore reach those Git and toolkit hosts too, and toolkit
+  helpers can reach the opted-in registries. Before resolving, the runner
+  probes the ecosystem's registry hosts through the proxy, and a refused host
+  fails the plan as `UNAVAILABLE` naming that host. The builder receives no
   control-plane credential, workspace secret, or GitHub token, and user values
-  reach it only as positional arguments. npm lifecycle scripts stay off unless
-  `PACKAGES_NPM_LIFECYCLE_SCRIPTS` allows them.
+  reach it only as positional arguments. Resolution happens before approval,
+  so it must not run package code: uv runs with `--no-build` (wheels only, no
+  source-distribution build backend), and npm lifecycle scripts stay off
+  unless `PACKAGES_NPM_LIFECYCLE_SCRIPTS` allows them.
 - **Verified, immutable releases.** After the build the runner removes the
   builder, walks the staged tree (rejecting links that leave it, special files,
   and trees over `PACKAGES_MAX_RELEASE_BYTES`), records its digest and SBOM,
@@ -614,11 +621,16 @@ workspace executor, never more. The decision and rejected alternatives are in
   own `~/.local/bin` and before the image's system directories, so a managed
   package can add a command but a binary-name conflict between bindings is
   refused at plan and again at publish.
-- **Crash recovery and cleanup.** Applies are durable rows. On startup the
-  runner fails applies a crash interrupted, removes their staging trees, and
-  marks releases whose tree is missing; hourly garbage collection removes only
-  releases no binding, profile, or retained history references, under the
-  packages root. Profiles record which releases each running workspace mounts.
+- **Crash recovery and cleanup.** Applies are durable rows; plan
+  resolutions in progress are runner memory and are lost on restart. On
+  startup the runner fails applies a crash interrupted, removes their staging
+  trees, and marks releases whose tree is missing; an absent packages root
+  marks and removes nothing, and a reconcile failure is logged without
+  blocking startup. A missing release whose directory returns is restored only
+  if its tree digest still matches, and its directory is removed otherwise.
+  Uninstalling a binding and hourly garbage collection remove only releases no
+  binding, profile, or retained history references, under the packages root.
+  Profiles record which releases each running workspace mounts.
 - **Residual risk.** A malicious or compromised package runs with workspace
   authority in every workspace bound to it. Approval, pinning, the network
   boundary, and rollback narrow that risk; they do not make untrusted packages
