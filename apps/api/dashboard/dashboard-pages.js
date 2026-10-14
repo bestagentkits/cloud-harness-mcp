@@ -86,11 +86,23 @@ export const DASHBOARD_PAGES = [
     label: 'Approvals',
     group: 'operate',
     title: 'Approvals',
-    help: 'Pending privilege grants waiting for your decision.',
+    help: 'Pending privilege grants and package plans waiting for your decision.',
     palette: true,
-    paletteHint: 'Pending privilege grants awaiting a decision',
+    paletteHint: 'Pending privilege grants and package plans awaiting a decision',
     nav: true,
     icon: '<path d="M9 12l2 2 4-4"/><path d="M12 3l8 4v6c0 4.5-3.2 7.3-8 8-4.8-.7-8-3.5-8-8V7z"/>'
+  },
+  {
+    id: 'packages',
+    route: '/dashboard/packages',
+    label: 'Packages',
+    group: 'operate',
+    title: 'Packages',
+    help: 'Managed toolbox packages: installed releases, health, applies, and rollback history.',
+    palette: true,
+    paletteHint: 'Managed toolbox packages, releases, and rollback',
+    nav: true,
+    icon: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/>'
   },
   {
     id: 'terminals',

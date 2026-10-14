@@ -3,7 +3,7 @@ import type { RunnerResponse } from '@cloud-harness/contracts';
 
 const statuses: Record<string, number> = {
   AUTHENTICATION_FAILED: 401, FORBIDDEN: 404, INVALID_INPUT: 400, NOT_FOUND: 404,
-  CONFLICT: 409, EXPIRED: 410, LIMIT_EXCEEDED: 429, TIMEOUT: 504,
+  CONFLICT: 409, STALE_GENERATION: 409, EXPIRED: 410, LIMIT_EXCEEDED: 429, TIMEOUT: 504,
   CANCELLED: 409, UNAVAILABLE: 503, DEPENDENCY_EGRESS_UNAVAILABLE: 503, INTERNAL_ERROR: 500
 };
 
@@ -13,6 +13,7 @@ const messages: Record<string, string> = {
   INVALID_INPUT: 'The request could not be processed.',
   NOT_FOUND: 'Workspace not found or no longer available.',
   CONFLICT: 'This item changed after you opened it.',
+  STALE_GENERATION: 'This item changed after you opened it.',
   EXPIRED: 'Workspace expired.',
   LIMIT_EXCEEDED: 'Too many requests. Try again later.',
   TIMEOUT: 'The workspace service took too long to respond.',
@@ -225,6 +226,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'artifact_list', 'artifact_snapshot', 'artifact_read', 'artifact_restore', 'artifact_delete',
   'github_status', 'github_setup_begin', 'github_setup_complete', 'github_reconcile', 'github_disconnect',
   'privilege_grant_list', 'privilege_grant_approve', 'privilege_grant_reject',
+  'package_overview', 'package_plan_list', 'package_plan_approve', 'package_plan_reject', 'package_rollback',
   'model_credential_list', 'model_credential_create', 'model_credential_rotate', 'model_credential_delete',
   'model_profile_list', 'model_profile_create', 'model_profile_update', 'model_profile_activate', 'model_profile_disable', 'model_profile_delete',
   'model_config_status',
@@ -324,6 +326,63 @@ function mcpServerResult(data: Record<string, unknown>): Record<string, unknown>
 }
 
 const knowledgeLinkKeys = ['id', 'sourceId', 'targetId', 'relation', 'origin', 'generation', 'createdAt'] as const;
+
+/*
+ * Managed packages. Every level is re-picked, so an owner identity, a host path, or an executor image
+ * reference the runner might attach never reaches the browser.
+ */
+const packageRuntimeKeys = ['node', 'npm', 'uv', 'python'] as const;
+const packageReleaseKeys = ['releaseId', 'ecosystem', 'name', 'version', 'treeDigest', 'sizeBytes', 'fileCount', 'binaries', 'createdAt', 'status', 'stale', 'dependencyCount', 'lifecycleScripts', 'integrity'] as const;
+const packageHistoryKeys = ['generation', 'releaseId', 'version', 'reason', 'actor', 'createdAt', 'available'] as const;
+const packageBindingKeys = ['bindingId', 'scope', 'workspaceId', 'ecosystem', 'name', 'generation', 'affectedWorkspaces'] as const;
+const packageApplyKeys = ['applyId', 'planId', 'bindingId', 'releaseId', 'state', 'errorCode', 'errorMessage', 'createdAt', 'updatedAt', 'finishedAt', 'scope', 'ecosystem', 'name', 'version'] as const;
+const packageConflictKeys = ['binary', 'scope', 'workspaceId', 'ecosystem', 'name'] as const;
+const packagePlanKeys = [
+  'planId', 'planDigest', 'status', 'scope', 'workspaceId', 'ecosystem', 'name', 'version', 'requestedSpec', 'integrity',
+  'dependencyCount', 'sizeEstimateBytes', 'binaries', 'lifecycleScripts', 'bindingGeneration', 'stale', 'affectedWorkspaces',
+  'createdAt', 'expiresAt', 'decidedAt', 'decidedBy', 'applyId'
+] as const;
+const packageSourceKeys = ['registry', 'resolved'] as const;
+const objectOrNull = (value: unknown, keys: readonly string[]) => value !== null && typeof value === 'object' ? pick(value, keys) : null;
+
+function packageRelease(value: unknown): Record<string, unknown> {
+  const release = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return { ...pick(release, packageReleaseKeys), runtime: objectOrNull(release.runtime, packageRuntimeKeys), source: objectOrNull(release.source, packageSourceKeys) };
+}
+
+function packagePlan(value: unknown): Record<string, unknown> {
+  const plan = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    ...pick(plan, packagePlanKeys),
+    source: objectOrNull(plan.source, packageSourceKeys),
+    runtime: objectOrNull(plan.runtime, packageRuntimeKeys),
+    conflicts: listOf(plan.conflicts, packageConflictKeys),
+    currentRelease: objectOrNull(plan.currentRelease, ['releaseId', 'version', 'generation'])
+  };
+}
+
+const packageSettingKeys = ['enabled', 'approvalMode', 'ecosystems', 'lifecycleScripts'] as const;
+
+function packageOverview(data: Record<string, unknown>): Record<string, unknown> {
+  const bindings = Array.isArray(data.bindings) ? data.bindings : [];
+  return {
+    ...pick(data, packageSettingKeys),
+    quotas: pick(data.quotas, ['maxReleaseBytes', 'maxOwnerBytes', 'maxBindings']),
+    usage: pick(data.usage, ['ownerBytes', 'bindings']),
+    bindings: bindings.map((value) => {
+      const binding = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+      return {
+        ...pick(binding, packageBindingKeys),
+        release: binding.release ? packageRelease(binding.release) : null,
+        history: listOf(binding.history, packageHistoryKeys)
+      };
+    }),
+    releases: Array.isArray(data.releases) ? data.releases.map(packageRelease) : [],
+    inFlight: listOf(data.inFlight, packageApplyKeys),
+    recentApplies: listOf(data.recentApplies, packageApplyKeys),
+    pendingPlans: Array.isArray(data.pendingPlans) ? data.pendingPlans.map(packagePlan) : []
+  };
+}
 const list = (data: Record<string, unknown>, key: string, keys: readonly string[]) => ({
   [key]: Array.isArray(data[key]) ? data[key].map((record) => pick(record, keys)) : []
 });
@@ -464,6 +523,14 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
   if (['github_status', 'github_setup_complete', 'github_reconcile', 'github_disconnect'].includes(operation)) return githubStatus(data);
   if (operation === 'privilege_grant_list') return list(data, 'grants', privilegeGrantKeys);
   if (operation === 'privilege_grant_approve' || operation === 'privilege_grant_reject') return { grant: pick(data.grant, privilegeGrantKeys) };
+  if (operation === 'package_overview') return packageOverview(data);
+  if (operation === 'package_plan_list') {
+    return { ...pick(data, ['enabled', 'approvalMode']), plans: Array.isArray(data.plans) ? data.plans.map(packagePlan) : [] };
+  }
+  if (operation === 'package_plan_approve' || operation === 'package_plan_reject') return { plan: packagePlan(data.plan) };
+  if (operation === 'package_rollback') {
+    return { binding: pick(data.binding, ['bindingId', 'scope', 'workspaceId', 'ecosystem', 'name', 'generation', 'releaseId']), replayed: data.replayed === true };
+  }
   if (operation === 'knowledge_dashboard_list') return { items: Array.isArray(data.items) ? data.items.map((item) => pick(item, knowledgeItemKeys)) : [] };
   if (operation === 'knowledge_dashboard_get' || operation === 'knowledge_dashboard_create' || operation === 'knowledge_dashboard_update') return pick(data, knowledgeItemKeys);
   if (operation === 'knowledge_dashboard_delete') return pick(data, ['deleted']);
@@ -586,10 +653,13 @@ const descriptiveOperations = new Set<string>([
   'skill_import_start', 'skill_import_cancel',
   'skill_set_create', 'skill_set_update', 'skill_set_delete',
   'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete',
-  'skill_suggest'
+  'skill_suggest',
+  // Package decisions answer with the store's plain refusal (digest mismatch, expired, rollback target gone).
+  'package_plan_approve', 'package_plan_reject', 'package_rollback'
 ]);
 
 const githubUnavailable = 'GitHub authorization is unavailable. Check the GitHub App credentials in the runner configuration, then retry.';
+const packagesDisabled = 'Managed packages are off. Operators enable them with PACKAGES_ENABLED=true.';
 
 /** Gateway operations need gateway wording; the shared table is workspace-oriented. */
 const operationMessages: Partial<Record<DashboardResponseOperation, Record<string, string>>> = {
@@ -609,6 +679,9 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
     NOT_FOUND: 'GitHub installation not found.'
   },
   github_disconnect: { NOT_FOUND: 'GitHub installation not found.' },
+  package_plan_approve: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
+  package_plan_reject: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package plan not found.' },
+  package_rollback: { FORBIDDEN: packagesDisabled },
   // A terminal the runner no longer knows about, including every terminal from before a runner
   // restart, answers NOT_FOUND. The browser turns that into its "no longer available" state.
   terminal_read: { NOT_FOUND: 'This terminal is no longer available.' },

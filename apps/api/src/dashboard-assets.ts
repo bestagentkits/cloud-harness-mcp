@@ -100,6 +100,7 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
   '/integrations/github',
   '/activity',
   '/approvals',
+  '/packages',
   '/terminals',
   '/mcp-servers',
   '/mcp-servers/:serverId',
