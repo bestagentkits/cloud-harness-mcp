@@ -62,9 +62,15 @@ case "$method $path" in
       | select(($q.head_sha // .head_sha) == .head_sha and ($q.event // .event) == .event and ($q.branch // .head_branch) == .head_branch)]
       | { total_count: length, workflow_runs: . }' | respond ;;
   "GET repos/{owner}/{repo}/actions/runs/"*/jobs)
+    if [ -n "$STUB_LARGE_JOBS" ]; then
+      jq -nc '{ total_count: 300, jobs: [range(300) as $i | { id: $i, name: "matrix \($i)", status: "completed", conclusion: "success",
+        labels: ["ubuntu-latest"], steps: [range(20) as $j | { name: ("step \($j) " * 20), conclusion: "success" }] }] }' | respond
+      exit 0
+    fi
     printf '%s' '{"total_count":2,"jobs":[{"id":1,"name":"lint","status":"completed","conclusion":"success","steps":[{"name":"npm run lint","conclusion":"success"}]},{"id":2,"name":"test","status":"completed","conclusion":"failure","steps":[{"name":"checkout","conclusion":"success"},{"name":"npm test","conclusion":"failure"}]}]}' | respond ;;
   "POST repos/{owner}/{repo}/actions/runs/"*/rerun-failed-jobs) printf '' ;;
   "GET repos/{owner}/{repo}/actions/runs/"*)
+    if [ -n "$STUB_RUN_GET_FAILS" ]; then echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; fi
     printf '{"id":%s,"name":"CI","workflow_id":7,"path":".github/workflows/ci.yml","event":"push","status":"queued","conclusion":null,"head_sha":"%s","head_branch":"main","run_number":12,"run_attempt":2,"html_url":"https://github.com/acme/widgets/actions/runs/%s"}' \
       "$(basename "$path")" "$STUB_HEAD_SHA" "$(basename "$path")" | respond ;;
   "GET repos/{owner}/{repo}/git/ref/heads/merge-lock")
@@ -82,11 +88,11 @@ function workspace() {
   directories.push(directory);
   writeFileSync(join(directory, 'gh'), STUB);
   chmodSync(join(directory, 'gh'), 0o755);
-  const run = (args: string[]) => {
+  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
     const result = spawnSync('bash', [helper, ...args], {
       input: 'dummy_token\n',
       encoding: 'utf8',
-      env: { PATH: `${directory}:${process.env.PATH ?? ''}`, GH_REPO: 'acme/widgets', HOME: directory, STUB_HEAD_SHA: HEAD_SHA }
+      env: { PATH: `${directory}:${process.env.PATH ?? ''}`, GH_REPO: 'acme/widgets', HOME: directory, STUB_HEAD_SHA: HEAD_SHA, ...extraEnv }
     });
     expect(result.stdout + result.stderr).not.toContain('dummy_token');
     return { ...result, json: () => JSON.parse(result.stdout) as Record<string, unknown> };
@@ -162,9 +168,30 @@ describe('gh-helper merge-train actions', () => {
     expect(calls()[1]).toEqual(expect.arrayContaining(['repos/{owner}/{repo}/actions/runs/9001/jobs', 'filter=latest', 'per_page=50']));
 
     const rerun = run(['workflow_run_rerun_failed', '9001']);
-    expect(rerun.json()).toEqual({ id: 9001, status: 'queued', conclusion: null, runAttempt: 2, url: 'https://github.com/acme/widgets/actions/runs/9001' });
+    expect(rerun.json()).toEqual({ id: 9001, status: 'queued', conclusion: null, runAttempt: 2, url: 'https://github.com/acme/widgets/actions/runs/9001', rerunRequested: true });
     expect(calls().some((call) => call.includes('repos/{owner}/{repo}/actions/runs/9001/rerun-failed-jobs') && call.includes('POST'))).toBe(true);
     expect(run(['workflow_run_rerun_failed', '9001/../1']).stderr).toContain('positive integer');
+  });
+
+  it('reports a started rerun as successful even when the follow-up read fails', () => {
+    const { run } = workspace();
+    const rerun = run(['workflow_run_rerun_failed', '9001'], { STUB_RUN_GET_FAILS: '1' });
+    expect(rerun.status).toBe(0);
+    expect(rerun.json()).toEqual({ id: 9001, rerunRequested: true });
+  });
+
+  it('views a run whose raw jobs payload exceeds a single command-line argument', () => {
+    const { run } = workspace();
+    const view = run(['workflow_run_view', '9001', '100'], { STUB_LARGE_JOBS: '1' });
+    expect(view.stderr).toBe('');
+    expect(view.json()).toMatchObject({ id: 9001, jobsTotal: 300 });
+    expect((view.json().jobs as unknown[])).toHaveLength(300);
+  });
+
+  it('refuses to dispatch a workflow on a bare commit SHA', () => {
+    const { run, calls } = workspace();
+    expect(run(['workflow_dispatch', 'ci.yml', HEAD_SHA, '']).stderr).toContain('branch or tag, not a commit SHA');
+    expect(calls()).toEqual([]);
   });
 
   it('lists the latest check runs for a SHA, optionally filtered by name', () => {

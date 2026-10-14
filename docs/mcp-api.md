@@ -493,12 +493,15 @@ and
   `changesRequestedBy`, `approvedBy`; a later `COMMENTED` review does not clear an
   earlier verdict); `ref_get` reads a fully qualified ref and reports `exists: false`
   instead of failing when it is absent. `workflow_dispatch` triggers a
-  `workflow_dispatch` workflow on a ref with string inputs. GitHub returns no run ID
+  `workflow_dispatch` workflow on a branch or tag (not a commit SHA) with string
+  inputs that serialize to at most 65,535 bytes. GitHub returns no run ID
   for a dispatch, so the result carries the ref's resolved `headSha` and a
   `runLookup` for `workflow_runs_list` (filters `workflow`, `headSha`, `branch`,
   `event`, `status`); the run can appear a few seconds after the dispatch, so poll
   that lookup. `workflow_run_view` returns a run with its latest jobs and failed step
-  names, and `workflow_run_rerun_failed` re-runs only the failed jobs. These need the
+  names, and `workflow_run_rerun_failed` re-runs only the failed jobs and reports
+  `rerunRequested: true` once GitHub accepts the request, even if the follow-up read
+  of the run fails. These need the
   App's Commit statuses, Checks, and Actions permissions; GitHub enforces them when the
   token is minted, and `workspace_capabilities` reports them as `commitStatusRead`,
   `commitStatusCreate`, `checkRunList`, `workflowRunRead`, `workflowDispatch`,
@@ -563,7 +566,8 @@ and
   Leases are the atomic compare-and-swap of the Git push protocol, applied by the
   receiving server, so a branch can serve as a distributed lock:
   - create only: `forceWithLease: true, expectedAbsent: true` with
-    `refspec: "HEAD:<branch>"` succeeds only while the branch does not exist;
+    `refspec: "<source>:<branch>"` succeeds only while the branch does not exist,
+    including when it already holds the pushed commit;
   - compare-and-swap: `forceWithLease: true, expectedRemoteOid: <oid>` updates the
     branch only while it still points at `<oid>`;
   - delete if match: `delete: true, forceWithLease: true, expectedRemoteOid: <oid>`
@@ -571,17 +575,20 @@ and
     `<oid>`.
 
   A lost lease returns `CONFLICT` (not retryable). With an `idempotencyKey`, a retry
-  after `UNKNOWN_REMOTE_STATE` probes the branch: a create that already landed with
-  this workspace's `HEAD`, or a delete whose branch is gone, returns
-  `alreadyFinalized: true`; any value other than the lease expectation returns
-  `CONFLICT` with `currentRemoteOid`. GitHub's REST ref endpoints have no
+  after `UNKNOWN_REMOTE_STATE` probes the branch: a create whose branch now holds
+  the refspec source's commit, or a delete whose branch is absent (whoever deleted
+  it), returns `alreadyFinalized: true`; any value other than the lease expectation
+  returns `CONFLICT` with `currentRemoteOid`. Because that probe compares commits,
+  a branch used as a lock must hold a commit unique to its holder, such as an
+  empty commit naming the holder on a local branch pushed as
+  `<holder-branch>:<lock>`. GitHub's REST ref endpoints have no
   compare-and-swap, which is why the lock uses the push protocol. Refspec policy:
   the source is `HEAD` or a branch-like name and the destination is a branch name or
   `refs/heads/...`; `+` force refspecs, tags, notes, other `refs/` namespaces,
   option-like values, `..`, `@{`, and `:`-prefixed delete refspecs are rejected, so
   deletion is possible only through `delete` with a lease. A push the remote accepts
-  but refuses by policy (`[remote rejected]`: branch protection, a ruleset, a
-  pre-receive hook) returns `FORBIDDEN`, or `GITHUB_PERMISSION_MISSING` when it
+  but refuses by policy (`[remote rejected]` or a `GH0xx` error: branch protection,
+  a ruleset, a pre-receive hook) returns `FORBIDDEN`, or `GITHUB_PERMISSION_MISSING` when it
   changes `.github/workflows` without the App's Workflows permission; neither is
   retryable. Whether a fast-forward push to a protected branch such as `dev` is
   allowed is decided by GitHub: required status checks must already pass on the

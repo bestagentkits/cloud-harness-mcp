@@ -131,8 +131,17 @@ case $mode in
         printf 'invalid expected remote object ID\n' >&2
         exit 2
       fi
-      git_clean --git-dir="$transfer_path" push --porcelain \
-        "--force-with-lease=${destination}:${lease_value}" origin "$argument"
+      push_status=0
+      push_output=$(git_clean --git-dir="$transfer_path" push --porcelain \
+        "--force-with-lease=${destination}:${lease_value}" origin "$argument") || push_status=$?
+      printf '%s\n' "$push_output"
+      # git reports "already up to date" before it checks a lease, so a create-only push of the commit the
+      # branch already holds exits 0. That is someone else's branch, not a create, so it must not succeed.
+      if [[ $push_status -eq 0 && $expected_remote_oid == absent ]] && grep -q $'^=\t' <<<"$push_output"; then
+        printf 'create-only lease rejected: %s already exists on the remote\n' "$destination" >&2
+        exit 1
+      fi
+      exit "$push_status"
     else
       git_clean --git-dir="$transfer_path" push --porcelain origin "$argument"
     fi

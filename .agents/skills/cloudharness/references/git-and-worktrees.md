@@ -144,7 +144,7 @@ URL. Network access for these tools is separate from executor egress.
   requires an explicit destination branch.
 - `expectedAbsent` creates a branch only if it is absent, and `delete: true`
   (refspec names only the branch) deletes it only if it still matches
-  `expectedRemoteOid`. A lost lease is `CONFLICT`, not retryable. Using a branch
+  `expectedRemoteOid`. A lost lease, or a create onto a branch already at the pushed commit, is `CONFLICT`, not retryable. Using a branch
   as a lock: [GitHub merge train](github-merge-train.md#atomic-branch-locks).
 - A push GitHub refuses by policy (`[remote rejected]`: branch protection,
   ruleset, or hook) returns `FORBIDDEN`; a commit that changes

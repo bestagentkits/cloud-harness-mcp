@@ -202,7 +202,11 @@ const workflowEvent = z.string().regex(/^[a-z_]{1,64}$/, 'event must be a GitHub
 const workflowInputs = z.record(
   z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,99}$/, 'input names must be workflow_dispatch input identifiers'),
   z.string().max(65_536).refine((val) => !val.includes('\0'), 'input values cannot contain null bytes')
-).refine((inputs) => Object.keys(inputs).length <= 25, 'workflow_dispatch accepts at most 25 inputs');
+).refine((inputs) => Object.keys(inputs).length <= 25, 'workflow_dispatch accepts at most 25 inputs')
+  // GitHub caps the dispatch inputs payload at 65,535 characters; the bound also keeps the helper argument small.
+  .refine((inputs) => new TextEncoder().encode(JSON.stringify(inputs)).length <= 65_535, 'workflow_dispatch inputs must serialize to at most 65,535 bytes');
+// The dispatch API runs a workflow on a branch or tag, never on a bare commit.
+const workflowDispatchRef = githubRevision.refine((value) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value), 'workflow_dispatch ref must be a branch or tag, not a commit SHA');
 
 const githubReadActionSchemas = [
   z.object({
@@ -460,7 +464,7 @@ const githubActionUnion = z.discriminatedUnion('action', [
     ...workspace,
     action: z.literal('workflow_dispatch'),
     workflow: workflowRef,
-    ref: githubRevision,
+    ref: workflowDispatchRef,
     inputs: workflowInputs.optional(),
     idempotencyKey: IdempotencyKeySchema.optional()
   }),

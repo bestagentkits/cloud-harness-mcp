@@ -21,16 +21,19 @@ lock is a branch pushed with a lease:
 
 | Operation | `git_push` input | `CONFLICT` when |
 | --- | --- | --- |
-| Acquire (create only) | `refspec: "HEAD:merge-lock"`, `forceWithLease: true`, `expectedAbsent: true` | the branch exists |
-| Hand over (compare-and-swap) | `refspec: "HEAD:merge-lock"`, `forceWithLease: true`, `expectedRemoteOid: <oid>` | the branch moved |
+| Acquire (create only) | `refspec: "merge-lock-holder:merge-lock"`, `forceWithLease: true`, `expectedAbsent: true` | the branch exists, even at your commit |
+| Hand over (compare-and-swap) | `refspec: "merge-lock-holder:merge-lock"`, `forceWithLease: true`, `expectedRemoteOid: <oid>` | the branch moved |
 | Release (delete if match) | `refspec: "merge-lock"`, `delete: true`, `forceWithLease: true`, `expectedRemoteOid: <oid>` | the branch moved |
 
+- Push a commit unique to this holder, never a shared `HEAD`. With `exec_run`:
+  `git branch -f merge-lock-holder "$(git commit-tree 'HEAD^{tree}' -p HEAD -m 'merge-lock <routine> <run id>')"`.
 - Pass an `idempotencyKey` on every lock push. After `UNKNOWN_REMOTE_STATE`,
-  retry with the same key: an acquire that landed with this workspace's `HEAD`,
-  or a release whose branch is gone, returns `alreadyFinalized: true`; any
-  other value returns `CONFLICT` with `currentRemoteOid`.
+  retry with the same key: an acquire whose lock holds your holder commit, or
+  a release whose branch is absent (whoever removed it), returns
+  `alreadyFinalized: true`; any other value returns `CONFLICT` with
+  `currentRemoteOid`.
 - Read the holder with `github_read` `ref_get` (`exists: false` when free).
-- `[remote rejected]` refusals (branch protection, rulesets, hooks) return
+- `[remote rejected]` and `GH0xx` refusals (branch protection, rulesets, hooks) return
   non-retryable `FORBIDDEN`. A fast-forward to a protected branch such as `dev`
   succeeds only when its required checks already pass on that commit and no
   pull-request rule applies to the App; otherwise merge with `pr_merge`.
@@ -74,13 +77,15 @@ result for 24 hours and rejects a changed payload with `CONFLICT`.
   (`error` | `failure` | `pending` | `success`), `context` (max 255); optional
   `description` (max 140), `targetUrl` (https). Needs Commit statuses write.
 - `workflow_dispatch`: required `workflow` (numeric ID or file name), `ref`
-  (branch or tag); optional `inputs` (string map, max 25 entries). The
+  (branch or tag, not a SHA); optional `inputs` (string map, max 25 entries,
+  65,535 bytes serialized). The
   workflow must declare `on: workflow_dispatch`. GitHub returns no run ID, so
   the result carries the ref's `headSha` and a `runLookup`; poll
   `workflow_runs_list` with it for a few seconds until the run appears. Needs
   Actions write.
 - `workflow_run_rerun_failed`: required `runId`. Re-runs only the failed jobs
-  and returns the new `runAttempt`. Needs Actions write.
+  and returns the new `runAttempt` with `rerunRequested: true` (only `id` when
+  the follow-up read fails; the rerun still started). Needs Actions write.
 
 <!-- cloudharness-example:github_action
 {"workspaceId":"ws_abcdefghijklmnopqrstuvwxyz012345","action":"commit_status_create","sha":"0123456789abcdef0123456789abcdef01234567","state":"pending","context":"merge-train","description":"Queued at position 2","idempotencyKey":"train-7-status-pending"}
@@ -88,7 +93,8 @@ result for 24 hours and rejects a changed payload with `CONFLICT`.
 
 ## Train loop
 
-1. Acquire the lock (create only). On `CONFLICT`, wait and read `ref_get`.
+1. Create the holder commit, then acquire the lock (create only). On
+   `CONFLICT`, wait and read `ref_get`.
 2. For each candidate PR: `pr_view` (`headRefOid`, `mergeStateStatus`),
    `pr_reviews` (skip any with `changesRequestedBy`), `commit_status_get` and
    `check_runs_list` on the head SHA.

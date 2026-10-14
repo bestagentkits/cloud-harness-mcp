@@ -43,11 +43,13 @@ Cloud Harness solves this with an **ephemeral sibling Git helper**:
 
   | Operation | Input | Fails with `CONFLICT` when |
   | --- | --- | --- |
-  | Create only | `refspec: "HEAD:merge-lock"`, `forceWithLease: true`, `expectedAbsent: true` | the branch already exists |
-  | Compare-and-swap | `refspec: "HEAD:merge-lock"`, `forceWithLease: true`, `expectedRemoteOid: "<oid>"` | the branch no longer points at `<oid>` |
+  | Create only | `refspec: "merge-lock-holder:merge-lock"`, `forceWithLease: true`, `expectedAbsent: true` | the branch already exists, even at the pushed commit |
+  | Compare-and-swap | `refspec: "merge-lock-holder:merge-lock"`, `forceWithLease: true`, `expectedRemoteOid: "<oid>"` | the branch no longer points at `<oid>` |
   | Delete if match | `refspec: "merge-lock"`, `delete: true`, `forceWithLease: true`, `expectedRemoteOid: "<oid>"` | the branch no longer points at `<oid>` |
 
-- **Refspec policy:** the source is `HEAD` or a branch name; the destination is a branch name or `refs/heads/...`. Tags, notes, other `refs/` namespaces, `+` force refspecs, `..`, `@{`, option-like values, and `:`-prefixed delete refspecs are rejected; deletion is possible only through `delete` with a lease. A push GitHub refuses by policy (`[remote rejected]`: branch protection, rulesets, hooks) returns non-retryable `FORBIDDEN`, or `GITHUB_PERMISSION_MISSING` when it changes `.github/workflows` without the Workflows permission. Fast-forwarding a protected branch such as `dev` succeeds only when GitHub's rules allow it (required checks already passing on the commit, and no pull-request requirement unless the App may bypass it).
+  Push a commit unique to the holder (for example an empty commit naming the holder on a local `merge-lock-holder` branch), not a shared `HEAD`: an `idempotencyKey` retry after `UNKNOWN_REMOTE_STATE` recognises its own acquire by comparing the lock with the refspec source's commit, and a delete retry reports success whenever the branch is absent.
+
+- **Refspec policy:** the source is `HEAD` or a branch name; the destination is a branch name or `refs/heads/...`. Tags, notes, other `refs/` namespaces, `+` force refspecs, `..`, `@{`, option-like values, and `:`-prefixed delete refspecs are rejected; deletion is possible only through `delete` with a lease. A push GitHub refuses by policy (`[remote rejected]` or a `GH0xx` error: branch protection, rulesets, hooks) returns non-retryable `FORBIDDEN`, or `GITHUB_PERMISSION_MISSING` when it changes `.github/workflows` without the Workflows permission. Fast-forwarding a protected branch such as `dev` succeeds only when GitHub's rules allow it (required checks already passing on the commit, and no pull-request requirement unless the App may bypass it).
 
 ## Idempotency & Unknown-Outcome Recovery
 

@@ -197,20 +197,52 @@ describe('git_push atomic ref leases', () => {
 
   it('reports a lease collision as a non-retryable CONFLICT', async () => {
     const { service, workspaceId, principalSelector } = fixture();
-    docker.pushResults = [{ stdout: '', stderr: ' ! [rejected]        HEAD -> merge-lock (stale info)\n', exitCode: 1, truncated: false }];
+    // Real `push --porcelain` output: the ref status line goes to stdout, only the summary to stderr.
+    docker.pushResults = [{ stdout: 'To https://github.com/acme/widgets.git\n!\tHEAD:refs/heads/merge-lock\t[rejected] (stale info)\nDone\n', stderr: 'error: failed to push some refs to \'https://github.com/acme/widgets.git\'\n', exitCode: 1, truncated: false }];
     await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'HEAD:merge-lock', forceWithLease: true, expectedAbsent: true }))
       .rejects.toMatchObject({ code: 'CONFLICT', retryable: false });
   });
 
   it('reports a protected-branch refusal as FORBIDDEN instead of a retryable transport failure', async () => {
     const { service, workspaceId, principalSelector } = fixture();
-    docker.pushResults = [{ stdout: '', stderr: ' ! [remote rejected] HEAD -> dev (protected branch hook declined)\n', exitCode: 1, truncated: false }];
+    docker.pushResults = [{ stdout: 'To https://github.com/acme/widgets.git\n!\tHEAD:refs/heads/dev\t[remote rejected] (protected branch hook declined)\nDone\n', stderr: 'remote: error: GH006: Protected branch update failed for refs/heads/dev.\n' + 'error: failed to push some refs to \'https://github.com/acme/widgets.git\'\n', exitCode: 1, truncated: false }];
     await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'HEAD:dev' }))
       .rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
 
-    docker.pushResults = [{ stdout: '', stderr: " ! [remote rejected] HEAD -> dev (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)\n", exitCode: 1, truncated: false }];
+    docker.pushResults = [{ stdout: "To https://github.com/acme/widgets.git\n!\tHEAD:refs/heads/dev\t[remote rejected] (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)\nDone\n", stderr: 'error: failed to push some refs to \'https://github.com/acme/widgets.git\'\n', exitCode: 1, truncated: false }];
     await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'HEAD:dev' }))
       .rejects.toMatchObject({ code: 'GITHUB_PERMISSION_MISSING' });
+  });
+
+  it('reports a create-only push onto a branch that already holds the commit as CONFLICT', async () => {
+    const { service, workspaceId, principalSelector } = fixture();
+    docker.pushResults = [{ stdout: 'To https://github.com/acme/widgets.git\n=\tHEAD:refs/heads/merge-lock\t[up to date]\nDone\n', stderr: 'create-only lease rejected: refs/heads/merge-lock already exists on the remote\n', exitCode: 1, truncated: false }];
+    await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'HEAD:merge-lock', forceWithLease: true, expectedAbsent: true }))
+      .rejects.toMatchObject({ code: 'CONFLICT', retryable: false });
+  });
+
+  it('classifies a ruleset refusal on a release branch as FORBIDDEN, not a lease conflict', async () => {
+    const { service, workspaceId, principalSelector } = fixture();
+    docker.pushResults = [{
+      stdout: 'To https://github.com/acme/widgets.git\n!\tHEAD:refs/heads/release/1.2\t[remote rejected] (push declined due to repository rule violations)\nDone\n',
+      stderr: 'remote: error: GH013: Repository rule violations found for refs/heads/release/1.2.\nerror: failed to push some refs\n',
+      exitCode: 1,
+      truncated: false
+    }];
+    await expect(service.execute(principalSelector, 'git_push', { workspaceId, refspec: 'HEAD:release/1.2' }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
+  });
+
+  it('reconciles a lock pushed from a branch other than HEAD against that branch commit', async () => {
+    const { service, workspaceId, principalSelector } = fixture();
+    const input = { workspaceId, refspec: 'lock-holder-7:merge-lock', forceWithLease: true, expectedAbsent: true, idempotencyKey: 'merge-lock-4' };
+    docker.pushResults = [{ stdout: '', stderr: 'fatal: Connection timed out', exitCode: 128, truncated: false }];
+    await expect(service.execute(principalSelector, 'git_push', input)).rejects.toMatchObject({ code: 'UNKNOWN_REMOTE_STATE' });
+    const revParse = docker.runDocker.mock.calls.map(([args]) => args as string[]).find((args) => args.includes('rev-parse'));
+    expect(revParse?.slice(-3)).toEqual(['--verify', '--quiet', 'lock-holder-7^{commit}']);
+
+    docker.probeResult = ok(`${LOCAL_HEAD}\trefs/heads/merge-lock\n`);
+    expect(await service.execute(principalSelector, 'git_push', input)).toMatchObject({ ok: true, data: { alreadyFinalized: true } });
   });
 
   it('reconciles an interrupted create-only push from the remote value', async () => {

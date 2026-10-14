@@ -1798,17 +1798,13 @@ export class WorkspaceService {
       });
       if (result.exitCode !== 0) {
         const action = mode === 'push' ? 'push' : mode === 'fetch' ? 'fetch' : 'transfer';
-        const errText = result.stderr || result.stdout;
+        // `push --porcelain` writes each ref's status line (`[rejected] (stale info)`, `[remote rejected]`)
+        // to stdout while stderr carries only the summary and `remote:` lines, so classify on both.
+        const errText = mode === 'push' ? [result.stderr, result.stdout].filter(Boolean).join('\n') : result.stderr || result.stdout;
         if (mode === 'push') {
-          if (errText.includes('stale info') || errText.includes('[rejected]') || errText.includes('lease') || errText.includes('non-fast-forward') || errText.includes('fetch first')) {
-            throw new HarnessError('CONFLICT', `Git push rejected: remote ref has diverged or force-with-lease failed (${errText})`.slice(0, 2_000), 409, false, {
-              expectedRemoteOid,
-              resumeAction: 'reconcile_push'
-            });
-          }
           // The remote received the push and refused it by policy (branch protection, a ruleset, a
           // pre-receive hook, or a missing App permission), so retrying the same push cannot succeed.
-          if (errText.includes('[remote rejected]')) {
+          if (/\[remote rejected\]|\bGH0\d\d\b|protected branch/i.test(errText)) {
             const missingWorkflowsPermission = /without [`'"]?workflows[`'"]? permission|create or update workflow/i.test(errText);
             throw new HarnessError(
               missingWorkflowsPermission ? 'GITHUB_PERMISSION_MISSING' : 'FORBIDDEN',
@@ -1819,6 +1815,12 @@ export class WorkspaceService {
               false,
               { expectedRemoteOid }
             );
+          }
+          if (/\[rejected\]|\(stale info\)|create-only lease rejected|non-fast-forward|fetch first/.test(errText)) {
+            throw new HarnessError('CONFLICT', `Git push rejected: remote ref has diverged or force-with-lease failed (${errText})`.slice(0, 2_000), 409, false, {
+              expectedRemoteOid,
+              resumeAction: 'reconcile_push'
+            });
           }
           if (errText.includes('Connection timed out') || errText.includes('Connection reset') || errText.includes('timed out') || errText.includes('Could not resolve host')) {
             throw new HarnessError('UNKNOWN_REMOTE_STATE', `Git push was interrupted by network failure (${errText})`.slice(0, 2_000), 504, true, {
@@ -1876,12 +1878,14 @@ export class WorkspaceService {
       await removeContainer(helperName);
     }
   }
-  private async currentHead(record: WorkspaceRecord, signal?: AbortSignal): Promise<string> {
+  private async currentHead(record: WorkspaceRecord, signal?: AbortSignal, revision = 'HEAD'): Promise<string> {
+    const revParse = revision === 'HEAD' ? ['rev-parse', 'HEAD'] : ['rev-parse', '--verify', '--quiet', `${revision}^{commit}`];
+    const unresolved = revision === 'HEAD' ? 'current Git HEAD could not be determined' : `Git revision ${revision} could not be resolved`;
     if (record.containerName) {
       const result = await runDocker([
-        'exec', record.containerName, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', 'rev-parse', 'HEAD'
+        'exec', record.containerName, 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', ...revParse
       ], { timeoutMs: 30_000, maxBytes: 8_192, ...(signal ? { signal } : {}) });
-      if (result.exitCode !== 0) throw new HarnessError('CONFLICT', 'current Git HEAD could not be determined', 409, false);
+      if (result.exitCode !== 0) throw new HarnessError('CONFLICT', unresolved, 409, false);
       return result.stdout.trim();
     }
     const helperName = `chm-hd-${record.id.slice(3, 15)}-${randomBytes(4).toString('hex')}`;
@@ -1894,9 +1898,9 @@ export class WorkspaceService {
         '--workdir', '/workspace',
         '--entrypoint', 'git',
         this.config.executorImage,
-        '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', 'rev-parse', 'HEAD'
+        '-c', 'core.hooksPath=/dev/null', '-c', 'core.pager=cat', ...revParse
       ], { timeoutMs: 30_000, maxBytes: 8_192, ...(signal ? { signal } : {}) });
-      if (result.exitCode !== 0) throw new HarnessError('CONFLICT', 'current Git HEAD could not be determined', 409, false);
+      if (result.exitCode !== 0) throw new HarnessError('CONFLICT', unresolved, 409, false);
       return result.stdout.trim();
     } finally {
       await removeContainer(helperName);
@@ -2013,7 +2017,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         ...(deleteRef ? { delete: deleteRef } : {})
       }))
       .digest('hex');
-    const currentLocalHead = await this.currentHead(record, signal);
+    // Reconcile compares the remote branch with the commit this push sends, which is the refspec source
+    // (not necessarily HEAD), so a retried lock create recognises its own commit.
+    const pushedSource = deleteRef ? 'HEAD' : refspec.split(':')[0] ?? 'HEAD';
+    const currentLocalHead = await this.currentHead(record, signal, pushedSource);
 
     if (idempotencyKey) {
       const claim = this.store.acquireGitOperation({
@@ -2056,7 +2063,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           }
           // A lease names the only remote value the retry may act on, so any other value is a conflict.
           if (deleteRef || expectedAbsent) {
-            if (deleteRef && remoteOid === null) return reconciled('Git branch delete complete (reconciled from remote state)');
+            if (deleteRef && remoteOid === null) return reconciled('Git branch is absent on the remote (reconciled from remote state; it may have been deleted by this call or another)');
             if (expectedAbsent && remoteOid !== null && remoteOid === existingOp.localCommitSha) {
               return reconciled('Git push complete (reconciled from remote state)');
             }

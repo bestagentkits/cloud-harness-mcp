@@ -225,6 +225,8 @@ describe('contracts', () => {
     expect(action.parse({ workspaceId, action: 'workflow_dispatch', workflow: 1234, ref: 'dev' })).toMatchObject({ workflow: 1234 });
     expect(() => action.parse({ workspaceId, action: 'workflow_dispatch', workflow: '../ci.yml', ref: 'dev' })).toThrow();
     expect(() => action.parse({ workspaceId, action: 'workflow_dispatch', workflow: 'ci.yml', ref: 'dev', inputs: Object.fromEntries(Array.from({ length: 26 }, (_, i) => [`k${i}`, 'v'])) })).toThrow();
+    expect(() => action.parse({ workspaceId, action: 'workflow_dispatch', workflow: 'ci.yml', ref: 'dev', inputs: { a: 'x'.repeat(40_000), b: 'é'.repeat(20_000) } })).toThrow();
+    expect(() => action.parse({ workspaceId, action: 'workflow_dispatch', workflow: 'ci.yml', ref: 'a'.repeat(40) })).toThrow();
     expect(action.parse({ workspaceId, action: 'workflow_run_rerun_failed', runId: 9001 })).toMatchObject({ runId: 9001 });
 
     expect(read.parse({ workspaceId, action: 'workflow_runs_list', headSha: sha, event: 'workflow_dispatch' })).toMatchObject({ limit: 20 });

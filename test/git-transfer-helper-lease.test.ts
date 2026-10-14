@@ -58,6 +58,24 @@ describe('git-transfer-helper push leases', () => {
     expect(next).not.toBe(base);
   });
 
+  it('rejects a create-only push when the branch already holds the pushed commit', () => {
+    const { base, push, remoteRef } = fixture();
+    expect(push('refs/heads/main:refs/heads/merge-lock', 'absent').status).toBe(0);
+
+    const sameCommit = push('refs/heads/main:refs/heads/merge-lock', 'absent');
+    expect(sameCommit.status).not.toBe(0);
+    expect(sameCommit.stderr).toContain('create-only lease rejected');
+    expect(remoteRef('refs/heads/merge-lock')).toBe(base);
+  });
+
+  it('reports a lost lease as a porcelain status line on stdout', () => {
+    const { next, push } = fixture();
+    const mismatch = push('refs/heads/feature:refs/heads/main', next);
+    expect(mismatch.status).not.toBe(0);
+    expect(mismatch.stdout).toMatch(/^!\t\S+\t\[rejected\] \(stale info\)$/m);
+    expect(mismatch.stderr).toContain('failed to push some refs');
+  });
+
   it('updates a ref only when it still holds the expected object ID', () => {
     const { base, next, push, remoteRef } = fixture();
     const mismatch = push('refs/heads/feature:refs/heads/main', next);

@@ -319,16 +319,20 @@ case "$action" in
   ref_get)
     ref="${1:-}"
     require_ref "$ref"
-    if output=$(gh api "repos/{owner}/{repo}/git/ref/${ref#refs/}" --jq '{ ref, oid: .object.sha, objectType: .object.type }' 2>&1); then
+    error_file=$(mktemp)
+    if output=$(gh api "repos/{owner}/{repo}/git/ref/${ref#refs/}" --jq '{ ref, oid: .object.sha, objectType: .object.type }' 2>"$error_file"); then
+      rm -f "$error_file"
       printf '%s\n' "$output" | jq '. + { exists: true }'
       exit 0
     fi
+    errors=$(cat "$error_file")
+    rm -f "$error_file"
     # The singular ref endpoint matches exactly, so 404 means this ref does not exist.
-    if [[ $output == *"HTTP 404"* ]]; then
+    if [[ $errors == *"HTTP 404"* ]]; then
       jq -n --arg ref "$ref" '{ ref: $ref, exists: false }'
       exit 0
     fi
-    printf '%s\n' "$output" >&2
+    printf '%s\n' "$errors" >&2
     exit 1
     ;;
   commit_status_get)
@@ -375,16 +379,16 @@ case "$action" in
     limit="${2:-100}"
     require_number "$run_id" "Workflow run ID"
     require_number "$limit" "Job limit"
-    run=$(gh api "repos/{owner}/{repo}/actions/runs/$run_id")
-    jobs=$(gh api -X GET "repos/{owner}/{repo}/actions/runs/$run_id/jobs" -f "per_page=$limit" -f "filter=latest")
-    jq -n --argjson run "$run" --argjson jobs "$jobs" '{
-      id: $run.id, name: $run.name, workflowId: $run.workflow_id, path: $run.path, event: $run.event,
-      status: $run.status, conclusion: $run.conclusion, headSha: $run.head_sha, headBranch: $run.head_branch,
-      runNumber: $run.run_number, runAttempt: $run.run_attempt, createdAt: $run.created_at, updatedAt: $run.updated_at, url: $run.html_url,
-      jobsTotal: $jobs.total_count,
-      jobs: [$jobs.jobs[] | { id, name, status, conclusion, startedAt: .started_at, completedAt: .completed_at, url: .html_url,
-        failedSteps: [(.steps // [])[] | select(.conclusion == "failure") | .name] }]
-    }'
+    # Each response is reduced by gh first and the two are joined on stdin: raw run and job payloads can
+    # exceed the per-argument size limit of a command line.
+    {
+      gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq '{ id, name, workflowId: .workflow_id, path, event,
+        status, conclusion, headSha: .head_sha, headBranch: .head_branch, runNumber: .run_number, runAttempt: .run_attempt,
+        createdAt: .created_at, updatedAt: .updated_at, url: .html_url }'
+      gh api -X GET "repos/{owner}/{repo}/actions/runs/$run_id/jobs" -f "per_page=$limit" -f "filter=latest" --jq '{ jobsTotal: .total_count,
+        jobs: [.jobs[] | { id, name, status, conclusion, startedAt: .started_at, completedAt: .completed_at, url: .html_url,
+          failedSteps: [(.steps // [])[] | select(.conclusion == "failure") | .name] }] }'
+    } | jq -s '.[0] + .[1]'
     ;;
   commit_status_create)
     sha="${1:-}"
@@ -415,6 +419,10 @@ case "$action" in
     inputs="${3:-}"
     require_workflow "$workflow"
     require_revision "$ref"
+    if [[ $ref =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+      echo "Workflow dispatch ref must be a branch or tag, not a commit SHA" >&2
+      exit 1
+    fi
     if [ -z "$inputs" ]; then inputs='{}'; fi
     # The dispatch API answers 204 without a run ID, so the ref's commit is resolved first and
     # returned for a workflow_runs_list lookup by headSha and event workflow_dispatch.
@@ -434,7 +442,11 @@ case "$action" in
     run_id="${1:-}"
     require_number "$run_id" "Workflow run ID"
     gh api -X POST "repos/{owner}/{repo}/actions/runs/$run_id/rerun-failed-jobs" >/dev/null
-    exec gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq '{ id, status, conclusion, runAttempt: .run_attempt, url: .html_url }'
+    # The rerun has started once the POST succeeds, so a failed follow-up read must not report failure:
+    # a retry would POST again and GitHub refuses to re-run a run that is already in progress.
+    if ! gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq '{ id, status, conclusion, runAttempt: .run_attempt, url: .html_url, rerunRequested: true }' 2>/dev/null; then
+      jq -n --argjson id "$run_id" '{ id: $id, rerunRequested: true }'
+    fi
     ;;
   issue_create)
     title="${1:-}"
