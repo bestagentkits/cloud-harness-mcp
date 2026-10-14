@@ -19,7 +19,8 @@ export const EXECUTOR_HARDENING_ARGS: readonly string[] = Object.freeze([
 /**
  * The executor's `--env PATH`, minus the checkout-local `node_modules/.bin` the toolbox does not have. The
  * command runs in a login shell (`bash -lc`, as `exec_run` does), so the image's `/etc/profile.d/harness.sh`
- * then puts `/opt/harness/bin` and the user-tools directories first, exactly as in a workspace.
+ * then puts `/opt/harness/bin`, the user-tools directories, and the managed release directories first, exactly
+ * as in a workspace.
  */
 export const TOOLBOX_PATH = '/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
@@ -103,6 +104,15 @@ export function withManagedBins(basePath: string, binDirs: readonly string[]): s
   return [...entries.slice(0, index), ...binDirs, ...entries.slice(index)].join(':');
 }
 
+/**
+ * A login shell (`bash -lc`, used by the toolbox and `exec_run`) runs Debian's /etc/profile, which replaces
+ * PATH for a non-root user. The image's /etc/profile.d/harness.sh puts these managed release `bin` directories
+ * back, after the user-tool directories and before the image's own, so precedence matches the `--env PATH`.
+ */
+export function managedPathEnvArgs(binDirs: readonly string[]): string[] {
+  return binDirs.length === 0 ? [] : ['--env', `CLOUD_HARNESS_MANAGED_PATH=${binDirs.join(':')}`];
+}
+
 function mountArgs(mount: ToolboxMount): string[] {
   for (const path of [mount.source, mount.target]) {
     // `--mount` is comma-separated, so a comma, quote, or control character could inject options.
@@ -153,6 +163,7 @@ export function buildToolboxCreateArgs(spec: ToolboxRunSpec, timeoutMs: number):
     '--env', 'XDG_CONFIG_HOME=/tmp/cloud-harness-home/.config',
     '--env', 'XDG_CACHE_HOME=/tmp/cloud-harness-home/.cache',
     '--env', `PATH=${withManagedBins(TOOLBOX_PATH, binDirs)}`,
+    ...managedPathEnvArgs(binDirs),
     spec.image,
     '/usr/bin/timeout', '-k', `${DEADLINE_KILL_AFTER_SECONDS}s`, `${toolboxDeadlineSeconds(timeoutMs)}s`,
     '/bin/bash', '-lc', spec.command

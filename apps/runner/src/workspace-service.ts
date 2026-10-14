@@ -29,7 +29,7 @@ import {
   TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
-import { EXECUTOR_HARDENING_ARGS, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
+import { EXECUTOR_HARDENING_ARGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
 import { PackageBuilder } from './package-builder.js';
 import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
 import { PackageStore } from './package-store.js';
@@ -857,6 +857,7 @@ export class WorkspaceService {
         '--env', 'PNPM_HOME=/opt/user-tools/pnpm',
         '--env', 'UV_TOOL_BIN_DIR=/opt/user-tools/bin',
         '--env', `PATH=${withManagedBins(EXECUTOR_PATH, packageProfile.binDirs)}`,
+        ...managedPathEnvArgs(packageProfile.binDirs),
         ...(useEnvFile ? ['--env-file', envFilePath] : []),
         this.config.executorImage
       ];

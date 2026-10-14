@@ -88,6 +88,8 @@ export async function startPackageRegistry(image: string): Promise<PackageRegist
     pypiIndex: `${REGISTRY_ORIGIN}/simple`,
     pythonMirror: `${REGISTRY_ORIGIN}/python`
   };
+  // A suite that installs no uv package never fills the Python cache, but the mirror still mounts it.
+  mkdirSync(pythonArchiveCache, { recursive: true });
   try {
     const created = docker(['network', 'create', '--internal', '--label', FIXTURE_LABEL, network]);
     if (created.status !== 0) throw new Error(`could not create the registry network: ${created.stderr.trim()}`);

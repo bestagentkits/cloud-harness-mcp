@@ -57,7 +57,7 @@ RUN useradd --uid 10001 --create-home --shell /bin/bash harness \
   && echo "harness ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/harness \
   && chmod 0440 /etc/sudoers.d/harness
 
-RUN echo 'export PATH="/opt/harness/bin:/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:$PATH"' > /etc/profile.d/harness.sh \
+RUN echo 'export PATH="/opt/harness/bin:/workspace/node_modules/.bin:/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin${CLOUD_HARNESS_MANAGED_PATH:+:$CLOUD_HARNESS_MANAGED_PATH}:$PATH"' > /etc/profile.d/harness.sh \
   && chmod 0644 /etc/profile.d/harness.sh
 
 RUN mkdir -p /workspace /opt/user-tools /var/cache/harness /tmp/cloud-harness-home \

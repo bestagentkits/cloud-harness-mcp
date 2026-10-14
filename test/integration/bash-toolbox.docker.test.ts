@@ -35,7 +35,7 @@ beforeAll(() => {
     jobsRoot: join(directory, 'jobs'), stateDb: join(directory, 'state.db'), executorImage: image,
     allowedGitHosts: ['github.com'], networkProfile: 'network-none', wallTtlSeconds: 300, idleTtlSeconds: 180,
     maxOutputBytes: 262_144, minFreeBytes: 104_857_600, maxWorkspaceBytes: 104_857_600, reaperIntervalSeconds: 30,
-    packagesEnabled: true
+    packagesEnabled: true, packagesRoot: join(directory, 'packages')
   } as RunnerConfig;
   store = new StateStore(config.stateDb);
   service = new WorkspaceService(config, store);

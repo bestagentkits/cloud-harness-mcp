@@ -190,6 +190,7 @@ describe('managed package dispatch', () => {
     const path = create.find((arg) => arg.startsWith('PATH='))!.slice('PATH='.length).split(':');
     expect(path.indexOf(`${target}/bin`)).toBeGreaterThan(path.indexOf('/tmp/cloud-harness-home/.local/bin'));
     expect(path.indexOf(`${target}/bin`)).toBeLessThan(path.indexOf('/usr/local/sbin'));
+    expect(create).toContain(`CLOUD_HARNESS_MANAGED_PATH=${target}/bin`);
     expect(new PackageStore(f.store.database).getProfile(f.record.id)?.releaseIds).toEqual([releaseId]);
   });
 

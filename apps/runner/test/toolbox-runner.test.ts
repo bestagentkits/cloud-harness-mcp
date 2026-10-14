@@ -242,10 +242,13 @@ describe('managed release bin directories', () => {
     expect(entries.indexOf('/usr/local/bin')).toBeGreaterThan(sbin);
     // Releases stay read-only even when their bin directory is on PATH.
     expect(flagValues(args, '--mount').every((value) => value.endsWith(',readonly'))).toBe(true);
+    // The login shell's /etc/profile resets PATH; the image's profile script restores these from this variable.
+    expect(flagValues(args, '--env')).toContain(`CLOUD_HARNESS_MANAGED_PATH=${release.target}/bin:${other.target}/bin`);
   });
 
   it('keeps the toolbox PATH identical when there are no managed bins', () => {
     expect(pathOf(argv())).toBe(TOOLBOX_PATH);
+    expect(flagValues(argv(), '--env').some((entry) => entry.startsWith('CLOUD_HARNESS_MANAGED_PATH='))).toBe(false);
     expect(pathOf(argv([release]))).toBe(TOOLBOX_PATH);
     expect(withManagedBins(TOOLBOX_PATH, [])).toBe(TOOLBOX_PATH);
   });
