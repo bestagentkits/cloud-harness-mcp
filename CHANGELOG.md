@@ -1,3 +1,10 @@
+# [0.66.0-beta.10](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.9...v0.66.0-beta.10) (2026-10-15)
+
+
+### Bug Fixes
+
+* **compose:** stop agent image keepalive from restart-looping ([#341](https://github.com/bestagentkits/cloud-harness-mcp/issues/341)) ([ea417e1](https://github.com/bestagentkits/cloud-harness-mcp/commit/ea417e196decb3fc62ecde1b5ca327ed76da11fe)), closes [#284](https://github.com/bestagentkits/cloud-harness-mcp/issues/284)
+
 # [0.66.0-beta.9](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.8...v0.66.0-beta.9) (2026-10-15)
 
 
