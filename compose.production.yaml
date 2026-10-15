@@ -73,7 +73,10 @@ services:
 
   agent-image-keepalive:
     image: cloud-harness-agent:local
-    command: ["sleep", "infinity"]
+    # The agent image's entrypoint starts the agent runtime, which would treat a
+    # command as its own arguments and exit; replace the entrypoint so the
+    # container only idles to keep the image referenced.
+    entrypoint: ["/sbin/tini", "--", "sleep", "infinity"]
     read_only: true
     network_mode: none
     cap_drop: [ALL]
