@@ -82,6 +82,13 @@ const workspaceRoute = `
         proxy_read_timeout 3600s;
         add_header X-Accel-Buffering no always;
     }`;
+const oauthCallbackRoute = `
+    location = /dashboard/mcp-oauth/callback {
+        access_log off;
+        proxy_pass http://127.0.0.1:3100/dashboard/mcp-oauth/callback;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }`;
 
 function createFixture(extraRoutes = legacyDashboardRoutes) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-nginx-'));
@@ -134,6 +141,7 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     expect(readFileSync(fixture.site, 'utf8')).toContain(gatewayRoute);
     expect(readFileSync(fixture.site, 'utf8')).toContain(workspaceRoute);
     expect(readFileSync(fixture.site, 'utf8')).toContain(apiKeyGatewayRoute);
+    expect(readFileSync(fixture.site, 'utf8')).toContain(oauthCallbackRoute);
     expect(backups(fixture.root)).toHaveLength(1);
 
     const second = runUpgrade(fixture.root);
@@ -188,6 +196,40 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     expect(second.status).toBe(0);
     expect(second.stdout).toContain('already installed');
     expect(backups(fixture.root)).toHaveLength(1);
+  });
+
+  it('adds only the missing OAuth callback route, which keeps the callback query out of the access log', () => {
+    const fixture = createFixture(`${dashboardRoutes}\n${apiKeyRoute}\n${gatewayRoute}\n${workspaceRoute}\n${apiKeyGatewayRoute}`);
+    const first = runUpgrade(fixture.root);
+    expect(first.status, first.stderr).toBe(0);
+    const installed = readFileSync(fixture.site, 'utf8');
+    expect(installed).toContain(oauthCallbackRoute);
+    expect((installed.match(/location = \/dashboard\/mcp-oauth\/callback \{/g) ?? [])).toHaveLength(1);
+    expect((installed.match(/location \^~ \/dashboard\/ \{/g) ?? [])).toHaveLength(1);
+
+    const second = runUpgrade(fixture.root);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('already installed');
+    expect(backups(fixture.root)).toHaveLength(1);
+  });
+
+  it.each([
+    ['an exact callback route that still logs', `
+    location = /dashboard/mcp-oauth/callback {
+        proxy_pass http://127.0.0.1:3100/dashboard/mcp-oauth/callback;
+    }`],
+    ['a custom route under the callback prefix', `
+    location ^~ /dashboard/mcp-oauth/ {
+        proxy_pass http://127.0.0.1:3100/dashboard/mcp-oauth/;
+    }`]
+  ])('rejects %s without touching the site', (_name, route) => {
+    const malformed = `${dashboardRoutes}\n${apiKeyRoute}\n${gatewayRoute}\n${workspaceRoute}\n${apiKeyGatewayRoute}\n${route}`;
+    const fixture = createFixture(malformed);
+    const result = runUpgrade(fixture.root);
+    expect(result.status, result.stderr).toBe(11);
+    expect(result.stderr).toContain('not the managed shape');
+    expect(readFileSync(fixture.site, 'utf8')).toBe(fixture.source);
+    expect(backups(fixture.root)).toHaveLength(0);
   });
 
   it('rejects an unmanaged API-key gateway route without touching the site', () => {

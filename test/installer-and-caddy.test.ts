@@ -35,6 +35,8 @@ describe('OSS 1-Click Installer & Ingress Templates', () => {
     expect(content).toContain('reverse_proxy http://127.0.0.1:3100');
     expect(content).toContain('flush_interval -1');
     expect(content).toContain('Strict-Transport-Security');
+    // The MCP OAuth callback's one-time code and state never reach the access log.
+    expect(content).toMatch(/request>uri query \{\s*delete code\s*delete state\s*\}/);
   });
 
   it('deploy/cloudflare-tunnel/compose.tunnel.yaml attaches to the ingress network', () => {

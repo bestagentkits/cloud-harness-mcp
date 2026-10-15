@@ -172,7 +172,7 @@ function createRunner(oauthConfig: { scopes: string | null; clientId: string | n
           return ok({ serverId: flow.serverId, blob: flow.blob, expectedIssuer: flow.issuer, scopes: flow.scopes });
         }
         case 'mcp_oauth_disconnect': disconnects.push(input); return ok({ disconnected: grants.delete(slot) });
-        case 'mcp_oauth_status': return ok({ status: { state: grants.has(slot) ? 'connected' : 'authorization_required' } });
+        case 'mcp_oauth_status': return ok({ status: { enabled: true, state: grants.has(slot) ? 'connected' : 'authorization_required' } });
         case 'mcp_gateway_catalog': return ok({ servers: [serverView()], tools: [] });
         case 'mcp_server_connection_result': case 'mcp_server_replace_tools': return ok({});
         default: return ok({});
@@ -279,6 +279,9 @@ describe('downstream MCP OAuth: authorization', () => {
 
     const unconfigured = build(createWorld(), createRunner(), { redirect: undefined });
     await expect(unconfigured.coordinator.start(alice, SERVER_ID)).rejects.toThrow(/MCP_DOWNSTREAM_OAUTH_REDIRECT_URL/);
+    expect(unconfigured.coordinator.configured).toBe(false);
+    expect(await unconfigured.coordinator.status(alice, SERVER_ID)).toMatchObject({ state: 'not_configured', redirectUrl: null });
+    expect(await built.coordinator.status(alice, SERVER_ID)).toMatchObject({ state: 'authorization_required', redirectUrl: REDIRECT });
     await built.connections.closeAll();
     await unconfigured.connections.closeAll();
   });
