@@ -1,3 +1,10 @@
+# [0.66.0-beta.8](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.7...v0.66.0-beta.8) (2026-10-15)
+
+
+### Features
+
+* **dashboard:** configurable workspace limits, idle TTL and safe auto-close ([#338](https://github.com/bestagentkits/cloud-harness-mcp/issues/338)) ([0badce2](https://github.com/bestagentkits/cloud-harness-mcp/commit/0badce24b36e3b356069226f8589d55f8e8a583f))
+
 # [0.66.0-beta.7](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.6...v0.66.0-beta.7) (2026-10-15)
 
 
