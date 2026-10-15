@@ -127,8 +127,10 @@ opens and recoveries until usage drops.
 
 An expired workspace becomes due for auto-close at roughly expiry + grace +
 one reaper interval. Before deleting it, the reaper holds a mutation lease and
-checks for running agents, uncommitted or untracked paths, stashes, and
-commits on any local branch that no remote-tracking ref contains. A
+checks for running agents within their TTL, uncommitted or untracked paths
+in the checkout and in each linked worktree (a clean worktree does not hold the
+workspace), stashes, and commits on any local branch or worktree `HEAD` that no
+remote-tracking ref contains. A
 successful `git_push` moves the checkout's remote-tracking ref to the pushed
 commit, and the commit a workspace was cloned at counts as on the remote, so
 pushed and freshly cloned work is not mistaken for unsaved work. Git-ignored

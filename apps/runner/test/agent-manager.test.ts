@@ -191,6 +191,18 @@ describe('AgentManager', () => {
     store.close();
   });
 
+  it('stops counting an agent as running once its TTL has passed', async () => {
+    let now = Date.now();
+    const { manager, record, repository } = setup('network-none', agentsConfig, () => now);
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    // Wait for the launch to arm its TTL timer against the real clock before moving the clock past it.
+    await vi.waitFor(() => expect(repository.listActiveAgents(record.ownerId, record.id)[0]?.status).toBe('RUNNING'));
+    expect(manager.hasActiveAgents(record.ownerId, record.id)).toBe(true);
+    now += 31_000;
+    expect(manager.hasActiveAgents(record.ownerId, record.id)).toBe(false);
+    await manager.stop();
+  });
+
   it('rejects network-enabled workspaces before launcher or gateway effects', async () => {
     const { manager, record, launcher, gateway, store } = setup('dependency-access');
     await expect(manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record))).rejects.toMatchObject({ code: 'CONFLICT' });

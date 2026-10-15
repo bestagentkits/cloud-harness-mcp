@@ -712,8 +712,10 @@ ChatGPT subscription (see
     ([configuration](configuration.md#workspace-and-repository-policy)). An
     explicit `workspace_close` transitions it to `CLOSED` and permanently prunes
     its host files. When the grace lapses, the reaper closes it only if nothing
-    would be lost: running agents, uncommitted or untracked files, stashes, or
-    commits not on any remote ref keep it `EXPIRED_RECOVERABLE`, with `error`
+    would be lost: running agents (an agent past its TTL no longer counts),
+    uncommitted or untracked files in the checkout or any linked worktree,
+    stashes, or commits not on any remote ref (including a worktree's detached
+    `HEAD`) keep it `EXPIRED_RECOVERABLE`, with `error`
     starting `auto-close deferred:`, until it is recovered or explicitly closed.
   - **`workspace_recover`:** Restores or exports work from active or `EXPIRED_RECOVERABLE`
     workspaces. In `resume` mode (default), it restores the workspace to `ACTIVE` state,

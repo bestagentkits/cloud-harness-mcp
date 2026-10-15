@@ -1676,8 +1676,34 @@ const handlers = {
       // caller keeps the workspace instead of guessing that it is clean. Only stdout is counted, so a git
       // warning on stderr cannot pass for a path, a stash, or a count.
       const quiet = { includeStderr: false };
-      const statusRes = await git(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], quiet);
+      // Linked worktrees live under `.worktrees/` inside the checkout. Each is checked on its own, so a
+      // clean one does not count as an untracked directory and the paths inside a dirty one are counted.
+      const worktreeRes = await git(['worktree', 'list', '--porcelain'], quiet);
+      if (worktreeRes.exitCode !== 0 || worktreeRes.truncated) return fail('INTERNAL_ERROR', 'git worktree list failed');
+      const worktreeBlocks = worktreeRes.output.split('\n\n');
+      const mainPath = worktreeBlocks[0]?.split('\n').find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
+      if (!mainPath) return fail('INTERNAL_ERROR', 'git worktree list returned no main worktree');
+      const linkedWorktrees = worktreeBlocks.slice(1).map((block) => {
+        const lines = block.split('\n');
+        const path = lines.find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
+        const head = lines.find((line) => line.startsWith('HEAD '))?.slice('HEAD '.length);
+        return { path, head, prunable: lines.some((line) => line === 'prunable' || line.startsWith('prunable ')) };
+      }).filter((worktree) => worktree.path);
+      const statusArgs = ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'];
+      // Only the linked worktrees themselves are excluded, so files a repository tracks elsewhere still count.
+      const worktreeExclusions = linkedWorktrees
+        .map((worktree) => relative(mainPath, worktree.path))
+        .filter((path) => path && !path.startsWith('..') && !isAbsolute(path))
+        .map((path) => `:(exclude,literal)${path}`);
+      const statusRes = await git([...statusArgs, '--', '.', ...worktreeExclusions], quiet);
       if (statusRes.exitCode !== 0 || statusRes.truncated) return fail('INTERNAL_ERROR', 'git status failed');
+      const worktreeStatuses = [];
+      // A prunable worktree's directory is gone, so it holds no files; its HEAD is still counted below.
+      for (const worktree of linkedWorktrees.filter((candidate) => !candidate.prunable)) {
+        const result = await git(['-C', worktree.path, ...statusArgs], quiet);
+        if (result.exitCode !== 0 || result.truncated) return fail('INTERNAL_ERROR', 'git status failed in a linked worktree');
+        worktreeStatuses.push(result.output);
+      }
       const stashRes = await git(['--no-optional-locks', 'stash', 'list'], quiet);
       if (stashRes.exitCode !== 0 || stashRes.truncated) return fail('INTERNAL_ERROR', 'git stash list failed');
       // Commits reachable from HEAD or any local branch but from no remote-tracking ref, so work on other
@@ -1686,6 +1712,10 @@ const handlers = {
       const tips = ['--branches'];
       const headRes = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], quiet);
       if (headRes.exitCode === 0) tips.push('HEAD');
+      // A linked worktree's detached HEAD can hold commits no branch contains.
+      for (const worktree of linkedWorktrees) {
+        if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(worktree.head ?? '') && !/^0+$/.test(worktree.head)) tips.push(worktree.head);
+      }
       const exclusions = ['--remotes'];
       const cloneRef = typeof input.cloneRef === 'string' ? input.cloneRef : '';
       if (/^[A-Za-z0-9._/-]{1,255}$/.test(cloneRef) && !cloneRef.includes('..') && !cloneRef.startsWith('-')) {
@@ -1701,7 +1731,7 @@ const handlers = {
       if (!Number.isSafeInteger(unpushedCommits) || unpushedCommits < 0) return fail('INTERNAL_ERROR', 'git rev-list returned an unexpected count');
       const countLines = (output) => output.split('\n').filter((line) => line.trim()).length;
       return ok('Workspace close check', {
-        uncommittedPaths: countLines(statusRes.output),
+        uncommittedPaths: [statusRes.output, ...worktreeStatuses].reduce((total, output) => total + countLines(output), 0),
         stashes: countLines(stashRes.output),
         unpushedCommits
       });
@@ -1713,12 +1743,15 @@ const handlers = {
       const commit = input.commit;
       if (!/^[A-Za-z0-9._/-]{1,255}$/.test(branch) || branch.includes('..') || branch.startsWith('-')) return fail('INVALID_INPUT', 'invalid branch');
       if (commit !== null && (typeof commit !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit))) return fail('INVALID_INPUT', 'invalid commit');
+      // `origin/HEAD` is the symbolic ref naming the remote default branch; writing through it would move
+      // that branch's tracking ref instead, so a push to a branch named HEAD is not tracked.
+      if (branch === 'HEAD') return fail('INVALID_INPUT', 'invalid branch');
       const ref = `refs/remotes/origin/${branch}`;
       const formatRes = await git(['check-ref-format', ref]);
       if (formatRes.exitCode !== 0) return fail('INVALID_INPUT', 'invalid branch');
       const updateRes = commit === null
-        ? await git(['update-ref', '-d', ref])
-        : await git(['update-ref', ref, commit]);
+        ? await git(['update-ref', '--no-deref', '-d', ref])
+        : await git(['update-ref', '--no-deref', ref, commit]);
       if (updateRes.exitCode !== 0) return fail('INTERNAL_ERROR', 'remote-tracking ref could not be updated');
       return ok('Remote-tracking ref updated', { ref, commit });
     }
