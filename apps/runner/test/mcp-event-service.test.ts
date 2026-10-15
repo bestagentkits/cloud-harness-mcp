@@ -115,6 +115,7 @@ describe('MCP event emission', () => {
     expect(outbox[0]!.id).toBe(eventIdForSource(`task:${task.id}:terminal`));
     expect(outbox[0]!.name).toBe('cloudharness.task.completed');
     expect(JSON.parse(outbox[0]!.payload_json)).toEqual(expect.objectContaining({ taskId: task.id, workspaceId: WS_A, status: 'SUCCEEDED', exitCode: 0 }));
+    expect(JSON.parse(outbox[0]!.payload_json)).not.toHaveProperty('name');
     expect(outbox[0]!.payload_json).not.toContain('SECRET-COMMAND-TEXT');
     expect(outbox[0]!.payload_json).not.toContain('raw failure output');
     expect(deliveries(store)).toHaveLength(1);
@@ -194,7 +195,7 @@ describe('MCP event subscriptions', () => {
     expect(Date.parse(second.refreshBefore) - clock.now).toBe(86_400_000);
     expect(second.deliveryStatus).toMatchObject({ active: true, lastDeliveryAt: null, lastError: null });
     expect(audits).toEqual(['mcp_event.subscribed']);
-    expect(events.list(owner)).toHaveLength(1);
+    expect(events.list(owner).subscriptions).toHaveLength(1);
   });
 
   it('refuses another principal workspace, an unverified callback, and a missing keyring', () => {
@@ -218,13 +219,27 @@ describe('MCP event subscriptions', () => {
     expect(() => subscribe(events, owner, 'cloudharness.task.completed', {}, { url: 'https://hooks.example.com/overflow' })).toThrow('limit reached');
   });
 
+  it('bounds retained rows per principal and pages the listing', () => {
+    const { events, owner } = setup();
+    for (let round = 0; round < 10; round += 1) {
+      for (let index = 0; index < 100; index += 1) {
+        const created = subscribe(events, owner, 'cloudharness.task.completed', {}, { url: `https://hooks.example.com/${round}/${index}` });
+        expect(events.revoke(owner, created.id)).toBe(true);
+      }
+    }
+    expect(() => subscribe(events, owner, 'cloudharness.task.completed', {}, { url: 'https://hooks.example.com/overflow' })).toThrow('retained event subscription limit');
+    const listed = events.list(owner);
+    expect(listed.truncated).toBe(true);
+    expect(listed.subscriptions).toHaveLength(200);
+  });
+
   it('isolates listing and revocation by principal', () => {
     const { events, owner, other } = setup();
     const mine = subscribe(events, owner, 'cloudharness.task.completed');
-    expect(events.list(other)).toEqual([]);
+    expect(events.list(other)).toEqual({ subscriptions: [], truncated: false });
     expect(events.revoke(other, mine.id)).toBe(false);
     expect(events.revoke(owner, mine.id)).toBe(true);
-    expect(events.list(owner)[0]).toMatchObject({ state: 'REVOKED', callbackOrigin: 'https://hooks.example.com' });
+    expect(events.list(owner).subscriptions[0]).toMatchObject({ state: 'REVOKED', callbackOrigin: 'https://hooks.example.com' });
   });
 
   it('unsubscribes idempotently and drops pending deliveries', () => {
@@ -260,7 +275,7 @@ describe('MCP event delivery queue', () => {
     expect(events.report([{ deliveryId: delivery!.deliveryId, leaseToken: delivery!.leaseToken, outcome: 'delivered' }])).toBe(1);
     expect(deliveries(store)[0]).toMatchObject({ status: 'DELIVERED', attempts: 1 });
     clock.now += 1;
-    expect(events.list(store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' }))[0]!.deliveryStatus.lastDeliveryAt).not.toBeNull();
+    expect(events.list(store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' })).subscriptions[0]!.deliveryStatus.lastDeliveryAt).not.toBeNull();
   });
 
   it('redelivers the same event id and body after an expired lease', () => {
@@ -286,7 +301,7 @@ describe('MCP event delivery queue', () => {
     const [last] = events.claim(10, 30_000);
     events.report([{ deliveryId: last!.deliveryId, leaseToken: last!.leaseToken, outcome: 'failed', error: 'timeout' }]);
     expect(deliveries(store)[0]).toMatchObject({ status: 'ABANDONED', attempts: 5, last_error: 'timeout' });
-    expect(events.list(store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' }))[0]!.deliveryStatus).toMatchObject({ lastError: 'timeout' });
+    expect(events.list(store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' })).subscriptions[0]!.deliveryStatus).toMatchObject({ lastError: 'timeout' });
   });
 
   it('does not retry a rejected delivery', () => {
@@ -307,7 +322,7 @@ describe('MCP event delivery queue', () => {
     context.clock.now = Date.now() + 1_000;
     expect(context.events.claim(10, 30_000)).toEqual([]);
     expect(deliveries(context.store)[0]).toMatchObject({ status: 'ABANDONED', last_error: 'credential_revoked' });
-    expect(context.events.list(context.owner)[0]).toMatchObject({ state: 'REVOKED', viaApiKey: true });
+    expect(context.events.list(context.owner).subscriptions[0]).toMatchObject({ state: 'REVOKED', viaApiKey: true });
     expect(context.audits).toContain('mcp_event.revoked');
   });
 

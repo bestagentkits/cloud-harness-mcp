@@ -88,13 +88,13 @@ function recordEvent(
 }
 
 type TaskEventRow = {
-  id: string; workspace_id: string; owner_id: string; name: string | null; status: string;
+  id: string; workspace_id: string; owner_id: string; status: string;
   exit_code: number | null; error_code: string | null; finished_at: number | null;
 };
 
 /** Emits the task terminal event for a task that has just entered a terminal status. */
 export function emitTaskTerminalEvent(database: DatabaseSync, taskId: string, now: number): void {
-  const row = database.prepare(`SELECT id, workspace_id, owner_id, name, status, exit_code, error_code, finished_at
+  const row = database.prepare(`SELECT id, workspace_id, owner_id, status, exit_code, error_code, finished_at
     FROM durable_tasks WHERE id = ?`).get(taskId) as TaskEventRow | undefined;
   if (!row || !isTerminalTaskStatus(row.status)) return;
   const occurredAt = row.finished_at ?? now;
@@ -102,7 +102,6 @@ export function emitTaskTerminalEvent(database: DatabaseSync, taskId: string, no
     recordEvent(database, row.owner_id, `task:${row.id}:terminal`, 'cloudharness.task.completed', occurredAt, {
       workspaceId: row.workspace_id,
       taskId: row.id,
-      name: row.name,
       status: 'SUCCEEDED',
       exitCode: row.exit_code,
       finishedAt: iso(occurredAt)
@@ -112,7 +111,6 @@ export function emitTaskTerminalEvent(database: DatabaseSync, taskId: string, no
   recordEvent(database, row.owner_id, `task:${row.id}:terminal`, 'cloudharness.task.failed', occurredAt, {
     workspaceId: row.workspace_id,
     taskId: row.id,
-    name: row.name,
     status: row.status,
     exitCode: row.exit_code,
     errorCode: boundedCode(row.error_code),

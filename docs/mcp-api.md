@@ -343,7 +343,9 @@ Decisions that are easy to misread:
   refreshes before `refreshBefore`. Re-subscribing with a different secret
   rotates it, and deliveries carry both signatures for a short grace window.
   `events/unsubscribe` is idempotent and always returns an empty result. The
-  per-principal quota and TTL bounds are owned by `MCP_EVENTS_LIMITS`.
+  per-principal active quota, the cap on retained (including revoked and
+  expired) rows, and the TTL bounds are owned by `MCP_EVENTS_LIMITS`; either
+  limit answers `-32013`.
 - **No replay.** Events are recorded only for subscriptions that exist when the
   transition commits. `cursor` is always `null`, and a requested `cursor` or
   `maxAgeMs` is accepted but ignored.
@@ -366,8 +368,9 @@ Decisions that are easy to misread:
 - **Stopping delivery.** Subscriptions created over a managed API key stop
   when that key is revoked or expires. OAuth-lane subscriptions lapse at their
   TTL unless the client refreshes them. The dashboard lists and revokes the
-  owner's subscriptions (`/dashboard/api/v1/event-subscriptions`) but never
-  creates one, and a client that re-subscribes reactivates a revoked
+  owner's subscriptions (`/dashboard/api/v1/event-subscriptions`, newest
+  first, with `truncated` set when the bounded page omits older rows) but
+  never creates one, and a client that re-subscribes reactivates a revoked
   subscription; to stop a client permanently, revoke its credential.
 
 Executable owners:

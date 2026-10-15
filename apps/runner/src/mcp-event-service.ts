@@ -26,6 +26,7 @@ export const MCP_EVENT_RETRY_WINDOW_MS = 15 * 60_000;
 export const MCP_EVENT_RETENTION_MS = 7 * 86_400_000;
 const PURGE_INTERVAL_MS = 60_000;
 const RECENT_DELIVERIES = 5;
+const LIST_LIMIT = 200;
 const SECRET_CONTEXT = 'mcp-event-subscription';
 const MAX_ATTEMPTS = MCP_EVENT_RETRY_DELAYS_MS.length + 1;
 
@@ -143,7 +144,7 @@ export class McpEventService {
       case 'events_unsubscribe':
         return this.unsubscribe(this.resolvePrincipal(request.principal), request.input);
       case 'events_subscriptions_list':
-        return { subscriptions: this.list(this.resolvePrincipal(request.principal)) };
+        return this.list(this.resolvePrincipal(request.principal));
       case 'events_subscription_revoke':
         return { revoked: this.revoke(this.resolvePrincipal(request.principal), request.input.id) };
       case 'events_delivery_claim':
@@ -155,6 +156,8 @@ export class McpEventService {
 
   /** Validates a subscription request and reports whether its callback needs a fresh challenge. */
   prepare(principalId: string, input: { name: McpEventName; arguments: Record<string, unknown>; url: string }): { id: string; verified: boolean } {
+    // Refused before the API sends a verification request it could never act on.
+    if (!this.keyring) throw new McpEventsError('UNAVAILABLE', 'event delivery requires the secret keyring');
     const { id } = this.admit(principalId, input);
     return { id, verified: this.isVerified(principalId, input.url) };
   }
@@ -229,26 +232,39 @@ export class McpEventService {
     });
   }
 
-  list(principalId: string): McpEventSubscriptionSummary[] {
+  list(principalId: string): { subscriptions: McpEventSubscriptionSummary[]; truncated: boolean } {
     const now = this.now();
-    const rows = this.database.prepare('SELECT * FROM event_subscriptions WHERE owner_id = ? ORDER BY created_at DESC, id')
-      .all(principalId) as SubscriptionRow[];
-    const recent = this.database.prepare(`SELECT event_id, status, attempts, last_error, created_at, completed_at
-      FROM event_deliveries WHERE subscription_id = ? ORDER BY created_at DESC, id LIMIT ${RECENT_DELIVERIES}`);
-    return rows.map((row) => ({
+    const rows = this.database.prepare(`SELECT * FROM event_subscriptions WHERE owner_id = ?
+      ORDER BY created_at DESC, id LIMIT ${LIST_LIMIT + 1}`).all(principalId) as SubscriptionRow[];
+    const page = rows.slice(0, LIST_LIMIT);
+    type RecentRow = {
+      subscription_id: string; event_id: string; status: 'PENDING' | 'DELIVERED' | 'ABANDONED'; attempts: number;
+      last_error: string | null; created_at: number; completed_at: number | null;
+    };
+    const recentBySubscription = new Map<string, RecentRow[]>();
+    if (page.length > 0) {
+      const recent = this.database.prepare(`SELECT subscription_id, event_id, status, attempts, last_error, created_at, completed_at FROM (
+          SELECT d.*, ROW_NUMBER() OVER (PARTITION BY d.subscription_id ORDER BY d.created_at DESC, d.id) AS position
+          FROM event_deliveries d JOIN event_subscriptions s ON s.id = d.subscription_id
+          WHERE s.owner_id = ? AND d.subscription_id IN (${page.map(() => '?').join(', ')})
+        ) WHERE position <= ${RECENT_DELIVERIES} ORDER BY created_at DESC, id`).all(principalId, ...page.map((row) => row.id)) as RecentRow[];
+      for (const row of recent) {
+        const list = recentBySubscription.get(row.subscription_id) ?? [];
+        list.push(row);
+        recentBySubscription.set(row.subscription_id, list);
+      }
+    }
+    const subscriptions = page.map((row) => ({
       id: row.id,
       name: row.name,
       arguments: JSON.parse(row.arguments_json) as Record<string, unknown>,
       callbackOrigin: safeOrigin(row.url),
       viaApiKey: row.api_key_id !== null,
-      state: row.state === 'REVOKED' ? 'REVOKED' : row.expires_at <= now ? 'EXPIRED' : 'ACTIVE',
+      state: row.state === 'REVOKED' ? 'REVOKED' as const : row.expires_at <= now ? 'EXPIRED' as const : 'ACTIVE' as const,
       createdAt: iso(row.created_at),
       refreshBefore: iso(row.expires_at),
       deliveryStatus: this.deliveryStatus(row, now),
-      recentDeliveries: (recent.all(row.id) as {
-        event_id: string; status: 'PENDING' | 'DELIVERED' | 'ABANDONED'; attempts: number; last_error: string | null;
-        created_at: number; completed_at: number | null;
-      }[]).map((delivery) => ({
+      recentDeliveries: (recentBySubscription.get(row.id) ?? []).map((delivery) => ({
         eventId: delivery.event_id,
         status: delivery.status,
         attempts: delivery.attempts,
@@ -257,6 +273,7 @@ export class McpEventService {
         completedAt: delivery.completed_at === null ? null : iso(delivery.completed_at)
       }))
     }));
+    return { subscriptions, truncated: rows.length > LIST_LIMIT };
   }
 
   revoke(principalId: string, id: string): boolean {
@@ -419,6 +436,12 @@ export class McpEventService {
     if (active.count >= MCP_EVENTS_LIMITS.maxSubscriptionsPerPrincipal) {
       throw new McpEventsError('RESOURCE_EXHAUSTED', 'active event subscription limit reached');
     }
+    // Expired and revoked rows are retained for visibility; bound them too so short-TTL churn cannot grow state.
+    const retained = this.database.prepare('SELECT count(*) AS count FROM event_subscriptions WHERE owner_id = ? AND id <> ?')
+      .get(principalId, id) as { count: number };
+    if (retained.count >= MCP_EVENTS_LIMITS.maxRetainedSubscriptionsPerPrincipal) {
+      throw new McpEventsError('RESOURCE_EXHAUSTED', 'retained event subscription limit reached');
+    }
     return { id, argumentsJson };
   }
 
@@ -467,7 +490,8 @@ export class McpEventService {
   }
 
   private apiKeyActive(principalId: string, apiKeyId: string, now: number): boolean {
-    if (this.apiKeysTablePresent === undefined) {
+    // Only a positive answer is cached: a table created by a later metadata migration must still be found.
+    if (!this.apiKeysTablePresent) {
       this.apiKeysTablePresent = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'api_keys'").get() !== undefined;
     }
     if (!this.apiKeysTablePresent) return false;

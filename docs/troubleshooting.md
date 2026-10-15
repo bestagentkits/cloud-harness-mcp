@@ -241,7 +241,7 @@ recent deliveries.
 |---|---|
 | `server/discover` has no `events` capability | The client is on local stdio, local HTTP, or `/mcp-gateway`, or the release predates events. Use the remote `/mcp` endpoint. |
 | `-32602` on `events/subscribe` | The `delivery.url` is not a public `https` URL without credentials or fragment, the secret is not `whsec_` plus base64 of 24–64 bytes, or the filter arguments have an unknown key. |
-| `-32011` / `-32012` / `-32013` / `-32014` | Unknown event name; unauthenticated request or a filter naming a workspace, task, or agent the caller does not own; per-principal subscription quota reached; a delivery mode other than `webhook`. |
+| `-32011` / `-32012` / `-32013` / `-32014` | Unknown event name; unauthenticated request or a filter naming a workspace, task, or agent the caller does not own; per-principal active or retained subscription quota reached (revoked and expired rows count until retention purges them); a delivery mode other than `webhook`. |
 | `-32015` with `reason` | The callback failed the signed verification challenge: it was unreachable, timed out, failed TLS, answered non-`2xx` or a redirect, or did not echo the exact `challenge`. Fix the receiver; nothing was stored. |
 | `-32603` "Events are temporarily unavailable" | The runner is unreachable or has no secret keyring configured. Check `/readyz` and the runner keyring. |
 | Subscription `REVOKED` without a dashboard action | It was created over a managed API key that was revoked or expired; the audit entry carries `reason: credential_revoked`. Subscribe again with a valid credential. |

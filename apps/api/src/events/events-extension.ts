@@ -181,8 +181,13 @@ export function registerEventsExtension(server: McpServer, backend: EventsBacken
     const url = parseCallbackUrl(params.delivery.url);
     // Idempotent: a key that could never have been stored has nothing to remove.
     if (definition && url.ok) {
-      await invoke(backend, 'events_unsubscribe', { name: definition.name, arguments: params.arguments ?? {}, url: url.url },
-        McpEventsRunnerDataSchemas.events_unsubscribe, ctx.mcpReq.signal);
+      try {
+        await invoke(backend, 'events_unsubscribe', { name: definition.name, arguments: params.arguments ?? {}, url: url.url },
+          McpEventsRunnerDataSchemas.events_unsubscribe, ctx.mcpReq.signal);
+      } catch (error) {
+        // Arguments that fail validation could never have keyed a stored subscription.
+        if (!(error instanceof ProtocolError && error.code === ProtocolErrorCode.InvalidParams)) throw error;
+      }
     }
     return { resultType: 'complete' as const };
   });

@@ -86,6 +86,18 @@ export function categorizeTransportError(error: unknown): McpEventCallbackError 
   return 'connection_refused';
 }
 
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason as Error);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason as Error);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error as Error); }
+    );
+  });
+}
+
 async function readCapped(response: Response): Promise<Uint8Array | undefined> {
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
@@ -125,12 +137,18 @@ export function createWebhookSender(options: WebhookSenderOptions = {}): Webhook
     const parsed = parseCallbackUrl(request.url);
     if (!parsed.ok) return { ok: false, reason: 'connection_refused' };
     const target = new URL(parsed.url);
-    // Re-resolved and re-checked on every attempt: a callback that now points inward is refused.
-    const validation = await validateGatewayEndpoint(policyTarget(target), policy);
-    if (!validation.ok) return { ok: false, reason: 'connection_refused' };
-    const agent = new Agent({ connect: { lookup: createPinnedLookup(validation.addresses) } });
     const timeout = AbortSignal.timeout(timeoutMs);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+    // Re-resolved and re-checked on every attempt: a callback that now points inward is refused.
+    // Resolution counts against the same deadline as the request.
+    let validation: Awaited<ReturnType<typeof validateGatewayEndpoint>>;
+    try {
+      validation = await abortable(validateGatewayEndpoint(policyTarget(target), policy), signal);
+    } catch (error) {
+      return { ok: false, reason: categorizeTransportError(error) };
+    }
+    if (!validation.ok) return { ok: false, reason: 'connection_refused' };
+    const agent = new Agent({ connect: { lookup: createPinnedLookup(validation.addresses) } });
     const timestamp = Math.floor(Date.now() / 1_000);
     try {
       const response = await transport(target.href, {
@@ -146,12 +164,9 @@ export function createWebhookSender(options: WebhookSenderOptions = {}): Webhook
         body: request.body,
         signal,
         dispatcher: agent,
-        redirect: 'error'
+        // Redirects are returned, never followed, and count as a client error below.
+        redirect: 'manual'
       } as RequestInit);
-      if (response.status >= 300 && response.status < 400) {
-        void response.body?.cancel().catch(() => undefined);
-        return { ok: false, reason: 'http_4xx', status: response.status };
-      }
       if (response.status < 200 || response.status >= 300) {
         void response.body?.cancel().catch(() => undefined);
         return { ok: false, reason: response.status >= 500 ? 'http_5xx' : 'http_4xx', status: response.status };

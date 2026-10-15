@@ -227,7 +227,8 @@ and adds these decisions:
   The URL is validated at subscribe time and re-resolved and re-validated
   before every attempt, with the socket pinned to the validated addresses, so
   a hostname that later rebinds inward is never dialled. Redirects are not
-  followed, and request time and response size are bounded.
+  followed (a `3xx` counts as a failed attempt), and resolution, request time,
+  and response size share one bound.
 - **Proof of control before delivery.** A signed verification challenge must
   be echoed before a principal's first subscription to a callback URL, so a
   client cannot direct signed traffic at an endpoint it does not control.

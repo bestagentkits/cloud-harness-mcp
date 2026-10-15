@@ -17,7 +17,7 @@ export type EventDeliveryWorkerOptions = {
   batchSize?: number;
   leaseMs?: number;
   concurrency?: number;
-  onError?: (stage: 'claim' | 'report', reason: string) => void;
+  onError?: (stage: 'claim' | 'deliver' | 'report', reason: string) => void;
 };
 
 export type DeliveryReport = { deliveryId: string; leaseToken: string; outcome: 'delivered' | 'failed' | 'rejected'; error?: WebhookOutcomeError };
@@ -66,7 +66,16 @@ export class EventDeliveryWorker {
     return await this.running;
   }
 
+  /** Never rejects: the timer fires it unawaited, so every failure is reported through `onError`. */
   private async drain(): Promise<void> {
+    try {
+      await this.pass();
+    } catch (error) {
+      this.options.onError?.('claim', error instanceof Error ? error.name : 'unknown');
+    }
+  }
+
+  private async pass(): Promise<void> {
     const signal = this.abort.signal;
     const claimed = await this.options.callRunner({
       version: 1, operation: 'events_delivery_claim', input: { limit: this.batchSize, leaseMs: this.leaseMs }
@@ -85,25 +94,40 @@ export class EventDeliveryWorker {
     const work = async (): Promise<void> => {
       for (let delivery = queue.shift(); delivery; delivery = queue.shift()) {
         if (signal.aborted) return;
-        reports.push(await this.deliver(delivery, signal));
+        const report = await this.deliver(delivery, signal);
+        // An attempt cut short by shutdown is left to its lease so it is retried, not counted as failed.
+        if (report && !signal.aborted) reports.push(report);
       }
     };
     await Promise.all(Array.from({ length: Math.min(this.concurrency, queue.length) }, work));
     if (reports.length === 0) return;
     // Reported even during shutdown so finished attempts are not re-sent after the lease lapses.
-    const reported = await this.options.callRunner({ version: 1, operation: 'events_delivery_report', input: { results: reports } });
+    let reported: McpEventsRunnerResponse;
+    try {
+      reported = await this.options.callRunner({ version: 1, operation: 'events_delivery_report', input: { results: reports } });
+    } catch (error) {
+      this.options.onError?.('report', error instanceof Error ? error.name : 'unknown');
+      return;
+    }
     if (!reported.ok) this.options.onError?.('report', reported.error.code);
   }
 
-  private async deliver(delivery: McpEventClaimedDelivery, signal: AbortSignal): Promise<DeliveryReport> {
-    const outcome = await this.options.sender.post({
-      url: delivery.url,
-      webhookId: delivery.eventId,
-      subscriptionId: delivery.subscriptionId,
-      secrets: delivery.secrets,
-      body: delivery.body,
-      signal
-    });
+  private async deliver(delivery: McpEventClaimedDelivery, signal: AbortSignal): Promise<DeliveryReport | undefined> {
+    let outcome: WebhookOutcome;
+    try {
+      outcome = await this.options.sender.post({
+        url: delivery.url,
+        webhookId: delivery.eventId,
+        subscriptionId: delivery.subscriptionId,
+        secrets: delivery.secrets,
+        body: delivery.body,
+        signal
+      });
+    } catch (error) {
+      // The lease lapses and the delivery is retried; the sender never throws for transport failures.
+      this.options.onError?.('deliver', error instanceof Error ? error.name : 'unknown');
+      return undefined;
+    }
     return { deliveryId: delivery.deliveryId, leaseToken: delivery.leaseToken, ...classifyOutcome(outcome) };
   }
 }

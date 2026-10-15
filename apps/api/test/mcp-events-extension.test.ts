@@ -18,7 +18,7 @@ const sender: WebhookSender = {
   post: async () => ({ ok: true, status: 200, body: new Uint8Array() })
 };
 
-function fakeRunner() {
+function fakeRunner(unsubscribe: unknown = { ok: true, data: { removed: true } }) {
   const requests: McpEventsRunnerRequest[] = [];
   const client = {
     async call() { return { ok: true, message: 'ok', data: {}, truncated: false }; },
@@ -26,7 +26,7 @@ function fakeRunner() {
       requests.push(request);
       if (request.operation === 'events_prepare') return { ok: true, data: { id: `sub_${'0'.repeat(32)}`, verified: true } };
       if (request.operation === 'events_subscribe') return { ok: true, data: { id: `sub_${'0'.repeat(32)}`, refreshBefore: new Date().toISOString() } };
-      return { ok: true, data: { removed: true } };
+      return unsubscribe;
     }
   } as unknown as RunnerClient;
   return { client, requests };
@@ -77,5 +77,17 @@ describe('MCP Events extension wiring', () => {
     expect(requests.map((request) => request.operation)).toEqual(['events_prepare', 'events_subscribe']);
     expect(requests.every((request) => 'principal' in request && request.principal.kind === 'owner')).toBe(true);
     expect(requests[1]!.input).toMatchObject({ apiKeyId, verified: false, url: params.delivery.url, name: params.name, arguments: {} });
+  });
+
+  it('treats unsubscribe arguments the runner rejects as already absent but surfaces an unavailable runner', async () => {
+    const principal = { era: 'modern' as const, authInfo: authInfo({ principal: owner }) };
+    const request = { method: 'events/unsubscribe', params: { name: params.name, arguments: { workspaceId: 'nope' }, delivery: { url: params.delivery.url } } } as never;
+    const invalid = fakeRunner({ ok: false, error: { code: 'INVALID_INPUT', message: 'invalid event arguments' } });
+    const client = await connect(createCloudHarnessServerFactory(invalid.client, { sender })(principal));
+    expect(await client.request(request, z.looseObject({}))).toBeDefined();
+    expect(invalid.requests.map((entry) => entry.operation)).toEqual(['events_unsubscribe']);
+    const down = fakeRunner({ ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' } });
+    const failing = await connect(createCloudHarnessServerFactory(down.client, { sender })(principal));
+    expect(await code(failing.request(request, z.unknown()))).toBe(-32603);
   });
 });

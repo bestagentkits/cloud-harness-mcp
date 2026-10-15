@@ -60,7 +60,6 @@ export const AgentEventArgumentsSchema = z.object({
 export const TaskCompletedPayloadSchema = z.object({
   workspaceId: z.string(),
   taskId: z.string(),
-  name: z.string().nullable(),
   status: z.literal('SUCCEEDED'),
   exitCode: z.number().int().nullable(),
   finishedAt: z.string()
@@ -69,7 +68,6 @@ export const TaskCompletedPayloadSchema = z.object({
 export const TaskFailedPayloadSchema = z.object({
   workspaceId: z.string(),
   taskId: z.string(),
-  name: z.string().nullable(),
   status: z.enum(['FAILED', 'CANCELLED', 'BLOCKED']),
   exitCode: z.number().int().nullable(),
   errorCode: z.string().nullable(),
@@ -139,6 +137,8 @@ export const MCP_EVENTS_LIMITS = {
   maxTtlMs: 86_400_000,
   minTtlMs: 60_000,
   maxSubscriptionsPerPrincipal: 100,
+  /** Revoked, expired, and failed rows kept for audit until retention purges them. */
+  maxRetainedSubscriptionsPerPrincipal: 1_000,
   verificationCacheMs: 86_400_000,
   secretRotationGraceMs: 600_000,
   maxBodyBytes: 262_144
@@ -244,7 +244,7 @@ export const McpEventsRunnerDataSchemas = {
     deliveryStatus: McpEventDeliveryStatusSchema.optional()
   }).strict(),
   events_unsubscribe: z.object({ removed: z.boolean() }).strict(),
-  events_subscriptions_list: z.object({ subscriptions: z.array(McpEventSubscriptionSummarySchema) }).strict(),
+  events_subscriptions_list: z.object({ subscriptions: z.array(McpEventSubscriptionSummarySchema), truncated: z.boolean() }).strict(),
   events_subscription_revoke: z.object({ revoked: z.boolean() }).strict(),
   events_delivery_claim: z.object({ deliveries: z.array(McpEventClaimedDeliverySchema) }).strict(),
   events_delivery_report: z.object({ accepted: z.number().int().nonnegative() }).strict()

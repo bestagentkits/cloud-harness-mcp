@@ -69,7 +69,7 @@ describe('webhook sender', () => {
     expect(outcome.ok).toBe(true);
     const init = calls[0]!.init;
     const headers = init.headers as Record<string, string>;
-    expect(init.redirect).toBe('error');
+    expect(init.redirect).toBe('manual');
     expect(init.method).toBe('POST');
     expect(headers['webhook-id']).toBe('evt_abc');
     expect(headers['x-mcp-subscription-id']).toBe('sub_x');
@@ -86,6 +86,14 @@ describe('webhook sender', () => {
     answer = [{ address: '127.0.0.1', family: 4 }];
     expect(await sender.post({ url: 'https://hooks.example.com/a', webhookId: 'evt_1', subscriptionId: 'sub_x', secrets: [secret], body: '{}' }))
       .toEqual({ ok: false, reason: 'connection_refused' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('bounds callback resolution by the request deadline', async () => {
+    const { calls, fetchImpl } = capturingFetch(() => new Response('ok'));
+    const sender = createWebhookSender({ resolve: () => new Promise(() => undefined), fetchImpl, timeoutMs: 50 });
+    expect(await sender.post({ url: 'https://hooks.example.com/a', webhookId: 'evt_1', subscriptionId: 'sub_x', secrets: [secret], body: '{}' }))
+      .toEqual({ ok: false, reason: 'timeout' });
     expect(calls).toHaveLength(0);
   });
 
@@ -171,6 +179,32 @@ describe('event delivery worker', () => {
       ])
     });
     await worker.stop();
+  });
+
+  it('survives a throwing runner or sender and leaves aborted attempts to their lease', async () => {
+    const errors: string[] = [];
+    const throwing = new EventDeliveryWorker({
+      callRunner: async () => { throw new TypeError('socket hang up'); },
+      sender: { checkUrl: async (url) => ({ ok: true, url }), verify: async () => ({ ok: true }), post: async () => ({ ok: true, status: 200, body: new Uint8Array() }) },
+      onError: (stage, reason) => errors.push(`${stage}:${reason}`)
+    });
+    await expect(throwing.tick()).resolves.toBeUndefined();
+    expect(errors).toEqual(['claim:TypeError']);
+
+    const { requests, callRunner } = runner([delivery(1), delivery(2)]);
+    const holder: { worker?: EventDeliveryWorker } = {};
+    const sender: WebhookSender = {
+      checkUrl: async (url) => ({ ok: true, url }), verify: async () => ({ ok: true }),
+      post: async (request) => {
+        if (request.webhookId === 'evt_1') throw new Error('unexpected');
+        void holder.worker!.stop();
+        return { ok: false, reason: 'timeout' };
+      }
+    };
+    const worker = holder.worker = new EventDeliveryWorker({ callRunner, sender, concurrency: 1, onError: (stage, reason) => errors.push(`${stage}:${reason}`) });
+    await worker.tick();
+    expect(errors).toEqual(['claim:TypeError', 'deliver:Error']);
+    expect(requests.map((request) => request.operation)).toEqual(['events_delivery_claim']);
   });
 
   it('runs one pass at a time and reports a failed claim without posting', async () => {

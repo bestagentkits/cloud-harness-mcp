@@ -102,7 +102,7 @@ beforeEach(async () => {
         id: `sub_${'e'.repeat(32)}`, name: 'cloudharness.task.completed' as const, arguments: { workspaceId }, callbackOrigin: 'https://hooks.example',
         viaApiKey: false, state: 'ACTIVE' as const, createdAt: '2026-08-17T00:00:00.000Z', refreshBefore: '2026-08-18T00:00:00.000Z',
         deliveryStatus: { active: true, lastDeliveryAt: null, lastError: null }, recentDeliveries: []
-      }] } };
+      }], truncated: false } };
       return { ok: true as const, data: { revoked: true } };
     })
   };
