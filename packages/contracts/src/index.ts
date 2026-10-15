@@ -16,3 +16,4 @@ export * from './oauth-grant-settings.js';
 export * from './repository-guidance.js';
 export * from './terminal-schemas.js';
 export * from './package-schemas.js';
+export * from './events-api.js';

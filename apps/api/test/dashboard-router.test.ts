@@ -96,6 +96,14 @@ beforeEach(async () => {
       if (operation === 'api_key_list') return { ok: true as const, operation, data: { keys: [key] }, truncated: false as const };
       if (operation === 'api_key_create') return { ok: true as const, operation, data: { key, apiKey: `chm_key_apk_${'k'.repeat(24)}.${'s'.repeat(43)}` }, truncated: false as const };
       return { ok: true as const, operation, data: { key: { ...key, state: 'REVOKED' as const, generation: 2, revokedAt: 2 } }, truncated: false as const };
+    }),
+    callEvents: vi.fn(async (request) => {
+      if (request.operation === 'events_subscriptions_list') return { ok: true as const, data: { subscriptions: [{
+        id: `sub_${'e'.repeat(32)}`, name: 'cloudharness.task.completed' as const, arguments: { workspaceId }, callbackOrigin: 'https://hooks.example',
+        viaApiKey: false, state: 'ACTIVE' as const, createdAt: '2026-08-17T00:00:00.000Z', refreshBefore: '2026-08-18T00:00:00.000Z',
+        deliveryStatus: { active: true, lastDeliveryAt: null, lastError: null }, recentDeliveries: []
+      }] } };
+      return { ok: true as const, data: { revoked: true } };
     })
   };
   const app = express();
@@ -521,6 +529,25 @@ describe('dashboard BFF', () => {
     });
     expect(revoked.status).toBe(200);
     expect(revoked.text).not.toContain('.ssss');
+  });
+
+  it('lists MCP event subscriptions by origin only and revokes one with CSRF', async () => {
+    const listed = await send('/api/v1/event-subscriptions');
+    expect(listed.status).toBe(200);
+    expect(listed.json.data.subscriptions[0]).toMatchObject({ callbackOrigin: 'https://hooks.example', state: 'ACTIVE' });
+    expect(runner.callEvents).toHaveBeenCalledWith({ version: 1, principal, operation: 'events_subscriptions_list', input: {} });
+
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const withoutCsrf = await send(`/api/v1/event-subscriptions/sub_${'e'.repeat(32)}/revoke`, { method: 'POST', headers: { ...headers, 'x-csrf-token': 'wrong' }, body: '{}' });
+    expect(withoutCsrf.status).toBe(403);
+    const malformed = await send('/api/v1/event-subscriptions/sub_bad/revoke', { method: 'POST', headers, body: '{}' });
+    expect(malformed.status).toBe(400);
+    const revoked = await send(`/api/v1/event-subscriptions/sub_${'e'.repeat(32)}/revoke`, { method: 'POST', headers, body: '{}' });
+    expect(revoked.status).toBe(200);
+    expect(revoked.json.data).toEqual({ revoked: true });
+    expect(runner.callEvents).toHaveBeenLastCalledWith({ version: 1, principal, operation: 'events_subscription_revoke', input: { id: `sub_${'e'.repeat(32)}` } });
   });
 
   it('exposes safe server configuration and status without control-plane fields', async () => {

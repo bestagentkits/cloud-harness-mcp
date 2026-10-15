@@ -10,6 +10,7 @@ import { GitHubApiInstallationVerifier } from './github-api-installation-verifie
 import { GitHubBindingService, GitHubSetupStateStore } from './github-binding-service.js';
 import { SqliteGitHubInstallationStore } from './github-installation-sqlite-store.js';
 import { MetadataStore } from './metadata-store.js';
+import { McpEventService } from './mcp-event-service.js';
 import { SecretKeyring } from './secret-keyring.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
@@ -37,6 +38,14 @@ const apiKeyStore = new ApiKeyStore(store.database, (database, principalId, acti
   });
 });
 const apiKeys = new ApiKeyService(store, apiKeyStore);
+const events = new McpEventService({
+  database: store.database,
+  resolvePrincipal: (principal) => store.resolvePrincipal(principal),
+  keyring,
+  audit: (database, principalId, action, subscriptionId, generation, details) => {
+    metadata.recordAuditInTransaction(database, principalId, action, 'mcp_event_subscription', subscriptionId, generation, details);
+  }
+});
 const githubInstallations = new SqliteGitHubInstallationStore(store.database);
 const githubBinding = config.githubApp
   ? new GitHubBindingService(new GitHubSetupStateStore(store.database), githubInstallations, new GitHubApiInstallationVerifier(config.githubApp))
@@ -69,7 +78,7 @@ void oauthGrantSettings.reconcileDefault().then(
 const server = createServer(createRunnerApp(config, service, controls, apiKeys, {
   settings: oauthGrantSettings,
   resolvePrincipal: (principal) => store.resolvePrincipal(principal)
-}));
+}, events));
 server.listen(config.port, config.host, () => logger.info({ host: config.host, port: config.port }, 'runner listening'));
 
 async function shutdown(signal: string) {
