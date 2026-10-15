@@ -165,6 +165,22 @@ describe('workspace close check', () => {
     expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 1 });
   });
 
+  it('still counts files left in a worktree directory that lost its link to the repository', async () => {
+    const clone = cleanClone();
+    const worktree = join(clone, '.worktrees', 'unlinked');
+    git(clone, 'worktree', 'add', '--quiet', '--detach', worktree, 'HEAD');
+    writeFileSync(join(worktree, 'data.txt'), 'data\n');
+    rmSync(join(worktree, '.git'));
+    // Both the checked-out README.md and the new file are now untracked files of the main checkout.
+    expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 2 });
+  });
+
+  it('reads a worktree path that contains a newline whole', async () => {
+    const clone = cleanClone();
+    git(clone, 'worktree', 'add', '--quiet', '--detach', join('.worktrees', 'odd\nname'), 'HEAD');
+    expect((await closeCheck()).data).toEqual({ uncommittedPaths: 0, stashes: 0, unpushedCommits: 0 });
+  });
+
   it('counts the commits of a worktree whose directory was removed', async () => {
     const clone = cleanClone();
     const worktree = join(clone, '.worktrees', 'gone');

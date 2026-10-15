@@ -1678,27 +1678,30 @@ const handlers = {
       const quiet = { includeStderr: false };
       // Linked worktrees live under `.worktrees/` inside the checkout. Each is checked on its own, so a
       // clean one does not count as an untracked directory and the paths inside a dirty one are counted.
-      const worktreeRes = await git(['worktree', 'list', '--porcelain'], quiet);
+      // NUL-separated, so a path containing a newline is read whole.
+      const worktreeRes = await git(['worktree', 'list', '--porcelain', '-z'], quiet);
       if (worktreeRes.exitCode !== 0 || worktreeRes.truncated) return fail('INTERNAL_ERROR', 'git worktree list failed');
-      const worktreeBlocks = worktreeRes.output.split('\n\n');
-      const mainPath = worktreeBlocks[0]?.split('\n').find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
+      const worktreeBlocks = worktreeRes.output.split('\0\0').filter(Boolean);
+      const mainPath = worktreeBlocks[0]?.split('\0').find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
       if (!mainPath) return fail('INTERNAL_ERROR', 'git worktree list returned no main worktree');
       const linkedWorktrees = worktreeBlocks.slice(1).map((block) => {
-        const lines = block.split('\n');
+        const lines = block.split('\0');
         const path = lines.find((line) => line.startsWith('worktree '))?.slice('worktree '.length);
         const head = lines.find((line) => line.startsWith('HEAD '))?.slice('HEAD '.length);
         return { path, head, prunable: lines.some((line) => line === 'prunable' || line.startsWith('prunable ')) };
       }).filter((worktree) => worktree.path);
       const statusArgs = ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'];
-      // Only the linked worktrees themselves are excluded, so files a repository tracks elsewhere still count.
+      // Only the live linked worktrees checked below are excluded, so files a repository keeps elsewhere, and
+      // whatever is left in a prunable worktree's directory, are still counted by the main status.
       const worktreeExclusions = linkedWorktrees
+        .filter((worktree) => !worktree.prunable)
         .map((worktree) => relative(mainPath, worktree.path))
         .filter((path) => path && !path.startsWith('..') && !isAbsolute(path))
         .map((path) => `:(exclude,literal)${path}`);
       const statusRes = await git([...statusArgs, '--', '.', ...worktreeExclusions], quiet);
       if (statusRes.exitCode !== 0 || statusRes.truncated) return fail('INTERNAL_ERROR', 'git status failed');
       const worktreeStatuses = [];
-      // A prunable worktree's directory is gone, so it holds no files; its HEAD is still counted below.
+      // A prunable worktree has lost its link to the repository, so the main status covers its directory instead.
       for (const worktree of linkedWorktrees.filter((candidate) => !candidate.prunable)) {
         const result = await git(['-C', worktree.path, ...statusArgs], quiet);
         if (result.exitCode !== 0 || result.truncated) return fail('INTERNAL_ERROR', 'git status failed in a linked worktree');
