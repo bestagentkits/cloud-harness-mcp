@@ -175,6 +175,9 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     minFreeBytes: process.env.MIN_FREE_BYTES,
     maxWorkspaceBytes: process.env.MAX_WORKSPACE_BYTES,
     maxActiveWorkspacesPerOwner: process.env.MAX_ACTIVE_WORKSPACES_PER_OWNER,
+    // An empty value must not coerce to 0, which would select immediate auto-close.
+    recoverableGraceSeconds: process.env.WORKSPACE_RECOVERABLE_GRACE_SECONDS || undefined,
+    lifecycleEnvironmentKeys: lifecycleEnvironmentKeys(),
     reaperIntervalSeconds: process.env.REAPER_INTERVAL_SECONDS,
     artifactRoot: process.env.ARTIFACT_ROOT,
     maxArtifactBytes: process.env.MAX_ARTIFACT_BYTES,
@@ -253,6 +256,17 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
  */
 export function packageApprovalUnavailable(config: Pick<RunnerConfig, 'authMode' | 'packagesEnabled' | 'packagesApprovalMode'>): boolean {
   return config.packagesEnabled && config.packagesApprovalMode === 'required' && (config.authMode ?? 'owner-bearer') === 'owner-bearer';
+}
+
+/** The lifecycle values the environment sets explicitly; an empty variable counts as unset, as zod coercion does not. */
+function lifecycleEnvironmentKeys(): string[] {
+  const variables: Array<[string, string]> = [
+    ['maxActiveWorkspacesPerOwner', 'MAX_ACTIVE_WORKSPACES_PER_OWNER'],
+    ['idleTtlSeconds', 'WORKSPACE_IDLE_TTL_SECONDS'],
+    ['wallTtlSeconds', 'WORKSPACE_WALL_TTL_SECONDS'],
+    ['recoverableGraceSeconds', 'WORKSPACE_RECOVERABLE_GRACE_SECONDS']
+  ];
+  return variables.filter(([, name]) => process.env[name] !== undefined && process.env[name] !== '').map(([key]) => key);
 }
 
 export const loadRunnerConfig = (): RunnerConfig => loadRunnerConfigWithReadiness().config;

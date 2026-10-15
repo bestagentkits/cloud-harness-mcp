@@ -11,6 +11,7 @@ import {
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 import { SecretDescriptionSchema, SecretNameSchema, SecretNameShapeSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
 import { ToolkitSelectionSchema } from './tool-schemas.js';
+import { InstanceSettingsUpdateInputSchema } from './workspace-lifecycle.js';
 import {
   JournalTypeSchema,
   KnowledgeItemIdSchema,
@@ -110,9 +111,7 @@ const settingsUpdateRequest = z.object({
   version: z.literal(2),
   principal: RunnerPrincipalSelectorSchema,
   operation: z.literal('settings_update'),
-  input: z.object({
-    defaultNetworkProfile: z.union([ExecutorNetworkProfileSchema, z.null()])
-  }).strict()
+  input: InstanceSettingsUpdateInputSchema
 }).strict();
 
 const settingsNetworkCheckRequest = z.object({
