@@ -68,6 +68,20 @@ Reading a skill never activates it or runs a script; scripts
 still run only through `skills_run` with the digest `skills_list` returned.
 Details: [Repository automation](references/repository-automation.md#skills).
 
+## MCP Events
+
+The remote HTTP endpoint also advertises MCP Events (`events/list`,
+`events/subscribe`, `events/unsubscribe`, webhook delivery only) for four
+terminal-state notifications: `cloudharness.task.completed`,
+`cloudharness.task.failed`, `cloudharness.agent.settled`, and
+`cloudharness.agent.failed`. These are client-side protocol subscriptions, not
+tools: only the host client subscribes, with its own HTTPS callback and secret,
+so never try to create one through a tool call or a workspace command. An event
+carries ids, status, codes, and timestamps only, so after one arrives call
+`tasks_status` or `agent_status` for the result. Events are not replayed and may
+arrive more than once; when your client lacks events, or in local stdio mode,
+poll `tasks_status`, `operation_wait`, or `agent_status` instead.
+
 ## Effective workflow
 
 1. **Preflight and authorization.** Confirm the target repository. Use a

@@ -211,6 +211,50 @@ path in this system. Three facts define its boundary.
    to a running API, and rotate the referenced secrets if that boundary is
    crossed.
 
+## MCP Events webhook egress
+
+[MCP Events](mcp-api.md#mcp-events-webhook-delivery) add a second
+principal-chosen API egress destination: the webhook callback URL a client
+passes to `events/subscribe`. The boundary reuses the gateway's address policy
+and adds these decisions:
+
+- **The API dials; the runner never does.** The runner records events in its
+  state database and leases due deliveries, with their unsealed signing
+  secrets, to the API over the service-token channel. Only the API's egress
+  network reaches a callback.
+- **Callback URLs are public HTTPS only.** No embedded credentials, no
+  fragment, and no loopback, private, link-local, CGNAT, or metadata target.
+  The URL is validated at subscribe time and re-resolved and re-validated
+  before every attempt, with the socket pinned to the validated addresses, so
+  a hostname that later rebinds inward is never dialled. Redirects are not
+  followed (a `3xx` counts as a failed attempt), and resolution, request time,
+  and response size share one bound.
+- **Proof of control before delivery.** A signed verification challenge must
+  be echoed before a principal's first subscription to a callback URL, so a
+  client cannot direct signed traffic at an endpoint it does not control.
+- **Minimal payloads.** Events carry identifiers, statuses, codes, and
+  timestamps, never command text, output, prompts, or messages. Recorded
+  failure reasons are server-generated categories, never the receiver's
+  response body; the dashboard shows only the callback origin, because a path
+  can carry receiver routing tokens.
+- **Sealed secrets.** Webhook secrets are encrypted with the runner keyring,
+  bound to the subscription and secret generation, never returned by any
+  listing, and re-sealed by the `secrets:rekey` entry point.
+- **Revocation tracks the credential.** A subscription created over a managed
+  API key is revoked when the next delivery is claimed after that key is
+  revoked or expires. Dashboard revocation is not a block list: the client can
+  re-subscribe while its credential stays valid. Subscribe, rotation,
+  unsubscribe, and revoke actions are recorded in the audit log as
+  `mcp_event.*` entries.
+
+Residual risk: a principal can make the API send small signed requests to any
+public HTTPS endpoint that answers the challenge. That is accepted for this
+single-owner harness and is bounded by the per-principal subscription quota.
+The executable owners are
+[`apps/api/src/events/webhook-sender.ts`](../apps/api/src/events/webhook-sender.ts),
+[`apps/api/src/mcp-gateway/url-policy.ts`](../apps/api/src/mcp-gateway/url-policy.ts),
+and [`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts).
+
 ## Downstream MCP OAuth client
 
 The gateway can also hold an OAuth grant for a downstream MCP server. This is

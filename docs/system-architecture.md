@@ -28,6 +28,12 @@ MCP gateway client
   -> principal-configured downstream MCP server over an API-owned, address-pinned
      outbound socket
 
+MCP Events webhook delivery
+  -> runner records a terminal task/agent event in its state database
+  -> API delivery worker leases due deliveries over the service channel
+  -> client-registered public HTTPS callback over an API-owned, address-pinned
+     outbound socket (Standard Webhooks signature)
+
 Dashboard Terminal (browser)
   -> /dashboard BFF on the API (session cookie, Origin, CSRF)
   -> runner internal terminal operation (service bearer, not an MCP tool)
@@ -325,6 +331,20 @@ schemas and lifecycle owners are under `apps/runner/src/metadata-*`,
 [`apps/runner/src/secret-metadata-store.ts`](../apps/runner/src/secret-metadata-store.ts),
 [`apps/runner/src/artifact-store.ts`](../apps/runner/src/artifact-store.ts), and
 [`apps/runner/src/github-installation-sqlite-store.ts`](../apps/runner/src/github-installation-sqlite-store.ts).
+
+MCP Events use a transactional outbox in the same state database (schema
+v13). The outbox row and its per-subscription delivery rows are written in the
+same savepoint as the generation-guarded terminal transition they describe, so
+a state change and its event commit or roll back together, and a task or agent
+yields at most one logical event. The runner owns subscriptions, fan-out,
+retry scheduling, retention, and API-key revocation checks; the API only
+claims leased deliveries, signs, and posts them, so a crash between post and
+report re-sends the same event after the lease expires. The owners are
+[`apps/runner/src/event-outbox.ts`](../apps/runner/src/event-outbox.ts),
+[`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts),
+and
+[`apps/api/src/events/event-delivery-worker.ts`](../apps/api/src/events/event-delivery-worker.ts);
+the protocol contract is in [MCP API](mcp-api.md#mcp-events-webhook-delivery).
 
 The admission policy permits up to `MAX_ACTIVE_WORKSPACES_PER_OWNER` concurrent
 counted workspaces per principal (default 3; `1` restores single-workspace

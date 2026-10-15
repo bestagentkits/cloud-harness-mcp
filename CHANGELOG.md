@@ -1,3 +1,10 @@
+# [0.66.0-beta.5](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.4...v0.66.0-beta.5) (2026-10-15)
+
+
+### Bug Fixes
+
+* **mcp-gateway:** polish downstream OAuth status handling ([#329](https://github.com/bestagentkits/cloud-harness-mcp/issues/329)) ([f38d48a](https://github.com/bestagentkits/cloud-harness-mcp/commit/f38d48a6d898fb887895506f055fedef92aefcee)), closes [#299](https://github.com/bestagentkits/cloud-harness-mcp/issues/299)
+
 # [0.66.0-beta.4](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.3...v0.66.0-beta.4) (2026-10-14)
 
 

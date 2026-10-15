@@ -21,5 +21,6 @@ Cloud Harness MCP records an immutable audit log of all tool invocations and lif
 - File mutations (`files_write`, `files_delete`, `files_apply_patch`).
 - Git operations (`git_push`, branch switches, commits).
 - Security events (authentication failures, permission denials, rate limits).
+- MCP Events subscriptions (`mcp_event.subscribed`, `mcp_event.secret_rotated`, `mcp_event.unsubscribed`, `mcp_event.revoked`, including revocation that follows an API key's revocation or expiry).
 
 Logs record timestamps, authenticated principal ID, target repository, and exit status.

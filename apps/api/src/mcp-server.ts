@@ -1,5 +1,6 @@
 import { McpServer, type AuthInfo, type CallToolResult, type McpRequestContext } from '@modelcontextprotocol/server';
 import {
+  ApiKeyIdSchema,
   TOOL_SPECS,
   ToolResultSchema,
   WorkspaceIdSchema,
@@ -14,6 +15,11 @@ import { RunnerClient } from './runner-client.js';
 import type { OperationBackend, SkillsExtensionOperation } from './operation-backend.js';
 import { formatToolResultText } from './mcp-response-text.js';
 import { registerSkillsExtension, supportsSkillsExtension } from './skills-extension.js';
+import { registerEventsExtension, type EventsBackend } from './events/events-extension.js';
+import type { WebhookSender } from './events/webhook-sender.js';
+
+/** MCP Events wiring; absent (no `events` capability) unless the API runs its delivery egress. */
+export type EventsOptions = { sender: WebhookSender };
 
 export function resultToMcp(result: ToolResult): CallToolResult {
   return {
@@ -32,8 +38,24 @@ export class RunnerOperationBackend implements OperationBackend {
   constructor(
     private readonly client: RunnerClient,
     private readonly principal?: RunnerPrincipalSelector,
-    private readonly skillsWorkspaceId?: WorkspaceId
-  ) {}
+    private readonly skillsWorkspaceId?: WorkspaceId,
+    eventsOptions?: EventsOptions & { apiKeyId?: string | undefined }
+  ) {
+    if (eventsOptions) {
+      const principal = this.principal;
+      this.events = {
+        sender: eventsOptions.sender,
+        authenticated: principal !== undefined,
+        apiKeyId: eventsOptions.apiKeyId,
+        call: async (operation, input, signal) => {
+          if (!principal) return { ok: false, error: { code: 'FORBIDDEN', message: 'Authentication context unavailable' } };
+          return await client.callEvents({ version: 1, principal, operation, input } as Parameters<RunnerClient['callEvents']>[0], signal);
+        }
+      };
+    }
+  }
+
+  readonly events?: EventsBackend;
 
   async call(operation: RunnerOperation, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
     if (!this.principal) return unauthenticated();
@@ -79,7 +101,7 @@ export function createCloudHarnessServer(
   }
 
   const server = new McpServer(
-    { name: 'cloud-harness-mcp', version: '0.66.0-beta.4' },
+    { name: 'cloud-harness-mcp', version: '0.66.0-beta.5' },
     { instructions }
   );
 
@@ -104,11 +126,21 @@ export function createCloudHarnessServer(
     );
   }
   if (supportsSkillsExtension(backend)) registerSkillsExtension(server, backend);
+  if (backend.events) registerEventsExtension(server, backend.events);
   return server;
 }
 
-export function createCloudHarnessServerFactory(client: RunnerClient): (context: McpRequestContext) => McpServer {
-  return (context) => createCloudHarnessServer(new RunnerOperationBackend(client, principalFromAuthInfo(context.authInfo)));
+/** Managed API key behind the request, set only by the API-key authentication lane. */
+function eventsFor(authInfo: AuthInfo | undefined, events: EventsOptions | undefined): (EventsOptions & { apiKeyId?: string }) | undefined {
+  if (!events) return undefined;
+  const apiKeyId = ApiKeyIdSchema.safeParse(authInfo?.extra?.apiKeyId);
+  return apiKeyId.success ? { ...events, apiKeyId: apiKeyId.data } : events;
+}
+
+export function createCloudHarnessServerFactory(client: RunnerClient, events?: EventsOptions): (context: McpRequestContext) => McpServer {
+  return (context) => createCloudHarnessServer(new RunnerOperationBackend(
+    client, principalFromAuthInfo(context.authInfo), undefined, eventsFor(context.authInfo, events)
+  ));
 }
 
 /**
@@ -127,10 +159,12 @@ export function bindWorkspace(authInfo: AuthInfo, workspaceId: WorkspaceId): Aut
  * named by the endpoint path. A request without a valid binding fails closed instead of falling
  * back to the unbound skill set.
  */
-export function createWorkspaceBoundServerFactory(client: RunnerClient): (context: McpRequestContext) => McpServer {
+export function createWorkspaceBoundServerFactory(client: RunnerClient, events?: EventsOptions): (context: McpRequestContext) => McpServer {
   return (context) => {
     const workspaceId = WorkspaceIdSchema.safeParse(context.authInfo?.extra?.[WORKSPACE_BINDING_KEY]);
     if (!workspaceId.success) throw new Error('Workspace binding unavailable');
-    return createCloudHarnessServer(new RunnerOperationBackend(client, principalFromAuthInfo(context.authInfo), workspaceId.data));
+    return createCloudHarnessServer(new RunnerOperationBackend(
+      client, principalFromAuthInfo(context.authInfo), workspaceId.data, eventsFor(context.authInfo, events)
+    ));
   };
 }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import express, { type NextFunction, type Response, type Router } from 'express';
-import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
+import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, McpEventSubscriptionIdSchema, McpEventsRunnerDataSchemas, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, PackagePlanApproveInputSchema, PackagePlanRejectInputSchema, PackageRemoveInputSchema, PackageRollbackInputSchema, type ApiConfig, type ApiKeyManagementOperation, type McpEventsRunnerRequest, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
 import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
@@ -203,6 +203,11 @@ export function registerDashboardControlRoutes(
   router.delete('/api/v1/api-keys/:keyId', apiKeyEndpoint('api_key_revoke', (request) => ({
     keyId: internalId('apk').parse(request.params.keyId), ...generation.parse(request.body)
   })));
+  // MCP Events subscriptions: visible and revocable here, never created here.
+  router.get('/api/v1/event-subscriptions', eventsEndpoint(() => ({ operation: 'events_subscriptions_list', input: {} })));
+  router.post('/api/v1/event-subscriptions/:subscriptionId/revoke', eventsEndpoint((request) => ({
+    operation: 'events_subscription_revoke', input: { id: McpEventSubscriptionIdSchema.parse(request.params.subscriptionId) }
+  })));
   router.get('/api/v1/knowledge', endpoint('knowledge_dashboard_list', (request) => ({
     ...(request.query.kind ? { kind: String(request.query.kind) } : {}),
     ...(request.query.scope ? { scope: String(request.query.scope) } : {}),
@@ -307,6 +312,27 @@ export function registerDashboardControlRoutes(
           const serverId = typeof payload.serverId === 'string' ? payload.serverId : undefined;
           if (serverId) gateway?.invalidateConnection(serverId);
         }
+      } catch (error) { next(error); }
+    };
+  }
+
+  function eventsEndpoint(build: (request: DashboardRequest) => { operation: 'events_subscriptions_list' | 'events_subscription_revoke'; input: Record<string, unknown> }) {
+    return async (request: DashboardRequest, response: Response, next: NextFunction): Promise<void> => {
+      try {
+        const selected = principal(request, response);
+        if (!selected) return;
+        if (!runner.callEvents) {
+          response.status(503).json({ error: 'unavailable', message: 'MCP Events are not available.' });
+          return;
+        }
+        const { operation, input } = build(request);
+        const result = await runner.callEvents({ version: 1, principal: selected, operation, input } as McpEventsRunnerRequest);
+        if (!result.ok) {
+          const status = result.error.code === 'NOT_FOUND' ? 404 : result.error.code === 'INVALID_INPUT' ? 400 : 503;
+          response.status(status).json({ error: result.error.code.toLowerCase(), message: status === 503 ? 'MCP Events are temporarily unavailable.' : result.error.message });
+          return;
+        }
+        response.json({ data: McpEventsRunnerDataSchemas[operation].parse(result.data) });
       } catch (error) { next(error); }
     };
   }

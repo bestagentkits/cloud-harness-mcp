@@ -257,6 +257,11 @@ The HTTP endpoint also serves built-in and owner skills through the
 `skills/get`, `resources/read`); see
 [Skills over MCP extension](docs/mcp-api.md#skills-over-mcp-extension).
 
+The remote HTTP endpoint also offers signed webhook notifications when a durable
+task or managed agent finishes, through MCP Events (`events/list`,
+`events/subscribe`, `events/unsubscribe`); see
+[MCP Events](docs/mcp-api.md#mcp-events-webhook-delivery).
+
 ### Retained artifacts
 
 `artifacts_snapshot`, `artifacts_list`, `artifacts_read`, `artifacts_restore`,

@@ -81,7 +81,9 @@ ambiguous or pre-existing nonstandard application routing. It backs up the live
 site under `/etc/cloud-harness-mcp/nginx-backups/`, installs the two
 `/dashboard` locations, the exact streaming `/mcp-gateway`, `/mcp-api-key`, and
 `/mcp-api-key/gateway` locations, and the streaming `^~ /mcp/workspaces/` prefix
-location for the workspace-bound MCP endpoint when they are missing, validates
+location for the workspace-bound MCP endpoint, and the exact
+`/dashboard/mcp-oauth/callback` location that keeps the downstream MCP OAuth
+callback's one-time query out of the access log, when they are missing, validates
 with `nginx -t`, and reloads nginx. Existing routes
 must match the managed blocks exactly after comments and blank lines are
 removed; otherwise the command fails closed without changing the site, with a
@@ -93,7 +95,9 @@ workspace-bound block; reconcile it with
 [`deploy/nginx/cloud-harness-mcp.conf`](../deploy/nginx/cloud-harness-mcp.conf)
 by hand, then rerun the command. Exit status `10` is the same refusal for an
 unmanaged route to `127.0.0.1:3100/mcp-api-key/` that is not the managed
-`/mcp-api-key/gateway` block. A
+`/mcp-api-key/gateway` block. Exit status `11` is the same refusal for an
+existing route mentioning `/dashboard/mcp-oauth` that is not the managed
+callback block. A
 failed validation or reload restores the exact backup and attempts to reload
 it. The operation is idempotent. Do not use bootstrap for this upgrade.
 
@@ -412,11 +416,15 @@ set, so its deployment is ordered:
 ### Downstream MCP OAuth redirect
 
 Downstream MCP OAuth (the gateway authenticating *to* third-party MCP
-servers) needs no new route or Access application. Its browser callback,
-`/dashboard/mcp-oauth/callback`, is served by the existing `/dashboard/`
-nginx location and protected by the same Access application as the rest of
-the dashboard, so it only works in `cloudflare-access` mode and only for a
-browser that holds a current Access session. Do not add an Access bypass for
+servers) needs no new Access application. Its browser callback,
+`/dashboard/mcp-oauth/callback`, is protected by the same Access application
+as the rest of the dashboard, so it only works in `cloudflare-access` mode and
+only for a browser that holds a current Access session. Its exact nginx
+location sets `access_log off` so the one-time `code` and `state` in its query
+string never reach the access log; the release deployment adds it through
+`cloud-harness-upgrade-nginx` (exit `11` means the site already has an
+unmanaged callback route to reconcile by hand). The Caddy template strips both
+query parameters from its JSON log instead. Do not add an Access bypass for
 the callback: it requires the verified principal to consume the one-time
 flow.
 

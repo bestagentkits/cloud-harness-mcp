@@ -38,6 +38,7 @@ URLs, or raw command content into tickets or shared logs.
 | Workspace-bound `/mcp/workspaces/<workspaceId>` returns an nginx HTML `404` while `/mcp` works | The host's nginx site predates the managed `^~ /mcp/workspaces/` prefix route. Run `sudo /usr/local/sbin/cloud-harness-upgrade-nginx` (Access-mode release deploys run it; owner-bearer deploys do not). A `404` that reaches the API instead means the path is wrong: JSON `not_found` for a segment that is not a well-formed workspace ID, or no route for extra path segments after it. The static API-key lane forwards only exact `/mcp` and `/mcp-gateway`, so it cannot reach this endpoint. |
 | `https://api.harness.zuey.me/mcp-gateway` returns an nginx HTML `404` while `https://api.harness.zuey.me/mcp` works | The Worker forwards to the hidden origin route `/mcp-api-key/gateway`, but the host's nginx site predates that exact location (or the Worker was redeployed before the origin release). Run `sudo /usr/local/sbin/cloud-harness-upgrade-nginx` and confirm the origin release serves the route; the Access application needs no change. If `/mcp` on the same hostname also fails, the lane itself is disabled or misrouted; use the API-key rows above. |
 | `cloud-harness-upgrade-nginx` exits `10` | The selected server block already proxies something to `127.0.0.1:3100/mcp-api-key/` that is not the managed `/mcp-api-key/gateway` block, so the command refused to change the site. Reconcile it with `deploy/nginx/cloud-harness-mcp.conf` by hand and rerun; see [deployment](deployment.md). |
+| `cloud-harness-upgrade-nginx` exits `11` | The selected server block already has a location mentioning `/dashboard/mcp-oauth` that is not the managed callback block (which sets `access_log off`), so the command refused to change the site. Reconcile it with `deploy/nginx/cloud-harness-mcp.conf` by hand and rerun; see [deployment](deployment.md). |
 | `cloud-harness-upgrade-nginx` exits `9` | The selected server block already has a location or `proxy_pass` under `/mcp/` that is not the managed workspace-bound block, so the command refused to change the site. Reconcile that block with `deploy/nginx/cloud-harness-mcp.conf` by hand and rerun; see [deployment](deployment.md). |
 | Dashboard skill ZIP upload returns `413` for an archive below 8 MiB | The application accepts skill archives up to 8 MiB, but an older managed nginx dashboard route can still inherit the server's 1 MiB request cap. Run the current `deploy/scripts/upgrade-nginx-dashboard.sh` (or the normal release deployment, which runs it) so `/dashboard/` gets `client_max_body_size 8m`; archives above 8 MiB remain intentionally rejected by the API and runner. |
 | Dashboard skill ZIP upload is rejected with `INVALID_INPUT` | The archive broke a reader bound in `apps/runner/src/skill-archive.ts`: 8 MiB archive, 200 `SKILL.md` documents, 20,000 files in total, and 64 Ki characters per `SKILL.md`. Only `SKILL.md` documents are imported; bundled assets are ignored and never expanded. Split a larger library into several archives. |
@@ -88,7 +89,8 @@ MCP server. Inbound Managed OAuth problems are in the table above.
 
 | Symptom | Meaning and next check |
 |---|---|
-| Connect returns `503 unavailable` | `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is unset on the API. Set it as described in [deployment](deployment.md#downstream-mcp-oauth-redirect). |
+| OAuth panel reads **Not configured** with no Connect, or Connect returns `503 unavailable` | `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is unset on the API. Set it as described in [deployment](deployment.md#downstream-mcp-oauth-redirect). A grant connected before it was unset keeps working and can still be disconnected. |
+| A Reconnect failed but the panel still reads **Connected** with a warning | Expected: a failed or declined interactive attempt keeps the working grant and records the cause as `lastError`, which clears on the next successful Connect or refresh. |
 | Test or Refresh returns `409` / a gateway call returns `AUTHORIZATION_REQUIRED` | The server has OAuth configured but no usable grant for this principal: never connected, disconnected, discarded after an endpoint or client change, or the refresh was rejected. Use Connect or Reauthorize on the server's Overview tab. Background calls intentionally never start an authorization. |
 | Callback returns to the server page with `oauth=error&reason=invalid_state` or `expired` | The one-time flow was already used, superseded by a newer Connect, started by another principal, or older than its short lifetime. Start Connect again from the same browser session. |
 | `reason=denied` | The user or the authorization server declined the request. Check the requested scopes and the account used at the provider. |
@@ -228,6 +230,25 @@ a lost response; do not create a second key until the first result is resolved.
   reaped independently of TTL workspace files. Inspect redacted audit metadata
   and the configured artifact root; a database row without its matching
   payload indicates an incoherent restore.
+
+## MCP Events
+
+The error mapping is owned by
+[`apps/api/src/events/events-extension.ts`](../apps/api/src/events/events-extension.ts);
+inspect delivery state with `GET /dashboard/api/v1/event-subscriptions`, which
+shows each subscription's state, callback origin, last error category, and
+recent deliveries.
+
+| Symptom | Meaning and next check |
+|---|---|
+| `server/discover` has no `events` capability | The client is on local stdio, local HTTP, or `/mcp-gateway`, or the release predates events. Use the remote `/mcp` endpoint. |
+| `-32602` on `events/subscribe` | The `delivery.url` is not a public `https` URL without credentials or fragment, the secret is not `whsec_` plus base64 of 24–64 bytes, or the filter arguments have an unknown key. |
+| `-32011` / `-32012` / `-32013` / `-32014` | Unknown event name; unauthenticated request or a filter naming a workspace, task, or agent the caller does not own; per-principal active or retained subscription quota reached (revoked and expired rows count until retention purges them); a delivery mode other than `webhook`. |
+| `-32015` with `reason` | The callback failed the signed verification challenge: it was unreachable, timed out, failed TLS, answered non-`2xx` or a redirect, or did not echo the exact `challenge`. Fix the receiver; nothing was stored. |
+| `-32603` "Events are temporarily unavailable" | The runner is unreachable or has no secret keyring configured. Check `/readyz` and the runner keyring. |
+| Subscription `REVOKED` without a dashboard action | It was created over a managed API key that was revoked or expired; the audit entry carries `reason: credential_revoked`. Subscribe again with a valid credential. |
+| Deliveries `ABANDONED` | The receiver kept failing past the retry window, answered `410` or `413`, or the subscription lapsed or was revoked first. Events are not replayed; fix the receiver and wait for the next transition. |
+| Duplicate deliveries at the receiver | Expected under at-least-once delivery. Deduplicate on `webhook-id`. |
 
 ## Containers and cleanup
 

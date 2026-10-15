@@ -1,6 +1,8 @@
 import {
   InternalRunnerRequestSchema,
   InternalRunnerResponseSchema,
+  McpEventsRunnerRequestSchema,
+  McpEventsRunnerResponseSchema,
   MetadataRunnerRequestSchema,
   ApiKeyAuthenticationRequestSchema,
   ApiKeyAuthenticationResponseSchema,
@@ -13,6 +15,8 @@ import {
   type ApiKeyManagementOperation,
   type ApiKeyManagementResponse,
   type InternalRunnerOperation,
+  type McpEventsRunnerRequest,
+  type McpEventsRunnerResponse,
   type MetadataRunnerOperation,
   type RunnerOperation,
   type RunnerPrincipalSelector,
@@ -52,6 +56,13 @@ export class RunnerClient {
     return await this.requestJson('/v1/internal/api-keys', request.data, ApiKeyAuthenticationResponseSchema, () => ({
       ok: false, error: 'authentication_failed'
     }));
+  }
+
+  /** MCP Events subscription and delivery-queue operations; principal scoping travels in the request. */
+  async callEvents(request: McpEventsRunnerRequest, signal?: AbortSignal): Promise<McpEventsRunnerResponse> {
+    return await this.requestJson('/v1/internal/events', McpEventsRunnerRequestSchema.parse(request), McpEventsRunnerResponseSchema, () => ({
+      ok: false, error: { code: 'UNAVAILABLE', message: 'Runner is unavailable' }
+    }), signal);
   }
 
   private async request(

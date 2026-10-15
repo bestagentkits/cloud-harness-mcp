@@ -104,9 +104,13 @@ Things to know:
 - **Disconnect** asks the provider to revoke the token where it supports that,
   then deletes it from Cloud Harness either way. Changing the endpoint or the
   manual client, or turning OAuth off, also discards the stored sign-in.
-- **Your operator must enable it.** If **Connect** reports that MCP OAuth is
-  unavailable, the deployment has not set
-  [`MCP_DOWNSTREAM_OAUTH_REDIRECT_URL`](/reference/environment-variables).
+- **A failed reconnect keeps a working sign-in.** If you cancel or the
+  provider rejects a **Reconnect**, the existing sign-in keeps working and the
+  panel shows the failure as a warning until the next successful sign-in.
+- **Your operator must enable it.** Until the deployment sets
+  [`MCP_DOWNSTREAM_OAUTH_REDIRECT_URL`](/reference/environment-variables), the
+  panel reads **Not configured** and offers no **Connect**. A sign-in made
+  before then keeps working and can still be disconnected.
 
 ## Connect an MCP client
 
