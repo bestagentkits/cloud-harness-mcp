@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ExecutorNetworkProfileSchema, IntegrationCredentialIdSchema, ModelCredentialIdSchema, ModelProfileIdSchema, SkillImportJobIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, SkillSourceIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { IntegrationCredentialCreateInputSchema, IntegrationCredentialRotateInputSchema, SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { ToolResultSchema } from './mcp-results.js';
+import { DecisionRerankToolsInputSchema } from './decision-plane.js';
 import {
   AgentModelProfileInputSchema,
   AgentModelProfileUpdateInputSchema,
@@ -207,6 +208,7 @@ export const MetadataRunnerOperationSchema = z.enum([
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
   'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
   'skill_suggest', 'typesafe_status',
+  'decision_rerank_tools', 'decision_plane_status',
   'integration_credential_list', 'integration_credential_create', 'integration_credential_rotate', 'integration_credential_delete'
 ]);
 
@@ -220,6 +222,8 @@ const skillVersion = z.string().max(64).regex(
 const metadataInputs = {
   skill_suggest: SkillSuggestInputSchema,
   typesafe_status: z.object({}).strict(),
+  decision_rerank_tools: DecisionRerankToolsInputSchema,
+  decision_plane_status: z.object({}).strict(),
   integration_credential_list: z.object({}).strict(),
   integration_credential_create: IntegrationCredentialCreateInputSchema,
   integration_credential_rotate: IntegrationCredentialRotateInputSchema,
@@ -625,6 +629,7 @@ export const MetadataRunnerRequestSchema = z.discriminatedUnion('operation', [
   metadataRequest('skill_set_update'), metadataRequest('skill_set_delete'), metadataRequest('skill_set_preview'),
   metadataRequest('toolkit_registry_list'), metadataRequest('toolkit_registry_update'), metadataRequest('toolkit_registry_refresh'),
   metadataRequest('skill_suggest'), metadataRequest('typesafe_status'),
+  metadataRequest('decision_rerank_tools'), metadataRequest('decision_plane_status'),
   metadataRequest('integration_credential_list'), metadataRequest('integration_credential_create'),
   metadataRequest('integration_credential_rotate'), metadataRequest('integration_credential_delete')
 ]);

@@ -46,13 +46,13 @@ export type RosterEntry = {
  * The wire shape, verified against the live endpoint rather than inferred.
  *
  * A call carries three top-level fields, `model`, `state`, and `questions`, and every question is a
- * tagged union whose `criteria` is a map. A choice's criteria map is keyed by option, and a noul's is
- * keyed by the two polar answers.
+ * tagged union. A choice's criteria map is keyed by option, and a noul's is
+ * keyed by the two polar answers. A score's criteria is a two-item list of its low and high anchors.
  */
 export type TypesafeQuestion =
   | { type: 'choice'; question: string; criteria: Record<string, string> }
   | { type: 'noul'; question: string; criteria: Record<string, string> }
-  | { type: 'score'; question: string; criteria: Record<string, string> };
+  | { type: 'score'; question: string; criteria: [low: string, high: string] };
 
 export type TypesafeRequest = {
   model: string;

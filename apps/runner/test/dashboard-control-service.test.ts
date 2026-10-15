@@ -255,6 +255,17 @@ describe('integration credentials and typesafe', () => {
     expect(result.data).toMatchObject({ suggested: null, reason: 'empty_roster', outboundCalls: 0 });
   });
 
+  it('reports egress as disabled when the operator turned TYPESAFE_EGRESS off', async () => {
+    const { controls } = setup(true, { typesafeEgress: 'off' });
+    await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_key', expectedGeneration: 0
+    }));
+
+    const status = await controls.execute(request('typesafe_status', {}));
+
+    expect(status.data).toMatchObject({ configured: true, enabled: false });
+  });
+
   it('answers not_configured with zero outbound work when the owner has no key', async () => {
     const { controls } = setup();
 

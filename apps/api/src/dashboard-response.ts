@@ -242,7 +242,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'skill_revision_list', 'skill_revision_get', 'skill_revision_diff',
   'skill_set_list', 'skill_set_get', 'skill_set_create', 'skill_set_update', 'skill_set_delete', 'skill_set_preview',
   'toolkit_registry_list', 'toolkit_registry_update', 'toolkit_registry_refresh',
-  'skill_suggest', 'typesafe_status',
+  'skill_suggest', 'typesafe_status', 'decision_plane_status',
   'skill_revision_fork',
   'skill_revision_create',
   'skill_archive_import',
@@ -627,6 +627,8 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
     };
   }
   if (operation === 'typesafe_status') return pick(data, ['configured', 'enabled', 'endpoint', 'model']);
+  // Status is counters and latency per purpose; there is no state text or answer to leak.
+  if (operation === 'decision_plane_status') return pick(data, ['enabled', 'purposes', 'provider', 'configured', 'metrics']);
   if (operation === 'integration_credential_list') return list(data, 'credentials', integrationCredentialKeys);
   if (operation === 'integration_credential_delete') return pick(data, ['id', 'deleted']);
   if (operation === 'integration_credential_create' || operation === 'integration_credential_rotate') return pick(data, integrationCredentialKeys);

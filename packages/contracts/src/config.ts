@@ -3,6 +3,7 @@ import { ExecutorNetworkProfileSchema } from './identifiers.js';
 import { AgentProxyOperationSchema } from './runner-api.js';
 import { BUILDABLE_PACKAGE_ECOSYSTEMS, BuildablePackageEcosystemSchema } from './package-schemas.js';
 import { SecretNameSchema } from './secret-policy.js';
+import { ImplementedDecisionPurposeSchema } from './decision-plane.js';
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
 
 const httpsUrl = z.url().refine((value) => {
@@ -243,6 +244,13 @@ export const RunnerConfigSchema = z.object({
   // Managed toolbox gate. Off by default: the `bash` toolbox target runs a disposable executor-image
   // container per call, so the operator opts in before any caller can start one.
   packagesEnabled: enabled.default(false),
+  /** Instance-wide TypeSafe egress switch: `off` stops skill suggestions and the Decision Plane even with a key. */
+  typesafeEgress: z.enum(['on', 'off']).default('on'),
+  // Decision Plane purposes the operator opted into. Empty (the default) keeps every path on its
+  // deterministic behaviour; an enabled purpose still needs the owner's TypeSafe credential.
+  decisionPlanePurposes: z.array(ImplementedDecisionPurposeSchema).max(2)
+    .refine((values) => new Set(values).size === values.length, 'decision plane purposes must be unique')
+    .default([]),
   // Concurrent toolbox containers per runner. Each one holds the executor memory, CPU, and pid bounds, so
   // this caps what toolbox calls can take from the host independently of the workspace limit.
   toolboxMaxConcurrent: z.coerce.number().int().min(1).max(16).default(2),

@@ -126,6 +126,15 @@ and approves plans through internal runner operations behind the BFF. The
 [security model](security-model.md#managed-toolbox-packages) records the
 boundary.
 
+The Decision Plane ([ADR 0004](adr/0004-decision-plane.md)) lives in the
+runner under
+[`apps/runner/src/decision-plane/`](../apps/runner/src/decision-plane/). It
+holds the provider key, redaction, bounds, metrics, and audit. The workspace
+service asks it for an advisory diagnosis of generic GitHub failures. The API's
+gateway `search` reaches it only through the internal `decision_rerank_tools`
+operation, and checks the returned ordering against its own candidate pool. The
+API never holds the provider credential.
+
 Third-party agent toolkits are acquired and normalized via disposable clone helpers running on a dedicated internal Docker network (`cloud-harness-provisioning`). All helper egress routes through the dual-homed `provisioning-proxy` (port 3128) with DNS destination allowlists. Normalized bundles are published to runner Content-Addressed Storage (`TOOLKIT_CACHE_ROOT`) and mounted into executors read-only at `/opt/cloud-harness/owner-skills:ro` or staged into `.cloud-harness/skills` under explicit confirmation.
 
 ## Composition roots and transports

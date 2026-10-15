@@ -161,6 +161,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     terminalIdleTimeoutMs: process.env.TERMINAL_IDLE_TIMEOUT_MS,
     terminalMaxLifetimeMs: process.env.TERMINAL_MAX_LIFETIME_MS,
     packagesEnabled: process.env.PACKAGES_ENABLED,
+    typesafeEgress: process.env.TYPESAFE_EGRESS,
+    decisionPlanePurposes: process.env.DECISION_PLANE_PURPOSES === undefined ? undefined : csv(process.env.DECISION_PLANE_PURPOSES, ''),
     toolboxMaxConcurrent: process.env.TOOLBOX_MAX_CONCURRENT,
     packagesRoot: process.env.PACKAGES_ROOT,
     packagesEcosystems: process.env.PACKAGES_ECOSYSTEMS === undefined ? undefined : csv(process.env.PACKAGES_ECOSYSTEMS, ''),

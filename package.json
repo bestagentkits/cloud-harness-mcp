@@ -53,7 +53,8 @@
     "verify:production": "node scripts/verify-production.mjs",
     "verify:compose": "node scripts/verify-compose-boundaries.mjs",
     "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build",
-    "verify:typesafe": "node scripts/verify-typesafe.mjs"
+    "verify:typesafe": "node scripts/verify-typesafe.mjs",
+    "bench:decision-plane": "npm run build -w @cloud-harness/contracts && RUN_DECISION_PLANE_BENCHMARK=true vitest run test/benchmarks/decision-plane.bench.test.ts"
   },
   "devDependencies": {
     "@semantic-release/changelog": "7.0.0",

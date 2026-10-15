@@ -1,6 +1,7 @@
 import {
   HarnessError,
   McpGatewayQualifiedToolNameSchema,
+  type DecisionRerankToolsResult,
   type ErrorCode,
   type McpGatewayResolvedCredentials,
   type McpGatewayServerView,
@@ -21,7 +22,7 @@ import {
   searchTools
 } from './catalog.js';
 import { redactGatewayError, sanitizeGatewayText } from './redaction.js';
-import type { GatewayCatalogFilter, GatewayUpstreamTool } from './types.js';
+import type { GatewayCatalogFilter, GatewayToolMatch, GatewayUpstreamTool } from './types.js';
 
 /**
  * The gateway service owns every meta-tool decision: catalog reads, progressive
@@ -169,6 +170,11 @@ function callPathToolDefinition(tool: McpGatewayToolView): CallPathToolDefinitio
   };
 }
 
+/** The lexical pool a semantic rerank chooses from: wider than the page, bounded by the search cap. */
+function rerankPoolSize(limit: number): number {
+  return Math.min(25, Math.max(limit * 4, 12));
+}
+
 export class McpGatewayService {
   private readonly timeoutMs: number;
   private readonly maxResponseBytes: number;
@@ -226,11 +232,14 @@ export class McpGatewayService {
     try {
       const catalog = await this.loadCatalog(principal, {}, context.signal);
       assertCatalogWithinLimit(catalog, this.maxCatalogBytes);
-      const matches = searchTools(filterSearchable(catalog), input.query, {
+      // Lexical search over the permission-filtered catalog is the candidate generator; the
+      // Decision Plane may only reorder that pool, so it can never surface a tool policy hides.
+      const pool = searchTools(filterSearchable(catalog), input.query, {
         ...(input.server ? { server: input.server } : {}),
-        limit: input.limit
+        limit: rerankPoolSize(input.limit)
       });
-      const results = matches.map((match) => ({
+      const reranked = await this.rerank(principal, input.query, pool, context.signal);
+      const results = (reranked?.matches ?? pool).slice(0, input.limit).map((match) => ({
         tool: match.tool.qualifiedName,
         server: match.tool.serverName,
         description: match.tool.description,
@@ -249,7 +258,10 @@ export class McpGatewayService {
         requestBytes: bytes(input.query),
         responseBytes: bytes(results)
       });
-      return ok({ results }, `Found ${results.length} matching MCP tool(s)`);
+      return ok(
+        { results, ranking: reranked ? 'semantic' : 'lexical', ...(reranked ? { decisionId: reranked.decisionId } : {}) },
+        `Found ${results.length} matching MCP tool(s)`
+      );
     } catch (error) {
       return await this.fail(principal, error, {
         operation: 'search',
@@ -638,6 +650,47 @@ export class McpGatewayService {
   private reconcileConnection(server: McpGatewayServerView): string {
     if (!server.enabled) return 'disabled';
     return this.connections.health(server.id);
+  }
+
+  /**
+   * Asks the runner's Decision Plane to reorder a lexical candidate pool. Any failure, a disabled
+   * plane, or an answer that is not exactly a permutation of the pool keeps the lexical order.
+   */
+  private async rerank(
+    principal: RunnerPrincipalSelector,
+    query: string,
+    pool: GatewayToolMatch[],
+    signal?: AbortSignal
+  ): Promise<{ matches: GatewayToolMatch[]; decisionId: string } | undefined> {
+    if (pool.length < 2) return undefined;
+    try {
+      const response = await this.runner.callInternal(
+        'decision_rerank_tools',
+        {
+          query,
+          candidates: pool.map((match) => ({ tool: match.tool.qualifiedName, description: match.tool.description }))
+        },
+        principal,
+        signal
+      );
+      const data = response.ok ? response.data as Partial<DecisionRerankToolsResult> | undefined : undefined;
+      if (!data || data.applied !== true || typeof data.decisionId !== 'string' || !Array.isArray(data.ordering)) return undefined;
+      const byName = new Map(pool.map((match) => [match.tool.qualifiedName, match]));
+      const ordering = data.ordering;
+      if (ordering.length !== pool.length || new Set(ordering).size !== pool.length || !ordering.every((name) => typeof name === 'string' && byName.has(name))) {
+        return undefined;
+      }
+      const relevance = data.relevance && typeof data.relevance === 'object' ? data.relevance : {};
+      const matches = ordering.map((name) => {
+        const match = byName.get(name)!;
+        const value = relevance[name];
+        const score = typeof value === 'number' && Number.isFinite(value) ? Math.min(1, Math.max(0.001, value)) : match.score;
+        return { tool: match.tool, score };
+      });
+      return { matches, decisionId: data.decisionId };
+    } catch {
+      return undefined;
+    }
   }
 
   private async loadCatalog(

@@ -1,0 +1,98 @@
+# ADR 0004: Advisory Decision Plane for Semantic Routing and Failure Diagnosis
+
+- **Status:** Accepted
+- **Date:** 2026-10-15
+- **Related Issues:** Issue #217 (this feature). It builds on the existing
+  TypeSafe skill suggester and does not relax
+  [ADR 0001](0001-multi-tenant-isolation-and-haas-ladder.md).
+
+## Context
+
+The harness makes many small semantic choices with hand-written rules: lexical
+search ranking for MCP gateway tools, and regex classification of GitHub CLI
+failures. Rules are predictable but brittle. A query that describes a tool in
+different words ranks the right tool low. A failure that matches no rule comes
+back as the generic `GITHUB_ACTION_FAILED`, which tells the caller nothing about
+whether a retry, a credential refresh, or a human is needed.
+
+A typed semantic model such as TypeSafe Jev answers bounded questions (pick one
+option, yes/no, a score) with calibrated probabilities in a few hundred
+milliseconds. Sending harness state to a third party, though, is a new egress
+path for workspace output, and a model must never become an authority that
+grants access.
+
+## Decision
+
+Add a provider-neutral **Decision Plane** in the runner. A caller submits
+redacted state and typed questions for one *purpose*, and gets typed answers
+with confidence back, or a deterministic fallback.
+
+### It advises and never authorizes
+
+- Deterministic policy runs first and stays the authority. The MCP gateway
+  removes denied and disabled tools *before* ranking. The plane may only reorder
+  the lexical pool it was offered, and the API rejects any ordering that is not
+  an exact permutation of that pool.
+- The GitHub classifier keeps its `code` and `retryable`. A diagnosis is added
+  as `data.diagnosis` (always `advisory: true`), and only when the classifier
+  fell through to its generic code.
+- Every failure path (purpose off, no key, redaction failure, timeout, rate
+  limit, HTTP error, malformed or out-of-range answer, low confidence) returns
+  the deterministic result. The plane never throws into its caller.
+
+### It is off until the owner opts in twice
+
+`DECISION_PLANE_PURPOSES` enables purposes instance-wide and defaults to empty.
+A call is also made only for an owner who has stored a TypeSafe integration key,
+which is the same key the skill suggester uses. Only implemented purposes are
+accepted. The purposes reserved in the contract for later phases (supervision,
+risk, context selection, test selection) are rejected by configuration.
+
+### Credentials and data stay in the runner
+
+The provider key is decrypted in the runner, which already holds integration
+credentials. The API only calls the internal `decision_rerank_tools` operation
+and receives an ordering. State is redacted fail-closed before it is sent: the
+workspace secret snapshot, model-provider credentials, the provider key itself,
+and the transient GitHub token are removed together with known credential
+shapes. If redaction fails, nothing is sent. Request bodies, timeouts, and
+per-owner call rate are bounded in the code.
+
+### Decisions are observable without recording content
+
+Each evaluation writes one `decision.evaluated` audit row with scalar fields
+only: purpose, provider, model, outcome, fallback reason, selection, confidence,
+policy effect, latency, sizes, and tokens. Prompts and answers are never
+persisted. In-memory metrics per purpose (fallback rate, latency p50/p95, low
+confidence, tokens) are served at `GET /api/v1/decision-plane/status`.
+
+## Evidence
+
+The benchmark harness `test/benchmarks/decision-plane.bench.test.ts` uses golden
+fixtures in `test/fixtures/decision-plane/`. Its offline suite always runs, and
+`npm run bench:decision-plane` adds the live provider when `TYPESAFE_API_KEY` is
+set. The live run recorded on 2026-10-15 against `jev-1.13.0`:
+
+| Measure | Deterministic | With Decision Plane |
+| --- | --- | --- |
+| Routing top-1 (16 queries) | 68.8% | 100% |
+| Routing top-3 | 87.5% | 100% |
+| Generic-fallback failures left unnamed (11 cases) | 100% | 18.2% (one is genuinely unknown, one abstained below confidence) |
+| Correct kind on nameable failures | — | 90% |
+| Latency p50 / p95 | — | ~100 ms / ~300 ms |
+
+The fixtures are small and hand-written. They show that the mechanism works and
+stays safe, not how well it generalizes. An unreachable provider falls back on
+every call; that path is checked offline.
+
+## Consequences
+
+- Owners who opt in send redacted query text and failure output tails to the
+  TypeSafe endpoint. That egress is documented in the
+  [security model](../security-model.md#decision-plane).
+- A search is slower by one bounded provider call. The gateway still answers
+  lexically when the plane is off, slow, or wrong.
+- Later purposes from issue #217 (agent supervision, risk gating, context and
+  test selection) reuse the same interface, fallback, and audit shape. Each one
+  needs its own implementation and benchmark before it is accepted in
+  configuration.

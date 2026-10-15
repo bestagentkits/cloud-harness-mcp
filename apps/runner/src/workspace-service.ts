@@ -60,6 +60,8 @@ import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
+import { FailureIntelligence } from './decision-plane/failure-intelligence.js';
+import type { DecisionPlane } from './decision-plane/decision-plane.js';
 import {
   hasGitHubFallbackCredential,
   resolveGitHubFallbackCredential,
@@ -248,6 +250,7 @@ export class WorkspaceService {
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
   private readonly metadata?: MetadataStore | undefined;
+  private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
@@ -347,6 +350,11 @@ export class WorkspaceService {
       const rec = this.store.byId(wsId);
       if (rec) this.store.clearMutationLock(rec.id, rec.generation);
     };
+  }
+
+  /** Attaches the Decision Plane. Without it every failure keeps only its deterministic classification. */
+  useDecisionPlane(plane: DecisionPlane): void {
+    this.failureIntelligence = new FailureIntelligence(plane);
   }
 
   /**
@@ -2552,11 +2560,26 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
 
       const classified = classifyGitHubFailure(result.stderr, result.stdout, action);
+      // Known errors stay authoritative; only the generic fallback gains an advisory diagnosis, and
+      // the deterministic code and retryability are returned unchanged either way.
+      const diagnosis = classified.code === 'GITHUB_ACTION_FAILED'
+        ? await this.failureIntelligence?.diagnose({
+          ownerId: record.ownerId,
+          workspaceId: record.id,
+          operation: `github ${action}`,
+          deterministicCode: classified.code,
+          exitCode: result.exitCode,
+          stderr: result.stderr,
+          stdout: result.stdout,
+          networkProfile: record.networkProfile,
+          secrets: () => ({ ...this.redactionSecrets(record.id), GITHUB_ACTION_TOKEN: token })
+        }).catch(() => undefined)
+        : undefined;
       return {
         result: {
           ok: false,
           message: classified.message,
-          data: { output: result.stdout || result.stderr },
+          data: { output: result.stdout || result.stderr, ...(diagnosis ? { diagnosis } : {}) },
           error: {
             code: classified.code,
             message: classified.message,

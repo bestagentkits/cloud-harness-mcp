@@ -114,6 +114,7 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/agent-model-profiles/:id/disable', endpoint('model_profile_disable', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
   router.delete('/api/v1/agent-model-profiles/:id', endpoint('model_profile_delete', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
   router.get('/api/v1/agent-model-config-status', endpoint('model_config_status', () => ({})));
+  router.get('/api/v1/decision-plane/status', endpoint('decision_plane_status', () => ({})));
   router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.get('/api/v1/artifacts', endpoint('artifact_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.post('/api/v1/artifacts', endpoint('artifact_snapshot', (request) => request.body as Record<string, unknown>));

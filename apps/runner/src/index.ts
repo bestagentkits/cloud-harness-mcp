@@ -11,6 +11,7 @@ import { GitHubBindingService, GitHubSetupStateStore } from './github-binding-se
 import { SqliteGitHubInstallationStore } from './github-installation-sqlite-store.js';
 import { MetadataStore } from './metadata-store.js';
 import { SecretKeyring } from './secret-keyring.js';
+import { createRunnerDecisionPlane } from './decision-plane/runner-decision-plane.js';
 import { StateStore } from './state-store.js';
 import { WorkspaceService } from './workspace-service.js';
 import { DockerAgentGatewayControl } from './agent-gateway-control.js';
@@ -50,7 +51,17 @@ const artifacts = new ArtifactStore(store.database, {
 const gatewayControl = config.agents ? new DockerAgentGatewayControl() : undefined;
 const modelProfiles = keyring ? new ModelProfileStateRepository(store.database, keyring) : undefined;
 const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts, { modelProfiles, ...(gatewayControl !== undefined ? { gateway: gatewayControl } : {}) });
-const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding, modelProfiles, gatewayControl, keyring);
+const decisionPlane = createRunnerDecisionPlane({
+  // The instance-wide TypeSafe egress switch closes the Decision Plane too: it shares the key and endpoint.
+  purposes: config.typesafeEgress === 'off' ? [] : config.decisionPlanePurposes,
+  database: metadata.database,
+  keyring,
+  modelProfiles,
+  recordAudit: (principalId, action, subjectType, subjectId, generation, details) =>
+    metadata.recordAudit(principalId, action, subjectType, subjectId, generation, details)
+});
+service.useDecisionPlane(decisionPlane);
+const controls = new DashboardControlService(config, store, metadata, artifacts, service, githubInstallations, githubBinding, modelProfiles, gatewayControl, keyring, decisionPlane);
 // A job row outlives the process that wrote it, so startup is where an import interrupted by a restart is
 // turned into a terminal state rather than left as a spinner that never ends.
 controls.reconcileInterruptedImports();
