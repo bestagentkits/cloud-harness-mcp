@@ -67,6 +67,32 @@ requireBoundary(networks['model-gateway-test-agent'].internal === true && networ
 requireBoundary(!testGateway.ports?.length && !fakeProvider.ports?.length, 'test topology must not publish host ports');
 requireBoundary(!(testGateway.volumes ?? []).some((mount) => mount.target.includes('/run/model-gateway-secrets/provider-api-key')), 'test topology must not mount the production provider secret');
 
+// The agent image's entrypoint runs the agent runtime, so a keepalive `command` would only become runtime
+// arguments and the container would exit and restart forever; its entrypoint itself must idle.
+const agentKeepalive = services['agent-image-keepalive'];
+requireBoundary(
+  JSON.stringify(agentKeepalive.entrypoint) === JSON.stringify(['/sbin/tini', '--', 'sleep', 'infinity']) && !agentKeepalive.command?.length,
+  'agent image keepalive must replace the agent runtime entrypoint with an idle sleep'
+);
+requireBoundary(
+  JSON.stringify(services['executor-image-keepalive'].command) === JSON.stringify(['sleep', 'infinity']) && !services['executor-image-keepalive'].entrypoint,
+  'executor image keepalive must idle under the executor tini entrypoint'
+);
+for (const name of ['executor-image-keepalive', 'agent-image-keepalive']) {
+  const keepalive = services[name];
+  requireBoundary(
+    keepalive.read_only === true &&
+      keepalive.network_mode === 'none' &&
+      sameNames(keepalive.cap_drop ?? [], ['ALL']) &&
+      (keepalive.security_opt ?? []).includes('no-new-privileges:true') &&
+      keepalive.user === '10001:10001' &&
+      !keepalive.volumes?.length &&
+      !keepalive.ports?.length &&
+      !Object.keys(keepalive.environment ?? {}).length,
+    `${name} must stay an unprivileged, offline, mount-free idle holder`
+  );
+}
+
 const published = services.ingress.ports ?? [];
 requireBoundary(published.length === 1, 'ingress must publish exactly one port');
 requireBoundary(published[0].host_ip === '127.0.0.1' && Number(published[0].target) === 3100, 'ingress must bind only loopback port 3100');
