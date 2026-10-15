@@ -174,6 +174,12 @@ requireBoundary(
   'nginx API-key MCP gateway route must preserve its hidden upstream path under the API-key Access scope'
 );
 
+const oauthCallback = locationBlock(/location = \/dashboard\/mcp-oauth\/callback \{[^}]+\}/s);
+requireBoundary(
+  oauthCallback.includes('access_log off;') && oauthCallback.includes('proxy_pass http://127.0.0.1:3100/dashboard/mcp-oauth/callback;'),
+  'nginx MCP OAuth callback route must keep its one-time code and state out of the access log'
+);
+
 const nginxUpgrade = readFileSync('deploy/scripts/upgrade-nginx-dashboard.sh', 'utf8');
 requireBoundary(
   nginxUpgrade.includes('dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1'),
@@ -196,8 +202,13 @@ requireBoundary(
   nginxUpgrade.includes('location = /mcp-api-key/gateway {') &&
     nginxUpgrade.includes('proxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;') &&
     nginxUpgrade.includes('add_api_key_gateway="$((1 - api_key_gateway_installed))"') &&
-    nginxUpgrade.includes('$api_key_gateway_installed -eq 1 ]]'),
+    nginxUpgrade.includes('$api_key_gateway_installed -eq 1 && $oauth_callback_installed -eq 1 ]]'),
   'nginx upgrade must install the hidden API-key MCP gateway route when it is absent'
+);
+requireBoundary(
+  nginxUpgrade.includes('location = /dashboard/mcp-oauth/callback {') &&
+    nginxUpgrade.includes('add_oauth_callback="$((1 - oauth_callback_installed))"'),
+  'nginx upgrade must install the access-log-free MCP OAuth callback route when it is absent'
 );
 requireBoundary(
   nginxUpgrade.includes('location ^~ /mcp/workspaces/ {') &&

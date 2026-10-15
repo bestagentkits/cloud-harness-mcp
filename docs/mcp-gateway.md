@@ -245,7 +245,10 @@ existing boundaries rather than adding a new credential path:
   never open a browser and never create state at an authorization server: they
   may only use or refresh an existing grant. Without a usable grant they fail
   with the structured `AUTHORIZATION_REQUIRED` code so the dashboard can offer
-  Connect or Reauthorize.
+  Connect or Reauthorize. A failed or declined Connect, Reconnect, or
+  Reauthorize never touches the stored tokens, so a grant that still works
+  stays `connected` (or `reauthorization_required`) and only records the
+  failure as `lastError`.
 - **Grants are principal-scoped and bound to what they were issued for.**
   Changing the endpoint or the manual client, or turning OAuth off, discards
   the stored grant locally; deleting the server deletes it. **Disconnect**
@@ -258,8 +261,12 @@ existing boundaries rather than adding a new credential path:
   client registration. A server that supports neither needs a manual client.
 - **Deployment opt-in.** Connect is unavailable until
   `MCP_DOWNSTREAM_OAUTH_REDIRECT_URL` is set; see
-  [configuration](configuration.md#downstream-mcp-oauth). Because the dashboard
-  is served only in `cloudflare-access` mode, the callback is too.
+  [configuration](configuration.md#downstream-mcp-oauth). Until then the
+  status reads `not_configured` and the dashboard offers no Connect; an
+  existing connected grant keeps working in the background and can still be
+  disconnected. Because the dashboard is served only in `cloudflare-access`
+  mode, the callback is too. The shipped nginx and Caddy configurations keep
+  the callback's one-time `code` and `state` out of their access logs.
 
 The state names, status fields, and transitions are owned by
 `McpGatewayOAuthStateSchema` and `McpGatewayOAuthStatusSchema` in the

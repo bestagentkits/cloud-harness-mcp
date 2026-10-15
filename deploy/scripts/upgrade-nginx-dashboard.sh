@@ -107,12 +107,14 @@ api_key_count=$(grep -Fxc '    location = /mcp-api-key {' "$block_file" || true)
 gateway_count=$(grep -Fxc '    location = /mcp-gateway {' "$block_file" || true)
 api_key_gateway_count=$(grep -Fxc '    location = /mcp-api-key/gateway {' "$block_file" || true)
 workspace_count=$(grep -Fxc '    location ^~ /mcp/workspaces/ {' "$block_file" || true)
+oauth_callback_count=$(grep -Fxc '    location = /dashboard/mcp-oauth/callback {' "$block_file" || true)
 dashboard_entry_block=$(sed -n '/^    location = \/dashboard {$/,/^    }$/p' "$block_file")
 dashboard_prefix_block=$(sed -n '/^    location \^~ \/dashboard\/ {$/,/^    }$/p' "$block_file")
 api_key_block=$(sed -n '/^    location = \/mcp-api-key {$/,/^    }$/p' "$block_file")
 gateway_block=$(sed -n '/^    location = \/mcp-gateway {$/,/^    }$/p' "$block_file")
 api_key_gateway_block=$(sed -n '/^    location = \/mcp-api-key\/gateway {$/,/^    }$/p' "$block_file")
 workspace_block=$(sed -n '/^    location \^~ \/mcp\/workspaces\/ {$/,/^    }$/p' "$block_file")
+oauth_callback_block=$(sed -n '/^    location = \/dashboard\/mcp-oauth\/callback {$/,/^    }$/p' "$block_file")
 normalize_block() {
   sed -E \
     -e 's/[[:space:]]*#.*$//' \
@@ -127,6 +129,9 @@ expected_api_key=$'location = /mcp-api-key {\nproxy_pass http://127.0.0.1:3100/m
 expected_gateway=$'location = /mcp-gateway {\nproxy_pass http://127.0.0.1:3100/mcp-gateway;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
 expected_api_key_gateway=$'location = /mcp-api-key/gateway {\nproxy_pass http://127.0.0.1:3100/mcp-api-key/gateway;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
 expected_workspace=$'location ^~ /mcp/workspaces/ {\nproxy_pass http://127.0.0.1:3100/mcp/workspaces/;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
+# The downstream MCP OAuth callback carries a one-time code and state in its query string,
+# so its exact route keeps the request out of the access log.
+expected_oauth_callback=$'location = /dashboard/mcp-oauth/callback {\naccess_log off;\nproxy_pass http://127.0.0.1:3100/dashboard/mcp-oauth/callback;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\n}'
 
 dashboard_installed=0
 dashboard_legacy=0
@@ -158,11 +163,15 @@ workspace_installed=0
 if [[ $workspace_count -eq 1 && $(normalize_block <<< "$workspace_block") == "$expected_workspace" ]]; then
   workspace_installed=1
 fi
+oauth_callback_installed=0
+if [[ $oauth_callback_count -eq 1 && $(normalize_block <<< "$oauth_callback_block") == "$expected_oauth_callback" ]]; then
+  oauth_callback_installed=1
+fi
 
 if [[ $dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_installed -eq 1 && $workspace_installed -eq 1 &&
-      $api_key_gateway_installed -eq 1 ]]; then
+      $api_key_gateway_installed -eq 1 && $oauth_callback_installed -eq 1 ]]; then
   "$nginx_command" -t
-  echo "Cloud Harness dashboard, API-key, gateway, API-key gateway, and workspace MCP nginx routes are already installed"
+  echo "Cloud Harness dashboard, OAuth callback, API-key, gateway, API-key gateway, and workspace MCP nginx routes are already installed"
   exit 0
 fi
 if [[ $dashboard_present -eq 0 ]] &&
@@ -195,8 +204,13 @@ if [[ $workspace_installed -eq 0 ]] &&
   echo "existing workspace MCP nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 9
 fi
+if [[ $oauth_callback_installed -eq 0 ]] &&
+   { [[ $oauth_callback_count -ne 0 ]] || grep -Fq '/dashboard/mcp-oauth' "$block_file"; }; then
+  echo "existing MCP OAuth callback nginx routing is not the managed shape; refusing to overwrite it" >&2
+  exit 11
+fi
 
-awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - dashboard_present))" -v upgrade_dashboard="$dashboard_legacy" -v add_api_key="$((1 - api_key_installed))" -v add_gateway="$((1 - gateway_installed))" -v add_api_key_gateway="$((1 - api_key_gateway_installed))" -v add_workspace="$((1 - workspace_installed))" '
+awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - dashboard_present))" -v upgrade_dashboard="$dashboard_legacy" -v add_api_key="$((1 - api_key_installed))" -v add_gateway="$((1 - gateway_installed))" -v add_api_key_gateway="$((1 - api_key_gateway_installed))" -v add_workspace="$((1 - workspace_installed))" -v add_oauth_callback="$((1 - oauth_callback_installed))" '
   upgrade_dashboard && NR >= opening && NR <= closing && $0 == "    location ^~ /dashboard/ {" {
     print
     print "        client_max_body_size 8m;"
@@ -263,6 +277,15 @@ awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - das
       print "    }"
       print ""
     }
+    if (add_oauth_callback) {
+      print "    location = /dashboard/mcp-oauth/callback {"
+      print "        access_log off;"
+      print "        proxy_pass http://127.0.0.1:3100/dashboard/mcp-oauth/callback;"
+      print "        proxy_set_header Host $host;"
+      print "        proxy_set_header X-Forwarded-Proto $scheme;"
+      print "    }"
+      print ""
+    }
     if (add_dashboard) {
       print "    location = /dashboard {"
       print "        proxy_pass http://127.0.0.1:3100/dashboard;"
@@ -301,4 +324,4 @@ fi
 "$nginx_command" -t
 "$systemctl_command" reload nginx
 trap 'rm -f -- "$block_file" "$rendered"' EXIT
-echo "installed Cloud Harness dashboard, API-key, gateway, API-key gateway, and workspace MCP nginx routes; backup: $backup"
+echo "installed Cloud Harness dashboard, OAuth callback, API-key, gateway, API-key gateway, and workspace MCP nginx routes; backup: $backup"

@@ -302,6 +302,28 @@ describe('MCP servers dashboard renderers', () => {
     expect(renderMcpServerDetail(server, [], [], 'overview', undefined, gateway)).toContain('Authorization required');
   });
 
+  it('offers no Connect without a redirect URL but keeps Disconnect for a stored grant', () => {
+    const server = { ...connected, oauth: { scopes: 'read' } };
+    const base = {
+      serverId: server.id, enabled: true, state: 'not_configured', issuer: null, requestedScopes: 'read',
+      grantedScopes: null, registrationMode: null, authorizedAt: null, expiresAt: null,
+      lastRefreshAt: null, lastError: null, redirectUrl: null
+    };
+    const empty = renderMcpServerDetail(server, [], [], 'overview', undefined, gateway, base);
+    expect(empty).toContain('Not configured');
+    expect(empty).toContain('MCP_DOWNSTREAM_OAUTH_REDIRECT_URL');
+    expect(empty).not.toContain('data-mcp-oauth-connect');
+    expect(empty).not.toContain('data-mcp-oauth-disconnect');
+    expectCspSafe(empty);
+    const stale = renderMcpServerDetail(server, [], [], 'overview', undefined, gateway, { ...base, issuer: 'https://as.example.com' });
+    expect(stale).not.toContain('data-mcp-oauth-connect');
+    expect(stale).toContain('data-mcp-oauth-disconnect');
+    const working = renderMcpServerDetail(server, [], [], 'overview', undefined, gateway, { ...base, state: 'connected', issuer: 'https://as.example.com' });
+    expect(working).toContain('Connected');
+    expect(working).not.toContain('data-mcp-oauth-connect');
+    expect(working).toContain('data-mcp-oauth-disconnect');
+  });
+
   it('renders a not-found state for an unavailable server', () => {
     const html = renderMcpServerDetail(undefined, [], [], 'overview', undefined, gateway);
     expect(html).toContain('MCP server not found.');

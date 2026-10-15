@@ -112,6 +112,20 @@ describe('McpOAuthStore', () => {
     expect(store.markGrant(a, 'srv_none', 'error', 'x')).toBe(false);
   });
 
+  it('keeps a working grant usable when an interactive reconnect fails', () => {
+    const { store, a, server } = setup();
+    const options = { configured: true, redirectUrl: null, requestedScopes: null };
+    store.saveGrant(a, server.id, grantInput());
+    expect(store.markGrant(a, server.id, 'error', 'the authorization server denied the request')).toBe(true);
+    expect(store.status(a, server.id, options)).toMatchObject({ state: 'connected', lastError: 'the authorization server denied the request' });
+    expect(store.loadGrant(a, server.id)?.state).toBe('connected');
+    store.markGrant(a, server.id, 'reauthorization_required', 'refresh failed');
+    store.markGrant(a, server.id, 'error', 'exchange failed');
+    expect(store.status(a, server.id, options)).toMatchObject({ state: 'reauthorization_required', lastError: 'exchange failed' });
+    store.saveGrant(a, server.id, grantInput({ expectedGeneration: 1 }));
+    expect(store.status(a, server.id, options)).toMatchObject({ state: 'connected', lastError: null });
+  });
+
   it('disconnects, cascades on server deletion, and never audits secret material', () => {
     const { metadata, store, a, server } = setup();
     store.saveGrant(a, server.id, grantInput());

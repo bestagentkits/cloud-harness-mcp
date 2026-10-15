@@ -2346,18 +2346,23 @@ function renderMcpOAuthSection(server, status) {
         ${status.redirectUrl ? `<dt>Redirect URL</dt><dd class="mono wrap">${escape(status.redirectUrl)}</dd>` : ''}
       </dl>` : '';
   const error = status?.lastError ? `<p class="warning wrap">${escape(status.lastError)}</p>` : '';
-  const disconnect = status && state !== 'authorization_required' && state !== 'not_configured'
+  // Without a redirect URL an interactive step cannot complete, so Connect is not offered.
+  const interactive = !status || Boolean(status.redirectUrl);
+  const setup = interactive ? '' : '<p class="wrap">Connecting needs <code>MCP_DOWNSTREAM_OAUTH_REDIRECT_URL</code> set to this dashboard\'s <code>/dashboard/mcp-oauth/callback</code> URL.</p>';
+  const connect = interactive
+    ? `<button class="accent-btn" type="button" data-mcp-oauth-connect="${escape(server.id)}">${escape(connectLabel)}</button>` : '';
+  // A stored grant can always be disconnected, even when Connect is unavailable.
+  const disconnect = status && (status.issuer || (state !== 'authorization_required' && state !== 'not_configured'))
     ? `<button class="danger" type="button" data-mcp-oauth-disconnect="${escape(server.id)}">Disconnect</button>` : '';
+  const actions = connect || disconnect ? `<div class="row-actions">${connect}${disconnect}</div>` : '';
   return `
     <section class="panel" aria-labelledby="mcp-oauth-heading">
       <h2 id="mcp-oauth-heading">OAuth</h2>
       <p><span class="status${connected ? ' connected' : ''}">${escape(label)}</span></p>
       ${error}
+      ${setup}
       ${facts}
-      <div class="row-actions">
-        <button class="accent-btn" type="button" data-mcp-oauth-connect="${escape(server.id)}">${escape(connectLabel)}</button>
-        ${disconnect}
-      </div>
+      ${actions}
     </section>`;
 }
 
