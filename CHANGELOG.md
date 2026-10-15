@@ -1,3 +1,10 @@
+# [0.66.0-beta.7](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.6...v0.66.0-beta.7) (2026-10-15)
+
+
+### Features
+
+* **decision-plane:** advisory semantic routing and failure diagnosis ([#334](https://github.com/bestagentkits/cloud-harness-mcp/issues/334)) ([d4e5226](https://github.com/bestagentkits/cloud-harness-mcp/commit/d4e5226a9cf113457222d7dc9315c7600641ee91)), closes [#217](https://github.com/bestagentkits/cloud-harness-mcp/issues/217) [#331](https://github.com/bestagentkits/cloud-harness-mcp/issues/331) [#332](https://github.com/bestagentkits/cloud-harness-mcp/issues/332) [#336](https://github.com/bestagentkits/cloud-harness-mcp/issues/336)
+
 # [0.66.0-beta.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.5...v0.66.0-beta.6) (2026-10-15)
 
 
