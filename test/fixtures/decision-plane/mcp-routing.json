@@ -1,0 +1,191 @@
+{
+  "description": "Golden MCP tool-routing cases. Every query shares at least one token with its expected tool so the lexical pool can contain it; the cases exercise wording where token overlap alone ranks a wrong tool first. Tools marked deny must never appear in any ranking.",
+  "tools": [
+    {
+      "server": "cloud",
+      "name": "pages_publish",
+      "description": "Publish a static site build to the production edge network",
+      "permission": "allow"
+    },
+    {
+      "server": "cloud",
+      "name": "pages_preview",
+      "description": "Create a temporary preview URL for a static site build",
+      "permission": "allow"
+    },
+    {
+      "server": "cloud",
+      "name": "container_run",
+      "description": "Run a one-off container image with a command and stream its output",
+      "permission": "allow"
+    },
+    {
+      "server": "cloud",
+      "name": "deployment_list",
+      "description": "List previous deployments and their status for an app",
+      "permission": "allow"
+    },
+    {
+      "server": "cloud",
+      "name": "deployment_rollback",
+      "description": "Roll an app back to a previous deployment",
+      "permission": "allow"
+    },
+    {
+      "server": "cloud",
+      "name": "app_delete",
+      "description": "Permanently delete an app and all of its deployments",
+      "permission": "deny"
+    },
+    {
+      "server": "cloud",
+      "name": "logs_tail",
+      "description": "Stream recent runtime log lines from an app",
+      "permission": "allow"
+    },
+    {
+      "server": "cloud",
+      "name": "dns_record_create",
+      "description": "Add a DNS record such as A, CNAME or TXT to a domain zone",
+      "permission": "allow"
+    },
+    {
+      "server": "cloud",
+      "name": "certificate_status",
+      "description": "Show TLS certificate issuance and expiry for a domain",
+      "permission": "allow"
+    },
+    {
+      "server": "tracker",
+      "name": "issue_create",
+      "description": "Open a new issue with a title, body and labels",
+      "permission": "allow"
+    },
+    {
+      "server": "tracker",
+      "name": "issue_search",
+      "description": "Find issues matching a text query, label or assignee",
+      "permission": "allow"
+    },
+    {
+      "server": "tracker",
+      "name": "issue_close",
+      "description": "Close an issue with an optional resolution comment",
+      "permission": "allow"
+    },
+    {
+      "server": "tracker",
+      "name": "comment_add",
+      "description": "Post a comment on an issue or pull request",
+      "permission": "allow"
+    },
+    {
+      "server": "db",
+      "name": "query_run",
+      "description": "Run a read-only SQL query against the analytics database",
+      "permission": "allow"
+    },
+    {
+      "server": "db",
+      "name": "table_describe",
+      "description": "Show columns, types and indexes for a database table",
+      "permission": "allow"
+    },
+    {
+      "server": "db",
+      "name": "backup_create",
+      "description": "Take a point-in-time snapshot backup of the database",
+      "permission": "allow"
+    },
+    {
+      "server": "db",
+      "name": "backup_restore",
+      "description": "Restore the database from a snapshot backup",
+      "permission": "deny"
+    },
+    {
+      "server": "mail",
+      "name": "message_send",
+      "description": "Send an email message to one or more recipients",
+      "permission": "allow"
+    },
+    {
+      "server": "mail",
+      "name": "message_search",
+      "description": "Search the mailbox for messages matching a query",
+      "permission": "allow"
+    },
+    {
+      "server": "chat",
+      "name": "channel_post",
+      "description": "Post a message to a team chat channel",
+      "permission": "allow"
+    }
+  ],
+  "cases": [
+    {
+      "query": "ship the site to production for real users",
+      "expected": "cloud.pages_publish"
+    },
+    {
+      "query": "give me a link so a reviewer can look at the site before it goes live",
+      "expected": "cloud.pages_preview"
+    },
+    {
+      "query": "the last release of the app is broken, go back to the previous deployment",
+      "expected": "cloud.deployment_rollback"
+    },
+    {
+      "query": "what has the app been printing in its log since the crash",
+      "expected": "cloud.logs_tail"
+    },
+    {
+      "query": "point the www subdomain of my domain at the load balancer",
+      "expected": "cloud.dns_record_create"
+    },
+    {
+      "query": "is the https certificate for my domain about to expire",
+      "expected": "cloud.certificate_status"
+    },
+    {
+      "query": "open a bug report: the login page shows a blank screen",
+      "expected": "tracker.issue_create"
+    },
+    {
+      "query": "are there already issues about flaky tests",
+      "expected": "tracker.issue_search"
+    },
+    {
+      "query": "mark the issue as resolved now that the fix shipped",
+      "expected": "tracker.issue_close"
+    },
+    {
+      "query": "how many users signed up last week according to the analytics database",
+      "expected": "db.query_run"
+    },
+    {
+      "query": "what columns does the orders table have",
+      "expected": "db.table_describe"
+    },
+    {
+      "query": "snapshot the database before the migration",
+      "expected": "db.backup_create"
+    },
+    {
+      "query": "email the release notes to the team",
+      "expected": "mail.message_send"
+    },
+    {
+      "query": "let the team channel know the deploy finished",
+      "expected": "chat.channel_post"
+    },
+    {
+      "query": "run a container to execute the database migration script",
+      "expected": "cloud.container_run"
+    },
+    {
+      "query": "show me which deployments of the app failed this week",
+      "expected": "cloud.deployment_list"
+    }
+  ]
+}

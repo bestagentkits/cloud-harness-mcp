@@ -15,7 +15,7 @@ import { readSkillArchive } from './skill-archive.js';
 import { SkillExtensionService } from './skill-extension-service.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
 import { compareSemver, isSemver, parseSkillVersion, trustedSkillVersion } from './skill-version.js';
-import { IntegrationCredentialRepository } from './integration-credential-repository.js';
+import { IntegrationCredentialError, IntegrationCredentialRepository } from './integration-credential-repository.js';
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 
@@ -41,6 +41,9 @@ function skillVersionDriftWarning(previous: string | null, next: string | null):
   return `declared version ${next} does not advance the current revision's ${previous}`;
 }
 import { TypesafeSkillSuggester, type RosterEntry } from './typesafe-skill-suggester.js';
+import type { DecisionPlane } from './decision-plane/decision-plane.js';
+import { providerCredentialSecrets } from './decision-plane/runner-decision-plane.js';
+import { rerankTools } from './decision-plane/tool-router.js';
 import { TOOLKIT_CATALOG } from './toolkit-service.js';
 import { diffRevisionText, formatRevisionDiff } from './revision-diff.js';
 import { fetchRegistrySearch } from './adapters/registry-search.js';
@@ -72,7 +75,8 @@ export class DashboardControlService {
     private readonly githubBinding?: GitHubBindingService,
     private readonly modelProfiles?: ModelProfileStateRepository,
     private readonly gatewayControl?: AgentGatewayControl,
-    private readonly keyring?: SecretKeyring
+    private readonly keyring?: SecretKeyring,
+    private readonly decisionPlane?: DecisionPlane
   ) {}
 
   /**
@@ -208,6 +212,7 @@ export class DashboardControlService {
   private suggester(ownerId: string, workspaceId: string, apiKey: string): TypesafeSkillSuggester {
     return new TypesafeSkillSuggester({
       apiKey: () => apiKey,
+      enabled: () => this.config.typesafeEgress !== 'off',
       secrets: () => ({
         ...this.workspaces.redactionSecrets(workspaceId),
         ...this.providerCredentialSecrets(ownerId)
@@ -216,15 +221,7 @@ export class DashboardControlService {
   }
 
   private providerCredentialSecrets(ownerId: string): Record<string, string> {
-    const snapshot = this.modelProfiles?.getExportSnapshot(ownerId);
-    if (!snapshot) return {};
-    const values: Record<string, string> = {};
-    for (const [id, credential] of Object.entries(snapshot.credentials)) {
-      if (typeof credential === 'object' && credential !== null && typeof (credential as { secret?: unknown }).secret === 'string') {
-        values[`MODEL_PROVIDER_${id}`] = (credential as { secret: string }).secret;
-      }
-    }
-    return values;
+    return providerCredentialSecrets(this.modelProfiles, ownerId);
   }
 
   /**
@@ -1205,9 +1202,30 @@ export class DashboardControlService {
           const credentials = this.keyring ? this.integrationCredentials().list(principalId) : [];
           return ok('TypeSafe status', {
             configured: credentials.some((credential) => credential.integration === 'typesafe' && credential.status === 'ACTIVE'),
-            enabled: true,
+            enabled: this.config.typesafeEgress !== 'off',
             endpoint: TYPESAFE_DEFAULT_ENDPOINT,
             model: TYPESAFE_DEFAULT_MODEL
+          });
+        }
+        case 'decision_rerank_tools': {
+          // The plane can only reorder the candidates it was given; the gateway validates that the
+          // ordering is a permutation of its own pool before it uses any of it.
+          if (!this.decisionPlane) {
+            return ok('Lexical ranking kept', { applied: false, decisionId: null, ordering: [], relevance: {}, reason: 'purpose_disabled' });
+          }
+          const reranked = await rerankTools(this.decisionPlane, principalId, parsed.input);
+          return ok(reranked.applied ? 'Semantic ranking applied' : 'Lexical ranking kept', reranked);
+        }
+        case 'decision_plane_status': {
+          // Counters and latency only: no state text, answer, or credential is ever part of status.
+          const status = this.decisionPlane?.status() ?? { purposes: [], metrics: {} };
+          const credentials = this.keyring ? this.integrationCredentials().list(principalId) : [];
+          return ok('Decision Plane status', {
+            enabled: status.purposes.length > 0,
+            purposes: status.purposes,
+            provider: 'typesafe-jev',
+            configured: credentials.some((credential) => credential.integration === 'typesafe' && credential.status === 'ACTIVE'),
+            metrics: status.metrics
           });
         }
         case 'skill_suggest': {
@@ -1296,6 +1314,8 @@ export class DashboardControlService {
       // The skill registry raises its own error type so the store stays free of HTTP concerns; the
       // service is where it becomes a status the control plane and the dashboard mapper understand.
       if (error instanceof SkillRegistryError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
+      // A stale generation or a second create is a conflict the dashboard recovers from, not a 500.
+      if (error instanceof IntegrationCredentialError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
       throw error;
     }
   }
@@ -1634,4 +1654,4 @@ function storedMcpHeaders(
     ? { name: header.name, value: header.value }
     : { name: header.name, secretRef: header.value.secretRef });
 }
-const statusFor = (code: ArtifactStoreError['code'] | SkillRegistryError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;
+const statusFor = (code: ArtifactStoreError['code'] | SkillRegistryError['code'] | IntegrationCredentialError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;

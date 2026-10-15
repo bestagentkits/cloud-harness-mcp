@@ -547,6 +547,23 @@ flag parsing by [`apps/api/src/cli-options.ts`](../apps/api/src/cli-options.ts).
 An example file is in the
 [user guide](../docs-site/connect.md#several-local-workspaces-from-one-server).
 
+## Decision Plane
+
+| Variable | Default | Decision |
+|---|---|---|
+| `DECISION_PLANE_PURPOSES` | empty (off) | Runner flag. A comma-separated subset of `mcp-routing` and `failure-classification`. A listed purpose is evaluated only for owners who stored a TypeSafe integration key. Any other value fails startup. |
+| `TYPESAFE_EGRESS` | `on` | Runner flag. `off` stops every TypeSafe call, both skill suggestions and the Decision Plane, even for owners with a stored key. `typesafe_status` then reports `enabled: false`. |
+
+`mcp-routing` reranks MCP gateway `search` results. `failure-classification`
+adds an advisory `data.diagnosis` to GitHub actions that end in the generic
+`GITHUB_ACTION_FAILED`. Both fall back to the deterministic result on any error.
+The purpose list is owned by
+[`packages/contracts/src/decision-plane.ts`](../packages/contracts/src/decision-plane.ts),
+the call bounds by
+[`apps/runner/src/decision-plane/decision-plane.ts`](../apps/runner/src/decision-plane/decision-plane.ts),
+and the rationale by [ADR 0004](adr/0004-decision-plane.md). Live counters are
+at `GET /api/v1/decision-plane/status`.
+
 ## Compose and logging overrides
 
 `CLOUD_HARNESS_ENV_FILE` selects the runtime environment file. `API_HOST_PORT`

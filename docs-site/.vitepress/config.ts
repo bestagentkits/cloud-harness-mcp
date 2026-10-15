@@ -136,6 +136,7 @@ export default defineConfig({
           { text: 'Projects', link: '/dashboard/projects' },
           { text: 'Secrets & Credentials', link: '/dashboard/secrets' },
           { text: 'Models & Budgets', link: '/dashboard/models' },
+          { text: 'TypeSafe', link: '/dashboard/typesafe' },
           { text: 'Skills & Skill Sets', link: '/dashboard/skills' },
           { text: 'Integrations', link: '/dashboard/integrations' },
           { text: 'GitHub Bindings', link: '/dashboard/github' },

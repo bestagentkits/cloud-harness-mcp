@@ -1260,7 +1260,7 @@ export function renderOAuthSettings(view, loadError) {
   return `<section class="panel" aria-labelledby="settings-oauth-heading"><h2 id="settings-oauth-heading">MCP OAuth sessions</h2>${intro}${facts}${notice}${form}<p id="settings-oauth-status" class="status-message" aria-live="polite"></p></section>`;
 }
 
-export function renderSettings(data, readiness, oauth) {
+export function renderSettings(data, readiness, oauth, typesafe) {
   const profile = data?.defaultNetworkProfile ?? {};
   const value = profile.value === 'network-none' ? 'network-none' : 'dependency-access';
   const stored = profile.source === 'setting';
@@ -1272,7 +1272,7 @@ export function renderSettings(data, readiness, oauth) {
   const readinessFact = readiness
     ? `<dt>Egress readiness</dt><dd>${readiness.ready === true ? 'Ready' : `Not ready: ${escape(readiness.reason ?? 'the readiness probe reported no reason')}`}</dd>`
     : '';
-  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${oauth ? renderOAuthSettings(oauth.view, oauth.error) : ''}${renderTypesafeSkeleton()}`;
+  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${oauth ? renderOAuthSettings(oauth.view, oauth.error) : ''}${typesafe ? renderTypesafeSettings(typesafe) : ''}`;
 }
 
 export function renderRuntime(data) {
@@ -1553,33 +1553,27 @@ export function launchBlockedByConflicts(conflicts, overrides = {}) {
 }
 
 /**
- * The TypeSafe panel. The key field is a password input that is never rendered back, the kill switch is
- * an ordinary checkbox, and the usage list shows scores rather than prompts, because prompt text never
- * belongs on this page.
+ * The TypeSafe panel shows only what the server backs: the per-owner key (write-only, so the field is a
+ * password input that never renders a stored value back), its removal, and the read-only status the
+ * runner reports. `view` is `{ status, credential, error }`, where `credential` is the owner's
+ * TypeSafe credential metadata (never a value). When a read failed, `error` is shown and the key form is
+ * withheld, because without the credential list the panel cannot tell a first save from a rotation.
  */
-export function renderTypesafeSkeleton() {
-  return `<section id="typesafe-panel" class="panel" aria-labelledby="typesafe-heading">
-      <h2 id="typesafe-heading">TypeSafe skill suggestions</h2>
-      <p id="typesafe-egress" role="status" aria-live="polite"></p>
-      <form class="stack-form" id="typesafe-form">
-        <label for="typesafe-key">API key (write-only, never shown again)</label>
-        <input id="typesafe-key" name="value" type="password" autocomplete="new-password">
-        <label for="typesafe-model">Model</label>
-        <input id="typesafe-model" name="model" value="jev-latest">
-        <label for="typesafe-gate-threshold">Gate threshold</label>
-        <input id="typesafe-gate-threshold" name="gateThreshold" type="number" min="0" max="1" step="0.05">
-        <label for="typesafe-fit-threshold">Fit threshold</label>
-        <input id="typesafe-fit-threshold" name="fitThreshold" type="number" min="0" max="1" step="0.05">
-        <label for="typesafe-max-egress-bytes">Maximum egress bytes</label>
-        <input id="typesafe-max-egress-bytes" name="maxEgressBytes" type="number" min="256" max="8192">
-        <label for="typesafe-cache-ttl">Cache lifetime (minutes)</label>
-        <input id="typesafe-cache-ttl" name="cacheTtlMinutes" type="number" min="1" max="1440">
-        <label for="typesafe-enabled"><input id="typesafe-enabled" name="enabled" type="checkbox"> Send suggestions</label>
-        <div class="form-row-actions"><button type="submit" id="typesafe-save" class="accent-btn">Save</button><button type="button" id="typesafe-test">Test connection</button></div>
-        <span id="typesafe-status" role="status" aria-live="polite"></span>
-      </form>
-      <table id="typesafe-usage" class="data-table desktop-table"><caption class="sr-only">Recent suggestions</caption><thead><tr><th scope="col">Skill</th><th scope="col">Gate</th><th scope="col">Fit</th><th scope="col">Latency</th><th scope="col">Redactions</th><th scope="col">Cached</th></tr></thead><tbody></tbody></table>
-    </section>`;
+export function renderTypesafeSettings(view = {}) {
+  const status = view.status;
+  const credential = view.credential;
+  const configured = Boolean(credential) || status?.configured === true;
+  const facts = status
+    ? `<dl class="facts"><dt>API key</dt><dd>${configured ? 'Configured' : 'Not configured'}</dd><dt>Egress</dt><dd>${status.enabled === true ? 'Enabled' : 'Off'}</dd><dt>Endpoint</dt><dd class="mono">${escape(status.endpoint ?? '')}</dd><dt>Model</dt><dd class="mono">${escape(status.model ?? '')}</dd>${credential ? `<dt>Key version</dt><dd>${escape(credential.activeVersion)}</dd>` : ''}</dl>`
+    : '';
+  const unavailable = view.error ? `<p class="warning">${escape(view.error)}</p>` : '';
+  const egressOff = status && status.enabled !== true
+    ? '<p class="warning"><strong>The operator turned TypeSafe egress off instance-wide</strong> with <span class="mono">TYPESAFE_EGRESS=off</span>. A stored key is kept, but nothing is sent until the operator removes that setting.</p>'
+    : '';
+  const remove = credential
+    ? `<button type="button" id="typesafe-remove" class="danger" data-credential-id="${escape(credential.id)}" data-generation="${escape(credential.generation)}">Remove key</button>`
+    : '';
+  return `<section id="typesafe-panel" class="panel" aria-labelledby="typesafe-heading"><h2 id="typesafe-heading">TypeSafe integration</h2><p>Your TypeSafe API key enables skill suggestions and the optional Decision Plane. The key is write-only: it is encrypted by the runner and never shown again.</p>${unavailable}${facts}${egressOff}${view.error ? '' : `<form class="stack-form" id="typesafe-form" novalidate><label for="typesafe-key">${credential ? 'Replacement API key' : 'API key'} (write-only, never shown again)</label><input id="typesafe-key" name="value" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" required><div class="form-row-actions"><button type="submit" id="typesafe-save" class="accent-btn"${credential ? ` data-credential-id="${escape(credential.id)}" data-generation="${escape(credential.generation)}"` : ''}>${credential ? 'Replace key' : 'Save key'}</button>${remove}</div></form>`}<p id="typesafe-status" class="status-message" aria-live="polite"></p></section>`;
 }
 
 /** Chips for the selected skill sets, so the launch dialog names what is about to be bound. */

@@ -305,3 +305,12 @@ If an agent started but followed the wrong files, read the `repository_context` 
 4. A subscription created with an API key stops when that key is revoked or expires; subscribe again with a valid credential.
 5. An event that happened before the subscription existed, or after it lapsed, is never delivered. Read the result with `tasks_status` or `agent_status`.
 6. Receivers may see the same event twice; deduplicate on the `webhook-id` header.
+
+---
+
+### 27. MCP gateway `search` says `ranking: "lexical"` although semantic routing is on, or a GitHub error has no `diagnosis`
+**Cause:** The Decision Plane is advisory and falls back silently to the deterministic result. That happens when the purpose is not listed in `DECISION_PLANE_PURPOSES`, `TYPESAFE_EGRESS=off`, the owner has no TypeSafe key, the provider timed out or was rate limited, the answer was malformed or low-confidence, or fewer than two tools matched lexically. A `diagnosis` is attached only to failures the deterministic classifier could not name (`GITHUB_ACTION_FAILED`).
+**Fix:**
+1. Read `GET /api/v1/decision-plane/status`. `enabled` and `purposes` show what is on, `configured` shows whether this owner has a key, and `metrics.<purpose>.fallbackReasons` counts why calls fell back.
+2. Search the audit log for `decision.evaluated` rows. Each one carries the `outcome` and `fallbackReason` without any prompt text.
+3. Lexical results are always correct to use. A fallback is never an error.

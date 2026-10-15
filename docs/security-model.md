@@ -692,6 +692,41 @@ and [`deploy/provisioning-proxy.mjs`](../deploy/provisioning-proxy.mjs).
 Configuration is described in
 [configuration](configuration.md#managed-toolbox).
 
+## Decision plane
+
+The Decision Plane ([ADR 0004](adr/0004-decision-plane.md)) is a second path,
+after the skill suggester, by which harness state can reach the TypeSafe
+endpoint. It is closed unless `DECISION_PLANE_PURPOSES` names a purpose *and*
+the owner has stored a TypeSafe integration key.
+
+- **Advisory only.** It can reorder MCP gateway search results that permission
+  filtering already allowed, and it can attach `data.diagnosis` to a generic
+  GitHub failure. It cannot add a tool, change an error code or `retryable`,
+  retry anything, or grant access. The API rejects an ordering that is not an
+  exact permutation of the candidates it sent.
+- **What leaves the runner.** For `mcp-routing`: the search query plus the
+  names and shortened descriptions of the allowed candidate tools. For
+  `failure-classification`: the action name, exit code, network profile, and a
+  tail of the stderr and stdout. Repository contents are never sent.
+- **Redaction fails closed, and comes before any cut.** Output and
+  descriptions are redacted whole and only then shortened, so a secret that
+  straddles the cut is replaced, never left as an unrecognised fragment. Every
+  purpose removes the TypeSafe key, model-provider credentials, and known
+  credential patterns (bearer tokens, prefixed API keys, JWTs).
+  `failure-classification` also removes the workspace secret snapshot and the
+  transient GitHub action token. If any of those cannot be read, nothing is
+  sent. The key and endpoint allowlist stay in
+  [`apps/runner/src/decision-plane/jev-provider.ts`](../apps/runner/src/decision-plane/jev-provider.ts),
+  inside the runner.
+- **Bounded and auditable.** Timeout, body size, and per-owner rate limits are
+  owned by
+  [`apps/runner/src/decision-plane/decision-plane.ts`](../apps/runner/src/decision-plane/decision-plane.ts).
+  Each evaluation leaves one scalar-only `decision.evaluated` audit row; a
+  burst refused by the rate limit is audited once per owner per minute and
+  counted in full in the metrics. Prompt text and answers are not stored. The
+  metrics at `GET /api/v1/decision-plane/status` are in-memory, instance-wide
+  aggregates, not per owner, and reset when the runner restarts.
+
 ## Storage and state limits
 
 Workspace paths are server-generated and checked beneath the configured jobs

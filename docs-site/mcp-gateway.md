@@ -141,7 +141,11 @@ Work through it in three steps:
 1. **`search`** — describe what you want to do, for example "create a GitHub
    issue". You get back qualified tool names in the form
    `<server>.<tool>`, ranked and filtered to tools you are allowed to use.
-   Optionally restrict the search to one server.
+   Optionally restrict the search to one server. If the operator enabled
+   semantic routing, the response says `ranking: "semantic"` and the matches
+   are reordered by meaning rather than shared words. Otherwise it says
+   `ranking: "lexical"`. Semantic routing only reorders tools you could already
+   see. It never adds a denied tool.
 2. **`inspect`** — pass one qualified name to receive that tool's real input
    schema, annotations, availability, and effective permission. Read the schema
    before you call it.

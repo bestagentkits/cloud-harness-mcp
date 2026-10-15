@@ -244,6 +244,24 @@ describe('integration credentials and typesafe', () => {
     expect(deleted.data).toMatchObject({ deleted: true });
   });
 
+  it('answers 409 for a stale generation or a second create, and 404 for a key already removed', async () => {
+    const { controls } = setup();
+    const created = await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_first', expectedGeneration: 0
+    }));
+    const credentialId = (created.data as { id: string }).id;
+
+    await expect(controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_second', expectedGeneration: 0
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await expect(controls.execute(request('integration_credential_rotate', {
+      credentialId, value: 'ts_live_stale', expectedGeneration: 7
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await controls.execute(request('integration_credential_delete', { credentialId, expectedGeneration: 1 }));
+    await expect(controls.execute(request('integration_credential_delete', { credentialId, expectedGeneration: 1 })))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
   it('reports an empty roster rather than calling out when a key exists but no workspace was named', async () => {
     const { controls } = setup();
     await controls.execute(request('integration_credential_create', {
@@ -253,6 +271,17 @@ describe('integration credentials and typesafe', () => {
     const result = await controls.execute(request('skill_suggest', { prompt: 'Please refactor the authentication middleware.' }));
 
     expect(result.data).toMatchObject({ suggested: null, reason: 'empty_roster', outboundCalls: 0 });
+  });
+
+  it('reports egress as disabled when the operator turned TYPESAFE_EGRESS off', async () => {
+    const { controls } = setup(true, { typesafeEgress: 'off' });
+    await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_key', expectedGeneration: 0
+    }));
+
+    const status = await controls.execute(request('typesafe_status', {}));
+
+    expect(status.data).toMatchObject({ configured: true, enabled: false });
   });
 
   it('answers not_configured with zero outbound work when the owner has no key', async () => {

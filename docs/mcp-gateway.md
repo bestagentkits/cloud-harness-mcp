@@ -143,7 +143,15 @@ meta-tools and discloses downstream tools one step at a time:
 
 1. `search` finds a qualified name (`<server>.<tool>`) from a description of
    what you need. It is lexical/fuzzy matching, permission-filtered, and
-   optionally restricted to one server.
+   optionally restricted to one server. When the `mcp-routing` Decision Plane
+   purpose is on, the lexical pool is reranked semantically. The response then
+   reports `ranking: "semantic"` and a `decisionId`; otherwise it reports
+   `ranking: "lexical"`. A rerank can only reorder tools already in the
+   permission-filtered pool
+   ([ADR 0004](adr/0004-decision-plane.md)). A search whose pool holds two or
+   more tools asks the runner for a rerank on every call, so it costs one
+   internal round-trip even when the purpose is off or the owner has no key;
+   the runner answers those cases at once without contacting the provider.
 2. `inspect` returns that one tool's real upstream input schema, annotations,
    availability, and effective permission.
 3. `execute` routes one call with arguments matching that schema, re-checks

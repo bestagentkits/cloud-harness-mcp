@@ -60,6 +60,8 @@ import { SecretSnapshotRedactor } from './output-redactor.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import { opaqueId } from './metadata-records.js';
 import { classifyGitHubFailure } from './github-error-classifier.js';
+import { FailureIntelligence } from './decision-plane/failure-intelligence.js';
+import type { DecisionPlane } from './decision-plane/decision-plane.js';
 import {
   hasGitHubFallbackCredential,
   resolveGitHubFallbackCredential,
@@ -248,6 +250,7 @@ export class WorkspaceService {
   public readonly networkProfileManager: NetworkProfileManager;
   private readonly agentManager?: AgentManager | undefined;
   private readonly metadata?: MetadataStore | undefined;
+  private failureIntelligence?: FailureIntelligence | undefined;
   constructor(
     private readonly config: RunnerConfig,
     private readonly store: StateStore,
@@ -349,6 +352,11 @@ export class WorkspaceService {
     };
   }
 
+  /** Attaches the Decision Plane. Without it every failure keeps only its deterministic classification. */
+  useDecisionPlane(plane: DecisionPlane): void {
+    this.failureIntelligence = new FailureIntelligence(plane);
+  }
+
   /**
    * The workspace and owner secret values. It is named separately from the redactor because the
    * suggestion engine has to name both value sources explicitly: these are the workspace secrets, and a
@@ -374,7 +382,9 @@ export class WorkspaceService {
       principalId: record.ownerId,
       metadata: this.metadata
     });
-    if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
+    // A reserved name, so a workspace secret called GH_TOKEN (the token the executor really holds)
+    // keeps its own entry and both values stay redacted.
+    if (fallbackToken) values['CLOUD_HARNESS_GITHUB_FALLBACK_TOKEN'] = fallbackToken;
     return values;
   }
 
@@ -2552,11 +2562,27 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
 
       const classified = classifyGitHubFailure(result.stderr, result.stdout, action);
+      // Known errors stay authoritative; only the generic fallback gains an advisory diagnosis, and
+      // the deterministic code and retryability are returned unchanged either way.
+      const diagnosis = classified.code === 'GITHUB_ACTION_FAILED'
+        ? await this.failureIntelligence?.diagnose({
+          ownerId: record.ownerId,
+          workspaceId: record.id,
+          operation: `github ${action}`,
+          deterministicCode: classified.code,
+          exitCode: result.exitCode,
+          stderr: result.stderr,
+          stdout: result.stdout,
+          networkProfile: record.networkProfile,
+          secrets: () => ({ ...this.redactionSecrets(record.id), GITHUB_ACTION_TOKEN: token }),
+          ...(signal ? { signal } : {})
+        }).catch(() => undefined)
+        : undefined;
       return {
         result: {
           ok: false,
           message: classified.message,
-          data: { output: result.stdout || result.stderr },
+          data: { output: result.stdout || result.stderr, ...(diagnosis ? { diagnosis } : {}) },
           error: {
             code: classified.code,
             message: classified.message,

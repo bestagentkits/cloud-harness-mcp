@@ -42,6 +42,9 @@ Its tool set is exactly `search`, `inspect`, `execute`, `permissions`, and
 `status`. Downstream tools are never aggregated into `tools/list`, so work
 progressively: `search` by intent, `inspect` one qualified `<server>.<tool>`
 name for its real input schema, then `execute` with matching arguments.
+`search` reports `ranking: "semantic"` when the operator's Decision Plane
+reordered the permission-filtered matches, and `"lexical"` otherwise. Either
+order is safe to use, and neither one can surface a denied tool.
 `permissions` reports the effective allow/deny decision and `status` reports
 server health. Credentials are referenced as dashboard global secrets and are
 never echoed back. A downstream server may instead use OAuth that the owner

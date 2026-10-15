@@ -2,6 +2,7 @@ export * from './api-key-api.js';
 export * from './config.js';
 export * from './identifiers.js';
 export * from './typesafe-schemas.js';
+export * from './decision-plane.js';
 export * from './internal-runner-api.js';
 export * from './mcp-results.js';
 export * from './runner-api.js';

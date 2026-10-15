@@ -616,6 +616,13 @@ ChatGPT subscription (see
   `GITHUB_REVIEWER_UNASSIGNABLE`, `GITHUB_MERGE_BLOCKED`, `GITHUB_MERGE_CONFLICT`,
   `GITHUB_AUTO_MERGE_UNAVAILABLE`);
   a `403` from the helper is never retried.
+  When the `failure-classification` Decision Plane purpose is on and a failure
+  matches no rule (`GITHUB_ACTION_FAILED`), the error may carry an advisory
+  `data.diagnosis` (`failureType`, `confidence`, `retryLikelyToSucceed`,
+  `credentialRefreshNeeded`, `workspaceRecreateNeeded`, `agentNeeded`,
+  `humanNeeded`, `priorFailures`, `decisionId`; schema `FailureDiagnosisSchema`
+  in [`packages/contracts/src/decision-plane.ts`](../packages/contracts/src/decision-plane.ts)).
+  It never changes `code` or `retryable`, and its absence means nothing.
   Comment, label, publish, review, reviewer-request, merge, commit-status, dispatch, and re-run mutations support idempotency keys with a 24-hour
   retention window; retries within 24 hours replay the cached result or reject
   payload mismatches with `CONFLICT`, after which the key expires and the request
