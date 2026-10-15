@@ -233,7 +233,10 @@ describe('workspace lifecycle settings', () => {
     docker.workerResult = cleanCheck;
     await reap(context.service);
     expect(context.store.byId(record.id)?.status).toBe('CLOSED');
-    expect(docker.workerRequests.some((request) => request.includes('close_check'))).toBe(true);
+    const check = docker.workerRequests.find((request) => request.includes('close_check'));
+    expect(check).toBeDefined();
+    // The clone base is passed so a tag clone is not mistaken for unpushed history.
+    expect(JSON.parse(check!).input).toMatchObject({ mode: 'close_check', cloneRef: 'main' });
     const audits = context.metadata.listAudit(context.ownerId, 10).filter((entry) => entry.action === 'workspace.auto_closed');
     expect(audits).toHaveLength(1);
   });
@@ -320,5 +323,14 @@ describe('workspace lifecycle settings', () => {
     expect(upgraded.byId(legacy.id)?.recoverableGraceSeconds ?? null).toBeNull();
     expect(upgraded.byId(active.id)).toMatchObject({ expiredAt: null, recoverableUntil: null });
     expect(upgraded.getWorkspaceLifecycleOverrides()).toMatchObject({ revision: 0, maxActiveWorkspacesPerOwner: null });
+  });
+
+  it('checks a bounded batch of due workspaces per reaper pass, oldest first', async () => {
+    const context = fixture();
+    const now = Date.now();
+    const ids = 'lmnopqrstuvw'.split('').map((suffix, index) => seedRecoverable(context, suffix, { recoverableUntil: now - 100_000 + index }).id);
+    expect(context.store.listAutoCloseDue(now)).toHaveLength(10);
+    expect(context.store.listAutoCloseDue(now).map((entry) => entry.id)).toEqual(ids.slice(0, 10));
+    expect(context.store.listAutoCloseDue(now, 3)).toHaveLength(3);
   });
 });

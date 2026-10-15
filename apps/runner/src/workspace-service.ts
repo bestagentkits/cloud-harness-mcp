@@ -1964,6 +1964,18 @@ export class WorkspaceService {
       await removeContainer(helperName);
     }
   }
+  /**
+   * Moves the checkout's remote-tracking ref to what a successful push left on the remote. The push runs
+   * from a separate transfer repository, so without this the checkout keeps reporting pushed commits as
+   * not on any remote. It is best-effort: a stale ref only makes the auto-close check keep the workspace.
+   */
+  private async trackPushedBranch(record: WorkspaceRecord, refspec: string, commit: string | null, signal?: AbortSignal): Promise<void> {
+    const destination = refspec.split(':')[1] ?? '';
+    if (!destination.startsWith('refs/heads/')) return;
+    const branch = destination.slice('refs/heads/'.length);
+    await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'track_push', branch, commit }, signal, true).catch(() => undefined);
+  }
+
   private async currentHead(record: WorkspaceRecord, signal?: AbortSignal, revision = 'HEAD'): Promise<string> {
     const revParse = revision === 'HEAD' ? ['rev-parse', 'HEAD'] : ['rev-parse', '--verify', '--quiet', `${revision}^{commit}`];
     const unresolved = revision === 'HEAD' ? 'current Git HEAD could not be determined' : `Git revision ${revision} could not be resolved`;
@@ -2216,6 +2228,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (idempotencyKey) {
         this.store.updateGitOperationStatus(record.ownerId, record.id, idempotencyKey, 'SUCCEEDED', JSON.stringify(response), null, currentLocalHead);
       }
+      await this.trackPushedBranch(record, refspec, deleteRef ? null : currentLocalHead, signal);
       return response;
     } catch (err: unknown) {
       if (err instanceof HarnessError && idempotencyKey) {
@@ -4803,7 +4816,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (this.agentManager?.hasActiveAgents(record.ownerId, record.id)) return 'agents are still running';
     let check: RunnerResponse;
     try {
-      check = await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'close_check' });
+      check = await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'close_check', cloneRef: record.repositoryRef ?? '' });
     } catch {
       return 'the unsaved-work check could not run';
     }
@@ -4925,7 +4938,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       details[`${name}.previous`] = result.previous[name] ?? 'runner-default';
       details[`${name}.next`] = result.next[name] ?? 'runner-default';
     }
-    this.metadata?.recordAudit(ownerId, 'settings.workspace_lifecycle.changed', 'instance', 'instance_settings', result.next.revision, details);
+    try {
+      this.metadata?.recordAudit(ownerId, 'settings.workspace_lifecycle.changed', 'instance', 'instance_settings', result.next.revision, details);
+    } catch { /* the change is committed; a failed audit write must not report the save as failed */ }
   }
 
   private async reapExpired(): Promise<void> {

@@ -31,7 +31,8 @@ function cleanClone() {
   return clone;
 }
 
-const closeCheck = async () => await executeWorkerRequest('workspace_recover', { mode: 'close_check' });
+const closeCheck = async (input: Record<string, unknown> = {}) => await executeWorkerRequest('workspace_recover', { mode: 'close_check', ...input });
+const trackPush = async (branch: string, commit: string | null) => await executeWorkerRequest('workspace_recover', { mode: 'track_push', branch, commit });
 
 describe('workspace close check', () => {
   it('reports a clone with all work on its remote as clean', async () => {
@@ -73,5 +74,60 @@ describe('workspace close check', () => {
     temporaryDirectories.push(directory);
     process.env.CH_WORKSPACE_ROOT = directory;
     expect((await closeCheck()).ok).toBe(false);
+  });
+
+  it('treats a commit pushed from a separate transfer repository as saved once the push is tracked', async () => {
+    const clone = cleanClone();
+    const base = join(clone, '..');
+    writeFileSync(join(clone, 'feature.txt'), 'feature\n');
+    git(clone, 'add', 'feature.txt');
+    git(clone, 'commit', '--quiet', '-m', 'feature');
+    // The harness pushes from a bare copy of the checkout, which leaves the checkout's tracking ref behind.
+    git(base, 'clone', '--quiet', '--bare', clone, join(base, 'transfer.git'));
+    git(join(base, 'origin'), 'config', 'receive.denyCurrentBranch', 'ignore');
+    git(join(base, 'transfer.git'), 'push', '--quiet', join(base, 'origin'), 'main:refs/heads/main');
+    expect((await closeCheck()).data).toMatchObject({ unpushedCommits: 1 });
+
+    const head = git(clone, 'rev-parse', 'HEAD').trim();
+    expect((await trackPush('main', head)).ok).toBe(true);
+    expect(git(clone, 'rev-parse', 'refs/remotes/origin/main').trim()).toBe(head);
+    expect((await closeCheck()).data).toEqual({ uncommittedPaths: 0, stashes: 0, unpushedCommits: 0 });
+
+    // Deleting the remote branch removes its tracking ref, so the commit counts as unsaved again.
+    expect((await trackPush('main', null)).ok).toBe(true);
+    expect((await closeCheck()).data).toMatchObject({ unpushedCommits: 2 });
+  });
+
+  it('refuses to track a malformed branch or commit', async () => {
+    cleanClone();
+    expect((await trackPush('../escape', 'a'.repeat(40))).ok).toBe(false);
+    expect((await trackPush('-main', 'a'.repeat(40))).ok).toBe(false);
+    expect((await trackPush('main', 'HEAD')).ok).toBe(false);
+    expect((await trackPush('main.lock', 'a'.repeat(40))).ok).toBe(false);
+  });
+
+  it('counts the commit a tag clone started from as on the remote', async () => {
+    const clone = cleanClone();
+    const base = join(clone, '..');
+    git(join(base, 'origin'), 'tag', 'v1');
+    const tagged = join(base, 'tagged');
+    git(base, 'clone', '--quiet', '--branch', 'v1', '--depth', '1', '--no-tags', `file://${join(base, 'origin')}`, tagged);
+    process.env.CH_WORKSPACE_ROOT = tagged;
+    expect((await closeCheck()).data).toMatchObject({ unpushedCommits: 1 });
+    expect((await closeCheck({ cloneRef: 'v1' })).data).toMatchObject({ unpushedCommits: 0 });
+    writeFileSync(join(tagged, 'local.txt'), 'local\n');
+    git(tagged, 'add', 'local.txt');
+    git(tagged, 'commit', '--quiet', '-m', 'local work on a tag clone');
+    expect((await closeCheck({ cloneRef: 'v1' })).data).toMatchObject({ unpushedCommits: 1 });
+  });
+
+  it('still counts local branches when HEAD is an unborn branch', async () => {
+    const clone = cleanClone();
+    writeFileSync(join(clone, 'a.txt'), 'a\n');
+    git(clone, 'add', 'a.txt');
+    git(clone, 'commit', '--quiet', '-m', 'local');
+    git(clone, 'checkout', '--quiet', '--orphan', 'empty');
+    git(clone, 'rm', '-rf', '--quiet', '.');
+    expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 0, unpushedCommits: 1 });
   });
 });

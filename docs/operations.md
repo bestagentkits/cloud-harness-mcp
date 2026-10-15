@@ -128,7 +128,11 @@ opens and recoveries until usage drops.
 An expired workspace becomes due for auto-close at roughly expiry + grace +
 one reaper interval. Before deleting it, the reaper holds a mutation lease and
 checks for running agents, uncommitted or untracked paths, stashes, and
-commits on any local branch that no remote-tracking ref contains. Any of these,
+commits on any local branch that no remote-tracking ref contains. A
+successful `git_push` moves the checkout's remote-tracking ref to the pushed
+commit, and the commit a workspace was cloned at counts as on the remote, so
+pushed and freshly cloned work is not mistaken for unsaved work. Git-ignored
+files are not checked and are deleted with the checkout. Any of these,
 or a check that cannot run, defers the close: the workspace stays
 `EXPIRED_RECOVERABLE`, its `error` starts with `auto-close deferred:` and names
 the reason, and the reaper retries after the longer of its grace and one hour.

@@ -1089,13 +1089,16 @@ export class StateStore {
     return this.getWorkspaceLifecycleOverrides().maxActiveWorkspacesPerOwner ?? configuredLimit;
   }
 
-  /** Recoverable workspaces whose auto-close window has passed and that no mutation lease holds. */
-  listAutoCloseDue(now: number): Array<{ id: string; generation: number }> {
+  /**
+   * Recoverable workspaces whose auto-close window has passed and that no mutation lease holds, oldest
+   * first. Each one costs a close check, so a reaper pass takes a bounded batch and the rest wait.
+   */
+  listAutoCloseDue(now: number, limit = 10): Array<{ id: string; generation: number }> {
     return this.database.prepare(`SELECT id, generation FROM workspaces WHERE status = 'EXPIRED_RECOVERABLE'
       AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?)
       AND COALESCE(recoverable_until, last_activity_at + COALESCE(recoverable_grace_seconds, ?) * 1000) <= ?
-      ORDER BY COALESCE(recoverable_until, last_activity_at) ASC`)
-      .all(now, DEFAULT_RECOVERABLE_GRACE_SECONDS, now) as Array<{ id: string; generation: number }>;
+      ORDER BY COALESCE(recoverable_until, last_activity_at) ASC LIMIT ?`)
+      .all(now, DEFAULT_RECOVERABLE_GRACE_SECONDS, now, limit) as Array<{ id: string; generation: number }>;
   }
 
   /**

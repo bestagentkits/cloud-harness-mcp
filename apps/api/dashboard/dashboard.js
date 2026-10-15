@@ -2670,7 +2670,8 @@ export function initializeDashboard() {
       }
     };
     form.addEventListener('input', () => {
-      acknowledgeBlock.hidden = grace.value.trim() !== '0';
+      // Any spelling of zero (0, 00, 0.0) needs the acknowledgement, so it must be visible for all of them.
+      acknowledgeBlock.hidden = !(grace.value.trim() !== '' && Number(grace.value.trim()) === 0);
       // The acknowledgement is asked for at save time, not while the operator is still typing.
       const { errors } = workspaceLifecycleUpdateInput(view, values(), true);
       showErrors(errors);
