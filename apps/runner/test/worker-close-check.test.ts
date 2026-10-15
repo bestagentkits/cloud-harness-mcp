@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -106,6 +106,16 @@ describe('workspace close check', () => {
     expect((await trackPush('main.lock', 'a'.repeat(40))).ok).toBe(false);
   });
 
+  it('never moves the remote default branch through the origin/HEAD symbolic ref', async () => {
+    const clone = cleanClone();
+    const main = git(clone, 'rev-parse', 'refs/remotes/origin/main').trim();
+    git(clone, 'commit', '--quiet', '--allow-empty', '-m', 'local');
+    const head = git(clone, 'rev-parse', 'HEAD').trim();
+    expect((await trackPush('HEAD', head)).ok).toBe(false);
+    expect(git(clone, 'rev-parse', 'refs/remotes/origin/main').trim()).toBe(main);
+    expect(git(clone, 'symbolic-ref', 'refs/remotes/origin/HEAD').trim()).toBe('refs/remotes/origin/main');
+  });
+
   it('counts the commit a tag clone started from as on the remote', async () => {
     const clone = cleanClone();
     const base = join(clone, '..');
@@ -130,4 +140,54 @@ describe('workspace close check', () => {
     git(clone, 'rm', '-rf', '--quiet', '.');
     expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 0, unpushedCommits: 1 });
   });
+
+  it('checks linked worktrees on their own instead of as an untracked directory', async () => {
+    const clone = cleanClone();
+    git(clone, 'worktree', 'add', '--quiet', '--detach', join('.worktrees', 'review'), 'HEAD');
+    expect((await closeCheck()).data).toEqual({ uncommittedPaths: 0, stashes: 0, unpushedCommits: 0 });
+
+    const worktree = join(clone, '.worktrees', 'review');
+    writeFileSync(join(worktree, 'one.txt'), 'one\n');
+    writeFileSync(join(worktree, 'two.txt'), 'two\n');
+    expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 2, unpushedCommits: 0 });
+
+    git(worktree, 'add', 'one.txt', 'two.txt');
+    git(worktree, 'commit', '--quiet', '-m', 'work on a detached worktree');
+    // The commit is reachable only from the worktree's detached HEAD, not from any branch.
+    expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 0, unpushedCommits: 1 });
+  });
+
+  it('still counts files the repository keeps in its own .worktrees directory', async () => {
+    const clone = cleanClone();
+    mkdirSync(join(clone, '.worktrees'));
+    writeFileSync(join(clone, '.worktrees', 'notes.txt'), 'draft\n');
+    git(clone, 'worktree', 'add', '--quiet', '--detach', join('.worktrees', 'review'), 'HEAD');
+    expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 1 });
+  });
+
+  it('still counts files left in a worktree directory that lost its link to the repository', async () => {
+    const clone = cleanClone();
+    const worktree = join(clone, '.worktrees', 'unlinked');
+    git(clone, 'worktree', 'add', '--quiet', '--detach', worktree, 'HEAD');
+    writeFileSync(join(worktree, 'data.txt'), 'data\n');
+    rmSync(join(worktree, '.git'));
+    // Both the checked-out README.md and the new file are now untracked files of the main checkout.
+    expect((await closeCheck()).data).toMatchObject({ uncommittedPaths: 2 });
+  });
+
+  it('reads a worktree path that contains a newline whole', async () => {
+    const clone = cleanClone();
+    git(clone, 'worktree', 'add', '--quiet', '--detach', join('.worktrees', 'odd\nname'), 'HEAD');
+    expect((await closeCheck()).data).toEqual({ uncommittedPaths: 0, stashes: 0, unpushedCommits: 0 });
+  });
+
+  it('counts the commits of a worktree whose directory was removed', async () => {
+    const clone = cleanClone();
+    const worktree = join(clone, '.worktrees', 'gone');
+    git(clone, 'worktree', 'add', '--quiet', '--detach', worktree, 'HEAD');
+    git(worktree, 'commit', '--quiet', '--allow-empty', '-m', 'orphaned work');
+    rmSync(worktree, { recursive: true, force: true });
+    expect((await closeCheck()).data).toEqual({ uncommittedPaths: 0, stashes: 0, unpushedCommits: 1 });
+  });
 });
+

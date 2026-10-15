@@ -226,7 +226,10 @@ export class AgentManager {
 
   /** Whether any agent of this workspace is still running, which keeps the reaper from auto-closing it. */
   hasActiveAgents(ownerId: string, workspaceId: string): boolean {
-    return this.repository.listActiveAgents(ownerId, workspaceId).length > 0;
+    // The agent reaper skips expired workspaces, so an agent past its TTL is never timed out there and
+    // must not hold the close forever; closing the workspace stops it.
+    const now = this.now();
+    return this.repository.listActiveAgents(ownerId, workspaceId).some((agent) => agent.expiresAt > now);
   }
 
   async stopWorkspace(ownerId: string, workspaceId: string, reason: string, generation?: number): Promise<void> {
