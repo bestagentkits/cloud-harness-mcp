@@ -231,6 +231,25 @@ a lost response; do not create a second key until the first result is resolved.
   and the configured artifact root; a database row without its matching
   payload indicates an incoherent restore.
 
+## MCP Events
+
+The error mapping is owned by
+[`apps/api/src/events/events-extension.ts`](../apps/api/src/events/events-extension.ts);
+inspect delivery state with `GET /dashboard/api/v1/event-subscriptions`, which
+shows each subscription's state, callback origin, last error category, and
+recent deliveries.
+
+| Symptom | Meaning and next check |
+|---|---|
+| `server/discover` has no `events` capability | The client is on local stdio, local HTTP, or `/mcp-gateway`, or the release predates events. Use the remote `/mcp` endpoint. |
+| `-32602` on `events/subscribe` | The `delivery.url` is not a public `https` URL without credentials or fragment, the secret is not `whsec_` plus base64 of 24–64 bytes, or the filter arguments have an unknown key. |
+| `-32011` / `-32012` / `-32013` / `-32014` | Unknown event name; unauthenticated request or a filter naming a workspace, task, or agent the caller does not own; per-principal active or retained subscription quota reached (revoked and expired rows count until retention purges them); a delivery mode other than `webhook`. |
+| `-32015` with `reason` | The callback failed the signed verification challenge: it was unreachable, timed out, failed TLS, answered non-`2xx` or a redirect, or did not echo the exact `challenge`. Fix the receiver; nothing was stored. |
+| `-32603` "Events are temporarily unavailable" | The runner is unreachable or has no secret keyring configured. Check `/readyz` and the runner keyring. |
+| Subscription `REVOKED` without a dashboard action | It was created over a managed API key that was revoked or expired; the audit entry carries `reason: credential_revoked`. Subscribe again with a valid credential. |
+| Deliveries `ABANDONED` | The receiver kept failing past the retry window, answered `410` or `413`, or the subscription lapsed or was revoked first. Events are not replayed; fix the receiver and wait for the next transition. |
+| Duplicate deliveries at the receiver | Expected under at-least-once delivery. Deduplicate on `webhook-id`. |
+
 ## Containers and cleanup
 
 Inspect before acting:

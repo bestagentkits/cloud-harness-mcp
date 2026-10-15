@@ -18,6 +18,7 @@ instead of copying behavior, defaults, command inventories, or configuration.
 | --- | --- | --- |
 | Trust model and isolation | [`docs/security-model.md`](docs/security-model.md) | `apps/api/src/request-security.ts`, `apps/runner/src/workspace-service.ts`, `test/integration/docker-sandbox.docker.test.ts` |
 | Public MCP contract | [`docs/mcp-api.md`](docs/mcp-api.md) | `packages/contracts/src/`, `apps/api/src/mcp-server.ts`, `packages/contracts/test/`, `test/integration/` |
+| MCP Events (webhook delivery) | [`docs/mcp-api.md`](docs/mcp-api.md), [`docs/security-model.md`](docs/security-model.md) | `packages/contracts/src/events-api.ts`, `apps/api/src/events/`, `apps/runner/src/event-outbox.ts`, `apps/runner/src/mcp-event-service.ts`, `test/integration/mcp-events-http.test.ts` |
 | API/runner boundary | [`docs/system-architecture.md`](docs/system-architecture.md) | `apps/api/src/`, `apps/runner/src/`, `compose*.yaml`, `scripts/verify-compose-boundaries.mjs` |
 | Repository and executor behavior | [`docs/security-model.md`](docs/security-model.md) | `apps/runner/src/repository-policy.ts`, `worker/`, runner and Docker tests |
 | Configuration | [`docs/configuration.md`](docs/configuration.md) | `.env.example`, `packages/contracts/src/config.ts`, `apps/api/src/config.ts`, `apps/runner/src/config.ts`, `compose*.yaml` |

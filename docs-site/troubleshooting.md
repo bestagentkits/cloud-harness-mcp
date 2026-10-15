@@ -293,3 +293,15 @@ If an agent started but followed the wrong files, read the `repository_context` 
 2. `FORBIDDEN` "rejected by the remote's branch protection, ruleset, or hook" (`[remote rejected]`, `GH006`, `GH013`) is a policy refusal and is not retryable: the target branch requires passing checks, a pull request, or a bypass entry for the App. `GITHUB_PERMISSION_MISSING` on a push means the commit changes `.github/workflows` and the App lacks **Workflows: Read and write**.
 3. After `workflow_dispatch`, poll `github_read` `workflow_runs_list` with the returned `runLookup` (`workflow`, `headSha`, `event: "workflow_dispatch"`) for a few seconds until the run appears.
 4. A routine that keeps one workspace for about an hour needs `WORKSPACE_WALL_TTL_SECONDS` of at least `3600`, because `workspace_lease_renew` never extends past the wall-clock deadline. Alternatively open a fresh workspace (a `fetchDepth: 1` checkout is enough for brokered GitHub calls) for each phase.
+
+---
+
+### 26. ChatGPT does not receive task or agent events, or `events/subscribe` fails
+**Cause:** [MCP Events](/ai-tools/chatgpt#_3-task-and-agent-notifications-mcp-events) are offered only on the remote `/mcp` endpoint, are delivered to the client's own HTTPS callback, and are never replayed.
+**Fix:**
+1. Connect to `https://harness.zuey.me/mcp`. Local stdio mode and `/mcp-gateway` do not offer events.
+2. Check the subscription's state, last error category, and recent deliveries with `GET /dashboard/api/v1/event-subscriptions`.
+3. `-32015` means the callback failed the signed verification challenge (unreachable, timed out, TLS error, non-`2xx` or redirect response, or a wrong `challenge` echo); nothing was stored. `-32602` means the callback is not a public `https` URL or the secret is not a valid `whsec_` secret. `-32012` means the request was not authenticated or a filter names a workspace, task, or agent you do not own; `-32013` means the subscription quota is reached.
+4. A subscription created with an API key stops when that key is revoked or expires; subscribe again with a valid credential.
+5. An event that happened before the subscription existed, or after it lapsed, is never delivered. Read the result with `tasks_status` or `agent_status`.
+6. Receivers may see the same event twice; deduplicate on the `webhook-id` header.

@@ -8,13 +8,14 @@ import { runnerRequestPrincipal } from './runner-request-principal.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { DashboardControlService } from './dashboard-control-service.js';
 import type { ApiKeyService } from './api-key-service.js';
+import type { McpEventService } from './mcp-event-service.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.authorization', 'authorization', '*.token', '*.content', '*.command'] });
 
 /** Holds the base64 form of an 8 MiB skills archive plus the operation envelope around it. */
 const DASHBOARD_OPERATION_BODY_LIMIT = '12mb';
 
-export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService, oauth?: OAuthSettingsOperations): Express {
+export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService, oauth?: OAuthSettingsOperations, events?: McpEventService): Express {
   const app = express();
   app.disable('x-powered-by');
   // A skills archive travels to the runner as base64 in this one route's envelope (up to ~10.7 MiB), so it
@@ -66,6 +67,20 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
       response.status(200).json(result);
     } catch (error) {
       sendRunnerError(response, error);
+    }
+  });
+  // MCP Events storage and the delivery queue. The runner never dials callbacks; the API egress
+  // worker claims sealed deliveries here and reports outcomes back.
+  app.post('/v1/internal/events', serviceAuth(config.serviceToken), (request: Request, response: Response) => {
+    if (!events) {
+      response.status(503).json({ ok: false, error: { code: 'UNAVAILABLE', message: 'event service unavailable' } });
+      return;
+    }
+    try {
+      response.status(200).json(events.execute(request.body));
+    } catch (error) {
+      logger.error({ err: error instanceof Error ? error.name : 'unknown' }, 'event operation failed');
+      response.status(500).json({ ok: false, error: { code: 'INTERNAL', message: 'event operation failed' } });
     }
   });
   return app;

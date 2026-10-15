@@ -60,7 +60,28 @@ Full MCP execution (including write/execute operations such as `workspace_open` 
 
 ---
 
-## 3. Troubleshooting
+## 3. Task and Agent Notifications (MCP Events)
+
+The remote endpoint `https://harness.zuey.me/mcp` advertises the MCP Events capability, so ChatGPT can subscribe to Cloud Harness events instead of polling. ChatGPT creates and refreshes these subscriptions itself; you never paste a webhook URL or secret, and the dashboard never creates one.
+
+| Event | Fires when |
+|---|---|
+| `cloudharness.task.completed` | A `tasks_run` task succeeds. |
+| `cloudharness.task.failed` | A task fails, is cancelled, is blocked by a failed dependency, or is interrupted by a runner restart. |
+| `cloudharness.agent.settled` | A managed agent reaches its final `SUCCEEDED` state. A turn ending is not settlement. |
+| `cloudharness.agent.failed` | A managed agent ends in any other final state. |
+
+Each event can be narrowed to one workspace, task, or agent you own. Events fire once per task or agent, and carry only ids, status, codes, and timestamps, never command output or messages: ChatGPT reads the result with `tasks_status` or `agent_status`.
+
+Good to know:
+
+- Delivery is at least once, and an event that happens while no subscription exists is not replayed later.
+- ChatGPT's subscriptions use Managed OAuth, so they lapse after at most 24 hours unless ChatGPT refreshes them. The dashboard API (`/dashboard/api/v1/event-subscriptions`) lists your subscriptions and can revoke one, which stops its delivery, but ChatGPT can subscribe again while the connector stays authorized; to stop it for good, revoke the subscription and disconnect the connector.
+- Live delivery to ChatGPT has not yet been verified end to end; Cloud Harness's own tests use a mock receiver.
+
+---
+
+## 4. Troubleshooting
 
 ### `FORBIDDEN: This conversation does not support developer MCPs`
 

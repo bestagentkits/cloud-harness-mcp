@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER, RunnerPrincipalSelectorSchema, type ExecutorNetworkProfile } from '@cloud-harness/contracts';
+import { emitTaskTerminalEvent, isTerminalTaskStatus, withEventSavepoint } from './event-outbox.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import {
   ActiveWorkspaceLimitReachedError,
@@ -52,7 +53,8 @@ export {
   downgradeStateSchemaToV8,
   downgradeStateSchemaToV9,
   downgradeStateSchemaToV10,
-  downgradeStateSchemaToV11
+  downgradeStateSchemaToV11,
+  downgradeStateSchemaToV12
 } from './principal-store.js';
 
 export type MemoryRecord = {
@@ -1478,19 +1480,34 @@ export class StateStore {
     if (updates.outputArtifactId !== undefined) { sets.push('output_artifact_id = ?'); values.push(updates.outputArtifactId); }
     values.push(taskId, expectedGeneration);
     const sql = `UPDATE durable_tasks SET ${sets.join(', ')} WHERE id = ? AND generation = ?`;
-    const result = this.database.prepare(sql).run(...values);
-    return Number(result.changes) === 1;
+    if (!isTerminalTaskStatus(updates.status)) {
+      return Number(this.database.prepare(sql).run(...values).changes) === 1;
+    }
+    // A first entry into a terminal status records its MCP event in the same savepoint, so the
+    // transition and the event commit together or not at all.
+    return withEventSavepoint(this.database, () => {
+      const previous = this.database.prepare('SELECT status FROM durable_tasks WHERE id = ? AND generation = ?')
+        .get(taskId, expectedGeneration) as { status: string } | undefined;
+      if (Number(this.database.prepare(sql).run(...values).changes) !== 1) return false;
+      if (previous && !isTerminalTaskStatus(previous.status)) emitTaskTerminalEvent(this.database, taskId, Date.now());
+      return true;
+    });
   }
 
   reconcileRunningTasks(currentBootId: string, now: number): number {
-    const result = this.database.prepare(`
-      UPDATE durable_tasks
-      SET status = 'FAILED', error_code = 'RUNNER_RESTARTED',
-          error_message = 'Task execution interrupted by runner restart',
-          finished_at = ?, generation = generation + 1
-      WHERE status IN ('QUEUED', 'RUNNING') AND boot_id != ?
-    `).run(now, currentBootId);
-    return Number(result.changes);
+    return withEventSavepoint(this.database, () => {
+      const interrupted = this.database.prepare("SELECT id FROM durable_tasks WHERE status IN ('QUEUED', 'RUNNING') AND boot_id != ?")
+        .all(currentBootId) as { id: string }[];
+      const result = this.database.prepare(`
+        UPDATE durable_tasks
+        SET status = 'FAILED', error_code = 'RUNNER_RESTARTED',
+            error_message = 'Task execution interrupted by runner restart',
+            finished_at = ?, generation = generation + 1
+        WHERE status IN ('QUEUED', 'RUNNING') AND boot_id != ?
+      `).run(now, currentBootId);
+      for (const task of interrupted) emitTaskTerminalEvent(this.database, task.id, now);
+      return Number(result.changes);
+    });
   }
 
   listStaleDurableTasks(olderThan: number): { id: string; logPath: string }[] {
