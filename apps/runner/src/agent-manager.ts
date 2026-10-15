@@ -224,6 +224,11 @@ export class AgentManager {
     }
   }
 
+  /** Whether any agent of this workspace is still running, which keeps the reaper from auto-closing it. */
+  hasActiveAgents(ownerId: string, workspaceId: string): boolean {
+    return this.repository.listActiveAgents(ownerId, workspaceId).length > 0;
+  }
+
   async stopWorkspace(ownerId: string, workspaceId: string, reason: string, generation?: number): Promise<void> {
     this.repository.closeWorkspaceAdmission(ownerId, workspaceId, this.now(), generation);
     const active = this.repository.listActiveAgents(ownerId, workspaceId, generation);

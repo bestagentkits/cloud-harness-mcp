@@ -178,13 +178,37 @@ the persisted default and its reset semantics by
 [`apps/api/src/dashboard-router.ts`](../apps/api/src/dashboard-router.ts).
 Runner-owned remote Git helpers do not depend on the executor network profile.
 
-`WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`, and
-`REAPER_INTERVAL_SECONDS` define lifecycle timing. `MAX_OUTPUT_BYTES` bounds
-runner/worker results. `MIN_FREE_BYTES` gates new workspace admission against a
-host reserve.
+`WORKSPACE_WALL_TTL_SECONDS`, `WORKSPACE_IDLE_TTL_SECONDS`,
+`WORKSPACE_RECOVERABLE_GRACE_SECONDS`, and `REAPER_INTERVAL_SECONDS` define
+lifecycle timing. The grace is how long an expired workspace stays
+`EXPIRED_RECOVERABLE` before the reaper may close it; `0` closes clean expired
+workspaces on the next reaper pass, and auto-close never discards unsaved work
+(see [operations](operations.md#expired-workspaces-and-auto-close)).
+`MAX_OUTPUT_BYTES` bounds runner/worker results. `MIN_FREE_BYTES` gates new
+workspace admission against a host reserve.
+
+**Dashboard lifecycle overrides.** Dashboard → Settings → **Workspace limits &
+lifecycle** stores durable, instance-wide overrides for
+`MAX_ACTIVE_WORKSPACES_PER_OWNER`, the idle TTL, the wall TTL, and the
+recoverable grace, so these can change without a redeploy. Each value resolves
+as Dashboard override, then the runner environment variable, then the built-in
+default, and the panel shows which source applies. Resetting a field returns it
+to the runner value. Override ranges are narrower than some environment ranges
+(the idle floor is a minute, and the Dashboard edits whole minutes); the bounds
+are owned by
+[`packages/contracts/src/workspace-lifecycle.ts`](../packages/contracts/src/workspace-lifecycle.ts)
+and the environment schema by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts). The
+TTLs and grace are snapshotted onto each workspace at `workspace_open`, so a
+change applies only to workspaces opened afterwards; a workspace persisted
+before the snapshot existed uses the runner idle TTL and a one-hour grace. The
+quota is re-read on every admission and recovery. Writes, validation, and
+auditing are owned by
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
+and [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts).
 
 `MAX_ACTIVE_WORKSPACES_PER_OWNER` bounds the concurrent counted workspaces one
-principal may hold. Counted statuses are `CREATING`, `ACTIVE`, and
+principal may hold, unless a Dashboard override replaces it. Counted statuses are `CREATING`, `ACTIVE`, and
 `NETWORK_QUARANTINED`; a record in `REAPING` is in flight to teardown and holds no
 slot, so destroying a workspace never consumes capacity. The shipped default is `3`
 and the accepted range is `1..64`, where `1` restores single-workspace behaviour.

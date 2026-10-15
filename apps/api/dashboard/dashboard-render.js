@@ -1260,6 +1260,99 @@ export function renderOAuthSettings(view, loadError) {
   return `<section class="panel" aria-labelledby="settings-oauth-heading"><h2 id="settings-oauth-heading">MCP OAuth sessions</h2>${intro}${facts}${notice}${form}<p id="settings-oauth-status" class="status-message" aria-live="polite"></p></section>`;
 }
 
+/**
+ * The four workspace lifecycle settings in display order. `unit` is the unit the operator edits:
+ * the quota is a count and the durations are whole minutes over the runner's integer seconds.
+ */
+export const WORKSPACE_LIFECYCLE_FIELDS = [
+  { name: 'maxActiveWorkspacesPerOwner', id: 'settings-lifecycle-max-active', label: 'Max active workspaces per principal', unit: 'count' },
+  { name: 'idleTtlSeconds', id: 'settings-lifecycle-idle', label: 'Idle timeout (minutes)', unit: 'minutes' },
+  { name: 'wallTtlSeconds', id: 'settings-lifecycle-wall', label: 'Maximum workspace lifetime (minutes)', unit: 'minutes' },
+  { name: 'recoverableGraceSeconds', id: 'settings-lifecycle-grace', label: 'Recoverable grace before auto-close (minutes)', unit: 'minutes' }
+];
+
+const LIFECYCLE_SOURCE_LABELS = { setting: 'Dashboard override', environment: 'Runner environment', default: 'Built-in default' };
+
+const isCount = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+/** A view from a runner that predates the lifecycle settings, or a malformed one, renders no panel. */
+export function isWorkspaceLifecycleView(view) {
+  if (!view || typeof view !== 'object' || !Number.isInteger(view.revision) || !view.settings || typeof view.settings !== 'object') return false;
+  return WORKSPACE_LIFECYCLE_FIELDS.every(({ name }) => {
+    const setting = view.settings[name];
+    return setting && isCount(setting.value) && isCount(setting.runnerValue) && isCount(setting.min) && isCount(setting.max);
+  });
+}
+
+/** The editable bounds of a field in its display unit; minute bounds stay inside the runner's second bounds. */
+export function workspaceLifecycleFieldBounds(field, setting) {
+  if (field.unit === 'count') return { min: setting.min, max: setting.max };
+  return { min: Math.ceil(setting.min / 60), max: Math.floor(setting.max / 60) };
+}
+
+/** A runner value that is not a whole minute (the environment allows 30 s idle) shows as a decimal and is only sent if edited. */
+export function workspaceLifecycleDisplayValue(field, seconds) {
+  return field.unit === 'count' ? String(seconds) : String(Math.round((seconds / 60) * 100) / 100);
+}
+
+/** A duration in seconds as the operator reads it. */
+export function lifecycleDurationLabel(seconds) {
+  if (!isCount(seconds)) return 'unknown';
+  if (seconds % 60 !== 0) return `${seconds} s`;
+  const minutes = seconds / 60;
+  return minutes >= 120 && minutes % 60 === 0 ? `${minutes} min (${minutes / 60} h)` : `${minutes} min`;
+}
+
+const bytesLabel = (bytes) => {
+  if (!isCount(bytes)) return 'unknown memory';
+  const gib = bytes / 1024 ** 3;
+  return gib >= 1 ? `${Math.round(gib * 100) / 100} GiB` : `${Math.round(bytes / 1024 ** 2)} MiB`;
+};
+
+const lifecycleValueLabel = (field, seconds) => field.unit === 'count' ? String(seconds) : lifecycleDurationLabel(seconds);
+
+/**
+ * Workspace limits and lifecycle. Every value shown as effective is the runner's read-back; the form edits
+ * the Dashboard overrides and a reset hands each field back to the runner value printed beside it.
+ */
+export function renderWorkspaceLifecycleSettings(view) {
+  if (!isWorkspaceLifecycleView(view)) return '';
+  const { settings } = view;
+  const usage = view.usage ?? {};
+  const ceilings = view.executorCeilings ?? {};
+  const reaper = lifecycleDurationLabel(view.reaperIntervalSeconds);
+  const quota = settings.maxActiveWorkspacesPerOwner.value;
+  const idle = settings.idleTtlSeconds.value;
+  const wall = settings.wallTtlSeconds.value;
+  const grace = settings.recoverableGraceSeconds.value;
+
+  const field = (definition, help) => {
+    const setting = settings[definition.name];
+    const bounds = workspaceLifecycleFieldBounds(definition, setting);
+    const value = workspaceLifecycleDisplayValue(definition, setting.value);
+    const source = LIFECYCLE_SOURCE_LABELS[setting.source] ?? 'Unknown';
+    const range = definition.unit === 'count' ? `${bounds.min}–${bounds.max}` : `${bounds.min}–${bounds.max} min`;
+    return `<div class="lifecycle-field"><label for="${definition.id}">${escape(definition.label)}</label><input id="${definition.id}" name="${definition.name}" type="number" inputmode="numeric" step="1" min="${escape(bounds.min)}" max="${escape(bounds.max)}" value="${escape(value)}" data-initial="${escape(value)}" required aria-describedby="${definition.id}-meta ${definition.id}-error"><p id="${definition.id}-meta" class="field-meta">Source: ${escape(source)} · Runner value: ${escape(lifecycleValueLabel(definition, setting.runnerValue))} · Allowed: ${escape(range)}</p><p id="${definition.id}-error" class="field-error"></p>${help}</div>`;
+  };
+
+  const ceilingText = `${bytesLabel(ceilings.memoryBytes)} memory, ${escape(ceilings.cpus ?? 'unknown')} CPU, ${escape(ceilings.pids ?? 'unknown')} pids`;
+  const atLimit = isCount(ceilings.memoryBytes) && isCount(ceilings.cpus) && isCount(ceilings.pids)
+    ? ` At the current limit of ${escape(quota)}, one principal alone could reach ${escape(bytesLabel(ceilings.memoryBytes * quota))} memory, ${escape(Math.round(ceilings.cpus * quota * 100) / 100)} CPU and ${escape(ceilings.pids * quota)} pids.`
+    : '';
+  const quotaHelp = `<dl class="facts"><dt>Your active workspaces</dt><dd><span class="mono">${escape(usage.counted ?? 0)} / ${escape(usage.limit ?? quota)}</span> counted against the effective limit</dd><dt>Expired, recoverable</dt><dd>${escape(usage.recoverable ?? 0)} (not counted; their checkouts still use disk)</dd></dl><p class="warning">Each executor is capped at ${ceilingText}. These are ceilings, not reservations, and they multiply with every concurrent workspace, so this per-principal quota does not guarantee the host has capacity.${atLimit}</p><p class="field-help">The limit is enforced at the next open, recover, or lease renew. Lowering it below current usage blocks new opens but never closes an existing workspace.</p>`;
+  const idleHelp = '<p class="field-help">A workspace expires after this long without activity. Tool calls that operate on the workspace refresh the idle lease: exec, files, git, shell, session, and task operations, <span class="mono">workspace_lease_renew</span>, and resuming with <span class="mono">workspace_recover</span>. <span class="mono">workspace_list</span>, <span class="mono">workspace_status</span>, and Dashboard polling or metadata reads do not keep a workspace alive.</p>';
+  const wallHelp = `<p class="field-help">A hard deadline counted from creation; activity never extends it. The effective active lifetime is the earlier of the idle expiry and this deadline (now: idle ${escape(lifecycleDurationLabel(idle))}, hard deadline ${escape(lifecycleDurationLabel(wall))}). The idle timeout may not exceed the lifetime.</p>`;
+  const graceHelp = `<p class="field-help">How long an expired workspace stays recoverable before the reaper may close it. It closes at about expiry + grace + up to one reaper interval (${escape(reaper)}).</p><div id="settings-lifecycle-ack-block" class="lifecycle-ack"${grace === 0 ? '' : ' hidden'}><p><strong>A grace of 0 closes clean expired workspaces on the next reaper pass.</strong> There is no window to recover them after expiry.</p><label class="checkbox-label" for="settings-lifecycle-ack"><input id="settings-lifecycle-ack" name="acknowledgeImmediateClose" type="checkbox" aria-describedby="settings-lifecycle-ack-error"><span>I understand expired workspaces close without a recovery window</span></label><p id="settings-lifecycle-ack-error" class="field-error"></p></div>`;
+
+  const timeline = `<ol class="lifecycle lifecycle-states" aria-label="Workspace lifecycle states"><li><strong class="mono">ACTIVE</strong>Counts against the quota. Expires at the earlier of ${escape(lifecycleDurationLabel(idle))} idle or ${escape(lifecycleDurationLabel(wall))} after creation.</li><li><strong class="mono">EXPIRED_RECOVERABLE</strong>Frees its active slot, but its checkout still uses disk. Recoverable with <span class="mono">workspace_recover</span> for ${escape(lifecycleDurationLabel(grace))}.</li><li><strong class="mono">CLOSED</strong>Auto-closed at about expiry + ${escape(lifecycleDurationLabel(grace))} + up to ${escape(reaper)}. Auto-close never deletes uncommitted, untracked, stashed, or unpushed work, nor a workspace with running agents (Git-ignored files are not checked): those stay recoverable until closed explicitly with <span class="mono">workspace_close</span> or recovered.</li></ol><dl class="facts"><dt>Retained by auto-close</dt><dd>${escape(usage.autoCloseDeferred ?? 0)} of your workspaces</dd><dt>Last changed</dt><dd>${view.updatedAt ? time(view.updatedAt) : 'Never changed in this dashboard'} <span class="mono">rev ${escape(view.revision)}</span></dd></dl>`;
+
+  const disclosure = '<p class="page-note"><strong>Not retroactive.</strong> Idle timeout, lifetime, and grace changes apply only to newly opened workspaces; open workspaces keep the policy they were opened with. The quota applies to the next open, recover, or renew. These are separate from the MCP OAuth session lifetime and from agent task TTLs.</p>';
+
+  const form = `<form id="settings-lifecycle-form" class="stack-form lifecycle-form" novalidate>${field(WORKSPACE_LIFECYCLE_FIELDS[0], quotaHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[1], idleHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[2], wallHelp)}${field(WORKSPACE_LIFECYCLE_FIELDS[3], graceHelp)}<div class="form-row-actions"><button id="save-settings-lifecycle" class="accent-btn" type="submit">Save lifecycle settings</button><button id="reset-settings-lifecycle" type="button">Reset to runner values</button></div></form>`;
+
+  return `<section id="settings-lifecycle-panel" class="panel" aria-labelledby="settings-lifecycle-heading"><h2 id="settings-lifecycle-heading">Workspace limits &amp; lifecycle</h2><p>Instance-wide quota and lifetimes for workspaces. Effective values below are what the runner reports.</p>${disclosure}${timeline}${form}<p id="settings-lifecycle-status" class="status-message" aria-live="polite"></p></section>`;
+}
+
 export function renderSettings(data, readiness, oauth, typesafe) {
   const profile = data?.defaultNetworkProfile ?? {};
   const value = profile.value === 'network-none' ? 'network-none' : 'dependency-access';
@@ -1272,7 +1365,7 @@ export function renderSettings(data, readiness, oauth, typesafe) {
   const readinessFact = readiness
     ? `<dt>Egress readiness</dt><dd>${readiness.ready === true ? 'Ready' : `Not ready: ${escape(readiness.reason ?? 'the readiness probe reported no reason')}`}</dd>`
     : '';
-  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${oauth ? renderOAuthSettings(oauth.view, oauth.error) : ''}${typesafe ? renderTypesafeSettings(typesafe) : ''}`;
+  return `<div class="page-note"><strong>Instance-wide defaults.</strong> These values apply to workspaces opened without an explicit network profile. Saving here neither starts nor changes a running workspace.</div><section class="panel" aria-labelledby="settings-network-heading"><h2 id="settings-network-heading">Default network profile</h2><p>Choose the network posture for newly opened workspaces.</p><label for="settings-network-profile">Effective default</label><select id="settings-network-profile" name="defaultNetworkProfile">${options}<option value=""${stored ? '' : ' selected'}>Use runner default</option></select><dl class="facts"><dt>Effective profile</dt><dd>${escape(networkLabel(value))} <span class="mono">${escape(value)}</span></dd><dt>Source</dt><dd>${escape(source)}</dd>${readinessFact}</dl><p class="warning"><strong>Dependency access grants outbound network access to repository-controlled code.</strong> A dependency, build script, or agent command can then reach the network and exfiltrate any credential injected into the workspace, including a global GH_TOKEN. A fine-grained token scoped only to the repositories a workspace needs is safer than a broadly scoped credential. Check egress readiness before relying on it.</p><div class="form-row-actions"><button id="save-settings-network-profile" class="accent-btn" type="button">Save</button><button id="reset-settings-network-profile" type="button">Reset to runner default</button><button id="check-settings-network" type="button">Check egress readiness</button></div><p id="settings-status" class="status-message" aria-live="polite"></p></section>${renderWorkspaceLifecycleSettings(data?.workspaceLifecycle)}${oauth ? renderOAuthSettings(oauth.view, oauth.error) : ''}${typesafe ? renderTypesafeSettings(typesafe) : ''}`;
 }
 
 export function renderRuntime(data) {

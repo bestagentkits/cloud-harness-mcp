@@ -842,6 +842,20 @@ nav[aria-label="Breadcrumb"] > * + *::before { content: "/"; margin-inline-end: 
 .stack-form .checkbox-label { display: flex; align-items: start; gap: var(--space-3); font-weight: 500; }
 .checkbox-label input { flex: 0 0 auto; width: 1.5rem; height: 1.5rem; min-height: auto; padding: 0; margin-block-start: 0; accent-color: var(--accent); box-shadow: none; }
 .checkbox-label span { padding-block-start: .125rem; }
+/* One labelled setting with its provenance, help, and inline error. The error line is empty until the
+   client validates, so a field without a problem takes no extra space. */
+.lifecycle-field { display: grid; gap: var(--space-1); padding-block: var(--space-3); border-block-start: 1px solid var(--line); }
+.lifecycle-field:first-child { border-block-start: 0; padding-block-start: 0; }
+.lifecycle-field > .facts, .lifecycle-field > .warning { margin-block: var(--space-2) 0; }
+.field-meta { margin: 0; color: var(--ink-muted); font-size: var(--text-12); font-variant-numeric: tabular-nums; }
+.field-help { margin: 0; color: var(--ink-muted); font-size: var(--text-13); }
+.field-error { margin: 0; color: var(--danger); font-size: var(--text-13); font-weight: 500; }
+.field-error:empty { display: none; }
+.stack-form input[aria-invalid="true"] { border-color: var(--danger-line); }
+.lifecycle-ack { display: grid; gap: var(--space-2); margin-block-start: var(--space-2); padding: var(--space-3) var(--space-4); border: 1px solid var(--danger-line); border-radius: var(--radius-md); background: var(--danger-soft); font-size: var(--text-13); }
+.lifecycle-ack[hidden] { display: none; }
+.lifecycle-ack p { margin: 0; }
+.lifecycle-states li strong { color: var(--ink); }
 .tools-checkbox-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--space-2); padding: var(--space-3); background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-12); margin-block: var(--space-1); }
 .tools-checkbox-grid label { display: flex; align-items: center; gap: var(--space-2); cursor: pointer; font-weight: 400; }
 .tools-checkbox-grid input { min-height: auto; width: 1.125rem; height: 1.125rem; accent-color: var(--accent); }

@@ -7,7 +7,7 @@ import {
   validateSecretClient
 } from '../dashboard/dashboard.js';
 
-import { renderSettings, renderSkillsSkeleton, renderTypesafeSettings } from '../dashboard/dashboard-render.js';
+import { renderSettings, renderSkillsSkeleton, renderTypesafeSettings, renderWorkspaceLifecycleSettings } from '../dashboard/dashboard-render.js';
 import { DASHBOARD_PAGES } from '../dashboard/dashboard-pages.js';
 import { renderSkillRevisions, renderSkillsLibraryRows } from '../dashboard/dashboard-render.js';
 import { planIsActionable, renderApprovals, renderPackages, shortDigest } from '../dashboard/dashboard-render.js';
@@ -409,6 +409,65 @@ describe('dashboard static UI contract', () => {
       "api('/settings/oauth')", "api('/settings/oauth', { method: 'POST'", 'id="settings-oauth-persistent"', 'id="settings-oauth-grant"',
       'id="settings-oauth-token-minutes"', 'id="settings-oauth-status"', 'expectedRevision: view.revision'
     ]) expect(script).toContain(contract);
+  });
+
+  it('renders the workspace limits and lifecycle panel from the runner view and wires its save, reset, and conflict paths', () => {
+    const setting = (value: number, source: string, runnerValue: number, min: number, max: number) => ({ value, source, runnerValue, min, max });
+    const view = {
+      revision: 7, updatedAt: '2026-10-15T00:00:00.000Z', reaperIntervalSeconds: 60,
+      settings: {
+        maxActiveWorkspacesPerOwner: setting(5, 'setting', 3, 1, 64),
+        idleTtlSeconds: setting(300, 'environment', 300, 60, 43_200),
+        wallTtlSeconds: setting(900, 'default', 900, 60, 86_400),
+        recoverableGraceSeconds: setting(3_600, 'default', 3_600, 0, 86_400)
+      },
+      usage: { counted: 2, limit: 5, recoverable: 1, autoCloseDeferred: 4 },
+      executorCeilings: { memoryBytes: 1_073_741_824, cpus: 1, pids: 256 }
+    };
+    const page = renderSettings({ defaultNetworkProfile: { value: 'network-none', source: 'setting' }, workspaceLifecycle: view });
+    // The network panel is unchanged and the lifecycle panel follows it.
+    expect(page.indexOf('id="settings-network-heading"')).toBeGreaterThan(-1);
+    expect(page.indexOf('id="settings-lifecycle-panel"')).toBeGreaterThan(page.indexOf('id="settings-status"'));
+
+    const panel = renderWorkspaceLifecycleSettings(view);
+    for (const selector of [
+      'aria-labelledby="settings-lifecycle-heading"', 'id="settings-lifecycle-form"', 'id="settings-lifecycle-max-active"', 'id="settings-lifecycle-idle"',
+      'id="settings-lifecycle-wall"', 'id="settings-lifecycle-grace"', 'id="settings-lifecycle-ack"', 'id="save-settings-lifecycle"',
+      'id="reset-settings-lifecycle"', 'id="settings-lifecycle-status"'
+    ]) expect(panel, selector).toContain(selector);
+    expect(panel).toMatch(/id="settings-lifecycle-status" class="status-message" aria-live="polite"/);
+    // Fields edit whole minutes inside the contract bounds and carry their provenance and error slots.
+    expect(panel).toMatch(/id="settings-lifecycle-max-active"[^>]*min="1" max="64" value="5"/);
+    expect(panel).toMatch(/id="settings-lifecycle-idle"[^>]*step="1" min="1" max="720" value="5"/);
+    expect(panel).toMatch(/id="settings-lifecycle-wall"[^>]*min="1" max="1440" value="15"/);
+    expect(panel).toMatch(/id="settings-lifecycle-grace"[^>]*min="0" max="1440" value="60"/);
+    expect(panel).toMatch(/id="settings-lifecycle-idle"[^>]*aria-describedby="settings-lifecycle-idle-meta settings-lifecycle-idle-error"/);
+    expect(panel).toContain('Source: Dashboard override · Runner value: 3');
+    expect(panel).toContain('Source: Runner environment · Runner value: 5 min');
+    expect(panel).toContain('Source: Built-in default · Runner value: 15 min');
+    expect(panel).toContain('2 / 5');
+    expect(panel).toContain('4 of your workspaces');
+    // Resource ceilings, timeline, retention, and the non-retroactive disclosure are stated, not implied.
+    for (const text of ['1 GiB memory, 1 CPU, 256 pids', 'ceilings, not reservations', 'never closes an existing workspace', 'ACTIVE', 'EXPIRED_RECOVERABLE', 'CLOSED',
+      'up to 1 min', 'workspace_close', 'workspace_lease_renew', 'do not keep a workspace alive', 'only to newly opened workspaces', 'MCP OAuth session lifetime', 'agent task TTLs', 'earlier of']) {
+      expect(panel, text).toContain(text);
+    }
+    // The grace-0 acknowledgement stays hidden until grace is 0, and shows when the stored grace is already 0.
+    expect(panel).toMatch(/id="settings-lifecycle-ack-block" class="lifecycle-ack" hidden/);
+    expect(renderWorkspaceLifecycleSettings({ ...view, settings: { ...view.settings, recoverableGraceSeconds: setting(0, 'setting', 3_600, 0, 86_400) } }))
+      .toMatch(/id="settings-lifecycle-ack-block" class="lifecycle-ack">/);
+    // An older runner without the view, or a malformed view, renders no panel and leaves the page intact.
+    expect(renderSettings({ defaultNetworkProfile: { value: 'network-none', source: 'setting' } })).not.toContain('settings-lifecycle');
+    expect(renderWorkspaceLifecycleSettings({ revision: 1, settings: { idleTtlSeconds: setting(300, 'default', 300, 60, 43_200) } })).toBe('');
+    expect(renderWorkspaceLifecycleSettings(undefined)).toBe('');
+    // Runner-supplied text is escaped.
+    expect(renderWorkspaceLifecycleSettings({ ...view, executorCeilings: { memoryBytes: 1, cpus: '<b>', pids: 1 } })).not.toContain('<b>');
+
+    // The shipped client saves through the BFF with the loaded revision and reloads on a conflict.
+    for (const wiring of [
+      'bindLifecycleSettingsControls()', 'workspaceLifecycleUpdateInput(view, values(), acknowledge.checked)', 'workspaceLifecycleResetInput(view)',
+      "requestBody({ workspaceLifecycle })", 'error?.status === 409', 'reloadLifecycleSettings(', "api('/settings')", "setAttribute('aria-invalid', 'true')"
+    ]) expect(script, wiring).toContain(wiring);
   });
 
   it('offers only the contract network profiles and drops the retired networkMode markup', () => {

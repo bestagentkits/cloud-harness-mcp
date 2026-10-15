@@ -4,6 +4,7 @@ import { AgentProxyOperationSchema } from './runner-api.js';
 import { BUILDABLE_PACKAGE_ECOSYSTEMS, BuildablePackageEcosystemSchema } from './package-schemas.js';
 import { SecretNameSchema } from './secret-policy.js';
 import { ImplementedDecisionPurposeSchema } from './decision-plane.js';
+import { DEFAULT_RECOVERABLE_GRACE_SECONDS } from './workspace-lifecycle.js';
 const token = z.string().min(32).max(512).refine((value) => !value.startsWith('change-me'), 'placeholder secret is forbidden');
 
 const httpsUrl = z.url().refine((value) => {
@@ -274,6 +275,11 @@ export const RunnerConfigSchema = z.object({
   minFreeBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxWorkspaceBytes: z.coerce.number().int().min(104_857_600).default(2_147_483_648),
   maxActiveWorkspacesPerOwner: z.coerce.number().int().min(1).max(64).default(DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER),
+  // An expired workspace stays recoverable this long before the reaper may close it; a Dashboard override
+  // replaces it for workspaces opened afterwards. 0 closes clean expired workspaces on the next pass.
+  recoverableGraceSeconds: z.coerce.number().int().min(0).max(86_400).default(DEFAULT_RECOVERABLE_GRACE_SECONDS),
+  // Which lifecycle values the runner environment set explicitly, so Settings can tell them from defaults.
+  lifecycleEnvironmentKeys: z.array(z.enum(['maxActiveWorkspacesPerOwner', 'idleTtlSeconds', 'wallTtlSeconds', 'recoverableGraceSeconds'])).max(4).default([]),
   reaperIntervalSeconds: z.coerce.number().int().min(10).max(3_600).default(30),
   artifactRoot: z.string().min(1).default('/var/lib/cloud-harness/artifacts'),
   maxArtifactBytes: z.coerce.number().int().min(1_024).max(268_435_456).default(16_777_216),

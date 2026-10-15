@@ -26,8 +26,8 @@ docker compose --profile images build executor-image
 ---
 
 ### 3. `workspace expired: TTL exceeded`
-**Cause:** The workspace reached its 15-minute wall-clock limit or 5-minute idle limit.
-**Fix:** Workspaces are ephemeral by design. Re-open a workspace using `workspace_open` with a fresh idempotency key.
+**Cause:** The workspace reached its wall-clock lifetime or idle timeout (15 and 5 minutes by default; the operator can change both in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) for workspaces opened afterwards).
+**Fix:** Workspaces are ephemeral by design. While the workspace is `EXPIRED_RECOVERABLE`, `workspace_recover` restores or exports its work. Otherwise re-open a workspace using `workspace_open` with a fresh idempotency key.
 
 ---
 
@@ -141,7 +141,7 @@ A `403` from the helper is never retried, because the operation may already have
 **Fix:**
 1. Call `workspace_list` to see the counted workspaces, then `workspace_close` one you no longer need. Closing removes that workspace's files, so finalize or push unpushed work first.
 2. An `ACTIVE` workspace also frees its slot when its idle or wall TTL expires. A `NETWORK_QUARANTINED` record does not expire, so close it explicitly.
-3. Raise `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner (default `3`, maximum `64`) after sizing host memory for the new limit, because each counted workspace may use up to 1 GiB of container memory, one CPU, and 256 pids.
+3. Raise the quota in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) → **Workspace limits & lifecycle**, or `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner when no Dashboard override is set (default `3`, maximum `64`), after sizing host memory for the new limit, because each counted workspace may use up to 1 GiB of container memory, one CPU, and 256 pids.
 Lowering the limit never reaps an existing workspace; it only blocks new admission and recovery until the counted total drops.
 
 ### 13. A workspace is stuck in `REAPING`
@@ -314,3 +314,13 @@ If an agent started but followed the wrong files, read the `repository_context` 
 1. Read `GET /api/v1/decision-plane/status`. `enabled` and `purposes` show what is on, `configured` shows whether this owner has a key, and `metrics.<purpose>.fallbackReasons` counts why calls fell back.
 2. Search the audit log for `decision.evaluated` rows. Each one carries the `outcome` and `fallbackReason` without any prompt text.
 3. Lexical results are always correct to use. A fallback is never an error.
+
+---
+
+### 28. An expired workspace is not auto-closed, and its `error` starts with `auto-close deferred:`
+**Cause:** The recoverable grace passed, but closing the workspace would have lost work: agents were still running, or the checkout had uncommitted or untracked files, stashes, or commits on a local branch that is not on any remote. A check that could not run defers the close too. Earlier releases deleted recoverable workspaces after one hour regardless; auto-close now retains them, and the reaper retries after the longer of the grace and one hour.
+**Fix:**
+1. Call `workspace_recover` with `mode: "status"` or `"patch"` to see what is unsaved.
+2. Push it (resume with `workspace_recover`, then `git_push`) or use `mode: "export"` to push a recovery snapshot branch.
+3. Call `workspace_close`. Closing without saving first discards the work.
+**Retained by auto-close** in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) counts these workspaces; they no longer count against the active quota but still use disk.

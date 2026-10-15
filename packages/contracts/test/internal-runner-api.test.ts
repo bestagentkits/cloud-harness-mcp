@@ -63,6 +63,23 @@ describe('internal runner API contract', () => {
     })).toThrow();
   });
 
+  it('accepts a revisioned, field-scoped workspace lifecycle change and refuses unsafe or empty ones', () => {
+    const update = (workspaceLifecycle: Record<string, unknown>) => InternalRunnerRequestSchema.safeParse({
+      version: 2, principal, operation: 'settings_update', input: { workspaceLifecycle }
+    });
+    expect(update({ expectedRevision: 0, idleTtlSeconds: 600, maxActiveWorkspacesPerOwner: null }).success).toBe(true);
+    expect(update({ expectedRevision: 2, recoverableGraceSeconds: 0, acknowledgeImmediateClose: true }).success).toBe(true);
+    expect(update({ expectedRevision: 2, recoverableGraceSeconds: 0 }).success).toBe(false);
+    expect(update({ expectedRevision: 0 }).success).toBe(false);
+    expect(update({ idleTtlSeconds: 600 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, idleTtlSeconds: 59 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, idleTtlSeconds: 600.5 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, maxActiveWorkspacesPerOwner: 65 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, wallTtlSeconds: 86_401 }).success).toBe(false);
+    expect(update({ expectedRevision: 0, idleTtlSeconds: 600, unknown: 1 }).success).toBe(false);
+    expect(InternalRunnerRequestSchema.safeParse({ version: 2, principal, operation: 'settings_update', input: {} }).success).toBe(false);
+  });
+
   it('requires the v2 principal selector and generation fence', () => {
     const workspaceId = `ws_${'a'.repeat(24)}`;
     expect(InternalRunnerRequestSchema.parse({

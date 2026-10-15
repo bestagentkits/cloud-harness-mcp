@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER, RunnerPrincipalSelectorSchema, type ExecutorNetworkProfile } from '@cloud-harness/contracts';
+import { DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER, DEFAULT_RECOVERABLE_GRACE_SECONDS, RunnerPrincipalSelectorSchema, type ExecutorNetworkProfile } from '@cloud-harness/contracts';
 import { emitTaskTerminalEvent, isTerminalTaskStatus, withEventSavepoint } from './event-outbox.js';
 import type { EncryptedSecret } from './secret-keyring.js';
 import {
@@ -166,7 +166,36 @@ export type WorkspaceRecord = {
   generation: number;
   error: string | null;
   requestFingerprint?: string | null;
+  /** The idle timeout snapshotted at open; absent on rows written before the policy became configurable. */
+  idleTtlSeconds?: number | null;
+  /** The recoverable grace snapshotted at open; absent on rows written before the policy became configurable. */
+  recoverableGraceSeconds?: number | null;
+  /** When the record last entered `EXPIRED_RECOVERABLE`; cleared whenever it becomes `ACTIVE` again. */
+  expiredAt?: number | null;
+  /** When the reaper may next try to auto-close the recoverable record; cleared with `expiredAt`. */
+  recoverableUntil?: number | null;
 };
+
+/** Changes a fenced lifecycle write may apply to one workspace row. */
+type FencedWorkspaceChanges = Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'generation' | 'error' | 'expiredAt' | 'recoverableUntil'>>;
+
+/** Dashboard overrides of the workspace lifecycle policy. `null` means the runner configuration applies. */
+export type WorkspaceLifecycleOverrides = {
+  maxActiveWorkspacesPerOwner: number | null;
+  idleTtlSeconds: number | null;
+  wallTtlSeconds: number | null;
+  recoverableGraceSeconds: number | null;
+  revision: number;
+  updatedAt: number | null;
+};
+
+/** Raised when a lifecycle settings write was based on a revision another write already replaced. */
+export class SettingsRevisionConflictError extends Error {
+  constructor(readonly currentRevision: number) {
+    super('SETTINGS_REVISION_CONFLICT');
+    this.name = 'SettingsRevisionConflictError';
+  }
+}
 
 export type ToolkitCacheEntryRecord = {
   cacheKey: string;
@@ -267,6 +296,8 @@ type Row = {
   created_at: number; last_activity_at: number; expires_at: number; hard_expires_at?: number | null;
   git_author_name?: string | null; git_author_email?: string | null; mutation_locked_until?: number | null;
   generation: number; error: string | null; request_fingerprint?: string | null;
+  idle_ttl_seconds?: number | null; recoverable_grace_seconds?: number | null;
+  expired_at?: number | null; recoverable_until?: number | null;
 };
 
 /**
@@ -296,6 +327,19 @@ function legacyNetworkMode(record: WorkspaceRecord | Row): string | undefined {
   return (record as unknown as { networkMode?: string }).networkMode;
 }
 
+/**
+ * The recoverable window belongs to `EXPIRED_RECOVERABLE` alone: any write that makes a record active again
+ * clears it, so a later expiry always starts a fresh window instead of inheriting a stale one.
+ */
+function withRecoverableWindow(current: WorkspaceRecord, changes: Partial<WorkspaceRecord>): WorkspaceRecord {
+  const next = { ...current, ...changes };
+  if (next.status === 'ACTIVE') {
+    next.expiredAt = null;
+    next.recoverableUntil = null;
+  }
+  return next;
+}
+
 const fromRow = (row: Row): WorkspaceRecord => ({
   id: row.id, ownerId: row.owner_id, idempotencyKey: row.idempotency_key, repositoryUrl: row.repository_url,
   repositoryRef: row.repository_ref, containerName: row.container_name, workspacePath: row.workspace_path,
@@ -305,7 +349,11 @@ const fromRow = (row: Row): WorkspaceRecord => ({
   gitAuthorName: row.git_author_name ?? null, gitAuthorEmail: row.git_author_email ?? null,
   mutationLockedUntil: row.mutation_locked_until ?? null,
   generation: row.generation, error: row.error,
-  requestFingerprint: row.request_fingerprint ?? null
+  requestFingerprint: row.request_fingerprint ?? null,
+  idleTtlSeconds: row.idle_ttl_seconds ?? null,
+  recoverableGraceSeconds: row.recoverable_grace_seconds ?? null,
+  expiredAt: row.expired_at ?? null,
+  recoverableUntil: row.recoverable_until ?? null
 });
 
 /**
@@ -369,7 +417,10 @@ export type OAuthGrantSettingsRecord = {
 export class StateStore {
   readonly database: DatabaseSync;
   readonly knowledge: KnowledgeStore;
-  /** Per-principal active-workspace limit, applied to legacy ownership merges. */
+  /**
+   * The runner-configured per-principal active-workspace limit. A Dashboard override replaces it; use
+   * `effectiveActiveWorkspaceLimit()` for the value admissions and ownership merges enforce.
+   */
   readonly maxActiveWorkspacesPerOwner: number;
   constructor(path: string, options: { maxActiveWorkspacesPerOwner?: number } = {}) {
     this.maxActiveWorkspacesPerOwner = options.maxActiveWorkspacesPerOwner ?? DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER;
@@ -479,6 +530,8 @@ export class StateStore {
     // path, and it cannot be re-created once an owner legally holds two counted
     // workspaces. The boot path never re-creates it.
     this.database.exec('DROP INDEX IF EXISTS one_active_workspace_per_owner;');
+    // Added after the principal migration, which rebuilds the workspaces table from a fixed column list.
+    this.migrateWorkspaceLifecycleColumns();
       this.database.prepare('INSERT OR IGNORE INTO runtime_meta(key, value) VALUES (?, ?)')
         .run('runner_instance_id', randomBytes(18).toString('hex'));
       this.knowledge = new KnowledgeStore(this.database);
@@ -496,8 +549,8 @@ export class StateStore {
 
   create(record: WorkspaceRecord): void {
     this.database.prepare(`INSERT INTO workspaces
-      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status, network_profile, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, generation, error, request_fingerprint)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, environment_id, status, network_profile, created_at, last_activity_at, expires_at, hard_expires_at, git_author_name, git_author_email, mutation_locked_until, generation, error, request_fingerprint, idle_ttl_seconds, recoverable_grace_seconds, expired_at, recoverable_until)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         record.id,
         record.ownerId,
@@ -518,19 +571,26 @@ export class StateStore {
         record.mutationLockedUntil ?? null,
         record.generation ?? 1,
         record.error ?? null,
-        record.requestFingerprint ?? null
+        record.requestFingerprint ?? null,
+        record.idleTtlSeconds ?? null,
+        record.recoverableGraceSeconds ?? null,
+        record.expiredAt ?? null,
+        record.recoverableUntil ?? null
       );
   }
 
   /**
-   * Atomically admits a new active workspace while the owner is below
-   * `activeLimit`. The count and the insert share one transaction, which makes this
-   * the admission authority: `WorkspaceService.ensureCapacity` awaits container and
-   * disk work before calling it, so no pre-check can be trusted on its own.
+   * Atomically admits a new active workspace while the owner is below the effective
+   * limit: a Dashboard override, else `configuredLimit`. The override read, the count,
+   * and the insert share one transaction, which makes this the admission authority:
+   * `WorkspaceService.ensureCapacity` awaits container and disk work before calling
+   * it, so no pre-check can be trusted on its own, and a concurrent limit change
+   * cannot be admitted against a stale value.
    */
-  admit(record: WorkspaceRecord, activeLimit: number): void {
+  admit(record: WorkspaceRecord, configuredLimit: number): void {
     this.database.exec('BEGIN IMMEDIATE;');
     try {
+      const activeLimit = this.effectiveActiveWorkspaceLimit(configuredLimit);
       const active = this.countOwnerCountedWorkspaces(record.ownerId);
       if (active >= activeLimit) throw new ActiveWorkspaceLimitReachedError(active, activeLimit);
       this.create(record);
@@ -551,8 +611,8 @@ export class StateStore {
     id: string,
     expectedGeneration: number,
     expectedStatuses: WorkspaceRecord['status'][],
-    changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'generation' | 'error'>>,
-    activeLimit: number
+    changes: FencedWorkspaceChanges,
+    configuredLimit: number
   ): WorkspaceRecord | undefined {
     this.database.exec('BEGIN IMMEDIATE;');
     try {
@@ -563,6 +623,7 @@ export class StateStore {
       }
       const countedStatuses: readonly string[] = COUNTED_WORKSPACE_STATUSES;
       if (!countedStatuses.includes(current.status)) {
+        const activeLimit = this.effectiveActiveWorkspaceLimit(configuredLimit);
         const active = this.countOwnerCountedWorkspaces(current.ownerId);
         if (active >= activeLimit) throw new ActiveWorkspaceLimitReachedError(active, activeLimit);
       }
@@ -728,13 +789,13 @@ export class StateStore {
   resolvePrincipal(selector: PrincipalSelector): string {
     const parsed = RunnerPrincipalSelectorSchema.parse(selector);
     if (parsed.kind === 'owner') {
-      return resolveOwnerPrincipal(this.database, parsed.ownerId, this.maxActiveWorkspacesPerOwner);
+      return resolveOwnerPrincipal(this.database, parsed.ownerId, this.effectiveActiveWorkspaceLimit());
     }
     return this.resolveExternalPrincipal(parsed);
   }
 
   resolveExternalPrincipal(selector: ExternalPrincipalSelector, options: { legacyOwnerId?: string } = {}): string {
-    return resolveExternalPrincipal(this.database, selector, options, this.maxActiveWorkspacesPerOwner);
+    return resolveExternalPrincipal(this.database, selector, options, this.effectiveActiveWorkspaceLimit());
   }
 
   principalByExternalIdentity(selector: Pick<ExternalPrincipalSelector, 'issuer' | 'subject'>): PrincipalRecord | undefined {
@@ -750,7 +811,7 @@ export class StateStore {
   }
 
   applyLegacyPrincipalMapping(mapping: { legacyOwnerId: string; issuer: string; subject: string }): string {
-    return applyLegacyPrincipalMapping(this.database, mapping, this.maxActiveWorkspacesPerOwner);
+    return applyLegacyPrincipalMapping(this.database, mapping, this.effectiveActiveWorkspaceLimit());
   }
 
   applyPrincipalRelinks(
@@ -776,8 +837,8 @@ export class StateStore {
   update(id: string, changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'hardExpiresAt' | 'gitAuthorName' | 'gitAuthorEmail' | 'mutationLockedUntil' | 'generation' | 'error'>>): WorkspaceRecord {
     const current = this.byId(id);
     if (!current) throw new Error(`workspace ${id} missing`);
-    const next = { ...current, ...changes };
-    this.database.prepare('UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, hard_expires_at=?, git_author_name=?, git_author_email=?, mutation_locked_until=?, generation=?, error=? WHERE id=?')
+    const next = withRecoverableWindow(current, changes);
+    this.database.prepare('UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, hard_expires_at=?, git_author_name=?, git_author_email=?, mutation_locked_until=?, generation=?, error=?, expired_at=?, recoverable_until=? WHERE id=?')
       .run(
         next.containerName ?? null,
         next.status,
@@ -789,6 +850,8 @@ export class StateStore {
         next.mutationLockedUntil ?? null,
         next.generation,
         next.error ?? null,
+        next.expiredAt ?? null,
+        next.recoverableUntil ?? null,
         id
       );
     return next;
@@ -937,6 +1000,133 @@ export class StateStore {
       .run(value, updatedAt);
   }
 
+  private migrateWorkspaceLifecycleColumns(): void {
+    const columns = new Set((this.database.prepare('PRAGMA table_info(workspaces)').all() as { name: string }[]).map((c) => c.name));
+    for (const [name, type] of [
+      ['idle_ttl_seconds', 'INTEGER'], ['recoverable_grace_seconds', 'INTEGER'], ['expired_at', 'INTEGER'], ['recoverable_until', 'INTEGER']
+    ] as const) {
+      if (!columns.has(name)) this.database.exec(`ALTER TABLE workspaces ADD COLUMN ${name} ${type};`);
+    }
+    if (!columns.has('recoverable_until')) {
+      // A recoverable row written by an earlier release used its last activity as the grace anchor with a
+      // fixed hour of grace, so it keeps exactly the close time it already had.
+      this.database.prepare(`UPDATE workspaces SET expired_at = last_activity_at, recoverable_until = last_activity_at + ?
+        WHERE status = 'EXPIRED_RECOVERABLE'`).run(DEFAULT_RECOVERABLE_GRACE_SECONDS * 1_000);
+    }
+    const settingsColumns = new Set((this.database.prepare('PRAGMA table_info(instance_settings)').all() as { name: string }[]).map((c) => c.name));
+    for (const [name, definition] of [
+      ['max_active_workspaces_per_owner', 'INTEGER CHECK(max_active_workspaces_per_owner BETWEEN 1 AND 64)'],
+      ['workspace_idle_ttl_seconds', 'INTEGER CHECK(workspace_idle_ttl_seconds BETWEEN 60 AND 43200)'],
+      ['workspace_wall_ttl_seconds', 'INTEGER CHECK(workspace_wall_ttl_seconds BETWEEN 60 AND 86400)'],
+      ['recoverable_grace_seconds', 'INTEGER CHECK(recoverable_grace_seconds BETWEEN 0 AND 86400)'],
+      ['lifecycle_revision', 'INTEGER NOT NULL DEFAULT 0'],
+      ['lifecycle_updated_at', 'INTEGER']
+    ] as const) {
+      if (!settingsColumns.has(name)) this.database.exec(`ALTER TABLE instance_settings ADD COLUMN ${name} ${definition};`);
+    }
+  }
+
+  /** The Dashboard overrides of the workspace lifecycle policy, or all-null at revision 0 when none were saved. */
+  getWorkspaceLifecycleOverrides(): WorkspaceLifecycleOverrides {
+    const row = this.database.prepare(`SELECT max_active_workspaces_per_owner, workspace_idle_ttl_seconds, workspace_wall_ttl_seconds,
+      recoverable_grace_seconds, lifecycle_revision, lifecycle_updated_at FROM instance_settings WHERE id = 1`).get() as {
+      max_active_workspaces_per_owner: number | null; workspace_idle_ttl_seconds: number | null; workspace_wall_ttl_seconds: number | null;
+      recoverable_grace_seconds: number | null; lifecycle_revision: number; lifecycle_updated_at: number | null;
+    } | undefined;
+    return {
+      maxActiveWorkspacesPerOwner: row?.max_active_workspaces_per_owner ?? null,
+      idleTtlSeconds: row?.workspace_idle_ttl_seconds ?? null,
+      wallTtlSeconds: row?.workspace_wall_ttl_seconds ?? null,
+      recoverableGraceSeconds: row?.recoverable_grace_seconds ?? null,
+      revision: row?.lifecycle_revision ?? 0,
+      updatedAt: row?.lifecycle_updated_at ?? null
+    };
+  }
+
+  /**
+   * Applies a field-scoped override change when `expectedRevision` is still current. `validate` sees the
+   * merged overrides inside the same transaction, so a rule spanning fields (idle within wall) cannot be
+   * bypassed by two concurrent saves. Omitted fields keep their value and the network default is untouched.
+   */
+  updateWorkspaceLifecycleOverrides(
+    expectedRevision: number,
+    changes: Partial<Pick<WorkspaceLifecycleOverrides, 'maxActiveWorkspacesPerOwner' | 'idleTtlSeconds' | 'wallTtlSeconds' | 'recoverableGraceSeconds'>>,
+    updatedAt: number,
+    validate: (next: WorkspaceLifecycleOverrides) => void
+  ): { previous: WorkspaceLifecycleOverrides; next: WorkspaceLifecycleOverrides } {
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const previous = this.getWorkspaceLifecycleOverrides();
+      if (previous.revision !== expectedRevision) throw new SettingsRevisionConflictError(previous.revision);
+      const defined = Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined));
+      const next: WorkspaceLifecycleOverrides = { ...previous, ...defined, revision: previous.revision + 1, updatedAt };
+      validate(next);
+      this.database.prepare(`INSERT INTO instance_settings(id, updated_at, max_active_workspaces_per_owner, workspace_idle_ttl_seconds,
+          workspace_wall_ttl_seconds, recoverable_grace_seconds, lifecycle_revision, lifecycle_updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at,
+          max_active_workspaces_per_owner = excluded.max_active_workspaces_per_owner,
+          workspace_idle_ttl_seconds = excluded.workspace_idle_ttl_seconds,
+          workspace_wall_ttl_seconds = excluded.workspace_wall_ttl_seconds,
+          recoverable_grace_seconds = excluded.recoverable_grace_seconds,
+          lifecycle_revision = excluded.lifecycle_revision,
+          lifecycle_updated_at = excluded.lifecycle_updated_at`)
+        .run(updatedAt, next.maxActiveWorkspacesPerOwner, next.idleTtlSeconds, next.wallTtlSeconds, next.recoverableGraceSeconds, next.revision, updatedAt);
+      this.database.exec('COMMIT;');
+      return { previous, next };
+    } catch (error) {
+      try { this.database.exec('ROLLBACK;'); } catch { /* ignore rollback error */ }
+      throw error;
+    }
+  }
+
+  /**
+   * The per-principal limit admissions and ownership merges enforce: the Dashboard override, else the
+   * runner configuration. It is a single synchronous read, so callers inside a transaction see the value
+   * that transaction commits against.
+   */
+  effectiveActiveWorkspaceLimit(configuredLimit: number = this.maxActiveWorkspacesPerOwner): number {
+    return this.getWorkspaceLifecycleOverrides().maxActiveWorkspacesPerOwner ?? configuredLimit;
+  }
+
+  /**
+   * Recoverable workspaces whose auto-close window has passed and that no mutation lease holds, oldest
+   * first. Each one costs a close check, so a reaper pass takes a bounded batch and the rest wait.
+   */
+  listAutoCloseDue(now: number, limit = 10): Array<{ id: string; generation: number }> {
+    return this.database.prepare(`SELECT id, generation FROM workspaces WHERE status = 'EXPIRED_RECOVERABLE'
+      AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?)
+      AND COALESCE(recoverable_until, last_activity_at + COALESCE(recoverable_grace_seconds, ?) * 1000) <= ?
+      ORDER BY COALESCE(recoverable_until, last_activity_at) ASC LIMIT ?`)
+      .all(now, DEFAULT_RECOVERABLE_GRACE_SECONDS, now, limit) as Array<{ id: string; generation: number }>;
+  }
+
+  /**
+   * Claims a due recoverable workspace for auto-close. Unlike `claimForReaping` it never takes a record
+   * that was recovered to `ACTIVE` meanwhile, whose generation a recovery leaves unchanged.
+   */
+  claimRecoverableForAutoClose(id: string, expectedGeneration: number, now: number): boolean {
+    const result = this.database.prepare(`UPDATE workspaces SET status = 'REAPING', generation = generation + 1
+      WHERE id = ? AND generation = ? AND status = 'EXPIRED_RECOVERABLE'
+        AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?)
+        AND COALESCE(recoverable_until, last_activity_at + COALESCE(recoverable_grace_seconds, ?) * 1000) <= ?`)
+      .run(id, expectedGeneration, now, DEFAULT_RECOVERABLE_GRACE_SECONDS, now);
+    return result.changes === 1;
+  }
+
+  /** The requesting principal's lifecycle usage shown beside the quota in Settings. */
+  workspaceLifecycleUsage(ownerId: string): { counted: number; recoverable: number; autoCloseDeferred: number } {
+    const row = this.database.prepare(`SELECT
+        SUM(CASE WHEN status = 'EXPIRED_RECOVERABLE' THEN 1 ELSE 0 END) AS recoverable,
+        SUM(CASE WHEN status = 'EXPIRED_RECOVERABLE' AND error LIKE 'auto-close deferred:%' THEN 1 ELSE 0 END) AS deferred
+      FROM workspaces WHERE owner_id = ?`).get(ownerId) as { recoverable: number | null; deferred: number | null } | undefined;
+    return {
+      counted: this.countOwnerCountedWorkspaces(ownerId),
+      recoverable: row?.recoverable ?? 0,
+      autoCloseDeferred: row?.deferred ?? 0
+    };
+  }
+
   /**
    * The inbound OAuth grant values Cloud Harness last applied and confirmed on
    * provider read-back, plus the outcome of the latest provider sync. No row, or
@@ -1058,16 +1248,16 @@ export class StateStore {
     id: string,
     expectedGeneration: number,
     expectedStatuses: WorkspaceRecord['status'][],
-    changes: Partial<Pick<WorkspaceRecord, 'containerName' | 'status' | 'lastActivityAt' | 'expiresAt' | 'generation' | 'error'>>
+    changes: FencedWorkspaceChanges
   ): WorkspaceRecord | undefined {
     const current = this.byId(id);
     if (!current || current.generation !== expectedGeneration || !expectedStatuses.includes(current.status)) return undefined;
-    const next = { ...current, ...changes };
+    const next = withRecoverableWindow(current, changes);
     // The status allowlist travels as one parameter and is expanded by SQLite, so the statement text is
     // constant no matter how many statuses are passed and nothing is ever interpolated into it.
-    const result = this.database.prepare(`UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, generation=?, error=?
+    const result = this.database.prepare(`UPDATE workspaces SET container_name=?, status=?, last_activity_at=?, expires_at=?, generation=?, error=?, expired_at=?, recoverable_until=?
       WHERE id=? AND generation=? AND status IN (SELECT value FROM json_each(?))`)
-      .run(next.containerName, next.status, next.lastActivityAt, next.expiresAt, next.generation, next.error, id, expectedGeneration, JSON.stringify(expectedStatuses));
+      .run(next.containerName, next.status, next.lastActivityAt, next.expiresAt, next.generation, next.error, next.expiredAt ?? null, next.recoverableUntil ?? null, id, expectedGeneration, JSON.stringify(expectedStatuses));
     return result.changes === 1 ? next : undefined;
   }
 

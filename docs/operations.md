@@ -107,11 +107,49 @@ command output.
 
 ## Cleanup
 
-Normal cleanup is `workspace_close` or TTL expiry. It stops known
-shell/session/task children, removes the named executor, deletes only the
-verified job directory, and records the workspace as closed. Startup also
-reconciles database, filesystem, and Docker inventories, scoped to the
-configured runner instance.
+Normal cleanup is `workspace_close` or reaper auto-close after the recoverable
+grace. It stops known shell/session/task children, removes the named executor,
+deletes only the verified job directory, and records the workspace as closed.
+TTL expiry alone only removes the executor; the checkout stays on disk while
+the workspace is `EXPIRED_RECOVERABLE`. Startup also reconciles database,
+filesystem, and Docker inventories, scoped to the configured runner instance.
+
+### Expired workspaces and auto-close
+
+The quota, idle TTL, wall TTL, and recoverable grace are set in Dashboard →
+Settings → **Workspace limits & lifecycle**, falling back to the runner
+environment ([configuration](configuration.md#workspace-and-repository-policy)).
+The panel also shows the reaper interval, your counted, recoverable, and
+auto-close-retained workspaces, and the per-executor ceilings that multiply
+with every concurrent workspace. TTL and grace changes apply only to
+workspaces opened afterwards. Lowering the quota closes nothing; it blocks new
+opens and recoveries until usage drops.
+
+An expired workspace becomes due for auto-close at roughly expiry + grace +
+one reaper interval. Before deleting it, the reaper holds a mutation lease and
+checks for running agents, uncommitted or untracked paths, stashes, and
+commits on any local branch that no remote-tracking ref contains. A
+successful `git_push` moves the checkout's remote-tracking ref to the pushed
+commit, and the commit a workspace was cloned at counts as on the remote, so
+pushed and freshly cloned work is not mistaken for unsaved work. Git-ignored
+files are not checked and are deleted with the checkout. Any of these,
+or a check that cannot run, defers the close: the workspace stays
+`EXPIRED_RECOVERABLE`, its `error` starts with `auto-close deferred:` and names
+the reason, and the reaper retries after the longer of its grace and one hour.
+A clean workspace is closed and audited as `workspace.auto_closed`; a deferral
+is audited as `workspace.auto_close_deferred` when its reason changes. Before
+this check existed, the reaper deleted recoverable workspaces after a fixed
+hour regardless of unsaved work.
+
+A retained workspace never closes on its own while the unsaved work remains,
+so it keeps using disk. To clear one, use `workspace_status` or
+`workspace_recover` in `status` or `patch` mode to see what is unsaved, push
+or export it (`workspace_recover` `export` mode, or resume and push), then
+`workspace_close`. Calling `workspace_close` directly discards the unsaved
+work. The check is owned by `autoCloseBlocker` in
+[`apps/runner/src/workspace-service.ts`](../apps/runner/src/workspace-service.ts)
+and the `close_check` mode in
+[`worker/harness-worker.mjs`](../worker/harness-worker.mjs).
 
 Inspect managed containers before any manual action:
 

@@ -706,8 +706,15 @@ ChatGPT subscription (see
     workspace's idle lease expires, its container executor is reaped to release CPU
     and memory, but its repository files, unpushed commits, branches, and working-tree
     modifications are retained during a recoverable grace period (`EXPIRED_RECOVERABLE`).
-    If the recoverable grace period lapses or the workspace is explicitly closed, it
-    transitions to `CLOSED` and all host files are permanently pruned.
+    The grace window starts at expiry. Its length, like the idle and wall TTLs, is
+    instance configuration snapshotted when the workspace opens, so a later
+    setting change never shortens or extends an open workspace
+    ([configuration](configuration.md#workspace-and-repository-policy)). An
+    explicit `workspace_close` transitions it to `CLOSED` and permanently prunes
+    its host files. When the grace lapses, the reaper closes it only if nothing
+    would be lost: running agents, uncommitted or untracked files, stashes, or
+    commits not on any remote ref keep it `EXPIRED_RECOVERABLE`, with `error`
+    starting `auto-close deferred:`, until it is recovered or explicitly closed.
   - **`workspace_recover`:** Restores or exports work from active or `EXPIRED_RECOVERABLE`
     workspaces. In `resume` mode (default), it restores the workspace to `ACTIVE` state,
     recreates and starts the executor container on demand, and refreshes the idle lease
@@ -719,8 +726,9 @@ ChatGPT subscription (see
     `EXPIRED_RECOVERABLE` workspace (clamped to the maximum `hardExpiresAt` limit),
     reactivating the executor container if previously reaped.
   - **Long routines:** renewal extends only the idle lease and never passes
-    `hardExpiresAt`, which `WORKSPACE_WALL_TTL_SECONDS` sets when the workspace opens
-    (shipped default 15 minutes). A routine that holds one workspace for about an hour
+    `hardExpiresAt`, which the instance wall TTL (Dashboard override or
+    `WORKSPACE_WALL_TTL_SECONDS`) sets when the workspace opens (shipped default
+    15 minutes). A routine that holds one workspace for about an hour
     needs an instance wall TTL of at least `3600`, or should open a fresh workspace per
     phase and keep its state in GitHub (statuses, refs, comments). Brokered
     `github_action`/`github_read` calls do not read local history, so a

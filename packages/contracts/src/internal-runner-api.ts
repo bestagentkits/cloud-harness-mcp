@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ExecutorNetworkProfileSchema, IntegrationCredentialIdSchema, ModelCredentialIdSchema, ModelProfileIdSchema, SkillImportJobIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, SkillSourceIdSchema, WorkspaceIdSchema } from './identifiers.js';
+import { IntegrationCredentialIdSchema, ModelCredentialIdSchema, ModelProfileIdSchema, SkillImportJobIdSchema, SkillRevisionIdSchema, SkillSetIdSchema, SkillSourceIdSchema, WorkspaceIdSchema } from './identifiers.js';
 import { IntegrationCredentialCreateInputSchema, IntegrationCredentialRotateInputSchema, SkillSuggestInputSchema } from './typesafe-schemas.js';
 import { ToolResultSchema } from './mcp-results.js';
 import { DecisionRerankToolsInputSchema } from './decision-plane.js';
@@ -11,6 +11,7 @@ import {
 import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 import { SecretDescriptionSchema, SecretNameSchema, SecretNameShapeSchema, SecretPurposeSchema, SecretValueSchema } from './secret-policy.js';
 import { ToolkitSelectionSchema } from './tool-schemas.js';
+import { InstanceSettingsUpdateInputSchema } from './workspace-lifecycle.js';
 import {
   JournalTypeSchema,
   KnowledgeItemIdSchema,
@@ -110,9 +111,7 @@ const settingsUpdateRequest = z.object({
   version: z.literal(2),
   principal: RunnerPrincipalSelectorSchema,
   operation: z.literal('settings_update'),
-  input: z.object({
-    defaultNetworkProfile: z.union([ExecutorNetworkProfileSchema, z.null()])
-  }).strict()
+  input: InstanceSettingsUpdateInputSchema
 }).strict();
 
 const settingsNetworkCheckRequest = z.object({
