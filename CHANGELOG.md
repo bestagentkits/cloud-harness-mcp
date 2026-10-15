@@ -1,3 +1,10 @@
+# [0.66.0-beta.6](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.5...v0.66.0-beta.6) (2026-10-15)
+
+
+### Features
+
+* **mcp:** MCP Events subscriptions with signed webhook delivery ([#335](https://github.com/bestagentkits/cloud-harness-mcp/issues/335)) ([8f868f7](https://github.com/bestagentkits/cloud-harness-mcp/commit/8f868f7174a094d93c2f968867fe760d53617bcb))
+
 # [0.66.0-beta.5](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.4...v0.66.0-beta.5) (2026-10-15)
 
 
