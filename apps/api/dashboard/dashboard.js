@@ -62,7 +62,8 @@ import {
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
   renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
-  renderTerminalPanel, renderTerminalsIndex
+  renderTerminalPanel, renderTerminalsIndex,
+  WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
@@ -159,6 +160,62 @@ export function githubCallbackParameters(search) {
 
 export function resetWriteOnlyFields(form) {
   for (const field of form.querySelectorAll('input[data-write-only]')) field.value = '';
+}
+
+/**
+ * The workspace lifecycle write for the edited panel values, or the field errors that block it. Only fields
+ * whose value changed are sent, in seconds, with the revision the panel loaded so a concurrent save from
+ * elsewhere surfaces as a conflict instead of being overwritten. The runner re-validates every rule here.
+ */
+export function workspaceLifecycleUpdateInput(view, values, acknowledged) {
+  const errors = {};
+  const update = { expectedRevision: view.revision };
+  const effective = {};
+  for (const field of WORKSPACE_LIFECYCLE_FIELDS) {
+    const setting = view.settings[field.name];
+    effective[field.name] = setting.value;
+    const raw = String(values?.[field.name] ?? '').trim();
+    if (raw === workspaceLifecycleDisplayValue(field, setting.value)) continue;
+    const number = raw === '' ? Number.NaN : Number(raw);
+    const bounds = workspaceLifecycleFieldBounds(field, setting);
+    if (!Number.isInteger(number) || number < bounds.min || number > bounds.max) {
+      errors[field.name] = field.unit === 'count'
+        ? `Enter a whole number from ${bounds.min} to ${bounds.max}.`
+        : `Enter whole minutes from ${bounds.min} to ${bounds.max}.`;
+      continue;
+    }
+    const next = field.unit === 'count' ? number : number * 60;
+    if (next === setting.value) continue;
+    update[field.name] = next;
+    effective[field.name] = next;
+  }
+  if (!errors.idleTtlSeconds && !errors.wallTtlSeconds && effective.idleTtlSeconds > effective.wallTtlSeconds) {
+    const field = update.wallTtlSeconds !== undefined && update.idleTtlSeconds === undefined ? 'wallTtlSeconds' : 'idleTtlSeconds';
+    errors[field] = `The idle timeout (${lifecycleDurationLabel(effective.idleTtlSeconds)}) cannot exceed the maximum lifetime (${lifecycleDurationLabel(effective.wallTtlSeconds)}).`;
+  }
+  if (update.recoverableGraceSeconds === 0) {
+    if (acknowledged === true) update.acknowledgeImmediateClose = true;
+    else errors.acknowledgeImmediateClose = 'Confirm that a grace of 0 closes expired workspaces without a recovery window.';
+  }
+  const changed = WORKSPACE_LIFECYCLE_FIELDS.some((field) => update[field.name] !== undefined);
+  return { errors, body: Object.keys(errors).length || !changed ? undefined : update };
+}
+
+/** Clears every override so each field falls back to the runner value the panel shows beside it. */
+export function workspaceLifecycleResetInput(view) {
+  const idle = view.settings.idleTtlSeconds.runnerValue;
+  const wall = view.settings.wallTtlSeconds.runnerValue;
+  if (idle > wall) {
+    return { error: `The runner values cannot be restored: the runner idle timeout (${lifecycleDurationLabel(idle)}) exceeds its maximum lifetime (${lifecycleDurationLabel(wall)}). Fix the runner environment, or keep a Dashboard override.` };
+  }
+  return { body: { expectedRevision: view.revision, ...Object.fromEntries(WORKSPACE_LIFECYCLE_FIELDS.map((field) => [field.name, null])) } };
+}
+
+/** The read-back the status line announces after a save, so the operator hears what the runner stored. */
+export function workspaceLifecycleSummary(view) {
+  if (!isWorkspaceLifecycleView(view)) return '';
+  const { settings } = view;
+  return `Effective: up to ${settings.maxActiveWorkspacesPerOwner.value} active per principal, idle ${lifecycleDurationLabel(settings.idleTtlSeconds.value)}, lifetime ${lifecycleDurationLabel(settings.wallTtlSeconds.value)}, grace ${lifecycleDurationLabel(settings.recoverableGraceSeconds.value)}.`;
 }
 
 export function apiKeyCreateInput(form) {
@@ -2431,6 +2488,7 @@ export function initializeDashboard() {
   function renderSettingsView() {
     insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth, settingsTypesafe));
     bindSettingsControls();
+    bindLifecycleSettingsControls();
     bindOAuthSettingsControls();
     bindTypesafeSettingsControls();
   }
@@ -2560,6 +2618,80 @@ export function initializeDashboard() {
     });
     document.querySelector('#adopt-settings-oauth')?.addEventListener('click', (event) => {
       void saveOAuthSettings(event.currentTarget, { grant: { mode: 'provider-maximum' }, tokenLifetimeSeconds: bounds.defaultSeconds, expectedRevision: view.revision }, 'Default adopted: clients stay signed in for the provider maximum.');
+    });
+  }
+  function lifecycleStatus(message) {
+    const status = document.querySelector('#settings-lifecycle-status');
+    if (status) status.textContent = message;
+  }
+  async function reloadLifecycleSettings(message) {
+    try {
+      const { data } = await api('/settings');
+      settingsPageData = data;
+      renderSettingsView();
+      lifecycleStatus(message);
+    } catch (error) {
+      lifecycleStatus(`${message} Reloading failed: ${error?.message ?? 'the request failed.'} Reload the page.`);
+    }
+  }
+  /** Save, then re-render from the runner's read-back; a stale revision reloads the panel instead of retrying. */
+  async function saveLifecycleSettings(button, workspaceLifecycle, savedMessage) {
+    const original = button.textContent;
+    button.disabled = true; button.textContent = 'Saving…';
+    lifecycleStatus('Saving…');
+    try {
+      const { data } = await api('/settings', { method: 'POST', body: requestBody({ workspaceLifecycle }) });
+      settingsPageData = data;
+      renderSettingsView();
+      lifecycleStatus(`${savedMessage} ${workspaceLifecycleSummary(data?.workspaceLifecycle)}`.trim());
+    } catch (error) {
+      if (error?.status === 409) await reloadLifecycleSettings('These settings changed elsewhere after you opened Settings. The panel now shows the current values; review them and save again.');
+      else lifecycleStatus(error?.message ?? 'The workspace lifecycle settings could not be saved.');
+    } finally {
+      if (button.isConnected) { button.disabled = false; button.textContent = original; }
+    }
+  }
+  function bindLifecycleSettingsControls() {
+    const view = settingsPageData?.workspaceLifecycle;
+    const form = document.querySelector('#settings-lifecycle-form');
+    if (!form || !isWorkspaceLifecycleView(view)) return;
+    const grace = form.querySelector('#settings-lifecycle-grace');
+    const acknowledge = form.querySelector('#settings-lifecycle-ack');
+    const acknowledgeBlock = form.querySelector('#settings-lifecycle-ack-block');
+    const values = () => Object.fromEntries(WORKSPACE_LIFECYCLE_FIELDS.map((field) => [field.name, form.querySelector(`#${field.id}`).value]));
+    const targets = [...WORKSPACE_LIFECYCLE_FIELDS.map((field) => ({ key: field.name, id: field.id })), { key: 'acknowledgeImmediateClose', id: 'settings-lifecycle-ack' }];
+    const showErrors = (errors) => {
+      for (const { key, id } of targets) {
+        const input = form.querySelector(`#${id}`);
+        const message = form.querySelector(`#${id}-error`);
+        if (errors[key]) input.setAttribute('aria-invalid', 'true');
+        else input.removeAttribute('aria-invalid');
+        if (message) message.textContent = errors[key] ?? '';
+      }
+    };
+    form.addEventListener('input', () => {
+      acknowledgeBlock.hidden = grace.value.trim() !== '0';
+      // The acknowledgement is asked for at save time, not while the operator is still typing.
+      const { errors } = workspaceLifecycleUpdateInput(view, values(), true);
+      showErrors(errors);
+    });
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const { errors, body } = workspaceLifecycleUpdateInput(view, values(), acknowledge.checked);
+      showErrors(errors);
+      const invalid = targets.find(({ key }) => errors[key]);
+      if (invalid) {
+        lifecycleStatus('Fix the highlighted fields before saving.');
+        form.querySelector(`#${invalid.id}`).focus();
+        return;
+      }
+      if (!body) { lifecycleStatus('No changes to save.'); return; }
+      void saveLifecycleSettings(form.querySelector('#save-settings-lifecycle'), body, 'Workspace lifecycle settings saved.');
+    });
+    document.querySelector('#reset-settings-lifecycle').addEventListener('click', (event) => {
+      const reset = workspaceLifecycleResetInput(view);
+      if (reset.error) { lifecycleStatus(reset.error); return; }
+      void saveLifecycleSettings(event.currentTarget, reset.body, 'Runner values restored.');
     });
   }
   function settingsStatus(message) {

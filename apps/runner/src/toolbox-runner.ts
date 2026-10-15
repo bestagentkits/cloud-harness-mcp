@@ -22,6 +22,9 @@ export const EXECUTOR_HARDENING_ARGS: readonly string[] = Object.freeze([
  * then puts `/opt/harness/bin`, the user-tools directories, and the managed release directories first, exactly
  * as in a workspace.
  */
+/** The memory, CPU, and pid ceilings `EXECUTOR_HARDENING_ARGS` sets, reported in Settings beside the workspace quota. */
+export const EXECUTOR_RESOURCE_CEILINGS = Object.freeze({ memoryBytes: 1_073_741_824, cpus: 1, pids: 256 });
+
 export const TOOLBOX_PATH = '/opt/user-tools/bin:/opt/user-tools/pnpm/bin:/opt/user-tools/pnpm:/opt/user-tools/bun/bin:/tmp/cloud-harness-home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
 /** Seconds the in-container deadline allows beyond the caller's timeout, so the runner's own timer fires first. */

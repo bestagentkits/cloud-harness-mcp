@@ -1670,6 +1670,30 @@ const handlers = {
         committedChanges: hasChanges
       });
     }
+    if (mode === 'close_check') {
+      // Counts the work an automatic close would discard. Any git failure is reported as a failure so the
+      // caller keeps the workspace instead of guessing that it is clean.
+      const statusRes = await git(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']);
+      if (statusRes.exitCode !== 0) return fail('INTERNAL_ERROR', statusRes.output || 'git status failed');
+      const stashRes = await git(['--no-optional-locks', 'stash', 'list']);
+      if (stashRes.exitCode !== 0) return fail('INTERNAL_ERROR', stashRes.output || 'git stash list failed');
+      const headRes = await git(['rev-parse', '--verify', '--quiet', 'HEAD']);
+      let unpushedCommits = 0;
+      if (headRes.exitCode === 0) {
+        // Commits reachable from any local ref but from no remote-tracking ref, so work on other local
+        // branches counts too, not only the checked-out one.
+        const unpushedRes = await git(['rev-list', '--count', '--branches', 'HEAD', '--not', '--remotes']);
+        if (unpushedRes.exitCode !== 0) return fail('INTERNAL_ERROR', unpushedRes.output || 'git rev-list failed');
+        unpushedCommits = Number.parseInt(unpushedRes.output.trim(), 10);
+        if (!Number.isSafeInteger(unpushedCommits) || unpushedCommits < 0) return fail('INTERNAL_ERROR', 'git rev-list returned an unexpected count');
+      }
+      const countLines = (output) => output.split('\n').filter((line) => line.trim()).length;
+      return ok('Workspace close check', {
+        uncommittedPaths: countLines(statusRes.output),
+        stashes: countLines(stashRes.output),
+        unpushedCommits
+      });
+    }
     return fail('INVALID_INPUT', `unsupported recovery mode ${mode}`);
   },
 };

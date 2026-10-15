@@ -708,7 +708,11 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   mcp_server_delete: { CONFLICT: 'This MCP server changed after you opened it.' },
   mcp_server_set_enabled: { CONFLICT: 'This MCP server changed after you opened it.' },
   settings_get: { UNAVAILABLE: 'Instance settings are temporarily unavailable.' },
-  settings_update: { UNAVAILABLE: 'Instance settings are temporarily unavailable.', INVALID_INPUT: 'The default network profile must be network-none or dependency-access.' },
+  settings_update: {
+    UNAVAILABLE: 'Instance settings are temporarily unavailable.',
+    INVALID_INPUT: 'The runner rejected these settings. Check each value against its allowed range and keep the idle timeout no longer than the hard lifetime.',
+    CONFLICT: 'Instance settings changed after you opened them. Reload and try again.'
+  },
   settings_network_check: { UNAVAILABLE: 'The egress readiness check is temporarily unavailable.' },
   skill_list: { UNAVAILABLE: 'The skill registry is temporarily unavailable.' },
   skill_get: { NOT_FOUND: 'Skill not found.' },

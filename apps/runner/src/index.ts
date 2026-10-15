@@ -23,7 +23,7 @@ import { OAuthGrantSettingsService } from './oauth-grant-settings-service.js';
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const loaded = loadRunnerConfigWithReadiness();
 const config = loaded.config;
-const store = new StateStore(config.stateDb);
+const store = new StateStore(config.stateDb, { maxActiveWorkspacesPerOwner: config.maxActiveWorkspacesPerOwner });
 let keyring: SecretKeyring | undefined;
 let secretReadinessError = loaded.secretReadinessError;
 try {

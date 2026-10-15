@@ -92,7 +92,8 @@ function fixture() {
       id, ownerId, idempotencyKey: `terminal-${character}`,
       repositoryUrl: 'https://github.com/example/repo.git', repositoryRef: null,
       containerName: `executor-${character}`, workspacePath, status: 'ACTIVE', networkProfile: 'network-none',
-      createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, generation: 1, error: null,
+      // The hard deadline is the wall TTL snapshotted at open, as workspace_open records it.
+      createdAt: now, lastActivityAt: now, expiresAt: now + 60_000, hardExpiresAt: now + 300_000, generation: 1, error: null,
       ...overrides
     };
     store.create(record);

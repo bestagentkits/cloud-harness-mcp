@@ -5,7 +5,10 @@ import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
   DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER,
+  DEFAULT_RECOVERABLE_GRACE_SECONDS,
   GITHUB_READ_ACTIONS,
+  WORKSPACE_LIFECYCLE_BOUNDS,
+  WORKSPACE_LIFECYCLE_SETTING_NAMES,
   GITHUB_WRITE_ACTIONS,
   HarnessError,
   InternalRunnerRequestSchema,
@@ -26,10 +29,13 @@ import {
   type RunnerResponse,
   type WorkspaceCapabilityResult,
   type ToolkitSelection,
+  type WorkspaceLifecycleSettingName,
+  type WorkspaceLifecycleSettingsUpdate,
+  type WorkspaceLifecycleSettingsView,
   TERMINAL_MAX_INPUT_BYTES
 } from '@cloud-harness/contracts';
 import { inspectContainer, removeContainer, runDocker, terminateContainerProcessGroup } from './docker-engine.js';
-import { EXECUTOR_HARDENING_ARGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
+import { EXECUTOR_HARDENING_ARGS, EXECUTOR_RESOURCE_CEILINGS, managedPathEnvArgs, reapStaleToolboxContainers, runToolboxCommand, toolboxContainerName, withManagedBins, type ToolboxRunResult } from './toolbox-runner.js';
 import { PackageBuilder } from './package-builder.js';
 import { PACKAGE_OPERATIONS, PackageService, databaseWorkspaceDirectory, type PackageOperation } from './package-service.js';
 import { PackageStore } from './package-store.js';
@@ -45,6 +51,8 @@ import { cloneHistorySpec, fetchHistorySpec } from './git-history-spec.js';
 import {
   ActiveWorkspaceLimitReachedError,
   COUNTED_WORKSPACE_STATUSES,
+  SettingsRevisionConflictError,
+  type WorkspaceLifecycleOverrides,
   type GitOperationStatus,
   type PrincipalSelector,
   type StateStore,
@@ -108,6 +116,12 @@ const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', '
  * `activeStatus` remains the enumeration superset for sweeps and container cleanup.
  */
 const countedStatus = new Set<WorkspaceRecord['status']>(COUNTED_WORKSPACE_STATUSES);
+/**
+ * The shortest wait before the reaper retries an auto-close it deferred or that failed. A deferral needs
+ * an operator or agent to act, and every check starts a short-lived helper container.
+ */
+const AUTO_CLOSE_RETRY_MS = 3_600_000;
+const AUTO_CLOSE_DEFERRED_PREFIX = 'auto-close deferred: ';
 const auditedFileMutations = new Set<RunnerOperation>([
   'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'
 ]);
@@ -589,13 +603,69 @@ export class WorkspaceService {
   }
 
   /**
-   * Concurrent counted workspaces this owner may hold. The `??` fallback mirrors
-   * the existing `dependencyNetworkName` pattern and exists because several tests
+   * The runner-configured per-principal limit. The `??` fallback mirrors the
+   * existing `dependencyNetworkName` pattern and exists because several tests
    * build partial `RunnerConfig` literals; production values always come from the
-   * validated schema.
+   * validated schema. Admission passes this to the store, which applies a
+   * Dashboard override inside its own transaction.
    */
-  private activeWorkspaceLimit(): number {
+  private configuredActiveWorkspaceLimit(): number {
     return this.config.maxActiveWorkspacesPerOwner ?? DEFAULT_MAX_ACTIVE_WORKSPACES_PER_OWNER;
+  }
+
+  /** Concurrent counted workspaces this owner may hold now: the Dashboard override, else the runner value. */
+  private activeWorkspaceLimit(): number {
+    return this.store.effectiveActiveWorkspaceLimit(this.configuredActiveWorkspaceLimit());
+  }
+
+  /** The runner-configured lifecycle values a cleared Dashboard override falls back to. */
+  private runnerLifecycleValues(): Record<WorkspaceLifecycleSettingName, number> {
+    return {
+      maxActiveWorkspacesPerOwner: this.configuredActiveWorkspaceLimit(),
+      idleTtlSeconds: this.config.idleTtlSeconds,
+      wallTtlSeconds: this.config.wallTtlSeconds,
+      recoverableGraceSeconds: this.config.recoverableGraceSeconds ?? DEFAULT_RECOVERABLE_GRACE_SECONDS
+    };
+  }
+
+  /** The lifecycle policy a workspace opened now receives: each Dashboard override, else the runner value. */
+  private effectiveLifecyclePolicy(overrides: WorkspaceLifecycleOverrides = this.store.getWorkspaceLifecycleOverrides()): Record<WorkspaceLifecycleSettingName, number> {
+    const runner = this.runnerLifecycleValues();
+    return {
+      maxActiveWorkspacesPerOwner: overrides.maxActiveWorkspacesPerOwner ?? runner.maxActiveWorkspacesPerOwner,
+      idleTtlSeconds: overrides.idleTtlSeconds ?? runner.idleTtlSeconds,
+      wallTtlSeconds: overrides.wallTtlSeconds ?? runner.wallTtlSeconds,
+      recoverableGraceSeconds: overrides.recoverableGraceSeconds ?? runner.recoverableGraceSeconds
+    };
+  }
+
+  /** The idle timeout this workspace was opened with; a row from before the snapshot uses the runner value. */
+  private idleTtlSecondsFor(record: WorkspaceRecord): number {
+    return record.idleTtlSeconds ?? this.config.idleTtlSeconds;
+  }
+
+  /** The recoverable grace this workspace was opened with; a row from before the snapshot keeps the former hour. */
+  private recoverableGraceSecondsFor(record: WorkspaceRecord): number {
+    return record.recoverableGraceSeconds ?? DEFAULT_RECOVERABLE_GRACE_SECONDS;
+  }
+
+  /**
+   * Finishes an expiry claimed with `claimForExpiry`: the executor is already gone, the slot is released,
+   * and the recoverable window opens from the expiry itself rather than from the last tool activity.
+   */
+  private markExpiredRecoverable(claimed: WorkspaceRecord, now: number): WorkspaceRecord | undefined {
+    return this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
+      status: 'EXPIRED_RECOVERABLE',
+      containerName: null,
+      lastActivityAt: now,
+      expiredAt: now,
+      recoverableUntil: now + this.recoverableGraceSecondsFor(claimed) * 1_000
+    });
+  }
+
+  /** The window a failed close leaves before the reaper tries again, so a failing close is not retried every pass. */
+  private failedCloseWindow(claimed: WorkspaceRecord, now: number): Pick<WorkspaceRecord, 'expiredAt' | 'recoverableUntil'> {
+    return { expiredAt: claimed.expiredAt ?? now, recoverableUntil: now + AUTO_CLOSE_RETRY_MS };
   }
 
   /**
@@ -624,11 +694,7 @@ export class WorkspaceService {
           if (claimed.containerName) {
             await removeContainer(claimed.containerName).catch(() => undefined);
           }
-          this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
-            status: 'EXPIRED_RECOVERABLE',
-            containerName: null,
-            lastActivityAt: now
-          });
+          this.markExpiredRecoverable(claimed, now);
         }
       }
     }
@@ -696,8 +762,9 @@ export class WorkspaceService {
     throw new HarnessError('LIMIT_EXCEEDED', `${violation}; workspace was closed`, 507, false);
   }
 
-  private expiry(createdAt: number, activityAt: number): number {
-    return Math.min(createdAt + this.config.wallTtlSeconds * 1_000, activityAt + this.config.idleTtlSeconds * 1_000);
+  /** The idle deadline after activity at `activityAt`, never past the hard deadline fixed at open. */
+  private expiry(record: Pick<WorkspaceRecord, 'hardExpiresAt' | 'idleTtlSeconds'>, activityAt: number): number {
+    return Math.min(record.hardExpiresAt, activityAt + (record.idleTtlSeconds ?? this.config.idleTtlSeconds) * 1_000);
   }
 
   private async clone(record: WorkspaceRecord, repositoryUrl: URL, ref?: string, historySpec = ''): Promise<string> {
@@ -937,7 +1004,7 @@ export class WorkspaceService {
         record.generation,
         ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'],
         { containerName, status: 'ACTIVE', error: null },
-        this.activeWorkspaceLimit()
+        this.configuredActiveWorkspaceLimit()
       );
     } catch (error) {
       await removeContainer(containerName).catch(() => undefined);
@@ -968,7 +1035,10 @@ export class WorkspaceService {
     if (parsed.ref?.startsWith('-')) throw new HarnessError('INVALID_INPUT', 'ref cannot start with a dash');
     const now = Date.now();
     const workspaceId = opaqueId('ws');
-    const hardExpiresAt = now + this.config.wallTtlSeconds * 1_000;
+    // The lifecycle policy is snapshotted here: a later Settings change applies to workspaces opened after
+    // it and never shortens or extends this one. The hard deadline is the wall-TTL snapshot.
+    const policy = this.effectiveLifecyclePolicy();
+    const hardExpiresAt = now + policy.wallTtlSeconds * 1_000;
     const record: WorkspaceRecord = {
       id: workspaceId, ownerId, idempotencyKey: parsed.idempotencyKey, repositoryUrl: url.toString(),
       repositoryRef: parsed.ref ?? null, containerName: null, workspacePath: join(this.config.jobsRoot, workspaceId),
@@ -976,11 +1046,12 @@ export class WorkspaceService {
       // Resolution order: explicit request, then the operator's persisted instance
       // default, then the runner configuration (shipped default: dependency-access).
       status: 'CREATING', networkProfile: parsed.networkProfile ?? this.store.getWorkspaceDefaultNetworkProfile() ?? this.config.networkProfile, createdAt: now,
-      lastActivityAt: now, expiresAt: this.expiry(now, now), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
-      mutationLockedUntil: null, generation: 1, error: null, requestFingerprint
+      lastActivityAt: now, expiresAt: Math.min(hardExpiresAt, now + policy.idleTtlSeconds * 1_000), hardExpiresAt, gitAuthorName: null, gitAuthorEmail: null,
+      mutationLockedUntil: null, generation: 1, error: null, requestFingerprint,
+      idleTtlSeconds: policy.idleTtlSeconds, recoverableGraceSeconds: policy.recoverableGraceSeconds, expiredAt: null, recoverableUntil: null
     };
     try {
-      this.store.admit(record, this.activeWorkspaceLimit());
+      this.store.admit(record, this.configuredActiveWorkspaceLimit());
     } catch (error) {
       const replay = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
       if (replay) {
@@ -1499,7 +1570,7 @@ export class WorkspaceService {
         if (claimed.containerName) {
           void removeContainer(claimed.containerName).catch(() => undefined);
         }
-        this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], { status: 'EXPIRED_RECOVERABLE', containerName: null, lastActivityAt: now });
+        this.markExpiredRecoverable(claimed, now);
         throw new HarnessError('EXPIRED', 'workspace expired', 410);
       }
       return this.store.byId(record.id) ?? record;
@@ -1513,7 +1584,7 @@ export class WorkspaceService {
     // Activity extends the idle lease but never shortens one that workspace_lease_renew already extended.
     const touched = this.store.updateFenced(record.id, record.generation, ['ACTIVE'], {
       lastActivityAt: now,
-      expiresAt: Math.min(record.hardExpiresAt, Math.max(record.expiresAt, this.expiry(record.createdAt, now)))
+      expiresAt: Math.min(record.hardExpiresAt, Math.max(record.expiresAt, this.expiry(record, now)))
     });
     if (!touched) throw new HarnessError('EXPIRED', 'workspace lifecycle changed', 410);
     return touched;
@@ -2855,7 +2926,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
       }
       try {
-        const extSec = (validated.extensionSeconds as number) ?? this.config.idleTtlSeconds;
+        const extSec = (validated.extensionSeconds as number) ?? this.idleTtlSecondsFor(rec);
         const newExpires = Math.min(rec.hardExpiresAt, now + extSec * 1000);
         let activeRecord = rec;
         if (isRecoverable) {
@@ -2868,7 +2939,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             activeRecord.generation,
             ['ACTIVE', 'EXPIRED_RECOVERABLE'],
             { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires },
-            this.activeWorkspaceLimit()
+            this.configuredActiveWorkspaceLimit()
           );
         } catch (error) {
           if (error instanceof ActiveWorkspaceLimitReachedError) {
@@ -2916,7 +2987,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         }
         try {
           const activeRecord = await this.ensureActiveExecutor(rec);
-          const extSec = this.config.idleTtlSeconds;
+          const extSec = this.idleTtlSecondsFor(activeRecord);
           const newExpires = Math.min(activeRecord.hardExpiresAt, now + extSec * 1000);
           let updated: WorkspaceRecord | undefined;
           try {
@@ -2925,7 +2996,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               activeRecord.generation,
               ['ACTIVE', 'EXPIRED_RECOVERABLE', 'NETWORK_QUARANTINED'],
               { status: 'ACTIVE', lastActivityAt: now, expiresAt: newExpires, error: null },
-              this.activeWorkspaceLimit()
+              this.configuredActiveWorkspaceLimit()
             );
           } catch (error) {
             if (error instanceof ActiveWorkspaceLimitReachedError) {
@@ -4468,7 +4539,11 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       };
     }
     if (parsed.operation === 'settings_get' || parsed.operation === 'settings_update') {
-      if (parsed.operation === 'settings_update') {
+      if (parsed.operation === 'settings_update' && parsed.input.workspaceLifecycle !== undefined) {
+        // Applied first: a lifecycle conflict or validation error then leaves the network default untouched.
+        this.updateWorkspaceLifecycle(ownerId, parsed.input.workspaceLifecycle);
+      }
+      if (parsed.operation === 'settings_update' && parsed.input.defaultNetworkProfile !== undefined) {
         const previous = this.store.getWorkspaceDefaultNetworkProfile();
         this.store.setWorkspaceDefaultNetworkProfile(parsed.input.defaultNetworkProfile, Date.now());
         // An instance-wide security posture change is operator-visible state: record
@@ -4493,7 +4568,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           defaultNetworkProfile: {
             value: stored ?? this.config.networkProfile,
             source: stored === undefined ? 'environment' : 'setting'
-          }
+          },
+          workspaceLifecycle: this.workspaceLifecycleView(ownerId)
         },
         truncated: false
       };
@@ -4662,6 +4738,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
         status: 'EXPIRED_RECOVERABLE',
         lastActivityAt: Date.now(),
+        ...this.failedCloseWindow(claimed, Date.now()),
         error: `Workspace stop failed: ${stopErr instanceof Error ? stopErr.message : String(stopErr)}`
       });
       throw stopErr;
@@ -4694,6 +4771,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
               this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
                 status: 'EXPIRED_RECOVERABLE',
                 lastActivityAt: Date.now(),
+                ...this.failedCloseWindow(claimed, Date.now()),
                 error: `Artifact spool failed: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`
               });
               throw new HarnessError('UNAVAILABLE', `Failed to archive task output for task ${t.id} during close: ${spoolErr instanceof Error ? spoolErr.message : String(spoolErr)}`, 503, true);
@@ -4714,6 +4792,140 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (finalState?.status === 'CLOSED') return;
       throw new HarnessError('CONFLICT', 'workspace cleanup lost its lifecycle lease', 409, true);
     }
+  }
+
+  /**
+   * Why a due recoverable workspace must not be deleted yet, or undefined when nothing would be lost.
+   * Running agents and anything not on a remote (uncommitted or untracked files, stashes, local commits)
+   * defer the close; a check that cannot run defers it too, because unknown work is never discarded.
+   */
+  private async autoCloseBlocker(record: WorkspaceRecord): Promise<string | undefined> {
+    if (this.agentManager?.hasActiveAgents(record.ownerId, record.id)) return 'agents are still running';
+    let check: RunnerResponse;
+    try {
+      check = await this.runRecoveryWorker(record, 'workspace_recover', { mode: 'close_check' });
+    } catch {
+      return 'the unsaved-work check could not run';
+    }
+    const data = check.data as { uncommittedPaths?: unknown; stashes?: unknown; unpushedCommits?: unknown } | undefined;
+    const counts = [data?.uncommittedPaths, data?.stashes, data?.unpushedCommits];
+    if (!check.ok || !counts.every((value) => typeof value === 'number' && Number.isInteger(value) && value >= 0)) {
+      return 'the unsaved-work check could not run';
+    }
+    const [uncommitted, stashes, unpushed] = counts as number[];
+    const reasons = [
+      uncommitted ? `${uncommitted} uncommitted or untracked path(s)` : '',
+      stashes ? `${stashes} stash(es)` : '',
+      unpushed ? `${unpushed} commit(s) not on any remote` : ''
+    ].filter(Boolean);
+    return reasons.length > 0 ? reasons.join(', ') : undefined;
+  }
+
+  /**
+   * Closes one recoverable workspace whose window passed, unless closing it would lose work. The check
+   * holds a recoverable mutation lease so no recovery or export changes the checkout underneath it, and
+   * the claim afterwards is fenced on generation, status, lease, and window, so a workspace recovered or
+   * deferred meanwhile is never taken.
+   */
+  private async autoCloseRecoverable(id: string, generation: number): Promise<void> {
+    const record = this.store.byId(id);
+    if (!record || record.generation !== generation || record.status !== 'EXPIRED_RECOVERABLE') return;
+    try {
+      this.store.acquireRecoverableMutationLease(id, generation, Date.now() + 120_000);
+    } catch {
+      return;
+    }
+    let blocker: string | undefined;
+    try {
+      blocker = await this.autoCloseBlocker(record);
+    } finally {
+      this.store.releaseMutationLease(id, generation);
+    }
+    const now = Date.now();
+    if (blocker) {
+      const error = `${AUTO_CLOSE_DEFERRED_PREFIX}${blocker}`;
+      const deferred = this.store.updateFenced(id, generation, ['EXPIRED_RECOVERABLE'], {
+        error,
+        recoverableUntil: now + Math.max(this.recoverableGraceSecondsFor(record) * 1_000, AUTO_CLOSE_RETRY_MS)
+      });
+      // A repeated deferral for the same reason is not new information, so only a change is audited.
+      if (deferred && record.error !== error) {
+        try {
+          this.metadata?.recordAudit(record.ownerId, 'workspace.auto_close_deferred', 'workspace', id, generation, { reason: blocker });
+        } catch { /* audit is best-effort; the workspace stays retained either way */ }
+      }
+      return;
+    }
+    if (!this.store.claimRecoverableForAutoClose(id, generation, now)) return;
+    const claimed = this.store.byId(id);
+    if (!claimed) return;
+    await this.closeRecord(claimed, 'recoverable grace period expired');
+    try {
+      this.metadata?.recordAudit(record.ownerId, 'workspace.auto_closed', 'workspace', id, claimed.generation, {
+        reason: 'recoverable grace period expired',
+        expiredAt: new Date(record.expiredAt ?? record.lastActivityAt).toISOString(),
+        graceSeconds: this.recoverableGraceSecondsFor(record)
+      });
+    } catch { /* the close already happened; audit is best-effort */ }
+  }
+
+  /** The Settings view of the lifecycle policy: each effective value, its source, and the caller's usage. */
+  private workspaceLifecycleView(ownerId: string): WorkspaceLifecycleSettingsView {
+    const overrides = this.store.getWorkspaceLifecycleOverrides();
+    const runner = this.runnerLifecycleValues();
+    const effective = this.effectiveLifecyclePolicy(overrides);
+    const environmentKeys: readonly string[] = this.config.lifecycleEnvironmentKeys ?? [];
+    const settings = Object.fromEntries(WORKSPACE_LIFECYCLE_SETTING_NAMES.map((name) => [name, {
+      value: effective[name],
+      source: overrides[name] !== null ? 'setting' : environmentKeys.includes(name) ? 'environment' : 'default',
+      runnerValue: runner[name],
+      min: WORKSPACE_LIFECYCLE_BOUNDS[name].min,
+      max: WORKSPACE_LIFECYCLE_BOUNDS[name].max
+    }])) as WorkspaceLifecycleSettingsView['settings'];
+    return {
+      revision: overrides.revision,
+      updatedAt: overrides.updatedAt === null ? null : new Date(overrides.updatedAt).toISOString(),
+      settings,
+      reaperIntervalSeconds: this.config.reaperIntervalSeconds,
+      usage: { ...this.store.workspaceLifecycleUsage(ownerId), limit: effective.maxActiveWorkspacesPerOwner },
+      executorCeilings: { ...EXECUTOR_RESOURCE_CEILINGS }
+    };
+  }
+
+  /**
+   * Saves a field-scoped lifecycle change. The idle-within-lifetime rule is checked on the merged effective
+   * values inside the store transaction, and the change is audited with both sides of every field.
+   */
+  private updateWorkspaceLifecycle(ownerId: string, update: WorkspaceLifecycleSettingsUpdate): void {
+    const changes = Object.fromEntries(
+      WORKSPACE_LIFECYCLE_SETTING_NAMES.filter((name) => update[name] !== undefined).map((name) => [name, update[name]])
+    ) as Partial<Record<WorkspaceLifecycleSettingName, number | null>>;
+    let result: { previous: WorkspaceLifecycleOverrides; next: WorkspaceLifecycleOverrides };
+    try {
+      result = this.store.updateWorkspaceLifecycleOverrides(update.expectedRevision, changes, Date.now(), (next) => {
+        const effective = this.effectiveLifecyclePolicy(next);
+        if (effective.idleTtlSeconds > effective.wallTtlSeconds) {
+          throw new HarnessError(
+            'INVALID_INPUT',
+            `the idle timeout (${effective.idleTtlSeconds}s) cannot exceed the maximum workspace lifetime (${effective.wallTtlSeconds}s)`,
+            400,
+            false
+          );
+        }
+      });
+    } catch (error) {
+      if (error instanceof SettingsRevisionConflictError) {
+        throw new HarnessError('CONFLICT', 'workspace lifecycle settings changed since they were loaded; reload them and try again', 409, true);
+      }
+      throw error;
+    }
+    const details: Record<string, string | number | boolean> = { revision: result.next.revision };
+    for (const name of WORKSPACE_LIFECYCLE_SETTING_NAMES) {
+      if (result.previous[name] === result.next[name]) continue;
+      details[`${name}.previous`] = result.previous[name] ?? 'runner-default';
+      details[`${name}.next`] = result.next[name] ?? 'runner-default';
+    }
+    this.metadata?.recordAudit(ownerId, 'settings.workspace_lifecycle.changed', 'instance', 'instance_settings', result.next.revision, details);
   }
 
   private async reapExpired(): Promise<void> {
@@ -4800,25 +5012,15 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           if (claimed.containerName) {
             await removeContainer(claimed.containerName).catch(() => undefined);
           }
-          this.store.updateFenced(claimed.id, claimed.generation, ['REAPING'], {
-            status: 'EXPIRED_RECOVERABLE',
-            containerName: null,
-            lastActivityAt: now
-          });
+          this.markExpiredRecoverable(claimed, now);
         }
       } else if (record.status === 'ACTIVE') {
         const violation = await this.resourceViolation(record).catch(() => undefined);
         if (violation) await this.closeRecord(record, violation).catch(() => undefined);
       }
     }
-    const recoverableRows = this.store.database.prepare(
-      "SELECT id, generation, last_activity_at FROM workspaces WHERE status = 'EXPIRED_RECOVERABLE' AND (mutation_locked_until IS NULL OR mutation_locked_until <= ?) AND (last_activity_at + 3600000 <= ?)"
-    ).all(now, now) as { id: string; generation: number; last_activity_at: number }[];
-    for (const row of recoverableRows) {
-      if (this.store.claimForReaping(row.id, row.generation, false)) {
-        const fullRec = this.store.byId(row.id);
-        if (fullRec) await this.closeRecord(fullRec, 'recoverable grace period expired').catch(() => undefined);
-      }
+    for (const due of this.store.listAutoCloseDue(now)) {
+      await this.autoCloseRecoverable(due.id, due.generation).catch(() => undefined);
     }
     if (this.artifacts) {
       try {
