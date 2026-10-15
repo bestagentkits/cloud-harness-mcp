@@ -15,7 +15,7 @@ import { readSkillArchive } from './skill-archive.js';
 import { SkillExtensionService } from './skill-extension-service.js';
 import { SkillRegistryError, type PrivilegeGrantRecord, type StateStore } from './state-store.js';
 import { compareSemver, isSemver, parseSkillVersion, trustedSkillVersion } from './skill-version.js';
-import { IntegrationCredentialRepository } from './integration-credential-repository.js';
+import { IntegrationCredentialError, IntegrationCredentialRepository } from './integration-credential-repository.js';
 import type { SecretKeyring } from './secret-keyring.js';
 import { FITS_THRESHOLD, GATE_THRESHOLD, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from './typesafe-questions.js';
 
@@ -1314,6 +1314,8 @@ export class DashboardControlService {
       // The skill registry raises its own error type so the store stays free of HTTP concerns; the
       // service is where it becomes a status the control plane and the dashboard mapper understand.
       if (error instanceof SkillRegistryError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
+      // A stale generation or a second create is a conflict the dashboard recovers from, not a 500.
+      if (error instanceof IntegrationCredentialError) throw new HarnessError(error.code, error.message, statusFor(error.code), false);
       throw error;
     }
   }
@@ -1652,4 +1654,4 @@ function storedMcpHeaders(
     ? { name: header.name, value: header.value }
     : { name: header.name, secretRef: header.value.secretRef });
 }
-const statusFor = (code: ArtifactStoreError['code'] | SkillRegistryError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;
+const statusFor = (code: ArtifactStoreError['code'] | SkillRegistryError['code'] | IntegrationCredentialError['code']) => code === 'NOT_FOUND' ? 404 : code === 'CONFLICT' ? 409 : code === 'LIMIT_EXCEEDED' ? 413 : 400;

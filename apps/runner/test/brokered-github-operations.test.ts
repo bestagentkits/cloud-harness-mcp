@@ -445,6 +445,21 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
       expect(args.join(' ')).toContain('/repo:/workspace:ro');
     });
 
+    it('redacts both a workspace GH_TOKEN and a different fallback token', () => {
+      const { config, store, metadata, installations, workspaceId } = fixture();
+      const fallback = 'fallback-runner-token-0123456789';
+      const injected = 'workspace-injected-token-9876543210';
+      const service = new WorkspaceService({ ...config, authMode: 'owner-bearer', githubToken: fallback } as RunnerConfig, store, metadata, installations);
+      vi.spyOn(store, 'getSecretSnapshot').mockReturnValue({
+        initialized: true,
+        secrets: [{ name: 'GH_TOKEN', version: 1, environmentId: 'env_test', envelope: {} as never }]
+      });
+      vi.spyOn(metadata, 'decryptEnvelope').mockReturnValue(injected);
+      const values = Object.values(service.redactionSecrets(workspaceId));
+      expect(values).toContain(injected);
+      expect(values).toContain(fallback);
+    });
+
     describe('advisory failure diagnosis', () => {
       const answers: Record<string, DecisionAnswer> = {
         failure_type: { kind: 'choice', value: 'transient_network', confidence: 0.9, probabilities: { transient_network: 0.9, unknown: 0.1 } },

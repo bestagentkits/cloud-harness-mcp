@@ -1,7 +1,7 @@
 import type { DecisionAnswer, DecisionRequest } from '@cloud-harness/contracts';
 import { TYPESAFE_ALLOWED_HOSTS, TYPESAFE_DEFAULT_ENDPOINT, TYPESAFE_DEFAULT_MODEL } from '../typesafe-questions.js';
 import { redactPrompt, type TypesafeQuestion, type TypesafeRequest } from '../typesafe-skill-suggester.js';
-import type { DecisionCallContext, DecisionProvider, ProviderEvaluation } from './decision-plane.js';
+import { combineSecrets, type DecisionCallContext, type DecisionProvider, type ProviderEvaluation } from './decision-plane.js';
 
 /** The hard ceiling on one request body, so a large candidate set cannot become a large upload. */
 export const JEV_MAX_BODY_BYTES = 16_384;
@@ -44,8 +44,14 @@ export class JevDecisionProvider implements DecisionProvider {
     const apiKey = this.config.apiKey();
     if (!apiKey) return { ok: false, reason: 'not_configured' };
 
-    // The snapshot is read inside redaction, so a failing secret read fails the call closed.
-    const secrets = (): Record<string, string> => ({ ...(this.config.secrets?.() ?? {}), ...(context.secrets?.() ?? {}) });
+    // Read once per call. A failing secret read fails the call closed, and the sources are merged so
+    // that one cannot replace another's value under the same name.
+    let secrets: Record<string, string>;
+    try {
+      secrets = combineSecrets(this.config.secrets, context.secrets);
+    } catch {
+      return { ok: false, reason: 'redaction_failed' };
+    }
     let redactionCount = 0;
     let failed = false;
     const redact = (text: string, maxBytes?: number): string => {

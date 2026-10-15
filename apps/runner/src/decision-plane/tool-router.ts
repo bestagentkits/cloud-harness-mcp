@@ -11,13 +11,11 @@ const CHOICE_WEIGHT = 0.3;
  * Candidates are addressed by position (`t0`, `t1`, ...) on the wire, so a tool name never has to
  * satisfy the question-key charset and a returned key can only map back to a candidate it offered.
  */
-export function rerankDecisionRequest(input: DecisionRerankToolsInput, redact: (text: string) => string | undefined = (text) => text): DecisionRequest | undefined {
+/** `descriptions`, when given, are the candidates' descriptions already redacted in full, by index. */
+export function rerankDecisionRequest(input: DecisionRerankToolsInput, descriptions: readonly string[] = input.candidates.map((candidate) => candidate.description)): DecisionRequest {
   const options: Record<string, string> = {};
   for (const [index, candidate] of input.candidates.entries()) {
-    // Upstream descriptions are redacted whole before they are shortened, so a cut cannot split a secret.
-    const redacted = redact(candidate.description.trim());
-    if (redacted === undefined) return undefined;
-    const description = redacted.slice(0, DESCRIPTION_CHARS);
+    const description = (descriptions[index] ?? '').trim().slice(0, DESCRIPTION_CHARS);
     options[`t${index}`] = `${candidate.tool}${description ? `: ${description}` : ''}`.slice(0, 400);
   }
   return {
@@ -63,8 +61,10 @@ export async function rerankTools(plane: DecisionPlane, ownerId: string, input: 
   // An owner with no provider key is the common case on every search; it is answered without an
   // evaluation, so it adds neither an audit row nor a fallback to the metrics.
   if (!plane.available(ownerId, 'mcp-routing')) return notApplied('not_configured');
-  const request = rerankDecisionRequest(input, (text) => plane.redact(ownerId, text));
-  if (!request) return notApplied('redaction_failed');
+  // Upstream descriptions are redacted whole before they are shortened, so a cut cannot split a secret.
+  const redacted = plane.redact(ownerId, input.candidates.map((candidate) => candidate.description));
+  if (!redacted) return notApplied('redaction_failed');
+  const request = rerankDecisionRequest(input, redacted.texts);
 
   let ranked: { ordering: string[]; relevance: Record<string, number> } | undefined;
   const outcome = await plane.evaluate(ownerId, request, (answers) => {
@@ -76,7 +76,7 @@ export async function rerankTools(plane: DecisionPlane, ownerId: string, input: 
       return { selected: '', confidence, policyEffect: 'abstain' };
     }
     return { selected: top, confidence, policyEffect: 'rerank' };
-  });
+  }, { redactionCount: redacted.count });
   if (!outcome.ok) return notApplied(outcome.reason, outcome.decisionId);
   if (!ranked) return notApplied('low_confidence', outcome.decisionId);
   return { applied: true, decisionId: outcome.decisionId, ordering: ranked.ordering, relevance: ranked.relevance };

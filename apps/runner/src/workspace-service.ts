@@ -382,7 +382,9 @@ export class WorkspaceService {
       principalId: record.ownerId,
       metadata: this.metadata
     });
-    if (fallbackToken) values['GH_TOKEN'] = fallbackToken;
+    // A reserved name, so a workspace secret called GH_TOKEN (the token the executor really holds)
+    // keeps its own entry and both values stay redacted.
+    if (fallbackToken) values['CLOUD_HARNESS_GITHUB_FALLBACK_TOKEN'] = fallbackToken;
     return values;
   }
 

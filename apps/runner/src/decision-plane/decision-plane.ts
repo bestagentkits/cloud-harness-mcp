@@ -46,6 +46,8 @@ export type DecisionEvaluateOptions = {
   secrets?: () => Record<string, string>;
   /** The caller's own cancellation. Aborting it aborts the provider call and answers `cancelled`. */
   signal?: AbortSignal;
+  /** Replacements the caller already made through `redact`, added to the audit row's count. */
+  redactionCount?: number;
 };
 
 export type DecisionOutcome =
@@ -126,15 +128,26 @@ export class DecisionPlane {
   }
 
   /**
-   * Fully redacts a text with the owner's plane secrets and the caller's secrets, before the caller
-   * cuts it down. Returns undefined when redaction cannot complete, so the caller sends nothing.
+   * Fully redacts texts with the owner's plane secrets and the caller's secrets, before the caller
+   * cuts them down. The secrets are read once for the whole batch. Returns undefined when redaction
+   * cannot complete, so the caller sends nothing; `count` belongs in the evaluation's audit row.
    */
-  redact(ownerId: string, text: string, secrets?: () => Record<string, string>): string | undefined {
-    const result = redactSecrets({
-      text,
-      secrets: () => ({ ...(this.options.secretsFor?.(ownerId) ?? {}), ...(secrets?.() ?? {}) })
-    });
-    return result.ok ? result.text : undefined;
+  redact(ownerId: string, texts: readonly string[], secrets?: () => Record<string, string>): { texts: string[]; count: number } | undefined {
+    let snapshot: Record<string, string>;
+    try {
+      snapshot = combineSecrets(() => this.options.secretsFor?.(ownerId) ?? {}, secrets);
+    } catch {
+      return undefined;
+    }
+    const redacted: string[] = [];
+    let count = 0;
+    for (const text of texts) {
+      const result = redactSecrets({ text, secrets: snapshot });
+      if (!result.ok) return undefined;
+      redacted.push(result.text);
+      count += result.count;
+    }
+    return { texts: redacted, count };
   }
 
   status(): { purposes: string[]; metrics: DecisionMetricsSnapshot } {
@@ -225,7 +238,7 @@ export class DecisionPlane {
     trace.model = evaluation.model;
     trace.inputTokens = evaluation.inputTokens;
     trace.outputTokens = evaluation.outputTokens;
-    trace.redactionCount = evaluation.redactionCount;
+    trace.redactionCount = evaluation.redactionCount + (options.redactionCount ?? 0);
     if (invalid) return fallback('invalid_answer');
 
     let described: { selected: string; confidence: number; policyEffect: string };
@@ -248,7 +261,7 @@ export class DecisionPlane {
 
   /** The plane's own secrets for this owner merged with the caller's, read lazily by the provider. */
   private callSecrets(ownerId: string, extra?: () => Record<string, string>): () => Record<string, string> {
-    return () => ({ ...(this.options.secretsFor?.(ownerId) ?? {}), ...(extra?.() ?? {}) });
+    return () => combineSecrets(() => this.options.secretsFor?.(ownerId) ?? {}, extra);
   }
 
   /**
@@ -290,6 +303,19 @@ export class DecisionPlane {
     this.callTimestamps.set(ownerId, recent);
     return true;
   }
+}
+
+/**
+ * Merges secret maps so that no source can replace another's entry: redaction works on values, and a
+ * caller secret that happens to share a name with a plane secret must not drop the plane's value.
+ * A failing source throws, so the caller's redaction fails closed.
+ */
+export function combineSecrets(...sources: ReadonlyArray<(() => Record<string, string>) | undefined>): Record<string, string> {
+  const combined: Record<string, string> = {};
+  sources.forEach((source, index) => {
+    for (const [name, value] of Object.entries(source?.() ?? {})) combined[`${index}:${name}`] = value;
+  });
+  return combined;
 }
 
 function clamp(value: number): number {

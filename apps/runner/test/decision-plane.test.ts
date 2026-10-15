@@ -6,6 +6,7 @@ import { JevDecisionProvider, parseJevAnswers } from '../src/decision-plane/jev-
 import { rankFromAnswers, rerankDecisionRequest, rerankTools } from '../src/decision-plane/tool-router.js';
 import { FailureIntelligence, diagnosisFromAnswers, failureDecisionRequest } from '../src/decision-plane/failure-intelligence.js';
 import { createRunnerDecisionPlane } from '../src/decision-plane/runner-decision-plane.js';
+import { redactPrompt } from '../src/typesafe-skill-suggester.js';
 
 const request: DecisionRequest = {
   purpose: 'mcp-routing',
@@ -351,6 +352,40 @@ describe('decision plane review hardening', () => {
     expect(diagnosis).toMatchObject({ failureType: 'auth' });
     expect(bodies).toHaveLength(1);
     for (let start = 0; start + 8 <= secret.length; start += 1) expect(bodies[0]).not.toContain(secret.slice(start, start + 8));
+  });
+
+  it('leaves no fragment when redaction shrinks long output that repeats a long secret', async () => {
+    const secret = `${'Rm4Tq8'.repeat(333)}Zx`;
+    const bodies: string[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return new Response(JSON.stringify(jevFailureBody), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    const provider = new JevDecisionProvider({ apiKey: () => 'k'.repeat(32), fetchImpl });
+    const traces: DecisionTrace[] = [];
+    const intelligence = new FailureIntelligence(new DecisionPlane({ purposes: ['failure-classification'], providerFor: () => provider, record: (_owner, trace) => traces.push(trace) }));
+    const stderr = `${secret.repeat(8)}${'e'.repeat(500)}`;
+    await intelligence.diagnose({ ...failureContext, stderr, secrets: () => ({ WORKSPACE_TOKEN: secret }) });
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toContain('Rm4Tq8Rm');
+    expect(traces[0]?.redactionCount).toBe(8);
+  });
+
+  it('keeps redacting the plane key when a caller secret reuses its name', async () => {
+    const planeKey = 'Pl4neKeyValueThatMustNeverLeave99';
+    let seen = '';
+    const provider: DecisionProvider = {
+      name: 'capture',
+      async evaluate(sent, context) {
+        const redacted = redactPrompt({ prompt: sent.state, secrets: context.secrets });
+        seen = redacted.ok ? redacted.outcome.text : '';
+        return { ok: false, reason: 'upstream_unavailable' };
+      }
+    };
+    const instance = new DecisionPlane({ purposes: ['failure-classification'], providerFor: () => provider, secretsFor: () => ({ TYPESAFE_API_KEY: planeKey }) });
+    await instance.evaluate('owner', { ...request, purpose: 'failure-classification', state: `leak ${planeKey}` }, describeAnswers, { secrets: () => ({ TYPESAFE_API_KEY: 'a-different-workspace-value' }) });
+    expect(seen).toContain('leak');
+    expect(seen).not.toContain(planeKey);
   });
 
   it('sends nothing when redaction of the output cannot complete', async () => {

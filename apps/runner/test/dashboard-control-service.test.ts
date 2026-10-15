@@ -244,6 +244,24 @@ describe('integration credentials and typesafe', () => {
     expect(deleted.data).toMatchObject({ deleted: true });
   });
 
+  it('answers 409 for a stale generation or a second create, and 404 for a key already removed', async () => {
+    const { controls } = setup();
+    const created = await controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_first', expectedGeneration: 0
+    }));
+    const credentialId = (created.data as { id: string }).id;
+
+    await expect(controls.execute(request('integration_credential_create', {
+      integration: 'typesafe', label: 'TypeSafe', value: 'ts_live_second', expectedGeneration: 0
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await expect(controls.execute(request('integration_credential_rotate', {
+      credentialId, value: 'ts_live_stale', expectedGeneration: 7
+    }))).rejects.toMatchObject({ code: 'CONFLICT', status: 409 });
+    await controls.execute(request('integration_credential_delete', { credentialId, expectedGeneration: 1 }));
+    await expect(controls.execute(request('integration_credential_delete', { credentialId, expectedGeneration: 1 })))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
   it('reports an empty roster rather than calling out when a key exists but no workspace was named', async () => {
     const { controls } = setup();
     await controls.execute(request('integration_credential_create', {
