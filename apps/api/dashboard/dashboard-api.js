@@ -36,6 +36,12 @@ export const createModelCredential = (payload) => api('/provider-credentials', {
 export const rotateModelCredential = (id, payload) => api(`/provider-credentials/${encodeURIComponent(id)}/rotate`, { method: 'PUT', body: JSON.stringify(payload) });
 export const deleteModelCredential = (id, expectedGeneration) => api(`/provider-credentials/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
 
+export const listIntegrationCredentials = () => api('/integration-credentials');
+export const createIntegrationCredential = (payload) => api('/integration-credentials', { method: 'POST', body: JSON.stringify(payload) });
+export const rotateIntegrationCredential = (id, payload) => api(`/integration-credentials/${encodeURIComponent(id)}/rotate`, { method: 'PUT', body: JSON.stringify(payload) });
+export const deleteIntegrationCredential = (id, expectedGeneration) => api(`/integration-credentials/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
+export const getTypesafeStatus = () => api('/typesafe/status');
+
 export const listModelProfiles = () => api('/agent-model-profiles');
 export const createModelProfile = (payload) => api('/agent-model-profiles', { method: 'POST', body: JSON.stringify(payload) });
 export const updateModelProfile = (id, payload) => api(`/agent-model-profiles/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });

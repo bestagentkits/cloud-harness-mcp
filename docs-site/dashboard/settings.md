@@ -1,11 +1,11 @@
 ---
 title: Instance Settings
-description: Instance-wide workspace defaults, network egress readiness, the credential-exfiltration tradeoff, and MCP OAuth session lifetimes.
+description: Instance-wide workspace defaults, network egress readiness, the credential-exfiltration tradeoff, MCP OAuth session lifetimes, and the TypeSafe integration key.
 ---
 
 # Instance Settings
 
-The Settings page (`/dashboard/settings`) owns the instance-wide defaults that apply to workspaces opened without an explicit override. It exposes the default executor network profile and the MCP OAuth session lifetimes.
+The Settings page (`/dashboard/settings`) owns the instance-wide defaults that apply to workspaces opened without an explicit override. It exposes the default executor network profile, the MCP OAuth session lifetimes, and your TypeSafe integration key.
 
 ## Default Network Profile
 
@@ -69,3 +69,7 @@ The panel always shows what Cloudflare reports, not what was last typed:
 On a new install whose grant duration was never set, Cloud Harness applies the provider maximum at startup; **Management** then says the default was applied automatically at first start. It never overwrites a value someone already set in Cloudflare, including an access-token lifetime outside 1–60 minutes; instead the panel offers **Adopt default** to switch to the provider maximum with 15-minute tokens.
 
 The panel is read-only, with the reason shown, when no integration is configured, the integration is read-only, Managed OAuth is off for the application, or the application uses SCIM provisioning or is not self-hosted. In those cases change the values in Cloudflare Zero Trust under **Advanced settings → Managed OAuth**. Operators enable the integration with the runner-only `CLOUDFLARE_ACCESS_*` API variables in the [environment-variable reference](/reference/environment-variables), using a Cloudflare API token limited to one account with **Access: Apps and Policies Write** (or **Read** for a read-only panel). The token never reaches the API, the browser, or a workspace. For sync errors, see [Troubleshooting](/troubleshooting#_21-mcp-oauth-sessions-panel-is-read-only-or-shows-a-sync-error).
+
+## TypeSafe integration
+
+The last panel stores your write-only TypeSafe API key and shows whether it is configured, whether the operator left TypeSafe egress on, and the endpoint and model in use. The key is per owner, unlike the instance-wide values above. See [TypeSafe Integration](/dashboard/typesafe).

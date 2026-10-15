@@ -45,6 +45,13 @@ export function registerDashboardControlRoutes(
   router.post('/api/v1/provider-credentials', endpoint('model_credential_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.put('/api/v1/provider-credentials/:id/rotate', endpoint('model_credential_rotate', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
   router.delete('/api/v1/provider-credentials/:id', endpoint('model_credential_delete', (request) => ({ credentialId: internalId('cred').parse(request.params.id), ...generation.parse(request.body) })));
+  // Integration keys are write-only: the value travels inbound to the runner's keyring and every
+  // response is metadata mapped through the strict credential key allowlist.
+  router.get('/api/v1/integration-credentials', endpoint('integration_credential_list', () => ({})));
+  router.post('/api/v1/integration-credentials', endpoint('integration_credential_create', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.put('/api/v1/integration-credentials/:id/rotate', endpoint('integration_credential_rotate', (request) => ({ credentialId: internalId('icr').parse(request.params.id), ...(request.body && typeof request.body === 'object' ? request.body : {}) })));
+  router.delete('/api/v1/integration-credentials/:id', endpoint('integration_credential_delete', (request) => ({ credentialId: internalId('icr').parse(request.params.id), ...generation.parse(request.body) })));
+  router.get('/api/v1/typesafe/status', endpoint('typesafe_status', () => ({})));
   router.get('/api/v1/agent-model-profiles', endpoint('model_profile_list', () => ({})));
   // Skills. `limit` and the list filters default inside the operation schema, so the route only
   // parses the identifier it owns and lets the schema fill the rest.

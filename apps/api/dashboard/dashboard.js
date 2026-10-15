@@ -12,6 +12,11 @@ import {
   disableModelProfile,
   deleteModelProfile,
   getModelConfigStatus,
+  listIntegrationCredentials,
+  createIntegrationCredential,
+  rotateIntegrationCredential,
+  deleteIntegrationCredential,
+  getTypesafeStatus,
   listKnowledge,
   getKnowledgeItem,
   createKnowledgeItem,
@@ -2077,7 +2082,8 @@ export function initializeDashboard() {
       btn.addEventListener('click', (event) => {
         const id = event.currentTarget.dataset.credentialId;
         const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        confirmAction.open({
+        confirmAction({
+          title: 'Delete provider credential?',
           label: 'Delete credential',
           pendingLabel: 'Deleting…',
           target: id,
@@ -2227,7 +2233,8 @@ export function initializeDashboard() {
       btn.addEventListener('click', (event) => {
         const id = event.currentTarget.dataset.profileId;
         const gen = Number(event.currentTarget.dataset.generation ?? 1);
-        confirmAction.open({
+        confirmAction({
+          title: 'Delete model profile?',
           label: 'Delete profile',
           pendingLabel: 'Deleting…',
           target: id,
@@ -2389,6 +2396,7 @@ export function initializeDashboard() {
   let settingsPageData;
   let settingsReadiness;
   let settingsOAuth;
+  let settingsTypesafe;
   // A provider outage must not hide the rest of Settings, so the OAuth read fails
   // into its own panel rather than the page.
   async function fetchOAuthSettings() {
@@ -2399,20 +2407,92 @@ export function initializeDashboard() {
       return { view: undefined, error: error?.message ?? 'OAuth session settings are temporarily unavailable.' };
     }
   }
+  // The TypeSafe panel needs both reads: status for the facts, and the credential list for the id and
+  // generation a rotation or removal must name. Either failing fails into the panel, not the page.
+  async function fetchTypesafeSettings() {
+    const [status, credentials] = await Promise.allSettled([getTypesafeStatus(), listIntegrationCredentials()]);
+    const view = status.status === 'fulfilled' ? { status: status.value.data } : {};
+    if (status.status === 'rejected') return { ...view, error: `TypeSafe status is unavailable: ${status.reason?.message ?? 'the request failed.'}` };
+    if (credentials.status === 'rejected') return { ...view, error: `TypeSafe key storage is unavailable: ${credentials.reason?.message ?? 'the request failed.'}` };
+    const list = Array.isArray(credentials.value.data?.credentials) ? credentials.value.data.credentials : [];
+    return { ...view, credential: list.find((credential) => credential.integration === 'typesafe') };
+  }
   async function loadSettings() {
     selectNavigation('settings');
     document.querySelector('#command-surface').hidden = true;
     insertRendered(content, '<div class="skeleton tile" aria-hidden="true"></div>');
-    const [{ data }, oauth] = await Promise.all([api('/settings'), fetchOAuthSettings()]);
+    const [{ data }, oauth, typesafe] = await Promise.all([api('/settings'), fetchOAuthSettings(), fetchTypesafeSettings()]);
     settingsPageData = data;
     settingsOAuth = oauth;
+    settingsTypesafe = typesafe;
     settingsReadiness = undefined;
     renderSettingsView();
   }
   function renderSettingsView() {
-    insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth));
+    insertRendered(content, renderSettings(settingsPageData, settingsReadiness, settingsOAuth, settingsTypesafe));
     bindSettingsControls();
     bindOAuthSettingsControls();
+    bindTypesafeSettingsControls();
+  }
+  function typesafeStatus(message) {
+    const status = document.querySelector('#typesafe-status');
+    if (status) status.textContent = message;
+  }
+  /** Re-read both sources after any change, so the panel shows what the runner stored, not what was sent. */
+  async function refreshTypesafeSettings(message) {
+    settingsTypesafe = await fetchTypesafeSettings();
+    renderSettingsView();
+    typesafeStatus(message);
+  }
+  function bindTypesafeSettingsControls() {
+    const form = document.querySelector('#typesafe-form');
+    if (!form) return;
+    const key = form.querySelector('#typesafe-key');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const value = key.value;
+      if (value.trim() === '') {
+        typesafeStatus('Enter the TypeSafe API key to save.');
+        key.focus();
+        return;
+      }
+      const button = form.querySelector('#typesafe-save');
+      const credential = settingsTypesafe?.credential;
+      const original = button.textContent;
+      button.disabled = true; button.textContent = 'Saving…';
+      typesafeStatus('Saving…');
+      void (async () => {
+        try {
+          if (credential) await rotateIntegrationCredential(credential.id, { value, expectedGeneration: credential.generation });
+          else await createIntegrationCredential({ integration: 'typesafe', label: 'TypeSafe', value, expectedGeneration: 0 });
+          key.value = '';
+          await refreshTypesafeSettings(credential ? 'TypeSafe key replaced.' : 'TypeSafe key saved.');
+        } catch (error) {
+          // The value never stays in the field after a failure either, so it cannot be resubmitted by accident.
+          key.value = '';
+          if (error?.status === 409) await refreshTypesafeSettings('The TypeSafe key changed after you opened Settings. The panel now shows the current state; enter the key again.');
+          else typesafeStatus(error?.message ?? 'The TypeSafe key could not be saved.');
+        } finally {
+          if (button.isConnected) { button.disabled = false; button.textContent = original; }
+        }
+      })();
+    });
+    document.querySelector('#typesafe-remove')?.addEventListener('click', (event) => {
+      const credential = settingsTypesafe?.credential;
+      if (!credential) return;
+      confirmAction({
+        title: 'Remove TypeSafe key?',
+        description: 'Delete the stored TypeSafe API key. Skill suggestions and the Decision Plane stop calling TypeSafe for your account until you save a new key.',
+        target: credential.label,
+        label: 'Remove key',
+        pendingLabel: 'Removing…',
+        action: async () => {
+          await deleteIntegrationCredential(credential.id, credential.generation);
+          announce('TypeSafe key removed.');
+          await refreshTypesafeSettings('TypeSafe key removed.');
+        }
+      }, event.currentTarget);
+    });
   }
   function oauthStatus(message) {
     const status = document.querySelector('#settings-oauth-status');

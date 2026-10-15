@@ -1,22 +1,47 @@
 ---
-title: TypeSafe Skill Suggestions
-description: Configuring the optional skill suggestion engine, its egress controls, and what leaves the process.
+title: TypeSafe Integration
+description: Storing the TypeSafe integration key, reading its status, what leaves the control plane, and how to turn it off.
 ---
 
-# TypeSafe Skill Suggestions
+# TypeSafe Integration
 
-When a TypeSafe integration key is configured, Cloud Harness can suggest at most one skill from a
+When you store a TypeSafe integration key, Cloud Harness can suggest at most one skill from a
 workspace's roster for each user prompt. The suggestion is **advisory**: it names a skill, it never
 loads one, and an agent may ignore it.
 
-The panel lives under **Settings** as **TypeSafe skill suggestions**.
+The same key also powers the optional Decision Plane, which an operator turns on with
+`DECISION_PLANE_PURPOSES` (see [Environment Variables](/reference/environment-variables)).
+
+## Where the panel is
+
+Open **Settings** (`/dashboard/settings`) and scroll to **TypeSafe integration**. The panel has three
+parts:
+
+- **Status**: whether a key is configured for your account, whether egress is enabled on this
+  instance, and the endpoint and model the runner uses. These values are read-only and come from the
+  runner.
+- **API key**: a password field. **Save key** stores the first key. Once one exists, the button reads
+  **Replace key** and rotates it.
+- **Remove key**: deletes the stored key after a confirmation. It appears only when a key exists.
+
+## Key storage
+
+The key is write-only. The dashboard sends it once to the runner, which encrypts it with its secret
+keyring and keeps it per owner. No response, status line, or log carries the value, and the field is
+cleared after every save attempt. The runner decrypts the key only to call TypeSafe.
+
+Saves and removals name the generation you loaded. If the key changed in another tab after you opened
+Settings, the save is refused, the panel reloads the current state, and you enter the key again.
+
+If the runner has no secret keyring, the panel says key storage is unavailable and does not offer the
+key field.
 
 ## What leaves the control plane
 
 This is the one control-plane feature that sends prompt content to a third party, so it is worth being
 precise about what does and does not leave:
 
-- **Leaves:** the prompt, after redaction, bounded to the configured payload size.
+- **Leaves:** the prompt, after redaction, bounded to a fixed payload size.
 - **Never leaves:** your secrets, provider credentials, or the executor. Redaction runs before egress and
   covers both the workspace secret snapshot and the provider credentials that do not travel through it.
 - **Comes back:** a skill name with its scores and token usage. The result carries no model prose, and
@@ -25,36 +50,21 @@ precise about what does and does not leave:
 If redaction fails for any reason, **nothing is sent** and the suggestion is skipped. A TypeSafe outage,
 a rate limit, or a timeout degrades to no suggestion rather than failing a turn.
 
-## Configuration
-
-| Field | What it does |
-| --- | --- |
-| API key | Write-only. It is never rendered back, never logged, and never sent anywhere but the configured endpoint. |
-| Model | Defaults to `jev-latest`. |
-| Gate threshold | How strongly a request must look like it needs a skill before the engine asks a second question. |
-| Fit threshold | How well a candidate must fit before it is suggested at all. |
-| Maximum egress bytes | Bounds the payload. Redaction removes the shapes it knows; a smaller payload bounds what is left. |
-| Cache lifetime | How long an identical request keeps its answer. The cache is memory-only and never stores the prompt. |
-| Send suggestions | The kill switch. Off means no outbound calls regardless of whether a key is present. |
-
-**Test connection** issues one cheap question against the configured key and reports only the status,
-the latency, and the returned model id. It never shows the key, the prompt, or the answer body.
-
 ## Where suggestions appear
 
-- **Agents:** the `skill_suggest` MCP tool, and a Claude Code `UserPromptSubmit` hook for hosts that
-  cannot call it directly. The hook injects a bounded `<skill_relevance>` block that says it is data to
-  ignore.
-- **The panel:** a usage list showing the chosen skill, gate, best fit, latency, redaction count, and
-  whether the answer came from cache. Prompt text never appears there.
+Suggestions reach agents through the `skill_suggest` MCP tool, and through a Claude Code
+`UserPromptSubmit` hook for hosts that cannot call it directly. The hook injects a bounded
+`<skill_relevance>` block that says it is data to ignore.
 
 ## Turning it off
 
-Removing the key is not the only control. `TYPESAFE_EGRESS=off` in the runner configuration or the
-environment disables egress regardless of the key, and the dashboard kill switch does the same per
-owner. Always-on is the default behaviour, not an unavoidable state.
+- **For your account:** select **Remove key**. With no key stored, no request is made.
+- **For the whole instance:** the operator sets `TYPESAFE_EGRESS=off` in the runner configuration. This
+  stops skill suggestions and the Decision Plane even when an owner has stored a key. The panel then
+  reports egress as **Off** and says the operator turned it off; a stored key is kept but not used.
 
 ## Related
 
-- [Skills & Skill Sets](/dashboard/skills) — the roster a suggestion is drawn from.
-- [Security Model](/security-model) — the trust boundary this feature expands and the controls on it.
+- [Instance Settings](/dashboard/settings): the page that hosts this panel.
+- [Skills & Skill Sets](/dashboard/skills): the roster a suggestion is drawn from.
+- [Security Model](/security-model): the trust boundary this feature expands and the controls on it.

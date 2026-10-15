@@ -7,7 +7,7 @@ import {
   validateSecretClient
 } from '../dashboard/dashboard.js';
 
-import { renderSkillsSkeleton, renderTypesafeSkeleton } from '../dashboard/dashboard-render.js';
+import { renderSettings, renderSkillsSkeleton, renderTypesafeSettings } from '../dashboard/dashboard-render.js';
 import { DASHBOARD_PAGES } from '../dashboard/dashboard-pages.js';
 import { renderSkillRevisions, renderSkillsLibraryRows } from '../dashboard/dashboard-render.js';
 import { planIsActionable, renderApprovals, renderPackages, shortDigest } from '../dashboard/dashboard-render.js';
@@ -228,18 +228,26 @@ describe('dashboard static UI contract', () => {
     expect(script).toContain('No named sessions.');
   });
 
-  it('renders the typename panel with a write-only key and no prompt surface', () => {
-    const skeleton = renderTypesafeSkeleton();
-    for (const selector of [
-      'id="typesafe-panel"', 'id="typesafe-key"', 'id="typesafe-model"', 'id="typesafe-gate-threshold"',
-      'id="typesafe-fit-threshold"', 'id="typesafe-max-egress-bytes"', 'id="typesafe-cache-ttl"',
-      'id="typesafe-enabled"', 'id="typesafe-egress"', 'id="typesafe-test"', 'id="typesafe-status"', 'id="typesafe-usage"'
-    ]) expect(skeleton, selector).toContain(selector);
+  it('renders the TypeSafe panel with only server-backed controls and a write-only key', () => {
+    const credential = { id: 'icr_12345678901234567890', integration: 'typesafe', label: 'TypeSafe', status: 'ACTIVE', activeVersion: 2, generation: 3 };
+    const panel = renderTypesafeSettings({ status: { configured: true, enabled: true, endpoint: 'https://typesafe.example/v1', model: 'jev-latest' }, credential });
+    for (const selector of ['id="typesafe-panel"', 'id="typesafe-form"', 'id="typesafe-key"', 'id="typesafe-save"', 'id="typesafe-remove"', 'id="typesafe-status"']) expect(panel, selector).toContain(selector);
 
-    // The key field never renders a stored value back, and the usage surface has no prompt column.
-    expect(skeleton).toMatch(/id="typesafe-key"[^>]*type="password"/);
-    expect(skeleton).not.toMatch(/prompt/i);
-    expect(skeleton).toContain('aria-live="polite"');
+    // The key field never renders a stored value back, and nothing the server cannot persist is offered.
+    expect(panel).toMatch(/id="typesafe-key"[^>]*type="password"/);
+    expect(panel).not.toMatch(/id="typesafe-key"[^>]*\svalue=/);
+    for (const unbacked of ['typesafe-model', 'gate-threshold', 'fit-threshold', 'max-egress-bytes', 'cache-ttl', 'typesafe-enabled', 'typesafe-test', 'typesafe-usage', 'Send suggestions', 'Test connection']) {
+      expect(panel, unbacked).not.toContain(unbacked);
+    }
+    expect(panel).not.toMatch(/prompt/i);
+    expect(panel).toContain('aria-live="polite"');
+    // Rotation and removal carry the generation the runner checks.
+    expect(panel).toContain('data-credential-id="icr_12345678901234567890" data-generation="3"');
+
+    // The shipped client reads status and the credential list, and saves through create or rotate.
+    for (const wiring of ["'/typesafe/status'", "'/integration-credentials'", '/integration-credentials/${encodeURIComponent(id)}/rotate', 'fetchTypesafeSettings()', 'bindTypesafeSettingsControls()']) expect(script, wiring).toContain(wiring);
+    // Settings mounts the panel when its view is supplied.
+    expect(renderSettings({ defaultNetworkProfile: { value: 'network-none', source: 'setting' } }, undefined, undefined, { status: { configured: false, enabled: true, endpoint: 'https://typesafe.example/v1', model: 'jev-latest' } })).toContain('id="typesafe-panel"');
   });
 
   it('renders every skills selector the UI contract names', () => {
@@ -651,5 +659,14 @@ describe('managed packages surfaces', () => {
     expect(script).toContain("api('/packages/remove', { method: 'POST', body: requestBody({ bindingId, expectedGeneration }) })");
     expect(script).toContain('requestBody(approving ? { planDigest } : {})');
     expect(script).toContain('pendingApprovals(grants, plans)');
+  });
+});
+
+describe('destructive confirmation wiring', () => {
+  const client = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+
+  it('calls the confirmAction function directly, never a nonexistent .open method', () => {
+    expect(client).toMatch(/function confirmAction\(options, invoker\)/);
+    expect(client).not.toMatch(/confirmAction\.open\(/);
   });
 });
