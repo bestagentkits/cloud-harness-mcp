@@ -1,3 +1,10 @@
+# [0.66.0-beta.9](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.8...v0.66.0-beta.9) (2026-10-15)
+
+
+### Bug Fixes
+
+* **runner:** let auto-close see through linked worktrees and expired agents ([#340](https://github.com/bestagentkits/cloud-harness-mcp/issues/340)) ([c2c3e40](https://github.com/bestagentkits/cloud-harness-mcp/commit/c2c3e400e3bae0cab7c65dbd3aaea86ab642e527))
+
 # [0.66.0-beta.8](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.7...v0.66.0-beta.8) (2026-10-15)
 
 
