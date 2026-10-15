@@ -323,9 +323,16 @@ repository commands. The dashboard Settings page owns that instance-wide default
 through dashboard-only internal runner operations; it is instance state rather
 than principal state, so in a deployment that serves more than one principal any
 authenticated dashboard principal can change the posture of future workspaces.
-That matches the single-owner threat model this harness is built for; a
-multi-tenant deployment needs an admin gate on the settings mutation before it
-can rely on per-principal policy. The `dependency-access` profile is enforced below MCP
+The same boundary covers the **Workspace limits & lifecycle** settings (the
+per-principal active-workspace quota, idle and wall TTLs, and recoverable
+grace): any authenticated dashboard principal with a valid CSRF token can
+change them for the whole instance, each change is audited as
+`settings.workspace_lifecycle.changed`, and no MCP tool reads or writes them.
+Raising the quota multiplies the per-executor resource ceilings a principal can
+hold; a zero grace is accepted only with an explicit acknowledgement, and
+auto-close still retains unsaved work. That matches the single-owner threat
+model this harness is built for; a multi-tenant deployment needs an admin gate
+on the settings mutation before it can rely on per-principal policy. The `dependency-access` profile is enforced below MCP
 tool policy: the executor attaches only to a dedicated managed Docker bridge
 (`chm-egress0`) with inter-container communication disabled and Docker's
 default masquerade off, and a transactional host firewall (installed via a

@@ -110,9 +110,10 @@ Never paste tokens, authorization codes, or callback URLs carrying `code` or
 - `LIMIT_EXCEEDED` with `active workspace limit reached: N active of a maximum M`
   means the principal already holds `M` counted workspaces (`CREATING`, `ACTIVE`,
   `NETWORK_QUARANTINED`). Call `workspace_list` to see them and `workspace_close`
-  to free a slot, or raise `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner.
-  Lowering the limit never reaps an existing workspace; it only blocks new
-  admission. A record in `REAPING` is in flight to teardown and holds no slot, so it
+  to free a slot, or raise the quota in Dashboard → Settings → **Workspace
+  limits & lifecycle** (or `MAX_ACTIVE_WORKSPACES_PER_OWNER` on the runner when
+  no override is set). Lowering the limit never reaps an existing workspace; it
+  only blocks new admission. A record in `REAPING` is in flight to teardown and holds no slot, so it
   never appears in this count.
 - A workspace whose lease is `ACTIVE` also frees its slot when its idle or wall TTL
   expires. A `NETWORK_QUARANTINED` record does not expire, so close it explicitly.
@@ -259,6 +260,14 @@ sudo docker ps -a --filter label=cloud-harness.managed=true \
   --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Label "cloud-harness.workspace"}}'
 df -h /var/lib/cloud-harness
 ```
+
+An `EXPIRED_RECOVERABLE` workspace that outlives its grace, with `error`
+starting `auto-close deferred:`, is retained on purpose: the reaper found
+running agents, uncommitted or untracked files, stashes, or unpushed commits,
+or could not run the check. Earlier releases deleted it after an hour
+regardless. Recover or export the work, then `workspace_close`; the Settings
+panel counts these as retained by auto-close. See
+[expired workspaces and auto-close](operations.md#expired-workspaces-and-auto-close).
 
 Prefer `workspace_close`. If manual recovery is unavoidable, match the opaque
 workspace ID in SQLite, the Docker label, and the exact job directory first.

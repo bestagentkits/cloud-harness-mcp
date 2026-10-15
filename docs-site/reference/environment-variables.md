@@ -72,8 +72,9 @@ Copy `.env.example` to `.env` and replace all `change-me` placeholder secrets be
 | `DEPENDENCY_BRIDGE_SUBNET` | `172.30.240.0/24` | Optional | Optional configuration. |
 | `DEPENDENCY_BRIDGE_INTERFACE` | `chm-egress0` | Optional | Optional configuration. |
 | `DEPENDENCY_NETWORK_NAME` | `cloud-harness-dependency-access` | Optional | Optional configuration. |
-| `WORKSPACE_WALL_TTL_SECONDS` | `900` | **Required** | Required configuration. |
-| `WORKSPACE_IDLE_TTL_SECONDS` | `300` | **Required** | Required configuration. |
+| `WORKSPACE_WALL_TTL_SECONDS` | `900` | **Required** | Workspace lifetime defaults. Dashboard Settings > Workspace limits & lifecycle can override these (and MAX_ACTIVE_WORKSPACES_PER_OWNER) for newly opened workspaces without a redeploy. |
+| `WORKSPACE_IDLE_TTL_SECONDS` | `300` | **Required** | Idle timeout: a workspace without tool activity for this long expires (30..43200, always capped by the wall TTL). |
+| `WORKSPACE_RECOVERABLE_GRACE_SECONDS` | `3600` | Optional | How long an expired workspace stays recoverable before auto-close (0..86400, default 3600). 0 closes clean expired workspaces on the next reaper pass; work that is not pushed is always retained. |
 | `MAX_ACTIVE_WORKSPACES_PER_OWNER` | `3` | **Required** | Concurrent active workspaces allowed per principal. Defaults to 3 when unset; set 1 to restore single-workspace behaviour. Each counted workspace can use up to 1 GiB of container memory, one CPU, and 256 pids, so size host memory for this limit times the expected simultaneous builds. |
 | `TERMINAL_MAX_PER_WORKSPACE` | `4` | Optional | Dashboard Terminal (runner): live PTYs one workspace may hold; another open is refused with 429. |
 | `TERMINAL_RETAINED_BYTES` | `1048576` | Optional | Raw output bytes retained per terminal for reconnecting readers; older bytes are reported as missed. |
