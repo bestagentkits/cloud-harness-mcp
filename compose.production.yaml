@@ -35,15 +35,6 @@ services:
     volumes:
       - /etc/cloud-harness-mcp:/run/cloud-harness-secrets:ro
 
-  # Keep the locally-built executor image referenced by a running container so a
-  # host `docker image prune -a` / `docker system prune -a` cannot delete it
-  # between workspace operations. The executor image only ever runs as
-  # short-lived per-workspace containers, so without a standing reference it is
-  # "unused" and a prune removes it, breaking workspace_open until the next
-  # deploy. This idle holder is strictly less privileged than a real executor:
-  # no network, no mounts, no secrets, all capabilities dropped, read-only,
-  # non-root.
-
   model-gateway:
     logging:
       driver: json-file
@@ -54,6 +45,15 @@ services:
     volumes:
       - /etc/cloud-harness-model-gateway/profiles.json:/run/model-gateway-config/profiles.json:ro
       - /etc/cloud-harness-model-gateway/provider-api-key:/run/model-gateway-secrets/provider-api-key:ro
+  # Keep the locally-built executor and agent images referenced by running
+  # containers so a host `docker image prune -a` / `docker system prune -a`
+  # cannot delete them between operations. Those images only ever run as
+  # short-lived per-workspace or per-agent containers, so without a standing
+  # reference they are "unused" and a prune removes them, breaking
+  # workspace_open or agent_spawn until the next deploy. Each idle holder is
+  # strictly less privileged than the containers it keeps referenced: no
+  # network, no mounts, no secrets, all capabilities dropped, read-only,
+  # non-root.
   executor-image-keepalive:
     image: cloud-harness-executor:local
     command: ["sleep", "infinity"]
