@@ -94,8 +94,8 @@ one-off runner re-encryption entry point owned by
 [`apps/runner/src/rekey-secrets.ts`](../apps/runner/src/rekey-secrets.ts) through
 the `secrets:rekey` package script or its compiled runner command.
 
-That command re-encrypts secret versions, workspace secret snapshots, and
-downstream MCP OAuth grants and pending flows. A grant is rewritten only while
+That command re-encrypts secret versions, workspace secret snapshots,
+downstream MCP OAuth grants and pending flows, and MCP Events webhook secrets. A grant is rewritten only while
 its generation is unchanged, so a concurrent token refresh is never overwritten.
 
 The command is interruptible and safe to resume; verify that it completes,
@@ -302,6 +302,50 @@ and the command by
 [`apps/runner/src/metadata-schema-down-v6.ts`](../apps/runner/src/metadata-schema-down-v6.ts).
 Then deploy the prior runner and canary readiness, the dashboard, and the MCP
 server list. Restore-from-backup remains the fallback.
+
+## MCP Events state schema rollback
+
+MCP Events add runner state schema v13 (event subscriptions, callback
+verifications, the event outbox, and delivery rows). A pre-v13 runner refuses a
+v13 state database, so release rollback relies on the pre-deploy recovery set,
+which restores the prior database together with the release. There is no
+packaged command for this downgrade. The bounded `downgradeStateSchemaToV12` in
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts)
+drops only the four event tables, and refuses while any subscription or outbox
+row exists unless data loss is explicitly allowed. A lossy downgrade discards
+every subscription and undelivered event; clients must subscribe again after a
+later upgrade, and nothing replays the lost events.
+
+## MCP Events deployment verification
+
+Automated tests prove [MCP Events](mcp-api.md#mcp-events-webhook-delivery)
+against a mock callback receiver only. A live ChatGPT subscription is
+separate, owner-authorized evidence; do not claim it from the mock tests or
+from configuration. After a release that ships or changes events:
+
+1. Deploy through the normal release path and confirm readiness.
+2. Confirm `server/discover` on the remote `/mcp` endpoint advertises
+   `capabilities.events` and that `events/list` returns the four
+   `cloudharness.*` events.
+3. From ChatGPT with the Cloud Harness connector, subscribe to a task or agent
+   event, so ChatGPT supplies its own callback URL and secret. Confirm the
+   subscription appears in `GET /dashboard/api/v1/event-subscriptions` with
+   the expected event name and callback origin, and that the audit log records
+   `mcp_event.subscribed`.
+4. Run a short `tasks_run` task in a disposable workspace and confirm ChatGPT
+   receives the event; the subscription's recent deliveries should show
+   `DELIVERED` with no `lastError`.
+5. Revoke the subscription through the dashboard revoke route
+   (`POST /dashboard/api/v1/event-subscriptions/<id>/revoke`, with the normal
+   dashboard session and CSRF token) or unsubscribe from the client, then
+   confirm no further delivery and the matching audit entry. Close the
+   workspace.
+
+Record the result in the tracking issue as a live receipt: release SHA, date,
+client and plan, event name, subscription and event ids, delivery status, and
+the revocation outcome. Keep callback URLs, secrets, and payload contents out
+of the receipt. Label mock-receiver test runs as mock evidence, never as live
+ChatGPT verification.
 
 ## Release rollback
 

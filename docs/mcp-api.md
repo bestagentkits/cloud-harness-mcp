@@ -300,6 +300,86 @@ Executable owners:
 and
 [`test/integration/skills-extension-http.test.ts`](../test/integration/skills-extension-http.test.ts).
 
+## MCP Events (webhook delivery)
+
+The remote Streamable HTTP API (`/mcp`, `/mcp/workspaces/<workspaceId>`, and
+the managed API-key lane) advertises `capabilities.events` in
+`server/discover` and serves `events/list`, `events/subscribe`, and
+`events/unsubscribe` from the MCP Events design sketch at protocol revision
+`2026-07-28`. It exists so a client such as ChatGPT can learn that a durable
+task or managed agent finished without polling. It is a protocol surface beside
+the tools, not a tool: `tools/list` is unchanged, and local stdio and local
+HTTP backends, like `/mcp-gateway`, do not advertise it.
+
+Decisions that are easy to misread:
+
+- **Webhook mode only.** Only `delivery.mode: "webhook"` is accepted, because
+  that is the mode ChatGPT supports; any other mode is refused as unsupported.
+  The event-specific JSON-RPC error codes follow the sketch revision ChatGPT
+  implements (`-32011`…`-32015`). They live in one constant,
+  `MCP_EVENTS_ERROR_CODES`, so a protocol renumbering is a single change.
+- **Four terminal-state events.** `cloudharness.task.completed`,
+  `cloudharness.task.failed`, `cloudharness.agent.settled`, and
+  `cloudharness.agent.failed`. Their filter arguments, payload schemas, and the
+  status sets each one covers are owned by `MCP_EVENT_DEFINITIONS` and are
+  returned verbatim by `events/list`. A task event fires once, on the task's
+  first transition into a terminal status, including a task the runner marks
+  `RUNNER_RESTARTED` after a restart. `agent.settled` means the agent reached
+  its terminal `SUCCEEDED` record and released its runtime; a turn ending is
+  never settlement.
+- **Payloads are notifications, not results.** They carry identifiers, status,
+  exit or error codes, and timestamps only, never command text, output,
+  prompts, or messages. Read the result with `tasks_status` or `agent_status`
+  after the event arrives.
+- **Owner scoping.** Subscriptions belong to the authenticated principal, and
+  a `workspaceId`, `taskId`, or `agentId` filter must name something that
+  principal owns. An unauthenticated request is refused before reaching the
+  runner. Events fan out only to the owner's matching, unexpired
+  subscriptions.
+- **Subscriptions are leases.** A subscription is identified by principal,
+  callback URL, event name, and canonical arguments, so re-subscribing is an
+  idempotent refresh that extends it and returns its current
+  `deliveryStatus`. Grants are finite even for `ttlMs: null`; the client
+  refreshes before `refreshBefore`. Re-subscribing with a different secret
+  rotates it, and deliveries carry both signatures for a short grace window.
+  `events/unsubscribe` is idempotent and always returns an empty result. The
+  per-principal quota and TTL bounds are owned by `MCP_EVENTS_LIMITS`.
+- **No replay.** Events are recorded only for subscriptions that exist when the
+  transition commits. `cursor` is always `null`, and a requested `cursor` or
+  `maxAgeMs` is accepted but ignored.
+- **At-least-once delivery.** The body is
+  `{eventId, name, timestamp, data, cursor: null}`, signed per
+  [Standard Webhooks](https://www.standardwebhooks.com/) with `webhook-id`
+  (equal to `eventId`), `webhook-timestamp`, and `webhook-signature`
+  (`v1,<base64>`, space-separated during a secret rotation), plus
+  `X-MCP-Subscription-Id`. A retry re-sends the same `webhook-id` and body, so
+  receivers must deduplicate on it. `410` and `413` responses stop retries for
+  that delivery; other failures are retried within a bounded window owned by
+  [`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts)
+  and then abandoned.
+- **Callback verification.** Before the first subscription for a
+  principal and callback URL, the API posts a signed
+  `{"type":"verification","challenge":...}` request and requires a `2xx`
+  JSON response echoing the same `challenge`; a pass is reused for a bounded
+  period. Callback URL rules are in the
+  [security model](security-model.md#mcp-events-webhook-egress).
+- **Stopping delivery.** Subscriptions created over a managed API key stop
+  when that key is revoked or expires. OAuth-lane subscriptions lapse at their
+  TTL unless the client refreshes them. The dashboard lists and revokes the
+  owner's subscriptions (`/dashboard/api/v1/event-subscriptions`) but never
+  creates one, and a client that re-subscribes reactivates a revoked
+  subscription; to stop a client permanently, revoke its credential.
+
+Executable owners:
+[`packages/contracts/src/events-api.ts`](../packages/contracts/src/events-api.ts),
+[`apps/api/src/events/`](../apps/api/src/events/),
+[`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts),
+[`apps/runner/src/event-outbox.ts`](../apps/runner/src/event-outbox.ts), and
+[`test/integration/mcp-events-http.test.ts`](../test/integration/mcp-events-http.test.ts).
+These tests use a mock callback receiver; they are not evidence of a live
+ChatGPT subscription (see
+[operations](operations.md#mcp-events-deployment-verification)).
+
 ## Semantics that are easy to misread
 
 - `files_apply_patch` is not a unified-diff parser. It performs one exact
