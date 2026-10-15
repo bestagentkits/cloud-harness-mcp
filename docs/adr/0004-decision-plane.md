@@ -36,13 +36,16 @@ with confidence back, or a deterministic fallback.
 - The GitHub classifier keeps its `code` and `retryable`. A diagnosis is added
   as `data.diagnosis` (always `advisory: true`), and only when the classifier
   fell through to its generic code.
-- Every failure path (purpose off, no key, redaction failure, timeout, rate
-  limit, HTTP error, malformed or out-of-range answer, low confidence) returns
+- Every failure path (purpose off, no key, redaction failure, timeout, caller
+  cancellation, rate limit, HTTP error, malformed or out-of-range answer, low
+  confidence) returns
   the deterministic result. The plane never throws into its caller.
 
 ### It is off until the owner opts in twice
 
 `DECISION_PLANE_PURPOSES` enables purposes instance-wide and defaults to empty.
+`TYPESAFE_EGRESS=off` closes every purpose regardless, because the plane shares
+the TypeSafe key and endpoint with the skill suggester.
 A call is also made only for an owner who has stored a TypeSafe integration key,
 which is the same key the skill suggester uses. Only implemented purposes are
 accepted. The purposes reserved in the contract for later phases (supervision,
@@ -55,7 +58,8 @@ credentials. The API only calls the internal `decision_rerank_tools` operation
 and receives an ordering. State is redacted fail-closed before it is sent: the
 workspace secret snapshot, model-provider credentials, the provider key itself,
 and the transient GitHub token are removed together with known credential
-shapes. If redaction fails, nothing is sent. Request bodies, timeouts, and
+shapes. Text is redacted whole before it is shortened, so a cut cannot split a
+secret into a fragment no rule recognises. If redaction fails, nothing is sent. Request bodies, timeouts, and
 per-owner call rate are bounded in the code.
 
 ### Decisions are observable without recording content

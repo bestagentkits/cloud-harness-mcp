@@ -2572,7 +2572,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
           stderr: result.stderr,
           stdout: result.stdout,
           networkProfile: record.networkProfile,
-          secrets: () => ({ ...this.redactionSecrets(record.id), GITHUB_ACTION_TOKEN: token })
+          secrets: () => ({ ...this.redactionSecrets(record.id), GITHUB_ACTION_TOKEN: token }),
+          ...(signal ? { signal } : {})
         }).catch(() => undefined)
         : undefined;
       return {

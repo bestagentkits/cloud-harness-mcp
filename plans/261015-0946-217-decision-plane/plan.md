@@ -1,6 +1,6 @@
 # Decision Plane foundation (issue #217, first slice)
 
-Status: in progress · Branch: `claude/determined-gates-b13d4w` → PR into `dev`
+Status: in review · Branch: `claude/determined-gates-b13d4w` → PR into `dev`
 
 ## Outcome
 
@@ -31,7 +31,7 @@ metrics, deterministic fallback on every path, and an offline/live benchmark.
 
 - Never widens permissions; never overrides a deterministic classification.
 - Default off (`DECISION_PLANE_PURPOSES` empty) until the benchmark evidence is
-  accepted. Phases 2–5 of the issue (supervision, risk, context, test selection) are
+  accepted. Phases 2–5 of the issue (supervision, risk, context, test selection) are tracked in #333 as
   follow-ups.
 
 ## Validation

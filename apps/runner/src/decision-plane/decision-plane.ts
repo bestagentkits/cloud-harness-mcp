@@ -7,6 +7,7 @@ import {
   type DecisionRequest,
   type ImplementedDecisionPurpose
 } from '@cloud-harness/contracts';
+import { redactSecrets } from '../typesafe-skill-suggester.js';
 import { DecisionMetrics, type DecisionMetricsSnapshot } from './decision-metrics.js';
 
 /** The bounds a human reviews in one place: they decide how long and how often a decision may run. */
@@ -38,6 +39,13 @@ export type DecisionCallContext = {
   signal: AbortSignal;
   /** Extra values to redact for this call, such as the secrets of the workspace a failure came from. */
   secrets?: () => Record<string, string>;
+};
+
+export type DecisionEvaluateOptions = {
+  /** Extra values to redact for this call. */
+  secrets?: () => Record<string, string>;
+  /** The caller's own cancellation. Aborting it aborts the provider call and answers `cancelled`. */
+  signal?: AbortSignal;
 };
 
 export type DecisionOutcome =
@@ -75,6 +83,11 @@ export type DecisionPlaneOptions = {
   purposes: readonly ImplementedDecisionPurpose[];
   /** Resolves the owner's provider, or undefined when the owner has none configured. */
   providerFor: (ownerId: string) => DecisionProvider | undefined;
+  /**
+   * Values the plane itself must never send for this owner, such as its own provider key and model
+   * provider credentials. Callers add their own per-call secrets on top.
+   */
+  secretsFor?: (ownerId: string) => Record<string, string>;
   /** Best-effort audit sink. A failing sink never fails a decision. */
   record?: (ownerId: string, trace: DecisionTrace) => void;
   now?: () => number;
@@ -91,6 +104,7 @@ export type DecisionPlaneOptions = {
 export class DecisionPlane {
   readonly metrics = new DecisionMetrics();
   private readonly callTimestamps = new Map<string, number[]>();
+  private readonly rateLimitAudited = new Map<string, number>();
   private readonly now: () => number;
 
   constructor(private readonly options: DecisionPlaneOptions) {
@@ -111,6 +125,18 @@ export class DecisionPlane {
     }
   }
 
+  /**
+   * Fully redacts a text with the owner's plane secrets and the caller's secrets, before the caller
+   * cuts it down. Returns undefined when redaction cannot complete, so the caller sends nothing.
+   */
+  redact(ownerId: string, text: string, secrets?: () => Record<string, string>): string | undefined {
+    const result = redactSecrets({
+      text,
+      secrets: () => ({ ...(this.options.secretsFor?.(ownerId) ?? {}), ...(secrets?.() ?? {}) })
+    });
+    return result.ok ? result.text : undefined;
+  }
+
   status(): { purposes: string[]; metrics: DecisionMetricsSnapshot } {
     return { purposes: [...this.options.purposes], metrics: this.metrics.snapshot() };
   }
@@ -119,7 +145,7 @@ export class DecisionPlane {
     ownerId: string,
     request: DecisionRequest,
     describe: (answers: Record<string, DecisionAnswer>) => { selected: string; confidence: number; policyEffect: string },
-    secrets?: () => Record<string, string>
+    options: DecisionEvaluateOptions = {}
   ): Promise<DecisionOutcome> {
     const decisionId = `dec_${randomUUID().replace(/-/g, '')}`;
     const startedAt = this.now();
@@ -159,9 +185,20 @@ export class DecisionPlane {
     }
     if (!provider) return fallback('not_configured');
     trace.provider = provider.name;
-    if (!this.permitCall(ownerId)) return fallback('rate_limited');
+    if (options.signal?.aborted) return fallback('cancelled');
+    if (!this.permitCall(ownerId)) return this.rateLimited(ownerId, trace, decisionId, startedAt);
 
     const controller = new AbortController();
+    const secrets = this.callSecrets(ownerId, options.secrets);
+    let cancel: (() => void) | undefined;
+    const cancelled = new Promise<ProviderEvaluation>((resolve) => {
+      if (!options.signal) return;
+      cancel = () => {
+        controller.abort();
+        resolve({ ok: false, reason: 'cancelled' });
+      };
+      options.signal.addEventListener('abort', cancel, { once: true });
+    });
     const timeoutMs = this.options.timeoutMs ?? DECISION_CALL_TIMEOUT_MS;
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<ProviderEvaluation>((resolve) => {
@@ -173,11 +210,13 @@ export class DecisionPlane {
     let evaluation: ProviderEvaluation;
     try {
       evaluation = await Promise.race([
-        provider.evaluate(parsed.data, { signal: controller.signal, ...(secrets ? { secrets } : {}) }).catch((): ProviderEvaluation => ({ ok: false, reason: 'connection_error' })),
-        timeout
+        provider.evaluate(parsed.data, { signal: controller.signal, secrets }).catch((): ProviderEvaluation => ({ ok: false, reason: 'connection_error' })),
+        timeout,
+        cancelled
       ]);
     } finally {
       clearTimeout(timer);
+      if (cancel) options.signal?.removeEventListener('abort', cancel);
     }
     trace.inputBytes = evaluation.inputBytes ?? 0;
     if (!evaluation.ok) return fallback(evaluation.reason);
@@ -205,6 +244,29 @@ export class DecisionPlane {
       policyEffect: described.policyEffect
     });
     return { ok: true, decisionId, provider: provider.name, model: evaluation.model, answers: evaluation.answers, latencyMs };
+  }
+
+  /** The plane's own secrets for this owner merged with the caller's, read lazily by the provider. */
+  private callSecrets(ownerId: string, extra?: () => Record<string, string>): () => Record<string, string> {
+    return () => ({ ...(this.options.secretsFor?.(ownerId) ?? {}), ...(extra?.() ?? {}) });
+  }
+
+  /**
+   * A refused call is counted in metrics every time but audited at most once per owner per window, so
+   * a burst against the egress bound cannot turn into an equally large burst of audit rows.
+   */
+  private rateLimited(ownerId: string, trace: DecisionTrace, decisionId: string, startedAt: number): DecisionOutcome {
+    const latencyMs = Math.max(0, this.now() - startedAt);
+    const finished = { ...trace, latencyMs, fallbackReason: 'rate_limited' as const };
+    const now = this.now();
+    const last = this.rateLimitAudited.get(ownerId);
+    if (last === undefined || now - last >= 60_000) {
+      this.rateLimitAudited.set(ownerId, now);
+      this.finish(ownerId, finished);
+    } else {
+      this.metrics.observe(finished);
+    }
+    return { ok: false, decisionId, reason: 'rate_limited', latencyMs };
   }
 
   private finish(ownerId: string, trace: DecisionTrace): void {
@@ -246,6 +308,7 @@ function invalidAnswer(request: DecisionRequest, answers: Record<string, Decisio
     if (answer.kind === 'choice') {
       if (question.kind !== 'choice' || !Object.hasOwn(question.options, answer.value)) return true;
       if (!isProbability(answer.confidence)) return true;
+      if (Object.values(answer.probabilities ?? {}).some((value) => !isProbability(value))) return true;
     } else if (answer.kind === 'boolean') {
       if (!isProbability(answer.probability)) return true;
     } else if (!isProbability(answer.value) || !isProbability(answer.confidence)) {

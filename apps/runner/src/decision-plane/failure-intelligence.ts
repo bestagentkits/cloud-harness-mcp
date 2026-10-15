@@ -4,6 +4,11 @@ import type { DecisionPlane } from './decision-plane.js';
 
 const STDERR_TAIL_CHARS = 1_500;
 const STDOUT_TAIL_CHARS = 600;
+/**
+ * How much raw output is redacted before the tail is cut. It is far wider than the tail so a secret
+ * that straddles the tail boundary is replaced whole, never left as an unrecognisable fragment.
+ */
+const REDACTION_WINDOW_CHARS = 16_000;
 const REPEAT_WINDOW_MS = 15 * 60_000;
 const REPEAT_KEYS_MAX = 1_000;
 
@@ -39,6 +44,8 @@ export type FailureContext = {
   stdout: string;
   networkProfile?: string;
   secrets?: () => Record<string, string>;
+  /** The caller's cancellation, so an abandoned operation does not keep a provider call running. */
+  signal?: AbortSignal;
 };
 
 function tail(text: string, chars: number): string {
@@ -61,12 +68,16 @@ export class FailureIntelligence {
   async diagnose(context: FailureContext): Promise<FailureDiagnosis | undefined> {
     if (!this.plane.available(context.ownerId, 'failure-classification')) return undefined;
     const priorFailures = this.notePriorFailures(`${context.workspaceId}\u0000${context.operation}`);
-    const request = failureDecisionRequest(context, priorFailures);
+    // Redact first, then tail: tailing raw output could cut a secret so its fragment escapes redaction.
+    const stderr = this.plane.redact(context.ownerId, rawWindow(context.stderr), context.secrets);
+    const stdout = this.plane.redact(context.ownerId, rawWindow(context.stdout), context.secrets);
+    if (stderr === undefined || stdout === undefined) return undefined;
+    const request = failureDecisionRequest({ ...context, stderr, stdout }, priorFailures);
     let diagnosis: FailureDiagnosis | undefined;
     const outcome = await this.plane.evaluate(context.ownerId, request, (answers) => {
       diagnosis = diagnosisFromAnswers(answers, priorFailures, '');
       return { selected: diagnosis.failureType, confidence: diagnosis.confidence, policyEffect: 'advisory' };
-    }, context.secrets);
+    }, { ...(context.secrets ? { secrets: context.secrets } : {}), ...(context.signal ? { signal: context.signal } : {}) });
     if (!outcome.ok || !diagnosis) return undefined;
     return { ...diagnosis, decisionId: outcome.decisionId };
   }
@@ -88,7 +99,13 @@ export class FailureIntelligence {
   }
 }
 
-export function failureDecisionRequest(context: Omit<FailureContext, 'ownerId' | 'workspaceId' | 'secrets'>, priorFailures: number): DecisionRequest {
+function rawWindow(text: string): string {
+  const trimmed = text.trim();
+  return trimmed.length <= REDACTION_WINDOW_CHARS ? trimmed : trimmed.slice(trimmed.length - REDACTION_WINDOW_CHARS);
+}
+
+/** Builds the request from output the caller has already redacted in full. */
+export function failureDecisionRequest(context: Omit<FailureContext, 'ownerId' | 'workspaceId' | 'secrets' | 'signal'>, priorFailures: number): DecisionRequest {
   const state = [
     `operation: ${context.operation}`,
     `deterministic classification: ${context.deterministicCode} (no known rule matched)`,

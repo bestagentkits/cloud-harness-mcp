@@ -81,17 +81,45 @@ export function redactPrompt(input: {
 }): { ok: true; outcome: RedactionOutcome } | { ok: false } {
   try {
     const limit = Math.min(input.maxBytes ?? MAX_EGRESS_BYTES, MAX_EGRESS_CEILING);
+    const redacted = redactSecrets({ text: input.prompt, secrets: input.secrets });
+    if (!redacted.ok) return { ok: false };
+    let { text } = redacted;
+    const { count } = redacted;
+
+    const encoded = Buffer.from(text, 'utf8');
+    let truncated = false;
+    if (encoded.byteLength > limit) {
+      const markerBytes = Buffer.byteLength(TRUNCATION_MARKER, 'utf8');
+      text = `${encoded.subarray(0, Math.max(0, limit - markerBytes)).toString('utf8')}${TRUNCATION_MARKER}`;
+      truncated = true;
+    }
+    return { ok: true, outcome: { text, count, truncated } };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Whole-text redaction with no length bound. A caller that keeps only part of a text must redact the
+ * whole of it first: a cut taken before redaction can split a secret so that no rule recognises the
+ * surviving fragment. Like `redactPrompt`, it reports failure instead of throwing.
+ */
+export function redactSecrets(input: {
+  text: string;
+  secrets?: Record<string, string> | (() => Record<string, string>) | undefined;
+}): { ok: true; text: string; count: number } | { ok: false } {
+  try {
     const secrets = typeof input.secrets === 'function' ? input.secrets() : (input.secrets ?? {});
     const redactor = new SecretSnapshotRedactor(secrets);
-    const snapshot = redactor.sanitizeString(input.prompt);
+    const snapshot = redactor.sanitizeString(input.text);
     if (typeof snapshot !== 'string') return { ok: false };
 
     // The snapshot redactor replaces values without reporting how many it replaced, and the count is
     // part of the audit record, so it is measured from the input before egress.
     let count = 0;
     for (const value of Object.values(secrets)) {
-      if (typeof value === 'string' && value.length > 0 && input.prompt.includes(value)) {
-        count += input.prompt.split(value).length - 1;
+      if (typeof value === 'string' && value.length > 0 && input.text.includes(value)) {
+        count += input.text.split(value).length - 1;
       }
     }
 
@@ -102,15 +130,7 @@ export function redactPrompt(input: {
         return rule.placeholder;
       });
     }
-
-    const encoded = Buffer.from(text, 'utf8');
-    let truncated = false;
-    if (encoded.byteLength > limit) {
-      const markerBytes = Buffer.byteLength(TRUNCATION_MARKER, 'utf8');
-      text = `${encoded.subarray(0, Math.max(0, limit - markerBytes)).toString('utf8')}${TRUNCATION_MARKER}`;
-      truncated = true;
-    }
-    return { ok: true, outcome: { text, count, truncated } };
+    return { ok: true, text, count };
   } catch {
     return { ok: false };
   }

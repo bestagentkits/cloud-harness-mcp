@@ -5,6 +5,7 @@ import { percentile } from '../src/decision-plane/decision-metrics.js';
 import { JevDecisionProvider, parseJevAnswers } from '../src/decision-plane/jev-provider.js';
 import { rankFromAnswers, rerankDecisionRequest, rerankTools } from '../src/decision-plane/tool-router.js';
 import { FailureIntelligence, diagnosisFromAnswers, failureDecisionRequest } from '../src/decision-plane/failure-intelligence.js';
+import { createRunnerDecisionPlane } from '../src/decision-plane/runner-decision-plane.js';
 
 const request: DecisionRequest = {
   purpose: 'mcp-routing',
@@ -317,5 +318,113 @@ describe('decision plane configuration', () => {
     expect(RunnerConfigSchema.parse({ ...base, decisionPlanePurposes: ['mcp-routing'] }).decisionPlanePurposes).toEqual(['mcp-routing']);
     expect(RunnerConfigSchema.safeParse({ ...base, decisionPlanePurposes: ['execution-risk'] }).success).toBe(false);
     expect(RunnerConfigSchema.safeParse({ ...base, decisionPlanePurposes: ['mcp-routing', 'mcp-routing'] }).success).toBe(false);
+  });
+});
+
+describe('decision plane review hardening', () => {
+  const failureContext = {
+    ownerId: 'owner', workspaceId: 'ws_hardening', operation: 'github pr_create', deterministicCode: 'GITHUB_ACTION_FAILED',
+    exitCode: 1, stdout: ''
+  };
+  const jevFailureBody = {
+    model: 'jev-1.13.0',
+    answers: {
+      failure_type: { type: 'choice', choice: 'auth', confidence: 0.9, probabilities: { auth: 0.9, unknown: 0.1 } },
+      retry_succeeds: { type: 'noul', noul: 0.1 }, credential_refresh: { type: 'noul', noul: 0.9 },
+      workspace_recreate: { type: 'noul', noul: 0.1 }, agent_needed: { type: 'noul', noul: 0.1 }, human_needed: { type: 'noul', noul: 0.2 }
+    },
+    usage: { input_tokens: 5, output_tokens: 1 }
+  };
+
+  it('redacts output before cutting the tail, so a secret straddling the boundary leaves no fragment', async () => {
+    const secret = 'Q7wZr2Lp9XvK4mTn8BcY1dHs6JfG3aEu';
+    const bodies: string[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return new Response(JSON.stringify(jevFailureBody), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    const provider = new JevDecisionProvider({ apiKey: () => 'k'.repeat(32), fetchImpl });
+    const intelligence = new FailureIntelligence(new DecisionPlane({ purposes: ['failure-classification'], providerFor: () => provider }));
+    // The 1,500-character tail starts 16 characters into the secret.
+    const stderr = `${'a'.repeat(3_000)} ${secret}${'b'.repeat(1_500 - (secret.length - 16))}`;
+    const diagnosis = await intelligence.diagnose({ ...failureContext, stderr, secrets: () => ({ WORKSPACE_TOKEN: secret }) });
+    expect(diagnosis).toMatchObject({ failureType: 'auth' });
+    expect(bodies).toHaveLength(1);
+    for (let start = 0; start + 8 <= secret.length; start += 1) expect(bodies[0]).not.toContain(secret.slice(start, start + 8));
+  });
+
+  it('sends nothing when redaction of the output cannot complete', async () => {
+    const provider = staticProvider(decided({}));
+    const intelligence = new FailureIntelligence(plane(provider).instance);
+    const result = await intelligence.diagnose({ ...failureContext, stderr: 'boom', secrets: () => { throw new Error('snapshot unreadable'); } });
+    expect(result).toBeUndefined();
+    expect(provider.calls).toBe(0);
+  });
+
+  it('redacts the plane-owned secrets from tool descriptions before they are shortened', async () => {
+    const secret = 'Hk3Vn8Qz1Wr5Ty7Ui9Op2As4Df6Gh0Jl';
+    let seen = '';
+    const provider: DecisionProvider = {
+      name: 'capture',
+      async evaluate(sent) { seen = JSON.stringify(sent); return { ok: false, reason: 'upstream_unavailable' }; }
+    };
+    const instance = new DecisionPlane({ purposes: ['mcp-routing'], providerFor: () => provider, secretsFor: () => ({ PROVIDER: secret }) });
+    const description = `${'d'.repeat(230)}${secret}`;
+    await rerankTools(instance, 'owner', { query: 'q', candidates: [{ tool: 'a.one', description }, { tool: 'b.two', description: 'two' }] });
+    for (let start = 0; start + 8 <= secret.length; start += 1) expect(seen).not.toContain(secret.slice(start, start + 8));
+  });
+
+  it('answers not_configured for an owner without a key, with no audit row or metric', async () => {
+    const { instance, traces } = plane(undefined);
+    const result = await rerankTools(instance, 'owner', { query: 'q', candidates: [{ tool: 'a.one', description: '' }, { tool: 'b.two', description: '' }] });
+    expect(result).toMatchObject({ applied: false, reason: 'not_configured' });
+    expect(traces).toHaveLength(0);
+    expect(instance.metrics.snapshot()['mcp-routing']).toBeUndefined();
+  });
+
+  it('audits a rate-limited burst once per window while still counting every refusal', async () => {
+    const { instance, traces } = plane(staticProvider(decided(goodAnswers)));
+    for (let call = 0; call < 120; call += 1) await instance.evaluate('owner', request, describeAnswers);
+    for (let call = 0; call < 5; call += 1) expect(await instance.evaluate('owner', request, describeAnswers)).toMatchObject({ reason: 'rate_limited' });
+    expect(traces.filter((trace) => trace.fallbackReason === 'rate_limited')).toHaveLength(1);
+    expect(instance.metrics.snapshot()['mcp-routing']?.fallbackReasons.rate_limited).toBe(5);
+  });
+
+  it('aborts the provider call and answers cancelled when the caller cancels', async () => {
+    let providerSignal: AbortSignal | undefined;
+    const provider: DecisionProvider = {
+      name: 'slow',
+      evaluate: (_sent, context) => new Promise<ProviderEvaluation>(() => { providerSignal = context.signal; })
+    };
+    const { instance } = plane(provider, { timeoutMs: 60_000 });
+    const controller = new AbortController();
+    const pending = instance.evaluate('owner', request, describeAnswers, { signal: controller.signal });
+    await Promise.resolve();
+    controller.abort();
+    expect(await pending).toMatchObject({ ok: false, reason: 'cancelled' });
+    expect(providerSignal?.aborted).toBe(true);
+    const already = new AbortController();
+    already.abort();
+    expect(await instance.evaluate('owner', request, describeAnswers, { signal: already.signal })).toMatchObject({ reason: 'cancelled' });
+  });
+
+  it('rejects a choice whose probabilities fall outside [0, 1]', async () => {
+    const outOfRange = { ...goodAnswers, pick: { kind: 'choice' as const, value: 'b', confidence: 0.9, probabilities: { a: -0.2, b: 1.7 } } };
+    expect(await plane(staticProvider(decided(outOfRange))).instance.evaluate('owner', request, describeAnswers)).toMatchObject({ reason: 'invalid_answer' });
+  });
+
+  it('counts unusable usage numbers as zero tokens', () => {
+    const parsed = parseJevAnswers({ ...jevFailureBody, answers: { pick: { type: 'choice', choice: 'a', confidence: 1, probabilities: { a: 1, b: 0 } }, clear: { type: 'noul', noul: 0.5 } }, usage: { input_tokens: -4, output_tokens: Number.POSITIVE_INFINITY } }, request);
+    expect(parsed).toMatchObject({ inputTokens: 0, outputTokens: 0 });
+  });
+
+  it('closes every purpose when the operator turns TYPESAFE_EGRESS off', () => {
+    const build = (typesafeEgress: 'on' | 'off') => createRunnerDecisionPlane({
+      purposes: ['mcp-routing', 'failure-classification'], typesafeEgress,
+      database: {} as never, keyring: undefined, modelProfiles: undefined, recordAudit: () => undefined
+    });
+    expect(build('on').status().purposes).toEqual(['mcp-routing', 'failure-classification']);
+    expect(build('off').status().purposes).toEqual([]);
+    expect(build('off').enabled('mcp-routing')).toBe(false);
   });
 });

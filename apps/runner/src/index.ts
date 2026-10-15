@@ -52,8 +52,8 @@ const gatewayControl = config.agents ? new DockerAgentGatewayControl() : undefin
 const modelProfiles = keyring ? new ModelProfileStateRepository(store.database, keyring) : undefined;
 const service = new WorkspaceService(config, store, metadata, githubInstallations, githubBinding, artifacts, { modelProfiles, ...(gatewayControl !== undefined ? { gateway: gatewayControl } : {}) });
 const decisionPlane = createRunnerDecisionPlane({
-  // The instance-wide TypeSafe egress switch closes the Decision Plane too: it shares the key and endpoint.
-  purposes: config.typesafeEgress === 'off' ? [] : config.decisionPlanePurposes,
+  purposes: config.decisionPlanePurposes,
+  typesafeEgress: config.typesafeEgress,
   database: metadata.database,
   keyring,
   modelProfiles,

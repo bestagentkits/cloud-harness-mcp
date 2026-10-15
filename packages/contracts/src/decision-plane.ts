@@ -81,6 +81,7 @@ export const DECISION_FALLBACK_REASONS = [
   'invalid_endpoint',
   'rate_limited',
   'timeout',
+  'cancelled',
   'unauthorized',
   'unprocessable',
   'upstream_unavailable',

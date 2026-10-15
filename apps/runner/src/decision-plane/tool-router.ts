@@ -11,12 +11,15 @@ const CHOICE_WEIGHT = 0.3;
  * Candidates are addressed by position (`t0`, `t1`, ...) on the wire, so a tool name never has to
  * satisfy the question-key charset and a returned key can only map back to a candidate it offered.
  */
-export function rerankDecisionRequest(input: DecisionRerankToolsInput): DecisionRequest {
+export function rerankDecisionRequest(input: DecisionRerankToolsInput, redact: (text: string) => string | undefined = (text) => text): DecisionRequest | undefined {
   const options: Record<string, string> = {};
-  input.candidates.forEach((candidate, index) => {
-    const description = candidate.description.trim().slice(0, DESCRIPTION_CHARS);
+  for (const [index, candidate] of input.candidates.entries()) {
+    // Upstream descriptions are redacted whole before they are shortened, so a cut cannot split a secret.
+    const redacted = redact(candidate.description.trim());
+    if (redacted === undefined) return undefined;
+    const description = redacted.slice(0, DESCRIPTION_CHARS);
     options[`t${index}`] = `${candidate.tool}${description ? `: ${description}` : ''}`.slice(0, 400);
-  });
+  }
   return {
     purpose: 'mcp-routing',
     state: `A user of an MCP tool gateway asked for: ${input.query}`,
@@ -57,9 +60,14 @@ export async function rerankTools(plane: DecisionPlane, ownerId: string, input: 
   const notApplied = (reason: DecisionRerankToolsResult['reason'], decisionId: string | null = null): DecisionRerankToolsResult =>
     ({ applied: false, decisionId, ordering: [], relevance: {}, ...(reason ? { reason } : {}) });
   if (!plane.enabled('mcp-routing')) return notApplied('purpose_disabled');
+  // An owner with no provider key is the common case on every search; it is answered without an
+  // evaluation, so it adds neither an audit row nor a fallback to the metrics.
+  if (!plane.available(ownerId, 'mcp-routing')) return notApplied('not_configured');
+  const request = rerankDecisionRequest(input, (text) => plane.redact(ownerId, text));
+  if (!request) return notApplied('redaction_failed');
 
   let ranked: { ordering: string[]; relevance: Record<string, number> } | undefined;
-  const outcome = await plane.evaluate(ownerId, rerankDecisionRequest(input), (answers) => {
+  const outcome = await plane.evaluate(ownerId, request, (answers) => {
     ranked = rankFromAnswers(input, answers);
     const top = ranked.ordering[0] ?? '';
     const confidence = ranked.relevance[top] ?? 0;

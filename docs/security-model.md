@@ -661,20 +661,27 @@ the owner has stored a TypeSafe integration key.
   retry anything, or grant access. The API rejects an ordering that is not an
   exact permutation of the candidates it sent.
 - **What leaves the runner.** For `mcp-routing`: the search query plus the
-  names and truncated descriptions of the allowed candidate tools. For
-  `failure-classification`: the action name, exit code, network profile, and the
-  tail of the redacted stderr and stdout. Repository contents are never sent.
-- **Redaction fails closed.** The workspace secret snapshot, model-provider
-  credentials, the TypeSafe key, and the transient GitHub action token are
-  removed with known credential patterns before the body is built. If any of
-  those cannot be read, nothing is sent. The key and endpoint allowlist stay in
+  names and shortened descriptions of the allowed candidate tools. For
+  `failure-classification`: the action name, exit code, network profile, and a
+  tail of the stderr and stdout. Repository contents are never sent.
+- **Redaction fails closed, and comes before any cut.** Output and
+  descriptions are redacted whole and only then shortened, so a secret that
+  straddles the cut is replaced, never left as an unrecognised fragment. Every
+  purpose removes the TypeSafe key, model-provider credentials, and known
+  credential patterns (bearer tokens, prefixed API keys, JWTs).
+  `failure-classification` also removes the workspace secret snapshot and the
+  transient GitHub action token. If any of those cannot be read, nothing is
+  sent. The key and endpoint allowlist stay in
   [`apps/runner/src/decision-plane/jev-provider.ts`](../apps/runner/src/decision-plane/jev-provider.ts),
   inside the runner.
 - **Bounded and auditable.** Timeout, body size, and per-owner rate limits are
   owned by
   [`apps/runner/src/decision-plane/decision-plane.ts`](../apps/runner/src/decision-plane/decision-plane.ts).
-  Each evaluation leaves one scalar-only `decision.evaluated` audit row. Prompt
-  text and answers are not stored.
+  Each evaluation leaves one scalar-only `decision.evaluated` audit row; a
+  burst refused by the rate limit is audited once per owner per minute and
+  counted in full in the metrics. Prompt text and answers are not stored. The
+  metrics at `GET /api/v1/decision-plane/status` are in-memory, instance-wide
+  aggregates, not per owner, and reset when the runner restarts.
 
 ## Storage and state limits
 

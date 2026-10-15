@@ -30,22 +30,28 @@ export function providerCredentialSecrets(modelProfiles: ModelProfileStateReposi
  */
 export function createRunnerDecisionPlane(input: {
   purposes: readonly ImplementedDecisionPurpose[];
+  /** The instance-wide TypeSafe egress switch. `off` closes every purpose: they share the key and endpoint. */
+  typesafeEgress: 'on' | 'off';
   database: DatabaseSync;
   keyring: SecretKeyring | undefined;
   modelProfiles: ModelProfileStateRepository | undefined;
   recordAudit: (principalId: string, action: string, subjectType: string, subjectId: string, generation: number, details: Record<string, string | number | boolean>) => void;
 }): DecisionPlane {
   const credentials = input.keyring ? new IntegrationCredentialRepository(input.database, input.keyring) : undefined;
+  const purposes = input.typesafeEgress === 'off' ? [] : input.purposes;
+  const providerKey = (ownerId: string) => credentials?.decryptValue(ownerId, 'typesafe') ?? undefined;
   return new DecisionPlane({
-    purposes: input.purposes,
+    purposes,
     providerFor: (ownerId) => {
-      if (input.purposes.length === 0 || !credentials) return undefined;
-      const apiKey = credentials.decryptValue(ownerId, 'typesafe');
+      if (purposes.length === 0) return undefined;
+      const apiKey = providerKey(ownerId);
       if (!apiKey) return undefined;
-      return new JevDecisionProvider({
-        apiKey: () => apiKey,
-        secrets: () => ({ TYPESAFE_API_KEY: apiKey, ...providerCredentialSecrets(input.modelProfiles, ownerId) })
-      });
+      return new JevDecisionProvider({ apiKey: () => apiKey });
+    },
+    // Read on every call and not caught: a failing read makes redaction fail closed.
+    secretsFor: (ownerId) => {
+      const apiKey = providerKey(ownerId);
+      return { ...(apiKey ? { TYPESAFE_API_KEY: apiKey } : {}), ...providerCredentialSecrets(input.modelProfiles, ownerId) };
     },
     record: (ownerId, trace: DecisionTrace) => {
       input.recordAudit(ownerId, 'decision.evaluated', 'decision', trace.decisionId, 0, {

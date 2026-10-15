@@ -154,7 +154,12 @@ export function parseJevAnswers(json: unknown, request: DecisionRequest):
   return {
     model: typeof record.model === 'string' ? record.model.slice(0, 64) : TYPESAFE_DEFAULT_MODEL,
     answers,
-    inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
-    outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0
+    inputTokens: tokenCount(usage.input_tokens),
+    outputTokens: tokenCount(usage.output_tokens)
   };
+}
+
+/** Usage is reported by the provider; anything but a finite non-negative integer counts as zero. */
+function tokenCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
