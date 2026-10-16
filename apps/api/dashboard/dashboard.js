@@ -3682,7 +3682,9 @@ export function initializeDashboard() {
   /** Renew, recover, finalize, and close, each with pending state and live feedback. */
   function bindCockpitActions(item) {
     const id = item.workspaceId;
-    document.querySelector('#renew-workspace-lease')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Renewing…', () => api(`/workspaces/${encodeURIComponent(id)}/lease-renew`, { method: 'POST', body: requestBody({}) }), 'Workspace lease renewed.'));
+    document.querySelector('#renew-workspace-lease')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Renewing…', () => api(`/workspaces/${encodeURIComponent(id)}/lease-renew`, { method: 'POST', body: requestBody({}) }), (result) => result?.data?.leaseCapped === true
+      ? 'Lease renewed only until the maximum workspace lifetime; the workspace still expires then.'
+      : 'Workspace lease renewed.'));
     document.querySelector('#recover-workspace')?.addEventListener('click', (event) => void cockpitAction(event.currentTarget, 'Recovering…', () => api(`/workspaces/${encodeURIComponent(id)}/recover`, { method: 'POST', body: requestBody({ mode: 'resume' }) }), 'Workspace recovery requested.'));
     const form = document.querySelector('#finalize-workspace-form');
     form?.addEventListener('submit', (event) => {
@@ -3705,8 +3707,8 @@ export function initializeDashboard() {
     const original = button.textContent;
     button.disabled = true; button.textContent = pendingLabel;
     try {
-      await action();
-      announce(successMessage);
+      const result = await action();
+      announce(typeof successMessage === 'function' ? successMessage(result) : successMessage);
       const id = location.pathname.match(/^\/dashboard\/workspaces\/(ws_[A-Za-z0-9_-]{20,80})/)?.[1];
       if (id) await loadWorkspace(id, 'summary');
     } catch (error) { showError(error); }

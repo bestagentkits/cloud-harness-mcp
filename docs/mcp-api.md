@@ -729,7 +729,11 @@ ChatGPT subscription (see
     safety escape hatch even if the hard wall-clock deadline was reached.
   - **`workspace_lease_renew`:** Explicitly extends the idle lease of an `ACTIVE` or
     `EXPIRED_RECOVERABLE` workspace (clamped to the maximum `hardExpiresAt` limit),
-    reactivating the executor container if previously reaped.
+    reactivating the executor container if previously reaped. Every successful
+    renewal returns `leaseCapped`; when the requested extension would pass
+    `hardExpiresAt`, it is `true`, the result adds `requestedExpiresAt` and a
+    `leaseWarnings` entry, and the message says the lease ends at the hard
+    deadline (or was not extended at all).
   - **Long routines:** renewal extends only the idle lease and never passes
     `hardExpiresAt`, which the instance wall TTL (Dashboard override or
     `WORKSPACE_WALL_TTL_SECONDS`) sets when the workspace opens (shipped default

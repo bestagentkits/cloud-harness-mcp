@@ -27,7 +27,7 @@ Tools for opening, inspecting, listing, secrets discovery, and closing isolated 
 
 **Open workspace**
 
-Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace.
+Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace. The result hardExpiresAt is a fixed deadline set by the instance maximum workspace lifetime that no renewal or activity extends.
 
 **Attributes:** `idempotent` · <span class="badge-openworld">openWorld</span>
 
@@ -118,7 +118,7 @@ Set the caller preferred active workspace when multiple workspaces exist.
 
 **Renew workspace lease**
 
-Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace.
+Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace. Renewal never passes hardExpiresAt; when the requested extension would pass it, the result sets leaseCapped: true with requestedExpiresAt and a leaseWarnings entry.
 
 **Attributes:** `idempotent`
 

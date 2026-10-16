@@ -184,6 +184,10 @@ Explicitly renew the active workspace idle lease or reactivate a recoverable exp
 
 - Optional: `workspaceId`, `extensionSeconds` (60–86,400).
 - Returns refreshed lease metadata with remaining lease time.
+- Never extends past `hardExpiresAt`. A renewal the deadline caps still returns
+  `ok: true` but sets `leaseCapped: true`, `requestedExpiresAt`, and a
+  `leaseWarnings` entry; check `leaseCapped` before a long step and plan to
+  push, finalize, or open a fresh workspace before `hardExpiresAt`.
 
 <!-- cloudharness-example:workspace_lease_renew
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa","extensionSeconds":3600}

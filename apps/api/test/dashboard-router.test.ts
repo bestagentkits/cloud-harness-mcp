@@ -263,7 +263,7 @@ describe('dashboard BFF', () => {
     const fixtures: Record<DashboardResponseOperation, unknown> = {
       workspace_list: { workspaces: [{ workspaceId, repositoryUrl: 'https://github.com/example/project.git', status: 'ACTIVE', ...hostile }], ...hostile },
       workspace_status: { workspaceId, status: 'ACTIVE', ...hostile },
-      workspace_detail: { workspaceId, status: 'ACTIVE', generation: 3, canRenewLease: true, leaseState: 'WARNING', availableActions: ['workspace_lease_renew', 'workspace_close', 'workspace_context', 'workspace_finalize'], ...hostile },
+      workspace_detail: { workspaceId, status: 'ACTIVE', generation: 3, canRenewLease: true, leaseCapped: true, leaseState: 'WARNING', availableActions: ['workspace_lease_renew', 'workspace_close', 'workspace_context', 'workspace_finalize'], ...hostile },
       workspace_close: { workspaceId, status: 'CLOSED', generation: 4, ...hostile },
       files_list: { path: '.', entries: [{ name: 'README.md', type: 'file', ...hostile }], ...hostile },
       files_read: { path: 'README.md', content: 'safe', sha256: 'a'.repeat(64), bytes: 4, ...hostile },
@@ -286,6 +286,7 @@ describe('dashboard BFF', () => {
       status: 'ACTIVE',
       version: 3,
       canRenewLease: true,
+      leaseCapped: true,
       leaseState: 'WARNING',
       availableActions: ['workspace_lease_renew', 'workspace_close', 'workspace_context', 'workspace_finalize']
     });

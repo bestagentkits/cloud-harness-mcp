@@ -1184,12 +1184,12 @@ const titles: Record<RunnerOperation, string> = {
 };
 
 const descriptions: Record<RunnerOperation, string> = {
-  workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace.',
+  workspace_open: 'Clone an approved HTTPS repository and start an owner-bound, TTL-limited coding workspace. The result hardExpiresAt is a fixed deadline set by the instance maximum workspace lifetime that no renewal or activity extends.',
   workspace_list: 'List owner-visible workspace records with bounded cursor pagination.',
   workspace_status: 'Read the lifecycle state and metadata for one workspace.',
   workspace_capabilities: 'Inspect workspace and repository authorization capabilities (including issue and pull request operations mapped to github_action) without modifying state or minting tokens.',
   workspace_close: 'Stop a workspace executor and permanently remove all workspace files, including unpushed commits.',
-  workspace_lease_renew: 'Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace.',
+  workspace_lease_renew: 'Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace. Renewal never passes hardExpiresAt; when the requested extension would pass it, the result sets leaseCapped: true with requestedExpiresAt and a leaseWarnings entry.',
   workspace_recover: 'Recover a recoverable expired workspace to active state, or inspect, patch, or export unpushed work.',
   workspace_context: 'Read the active workspace ID, branch, lease time, Git identity, and repository overview.',
   workspace_set_active: 'Set the caller preferred active workspace when multiple workspaces exist.',

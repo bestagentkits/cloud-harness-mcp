@@ -461,7 +461,7 @@ export class LocalWorkspaceBackend implements OperationBackend {
       return {
         ok: true,
         message: 'Local workspace lease is permanent',
-        data: this.getPublicRecord(),
+        data: { ...this.getPublicRecord(), leaseCapped: false },
         truncated: false
       };
     }

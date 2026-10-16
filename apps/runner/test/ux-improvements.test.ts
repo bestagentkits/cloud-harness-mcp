@@ -139,6 +139,54 @@ describe('UX Improvements and Feature Enhancements', () => {
     expect(touched.expiresAt).toBeLessThanOrEqual(renewed.hardExpiresAt);
   });
 
+  it('reports a renewal that the hard deadline caps instead of a plain success', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-lease-cap-'));
+    temporaryDirectories.push(directory);
+    const jobsRoot = join(directory, 'jobs');
+    mkdirSync(jobsRoot, { recursive: true });
+    const config = {
+      jobsRoot,
+      stateDb: join(directory, 'state.db'),
+      idleTtlSeconds: 300,
+      wallTtlSeconds: 900,
+      workspaceIdleTimeoutSeconds: 300,
+      maxOutputBytes: 262144,
+      maxWorkspaceBytes: 104857600,
+      minFreeBytes: 1048576
+    } as RunnerConfig;
+
+    const store = new StateStore(config.stateDb);
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner-1' });
+    const now = Date.now();
+    const hardExpiresAt = now + 840_000;
+    const ws = createWorkspaceRecord(ownerId, { expiresAt: now + 240_000, hardExpiresAt });
+    store.create(ws);
+    const service = new WorkspaceService(config, store);
+
+    const first = await service.execute(ownerId, 'workspace_lease_renew', { workspaceId: ws.id, extensionSeconds: 3600 });
+    expect(first.ok).toBe(true);
+    expect(first.message).toContain('only until the hard deadline');
+    const firstData = first.data as Record<string, unknown>;
+    expect(firstData.leaseCapped).toBe(true);
+    expect(firstData.expiresAt).toBe(new Date(hardExpiresAt).toISOString());
+    expect(Date.parse(firstData.requestedExpiresAt as string)).toBeGreaterThan(hardExpiresAt);
+    expect((firstData.leaseWarnings as string[]).some((warning) => warning.includes('past the hard deadline'))).toBe(true);
+
+    // A second renewal cannot move the lease at all, and says so.
+    const second = await service.execute(ownerId, 'workspace_lease_renew', { workspaceId: ws.id, extensionSeconds: 3600 });
+    expect(second.ok).toBe(true);
+    expect(second.message).toContain('Workspace lease not extended');
+    const secondData = second.data as Record<string, unknown>;
+    expect(secondData.leaseCapped).toBe(true);
+    expect(secondData.expiresAt).toBe(new Date(hardExpiresAt).toISOString());
+
+    // A renewal that fits before the deadline stays a plain success.
+    const fits = await service.execute(ownerId, 'workspace_lease_renew', { workspaceId: ws.id, extensionSeconds: 60 });
+    expect(fits.message).toBe('Workspace lease renewed');
+    expect((fits.data as Record<string, unknown>).leaseCapped).toBe(false);
+  });
+
   it('Issue #92: resolves implicit active workspace when workspaceId is omitted', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'cloud-harness-ux-implicit-ws-'));
     temporaryDirectories.push(directory);
