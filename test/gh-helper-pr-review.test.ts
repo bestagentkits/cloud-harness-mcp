@@ -97,6 +97,31 @@ describe('gh-helper pull request review lifecycle', () => {
     expect(run(['pr_merge', '12', 'ff']).stderr).toContain('Merge method must be');
   });
 
+  it('reads the merged state over GraphQL, never through a gh pr view field allowlist', () => {
+    const rejectView = 'case "$1 $2" in "pr view") echo \'Unknown JSON field: "isInMergeQueue"\' >&2; exit 1;; esac';
+    const result = run(['pr_merge', '12', 'squash', '', '', 'cafebabe'], `${rejectView}\ncase "$*" in *isInMergeQueue*) echo '{"number":12,"state":"MERGED"}';; esac`);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('"state":"MERGED"');
+    expect(result.calls).toHaveLength(2);
+    expect(result.calls[1]!.slice(0, 2)).toEqual(['api', 'graphql']);
+    expect(result.calls[1]).toEqual(expect.arrayContaining(['owner=acme', 'repo=widgets', 'number=12']));
+    expect(result.calls.some((call) => call[0] === 'pr' && call[1] === 'view')).toBe(false);
+  });
+
+  it('falls back to the REST pull request when GraphQL lacks the merge-queue field', () => {
+    const result = run(['pr_merge', '12', 'squash'], 'case "$1 $2" in "api graphql") echo "Field \'isInMergeQueue\' doesn\'t exist" >&2; exit 1;; "api repos/{owner}/{repo}/pulls/12") echo \'{"number":12,"state":"MERGED","merged":true}\';; esac');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('"merged":true');
+    expect(result.calls[2]!.slice(0, 2)).toEqual(['api', 'repos/{owner}/{repo}/pulls/12']);
+  });
+
+  it('reports a completed merge with a warning when every status lookup fails', () => {
+    const result = run(['pr_merge', '12', 'squash'], 'case "$1" in api) echo "HTTP 502" >&2; exit 1;; esac');
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ number: 12, warning: 'pr_merge succeeded but the pull request status lookup failed; read the state with pr_view' });
+    expect(result.stderr).toBe('');
+  });
+
   it('enables auto-merge only while checks or approvals are still pending', () => {
     const pending = run(['pr_auto_merge_enable', '12', 'squash'], 'case "$*" in *mergeStateStatus*) echo BLOCKED;; esac');
     expect(pending.status).toBe(0);

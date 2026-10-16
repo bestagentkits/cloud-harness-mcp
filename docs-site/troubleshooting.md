@@ -135,6 +135,7 @@ A `403` from the helper is never retried, because the operation may already have
 - `GITHUB_MERGE_BLOCKED`: required checks, required approvals, branch protection, or a moved head blocks the merge. Check `mergeStateStatus` and `reviewDecision` from `pr_view`; use `pr_auto_merge_enable` to merge once the requirements pass.
 - `GITHUB_MERGE_CONFLICT`: update the PR branch and resolve the conflict, then retry.
 - `GITHUB_AUTO_MERGE_UNAVAILABLE`: the repository does not allow auto-merge, or the PR is already mergeable (merge it directly).
+- A successful `pr_merge` result that carries a `warning`: the merge went through, but the harness could not read the pull request state afterwards. Do not retry the merge; read `pr_view` to get the merge commit.
 
 ### 12. `LIMIT_EXCEEDED: active workspace limit reached` on `workspace_open`
 **Cause:** The principal already holds `MAX_ACTIVE_WORKSPACES_PER_OWNER` counted workspaces (`CREATING`, `ACTIVE`, `NETWORK_QUARANTINED`). A record in `REAPING` is in flight to teardown and holds no slot. Multiple concurrent workspaces are supported by design, so this is a quota rather than a harness limitation.
