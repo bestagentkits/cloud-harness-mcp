@@ -24,7 +24,7 @@ const GITHUB_ACTION_PERMISSIONS: Record<string, GitHubActionPermissions> = {
   issue_view: { scope: 'issues', write: false, optionalScope: 'pull_requests' },
   issue_create: { scope: 'issues', write: true },
   issue_comment: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
-  issue_comment_update: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
+  issue_comment_update: { scope: 'issues', write: true },
   issue_update: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
   issue_publish: { scope: 'issues', write: true, optionalScope: 'pull_requests' },
   label_create: { scope: 'issues', write: true },

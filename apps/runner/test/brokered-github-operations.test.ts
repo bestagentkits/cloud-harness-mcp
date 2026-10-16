@@ -931,4 +931,21 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     expect(result.error).toMatchObject({ code: 'GITHUB_PERMISSION_MISSING' });
     expect(result.error!.message).not.toContain('most likely names a pull request');
   });
+  it('keeps the generic remedy for a permission refusal that is not a pull request lookup', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issues-only-token', { issues: 'write', contents: 'read' }));
+    docker.ghResult = { stdout: '', stderr: 'HTTP 403: Resource protected by organization SAML enforcement.\n', exitCode: 1, truncated: false };
+
+    const result = await service.execute(principalSelector, 'github_action', {
+      workspaceId,
+      action: 'issue_comment',
+      issueNumber: 7,
+      body: 'hello'
+    });
+
+    expect(result.error).toMatchObject({ code: 'GITHUB_PERMISSION_MISSING' });
+    expect(result.error!.message).not.toContain('most likely names a pull request');
+    expect(result.error!.message).toContain('GH_TOKEN');
+  });
 });

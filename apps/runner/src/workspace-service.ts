@@ -2651,7 +2651,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       const optionalLevel = isWrite ? 'write' : 'read';
       const optionalGranted = optionalScope !== undefined
         && (appPermissions?.[optionalScope] === 'write' || appPermissions?.[optionalScope] === optionalLevel);
-      if (classified.code === 'GITHUB_PERMISSION_MISSING' && optionalScope && credentialSource === 'app' && !optionalGranted) {
+      if (classified.code === 'GITHUB_PERMISSION_MISSING' && optionalScope && credentialSource === 'app' && !optionalGranted
+        && /Resource not accessible by integration/i.test(`${result.stderr}\n${result.stdout}`)) {
         // The App token holds the action's own scope, so a refusal here means the number names a
         // pull request the installation cannot reach: say which permission that is, not a generic hint.
         const hint = `GitHub ${action} was refused: the number most likely names a pull request, and this GitHub App installation does not grant ${optionalScope}:${optionalLevel}, which an issue action on a pull request needs. Use the matching pr_* action (pr_view, pr_comment), or add the Pull requests permission to the GitHub App and approve the installation change.`;

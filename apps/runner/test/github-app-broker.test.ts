@@ -207,6 +207,7 @@ describe('GitHub App broker', () => {
   it.each([
     ['issue_list', 'issues', false],
     ['issue_create', 'issues', true],
+    ['issue_comment_update', 'issues', true],
     ['label_create', 'issues', true],
     ['pr_list', 'pull_requests', false],
     ['pr_view', 'pull_requests', false],
@@ -231,7 +232,6 @@ describe('GitHub App broker', () => {
   it.each([
     ['issue_view', false],
     ['issue_comment', true],
-    ['issue_comment_update', true],
     ['issue_update', true],
     ['issue_publish', true],
     ['issue_labels_add', true],
