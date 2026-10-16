@@ -97,26 +97,39 @@ describe('gh-helper pull request review lifecycle', () => {
     expect(run(['pr_merge', '12', 'ff']).stderr).toContain('Merge method must be');
   });
 
+  /** Answers like real gh: the canned API body goes through the helper's own --jq filter. */
+  const applyJq = (payload: string) => `jqf=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && jqf="$a"; prev="$a"; done; printf '%s' '${payload}' | jq -c "$jqf"`;
+
   it('reads the merged state over GraphQL, never through a gh pr view field allowlist', () => {
     const rejectView = 'case "$1 $2" in "pr view") echo \'Unknown JSON field: "isInMergeQueue"\' >&2; exit 1;; esac';
-    const result = run(['pr_merge', '12', 'squash', '', '', 'cafebabe'], `${rejectView}\ncase "$*" in *isInMergeQueue*) echo '{"number":12,"state":"MERGED"}';; esac`);
+    const graphql = JSON.stringify({ data: { repository: { pullRequest: { number: 12, state: 'MERGED', mergedAt: '2026-10-16T08:24:44Z', mergeCommit: { oid: 'abc123' }, autoMergeRequest: null, isInMergeQueue: false, url: 'https://github.com/acme/widgets/pull/12' } } } });
+    const result = run(['pr_merge', '12', 'squash', '', '', 'cafebabe'], `${rejectView}\ncase "$1 $2" in "api graphql") ${applyJq(graphql)};; esac`);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('"state":"MERGED"');
+    expect(JSON.parse(result.stdout)).toEqual({ number: 12, state: 'MERGED', merged: true, mergedAt: '2026-10-16T08:24:44Z', mergeCommit: { oid: 'abc123' }, autoMergeRequest: null, isInMergeQueue: false, url: 'https://github.com/acme/widgets/pull/12' });
     expect(result.calls).toHaveLength(2);
     expect(result.calls[1]!.slice(0, 2)).toEqual(['api', 'graphql']);
     expect(result.calls[1]).toEqual(expect.arrayContaining(['owner=acme', 'repo=widgets', 'number=12']));
+    expect(result.calls[1]!.find((part) => part.startsWith('query='))).toContain('isInMergeQueue');
     expect(result.calls.some((call) => call[0] === 'pr' && call[1] === 'view')).toBe(false);
   });
 
   it('falls back to the REST pull request when GraphQL lacks the merge-queue field', () => {
-    const result = run(['pr_merge', '12', 'squash'], 'case "$1 $2" in "api graphql") echo "Field \'isInMergeQueue\' doesn\'t exist" >&2; exit 1;; "api repos/{owner}/{repo}/pulls/12") echo \'{"number":12,"state":"MERGED","merged":true}\';; esac');
+    const rest = JSON.stringify({ number: 12, state: 'closed', merged: true, merged_at: '2026-10-16T08:24:44Z', merge_commit_sha: 'abc123', auto_merge: { merge_method: 'squash', enabled_by: { login: 'octocat' } }, html_url: 'https://github.com/acme/widgets/pull/12' });
+    const result = run(['pr_merge', '12', 'squash'], `case "$1 $2" in "api graphql") echo '{"errors":[{"message":"Field isInMergeQueue does not exist"}]}'; echo "gh: Field isInMergeQueue does not exist" >&2; exit 1;; "api repos/{owner}/{repo}/pulls/12") ${applyJq(rest)};; esac`);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('"merged":true');
+    expect(JSON.parse(result.stdout)).toEqual({ number: 12, state: 'MERGED', merged: true, mergedAt: '2026-10-16T08:24:44Z', mergeCommit: { oid: 'abc123' }, autoMergeRequest: { mergeMethod: 'SQUASH', enabledBy: { login: 'octocat' } }, url: 'https://github.com/acme/widgets/pull/12', warning: 'Merge-queue state could not be read' });
     expect(result.calls[2]!.slice(0, 2)).toEqual(['api', 'repos/{owner}/{repo}/pulls/12']);
   });
 
+  it('never reports a merge commit for an unmerged pull request read over REST', () => {
+    const rest = JSON.stringify({ number: 12, state: 'open', merged: false, merged_at: null, merge_commit_sha: 'testmerge', auto_merge: null, html_url: 'u' });
+    const result = run(['pr_auto_merge_enable', '12', 'squash'], `case "$*" in *mergeStateStatus*) echo BLOCKED; exit 0;; esac\ncase "$1 $2" in "api graphql") echo '{"errors":[]}'; exit 1;; "api repos/{owner}/{repo}/pulls/12") ${applyJq(rest)};; esac`);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ state: 'OPEN', merged: false, mergeCommit: null, autoMergeRequest: null });
+  });
+
   it('reports a completed merge with a warning when every status lookup fails', () => {
-    const result = run(['pr_merge', '12', 'squash'], 'case "$1" in api) echo "HTTP 502" >&2; exit 1;; esac');
+    const result = run(['pr_merge', '12', 'squash'], 'case "$1" in api) echo \'{"message":"Bad Gateway"}\'; echo "gh: HTTP 502" >&2; exit 1;; esac');
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ number: 12, warning: 'pr_merge succeeded but the pull request status lookup failed; read the state with pr_view' });
     expect(result.stderr).toBe('');

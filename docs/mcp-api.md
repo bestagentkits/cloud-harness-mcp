@@ -564,9 +564,9 @@ ChatGPT subscription (see
   (`merge`, `squash`, or `rebase`, optional commit message and `matchHeadCommit` guard) and
   `pr_auto_merge_enable`/`pr_auto_merge_disable` complete the lifecycle. Merge and auto-merge
   additionally need `contents: write` on the token. After a merge or auto-merge request succeeds, the
-  helper reads the pull request state over GraphQL (REST when the host lacks `isInMergeQueue`);
-  a failed status lookup adds a `warning` to a successful result and never reports the completed
-  merge as `GITHUB_ACTION_FAILED`. `workspace_capabilities` reports each
+  helper reads the pull request state over GraphQL, falling back to REST (without
+  `isInMergeQueue`) when GraphQL fails; a fallback or a failed status lookup adds a `warning` to
+  a successful result and never reports the completed request as `GITHUB_ACTION_FAILED`. `workspace_capabilities` reports each
   capability under `operations` (`pullRequestReview`, `pullRequestReviewComment`,
   `pullRequestReviewThread`, `pullRequestReviewerManage`, `pullRequestReady`,
   `pullRequestMerge`, `pullRequestAutoMerge`) and the authoritative action split under

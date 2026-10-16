@@ -70,7 +70,7 @@ case "$method $path" in
     printf '%s' '{"total_count":2,"jobs":[{"id":1,"name":"lint","status":"completed","conclusion":"success","steps":[{"name":"npm run lint","conclusion":"success"}]},{"id":2,"name":"test","status":"completed","conclusion":"failure","steps":[{"name":"checkout","conclusion":"success"},{"name":"npm test","conclusion":"failure"}]}]}' | respond ;;
   "POST repos/{owner}/{repo}/actions/runs/"*/rerun-failed-jobs) printf '' ;;
   "GET repos/{owner}/{repo}/actions/runs/"*)
-    if [ -n "$STUB_RUN_GET_FAILS" ]; then echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; fi
+    if [ -n "$STUB_RUN_GET_FAILS" ]; then echo '{"message":"Bad Gateway"}'; echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; fi
     printf '{"id":%s,"name":"CI","workflow_id":7,"path":".github/workflows/ci.yml","event":"push","status":"queued","conclusion":null,"head_sha":"%s","head_branch":"main","run_number":12,"run_attempt":2,"html_url":"https://github.com/acme/widgets/actions/runs/%s"}' \
       "$(basename "$path")" "$STUB_HEAD_SHA" "$(basename "$path")" | respond ;;
   "GET repos/{owner}/{repo}/git/ref/heads/merge-lock")
