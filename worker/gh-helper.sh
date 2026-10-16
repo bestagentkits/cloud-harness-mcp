@@ -607,9 +607,9 @@ case "$action" in
       done
     fi
     if [ -n "$add_labels" ]; then
-      if ! gh issue edit "$issue_number" --add-label "$add_labels" >/dev/null 2>&1; then
+      if ! add_output=$(gh issue edit "$issue_number" --add-label "$add_labels" 2>&1); then
         jq -n \
-          --arg error "failed to add labels" \
+          --arg error "failed to add labels: $add_output" \
           --arg step "add_labels" \
           --arg labelsCreated "$labels_created" \
           --argjson issueNumber "$issue_number" \
@@ -632,9 +632,9 @@ case "$action" in
       IFS=',' read -ra RADDR <<< "$remove_labels"
       for rlabel in "${RADDR[@]}"; do
         if echo "$current_labels" | grep -Fxq "$rlabel"; then
-          if ! gh issue edit "$issue_number" --remove-label "$rlabel" >/dev/null 2>&1; then
+          if ! remove_output=$(gh issue edit "$issue_number" --remove-label "$rlabel" 2>&1); then
             jq -n \
-              --arg error "failed to remove label $rlabel" \
+              --arg error "failed to remove label $rlabel: $remove_output" \
               --arg step "remove_labels" \
               --arg failedLabel "$rlabel" \
               --arg labelsCreated "$labels_created" \

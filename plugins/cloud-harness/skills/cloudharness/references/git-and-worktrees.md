@@ -237,6 +237,7 @@ Read-only GitHub access with no approval prompts, sharing `github_action`'s brok
 - History and ref reads mint a `contents: read`-scoped token; other reads mint
   the narrowest scope their action needs, via the same broker as `github_action`.
   Tokens are never exposed to workspace files.
+- `issue_*` accepts a PR number when the App grants Pull requests; if the error says the number most likely names a pull request, use `pr_view` / `pr_comment`.
 
 <!-- cloudharness-example:github_read
 {"workspaceId":"ws_abcdefghijklmnopqrstuvwxyz012345","action":"commit_list","limit":10}

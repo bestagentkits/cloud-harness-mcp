@@ -69,7 +69,10 @@ push paths still work, but a write returns `GITHUB_PERMISSION_MISSING` (GitHub's
 `403 Resource not accessible by integration`) naming the scope to add. GitHub's
 comment and label endpoints accept **either** `Issues: write` **or** `Pull
 requests: write`, so a pull-request action is satisfied by the Pull requests
-permission alone; issue actions need the Issues permission. See GitHub's
+permission alone; issue actions need the Issues permission. An issue action on a
+pull request number (every pull request is also an issue) additionally needs the
+Pull requests permission, which the runner requests when the installation grants
+it. See GitHub's
 [permission guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app).
 
 ### Adding a permission later

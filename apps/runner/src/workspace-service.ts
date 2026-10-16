@@ -2518,7 +2518,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         installations: this.githubInstallations,
         permissionScope,
         requiredPermission: isWrite ? 'write' : 'read',
-        ...(requirement.alsoWrite?.includes('contents') ? { contentsPermission: 'write' as const } : {})
+        ...(requirement.alsoWrite?.includes('contents') ? { contentsPermission: 'write' as const } : {}),
+        ...(requirement.optionalScope ? { optionalScope: requirement.optionalScope } : {})
       });
       appToken = minted?.token;
       appPermissions = minted?.permissions;
@@ -2645,7 +2646,18 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         };
       }
 
-      const classified = classifyGitHubFailure(result.stderr, result.stdout, action);
+      let classified = classifyGitHubFailure(result.stderr, result.stdout, action);
+      const optionalScope = requirement.optionalScope;
+      const optionalLevel = isWrite ? 'write' : 'read';
+      const optionalGranted = optionalScope !== undefined
+        && (appPermissions?.[optionalScope] === 'write' || appPermissions?.[optionalScope] === optionalLevel);
+      if (classified.code === 'GITHUB_PERMISSION_MISSING' && optionalScope && credentialSource === 'app' && !optionalGranted
+        && /Resource not accessible by integration/i.test(`${result.stderr}\n${result.stdout}`)) {
+        // The App token holds the action's own scope, so a refusal here means the number names a
+        // pull request the installation cannot reach: say which permission that is, not a generic hint.
+        const hint = `GitHub ${action} was refused: the number most likely names a pull request, and this GitHub App installation does not grant ${optionalScope}:${optionalLevel}, which an issue action on a pull request needs. Use the matching pr_* action (pr_view, pr_comment), or add the Pull requests permission to the GitHub App and approve the installation change.`;
+        classified = { ...classified, message: `${hint} Detail: ${result.stderr || result.stdout}`.trim().slice(0, 2_000) };
+      }
       // Known errors stay authoritative; only the generic fallback gains an advisory diagnosis, and
       // the deterministic code and retryability are returned unchanged either way.
       const diagnosis = classified.code === 'GITHUB_ACTION_FAILED'
