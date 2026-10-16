@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -101,7 +101,22 @@ describe.skipIf(process.platform === 'win32')('terminal session scripts', () => 
     // A retried cleanup stays successful and still blocks the shell.
     expect(await killSession('term_raced')).toBe(0);
     const retry = startShell('term_raced');
-    expect(await settlesWithin(retry.exited, 3_000)).not.toBe('pending');
+    const retryCode = await settlesWithin(retry.exited, 3_000);
+    expect(retryCode).not.toBe('pending');
+    expect(retryCode).not.toBe(0);
+  });
+
+  it('treats a claim whose marker was never written as closed', async () => {
+    // The noclobber claim creates the file before writing to it, so a full /tmp can leave it empty.
+    mkdirSync(pidDir, { recursive: true });
+    writeFileSync(join(pidDir, 'term_empty.pid'), '');
+
+    expect(await killSession('term_empty')).toBe(0);
+    expect(await killSession('term_empty')).toBe(0);
+    const shell = startShell('term_empty');
+    const code = await settlesWithin(shell.exited, 3_000);
+    expect(code).not.toBe('pending');
+    expect(code).not.toBe(0);
   });
 
   it('does not let a stale close of one terminal block another', async () => {

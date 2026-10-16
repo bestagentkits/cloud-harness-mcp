@@ -72,14 +72,17 @@ export function terminalCommand(terminalId: string): string[] {
 /**
  * A missing pid file is never proof that no shell exists: the exec can still be starting. The script claims the
  * file with a `closed` marker (noclobber, so it cannot replace a recorded pid) and only that claim counts as
- * clean, because the launcher can no longer publish its pid and so never runs the shell.
+ * clean, because the launcher can no longer publish its pid and so never runs the shell. The launcher only ever
+ * links a complete pid file, so an empty one is a claim whose marker write failed (a full /tmp) and counts as
+ * closed too; otherwise every later close would fail on it.
  */
 export const KILL_SESSION_SCRIPT = [
   'pid_file=$1',
   'mkdir -p -- "${pid_file%/*}" || exit 1',
   'if ! test -e "$pid_file"; then (set -C; printf \'closed\\n\' > "$pid_file") 2>/dev/null && exit 0; fi',
-  'read -r sid < "$pid_file" || exit 1',
-  '[[ $sid == closed ]] && exit 0',
+  'test -r "$pid_file" || exit 1',
+  'read -r sid < "$pid_file"',
+  '[[ -z $sid || $sid == closed ]] && exit 0',
   '[[ $sid =~ ^[0-9]+$ ]] || exit 1',
   'pkill -TERM -s "$sid" 2>/dev/null',
   'for _ in {1..20}; do pgrep -s "$sid" >/dev/null || { rm -f -- "$pid_file"; exit 0; }; sleep 0.05; done',
