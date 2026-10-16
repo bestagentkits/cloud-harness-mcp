@@ -35,6 +35,14 @@ require_workflow() {
   fi
 }
 
+# Prints a best-effort read only when it succeeds. On an API error gh skips --jq and copies the raw
+# error body to stdout, so the output is captured first rather than streamed.
+print_if_ok() {
+  local out
+  out=$("$@" 2>/dev/null) || return 1
+  printf '%s\n' "$out"
+}
+
 action="${1:-}"
 if [ -z "$action" ]; then
   echo "GitHub action required" >&2
@@ -244,7 +252,21 @@ case "$action" in
       echo "Failed to ${action#pr_} pull request $pr_number" >&2
       exit 1
     fi
-    exec gh pr view "$pr_number" --json number,state,mergedAt,mergeCommit,autoMergeRequest,isInMergeQueue,url
+    # The merge already happened, so the status lookup must not turn it into a failure. GraphQL is
+    # resolved by GitHub rather than by the local gh build, unlike `gh pr view --json`, whose field
+    # allowlist lags new fields such as isInMergeQueue. REST covers hosts without that field and GraphQL outages.
+    if print_if_ok gh api graphql \
+      -f owner="${GH_REPO%%/*}" -f repo="${GH_REPO#*/}" -F number="$pr_number" \
+      -f query='query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { number state mergedAt mergeCommit { oid } autoMergeRequest { enabledAt mergeMethod enabledBy { login } } isInMergeQueue url } } }' \
+      --jq '.data.repository.pullRequest | { number, state, merged: (.state == "MERGED"), mergedAt, mergeCommit, autoMergeRequest, isInMergeQueue, url }'; then
+      exit 0
+    fi
+    if print_if_ok gh api "repos/{owner}/{repo}/pulls/$pr_number" \
+      --jq '{ number, state: (if .merged then "MERGED" else (.state | ascii_upcase) end), merged, mergedAt: .merged_at, mergeCommit: (if .merged and .merge_commit_sha then { oid: .merge_commit_sha } else null end), autoMergeRequest: (if .auto_merge then { mergeMethod: (.auto_merge.merge_method | ascii_upcase), enabledBy: { login: .auto_merge.enabled_by.login } } else null end), url: .html_url, warning: "Merge-queue state could not be read" }'; then
+      exit 0
+    fi
+    jq -n --argjson number "$pr_number" --arg action "$action" \
+      '{ number: $number, warning: ($action + " succeeded but the pull request status lookup failed; read the state with pr_view") }'
     ;;
   pr_auto_merge_disable)
     pr_number="${1:-}"
@@ -444,7 +466,7 @@ case "$action" in
     gh api -X POST "repos/{owner}/{repo}/actions/runs/$run_id/rerun-failed-jobs" >/dev/null
     # The rerun has started once the POST succeeds, so a failed follow-up read must not report failure:
     # a retry would POST again and GitHub refuses to re-run a run that is already in progress.
-    if ! gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq '{ id, status, conclusion, runAttempt: .run_attempt, url: .html_url, rerunRequested: true }' 2>/dev/null; then
+    if ! print_if_ok gh api "repos/{owner}/{repo}/actions/runs/$run_id" --jq '{ id, status, conclusion, runAttempt: .run_attempt, url: .html_url, rerunRequested: true }'; then
       jq -n --argjson id "$run_id" '{ id: $id, rerunRequested: true }'
     fi
     ;;
