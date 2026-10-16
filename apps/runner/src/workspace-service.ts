@@ -237,6 +237,36 @@ function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilit
   };
 }
 
+/**
+ * A renewal never passes hardExpiresAt. When the requested extension reaches it, the
+ * result says so (leaseCapped, the requested expiry and a lease warning) so a caller
+ * that renews before a long step learns the workspace will still end at the deadline.
+ */
+function renewedLeaseResult(updated: WorkspaceRecord, previousExpiresAt: number, requestedExpiresAt: number) {
+  const data = publicRecord(updated);
+  if (requestedExpiresAt <= updated.hardExpiresAt) {
+    return { ok: true, message: 'Workspace lease renewed', data: { ...data, leaseCapped: false }, truncated: false };
+  }
+  const deadline = new Date(updated.hardExpiresAt).toISOString();
+  const extended = updated.expiresAt > previousExpiresAt;
+  const message = extended
+    ? `Workspace lease renewed only until the hard deadline ${deadline}; renewal cannot extend past hardExpiresAt`
+    : `Workspace lease not extended: it already ends at the hard deadline ${deadline}, which renewal cannot pass`;
+  const warning = `Requested lease end ${new Date(requestedExpiresAt).toISOString()} is past the hard deadline ${deadline}. `
+    + 'The workspace expires then regardless of renewals: push or finalize work before it, or open a new workspace for later steps.';
+  return {
+    ok: true,
+    message,
+    data: {
+      ...data,
+      leaseCapped: true,
+      requestedExpiresAt: new Date(requestedExpiresAt).toISOString(),
+      leaseWarnings: [...(data.leaseWarnings ?? []), warning]
+    },
+    truncated: false
+  };
+}
+
 function internalWorkspaceDetail(record: WorkspaceRecord) {
   return { ...publicRecord(record), generation: record.generation };
 }
@@ -2952,7 +2982,8 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       }
       try {
         const extSec = (validated.extensionSeconds as number) ?? this.idleTtlSecondsFor(rec);
-        const newExpires = Math.min(rec.hardExpiresAt, now + extSec * 1000);
+        const requestedExpires = now + extSec * 1000;
+        const newExpires = Math.min(rec.hardExpiresAt, requestedExpires);
         let activeRecord = rec;
         if (isRecoverable) {
           activeRecord = await this.ensureActiveExecutor(rec);
@@ -2975,7 +3006,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         if (!updated) {
           throw new HarnessError('CONFLICT', 'workspace lifecycle changed or was reaped during renewal', 409);
         }
-        return { ok: true, message: 'Workspace lease renewed', data: publicRecord(updated), truncated: false };
+        return renewedLeaseResult(updated, rec.expiresAt, requestedExpires);
       } finally {
         if (isRecoverable) {
           this.store.releaseMutationLease(rec.id, rec.generation);
