@@ -54,19 +54,32 @@ export const TERMINAL_PID_DIR = '/tmp/cloud-harness-shells';
 /**
  * The login shell must be the PTY session leader with a recorded pid so `pkill -s` can end the whole session.
  * `bash -i` instead of `bash -l`: Debian's /etc/profile resets PATH and would drop the executor's tool paths.
+ *
+ * The pid is published with `ln`, which fails when the file already exists, so it appears complete or not at
+ * all. A close that lands before the shell has recorded its pid claims the file first (see
+ * `KILL_SESSION_SCRIPT`), and the shell then refuses to start instead of outliving its closed terminal.
  */
 export function terminalCommand(terminalId: string): string[] {
   return [
     '/bin/bash', '-c',
-    `mkdir -p ${TERMINAL_PID_DIR} /tmp/cloud-harness-home && printf '%s\\n' "$$" > ${TERMINAL_PID_DIR}/"$1".pid && exec /bin/bash -i`,
+    `pid_file=${TERMINAL_PID_DIR}/"$1".pid; mkdir -p ${TERMINAL_PID_DIR} /tmp/cloud-harness-home`
+      + ` && printf '%s\\n' "$$" > "$pid_file.$$" && ln "$pid_file.$$" "$pid_file"; recorded=$?; rm -f -- "$pid_file.$$"`
+      + '; ((recorded == 0)) && exec /bin/bash -i',
     'terminal', terminalId
   ];
 }
 
-const KILL_SESSION_SCRIPT = [
+/**
+ * A missing pid file is never proof that no shell exists: the exec can still be starting. The script claims the
+ * file with a `closed` marker (noclobber, so it cannot replace a recorded pid) and only that claim counts as
+ * clean, because the launcher can no longer publish its pid and so never runs the shell.
+ */
+export const KILL_SESSION_SCRIPT = [
   'pid_file=$1',
-  'test -r "$pid_file" || exit 0',
-  'read -r sid < "$pid_file" || exit 0',
+  'mkdir -p -- "${pid_file%/*}" || exit 1',
+  'if ! test -e "$pid_file"; then (set -C; printf \'closed\\n\' > "$pid_file") 2>/dev/null && exit 0; fi',
+  'read -r sid < "$pid_file" || exit 1',
+  '[[ $sid == closed ]] && exit 0',
   '[[ $sid =~ ^[0-9]+$ ]] || exit 1',
   'pkill -TERM -s "$sid" 2>/dev/null',
   'for _ in {1..20}; do pgrep -s "$sid" >/dev/null || { rm -f -- "$pid_file"; exit 0; }; sleep 0.05; done',
