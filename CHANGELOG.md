@@ -1,3 +1,12 @@
+# [0.66.0-beta.11](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.10...v0.66.0-beta.11) (2026-10-16)
+
+
+### Bug Fixes
+
+* **github:** let issue actions reach pull request numbers ([#348](https://github.com/bestagentkits/cloud-harness-mcp/issues/348)) ([31c8824](https://github.com/bestagentkits/cloud-harness-mcp/commit/31c8824e166eb54e832038b3e6432335bf9b4eac)), closes [#343](https://github.com/bestagentkits/cloud-harness-mcp/issues/343) [#346](https://github.com/bestagentkits/cloud-harness-mcp/issues/346)
+* **github:** report pr_merge success when the post-merge lookup fails ([#345](https://github.com/bestagentkits/cloud-harness-mcp/issues/345)) ([669a31f](https://github.com/bestagentkits/cloud-harness-mcp/commit/669a31fff5717a41b9dd19f72e8f3cd874ea0e70)), closes [#342](https://github.com/bestagentkits/cloud-harness-mcp/issues/342) [#344](https://github.com/bestagentkits/cloud-harness-mcp/issues/344)
+* **runner:** stop a terminal closed before its shell starts from leaking ([#349](https://github.com/bestagentkits/cloud-harness-mcp/issues/349)) ([55f4983](https://github.com/bestagentkits/cloud-harness-mcp/commit/55f4983d65d9c37ad2e61d6265fec5857a199a0c)), closes [#347](https://github.com/bestagentkits/cloud-harness-mcp/issues/347)
+
 # [0.66.0-beta.10](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.9...v0.66.0-beta.10) (2026-10-15)
 
 
