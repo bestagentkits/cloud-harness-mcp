@@ -875,4 +875,60 @@ describe('Brokered GitHub Issues and Pull Request Operations', () => {
     })).rejects.toMatchObject({ code: 'UNAVAILABLE' });
     expect(docker.runDocker.mock.calls.find(([args]) => args.includes('/opt/harness/gh-helper.sh'))).toBeUndefined();
   });
+  it('asks for pull_requests beside issues so an issue action reaches a pull request number', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issue-and-pr-token', { issues: 'write', pull_requests: 'write' }));
+    docker.ghResult = { stdout: 'https://github.com/bestagentkits/cloud-harness-mcp/pull/1379#issuecomment-1\n', stderr: '', exitCode: 0, truncated: false };
+
+    const result = await service.execute(principalSelector, 'github_action', {
+      workspaceId,
+      action: 'issue_comment',
+      issueNumber: 1379,
+      body: 'Looks good'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(broker.mintPrincipalRepositoryScopedToken).toHaveBeenCalledWith(expect.objectContaining({
+      permissionScope: 'issues',
+      requiredPermission: 'write',
+      optionalScope: 'pull_requests'
+    }));
+  });
+
+  it('names the pull request permission when an issue action on a pull request number is refused', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issues-only-token', { issues: 'read', contents: 'read' }));
+    docker.ghResult = { stdout: '', stderr: 'GraphQL: Resource not accessible by integration (repository.issue)\n', exitCode: 1, truncated: false };
+
+    const result = await service.execute(principalSelector, 'github_read', {
+      workspaceId,
+      action: 'issue_view',
+      issueNumber: 1379
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({ code: 'GITHUB_PERMISSION_MISSING', retryable: false });
+    expect(result.error!.message).toContain('pull_requests:read');
+    expect(result.error!.message).toContain('pr_view');
+    expect(result.error!.message).toContain('Resource not accessible by integration');
+    expect(JSON.stringify(result)).not.toContain('issues-only-token');
+  });
+
+  it('keeps the generic permission remedy when the token already reaches pull requests', async () => {
+    const { config, store, installations, workspaceId, principalSelector } = fixture();
+    const service = new WorkspaceService(config, store, undefined, installations);
+    broker.mintPrincipalRepositoryScopedToken.mockResolvedValueOnce(mintedToken('issue-and-pr-token', { issues: 'read', pull_requests: 'write', contents: 'read' }));
+    docker.ghResult = { stdout: '', stderr: 'GraphQL: Resource not accessible by integration (repository.issue)\n', exitCode: 1, truncated: false };
+
+    const result = await service.execute(principalSelector, 'github_read', {
+      workspaceId,
+      action: 'issue_view',
+      issueNumber: 7
+    });
+
+    expect(result.error).toMatchObject({ code: 'GITHUB_PERMISSION_MISSING' });
+    expect(result.error!.message).not.toContain('most likely names a pull request');
+  });
 });
