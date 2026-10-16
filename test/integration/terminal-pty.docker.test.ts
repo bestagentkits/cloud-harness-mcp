@@ -262,4 +262,23 @@ describe('real PTY terminals in a hardened executor', () => {
     const leftovers = await exec('pgrep', '-c', '-x', 'bash');
     expect(leftovers.stdout.trim()).toBe('0');
   }, 30_000);
+
+  it('leaves no shell behind when a terminal is closed right after it opens', async () => {
+    for (let index = 0; index < 4; index += 1) {
+      const session = await open();
+      const closed = await manager.closeTerminal(owner, workspaceId, session.view.terminalId);
+      expect(closed.status).toBe('closed');
+    }
+    // A launcher that lost to the close exits on its own; it must never become a lasting shell.
+    const deadline = Date.now() + 5_000;
+    let count = '';
+    while (Date.now() < deadline) {
+      count = (await exec('pgrep', '-c', '-x', 'bash')).stdout.trim();
+      if (count === '0') break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(count).toBe('0');
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect((await exec('pgrep', '-c', '-x', 'bash')).stdout.trim()).toBe('0');
+  }, 30_000);
 });
