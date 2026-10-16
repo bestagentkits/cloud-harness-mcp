@@ -110,7 +110,7 @@ result for 24 hours and rejects a changed payload with `CONFLICT`.
 
 `workspace_lease_renew` extends only the idle lease and never passes the
 wall-clock deadline that `WORKSPACE_WALL_TTL_SECONDS` sets (shipped default 15
-minutes); a capped renewal returns `leaseCapped: true`. A train that keeps one workspace for about an hour needs that value
-at 3600 or more; otherwise open a fresh workspace for each phase and keep state
+minutes); a capped renewal returns `leaseCapped: true`. A train that keeps one
+workspace for about an hour needs that value at 3600 or more; otherwise open a fresh workspace for each phase and keep state
 in GitHub (the lock branch, statuses, comments). A `fetchDepth: 1` checkout is
 enough, because brokered GitHub calls do not read local history.

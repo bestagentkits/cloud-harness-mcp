@@ -730,7 +730,7 @@ ChatGPT subscription (see
   - **`workspace_lease_renew`:** Explicitly extends the idle lease of an `ACTIVE` or
     `EXPIRED_RECOVERABLE` workspace (clamped to the maximum `hardExpiresAt` limit),
     reactivating the executor container if previously reaped. Every successful
-    renewal returns `leaseCapped`; when the requested extension reaches
+    renewal returns `leaseCapped`; when the requested extension would pass
     `hardExpiresAt`, it is `true`, the result adds `requestedExpiresAt` and a
     `leaseWarnings` entry, and the message says the lease ends at the hard
     deadline (or was not extended at all).

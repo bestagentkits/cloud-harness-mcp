@@ -118,7 +118,7 @@ Set the caller preferred active workspace when multiple workspaces exist.
 
 **Renew workspace lease**
 
-Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace. Renewal never passes hardExpiresAt; when the requested extension reaches it, the result sets leaseCapped: true with requestedExpiresAt and a leaseWarnings entry.
+Explicitly renew the workspace idle lease duration or reactivate a recoverable expired workspace. Renewal never passes hardExpiresAt; when the requested extension would pass it, the result sets leaseCapped: true with requestedExpiresAt and a leaseWarnings entry.
 
 **Attributes:** `idempotent`
 
