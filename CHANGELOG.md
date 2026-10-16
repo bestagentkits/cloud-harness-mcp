@@ -1,3 +1,10 @@
+# [0.66.0-beta.12](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.11...v0.66.0-beta.12) (2026-10-16)
+
+
+### Bug Fixes
+
+* **runner:** report lease renewals capped by the hard deadline ([#351](https://github.com/bestagentkits/cloud-harness-mcp/issues/351)) ([ad810ae](https://github.com/bestagentkits/cloud-harness-mcp/commit/ad810aefe993135a5c46e545f9b9453c7586cdb7)), closes [#350](https://github.com/bestagentkits/cloud-harness-mcp/issues/350)
+
 # [0.66.0-beta.11](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.10...v0.66.0-beta.11) (2026-10-16)
 
 
