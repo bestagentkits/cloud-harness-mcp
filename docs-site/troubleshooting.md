@@ -114,7 +114,7 @@ bash deploy/scripts/setup-dependency-firewall.sh
 ```
 2. Confirm **Egress readiness** reports `Ready` on the dashboard [Settings](/dashboard/settings) page.
 3. Open the workspace again with a fresh idempotency key. The failed attempt kept its key with a `FAILED` status, and replaying that key returns the failed record without retrying the attestation.
-To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"`.
+To work without egress meanwhile, reset the default to `network-none` on the Settings page or open the workspace with `networkProfile: "network-none"` under a new idempotency key. An omitted profile and an explicit `network-none` are different requests, so reusing the failed open's key with the explicit profile returns `CONFLICT`.
 
 ---
 

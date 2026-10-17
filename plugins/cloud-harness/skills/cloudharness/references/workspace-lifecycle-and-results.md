@@ -90,7 +90,9 @@ parameters after a lost response or an `UNKNOWN_REMOTE_STATE`:
   not issue another mutation.
 
 Changing the operation or its parameters requires a new key; a mismatched reuse
-returns `CONFLICT`.
+returns `CONFLICT`. For `workspace_open`, omitting `networkProfile` and passing
+`network-none` explicitly are different parameters, so a `network-none` retry
+after a failed default-profile open needs its own key.
 
 ## Workspace operations
 
