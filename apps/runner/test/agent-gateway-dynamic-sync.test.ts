@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DockerAgentGatewayControl, GatewayControlRejection, isDefiniteIssueRefusal } from '../src/agent-gateway-control.js';
+import { DockerAgentGatewayControl, GatewayControlRejection, gatewaySnapshotDigest, isDefiniteIssueRefusal, type GatewaySnapshot } from '../src/agent-gateway-control.js';
 import * as dockerEngine from '../src/docker-engine.js';
 
 describe('Runner AgentGatewayControl Dynamic Sync', () => {
@@ -44,8 +44,8 @@ describe('Runner AgentGatewayControl Dynamic Sync', () => {
 
     const control = new DockerAgentGatewayControl('mock-gateway-container');
 
-    // 1. Apply snapshot
-    const ack = await control.applySnapshot({
+    // 1. Push a snapshot
+    const ack = await control.syncSnapshot(() => ({
       generation: 1,
       sequence: 1,
       credentials: {
@@ -54,10 +54,10 @@ describe('Runner AgentGatewayControl Dynamic Sync', () => {
       profiles: {
         rev_1: { model: 'gpt-5.2' }
       }
-    });
+    }), { onlyIfMismatch: false });
 
     expect(ack.gatewayBootId).toBe('boot_mock_123');
-    expect(ack.snapshotDigest).toBe('sha256:digest123');
+    expect(ack.gatewayDigest).toBe('sha256:digest123');
 
     // 2. Query digest
     const digest = await control.queryDigest();
@@ -164,6 +164,147 @@ describe('Runner AgentGatewayControl Dynamic Sync', () => {
       expect(isDefiniteIssueRefusal(await control.issue(issueInput).catch((caught: unknown) => caught))).toBe(true);
       refused.mockRestore();
       expect(isDefiniteIssueRefusal(new Error('model gateway control request failed'))).toBe(false);
+    });
+  });
+});
+
+describe('gateway snapshot push state', () => {
+  const ack = JSON.stringify({ ok: true, ack: { gatewayBootId: 'boot_1', snapshotDigest: 'sha256:a' } });
+  const snapshot = { credentials: {}, profiles: {} };
+  const push = (control: DockerAgentGatewayControl) => control.syncSnapshot(() => snapshot, { onlyIfMismatch: false });
+
+  it('keeps the last successful push time, reports a later failure, and clears it on the next success', async () => {
+    let clock = 1_000;
+    let fail = false;
+    const spy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async () =>
+      fail ? { exitCode: 1, stdout: '', stderr: '' } : { exitCode: 0, stdout: ack, stderr: '' });
+    const control = new DockerAgentGatewayControl('gateway', () => clock);
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: null, lastError: null });
+
+    await push(control);
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 1_000, lastError: null });
+
+    clock = 2_000; fail = true;
+    await expect(push(control)).rejects.toThrow('model gateway control request failed');
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 1_000, lastError: 'model gateway control request failed' });
+
+    clock = 3_000; fail = false;
+    await push(control);
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 3_000, lastError: null });
+    spy.mockRestore();
+  });
+
+  it('serializes pushes, builds each snapshot after the previous push landed, and keeps going after a failure', async () => {
+    const releases: Array<() => void> = [];
+    const order: string[] = [];
+    let calls = 0;
+    const spy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async () => {
+      calls += 1;
+      const call = calls;
+      order.push(`push ${call} started`);
+      if (call === 1) await new Promise<void>((resolve) => releases.push(resolve));
+      order.push(`push ${call} settled`);
+      return call === 1 ? { exitCode: 1, stdout: '', stderr: '' } : { exitCode: 0, stdout: ack, stderr: '' };
+    });
+    const control = new DockerAgentGatewayControl('gateway', () => 7_000);
+    let state = 'old';
+    const first = control.syncSnapshot(() => { order.push(`build ${state}`); return snapshot; }, { onlyIfMismatch: false });
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    const second = control.syncSnapshot(() => { order.push(`build ${state}`); return snapshot; }, { onlyIfMismatch: false });
+    // The second sync has not built its snapshot yet, so a change made now is the one it pushes.
+    state = 'new';
+    releases[0]!();
+    await expect(first).rejects.toThrow('model gateway control request failed');
+    await expect(second).resolves.toMatchObject({ pushed: true, gatewayDigest: 'sha256:a' });
+    expect(order).toEqual(['build old', 'push 1 started', 'push 1 settled', 'build new', 'push 2 started', 'push 2 settled']);
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 7_000, lastError: null });
+    spy.mockRestore();
+  });
+
+  describe('coalescing', () => {
+    const current = { credentials: {}, profiles: { rev_current: { model: 'current' } } };
+    const stale = { credentials: {}, profiles: { rev_stale: { model: 'stale' } } };
+
+    /** A gateway whose first control request waits for release, recording every operation. */
+    function gateway() {
+      const operations: string[] = [];
+      const releases: Array<() => void> = [];
+      let held = false;
+      let applied = 'sha256:none';
+      const spy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
+        const command = JSON.parse(options?.stdin ?? '{}') as { operation: string };
+        operations.push(command.operation);
+        if (!held) {
+          held = true;
+          await new Promise<void>((resolve) => releases.push(resolve));
+        }
+        if (command.operation === 'digest') {
+          return { exitCode: 0, stdout: JSON.stringify({ ok: true, digest: { gatewayBootId: 'boot_1', snapshotDigest: applied, activeProfileCount: 0, activeCredentialCount: 0, activeLeaseCount: 0 } }), stderr: '' };
+        }
+        applied = gatewaySnapshotDigest(command as unknown as GatewaySnapshot);
+        return { exitCode: 0, stdout: JSON.stringify({ ok: true, ack: { gatewayBootId: 'boot_1', snapshotDigest: applied } }), stderr: '' };
+      });
+      return { spy, operations, releases };
+    }
+
+    it('joins a queued section that has not started, so callers share one section built from the latest state', async () => {
+      const { spy, operations, releases } = gateway();
+      const control = new DockerAgentGatewayControl('gateway', () => 1);
+      const builds: string[] = [];
+      const inFlight = control.syncSnapshot(() => { builds.push('in flight'); return stale; }, { onlyIfMismatch: false });
+      await vi.waitFor(() => expect(releases).toHaveLength(1));
+      const queried: string[] = [];
+      const first = control.syncSnapshot(() => { builds.push('first joiner'); return stale; }, { onlyIfMismatch: true, onQueried: () => queried.push('first') });
+      const second = control.syncSnapshot(() => { builds.push('second joiner'); return current; }, { onlyIfMismatch: true, onQueried: () => queried.push('second') });
+      const third = control.syncSnapshot(() => { builds.push('third joiner'); return current; }, { onlyIfMismatch: true });
+      releases[0]!();
+      await inFlight;
+      const results = await Promise.all([first, second, third]);
+      // One pending section ran once, with the latest builder, and every joined caller got its result.
+      expect(builds).toEqual(['in flight', 'third joiner']);
+      expect(operations).toEqual(['apply_snapshot', 'digest', 'apply_snapshot']);
+      expect(queried).toEqual(['first', 'second']);
+      const expectedDigest = gatewaySnapshotDigest(current);
+      for (const result of results) {
+        expect(result).toEqual({ gatewayBootId: 'boot_1', gatewayDigest: expectedDigest, expectedDigest, pushed: true });
+      }
+      // Once that section started, a new sync queues a fresh section instead of joining it.
+      await expect(control.syncSnapshot(() => current, { onlyIfMismatch: true })).resolves.toMatchObject({ pushed: false });
+      expect(operations).toEqual(['apply_snapshot', 'digest', 'apply_snapshot', 'digest']);
+      spy.mockRestore();
+    });
+
+    it('upgrades a pending mismatch-only section to a forced push when a forced sync joins it', async () => {
+      const { spy, operations, releases } = gateway();
+      const control = new DockerAgentGatewayControl('gateway', () => 1);
+      const inFlight = control.syncSnapshot(() => current, { onlyIfMismatch: false });
+      await vi.waitFor(() => expect(releases).toHaveLength(1));
+      // The gateway will already hold this snapshot, so the check alone would push nothing.
+      const check = control.syncSnapshot(() => current, { onlyIfMismatch: true });
+      const forced = control.syncSnapshot(() => current, { onlyIfMismatch: false });
+      releases[0]!();
+      await inFlight;
+      const [checked, pushed] = await Promise.all([check, forced]);
+      expect(operations).toEqual(['apply_snapshot', 'apply_snapshot']);
+      expect(checked).toMatchObject({ pushed: true });
+      expect(pushed).toEqual(checked);
+      spy.mockRestore();
+    });
+
+    it('rejects every joined caller when the shared section fails, and the next section still runs', async () => {
+      const { spy, releases } = gateway();
+      const control = new DockerAgentGatewayControl('gateway', () => 1);
+      const inFlight = control.syncSnapshot(() => current, { onlyIfMismatch: false });
+      await vi.waitFor(() => expect(releases).toHaveLength(1));
+      const failing = () => { throw new Error('snapshot build failed'); };
+      const first = control.syncSnapshot(failing, { onlyIfMismatch: false });
+      const second = control.syncSnapshot(failing, { onlyIfMismatch: false });
+      releases[0]!();
+      await inFlight;
+      await expect(first).rejects.toThrow('snapshot build failed');
+      await expect(second).rejects.toThrow('snapshot build failed');
+      await expect(control.syncSnapshot(() => current, { onlyIfMismatch: true })).resolves.toMatchObject({ pushed: false });
+      spy.mockRestore();
     });
   });
 });

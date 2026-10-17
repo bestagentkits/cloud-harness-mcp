@@ -388,6 +388,39 @@ saved, or the catalog price could not be refreshed, a pricing note appears next 
 price: edit the profile to take the new price. The comparison is advisory and is skipped
 when the catalog cannot be reached.
 
+### Gateway status
+
+The badge beside **Model profiles** reads `GET /api/v1/agent-model-config-status`
+(schema `ModelConfigStatusSchema` in
+[`model-profile-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-profile-schemas.ts)):
+
+- **Gateway synchronized** (`gatewaySynced: true`) means the Model Gateway answered and the
+  last snapshot it applied matches the runner's current profile and credential snapshot: the
+  digest it reports equals the digest of the snapshot the runner would send now. The gateway
+  merges each snapshot into what it already holds, so profiles and credentials removed since an
+  earlier snapshot can remain loaded there; the badge does not claim otherwise. An unreachable
+  gateway, or one whose repair push failed, shows **Gateway sync pending**.
+- **Last successful sync** (`lastSyncTime`) is when the runner last pushed a snapshot
+  successfully: after a dashboard change, at runner startup, before an agent launch, or to
+  repair the gateway. It is kept in memory, so it reads **Never since the runner started**
+  (`null`) until the restarted runner pushes again. The badge can then still read
+  **Gateway synchronized**, because the gateway kept the snapshot the previous runner sent.
+- The error line (`error`) explains an unreachable gateway or a failed last push. A later
+  successful push clears it, and it is not shown while the gateway's last applied snapshot
+  matches.
+
+When the digests differ, reading the status pushes the current snapshot once and reports the
+result. This repairs a gateway that restarted, missed a failed push, or holds a snapshot that
+changed without a push, such as when an agent pinned to an older profile revision ends. The
+agent manager makes the same comparison before it launches an agent on a dashboard-managed
+profile, and refuses the launch as retryable when the gateway cannot be brought in sync.
+
+The runner serializes every snapshot push, and it builds each snapshot just before sending it.
+A push therefore always carries the latest saved state, such as a key rotated a moment earlier,
+and a slower push can never replace a newer snapshot with an older one.
+Requests that arrive while a push is already waiting share that push, so a status read or an
+agent launch waits for at most the push in progress and one more.
+
 ## Spend policies
 
 A spend policy caps the estimated model spend of a UTC day or month. A policy without a

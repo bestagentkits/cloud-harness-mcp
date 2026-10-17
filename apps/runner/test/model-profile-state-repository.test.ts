@@ -147,6 +147,32 @@ describe('ModelProfileStateRepository', () => {
     repo.deleteProfile(p1, profile.id, 4);
     expect(repo.listProfiles(p1)).toHaveLength(0);
   });
+  it('exports the gateway snapshot in id order, so the same state always yields the same record', () => {
+    const { repo, p1, p2 } = setup();
+    const profiles: Array<{ id: string; activeRevisionId: string | null }> = [];
+    for (const [index, slug] of ['order-c', 'order-a', 'order-e', 'order-b', 'order-f', 'order-d'].entries()) {
+      const owner = index % 2 === 0 ? p1 : p2;
+      const credential = repo.createCredential(owner, { label: `Key ${index}`, provider: 'openai', apiKey: `sk-order-${index}` });
+      profiles.push(repo.createProfile(owner, {
+        profileId: ModelProfileIdSchema.parse(slug),
+        displayName: `Order ${index}`,
+        credentialId: credential.id,
+        model: 'gpt-5.2-codex',
+        apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+        limits: { maxInputTokens: 10000, maxOutputTokens: 2000, maxCostMicros: 50000 },
+        maxProxyOperations: ['files_read']
+      }));
+    }
+    const snapshot = repo.getExportSnapshot();
+    const credentialIds = Object.keys(snapshot.credentials);
+    expect(credentialIds).toEqual([...credentialIds].sort());
+    const byProfileId = [...profiles].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    expect(Object.keys(snapshot.profiles)).toEqual(byProfileId.map((profile) => profile.activeRevisionId));
+    // Insertion order differs from id order, so the test proves the ordering rather than echoing inserts.
+    expect(profiles.map((profile) => profile.id)).not.toEqual(byProfileId.map((profile) => profile.id));
+  });
+
   it('routes each provider to its registry endpoint and rejects API modes the provider lacks', () => {
     const { repo, p1 } = setup();
     const base = {

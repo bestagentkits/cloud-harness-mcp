@@ -825,11 +825,18 @@ export function renderModelCredentials(credentials, context) {
   return `<div class="desktop-table"><table><caption>${escape(credentials.length)} provider key(s)</caption><thead><tr><th>Key</th><th>Provider</th><th>Secret</th><th>Key check</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div><ul class="mobile-list">${cards}</ul>`;
 }
 
+/** The gateway badge, when the runner last pushed a snapshot successfully since it started, and why the last push failed. */
+function renderGatewaySync(status) {
+  if (!status) return '<span class="status">Gateway status unavailable</span>';
+  const badge = `<span class="status ${status.gatewaySynced ? 'active' : 'pending'}">${status.gatewaySynced ? 'Gateway synchronized' : 'Gateway sync pending'}</span>`;
+  const last = Number.isFinite(status.lastSyncTime) ? timeText(status.lastSyncTime) : 'Never since the runner started';
+  const error = typeof status.error === 'string' && status.error ? `<br>${escape(status.error)}` : '';
+  return `<div>${badge}<p class="field-help">Last successful sync: ${last}${error}</p></div>`;
+}
+
 export function renderModelsPage({ profiles = [], credentials = [], status = null, providers = [] } = {}) {
   const context = { profiles, credentials, providers };
-  const sync = status
-    ? `<span class="status ${status.gatewaySynced ? 'active' : 'pending'}">${status.gatewaySynced ? 'Gateway synchronized' : 'Gateway sync pending'}</span>`
-    : '<span class="status">Gateway status unavailable</span>';
+  const sync = renderGatewaySync(status);
   return `<div id="models-page" class="models-page">
     <p class="page-note"><strong>Subagent models.</strong> Each profile routes Pi subagents to one provider model with a price, per-run limits, and a ceiling on the file tools they may call. Provider keys are write-only: they are encrypted on the server and never sent back to the browser.</p>
     <section class="panel" aria-labelledby="model-profiles-heading"><div class="record-heading"><h2 id="model-profiles-heading">Model profiles</h2>${sync}</div>${renderModelProfiles(profiles, context)}</section>

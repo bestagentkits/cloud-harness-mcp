@@ -633,6 +633,17 @@ describe('models page list', () => {
     expect(markup).toContain('No provider keys yet.');
     expect(markup).toContain('Gateway status unavailable');
   });
+
+  it('shows when the gateway was last synchronized, never for no push yet, and why the last push failed', () => {
+    const never = renderModelsPage({ status: { gatewaySynced: false, lastSyncTime: null, error: null } });
+    expect(never).toContain('Gateway sync pending');
+    expect(never).toContain('Last successful sync: Never since the runner started');
+
+    const at = Date.UTC(2026, 0, 2, 3, 4, 5);
+    const failed = renderModelsPage({ status: { gatewaySynced: false, lastSyncTime: at, error: 'model gateway <rejected> snapshot' } });
+    expect(failed).toContain(`Last successful sync: <time datetime="${new Date(at).toISOString()}">`);
+    expect(failed).toContain('model gateway &lt;rejected&gt; snapshot');
+  });
 });
 
 describe('models page shell and small viewports', () => {

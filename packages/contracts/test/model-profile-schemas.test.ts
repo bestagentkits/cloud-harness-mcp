@@ -216,5 +216,7 @@ describe('Model Profile & Credential Contracts', () => {
       error: null
     });
     expect(status.gatewaySynced).toBe(true);
+    // No successful push yet is null rather than a made-up time.
+    expect(ModelConfigStatusSchema.parse({ ...status, gatewaySynced: false, lastSyncTime: null, error: 'model gateway control request failed' }).lastSyncTime).toBeNull();
   });
 });

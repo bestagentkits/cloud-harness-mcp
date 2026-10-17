@@ -131,8 +131,6 @@ export class AgentManager {
   private readonly runtimes = new Map<string, RuntimeContext>();
   private readonly launches = new Map<string, Promise<void>>();
   private readonly cleanupTargets = new Map<string, TerminalAgentStatus>();
-  private lastSyncedBootId?: string | undefined;
-  private lastSyncedDigest?: string | undefined;
   private readonly now: () => number;
   private accepting = true;
   /** Set while stopping, so a reap already in flight cannot start a spend sweep after stop() returns. */
@@ -159,22 +157,20 @@ export class AgentManager {
 
 
   async ensureGatewaySynced(): Promise<void> {
-    if (!this.modelProfiles || !this.gateway.applySnapshot || !this.gateway.queryDigest) return;
+    const modelProfiles = this.modelProfiles;
+    if (!modelProfiles || !this.hasSnapshotSync()) return;
     try {
-      const snapshot = this.modelProfiles.getExportSnapshot();
-      const digestResult = await this.gateway.queryDigest();
-      if (
-        digestResult.gatewayBootId !== this.lastSyncedBootId
-        || (Object.keys(snapshot.profiles).length > 0 && digestResult.activeProfileCount === 0)
-        || (this.lastSyncedDigest !== undefined && digestResult.snapshotDigest !== this.lastSyncedDigest)
-      ) {
-        const ack = await this.gateway.applySnapshot(snapshot);
-        this.lastSyncedBootId = ack.gatewayBootId;
-        this.lastSyncedDigest = ack.snapshotDigest;
-      }
+      // Compare with the snapshot as it is now, built after any earlier push landed: it changes
+      // without a push when an agent pinned to an older revision ends, and a restarted gateway
+      // reports an empty digest.
+      await this.gateway.syncSnapshot(() => modelProfiles.getExportSnapshot(), { onlyIfMismatch: true });
     } catch (err) {
       throw new HarnessError('UNAVAILABLE', `model gateway reconciliation failed: ${err instanceof Error ? err.message : 'unreachable'}`, 503, true);
     }
+  }
+  /** Lease-only gateway doubles built with a cast have no snapshot surface; there is nothing to reconcile. */
+  private hasSnapshotSync(): boolean {
+    return typeof (this.gateway as Partial<AgentGatewayControl>).syncSnapshot === 'function';
   }
   static isPublicOperation(operation: RunnerOperation): boolean {
     return AGENT_OPERATIONS[operation] === true;
@@ -188,12 +184,10 @@ export class AgentManager {
     this.stopping = false;
     this.epoch = this.repository.bumpEpoch(this.store.instanceId(), this.now());
     await this.launcher.reconcile?.();
-    if (this.modelProfiles && this.gateway.applySnapshot) {
+    const modelProfiles = this.modelProfiles;
+    if (modelProfiles && this.hasSnapshotSync()) {
       try {
-        const snapshot = this.modelProfiles.getExportSnapshot();
-        const ack = await this.gateway.applySnapshot(snapshot);
-        this.lastSyncedBootId = ack.gatewayBootId;
-        this.lastSyncedDigest = ack.snapshotDigest;
+        await this.gateway.syncSnapshot(() => modelProfiles.getExportSnapshot(), { onlyIfMismatch: false });
       } catch {
         // Gateway will be reconciled upon spawn or status check
       }
