@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertProviderRequestUrl, createLineSplitter, createProviderHttpClient, isUnsafeProviderAddress, redactSecret } from '../src/model-provider-http.js';
+import { assertProviderRequestUrl, assertPublicMetadataUrl, createLineSplitter, createProviderHttpClient, isUnsafeProviderAddress, redactSecret } from '../src/model-provider-http.js';
 
 describe('model provider HTTP policy', () => {
   it('allows only registry hosts for registry providers', () => {
@@ -20,6 +20,16 @@ describe('model provider HTTP policy', () => {
     expect(assertProviderRequestUrl('opencode-go', 'https://opencode.ai/inference/go/openai/v1/chat/completions').hostname).toBe('opencode.ai');
     expect(() => assertProviderRequestUrl('opencode-go', 'https://api.openai.com/v1/chat/completions')).toThrow('not allowed');
     expect(() => assertProviderRequestUrl('opencode-go', 'https://evil.opencode.ai.example.org/inference/go/v1/models')).toThrow('not allowed');
+  });
+
+  it('allows only the public metadata hosts for credential-free metadata reads', () => {
+    expect(assertPublicMetadataUrl('https://models.dev/api.json').hostname).toBe('models.dev');
+    expect(() => assertPublicMetadataUrl('http://models.dev/api.json')).toThrow('HTTPS');
+    expect(() => assertPublicMetadataUrl('https://user:pw@models.dev/api.json')).toThrow('credential-free');
+    expect(() => assertPublicMetadataUrl('https://models.dev.example.org/api.json')).toThrow('not allowed');
+    expect(() => assertPublicMetadataUrl('https://opencode.ai/inference/go/v1/models')).toThrow('not allowed');
+    // A provider request, which may carry a credential, never reaches the metadata host.
+    expect(() => assertProviderRequestUrl('opencode-go', 'https://models.dev/api.json')).toThrow('not allowed');
   });
 
   it('limits a custom provider to its own public upstream host', () => {

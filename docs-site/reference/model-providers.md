@@ -24,7 +24,7 @@ same list, with their own key metadata, through `model_provider_list`.
 | OpenRouter | Bearer | Chat Completions, Responses | OpenRouter's public catalog | Yes | [openrouter.ai](https://openrouter.ai/settings/keys) |
 | Google Gemini | Bearer | Chat Completions (OpenAI-compatible endpoint) | Provider's models endpoint, with your key | No | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | DeepSeek | Bearer | Chat Completions | Provider's models endpoint, with your key | No | [platform.deepseek.com](https://platform.deepseek.com/api_keys) |
-| OpenCode Go | Bearer | Chat Completions, Responses (OpenAI-compatible paths) | Provider's public models endpoint, without your key | Yes | [opencode.ai/console](https://opencode.ai/console) |
+| OpenCode Go | Bearer | Chat Completions, Responses (OpenAI-compatible paths) | Provider's public models endpoint, without your key; prices from [models.dev](https://models.dev) | Yes | [opencode.ai/console](https://opencode.ai/console) |
 | Custom (OpenAI-compatible) | Bearer or `x-api-key` | Chat Completions or Responses, at the one HTTPS URL you enter | None: you enter the model ID | Yes | Your provider's console |
 
 OpenCode asks clients to send a session header, and the harness always sends it for OpenCode
@@ -38,8 +38,8 @@ What the columns mean:
   [`model-pricing.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-pricing.ts).
 - **Outbound hosts.** A key for a registry provider is only ever sent to that provider's own
   registry hosts. A Custom key is sent only to the host of the upstream URL on the profile
-  or draft check that uses it, so enter only upstreams you trust with that key. The check
-  is owned by
+  or draft check that uses it, so enter only upstreams you trust with that key. The only
+  other host the catalog reads is `models.dev`, without any key. The check is owned by
   [`apps/runner/src/model-provider-http.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/apps/runner/src/model-provider-http.ts).
 
 ### Not supported
@@ -76,11 +76,20 @@ Limitations:
 - Only the OpenAI Chat Completions and Responses paths are used. A model that OpenCode
   serves only on its Anthropic Messages or Google paths fails the connection check with
   `unsupported_protocol`.
-- OpenCode publishes per-token prices (input, output, cached read, cached write) on its Go
-  page, but offers no price API to sync, and OpenRouter does not price the subscription. The
-  catalog shows these models with unknown prices, so enter the prices on the profile
-  yourself; the profile marks them as an override, and every spend figure is an estimate.
-  An unknown cache-write price is charged at twice the input price.
+- OpenCode's API publishes no prices and OpenRouter does not list the subscription, so the
+  catalog takes prices, context window, and output limit from the public
+  [models.dev](https://models.dev) registry (`https://models.dev/api.json`, provider
+  `opencode-go`), the same source OpenCode's own client reads. These prices show as
+  provider prices with `estimate` confidence and `sourceModelId` `opencode-go/<model>`, and a
+  profile saved with them is catalog-verified like any other catalog price. Long-context
+  price tiers are kept; a price that changes under another condition (such as audio input)
+  is flagged as conditional. The runner fetches models.dev without any key and keeps it in
+  memory only, so after a runner restart the prices return with the first catalog search.
+- A model the live list serves but models.dev does not list keeps unknown (`null`) prices.
+  Enter the prices on the profile yourself; the profile marks them as an override, and every
+  spend figure is an estimate. An unknown cache-write price is charged at twice the input
+  price. If models.dev is unreachable, the catalog still lists the models, unpriced, and
+  reports that source as unavailable.
 - Over MCP, override prices on a new route always need owner approval
   (`price_unverified_for_new_route`). Like every MCP-created profile, an OpenCode Go profile
   created over MCP needs activation in the Dashboard, and an MCP update that changes its

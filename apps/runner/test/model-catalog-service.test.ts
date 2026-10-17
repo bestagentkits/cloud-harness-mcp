@@ -24,6 +24,8 @@ const openRouterPayload = {
   ]
 };
 
+const modelsDevFixture = JSON.parse(readFileSync(new URL('./fixtures/models-dev-sample.json', import.meta.url), 'utf8')) as unknown;
+
 const CLAUDE_LONG_PROMPT_TIER = {
   minPromptTokens: 200_000, inputMicrosPerMillionTokens: 6_000_000, outputMicrosPerMillionTokens: 22_500_000,
   cacheReadMicrosPerMillionTokens: 600_000, cacheWriteMicrosPerMillionTokens: 12_000_000
@@ -43,9 +45,13 @@ class FakeProviders implements ProviderHttpClient {
     return json({ data: [{ id: 'gpt-4o-mini' }, { id: 'o3' }, { id: 'text-embedding-3-small' }] });
   };
 
+  modelsDev: Handler = () => json(modelsDevFixture);
+
   async request(request: ProviderHttpRequest): Promise<ProviderHttpResponse> {
     this.calls.push(request);
-    return new URL(request.url).hostname === 'openrouter.ai' ? await this.openRouter(request) : await this.vendor(request);
+    const host = new URL(request.url).hostname;
+    if (host === 'openrouter.ai') return await this.openRouter(request);
+    return host === 'models.dev' ? await this.modelsDev(request) : await this.vendor(request);
   }
 
   count(host: string): number {
@@ -170,7 +176,8 @@ describe('ModelCatalogService', () => {
     expect(anonymous.entries.map((entry) => [entry.providerModelId, entry.availability])).toEqual([
       ['glm-5.1', 'public_catalog'], ['kimi-k2.6', 'public_catalog']
     ]);
-    expect(anonymous.freshness.sources.map((source) => [source.source, source.state])).toEqual([['provider', 'fresh'], ['openrouter', 'fresh']]);
+    // The listing and models.dev, the provider's published price list, are both provider sources.
+    expect(anonymous.freshness.sources.map((source) => [source.source, source.state])).toEqual([['provider', 'fresh'], ['provider', 'fresh']]);
 
     const credential = repo.createCredential(p2, { label: 'Go', provider: 'opencode-go', apiKey: 'sk-opencode-secret' });
     const keyed = await catalog.search(p2, search({ provider: 'opencode-go', credentialId: credential.id }));
@@ -182,6 +189,60 @@ describe('ModelCatalogService', () => {
     expect(vendorCalls.map((call) => call.url)).toEqual(['https://opencode.ai/inference/go/v1/models']);
     expect(vendorCalls[0]?.headers?.authorization).toBeUndefined();
     expect(JSON.stringify(http.calls)).not.toContain('sk-opencode-secret');
+  });
+
+  it('prices OpenCode Go models from models.dev, leaves unmatched models unpriced, and sends no credential there', async () => {
+    const { repo, p1, http, service } = setup();
+    http.vendor = () => json({ object: 'list', data: [{ id: 'glm-5.1' }, { id: 'kimi-k2.6' }, { id: 'qwen3.7-plus' }] });
+    const catalog = service();
+    expect(catalog.cachedPrice('opencode-go', 'glm-5.1')).toBeUndefined();
+    const credential = repo.createCredential(p1, { label: 'Go', provider: 'opencode-go', apiKey: 'sk-opencode-secret' });
+    const result = await catalog.search(p1, search({ provider: 'opencode-go', credentialId: credential.id }));
+    expect(ModelCatalogSearchResultSchema.safeParse(result).success).toBe(true);
+    const [glm, kimi, qwen] = result.entries;
+    expect(glm).toMatchObject({
+      providerModelId: 'glm-5.1',
+      canonicalModelId: null,
+      displayName: 'GLM-5.1',
+      contextWindow: 204_800,
+      maxOutputTokens: 131_072,
+      capabilities: { tools: 'reported', reasoning: 'reported', vision: 'unknown' },
+      pricing: {
+        inputMicrosPerMillionTokens: 600_000, outputMicrosPerMillionTokens: 2_200_000, cacheReadMicrosPerMillionTokens: 110_000,
+        provenance: { source: 'provider', sourceModelId: 'opencode-go/glm-5.1', retrievedAt: 1_800_000_000_000, confidence: 'estimate' },
+        hasConditionalPricing: false
+      }
+    });
+    expect(kimi?.pricing).toMatchObject({
+      inputMicrosPerMillionTokens: null, outputMicrosPerMillionTokens: null,
+      provenance: { source: 'none', sourceModelId: null, confidence: 'unknown' }
+    });
+    expect(qwen?.pricing.tiers).toHaveLength(1);
+    // OpenRouter does not list OpenCode Go, so it is not asked.
+    expect(http.count('openrouter.ai')).toBe(0);
+    const metadataCalls = http.calls.filter((call) => new URL(call.url).hostname === 'models.dev');
+    expect(metadataCalls).toHaveLength(1);
+    expect(metadataCalls[0]?.headers).toBeUndefined();
+    expect(JSON.stringify(http.calls.filter((call) => new URL(call.url).hostname !== 'opencode.ai'))).not.toContain('sk-opencode-secret');
+
+    // A revision's cached price comes from the same snapshot without another request.
+    const calls = http.calls.length;
+    expect(catalog.cachedPrice('opencode-go', 'glm-5.1')).toEqual(glm?.pricing);
+    expect(catalog.cachedPrice('opencode-go', 'kimi-k2.6')).toBeUndefined();
+    expect(http.calls).toHaveLength(calls);
+  });
+
+  it('keeps the OpenCode Go listing unpriced when models.dev fails', async () => {
+    const { p1, http, service } = setup();
+    http.vendor = () => json({ object: 'list', data: [{ id: 'glm-5.1' }] });
+    http.modelsDev = () => json({ error: 'down' }, 503);
+    const result = await service().search(p1, search({ provider: 'opencode-go' }));
+    expect(result.entries.map((entry) => [entry.providerModelId, entry.pricing.inputMicrosPerMillionTokens, entry.pricing.provenance.source]))
+      .toEqual([['glm-5.1', null, 'none']]);
+    expect(result.freshness).toMatchObject({
+      state: 'stale',
+      sources: [{ source: 'provider', state: 'fresh', error: null }, { source: 'provider', state: 'unavailable', error: 'upstream_error' }]
+    });
   });
 
   it('falls back to public entries and reports the category when the listing fails', async () => {
