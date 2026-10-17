@@ -2,7 +2,10 @@
 
 Use these tools for bounded workspace inspection and mutation. Prefer them over
 shell commands because their paths, sizes, concurrency checks, and results are
-validated by Cloud Harness.
+validated by Cloud Harness. In a
+[multi-repository workspace](multi-repository-workspaces.md), paths start at the
+tree root (`repos/<alias>/...`) unless `repositoryId` confines the call to one
+checkout.
 
 ## File inspection
 
