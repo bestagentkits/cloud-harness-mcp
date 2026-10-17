@@ -153,7 +153,7 @@ export const MCP_EVENT_DEFINITIONS: readonly McpEventDefinition[] = [
   },
   {
     name: 'cloudharness.automation.completed',
-    description: 'A webhook-triggered automation workflow finished: its agent reached SUCCEEDED and any configured GitHub comment was attempted. Read the result on the Dashboard Automations page.',
+    description: 'A webhook-triggered automation workflow finished: its agent reached SUCCEEDED. Any configured GitHub comment is posted afterwards; read the result on the Dashboard Automations page.',
     arguments: AutomationEventArgumentsSchema,
     payload: AutomationCompletedPayloadSchema
   },

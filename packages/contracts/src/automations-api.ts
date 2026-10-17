@@ -49,7 +49,7 @@ export const AUTOMATION_DEFAULT_PROXY_OPERATIONS = ['files_list', 'files_read', 
 
 const name = z.string().trim().min(1).max(100);
 const githubRepository = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u, 'repository must be owner/name')
-  .refine((value) => !value.endsWith('.git') && !value.split('/')[1]!.startsWith('.'), 'repository must be owner/name');
+  .refine((value) => !value.endsWith('.git') && !(value.split('/')[1] ?? '').startsWith('.'), 'repository must be owner/name');
 const githubLogin = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/u);
 const label = z.string().min(1).max(100).refine((value) => !/[\0\r\n]/u.test(value), 'label cannot contain control characters');
 const gitRef = z.string().min(1).max(200).regex(/^[A-Za-z0-9._/-]+$/u).refine((value) => !value.startsWith('-') && !value.includes('..'), 'invalid ref');

@@ -210,6 +210,8 @@ export function loadRunnerConfigWithReadiness(): RunnerConfigLoadResult {
     } : undefined,
     githubToken,
     cloudflareAccessOAuth: cloudflareAccessOAuth(),
+    automationsEnabled: process.env.AUTOMATIONS_ENABLED,
+    automationsMaxConcurrentWorkflows: process.env.AUTOMATIONS_MAX_CONCURRENT_WORKFLOWS,
     agents: agentConfigurationPresent ? {
       image: process.env.AGENT_IMAGE,
       networkMode: process.env.AGENT_NETWORK_MODE,

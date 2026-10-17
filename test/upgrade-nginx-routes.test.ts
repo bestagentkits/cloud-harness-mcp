@@ -89,6 +89,13 @@ const oauthCallbackRoute = `
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
     }`;
+const webhookRoute = `
+    location ^~ /integrations/webhooks/ {
+        client_max_body_size 1m;
+        proxy_pass http://127.0.0.1:3100/integrations/webhooks/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }`;
 
 function createFixture(extraRoutes = legacyDashboardRoutes) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-nginx-'));
@@ -142,6 +149,7 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     expect(readFileSync(fixture.site, 'utf8')).toContain(workspaceRoute);
     expect(readFileSync(fixture.site, 'utf8')).toContain(apiKeyGatewayRoute);
     expect(readFileSync(fixture.site, 'utf8')).toContain(oauthCallbackRoute);
+    expect(readFileSync(fixture.site, 'utf8')).toContain(webhookRoute);
     expect(backups(fixture.root)).toHaveLength(1);
 
     const second = runUpgrade(fixture.root);
@@ -227,6 +235,41 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     const fixture = createFixture(malformed);
     const result = runUpgrade(fixture.root);
     expect(result.status, result.stderr).toBe(11);
+    expect(result.stderr).toContain('not the managed shape');
+    expect(readFileSync(fixture.site, 'utf8')).toBe(fixture.source);
+    expect(backups(fixture.root)).toHaveLength(0);
+  });
+
+  it('adds only the missing automation webhook route to an install that has every other route', () => {
+    const fixture = createFixture(`${dashboardRoutes}\n${apiKeyRoute}\n${gatewayRoute}\n${workspaceRoute}\n${apiKeyGatewayRoute}\n${oauthCallbackRoute}`);
+    const first = runUpgrade(fixture.root);
+    expect(first.status, first.stderr).toBe(0);
+    const installed = readFileSync(fixture.site, 'utf8');
+    expect(installed).toContain(webhookRoute);
+    expect((installed.match(/location \^~ \/integrations\/webhooks\/ \{/g) ?? [])).toHaveLength(1);
+    expect((installed.match(/location = \/dashboard\/mcp-oauth\/callback \{/g) ?? [])).toHaveLength(1);
+
+    const second = runUpgrade(fixture.root);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('already installed');
+    expect(backups(fixture.root)).toHaveLength(1);
+  });
+
+  it.each([
+    ['a webhook route without the body cap', `
+    location ^~ /integrations/webhooks/ {
+        proxy_pass http://127.0.0.1:3100/integrations/webhooks/;
+        proxy_set_header Host $host;
+    }`],
+    ['a custom route under the integrations prefix', `
+    location /integrations/ {
+        proxy_pass http://127.0.0.1:9999/integrations/;
+    }`]
+  ])('rejects %s without touching the site', (_name, route) => {
+    const malformed = `${dashboardRoutes}\n${apiKeyRoute}\n${gatewayRoute}\n${workspaceRoute}\n${apiKeyGatewayRoute}\n${oauthCallbackRoute}\n${route}`;
+    const fixture = createFixture(malformed);
+    const result = runUpgrade(fixture.root);
+    expect(result.status, result.stderr).toBe(12);
     expect(result.stderr).toContain('not the managed shape');
     expect(readFileSync(fixture.site, 'utf8')).toBe(fixture.source);
     expect(backups(fixture.root)).toHaveLength(0);

@@ -67,6 +67,18 @@ export function preAuthRequestLimits() {
   };
 }
 
+/**
+ * The public automation webhook ingress has no caller identity before the runner verifies the
+ * signature, so it gets its own window: a webhook burst cannot consume the MCP pre-auth budget.
+ */
+export function webhookIngressLimits(maxRequests = 300, maxActive = 16) {
+  const window: LimitWindow = { startedAt: Date.now(), requests: 0, active: 0, lastSeenAt: Date.now() };
+
+  return (_request: Request, response: Response, next: NextFunction): void => {
+    enforceLimit(window, response, next, maxRequests, maxActive);
+  };
+}
+
 export function principalRequestLimits(maxPrincipals = 1_000) {
   const windows = new Map<string, LimitWindow>();
 
