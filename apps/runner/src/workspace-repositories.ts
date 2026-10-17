@@ -101,8 +101,7 @@ export function scopedWorkdirArgs(record: Pick<WorkspaceRecord, 'repositoryScope
 export function assertRepositoryWritable(record: Pick<WorkspaceRecord, 'repositoryScope'>, action: string): void {
   if (record.repositoryScope?.access === 'read-only') {
     throw new HarnessError('FORBIDDEN', `repository ${record.repositoryScope.alias} is read-only in this workspace; ${action} is not allowed`, 403, false, {
-      repository: record.repositoryScope.alias,
-      reason: 'repository_read_only'
+      repository: record.repositoryScope.alias
     });
   }
 }

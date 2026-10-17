@@ -760,7 +760,7 @@ const schemas = {
   workspace_open: z.object({
     repositoryUrl: z.url().optional(), ref: gitArgument.optional(), idempotencyKey: IdempotencyKeySchema,
     repositories: z.array(WorkspaceRepositoryInputSchema).min(1).max(MAX_WORKSPACE_REPOSITORIES_LIMIT).optional()
-      .describe('Open a multi-repository workspace: one independent checkout per entry under repos/<alias>/. Mutually exclusive with repositoryUrl and ref.'),
+      .describe('Open a multi-repository workspace: one independent checkout per entry under `repos/<alias>/`. Mutually exclusive with repositoryUrl and ref.'),
     primaryRepositoryAlias: RepositoryAliasSchema.optional()
       .describe('Alias of the repository workspace-level defaults (status, guidance) report first; defaults to the first entry.'),
     fetchDepth: z.number().int().min(0).max(100_000).optional()
