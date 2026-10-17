@@ -58,6 +58,9 @@ export const searchModelCatalog = ({ provider, credentialId, q, limit } = {}) =>
   return api(`/model-catalog?${query}`);
 };
 export const refreshModelCatalog = (payload) => api('/model-catalog/refresh', { method: 'POST', body: JSON.stringify(payload) });
+export const getModelSpend = () => api('/model-spend');
+export const setModelSpendPolicy = (payload) => api('/model-spend/policies', { method: 'PUT', body: JSON.stringify(payload) });
+export const deleteModelSpendPolicy = (id, expectedGeneration) => api(`/model-spend/policies/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) });
 export const verifyModelConnection = (payload) => api('/model-connection/verify', { method: 'POST', body: JSON.stringify(payload) });
 export const listKnowledge = (params = {}) => {
   const query = new URLSearchParams();

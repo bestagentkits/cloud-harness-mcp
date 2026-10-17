@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { AgentModelProfileInputSchema } from '@cloud-harness/contracts';
+import { AgentModelPricingSchema, AgentModelProfileInputSchema } from '@cloud-harness/contracts';
 import './dashboard-test-dom.js';
 import {
   MUTATING_PROXY_OPERATIONS, PERMISSION_PRESETS, PROXY_OPERATIONS,
   applyCatalogEntry, applyCustomModel, buildProfileRequest, catalogFreshnessNotice, catalogOptions, createModelCombobox,
   deriveProfileSlug, dollarsFromMicros, draftRouteKey, draftVerificationInput, draftVerificationRef, effectiveUpstream, formatPrice, initialWizardState,
-  microsFromDollars, permissionDiff, permissionPresetFor, pricingDrift, priceProvenanceText, profileVerification, providerApiModes, resetUntouchedPricing,
+  microsFromDollars, permissionDiff, permissionPresetFor, priceProvenanceText, profileVerification, providerApiModes, resetUntouchedPricing,
   renderModelOptions, renderModelsPage, renderPermissionDiff, renderSaveGate, renderVerificationResult, renderWizardStep, renderWizardSteps,
   createModelWizard, wizardSaveGate
 } from '../dashboard/dashboard-models.js';
@@ -90,6 +90,9 @@ describe('model profile wizard rules', () => {
     expect(microsFromDollars('')).toBeNull();
     expect(microsFromDollars('-1')).toBeNull();
     expect(microsFromDollars('1e3')).toBeNull();
+    // Past the safe-integer range an amount is refused, never rounded.
+    expect(microsFromDollars('999999999.999999')).toBe(999_999_999_999_999);
+    expect(microsFromDollars('999999999999.999999')).toBeNull();
     expect(dollarsFromMicros(1_750_000)).toBe('1.75');
     expect(dollarsFromMicros(1)).toBe('0.000001');
     expect(dollarsFromMicros(null)).toBe('');
@@ -247,7 +250,7 @@ describe('model profile wizard rules', () => {
       kind: 'create',
       body: {
         profileId: 'gpt-5-mini', displayName: 'GPT-5 mini', credentialId, model: 'gpt-5-mini', apiMode: 'chat-completions',
-        pricing: { inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000 },
+        pricing: { inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null, tiers: [] },
         catalogPriceRef: { sourceModelId: 'openai/gpt-5-mini' },
         limits: { maxInputTokens: 200_000, maxOutputTokens: 32_000, maxCostMicros: 5_000_000 },
         maxProxyOperations: [...PERMISSION_PRESETS.read.operations].sort((a, b) => PROXY_OPERATIONS.indexOf(a) - PROXY_OPERATIONS.indexOf(b))
@@ -277,7 +280,8 @@ describe('model profile wizard rules', () => {
     const state = createDraft();
     applyCatalogEntry(state, tiered);
     const accepted = buildProfileRequest(state, openai).request.body;
-    expect(accepted.pricing).toEqual({ inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000, cacheReadMicrosPerMillionTokens: 25_000, tiers: [tier] });
+    // An unpublished cache price is sent as null, so the save replaces any saved cache price.
+    expect(accepted.pricing).toEqual({ inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_000_000, cacheReadMicrosPerMillionTokens: 25_000, cacheWriteMicrosPerMillionTokens: null, tiers: [tier] });
     expect(accepted.catalogPriceRef).toEqual({ sourceModelId: 'openai/gpt-5-mini' });
     expect(AgentModelProfileInputSchema.safeParse(accepted).success).toBe(true);
 
@@ -391,16 +395,11 @@ describe('model profile wizard rules', () => {
     expect(profileVerification(profile({ lastVerification: undefined }))).toEqual({ outcome: 'not_tested', checkedAt: null, current: false });
   });
 
-  it('describes catalog freshness and price drift in plain language', () => {
+  it('describes catalog freshness in plain language', () => {
     expect(catalogFreshnessNotice({ state: 'fresh', fetchedAt: 1_760_000_000_000, sources: [] })?.level).toBe('fresh');
     const stale = catalogFreshnessNotice({ state: 'stale', fetchedAt: 1_760_000_000_000, sources: [{ source: 'provider', state: 'stale', fetchedAt: 1, error: 'rate_limited' }] });
     expect(stale?.text).toContain('(provider: rate limited)');
     expect(catalogFreshnessNotice({ state: 'unavailable', fetchedAt: null, sources: [] })?.text).toContain('Enter the model ID yourself');
-    const revision = profile().activeRevision;
-    expect(pricingDrift(revision, entry({ providerModelId: 'gpt-5', pricing: { ...entry().pricing, inputMicrosPerMillionTokens: 1_250_000, outputMicrosPerMillionTokens: 10_000_000 } }), { state: 'fresh' })).toEqual({ state: 'current' });
-    expect(pricingDrift(revision, entry(), { state: 'fresh' })).toMatchObject({ state: 'changed', text: 'Catalog price is now $0.25 / $2.00' });
-    expect(pricingDrift(revision, entry({ pricing: { ...entry().pricing, inputMicrosPerMillionTokens: null } }), null)).toEqual({ state: 'unknown' });
-    expect(pricingDrift(revision, undefined, null)).toEqual({ state: 'unknown' });
   });
 });
 
@@ -619,7 +618,6 @@ describe('models page list', () => {
     expect(markup).toContain('Prod OpenAI');
     expect(markup).toContain('$1.25 / $10.00');
     expect(markup).toContain('$2.50 · 150,000 in / 20,000 out');
-    expect(markup).toContain('data-pricing-drift="gpt-5" hidden');
     expect(markup).toContain('Gateway synchronized');
     expect(markup).toContain('<span class="status">Disabled</span>');
     expect(markup).not.toMatch(/apiKey|secret"/);
@@ -668,7 +666,7 @@ describe('models page shell and small viewports', () => {
     expect(mobile).toContain('.mobile-list { display: grid; }');
     expect(mobile).toContain('dialog { padding: var(--space-4); }');
     // Hidden wizard parts stay hidden even where a component rule sets a display value.
-    for (const rule of ['.wizard-subfields[hidden] { display: none; }', '.model-options[hidden] { display: none; }', '.wizard-actions #model-wizard-back[hidden] { display: none; }', '.pricing-drift[hidden] { display: none; }']) expect(css).toContain(rule);
+    for (const rule of ['.wizard-subfields[hidden] { display: none; }', '.model-options[hidden] { display: none; }', '.wizard-actions #model-wizard-back[hidden] { display: none; }']) expect(css).toContain(rule);
     // The wizard uses its own width rather than the generic dialog cap, and a long operation label wraps its flag inside the grid.
     expect(css).toContain('#model-profile-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); max-width: calc(100vw - 2 * var(--space-4)); }');
     expect(css).toContain('.wizard-permissions .tools-checkbox-grid { margin-block: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }');
@@ -928,6 +926,82 @@ describe('model wizard controller', () => {
     expect(Object.fromEntries(fields.map((field) => [field, view.wizard.state[field]]))).toEqual(snapshot);
     expect(view.q('[name="pricingInput"]')!.value).toBe('1.25');
     expect(view.q('#model-wizard-review-facts')!.textContent).toContain('Source: saved on this profile');
+  });
+
+  it('pre-fills an edit with the catalog price and saves it with its reference only while unedited', async () => {
+    const catalogEntry = entry({ providerModelId: 'gpt-5', displayName: 'GPT-5', pricing: { ...entry().pricing, inputMicrosPerMillionTokens: 1_500_000, outputMicrosPerMillionTokens: 12_000_000, cacheReadMicrosPerMillionTokens: 150_000, provenance: { source: 'openrouter', sourceModelId: 'openai/gpt-5', retrievedAt: 1_760_000_000_000, confidence: 'estimate' } } });
+    const view = mount({ searchCatalog: vi.fn(async () => catalogResult([entry(), catalogEntry])) });
+    const saved = profile();
+    view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers, useCatalogPrice: true });
+    await flush();
+    expect(view.api.searchCatalog).toHaveBeenCalledWith({ provider: 'openai', credentialId, q: 'gpt-5', limit: 10 });
+    // Nothing is saved until the operator saves; the form only shows the catalog price.
+    expect(view.api.updateProfile).not.toHaveBeenCalled();
+    expect(view.status.textContent).toBe('Filled in the current catalog price. Review it, then save.');
+    expect(view.wizard.state).toMatchObject({ step: 3, pricingInput: '1.50', pricingOutput: '12.00' });
+    expect(view.q('[data-price-save]')!.textContent).toBe('Catalog price');
+    await view.submit();
+    expect(view.q('[data-price-save]')!.textContent).toBe('Catalog price');
+    await view.submit();
+    const [, body] = view.api.updateProfile.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(body.catalogPriceRef).toEqual({ sourceModelId: 'openai/gpt-5' });
+    expect(body.pricing).toEqual({ inputMicrosPerMillionTokens: 1_500_000, outputMicrosPerMillionTokens: 12_000_000, cacheReadMicrosPerMillionTokens: 150_000, cacheWriteMicrosPerMillionTokens: null, tiers: [] });
+  });
+
+  it('clears a saved cache price and tiers the catalog no longer publishes when accepting the catalog price', async () => {
+    // The input and output prices already match the catalog; only the saved cache price and tier differ.
+    const catalogEntry = entry({ providerModelId: 'gpt-5', displayName: 'GPT-5', pricing: { ...entry().pricing, inputMicrosPerMillionTokens: 1_250_000, outputMicrosPerMillionTokens: 10_000_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null, provenance: { source: 'openrouter', sourceModelId: 'openai/gpt-5', retrievedAt: 1_760_000_000_000, confidence: 'estimate' } } });
+    const view = mount({ searchCatalog: vi.fn(async () => catalogResult([catalogEntry])) });
+    const tier = { minPromptTokens: 272_000, inputMicrosPerMillionTokens: 2_500_000, outputMicrosPerMillionTokens: 20_000_000 };
+    const saved = profile({ activeRevision: { ...profile().activeRevision, pricing: { inputMicrosPerMillionTokens: 1_250_000, outputMicrosPerMillionTokens: 10_000_000, cacheReadMicrosPerMillionTokens: 125_000, tiers: [tier] } } });
+    view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers, useCatalogPrice: true });
+    await flush();
+    expect(view.q('[data-price-save]')!.textContent).toBe('Catalog price');
+    await view.submit();
+    await view.submit();
+    const [, body] = view.api.updateProfile.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(body.catalogPriceRef).toEqual({ sourceModelId: 'openai/gpt-5' });
+    // Explicit nulls and an empty tier list: a body with only input and output would let the runner keep the saved cache price and tier.
+    expect(body.pricing).toEqual({ inputMicrosPerMillionTokens: 1_250_000, outputMicrosPerMillionTokens: 10_000_000, cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null, tiers: [] });
+    expect(AgentModelPricingSchema.safeParse(body.pricing).success).toBe(true);
+  });
+
+  it('labels an edited price as a custom override and sends it without a catalog reference', async () => {
+    const view = mount({ searchCatalog: vi.fn(async () => catalogResult([entry({ providerModelId: 'gpt-5' })])) });
+    const saved = profile();
+    view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers, useCatalogPrice: true });
+    await flush();
+    expect(view.q('[data-price-save]')!.textContent).toBe('Catalog price');
+    view.type(view.q('[name="pricingOutput"]')!, '2.10');
+    const badge = view.q('[data-price-save]')!;
+    expect(badge.textContent).toBe('Custom price (override)');
+    expect(badge.getAttribute('data-price-save')).toBe('override');
+    await view.submit();
+    await view.submit();
+    const [, body] = view.api.updateProfile.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(body).not.toHaveProperty('catalogPriceRef');
+    expect(body.pricing).toEqual({ inputMicrosPerMillionTokens: 250_000, outputMicrosPerMillionTokens: 2_100_000 });
+  });
+
+  it('keeps the saved price and shows the error when the catalog lookup fails', async () => {
+    const view = mount({ searchCatalog: vi.fn(async () => { throw new Error('The catalog is unavailable.'); }) });
+    const saved = profile();
+    view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers, useCatalogPrice: true });
+    await flush();
+    expect(view.wizard.state).toMatchObject({ pricingInput: '1.25', pricingOutput: '10.00', selectedEntry: null });
+    expect(view.status.textContent).toBe('The catalog is unavailable. The saved price is unchanged.');
+    expect(view.q('[data-price-save]')!.textContent).toBe('Saved price (unchanged)');
+  });
+
+  it('keeps the saved price when the catalog has none, and says so', async () => {
+    const view = mount({ searchCatalog: vi.fn(async () => catalogResult([entry()])) });
+    const saved = profile();
+    view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers, useCatalogPrice: true });
+    await flush();
+    expect(view.wizard.state).toMatchObject({ pricingInput: '1.25', pricingOutput: '10.00', selectedEntry: null });
+    expect(view.status.textContent).toContain('The catalog has no current price for this model. The saved price is unchanged');
+    // Restating the saved price keeps it and its provenance, so the save is not labelled an override.
+    expect(view.q('[data-price-save]')!.textContent).toBe('Saved price (unchanged)');
   });
 
   it('clears the previous model price when the model ID is overridden in Advanced settings', async () => {

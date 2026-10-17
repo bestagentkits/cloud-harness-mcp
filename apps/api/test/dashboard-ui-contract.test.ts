@@ -729,3 +729,29 @@ describe('destructive confirmation wiring', () => {
     expect(client).not.toMatch(/confirmAction\.open\(/);
   });
 });
+
+describe('model pricing and spend surfaces', () => {
+  const read = (name: string) => readFileSync(new URL(`../dashboard/${name}`, import.meta.url), 'utf8');
+  const apiClient = read('dashboard-api.js');
+  const client = read('dashboard.js');
+  const models = read('dashboard-models.js');
+
+  it('sends spend policy changes through the shared API helper, with the generation on delete', () => {
+    expect(apiClient).toContain("export const getModelSpend = () => api('/model-spend');");
+    expect(apiClient).toContain("export const setModelSpendPolicy = (payload) => api('/model-spend/policies', { method: 'PUT', body: JSON.stringify(payload) });");
+    expect(apiClient).toContain("api(`/model-spend/policies/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ expectedGeneration }) })");
+    expect(client).toMatch(/createSpendPanel\(\{[\s\S]*?confirm: confirmAction,[\s\S]*?getSpend: getModelSpend, setPolicy: setModelSpendPolicy, deletePolicy: deleteModelSpendPolicy/);
+  });
+
+  it('takes repricing from the runner review, and opens the review as an edit', () => {
+    // The list no longer searches the catalog per profile; the runner's pricingReview is the one source.
+    expect(client).not.toContain('checkProfilePricing');
+    expect(models).not.toContain('pricing-drift');
+    expect(client).toContain("openWizard('edit', profile, button, { useCatalogPrice: true })");
+  });
+
+  it('never shows an unknown saved price as zero', () => {
+    expect(models).toContain("export const UNKNOWN_SAVED_PRICE = 'Unknown (charged conservatively)';");
+    expect(models).not.toMatch(/\?\?\s*['"]\$0/);
+  });
+});

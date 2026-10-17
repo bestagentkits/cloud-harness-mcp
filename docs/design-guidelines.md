@@ -586,6 +586,18 @@ wired, so the visible one is never the only working one. Owners:
   [`dashboard-models.js`](../apps/api/dashboard/dashboard-models.js), with
   [`apps/api/test/dashboard-models-wizard.test.ts`](../apps/api/test/dashboard-models-wizard.test.ts)
   as the behaviour evidence.
+- **Estimates and spend limits:** a figure that is an estimate rather than a
+  bill carries a neutral, bordered `Estimate` tag (`.estimate-tag`) next to the
+  amount, so the qualifier is read with the number instead of in a footnote.
+  Spend threshold states reuse the status pills with their words (`OK`,
+  `Warning`, `Exceeded`, `No limit`): success, warning, and danger colours only
+  reinforce the text. A saved price the revision leaves unknown reads
+  "Unknown (charged conservatively)", never `$0`, and a repricing warning is a
+  sentence with its review action rather than a colour. Owners:
+  `renderSavedPricing`, `renderSpendPanel`, and `createSpendPanel` in
+  [`dashboard-models.js`](../apps/api/dashboard/dashboard-models.js), with
+  [`apps/api/test/dashboard-models-spend.test.ts`](../apps/api/test/dashboard-models-spend.test.ts)
+  as the behaviour evidence.
 - **Interaction states:** every control ships default / hover / `:focus-visible`
   / active / disabled; touch targets >= 44px (small controls expand their hit
   area via `::before`); inputs >= 16px.

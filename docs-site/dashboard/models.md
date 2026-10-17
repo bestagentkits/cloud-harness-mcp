@@ -334,8 +334,13 @@ key, connection check, or save is in flight.
    never inherits the previous model's price. A price no source published stays **Unknown**:
    enter it yourself, and enter `0` only for a model that is really free. A catalog price
    you keep unedited is saved whole, cache prices and long-prompt tiers included, with a
-   `catalogPriceRef` to its catalog model; once you edit a price, only the input and output
-   prices you typed are sent, as your override. Choose a permission preset here. **Advanced** holds the profile ID (derived
+   `catalogPriceRef` to its catalog model. A cache price the catalog does not publish is
+   sent as `null` and flat pricing as an empty tier list, so the save replaces every saved
+   price rather than keeping an old cache price or tier. Once you edit a price, only the
+   input and output prices you typed are sent, as your override. **Saved as** tells you which before you
+   save: **Catalog price**, **Custom price (override)**, or, for an edit that keeps the
+   saved input and output prices for the same model and key, **Saved price (unchanged)**
+   (the saved prices and their provenance are kept). Choose a permission preset here. **Advanced** holds the profile ID (derived
    from the model and made unique among your profiles), the API mode, the custom upstream
    URL (Custom only), per-run limits, prices, and the model ID.
 5. **Verify and save:** run a [connection check](#verifying-a-connection) against the
@@ -383,10 +388,42 @@ pending draft results.
 Each profile shows its provider and model, verification status and when it was checked,
 the key it uses, its prices, and its per-run cost and token limits. Actions are **Verify**
 (checks the saved profile), **Edit**, **Duplicate**, **Disable** or **Activate**, and
-**Delete**. When the catalog now lists a different price for the model than the profile
-saved, or the catalog price could not be refreshed, a pricing note appears next to the
-price: edit the profile to take the new price. The comparison is advisory and is skipped
-when the catalog cannot be reached.
+**Delete**.
+
+The **Price per 1M (in / out)** column shows the revision's pinned prices as saved:
+
+- the input and output prices, then **cache read** and **cache write**, then one line per
+  long-prompt tier (**From N prompt tokens:** with that tier's prices);
+- a price the revision leaves unknown reads **Unknown (charged conservatively)**, never
+  `$0`, because the gateway charges it at the conservative default in
+  [How unknown prices are charged](#revision-pricing-and-provenance);
+- where the prices came from: a **Catalog price** or **Custom price (override)** badge, then
+  **Source:** (OpenRouter, provider, or entered by you), **confidence:** (`exact`,
+  `estimate`, or `unknown`), and **retrieved** with the catalog's retrieval time when it has
+  one.
+
+When the [repricing review](#revision-pricing-and-provenance) reads `repriced`, a warning
+appears under the price: **Catalog price changed by N% since saved**, where N is the largest
+change the review measured (**Catalog price changed since saved** when no percentage
+applies, for example a new tier). For a profile whose price is your override, the warning
+reads **Differs from catalog** instead, because the difference is your choice. Either way,
+**Review catalog price** opens the edit form with the catalog's current price filled in;
+nothing is saved until you choose **Save changes**. Saving it unedited replaces every saved
+price, cache prices and tiers included, and the runner records it as the catalog's price
+when it still matches the runner's cached catalog price (otherwise it is saved as your
+override). When the catalog has no current price for the model, the form says **The catalog
+has no current price for this model** and keeps the saved price; when the catalog cannot be
+read, the form shows the error and keeps the saved price.
+
+When the review reads `unknown`, the list says **No catalog price to compare with**. This
+note does not mean the saved price is wrong: the runner may not have loaded the catalog yet
+(for example just after a restart), or the catalog may not list the model. Profiles of a
+provider without a catalog, such as Custom, never show it. For a
+`repriced` or `unknown` review whose catalog has a retrieval time, the list adds **Compared
+with the catalog from** that time, so you can tell how old the comparison is. When the
+catalog also prices the model by conditions a saved price cannot express, the list adds
+**The catalog also prices this model by conditions a saved price cannot express, so the
+charge can differ from this estimate.**
 
 ### Gateway status
 
@@ -448,8 +485,56 @@ one profile record. Deleting a profile keeps its policies and its spend, and a p
 created again with the same id inherits both. Delete the policies yourself if the new
 profile should start without them.
 
-The page has no spend controls yet, and no MCP tool manages policies. Use these dashboard
-routes. Each needs a signed-in dashboard session. A change also needs the session cookie,
+### The Spend and limits panel
+
+The **Spend and limits** panel on the Models & Budgets page reads
+`GET /dashboard/api/v1/model-spend`. Every amount in it carries an **Estimate** tag, and
+the help note under the heading says that a run's cap is reserved until the run ends. Each
+row is one window, **Today (UTC)** or **This month (UTC)**, for **All runs** (your account)
+or for one profile, shown as its display name and id. A profile that was deleted but still
+has a policy or spend reads **(profile deleted)**.
+
+| Column | Shows |
+| --- | --- |
+| **Settled** | Runs settled at the cost the model gateway charged |
+| **Reserved** | Open runs, each at its full cap |
+| **Unreconciled** | Runs whose gateway accounting was lost, each at its full cap |
+| **Total** | The three added together; this is what a limit is compared with |
+| **Limit** | The policy's limit and **warn at N%**, or **None** |
+| **State** | **OK**, **Warning** (from the warn percentage), **Exceeded** (at the limit), or **No limit** |
+
+The state is written as a word; its green, amber, or red pill only repeats it.
+
+**Adding a limit.** Use **Set limit** on a row, or the **Add a spend limit** form under
+the table. Choose **Applies to** (**All runs (account)** or a saved profile), **Period**
+(**Daily (UTC day)** or **Monthly (UTC month)**), **Limit (USD)**, and **Warn at (% of
+limit)** (80 unless you change it), then **Add limit**. The limit is typed in US dollars
+with at most six decimal places, above $0 and at most $1,000,000; a leading `$`, surrounding
+spaces, leading zeros, and a bare fraction such as `.5` are accepted. The browser converts it
+to whole micro-dollars without rounding, and refuses a negative amount or a seventh
+decimal place before anything is sent. A scope and period that already has a limit is
+refused with the server's message; the panel reloads so you can see and edit that limit
+instead.
+
+**Editing a limit.** **Edit limit** opens the **Edit spend limit** form with the stored
+values. A limit keeps its scope and period, so only **Limit (USD)** and **Warn at (% of
+limit)** can change; to move it, delete it and add a new one. **Save limit** sends the
+limit with the version you opened. If someone changed or deleted it meanwhile, the panel
+shows the server's message, reloads, and fills the form with the current values for you to
+review and save again. If the limit was deleted and a new one added for the same scope and
+period, the form opens that limit instead; if none exists any more, the form turns into
+**Add a spend limit** with your typed values kept.
+
+**Deleting a limit.** **Delete limit** asks for confirmation, naming the period and the
+scope as the **Applies to** column does (**All runs**, the profile's display name followed by
+its ID in parentheses, or the ID followed by **(profile deleted)**), then removes the limit.
+Recorded spend is kept. A limit that changed or was already deleted is refused with the
+server's message and the panel reloads.
+
+### Spend routes
+
+No MCP tool manages policies. Scripts can use the dashboard routes the panel uses. Each
+needs a signed-in dashboard session. A change also needs the session cookie,
 an `x-csrf-token` header set to the `csrfToken` field of the `GET /dashboard/api/v1/session`
 response, `Content-Type: application/json`, and the dashboard's own `Origin`; the
 dashboard page sends all of these itself.

@@ -16,6 +16,9 @@ import {
   searchModelCatalog,
   refreshModelCatalog,
   verifyModelConnection,
+  getModelSpend,
+  setModelSpendPolicy,
+  deleteModelSpendPolicy,
   listIntegrationCredentials,
   createIntegrationCredential,
   rotateIntegrationCredential,
@@ -70,7 +73,7 @@ import {
   WORKSPACE_LIFECYCLE_FIELDS, isWorkspaceLifecycleView, lifecycleDurationLabel, workspaceLifecycleDisplayValue, workspaceLifecycleFieldBounds
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
-import { createModelWizard, pricingDrift, renderModelsPage, verificationLabel } from './dashboard-models.js';
+import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -2064,39 +2067,20 @@ export function initializeDashboard() {
     if (token !== modelsLoadToken) return;
     insertRendered(content, renderModelsPage(page));
     bindModelsPage(page);
-    void checkProfilePricing(page, token);
-  }
-  const reloadModels = () => loadModels().catch(showError);
-
-  /**
-   * Marks a profile whose saved price no longer matches the catalog. The check is advisory and
-   * batched below the per-principal request budget; a catalog failure leaves the saved price as shown.
-   */
-  async function checkProfilePricing(page, token) {
-    const targets = page.profiles.flatMap((profile) => {
-      const revision = profile.activeRevision;
-      const credential = page.credentials.find((entry) => entry.id === revision?.credentialId);
-      const provider = page.providers.find((entry) => entry.id === credential?.provider);
-      return revision && credential?.status === 'ACTIVE' && provider && provider.catalogStrategy !== 'none' ? [{ profile, revision, credential }] : [];
-    });
-    for (const batch of chunkPaletteRequests(targets)) {
-      if (token !== modelsLoadToken) return;
-      await Promise.all(batch.map(async ({ profile, revision, credential }) => {
-        try {
-          const result = await searchModelCatalog({ provider: credential.provider, credentialId: credential.id, q: revision.model, limit: 10 });
-          if (token !== modelsLoadToken) return;
-          const entry = result?.data?.entries?.find((candidate) => candidate.providerModelId === revision.model);
-          const drift = pricingDrift(revision, entry, result?.data?.freshness);
-          if (drift.state !== 'changed' && drift.state !== 'catalog_stale') return;
-          for (const marker of content.querySelectorAll('[data-pricing-drift]')) {
-            if (marker.dataset.pricingDrift !== profile.id) continue;
-            marker.textContent = drift.text;
-            marker.hidden = false;
-          }
-        } catch { /* advisory only: see above */ }
-      }));
+    // Spend enriches the page: the panel loads on its own and reports its own failure.
+    const spendSection = content.querySelector('#model-spend');
+    if (spendSection) {
+      void createSpendPanel({
+        section: spendSection,
+        insert: insertRendered,
+        announce,
+        confirm: confirmAction,
+        profiles: page.profiles,
+        api: { getSpend: getModelSpend, setPolicy: setModelSpendPolicy, deletePolicy: deleteModelSpendPolicy }
+      }).load();
     }
   }
+  const reloadModels = () => loadModels().catch(showError);
 
   function bindModelCredentialDialog() {
     if (modelCredentialDialog) return modelCredentialDialog;
@@ -2174,7 +2158,7 @@ export function initializeDashboard() {
         updateProfile: updateModelProfile
       }
     });
-    const openWizard = (mode, profile, trigger) => modelWizard.open({ mode, profile, profiles: page.profiles, credentials: page.credentials, providers: page.providers, trigger });
+    const openWizard = (mode, profile, trigger, options = {}) => modelWizard.open({ mode, profile, profiles: page.profiles, credentials: page.credentials, providers: page.providers, trigger, ...options });
     document.querySelector('#open-add-profile-btn')?.addEventListener('click', (event) => openWizard('create', null, event.currentTarget));
     document.querySelector('#open-add-credential-btn')?.addEventListener('click', (event) => credentialDialog.open({ providerList: page.providers, trigger: event.currentTarget }));
     document.querySelector('#models-page')?.addEventListener('click', (event) => {
@@ -2185,6 +2169,8 @@ export function initializeDashboard() {
       const credential = page.credentials.find((entry) => entry.id === button.dataset.credentialId);
       if (action === 'add') openWizard('create', null, button);
       else if ((action === 'edit' || action === 'duplicate') && profile) openWizard(action, profile, button);
+      // The repricing warning's action: an edit pre-filled with the catalog price, saved only by the operator.
+      else if (action === 'review-price' && profile) openWizard('edit', profile, button, { useCatalogPrice: true });
       else if (action === 'verify' && profile) void verifyModelProfile(profile, button);
       else if ((action === 'activate' || action === 'disable') && profile) {
         void (async () => {
