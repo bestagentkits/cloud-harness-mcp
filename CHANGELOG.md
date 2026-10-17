@@ -1,3 +1,10 @@
+# [0.66.0-beta.20](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.19...v0.66.0-beta.20) (2026-10-17)
+
+
+### Features
+
+* **models:** import catalog price tiers, resolve price provenance, and review repricing ([#379](https://github.com/bestagentkits/cloud-harness-mcp/issues/379)) ([74cd394](https://github.com/bestagentkits/cloud-harness-mcp/commit/74cd394f266d128b58849725f91acd53f9c2e8c6))
+
 # [0.66.0-beta.19](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.18...v0.66.0-beta.19) (2026-10-17)
 
 
