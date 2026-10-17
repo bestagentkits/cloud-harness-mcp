@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import {
   HarnessError, MetadataRunnerRequestSchema, ModelCatalogRefreshResultSchema, ModelCatalogSearchResultSchema,
   ModelProfileValidateResultSchema, listModelProviders, qualifiedToolName,
@@ -1570,15 +1571,7 @@ export class DashboardControlService {
     }
 
     const { revision, provider, current } = plan;
-    const currentRevision = current?.activeRevision ?? null;
-    const currentProvider = currentRevision ? this.models().getCredentialProvider(principalId, currentRevision.credentialId) : undefined;
-    const escalations: ModelProfileEscalation[] = profileEscalations({
-      current: currentRevision,
-      next: revision,
-      provider,
-      ...(currentProvider ? { currentProvider } : {}),
-      boundCustomUrls: this.models().listBoundCustomUpstreams(principalId, revision.credentialId)
-    });
+    const escalations = this.planEscalations(principalId, input.action, plan);
     return ModelProfileValidateResultSchema.parse({
       valid: true,
       action: input.action,
@@ -1605,6 +1598,25 @@ export class DashboardControlService {
   }
 
   /**
+   * The changes in a planned save that need the owner's approval outside the
+   * Dashboard. Reads go through the repository's handle, so a guard running inside
+   * the save's transaction classifies the state the save commits against.
+   */
+  private planEscalations(principalId: string, action: 'create' | 'update', plan: ProfileRevisionPlan): ModelProfileEscalation[] {
+    const { revision, provider, current } = plan;
+    const currentRevision = current?.activeRevision ?? null;
+    const currentProvider = currentRevision ? this.models().getCredentialProvider(principalId, currentRevision.credentialId) : undefined;
+    return profileEscalations({
+      action,
+      current: currentRevision,
+      next: revision,
+      provider,
+      ...(currentProvider ? { currentProvider } : {}),
+      boundCustomUrls: this.models().listBoundCustomUpstreams(principalId, revision.credentialId)
+    });
+  }
+
+  /**
    * Records a profile change in the transaction that commits it. Details name the
    * actor, route, limits, and price source, never prices, URL paths, or keys.
    */
@@ -1613,10 +1625,11 @@ export class DashboardControlService {
     action: 'created' | 'updated' | 'activated' | 'disabled' | 'deleted',
     actor: ModelChangeActor
   ): ProfileChangeRecorder {
-    return (profile) => this.auditProfile(principalId, action, profile, actor);
+    return (database, profile) => this.auditProfile(database, principalId, action, profile, actor);
   }
 
   private auditProfile(
+    database: DatabaseSync,
     principalId: string,
     action: 'created' | 'updated' | 'activated' | 'disabled' | 'deleted',
     profile: AgentModelProfileMetadata,
@@ -1624,7 +1637,7 @@ export class DashboardControlService {
   ): void {
     const provider = this.models().getCredentialProvider(principalId, profile.activeRevision?.credentialId ?? profile.credentialId);
     this.metadata.recordAuditInTransaction(
-      this.principals.database, principalId, `model_profile.${action}`, 'model_profile', profile.id, profile.generation,
+      database, principalId, `model_profile.${action}`, 'model_profile', profile.id, profile.generation,
       profileAuditDetails(profile, provider, actor)
     );
   }

@@ -182,19 +182,29 @@ export interface ProfileRevisionOptions {
 }
 
 /**
- * Called inside the write transaction with the profile as it will be committed, so
- * a change and its audit row land together or not at all.
+ * Called inside the write transaction, on the database handle that holds it, with
+ * the profile as it will be committed, so a change and its audit row land
+ * together or not at all.
  */
-export type ProfileChangeRecorder = (profile: AgentModelProfileMetadata) => void;
+export type ProfileChangeRecorder = (database: DatabaseSync, profile: AgentModelProfileMetadata) => void;
+
+/**
+ * Called inside the write transaction with the exact plan the save then commits:
+ * the same revision id, timestamp, and prices, read under the write lock. Throwing
+ * refuses the save and writes nothing.
+ */
+export type ProfileChangeGuard = (plan: ProfileRevisionPlan) => void;
 
 export interface CreateProfileOptions extends ProfileRevisionOptions {
   // The status a new profile starts in. The Dashboard creates ACTIVE profiles; a
   // caller that is not the owner's input channel creates DISABLED ones.
   initialStatus?: 'ACTIVE' | 'DISABLED';
+  guard?: ProfileChangeGuard;
   record?: ProfileChangeRecorder;
 }
 
 export interface UpdateProfileOptions extends ProfileRevisionOptions {
+  guard?: ProfileChangeGuard;
   record?: ProfileChangeRecorder;
 }
 
@@ -768,24 +778,28 @@ export class ModelProfileStateRepository {
   }
 
   createProfile(principalId: string, input: AgentModelProfileInput, options: CreateProfileOptions = {}): AgentModelProfileMetadata {
-    const { revision, displayName } = this.planCreateRevision(principalId, input, options);
-    const status = options.initialStatus ?? 'ACTIVE';
-    const now = revision.createdAt;
-    const profile: AgentModelProfileMetadata = {
-      id: input.profileId,
-      principalId,
-      displayName,
-      credentialId: input.credentialId,
-      desiredRevisionId: revision.id,
-      activeRevisionId: revision.id,
-      generation: 1,
-      status,
-      activeRevision: revision,
-      createdAt: now,
-      updatedAt: now
-    };
+    // Planning under the write lock means the guard sees, and the insert commits,
+    // one plan against one state.
+    return this.inTransaction(() => {
+      const plan = this.planCreateRevision(principalId, input, options);
+      options.guard?.(plan);
+      const { revision, displayName } = plan;
+      const status = options.initialStatus ?? 'ACTIVE';
+      const now = revision.createdAt;
+      const profile: AgentModelProfileMetadata = {
+        id: input.profileId,
+        principalId,
+        displayName,
+        credentialId: input.credentialId,
+        desiredRevisionId: revision.id,
+        activeRevisionId: revision.id,
+        generation: 1,
+        status,
+        activeRevision: revision,
+        createdAt: now,
+        updatedAt: now
+      };
 
-    this.inTransaction(() => {
       this.database.prepare(`
         INSERT INTO agent_model_profiles (
           id, principal_id, display_name, credential_id, desired_revision_id, active_revision_id, generation, status, created_at, updated_at
@@ -793,10 +807,9 @@ export class ModelProfileStateRepository {
       `).run(input.profileId, principalId, displayName, input.credentialId, revision.id, revision.id, status, now, now);
 
       this.insertRevision(revision);
-      options.record?.(profile);
+      options.record?.(this.database, profile);
+      return profile;
     });
-
-    return profile;
   }
 
   /**
@@ -1008,35 +1021,38 @@ export class ModelProfileStateRepository {
     input: AgentModelProfileUpdateInput,
     options: UpdateProfileOptions = {}
   ): AgentModelProfileMetadata {
-    const { revision, displayName, current } = this.planUpdateRevision(principalId, profileId, input, options);
-    // An update plan always describes the profile it replaces.
-    const { generation, status, createdAt } = current!;
-    const now = revision.createdAt;
-    const profile: AgentModelProfileMetadata = {
-      id: revision.profileId,
-      principalId,
-      displayName,
-      credentialId: revision.credentialId,
-      desiredRevisionId: revision.id,
-      activeRevisionId: revision.id,
-      generation: generation + 1,
-      status,
-      activeRevision: revision,
-      createdAt,
-      updatedAt: now
-    };
+    // Planning under the write lock means the guard sees, and the update commits,
+    // one plan against one state.
+    return this.inTransaction(() => {
+      const plan = this.planUpdateRevision(principalId, profileId, input, options);
+      options.guard?.(plan);
+      const { revision, displayName, current } = plan;
+      // An update plan always describes the profile it replaces.
+      const { generation, status, createdAt } = current!;
+      const now = revision.createdAt;
+      const profile: AgentModelProfileMetadata = {
+        id: revision.profileId,
+        principalId,
+        displayName,
+        credentialId: revision.credentialId,
+        desiredRevisionId: revision.id,
+        activeRevisionId: revision.id,
+        generation: generation + 1,
+        status,
+        activeRevision: revision,
+        createdAt,
+        updatedAt: now
+      };
 
-    this.inTransaction(() => {
       this.insertRevision(revision);
       this.database.prepare(`
         UPDATE agent_model_profiles
         SET display_name = ?, credential_id = ?, desired_revision_id = ?, active_revision_id = ?, generation = generation + 1, updated_at = ?
         WHERE id = ? AND principal_id = ?
       `).run(displayName, revision.credentialId, revision.id, revision.id, now, profileId, principalId);
-      options.record?.(profile);
+      options.record?.(this.database, profile);
+      return profile;
     });
-
-    return profile;
   }
 
   activateProfile(principalId: string, profileId: string, expectedGeneration: number, record?: ProfileChangeRecorder): AgentModelProfileMetadata {
@@ -1070,7 +1086,7 @@ export class ModelProfileStateRepository {
       `).run(status, Date.now(), profileId, principalId);
 
       const updated = this.listProfiles(principalId).find((p) => p.id === profileId)!;
-      record?.(updated);
+      record?.(this.database, updated);
       return updated;
     });
   }
@@ -1105,7 +1121,7 @@ export class ModelProfileStateRepository {
       const deleted = record ? this.listProfiles(principalId).find((p) => p.id === profileId) : undefined;
       this.database.prepare('DELETE FROM agent_model_profiles WHERE id = ? AND principal_id = ?').run(profileId, principalId);
       this.deleteVerification(principalId, 'profile', profileId);
-      if (deleted) record?.(deleted);
+      if (deleted) record?.(this.database, deleted);
     });
   }
 

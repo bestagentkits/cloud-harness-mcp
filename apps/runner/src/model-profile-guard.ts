@@ -24,7 +24,9 @@ export interface GuardedRevision {
 }
 
 export interface ProfileEscalationInput {
-  // The revision the change replaces; null for a create.
+  action: 'create' | 'update';
+  // The revision the change replaces; null for a create, and for an update of a
+  // profile whose active revision cannot be read.
   current: GuardedRevision | null;
   next: GuardedRevision;
   // The provider of the next revision's credential.
@@ -86,7 +88,9 @@ function catalogVerified(provenance: AgentModelPriceProvenance): boolean {
  * The changes in a profile save that need the owner's approval when they do not
  * come from the Dashboard. Pure: it reads nothing and writes nothing. The result
  * is sorted and has no duplicates. A create has no current revision, so only an
- * unbound custom upstream applies to it.
+ * unbound custom upstream applies to it. An update with no readable current
+ * revision fails closed: nothing is treated as approved, so every escalation the
+ * next revision can carry is reported.
  */
 export function profileEscalations(input: ProfileEscalationInput): ModelProfileEscalation[] {
   const { current, next, provider } = input;
@@ -96,7 +100,14 @@ export function profileEscalations(input: ProfileEscalationInput): ModelProfileE
     found.add('custom_upstream_unbound');
   }
 
-  if (current) {
+  if (input.action === 'update' && !current) {
+    // Limits are positive and a revision allows at least one proxy operation, so
+    // both exceed an approved baseline of nothing.
+    found.add('limits_raised');
+    found.add('proxy_operations_widened');
+    if (!catalogVerified(next.priceProvenance)) found.add('price_lowered');
+    if (next.priceProvenance.isOverride) found.add('price_unverified_for_new_route');
+  } else if (current) {
     if (LIMIT_KEYS.some((key) => next.limits[key] > current.limits[key])) found.add('limits_raised');
 
     if (!catalogVerified(next.priceProvenance)) {

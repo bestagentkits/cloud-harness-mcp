@@ -31,7 +31,7 @@ function revision(overrides: Partial<GuardedRevision> = {}): GuardedRevision {
 }
 
 const escalations = (next: GuardedRevision, current: GuardedRevision | null = revision(), provider: ModelProviderKind = 'openai', bound: string[] = []) =>
-  profileEscalations({ current, next, provider, boundCustomUrls: bound });
+  profileEscalations({ action: current ? 'update' : 'create', current, next, provider, boundCustomUrls: bound });
 
 describe('profile escalation classifier', () => {
   it('reports nothing for an unchanged revision', () => {
@@ -121,6 +121,39 @@ describe('profile escalation classifier', () => {
     });
     expect(escalations(generous, null, 'openai')).toEqual([]);
     expect(escalations(generous, null, 'custom')).toEqual(['custom_upstream_unbound']);
+  });
+
+  it('resolves cache prices for each side with its own credential provider', () => {
+    // Both sides leave the cache write price unknown. OpenRouter bills cache writes,
+    // so it charges twice the input price; OpenAI does not, so it charges the input price.
+    const fromOpenRouter = revision({ credentialId: 'cred_00000000000000000000000000000002', priceProvenance: CATALOG });
+    const toOpenAi = revision({ priceProvenance: CATALOG });
+    const guard = (current: GuardedRevision, next: GuardedRevision, provider: ModelProviderKind, currentProvider?: ModelProviderKind) =>
+      profileEscalations({ action: 'update', current, next, provider, ...(currentProvider ? { currentProvider } : {}), boundCustomUrls: [] });
+
+    // Catalog prices are trusted, so a switch carrying them is not price-checked.
+    expect(guard(fromOpenRouter, toOpenAi, 'openai', 'openrouter')).toEqual([]);
+    const typed = (value: GuardedRevision) => ({ ...value, priceProvenance: { ...CATALOG, source: 'user' as const, isOverride: false } });
+    // Moving off a provider that bills cache writes lowers the resolved write price.
+    expect(guard(typed(fromOpenRouter), typed(toOpenAi), 'openai', 'openrouter')).toEqual(['price_lowered']);
+    // Moving onto one raises it.
+    expect(guard(typed(toOpenAi), typed(fromOpenRouter), 'openrouter', 'openai')).toEqual([]);
+    // Without the current provider both sides resolve as the next one, which hides the drop.
+    expect(guard(typed(fromOpenRouter), typed(toOpenAi), 'openai')).toEqual([]);
+  });
+
+  it('fails closed for an update with no readable current revision', () => {
+    const update = (next: GuardedRevision, provider: ModelProviderKind = 'openai') =>
+      profileEscalations({ action: 'update', current: null, next, provider, boundCustomUrls: [] });
+    // Nothing is approved, so limits, operations, and typed prices all escalate.
+    expect(update(revision())).toEqual(['limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened']);
+    // Catalog prices need no approval, even here.
+    expect(update(revision({ priceProvenance: CATALOG }))).toEqual(['limits_raised', 'proxy_operations_widened']);
+    expect(update(revision({ upstreamUrl: CUSTOM_URL }), 'custom')).toEqual([
+      'custom_upstream_unbound', 'limits_raised', 'price_lowered', 'price_unverified_for_new_route', 'proxy_operations_widened'
+    ]);
+    // A create has no current revision by definition and is not affected.
+    expect(profileEscalations({ action: 'create', current: null, next: revision(), provider: 'openai', boundCustomUrls: [] })).toEqual([]);
   });
 
   it('returns every escalation sorted and once', () => {
