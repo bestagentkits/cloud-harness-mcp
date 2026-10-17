@@ -16,7 +16,9 @@ export interface ClassifiedFailure {
 
 const QUOTA_TEXT = /insufficient[_ ]quota|insufficient[_ ]balance|insufficient credits|credit|balance|billing|quota|payment/iu;
 const INVALID_KEY_TEXT = /api[_ ]?key[_ ]?(not valid|invalid)|invalid[_ ]api[_ ]?key|api_key_invalid|incorrect api key|invalid x-api-key|unauthenticated/iu;
-const UNKNOWN_MODEL_TEXT = /model[^.]{0,80}(not found|not exist|does not exist|is not available|unknown|not supported|invalid)|(unknown|invalid|unsupported) model|no endpoints found/iu;
+const UNKNOWN_MODEL_TEXT = /model[^.]{0,80}(not found|not exist|does not exist|is not available|unknown|not supported|invalid)|model[_ ]not[_ ]found|(unknown|invalid|unsupported) model|no endpoints found/iu;
+const RATE_LIMIT_TEXT = /rate[_ ]?limit|too many requests/iu;
+const ACCESS_TEXT = /permission|not allowed|access denied|forbidden|missing[_ ]scope|insufficient[_ ]scope/iu;
 const TOOLS_UNSUPPORTED_TEXT = /tool|function/iu;
 
 /** Categories that never prove a configuration wrong: the connection was only partly provable. */
@@ -96,6 +98,37 @@ export function classifyHttpFailure(provider: ModelProviderKind, status: number,
   const failure: ClassifiedFailure = { category: 'upstream', message: withDetail(`The provider answered HTTP ${status}`) };
   if (status >= 100 && status <= 599) failure.httpStatus = status;
   return failure;
+}
+
+/**
+ * Classifies an error the provider reported inside a 2xx stream with the same
+ * rules as an HTTP failure: a numeric status goes through the HTTP mapping,
+ * otherwise the provider's code and text decide. The result carries no HTTP
+ * status because the exchange itself succeeded.
+ */
+export function classifyStreamError(
+  provider: ModelProviderKind,
+  error: { message: string; code?: string; status?: number },
+  secret: string
+): ClassifiedFailure {
+  const message = sanitizeMessage(`The provider reported an error in the stream: ${error.message}`, secret);
+  if (error.status !== undefined) {
+    const body = JSON.stringify({ error: { ...(error.code !== undefined ? { code: error.code } : {}), message: error.message } });
+    const failure = classifyHttpFailure(provider, error.status, body, secret);
+    return { category: failure.category, message: failure.category === 'auth' ? failure.message : message };
+  }
+  const text = `${error.code ?? ''} ${error.message}`;
+  if (INVALID_KEY_TEXT.test(text)) return { category: 'auth', message: 'The provider rejected the API key.' };
+  if (QUOTA_TEXT.test(text)) return { category: 'quota', message };
+  if (RATE_LIMIT_TEXT.test(text)) return { category: 'rate_limited', message };
+  if (UNKNOWN_MODEL_TEXT.test(text)) return { category: 'not_found', message };
+  if (ACCESS_TEXT.test(text)) return { category: 'access', message };
+  return { category: 'upstream', message };
+}
+
+/** Whether a refused model listing names missing permissions or scopes rather than a bad key. */
+export function isScopeRefusal(body: string): boolean {
+  return /insufficient[_ ]permissions?|missing[_ ]scopes?|insufficient[_ ]scopes?|restricted (api )?key|does not have (the )?(required )?(permission|scope)/iu.test(body);
 }
 
 /** Classifies a transport failure raised by the provider HTTP client. */

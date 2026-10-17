@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 import { getModelProvider, listModelProviders, type ModelProviderKind } from '@cloud-harness/contracts';
 
 // Outbound HTTPS from the runner to model providers, for catalog discovery and
@@ -68,7 +69,10 @@ export function isUnsafeProviderAddress(address: string): boolean {
     return normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') ||
       normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb') ||
       normalized.startsWith('ff') || normalized.startsWith('2001:db8:') || normalized.startsWith('2001:2:') ||
-      normalized.startsWith('100:');
+      normalized.startsWith('100:') ||
+      // NAT64 (64:ff9b::/96, 64:ff9b:1::/48) and 6to4 (2002::/16) embed an
+      // IPv4 address the gateway would reach; refuse the prefixes outright.
+      normalized.startsWith('64:ff9b:') || normalized.startsWith('2002:');
   }
   return true;
 }
@@ -84,10 +88,15 @@ function assertPublicHostname(hostname: string): void {
   }
 }
 
-const registryHosts = new Set(listModelProviders().flatMap((provider) => [
-  ...Object.values(provider.endpoints),
-  ...(provider.modelsEndpoint ? [provider.modelsEndpoint.url] : [])
-]).map((url) => new URL(url).hostname));
+// Each registry provider may reach only its own hosts, so a credential for one
+// provider is never sent to another provider's API.
+const registryHosts: ReadonlyMap<ModelProviderKind, ReadonlySet<string>> = new Map(listModelProviders().map((provider) => [
+  provider.id,
+  new Set([
+    ...Object.values(provider.endpoints),
+    ...(provider.modelsEndpoint ? [provider.modelsEndpoint.url] : [])
+  ].map((url) => new URL(url).hostname))
+]));
 
 /**
  * The hosts a request for `provider` may reach: the registry's own hosts, or
@@ -101,7 +110,7 @@ export function assertProviderRequestUrl(provider: ModelProviderKind, raw: strin
   const definition = getModelProvider(provider);
   const allowed = definition.requiresCustomUpstream
     ? customUpstreamUrl !== undefined && new URL(customUpstreamUrl).hostname === url.hostname
-    : registryHosts.has(url.hostname);
+    : registryHosts.get(provider)?.has(url.hostname) === true;
   if (!allowed) throw new ProviderHttpError('forbidden_host', 'provider request host is not allowed');
   assertPublicHostname(url.hostname);
   return url;
@@ -109,17 +118,57 @@ export function assertProviderRequestUrl(provider: ModelProviderKind, raw: strin
 
 type Lookup = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
 
+/**
+ * Splits a streamed body into lines. A StringDecoder keeps a multibyte UTF-8
+ * character that straddles two chunks intact. `push` returns false once
+ * `onLine` asks to stop.
+ */
+export function createLineSplitter(onLine: (line: string) => boolean | void): { push(chunk: Buffer): boolean; end(): void } {
+  const decoder = new StringDecoder('utf8');
+  let pending = '';
+  return {
+    push(chunk) {
+      pending += decoder.write(chunk);
+      let newline = pending.indexOf('\n');
+      while (newline >= 0) {
+        const line = pending.slice(0, newline).replace(/\r$/u, '');
+        pending = pending.slice(newline + 1);
+        if (onLine(line) === false) return false;
+        newline = pending.indexOf('\n');
+      }
+      return true;
+    },
+    end() {
+      pending += decoder.end();
+      if (pending.length > 0) onLine(pending.replace(/\r$/u, ''));
+      pending = '';
+    }
+  };
+}
+
+function timeoutError(timeoutMs: number): ProviderHttpError {
+  return new ProviderHttpError('timeout', `provider did not answer within ${timeoutMs} ms`);
+}
+
 export function createProviderHttpClient(options: { lookup?: Lookup } = {}): ProviderHttpClient {
   const resolveAll: Lookup = options.lookup ?? ((hostname) => dnsLookup(hostname, { all: true, verbatim: true }));
   return {
     async request(request) {
+      // The deadline covers name resolution as well as the exchange itself.
+      const startedAt = Date.now();
       const url = new URL(request.url);
       let address = url.hostname;
       let family = isIP(address);
       if (family === 0) {
-        const addresses = await resolveAll(url.hostname).catch(() => {
-          throw new ProviderHttpError('network', 'provider hostname did not resolve');
-        });
+        let lookupTimer: NodeJS.Timeout | undefined;
+        const addresses = await Promise.race([
+          resolveAll(url.hostname).catch(() => {
+            throw new ProviderHttpError('network', 'provider hostname did not resolve');
+          }),
+          new Promise<never>((_resolve, reject) => {
+            lookupTimer = setTimeout(() => reject(timeoutError(request.timeoutMs)), request.timeoutMs);
+          })
+        ]).finally(() => clearTimeout(lookupTimer));
         const selected = addresses.find((candidate) => !isUnsafeProviderAddress(candidate.address));
         if (!selected || (selected.family !== 4 && selected.family !== 6)) {
           throw new ProviderHttpError('forbidden_host', 'provider hostname resolved only to private or reserved addresses');
@@ -129,6 +178,8 @@ export function createProviderHttpClient(options: { lookup?: Lookup } = {}): Pro
       } else if (isUnsafeProviderAddress(address)) {
         throw new ProviderHttpError('forbidden_host', 'provider address is private or reserved');
       }
+      const remainingMs = request.timeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) throw timeoutError(request.timeoutMs);
       const pinnedAddress = address;
       const pinnedFamily = family;
       return await new Promise<ProviderHttpResponse>((resolve, reject) => {
@@ -169,7 +220,7 @@ export function createProviderHttpClient(options: { lookup?: Lookup } = {}): Pro
           const chunks: Buffer[] = [];
           let size = 0;
           let truncated = false;
-          let pending = '';
+          const lines = request.onLine ? createLineSplitter(request.onLine) : undefined;
           const stop = () => {
             truncated = true;
             incoming.destroy();
@@ -181,28 +232,20 @@ export function createProviderHttpClient(options: { lookup?: Lookup } = {}): Pro
             const kept = chunk.byteLength > room ? chunk.subarray(0, room) : chunk;
             chunks.push(kept);
             size += kept.byteLength;
-            if (request.onLine) {
-              pending += kept.toString('utf8');
-              let newline = pending.indexOf('\n');
-              while (newline >= 0) {
-                const line = pending.slice(0, newline).replace(/\r$/u, '');
-                pending = pending.slice(newline + 1);
-                if (request.onLine(line) === false) { stop(); return; }
-                newline = pending.indexOf('\n');
-              }
-            }
+            if (lines && !lines.push(kept)) { stop(); return; }
             if (kept.byteLength < chunk.byteLength) stop();
           });
           incoming.on('end', () => {
-            if (request.onLine && pending.length > 0) request.onLine(pending);
+            if (settled) return;
+            lines?.end();
             finish(undefined, { status: incoming.statusCode ?? 0, headers, body: Buffer.concat(chunks).toString('utf8'), truncated });
           });
           incoming.on('error', () => finish(new ProviderHttpError('network', 'provider response failed')));
         });
         const deadline = setTimeout(() => {
           outgoing.destroy();
-          finish(new ProviderHttpError('timeout', `provider did not answer within ${request.timeoutMs} ms`));
-        }, request.timeoutMs);
+          finish(timeoutError(request.timeoutMs));
+        }, remainingMs);
         outgoing.on('error', (error) => finish(new ProviderHttpError('network', `provider request failed: ${error.name}`)));
         outgoing.end(request.body);
       });

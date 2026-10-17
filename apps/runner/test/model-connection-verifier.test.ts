@@ -16,12 +16,13 @@ import { ProviderHttpError, type ProviderHttpClient, type ProviderHttpRequest, t
 import { ModelConnectionVerifier, type VerificationAudit } from '../src/model-verification/model-connection-verifier.js';
 import { VerificationRateLimiter } from '../src/model-verification/verification-rate-limiter.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
-import { StateStore } from '../src/state-store.js';
+import { StateStore, downgradeStateSchemaToV10, downgradeStateSchemaToV11, downgradeStateSchemaToV8, downgradeStateSchemaToV9 } from '../src/state-store.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
 
 const SECRET = 'sk-test-verification-secret-0123456789';
 
-type Reply = { status: number; body: string } | Error;
+// 'hang' never answers, like a provider (or name lookup) that stalls.
+type Reply = { status: number; body: string } | Error | 'hang';
 type Handler = (request: ProviderHttpRequest) => Reply;
 
 /** Replays a canned answer, feeding streamed lines through onLine exactly as the real client does. */
@@ -31,6 +32,7 @@ function fakeHttp(handler: Handler): { client: ProviderHttpClient; requests: Pro
     async request(request): Promise<ProviderHttpResponse> {
       requests.push(request);
       const reply = handler(request);
+      if (reply === 'hang') return await new Promise<never>(() => undefined);
       if (reply instanceof Error) {
         // A timeout after partial output: deliver the lines first, then fail.
         const partial = (reply as Error & { partial?: string }).partial;
@@ -70,7 +72,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function setup(handler: Handler, options: { limiter?: VerificationRateLimiter } = {}) {
+function setup(handler: Handler, options: { limiter?: VerificationRateLimiter; totalBudgetMs?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'model-verify-')); roots.push(root);
   const store = new StateStore(join(root, 'state.db'));
   closers.push(() => store.close());
@@ -84,7 +86,8 @@ function setup(handler: Handler, options: { limiter?: VerificationRateLimiter } 
     repository: repo,
     http: http.client,
     audit: (...args) => { audits.push(args); },
-    rateLimiter: options.limiter ?? new VerificationRateLimiter(1_000)
+    rateLimiter: options.limiter ?? new VerificationRateLimiter(1_000),
+    ...(options.totalBudgetMs !== undefined ? { totalBudgetMs: options.totalBudgetMs } : {})
   });
   const credential = (provider: ModelProviderKind = 'openai', authMode?: ProviderAuthMode, principal = p1) =>
     repo.createCredential(principal, { label: `${provider} key`, provider, apiKey: SECRET, ...(authMode ? { authMode } : {}) });
@@ -140,7 +143,7 @@ describe('model connection verifier', () => {
     expect(inference?.timeoutMs).toBeLessThanOrEqual(20_000);
     expect(inference?.maxResponseBytes).toBe(256 * 1024);
     expect(JSON.parse(inference?.body ?? '')).toEqual({
-      model: 'gpt-test', messages: [{ role: 'user', content: 'Reply with OK.' }], max_tokens: 16, stream: true, stream_options: { include_usage: true }
+      model: 'gpt-test', messages: [{ role: 'user', content: 'Reply with OK.' }], max_completion_tokens: 16, stream: true, stream_options: { include_usage: true }
     });
 
     const listed = ctx.repo.listProfiles(ctx.p1)[0]!;
@@ -157,6 +160,32 @@ describe('model connection verifier', () => {
     expect(ctx.audits).toHaveLength(1);
     expect(ctx.audits[0]?.slice(0, 4)).toEqual([ctx.p1, 'model_connection.verified', 'model_profile', saved.id]);
     expect(ctx.audits[0]?.[5]).toMatchObject({ outcome: 'verified', provider: 'openai', target: 'profile', model: 'gpt-test' });
+  });
+
+  it('names the chat output cap the way the gateway does for each provider', async () => {
+    const toolAnswer = json({ choices: [{ message: { tool_calls: [{ function: { name: 'report_status', arguments: '{}' } }] } }] });
+    const handler: Handler = (request) => {
+      if (request.method === 'GET') return { status: 200, body: listing(['m']) };
+      return Array.isArray((JSON.parse(request.body ?? '{}') as Record<string, unknown>).tools) ? { status: 200, body: toolAnswer } : { status: 200, body: chatStream() };
+    };
+    for (const [provider, field, other] of [['openai', 'max_completion_tokens', 'max_tokens'], ['deepseek', 'max_tokens', 'max_completion_tokens']] as const) {
+      const ctx = setup(handler);
+      await ctx.verifier.verify(ctx.p1, { credentialId: ctx.credential(provider).id, model: 'm', checks: { tools: true } });
+      const [inference, tool] = ctx.requests.filter((request) => request.method === 'POST').map((request) => JSON.parse(request.body ?? '{}') as Record<string, unknown>);
+      expect(inference?.[field], provider).toBe(16);
+      expect(tool?.[field], provider).toBe(128);
+      expect(inference).not.toHaveProperty(other);
+      expect(tool).not.toHaveProperty(other);
+    }
+  });
+
+  it('audits the credential generation and keeps the key version as a detail', async () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    ctx.store.database.prepare('UPDATE model_provider_credentials SET generation = 7 WHERE id = ?').run(cred.id);
+    await ctx.verifier.verify(ctx.p1, { credentialId: cred.id });
+    expect(ctx.audits[0]?.[4]).toBe(7);
+    expect(ctx.audits[0]?.[5]).toMatchObject({ keyVersion: 1, credentialId: cred.id });
   });
 
   it('verifies a responses-mode draft without saving a profile or revision', async () => {
@@ -188,15 +217,41 @@ describe('model connection verifier', () => {
     await expect(ctx.verifier.verify(ctx.p1, { credentialId: cred.id, checks: { inference: true } })).rejects.toThrow('a model is required');
   });
 
-  it('fails on a rejected key without echoing the provider text and skips the paid checks', async () => {
+  it('fails a key check on a rejected key without echoing the provider text', async () => {
     const ctx = setup(openAiHandler({ models: { status: 401, body: json({ error: { message: `Incorrect API key provided: ${SECRET.slice(0, 8)}****6789` } }) } }));
     const cred = ctx.credential();
-    const result = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test', checks: { tools: true } });
+    const result = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id });
     expect(result.outcome).toBe('failed');
     expect(byName(result, 'authentication')).toMatchObject({ outcome: 'failed', errorCategory: 'auth', httpStatus: 401, message: 'The provider rejected the API key.' });
-    expect(result.checks.slice(1).every((entry) => entry.outcome === 'not_tested')).toBe(true);
     expect(ctx.requests).toHaveLength(1);
     expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification?.outcome).toBe('failed');
+  });
+
+  it('lets inference decide the key when the model list refuses it', async () => {
+    const refused = { status: 401, body: json({ error: { message: 'You have insufficient permissions for this operation. Missing scopes: api.model.read.' } }) };
+    const ctx = setup(openAiHandler({ models: refused }));
+    const cred = ctx.credential();
+    const result = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
+    expect(byName(result, 'authentication')).toMatchObject({ outcome: 'limited', errorCategory: 'access', httpStatus: 401 });
+    expect(byName(result, 'streaming_inference').outcome).toBe('verified');
+    expect(byName(result, 'model_access').outcome).toBe('verified');
+    expect(result.outcome).toBe('limited');
+    expect(ctx.requests).toHaveLength(2);
+    expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification?.outcome).toBe('verified');
+
+    // An inference that rejects the key settles it as failed.
+    const rejected = setup(openAiHandler({ models: refused, inference: { status: 401, body: '{}' } }));
+    const rejectedCred = rejected.credential();
+    const failed = await rejected.verifier.verify(rejected.p1, { credentialId: rejectedCred.id, model: 'gpt-test' });
+    expect(failed.outcome).toBe('failed');
+    expect(byName(failed, 'streaming_inference')).toMatchObject({ outcome: 'failed', errorCategory: 'auth' });
+    expect(rejected.repo.listCredentials(rejected.p1)[0]?.lastVerification?.outcome).toBe('failed');
+
+    // Without inference, scope text on a 401 still reads as limited rather than a bad key.
+    const keyOnly = setup(openAiHandler({ models: refused }));
+    const keyOnlyResult = await keyOnly.verifier.verify(keyOnly.p1, { credentialId: keyOnly.credential().id });
+    expect(byName(keyOnlyResult, 'authentication')).toMatchObject({ outcome: 'limited', errorCategory: 'access' });
+    expect(keyOnly.repo.listCredentials(keyOnly.p1)[0]?.lastVerification?.outcome).toBe('limited');
   });
 
   it('maps Gemini key errors (400 INVALID_ARGUMENT and 403) to auth, and other 403s to access', async () => {
@@ -211,7 +266,8 @@ describe('model connection verifier', () => {
     const ctx = setup(() => ({ status: 403, body: json({ error: { message: 'Project has no access to this API' } }) }));
     const cred = ctx.credential('google');
     const result = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id });
-    expect(byName(result, 'authentication')).toMatchObject({ errorCategory: 'access', outcome: 'failed', httpStatus: 403 });
+    // A 403 that is not a bad key is a key scoped away from listing models.
+    expect(byName(result, 'authentication')).toMatchObject({ errorCategory: 'access', outcome: 'limited', httpStatus: 403 });
   });
 
   it('matches Gemini model IDs that the listing prefixes with models/', async () => {
@@ -230,6 +286,13 @@ describe('model connection verifier', () => {
     const ctx = setup(() => ({ status: 200, body: listing(['claude-a'], { has_more: true }) }));
     const cred = ctx.credential('anthropic');
     const result = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'claude-z', checks: { inference: false } });
+    expect(byName(result, 'model_access')).toMatchObject({ outcome: 'limited', errorCategory: 'not_found' });
+    expect(result.outcome).toBe('limited');
+  });
+
+  it('treats a model missing from a complete listing as limited when inference proved nothing', async () => {
+    const ctx = setup(openAiHandler({ models: { status: 200, body: listing(['gpt-other']) }, inference: { status: 429, body: json({ error: { message: 'Rate limit reached' } }) } }));
+    const result = await ctx.verifier.verify(ctx.p1, { credentialId: ctx.credential().id, model: 'gpt-test' });
     expect(byName(result, 'model_access')).toMatchObject({ outcome: 'limited', errorCategory: 'not_found' });
     expect(result.outcome).toBe('limited');
   });
@@ -272,6 +335,59 @@ describe('model connection verifier', () => {
     const result = await ctx.verifier.verify(ctx.p1, { credentialId: cred.id, model: 'gpt-test' });
     expect(byName(result, 'protocol').outcome).toBe('verified');
     expect(byName(result, 'streaming_inference')).toMatchObject({ outcome: 'limited', errorCategory: 'timeout' });
+  });
+
+  it('waits for a finish reason or [DONE] even when usage arrives early', async () => {
+    const usageFirst = sse([
+      { choices: [], usage: { prompt_tokens: 5, completion_tokens: 0 } },
+      { choices: [{ index: 0, delta: { content: 'OK' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }
+    ], false);
+    const ctx = setup(openAiHandler({ inference: { status: 200, body: usageFirst } }));
+    const result = await ctx.verifier.verify(ctx.p1, { credentialId: ctx.credential().id, model: 'gpt-test' });
+    expect(byName(result, 'streaming_inference').outcome).toBe('verified');
+    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 1 });
+
+    const unfinished = sse([
+      { choices: [{ index: 0, delta: { content: 'O' }, finish_reason: null }], usage: { prompt_tokens: 5, completion_tokens: 1 } }
+    ], false);
+    const cut = setup(openAiHandler({ inference: { status: 200, body: unfinished } }));
+    const cutResult = await cut.verifier.verify(cut.p1, { credentialId: cut.credential().id, model: 'gpt-test' });
+    expect(byName(cutResult, 'streaming_inference')).toMatchObject({ outcome: 'failed', errorCategory: 'invalid_response' });
+  });
+
+  it('classifies an error reported inside the stream like an HTTP failure', async () => {
+    const opening = { choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] };
+    const cases: Array<[unknown, string, string]> = [
+      [{ error: { message: 'You exceeded your current quota', code: 'insufficient_quota' } }, 'quota', 'limited'],
+      [{ error: { code: 429, message: 'Rate limit exceeded upstream' } }, 'rate_limited', 'limited'],
+      [{ error: { code: 404, message: 'No endpoints found for gpt-test' } }, 'not_found', 'failed'],
+      [{ error: { code: 401, message: 'User not found.' } }, 'auth', 'failed'],
+      [{ error: { message: 'Internal failure' } }, 'upstream', 'limited']
+    ];
+    for (const [event, category, outcome] of cases) {
+      const ctx = setup(openAiHandler({ inference: { status: 200, body: sse([opening, event], false) } }));
+      const result = await ctx.verifier.verify(ctx.p1, { credentialId: ctx.credential().id, model: 'gpt-test' });
+      expect(byName(result, 'streaming_inference'), category).toMatchObject({ outcome, errorCategory: category });
+      expect(byName(result, 'streaming_inference').httpStatus, category).toBeUndefined();
+      if (category === 'auth') expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification?.outcome).toBe('failed');
+    }
+    const ctx = setup(openAiHandler({ inference: { status: 200, body: sse([{ type: 'response.created', response: {} }, { type: 'response.failed', response: { error: { code: 'model_not_found', message: 'The model does not exist' } } }], false) } }));
+    const responses = await ctx.verifier.verify(ctx.p1, { credentialId: ctx.credential().id, model: 'gpt-test', apiMode: 'responses' });
+    expect(byName(responses, 'streaming_inference')).toMatchObject({ outcome: 'failed', errorCategory: 'not_found' });
+  });
+
+  it('keeps the whole run inside one deadline and marks the checks it could not finish', async () => {
+    const ctx = setup(() => 'hang', { totalBudgetMs: 1_200 });
+    const startedAt = Date.now();
+    const result = await ctx.verifier.verify(ctx.p1, { credentialId: ctx.credential().id, model: 'gpt-test', checks: { tools: true } });
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(byName(result, 'authentication')).toMatchObject({ outcome: 'limited', errorCategory: 'timeout' });
+    for (const name of ['protocol', 'streaming_inference', 'tool_call']) {
+      expect(byName(result, name), name).toMatchObject({ outcome: 'limited', errorCategory: 'timeout' });
+    }
+    expect(result.outcome).toBe('limited');
+    expect(ctx.requests).toHaveLength(1);
   });
 
   it('fails a malformed stream and a stream of the wrong API family', async () => {
@@ -411,6 +527,58 @@ describe('model connection verifier', () => {
     await expect(ctx.verifier.verify(ctx.p2, { credentialId: ctx.credential('openai', undefined, ctx.p2).id })).resolves.toBeDefined();
     now += 60_000;
     await expect(ctx.verifier.verify(ctx.p1, { credentialId: cred.id })).resolves.toBeDefined();
+  });
+
+  it('does not spend the allowance on a request that never reaches the provider', async () => {
+    const ctx = setup(openAiHandler(), { limiter: new VerificationRateLimiter(1, 60_000) });
+    const cred = ctx.credential();
+    await expect(ctx.verifier.verify(ctx.p1, { profileId: 'missing-profile' as never })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(ctx.verifier.verify(ctx.p1, { credentialId: cred.id, checks: { inference: true } })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(ctx.verifier.verify(ctx.p1, { credentialId: cred.id })).resolves.toBeDefined();
+    await expect(ctx.verifier.verify(ctx.p1, { credentialId: cred.id })).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
+  });
+
+  it('never lets an older check replace a newer stored result', () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const record = (outcome: 'verified' | 'failed', checkedAt: number) => ctx.repo.recordVerification(ctx.p1, {
+      targetKind: 'credential', targetId: cred.id, revisionId: null, credentialVersion: 1, outcome, resultJson: '{}', checkedAt
+    });
+    expect(record('verified', 2_000)).toBe(true);
+    expect(record('failed', 1_000)).toBe(false);
+    expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'verified', checkedAt: 2_000 });
+    expect(record('failed', 3_000)).toBe(true);
+    expect(ctx.repo.listCredentials(ctx.p1)[0]?.lastVerification).toMatchObject({ outcome: 'failed', checkedAt: 3_000 });
+  });
+
+  it('does not store a result for a target that was deleted or belongs to another principal', () => {
+    const ctx = setup(openAiHandler());
+    const cred = ctx.credential();
+    const saved = ctx.profile(cred.id, 'gpt-test');
+    const count = () => (ctx.store.database.prepare('SELECT count(*) AS count FROM model_verification_results').get() as { count: number }).count;
+    expect(ctx.repo.recordVerification(ctx.p2, {
+      targetKind: 'credential', targetId: cred.id, revisionId: null, credentialVersion: 1, outcome: 'verified', resultJson: '{}', checkedAt: 1
+    })).toBe(false);
+    ctx.repo.deleteProfile(ctx.p1, saved.id, saved.generation);
+    expect(ctx.repo.recordVerification(ctx.p1, {
+      targetKind: 'profile', targetId: saved.id, revisionId: saved.activeRevisionId, credentialVersion: null, outcome: 'verified', resultJson: '{}', checkedAt: 1
+    })).toBe(false);
+    ctx.repo.deleteCredential(ctx.p1, cred.id, 1);
+    expect(ctx.repo.recordVerification(ctx.p1, {
+      targetKind: 'credential', targetId: cred.id, revisionId: null, credentialVersion: 1, outcome: 'verified', resultJson: '{}', checkedAt: 1
+    })).toBe(false);
+    expect(count()).toBe(0);
+  });
+
+  it('drops stored results when the state schema is downgraded below the model tables', () => {
+    const ctx = setup(openAiHandler());
+    const tables = () => new Set((ctx.store.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
+    expect(tables().has('model_verification_results')).toBe(true);
+    downgradeStateSchemaToV11(ctx.store.database);
+    downgradeStateSchemaToV10(ctx.store.database);
+    downgradeStateSchemaToV9(ctx.store.database);
+    downgradeStateSchemaToV8(ctx.store.database);
+    expect(tables().has('model_verification_results')).toBe(false);
   });
 
   it('removes stored results with the profile and the credential', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertProviderRequestUrl, createProviderHttpClient, isUnsafeProviderAddress, redactSecret } from '../src/model-provider-http.js';
+import { assertProviderRequestUrl, createLineSplitter, createProviderHttpClient, isUnsafeProviderAddress, redactSecret } from '../src/model-provider-http.js';
 
 describe('model provider HTTP policy', () => {
   it('allows only registry hosts for registry providers', () => {
@@ -8,6 +8,14 @@ describe('model provider HTTP policy', () => {
     expect(() => assertProviderRequestUrl('openai', 'https://evil.example.org/v1/models')).toThrow('not allowed');
     expect(() => assertProviderRequestUrl('openai', 'http://api.openai.com/v1/models')).toThrow('HTTPS');
     expect(() => assertProviderRequestUrl('openai', 'https://user:pw@api.openai.com/v1/models')).toThrow('credential-free');
+  });
+
+  it('keeps each registry provider on its own hosts', () => {
+    expect(assertProviderRequestUrl('openrouter', 'https://openrouter.ai/api/v1/key').hostname).toBe('openrouter.ai');
+    expect(() => assertProviderRequestUrl('openai', 'https://api.anthropic.com/v1/models')).toThrow('not allowed');
+    expect(() => assertProviderRequestUrl('openai', 'https://openrouter.ai/api/v1/models')).toThrow('not allowed');
+    expect(() => assertProviderRequestUrl('anthropic', 'https://api.openai.com/v1/models')).toThrow('not allowed');
+    expect(() => assertProviderRequestUrl('google', 'https://api.deepseek.com/models')).toThrow('not allowed');
   });
 
   it('limits a custom provider to its own public upstream host', () => {
@@ -24,6 +32,44 @@ describe('model provider HTTP policy', () => {
     }
     expect(isUnsafeProviderAddress('8.8.8.8')).toBe(false);
     expect(isUnsafeProviderAddress('2606:4700::1111')).toBe(false);
+  });
+
+  it('refuses NAT64 and 6to4 prefixes that embed an IPv4 address', () => {
+    for (const address of ['64:ff9b::a00:1', '64:ff9b::7f00:1', '64:ff9b::808:808', '64:ff9b:1::a9fe:a9fe', '2002:a00:1::1', '2002:7f00:1::', '2002:808:808::1']) {
+      expect(isUnsafeProviderAddress(address)).toBe(true);
+    }
+  });
+
+  it('times out a slow name lookup within the request deadline', async () => {
+    const client = createProviderHttpClient({
+      lookup: () => new Promise((resolve) => setTimeout(() => resolve([{ address: '8.8.8.8', family: 4 }]), 1_000))
+    });
+    const startedAt = Date.now();
+    await expect(client.request({ url: 'https://api.openai.com/v1/models', method: 'GET', timeoutMs: 50, maxResponseBytes: 1024 }))
+      .rejects.toMatchObject({ kind: 'timeout' });
+    expect(Date.now() - startedAt).toBeLessThan(900);
+  });
+
+  it('keeps a multibyte character split across chunks intact', () => {
+    const lines: string[] = [];
+    const splitter = createLineSplitter((line) => { lines.push(line); });
+    const bytes = Buffer.from('data: héllo 日本\r\nlast ✓', 'utf8');
+    // Cut inside the three-byte "日" and inside the "✓".
+    const cuts = [9, bytes.indexOf(Buffer.from('日')) + 1, bytes.length - 1];
+    let start = 0;
+    for (const cut of [...cuts, bytes.length]) {
+      expect(splitter.push(bytes.subarray(start, cut))).toBe(true);
+      start = cut;
+    }
+    splitter.end();
+    expect(lines).toEqual(['data: héllo 日本', 'last ✓']);
+  });
+
+  it('stops splitting once the line consumer asks to stop', () => {
+    const lines: string[] = [];
+    const splitter = createLineSplitter((line) => { lines.push(line); return line !== 'stop'; });
+    expect(splitter.push(Buffer.from('a\nstop\nb\n'))).toBe(false);
+    expect(lines).toEqual(['a', 'stop']);
   });
 
   it('refuses a hostname that resolves only to private addresses before connecting', async () => {

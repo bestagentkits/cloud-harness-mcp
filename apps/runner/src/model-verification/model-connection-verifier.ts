@@ -13,10 +13,10 @@ import {
   type ModelVerificationUsage,
   type ProviderAuthMode
 } from '@cloud-harness/contracts';
-import { assertProviderRequestUrl, type ProviderHttpClient, type ProviderHttpResponse } from '../model-provider-http.js';
+import { ProviderHttpError, assertProviderRequestUrl, type ProviderHttpClient, type ProviderHttpRequest, type ProviderHttpResponse } from '../model-provider-http.js';
 import type { ModelProfileStateRepository, VerificationCredential } from '../model-profile-state-repository.js';
 import {
-  classifyHttpFailure, classifyTransportFailure, isToolsUnsupported, outcomeForCategory, sanitizeMessage,
+  classifyHttpFailure, classifyStreamError, classifyTransportFailure, isScopeRefusal, isToolsUnsupported, outcomeForCategory, sanitizeMessage,
   type ClassifiedFailure
 } from './failure-classification.js';
 import { calledTool, createStreamProbe, parseNonStreamedAnswer } from './stream-probe.js';
@@ -32,7 +32,8 @@ const LISTING_MAX_BYTES = 4 * 1024 * 1024;
 const INFERENCE_TIMEOUT_MS = 20_000;
 const INFERENCE_MAX_BYTES = 256 * 1024;
 const TOOL_TIMEOUT_MS = 15_000;
-// Stays inside the API's default runner request timeout (60 s).
+// One deadline for the whole run, name resolution included. It stays well
+// inside the API's runner request timeout so the caller always gets a result.
 const TOTAL_BUDGET_MS = 45_000;
 const MIN_REQUEST_MS = 1_000;
 const PROMPT = 'Reply with OK.';
@@ -62,6 +63,8 @@ export interface ModelConnectionVerifierOptions {
   audit?: VerificationAudit;
   now?: () => number;
   rateLimiter?: VerificationRateLimiter;
+  // Overrides the run's total time budget; tests use a short one.
+  totalBudgetMs?: number;
 }
 
 interface VerificationTarget {
@@ -99,6 +102,15 @@ function credentialHeaders(style: HeaderStyle, secret: string): Record<string, s
   return { authorization: `Bearer ${secret}` };
 }
 
+/**
+ * The Chat Completions output cap, named as the model gateway names it: OpenAI
+ * takes `max_completion_tokens` (its reasoning models refuse `max_tokens`),
+ * every other provider takes `max_tokens`.
+ */
+export function chatOutputCap(provider: ModelProviderKind, tokens: number): { max_completion_tokens: number } | { max_tokens: number } {
+  return provider === 'openai' ? { max_completion_tokens: tokens } : { max_tokens: tokens };
+}
+
 function normalizeModelId(id: string): string {
   return id.startsWith('models/') ? id.slice('models/'.length) : id;
 }
@@ -129,14 +141,21 @@ export function overallOutcome(checks: readonly ModelVerificationCheck[]): Model
   return 'not_tested';
 }
 
-/** What the run proved about the key alone, for the credential's own status. */
+/**
+ * What the run proved about the key alone, for the credential's own status. A
+ * refused model list (a key scoped away from listing) proves nothing either
+ * way, so inference decides when it ran, and an inference that rejects the
+ * key overrides a listing that accepted it.
+ */
 function credentialOutcome(checks: readonly ModelVerificationCheck[]): ModelVerificationOutcome {
-  const authentication = checks.find((entry) => entry.name === 'authentication');
-  if (authentication && authentication.outcome !== 'not_tested') return authentication.outcome;
+  // A provider that rejects the key during inference has the last word.
   const inference = checks.filter((entry) => entry.name !== 'authentication' && entry.name !== 'model_access');
   if (inference.some((entry) => entry.errorCategory === 'auth')) return 'failed';
+  const authentication = checks.find((entry) => entry.name === 'authentication');
+  const listingRefused = authentication?.outcome === 'limited' && authentication.errorCategory === 'access';
+  if (authentication && authentication.outcome !== 'not_tested' && !listingRefused) return authentication.outcome;
   if (inference.some((entry) => entry.outcome === 'verified')) return 'verified';
-  return 'not_tested';
+  return listingRefused ? 'limited' : 'not_tested';
 }
 
 function costMicros(tokens: number, pricePerMillion: number): number {
@@ -152,17 +171,20 @@ function addUsage(left: ModelVerificationUsage | undefined, right: ModelVerifica
 export class ModelConnectionVerifier {
   private readonly now: () => number;
   private readonly rateLimiter: VerificationRateLimiter;
+  private readonly totalBudgetMs: number;
 
   constructor(private readonly options: ModelConnectionVerifierOptions) {
     this.now = options.now ?? Date.now;
     this.rateLimiter = options.rateLimiter ?? new VerificationRateLimiter();
+    this.totalBudgetMs = options.totalBudgetMs ?? TOTAL_BUDGET_MS;
   }
 
   async verify(principalId: string, input: ModelConnectionVerifyInput): Promise<ModelConnectionVerifyResult> {
-    this.rateLimiter.take(principalId);
     const target = this.resolveTarget(principalId, input);
+    // Only a request that will reach the provider uses up the principal's allowance.
+    this.rateLimiter.take(principalId);
     const startedAt = this.now();
-    const deadline = startedAt + TOTAL_BUDGET_MS;
+    const deadline = startedAt + this.totalBudgetMs;
     const secret = target.credential.secret;
     const provider = target.credential.provider;
 
@@ -205,12 +227,13 @@ export class ModelConnectionVerifier {
       'model_connection.verified',
       target.kind === 'profile' ? 'model_profile' : 'model_credential',
       target.kind === 'profile' ? target.profileId! : target.credential.id,
-      target.kind === 'profile' ? target.profileGeneration! : target.credential.activeVersion,
+      target.kind === 'profile' ? target.profileGeneration! : target.credential.generation,
       {
         outcome: result.outcome,
         provider,
         target: target.kind,
         credentialId: target.credential.id,
+        keyVersion: target.credential.activeVersion,
         ...(target.model ? { model: target.model } : {}),
         apiMode: target.apiMode,
         elapsedMs: result.elapsedMs,
@@ -275,14 +298,24 @@ export class ModelConnectionVerifier {
     return Math.min(cap, deadline - this.now());
   }
 
-  private async send(
-    target: VerificationTarget,
-    request: { url: string; method: 'GET' | 'POST'; headers: Record<string, string>; body?: string; timeoutMs: number; maxResponseBytes: number; onLine?: (line: string) => boolean }
-  ): Promise<ProviderHttpResponse> {
+  /**
+   * Sends one request, bounded by its share of the run's deadline whatever the
+   * client does: the client's own timeout already covers name resolution, and
+   * the race guarantees the run never outlives its budget.
+   */
+  private async send(target: VerificationTarget, request: ProviderHttpRequest): Promise<ProviderHttpResponse> {
     const provider = target.credential.provider;
     const custom = provider === 'custom' ? target.upstreamUrl() : undefined;
     assertProviderRequestUrl(provider, request.url, custom);
-    return await this.options.http.request(request);
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new ProviderHttpError('timeout', `provider did not answer within ${request.timeoutMs} ms`)), request.timeoutMs);
+    });
+    try {
+      return await Promise.race([this.options.http.request(request), expired]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async checkAuthentication(target: VerificationTarget, deadline: number): Promise<{ check: ModelVerificationCheck; listing?: ModelListing }> {
@@ -318,7 +351,23 @@ export class ModelConnectionVerifier {
       const response = await this.send(target, { url, method: 'GET', headers: credentialHeaders(style, secret), timeoutMs, maxResponseBytes: LISTING_MAX_BYTES });
       const elapsed = this.now() - started;
       if (response.status < 200 || response.status >= 300) {
-        return { check: failedCheck('authentication', elapsed, classifyHttpFailure(provider, response.status, response.body, secret)) };
+        const failure = classifyHttpFailure(provider, response.status, response.body, secret);
+        if (response.status === 401 || response.status === 403) {
+          // A restricted key may be refused the model list yet still run inference.
+          const exercised = target.runInference || target.runTools;
+          if (exercised || failure.category !== 'auth' || isScopeRefusal(response.body)) {
+            return {
+              check: check('authentication', 'limited', elapsed, {
+                category: 'access',
+                httpStatus: response.status,
+                message: exercised
+                  ? 'The provider refused the model list for this key; the inference check decides whether the key works.'
+                  : 'The provider refused the model list for this key; it may lack permission to list models.'
+              })
+            };
+          }
+        }
+        return { check: failedCheck('authentication', elapsed, failure) };
       }
       authCheck = check('authentication', 'verified', elapsed);
       listing = parseListing(response);
@@ -370,7 +419,7 @@ export class ModelConnectionVerifier {
       return { protocol: exhausted, streaming: { ...exhausted, name: 'streaming_inference' } };
     }
     const body = target.apiMode === 'chat-completions'
-      ? { model: target.model, messages: [{ role: 'user', content: PROMPT }], max_tokens: INFERENCE_MAX_OUTPUT_TOKENS, stream: true, stream_options: { include_usage: true } }
+      ? { model: target.model, messages: [{ role: 'user', content: PROMPT }], ...chatOutputCap(provider, INFERENCE_MAX_OUTPUT_TOKENS), stream: true, stream_options: { include_usage: true } }
       : { model: target.model, input: PROMPT, max_output_tokens: INFERENCE_MAX_OUTPUT_TOKENS, stream: true };
     const probe = createStreamProbe(target.apiMode);
     let response: ProviderHttpResponse;
@@ -394,7 +443,7 @@ export class ModelConnectionVerifier {
     const state = probe.state;
     const usage = state.usage;
     if (state.streamError !== undefined) {
-      const failure: ClassifiedFailure = { category: 'upstream', message: sanitizeMessage(`The provider reported an error in the stream: ${state.streamError}`, secret) };
+      const failure = classifyStreamError(provider, state.streamError, secret);
       const protocol = state.protocolEvents > 0 ? check('protocol', 'verified', elapsed) : failedCheck('protocol', elapsed, failure);
       return { protocol, streaming: failedCheck('streaming_inference', elapsed, failure), failure, ...(usage ? { usage } : {}) };
     }
@@ -439,7 +488,7 @@ export class ModelConnectionVerifier {
     const prompt = `Call ${TOOL_NAME} with status "ok".`;
     const body = target.apiMode === 'chat-completions'
       ? {
-        model: target.model, messages: [{ role: 'user', content: prompt }], max_tokens: TOOL_MAX_OUTPUT_TOKENS, stream: false,
+        model: target.model, messages: [{ role: 'user', content: prompt }], ...chatOutputCap(provider, TOOL_MAX_OUTPUT_TOKENS), stream: false,
         tools: [{ type: 'function', function: { name: TOOL_NAME, description, parameters } }],
         tool_choice: { type: 'function', function: { name: TOOL_NAME } }
       }
@@ -491,8 +540,16 @@ export class ModelConnectionVerifier {
     if (listing) {
       const wanted = normalizeModelId(target.model);
       if (listing.ids.has(wanted)) return check('model_access', 'verified', elapsed, undefined, 'listed by the provider');
-      if (listing.complete) {
+      // A complete list is decisive only when no inference ran; an inference that
+      // ran but proved nothing (rate limit, quota, timeout) leaves the answer open.
+      if (listing.complete && !target.runInference) {
         return check('model_access', 'failed', elapsed, { category: 'not_found', message: sanitizeMessage(`The provider does not list the model ${target.model}.`, secret) });
+      }
+      if (listing.complete) {
+        return check('model_access', 'limited', elapsed, {
+          category: 'not_found',
+          message: sanitizeMessage(`The provider does not list the model ${target.model}, and inference could not confirm it.`, secret)
+        });
       }
       return check('model_access', 'limited', elapsed, { category: 'not_found', message: 'The model was not in the partial model list the provider returned.' });
     }

@@ -71,6 +71,8 @@ export interface VerificationCredential {
   provider: ModelProviderKind;
   authMode: ProviderAuthMode;
   activeVersion: number;
+  // The credential record's generation, which audit entries refer to.
+  generation: number;
   secret: string;
 }
 
@@ -114,10 +116,10 @@ export class ModelProfileStateRepository {
    */
   getActiveCredentialForVerification(principalId: string, credentialId: string): VerificationCredential {
     const row = this.database.prepare(`
-      SELECT id, provider, auth_mode, active_version, status FROM model_provider_credentials
+      SELECT id, provider, auth_mode, active_version, status, generation FROM model_provider_credentials
       WHERE id = ? AND principal_id = ?
     `).get(credentialId, principalId) as {
-      id: string; provider: ModelProviderKind; auth_mode: ProviderAuthMode; active_version: number; status: string;
+      id: string; provider: ModelProviderKind; auth_mode: ProviderAuthMode; active_version: number; status: string; generation: number;
     } | undefined;
     if (!row) throw new HarnessError('NOT_FOUND', 'model provider credential was not found', 404, false);
     if (row.status !== 'ACTIVE') {
@@ -141,22 +143,35 @@ export class ModelProfileStateRepository {
       name: row.id,
       version: row.active_version
     });
-    return { id: row.id, provider: row.provider, authMode: row.auth_mode, activeVersion: row.active_version, secret };
+    return { id: row.id, provider: row.provider, authMode: row.auth_mode, activeVersion: row.active_version, generation: row.generation, secret };
   }
 
-  /** Stores the latest check for a target, replacing the previous one. */
-  recordVerification(principalId: string, record: VerificationRecord): void {
-    this.database.prepare(`
+  /**
+   * Stores the latest check for a target. A check that finished earlier than
+   * the stored one never replaces it, and nothing is written once the target
+   * credential or profile has been deleted, so a slow check cannot resurrect a
+   * row that the delete removed. Returns whether the row was written.
+   */
+  recordVerification(principalId: string, record: VerificationRecord): boolean {
+    const targetTable = record.targetKind === 'profile' ? 'agent_model_profiles' : 'model_provider_credentials';
+    const result = this.database.prepare(`
       INSERT INTO model_verification_results (
         principal_id, target_kind, target_id, revision_id, credential_version, outcome, result_json, checked_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM ${targetTable} WHERE id = ? AND principal_id = ?)
       ON CONFLICT(principal_id, target_kind, target_id) DO UPDATE SET
         revision_id = excluded.revision_id,
         credential_version = excluded.credential_version,
         outcome = excluded.outcome,
         result_json = excluded.result_json,
         checked_at = excluded.checked_at
-    `).run(principalId, record.targetKind, record.targetId, record.revisionId, record.credentialVersion, record.outcome, record.resultJson, record.checkedAt);
+      WHERE excluded.checked_at >= model_verification_results.checked_at
+    `).run(
+      principalId, record.targetKind, record.targetId, record.revisionId, record.credentialVersion, record.outcome, record.resultJson, record.checkedAt,
+      record.targetId, principalId
+    );
+    return Number(result.changes) > 0;
   }
 
   private latestVerifications(principalId: string, targetKind: 'profile' | 'credential'): Map<string, {

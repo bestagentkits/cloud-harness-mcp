@@ -1348,6 +1348,7 @@ export function downgradeStateSchemaToV8(database: DatabaseSync, allowDataLoss =
   }
   transaction(database, () => {
     database.exec(`
+      DROP TABLE IF EXISTS model_verification_results;
       DROP TABLE IF EXISTS agent_model_profile_revisions;
       DROP TABLE IF EXISTS agent_model_profiles;
       DROP TABLE IF EXISTS model_provider_credential_versions;

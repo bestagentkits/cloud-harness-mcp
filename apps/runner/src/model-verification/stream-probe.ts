@@ -10,7 +10,16 @@ export interface StreamProbeState {
   foreignEvents: number;
   completed: boolean;
   usage?: ModelVerificationUsage;
-  streamError?: string;
+  streamError?: StreamError;
+}
+
+/** An error the provider reported inside a 2xx stream, classified like an HTTP failure. */
+export interface StreamError {
+  message: string;
+  // The provider's symbolic code or type (`insufficient_quota`, `model_not_found`).
+  code?: string;
+  // A numeric HTTP-style status some providers put in the error's `code` or `status`.
+  status?: number;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -27,11 +36,22 @@ export function usageFrom(value: unknown): ModelVerificationUsage | undefined {
   return { inputTokens: input as number, outputTokens: output as number };
 }
 
-function errorText(value: unknown): string {
+function httpLikeStatus(value: unknown): number | undefined {
+  return Number.isInteger(value) && (value as number) >= 100 && (value as number) <= 599 ? value as number : undefined;
+}
+
+function streamErrorFrom(value: unknown): StreamError {
+  if (typeof value === 'string') return { message: value };
   const record = asRecord(value);
-  if (typeof value === 'string') return value;
-  if (record && typeof record.message === 'string') return record.message;
-  return 'the provider reported an error in the stream';
+  const error: StreamError = {
+    message: record && typeof record.message === 'string' ? record.message : 'the provider reported an error in the stream'
+  };
+  if (!record) return error;
+  const code = typeof record.code === 'string' ? record.code : typeof record.type === 'string' && record.type !== 'error' ? record.type : undefined;
+  if (code !== undefined) error.code = code;
+  const status = httpLikeStatus(record.code) ?? httpLikeStatus(record.status);
+  if (status !== undefined) error.status = status;
+  return error;
 }
 
 function isChatChunk(event: Record<string, unknown>): boolean {
@@ -40,9 +60,10 @@ function isChatChunk(event: Record<string, unknown>): boolean {
 
 function applyChatEvent(state: StreamProbeState, event: Record<string, unknown>): void {
   if (event.error !== undefined) {
-    state.streamError = errorText(event.error);
+    state.streamError = streamErrorFrom(event.error);
     return;
   }
+  // Usage may arrive on any chunk; only a finish reason or [DONE] ends the answer.
   const usage = usageFrom(event.usage);
   if (usage) state.usage = usage;
   if (isChatChunk(event)) {
@@ -52,13 +73,12 @@ function applyChatEvent(state: StreamProbeState, event: Record<string, unknown>)
   } else if (typeof event.type === 'string' && event.type.startsWith('response.')) {
     state.foreignEvents += 1;
   }
-  if (usage) state.completed = true;
 }
 
 function applyResponsesEvent(state: StreamProbeState, event: Record<string, unknown>): void {
   const type = typeof event.type === 'string' ? event.type : '';
   if (type === 'error' || (event.error !== undefined && !type.startsWith('response.'))) {
-    state.streamError = errorText(event.error ?? event);
+    state.streamError = streamErrorFrom(event.error ?? event);
     return;
   }
   if (!type.startsWith('response.')) {
@@ -68,7 +88,7 @@ function applyResponsesEvent(state: StreamProbeState, event: Record<string, unkn
   state.protocolEvents += 1;
   const response = asRecord(event.response);
   if (type === 'response.failed') {
-    state.streamError = errorText(response?.error);
+    state.streamError = streamErrorFrom(response?.error);
     return;
   }
   // `incomplete` is the expected end when the tiny output cap is reached.
