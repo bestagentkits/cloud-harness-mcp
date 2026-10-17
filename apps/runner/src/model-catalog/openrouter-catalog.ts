@@ -61,7 +61,6 @@ const PRICE_KEYS = new Set([
   'prompt', 'completion', 'request', 'image', 'web_search', 'internal_reasoning', 'input_cache_read', 'input_cache_write',
   'input_cache_write_1h', 'audio', 'input_audio_cache', 'image_output', 'audio_output'
 ]);
-const MAX_OVERRIDES = 16;
 
 /**
  * The higher of the default and the one-hour cache-write price. The agent runtime
@@ -97,23 +96,27 @@ function overrideTier(override: unknown): ModelPriceTier | undefined {
   };
 }
 
-/** Maps `overrides[]` to tiers; `skipped` reports any override that did not become a tier. */
+/**
+ * Maps `overrides[]` to tiers, all or nothing. If any override cannot become a
+ * tier (another condition, a bad threshold, a missing price, a shared threshold, or
+ * more overrides than a revision holds tiers), no tier is used and `skipped` is set:
+ * a partial tier set would misprice the prompts between the tiers kept.
+ */
 function overrideTiers(overrides: unknown): { tiers: ModelPriceTier[]; skipped: boolean } {
   if (overrides === undefined || overrides === null) return { tiers: [], skipped: false };
   if (!Array.isArray(overrides)) return { tiers: [], skipped: true };
-  let skipped = overrides.length > MAX_OVERRIDES;
-  const candidates: ModelPriceTier[] = [];
-  for (const override of overrides.slice(0, MAX_OVERRIDES)) {
+  if (overrides.length === 0) return { tiers: [], skipped: false };
+  if (overrides.length > MAX_MODEL_PRICE_TIERS) return { tiers: [], skipped: true };
+  const tiers: ModelPriceTier[] = [];
+  for (const override of overrides) {
     const tier = overrideTier(override);
-    if (tier) candidates.push(tier);
-    else skipped = true;
+    if (!tier) return { tiers: [], skipped: true };
+    tiers.push(tier);
   }
-  candidates.sort((left, right) => left.minPromptTokens - right.minPromptTokens);
-  // Two prices for one threshold are ambiguous, so neither is used.
-  const unique = candidates.filter((tier) => candidates.filter((other) => other.minPromptTokens === tier.minPromptTokens).length === 1);
-  if (unique.length !== candidates.length) skipped = true;
-  if (unique.length > MAX_MODEL_PRICE_TIERS) skipped = true;
-  return { tiers: unique.slice(0, MAX_MODEL_PRICE_TIERS), skipped };
+  tiers.sort((left, right) => left.minPromptTokens - right.minPromptTokens);
+  // Two prices for one threshold are ambiguous.
+  if (tiers.some((tier, index) => index > 0 && tier.minPromptTokens === tiers[index - 1]!.minPromptTokens)) return { tiers: [], skipped: true };
+  return { tiers, skipped: false };
 }
 
 function expiry(value: unknown): number | null {

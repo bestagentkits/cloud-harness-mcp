@@ -774,6 +774,17 @@ export class ModelProfileStateRepository {
     });
   }
 
+  /** The credential and active revision model of one profile, without loading the profile list. */
+  getProfileRoute(principalId: string, profileId: string): { credentialId: string; model: string | null } | undefined {
+    const row = this.database.prepare(`
+      SELECT p.credential_id, r.model
+      FROM agent_model_profiles p
+      LEFT JOIN agent_model_profile_revisions r ON r.id = p.active_revision_id AND r.principal_id = p.principal_id
+      WHERE p.id = ? AND p.principal_id = ?
+    `).get(profileId, principalId) as { credential_id: string; model: string | null } | undefined;
+    return row ? { credentialId: row.credential_id, model: row.model } : undefined;
+  }
+
   updateProfile(
     principalId: string,
     profileId: string,

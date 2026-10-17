@@ -95,11 +95,12 @@ so a catalog price can be saved unchanged:
   (`min_prompt_tokens`) becomes a long-prompt tier in `tiers`. A tier never inherits a
   base price: one without its own input and output price is not used, and a cache price it
   does not publish stays unknown.
-- **Conditional pricing.** `hasConditionalPricing` marks a price that also changes under a
-  condition the tiers cannot express: an override with any other condition, more tiers than
-  a revision can hold, two overrides for one threshold, or a tier that would break the tier
-  rules once unknown cache prices are resolved for the selected provider. Such overrides are
-  left out, so the listed prices understate some requests.
+- **Conditional pricing.** Tiers are all or nothing. When any override cannot become a
+  tier (it has another condition or lacks its own input and output price), when there are
+  more than four, when two share a threshold, or when the tiers would break the tier rules
+  once unknown cache prices are resolved for the selected provider, the entry lists no tiers
+  at all and sets `hasConditionalPricing`. The listed flat price then understates or
+  overstates some requests, but a partial tier set is never shown as complete.
 
 ### Freshness and refresh
 
@@ -223,18 +224,20 @@ and `AgentModelPricingSchema` in
   `confidence` (`exact`, `estimate`, or `unknown`), and `isOverride`. A client cannot set
   provenance or confidence; the runner assigns them when the revision is saved:
   - A save that sends `catalogPriceRef: { "sourceModelId": "vendor/model" }` names the
-    catalog model its prices came from. The runner looks that model up in its own cached
-    catalog, without a network call. When the submitted input, output, cache read, cache
-    write, and tier prices all equal the cached catalog price, the catalog's provenance is
-    copied with `isOverride: false`: confidence `exact` when an OpenRouter profile routes to
-    that very model, `estimate` otherwise (a direct vendor, or another OpenRouter model).
-    For a direct vendor the reference must name one of that vendor's models.
+    catalog model its prices came from. The reference must be the catalog entry for the
+    model the revision routes to: for an OpenRouter profile, that model ID itself; for a
+    direct vendor, the catalog model the profile's model matches (the one the catalog
+    search shows for it). The runner resolves the routed model in its own cached catalog,
+    without a network call. When the reference names that entry and the submitted input,
+    output, cache read, cache write, and tier prices all equal its price, the catalog's
+    provenance is copied with `isOverride: false`: confidence `exact` for OpenRouter,
+    `estimate` for a direct vendor.
   - Pricing that differs in any price or tier is your override: `source: "user"`,
-    `isOverride: true`, confidence `unknown`, with the referenced catalog model and its
+    `isOverride: true`, confidence `unknown`, with the routed model's catalog entry and its
     retrieval time kept for context.
-  - A save without a reference, or with one the cached catalog does not list, is recorded
-    as your override with no source model. Revisions saved before provenance existed read
-    back the same way.
+  - A save without a reference, with a reference to any other model, or for a model the
+    cached catalog does not list, is recorded as your override with no source model.
+    Revisions saved before provenance existed read back the same way.
 
 **Pinned prices never drift.** Revisions are immutable, and catalog refreshes never write
 to them. An edit that does not submit pricing copies the current revision's prices, cache
@@ -250,18 +253,18 @@ catalog price they reference.
 
 **Repricing review.** Listing profiles (`model_profile_list`) adds a `pricingReview` to
 each profile with an active revision. It compares the revision's pinned prices with the
-cached catalog price for its `sourceModelId`, or, for a revision without one, for its model
-ID matched the way the catalog search matches it. The schema is `ModelPricingReviewSchema` in
+cached catalog price for the model the revision routes to, matched the way the catalog
+search matches it; the stored `sourceModelId` is never used to pick the price. The schema is `ModelPricingReviewSchema` in
 [`model-profile-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-profile-schemas.ts).
 
 - `repriced`: an input, output, cache read, cache write, or tier price differs from the
   catalog by at least `REPRICING_WARNING_PERCENT` (10%, in
   [`model-catalog-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-catalog-schemas.ts))
-  in either direction; a pinned price of zero now has a catalog price; a tier exists on
+  in either direction; a pinned price of zero now has a catalog price; a pinned cache price
+  is no longer published by the catalog (listed with `catalog: null`); a tier exists on
   only one side. A rise means cost estimates and
-  caps are understated, a fall means they are overstated. A cache price is compared only
-  when both sides state it, because an unknown pinned cache price is charged at the
-  conservative default below. `changes` lists each difference with the pinned price, the
+  caps are understated, a fall means they are overstated. A cache price the revision leaves
+  unknown is not compared, because it is charged at the conservative default below. `changes` lists each difference with the pinned price, the
   catalog price, and the signed percentage.
 - `current`: nothing differs by that much.
 - `unknown`: the runner has no cached catalog price for the model, for example before the
@@ -277,7 +280,10 @@ prices match the catalog reads `current` with the note set.
 
 `isOverride` repeats the revision's provenance: for your own prices the difference is
 information, not a sign that the price is stale. Listing never makes a network call: the
-review reads the last cached catalog, kept across restarts, whatever its age. It is computed
+review reads the last cached catalog, whatever its age. The OpenRouter catalog is kept
+across restarts, except that a copy saved in an older format is not used: until the next
+catalog search fetches a new one, reviews of OpenRouter-priced models read `unknown`, and a
+list reads the saved copy at most once until that fetch succeeds. It is computed
 on every list and never stored, so a catalog refresh changes the review but never the pinned
 prices, provenance, or limits. To take a new catalog price, edit the profile and save it.
 

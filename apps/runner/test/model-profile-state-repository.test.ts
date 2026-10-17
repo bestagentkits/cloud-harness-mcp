@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HarnessError,
   ModelProfileIdSchema,
@@ -16,6 +16,7 @@ import {
   type RunnerConfig
 } from '@cloud-harness/contracts';
 import { ArtifactStore } from '../src/artifact-store.js';
+import { CatalogSnapshotStore } from '../src/model-catalog/catalog-snapshot-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
@@ -546,9 +547,17 @@ describe('profile pricing provenance and repricing review through the dashboard 
   const cleanups: Array<() => void> = [];
   afterEach(() => {
     for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+    vi.restoreAllMocks();
   });
 
   const MODEL = 'anthropic/claude-sonnet-4.5';
+  const flatModel = (id: string, prompt: string, completion: string) => ({ id, name: id, pricing: { prompt, completion } });
+  const OTHER_MODELS = [
+    flatModel('openai/cheap', '0.000001', '0.000002'),
+    flatModel('openai/expensive', '0.00001', '0.00002'),
+    flatModel('anthropic/claude-haiku-x', '0.000001', '0.000005'),
+    flatModel('anthropic/claude-opus-x', '0.000015', '0.000075')
+  ];
   const openRouterModel = (prompt: string, completion: string) => ({
     id: MODEL, name: 'Claude Sonnet 4.5',
     pricing: {
@@ -569,7 +578,7 @@ describe('profile pricing provenance and repricing review through the dashboard 
       root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000
     });
     const repo = new ModelProfileStateRepository(principals.database, keyring);
-    const upstream = { models: [openRouterModel('0.000003', '0.000015')], requests: 0 };
+    const upstream = { models: [openRouterModel('0.000003', '0.000015'), ...OTHER_MODELS], requests: 0 };
     const http: ProviderHttpClient = {
       request: async (request) => {
         upstream.requests += 1;
@@ -591,7 +600,7 @@ describe('profile pricing provenance and repricing review through the dashboard 
 
   async function catalogPricing(call: ReturnType<typeof setup>['call']) {
     const result = await call('model_catalog_search', { provider: 'openrouter', query: 'claude' }) as ModelCatalogSearchResult;
-    const pricing = result.entries[0]!.pricing;
+    const pricing = result.entries.find((entry) => entry.providerModelId === MODEL)!.pricing;
     return {
       fetchedAt: pricing.provenance.retrievedAt,
       pricing: {
@@ -669,7 +678,7 @@ describe('profile pricing provenance and repricing review through the dashboard 
 
     const revisionRows = () => principals.database.prepare('SELECT * FROM agent_model_profile_revisions ORDER BY id').all();
     const rowsBefore = JSON.stringify(revisionRows());
-    upstream.models = [openRouterModel('0.0000036', '0.000015')];
+    upstream.models = [openRouterModel('0.0000036', '0.000015'), ...OTHER_MODELS];
     await call('model_catalog_refresh', { provider: 'openrouter' });
     const after = await listProfiles(call);
 
@@ -687,12 +696,88 @@ describe('profile pricing provenance and repricing review through the dashboard 
     expect(JSON.stringify(revisionRows())).not.toContain('pricingReview');
   });
 
+  it('accepts a catalog reference only for the model the revision routes to', async () => {
+    const { call } = setup();
+    const openRouter = await call('model_credential_create', { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-secret' }) as { id: string };
+    const anthropic = await call('model_credential_create', { label: 'Anthropic', provider: 'anthropic', apiKey: 'sk-ant-secret' }) as { id: string };
+    await call('model_catalog_search', { provider: 'openrouter' });
+    const flat = (input: number, output: number) => ({ inputMicrosPerMillionTokens: input, outputMicrosPerMillionTokens: output });
+    const save = async (profileId: string, credentialId: string, model: string, pricing: unknown, sourceModelId: string) =>
+      await call('model_profile_create', {
+        profileId, displayName: profileId, credentialId, model, apiMode: 'chat-completions', limits: LIMITS, maxProxyOperations: ['files_read'],
+        pricing, catalogPriceRef: { sourceModelId }
+      }) as AgentModelProfileMetadata;
+
+    // The cheap model's exact prices, saved for the expensive model, are the operator's override.
+    const openRouterMismatch = await save('or-mismatch', openRouter.id, 'openai/expensive', flat(1_000_000, 2_000_000), 'openai/cheap');
+    expect(openRouterMismatch.activeRevision?.priceProvenance).toEqual({ source: 'user', sourceModelId: null, retrievedAt: null, confidence: 'unknown', isOverride: true });
+    const vendorMismatch = await save('vendor-mismatch', anthropic.id, 'claude-opus-x', flat(1_000_000, 5_000_000), 'anthropic/claude-haiku-x');
+    expect(vendorMismatch.activeRevision?.priceProvenance).toMatchObject({ source: 'user', sourceModelId: null, isOverride: true });
+    // The routed model's own reference still counts.
+    const vendorMatch = await save('vendor-match', anthropic.id, 'claude-opus-x', flat(15_000_000, 75_000_000), 'anthropic/claude-opus-x');
+    expect(vendorMatch.activeRevision?.priceProvenance).toMatchObject({ source: 'openrouter', sourceModelId: 'anthropic/claude-opus-x', confidence: 'estimate', isOverride: false });
+
+    // The review prices the routed model, so both mismatched saves read as repriced.
+    const profiles = await listProfiles(call);
+    const review = (id: string) => profiles.find((profile) => profile.id === id)?.pricingReview;
+    expect(review('or-mismatch')).toMatchObject({ state: 'repriced', isOverride: true, changes: [{ field: 'input', pinned: 1_000_000, catalog: 10_000_000 }, { field: 'output' }] });
+    expect(review('vendor-mismatch')).toMatchObject({ state: 'repriced', isOverride: true, changes: [{ field: 'input', pinned: 1_000_000, catalog: 15_000_000 }, { field: 'output' }] });
+    expect(review('vendor-match')).toMatchObject({ state: 'current', isOverride: false });
+  });
+
+  it('reads the persisted catalog snapshot at most once while listing, even when it is rejected', async () => {
+    const { principals, call } = setup();
+    // A snapshot in an older format no longer parses and is treated as absent.
+    principals.database.prepare(`
+      INSERT INTO model_catalog_snapshots (cache_key, source, provider, entries_json, fetched_at)
+      VALUES ('openrouter:public', 'openrouter', 'openrouter', ?, 1)
+    `).run(JSON.stringify([{ id: MODEL }]));
+    const loads = vi.spyOn(CatalogSnapshotStore.prototype, 'loadOpenRouter');
+    const credential = await call('model_credential_create', { label: 'OpenRouter', provider: 'openrouter', apiKey: 'sk-or-secret' }) as { id: string };
+    for (const profileId of ['one', 'two', 'three']) {
+      await createProfile(call, profileId, credential.id, { pricing: { inputMicrosPerMillionTokens: 3_000_000, outputMicrosPerMillionTokens: 15_000_000 } });
+    }
+    for (let index = 0; index < 3; index += 1) {
+      expect((await listProfiles(call)).map((profile) => profile.pricingReview?.state)).toEqual(['unknown', 'unknown', 'unknown']);
+    }
+    expect(loads).toHaveBeenCalledTimes(1);
+
+    // The next catalog search replaces the rejected snapshot, and listing reviews against it.
+    await call('model_catalog_search', { provider: 'openrouter' });
+    expect((await listProfiles(call)).map((profile) => profile.pricingReview?.state)).toEqual(['repriced', 'repriced', 'repriced']);
+    expect(loads).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps catalog code free of revision writes', () => {
     const directory = new URL('../src/model-catalog/', import.meta.url);
     const sources = readdirSync(directory).filter((name) => name.endsWith('.ts'));
     expect(sources.length).toBeGreaterThan(0);
     for (const name of sources) {
       expect(readFileSync(new URL(name, directory), 'utf8'), name).not.toMatch(/agent_model_profile|\.(?:create|update|activate)Profile\(/u);
+    }
+  });
+});
+
+describe('ModelProfileStateRepository single-profile route read', () => {
+  it('returns one profile\'s credential and active model, scoped to its principal', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'model-profile-route-'));
+    const store = new StateStore(join(directory, 'state.sqlite'));
+    try {
+      const repo = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
+      const p1 = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-1' });
+      const p2 = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-2' });
+      const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-route-secret' });
+      repo.createProfile(p1, {
+        profileId: ModelProfileIdSchema.parse('route'), displayName: 'Route', credentialId: credential.id, model: 'gpt-route', apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+        limits: { maxInputTokens: 1, maxOutputTokens: 1, maxCostMicros: 1 }, maxProxyOperations: ['files_read']
+      });
+      expect(repo.getProfileRoute(p1, 'route')).toEqual({ credentialId: credential.id, model: 'gpt-route' });
+      expect(repo.getProfileRoute(p2, 'route')).toBeUndefined();
+      expect(repo.getProfileRoute(p1, 'missing')).toBeUndefined();
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

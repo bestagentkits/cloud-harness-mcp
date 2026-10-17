@@ -23,6 +23,8 @@ function catalog(overrides: Partial<ModelCatalogPrice> = {}): ModelCatalogPrice 
   };
 }
 
+const REF = { sourceModelId: 'vendor/model' };
+
 const CATALOG_PROVENANCE: AgentModelPriceProvenance = {
   source: 'openrouter', sourceModelId: 'vendor/model', retrievedAt: RETRIEVED_AT, confidence: 'exact', isOverride: false
 };
@@ -45,14 +47,14 @@ describe('saved price provenance', () => {
   };
 
   it('copies the catalog provenance when every price and tier matches', () => {
-    expect(savedPriceProvenance(submitted, catalog({ tiers: [TIER] }))).toEqual(CATALOG_PROVENANCE);
+    expect(savedPriceProvenance(submitted, REF, catalog({ tiers: [TIER] }))).toEqual(CATALOG_PROVENANCE);
     const estimate = catalog({ provenance: { ...catalog().provenance, confidence: 'estimate' } });
-    expect(savedPriceProvenance({ ...submitted, tiers: [] }, estimate)).toEqual({ ...CATALOG_PROVENANCE, confidence: 'estimate' });
+    expect(savedPriceProvenance({ ...submitted, tiers: [] }, REF, estimate)).toEqual({ ...CATALOG_PROVENANCE, confidence: 'estimate' });
   });
 
   it('treats an absent and an unknown cache price as the same price', () => {
     const unknownCache = catalog({ cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null });
-    expect(savedPriceProvenance({ inputMicrosPerMillionTokens: 1_000_000, outputMicrosPerMillionTokens: 4_000_000 }, unknownCache)).toEqual(CATALOG_PROVENANCE);
+    expect(savedPriceProvenance({ inputMicrosPerMillionTokens: 1_000_000, outputMicrosPerMillionTokens: 4_000_000 }, REF, unknownCache)).toEqual(CATALOG_PROVENANCE);
   });
 
   it('records any edited price, cache price, or tier as an override that names its catalog model', () => {
@@ -60,21 +62,28 @@ describe('saved price provenance', () => {
       source: 'user', sourceModelId: 'vendor/model', retrievedAt: RETRIEVED_AT, confidence: 'unknown', isOverride: true
     };
     const withTiers = catalog({ tiers: [TIER] });
-    expect(savedPriceProvenance({ ...submitted, inputMicrosPerMillionTokens: 1_000_001 }, withTiers)).toEqual(override);
-    expect(savedPriceProvenance({ ...submitted, cacheWriteMicrosPerMillionTokens: null }, withTiers)).toEqual(override);
-    expect(savedPriceProvenance({ ...submitted, tiers: [] }, withTiers)).toEqual(override);
-    expect(savedPriceProvenance({ ...submitted, tiers: [{ ...TIER, minPromptTokens: 128_000 }] }, withTiers)).toEqual(override);
+    expect(savedPriceProvenance({ ...submitted, inputMicrosPerMillionTokens: 1_000_001 }, REF, withTiers)).toEqual(override);
+    expect(savedPriceProvenance({ ...submitted, cacheWriteMicrosPerMillionTokens: null }, REF, withTiers)).toEqual(override);
+    expect(savedPriceProvenance({ ...submitted, tiers: [] }, REF, withTiers)).toEqual(override);
+    expect(savedPriceProvenance({ ...submitted, tiers: [{ ...TIER, minPromptTokens: 128_000 }] }, REF, withTiers)).toEqual(override);
+  });
+
+  it('ignores a reference to any model other than the one the revision routes to', () => {
+    // The routed model's catalog price equals the submitted pricing, but the client named another model.
+    expect(savedPriceProvenance(submitted, { sourceModelId: 'vendor/cheap' }, catalog({ tiers: [TIER] }))).toEqual(DEFAULT_USER_PRICE_PROVENANCE);
+    expect(savedPriceProvenance({ ...submitted, inputMicrosPerMillionTokens: 1 }, { sourceModelId: 'vendor/cheap' }, catalog({ tiers: [TIER] })))
+      .toEqual(DEFAULT_USER_PRICE_PROVENANCE);
   });
 
   it('never trusts a reference the runner cannot resolve to a priced entry', () => {
-    expect(savedPriceProvenance(submitted, undefined)).toEqual(DEFAULT_USER_PRICE_PROVENANCE);
+    expect(savedPriceProvenance(submitted, REF, undefined)).toEqual(DEFAULT_USER_PRICE_PROVENANCE);
     const unpriced = catalog({
       inputMicrosPerMillionTokens: null, outputMicrosPerMillionTokens: null,
       provenance: { source: 'openrouter', sourceModelId: 'vendor/model', retrievedAt: RETRIEVED_AT, confidence: 'unknown' }
     });
-    expect(savedPriceProvenance(submitted, unpriced)).toMatchObject({ source: 'user', confidence: 'unknown', isOverride: true });
+    expect(savedPriceProvenance(submitted, REF, unpriced)).toMatchObject({ source: 'user', confidence: 'unknown', isOverride: true });
     const none = catalog({ provenance: { source: 'none', sourceModelId: null, retrievedAt: null, confidence: 'unknown' } });
-    expect(savedPriceProvenance(submitted, none)).toEqual(DEFAULT_USER_PRICE_PROVENANCE);
+    expect(savedPriceProvenance(submitted, REF, none)).toEqual(DEFAULT_USER_PRICE_PROVENANCE);
   });
 });
 
@@ -108,7 +117,18 @@ describe('repricing review', () => {
     ]);
     const unstated = revision({ cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: undefined });
     expect(reviewPricing(unstated, catalog({ cacheReadMicrosPerMillionTokens: 900_000 })).state).toBe('current');
-    expect(reviewPricing(revision(), catalog({ cacheWriteMicrosPerMillionTokens: null })).state).toBe('current');
+  });
+
+  it('flags a stated cache price the catalog no longer publishes', () => {
+    expect(reviewPricing(revision(), catalog({ cacheReadMicrosPerMillionTokens: null }))).toMatchObject({
+      state: 'repriced', changes: [{ field: 'cacheRead', minPromptTokens: null, pinned: 100_000, catalog: null, percent: null }]
+    });
+    const { cacheWriteMicrosPerMillionTokens: _omitted, ...withoutWrite } = catalog();
+    void _omitted;
+    expect(reviewPricing(revision(), withoutWrite).changes).toEqual([{ field: 'cacheWrite', minPromptTokens: null, pinned: 2_000_000, catalog: null, percent: null }]);
+    const tierWithoutRead = { ...TIER, cacheReadMicrosPerMillionTokens: null };
+    expect(reviewPricing(revision({ tiers: [TIER] }), catalog({ tiers: [tierWithoutRead] })).changes)
+      .toEqual([{ field: 'cacheRead', minPromptTokens: 200_000, pinned: 600_000, catalog: null, percent: null }]);
   });
 
   it('flags a pinned zero price once the catalog charges for it', () => {

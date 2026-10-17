@@ -1,6 +1,6 @@
 import {
   DEFAULT_USER_PRICE_PROVENANCE, REPRICING_WARNING_PERCENT,
-  type AgentModelPriceProvenance, type AgentModelPricing, type AgentModelProfileRevision, type ModelCatalogPrice,
+  type AgentModelPriceProvenance, type AgentModelPricing, type AgentModelProfileRevision, type ModelCatalogPrice, type ModelCatalogPriceRef,
   type ModelPricingReview, type ModelPricingReviewChange, type PinnedModelPricing
 } from '@cloud-harness/contracts';
 
@@ -43,22 +43,30 @@ function canonicalPricing(pricing: PinnedModelPricing): string {
 }
 
 /**
- * Provenance for prices a client submitted with a catalog reference. `catalog` is
- * the runner's own cached price for that reference, undefined when it has none.
- * Only pricing equal to it in every price and tier is recorded as the catalog's;
- * any other pricing is the operator's override, noting the catalog model it
- * started from. The client's claim alone never sets provenance or confidence.
+ * Provenance for prices a client submitted with a catalog reference. `routed` is
+ * the runner's own cached catalog price for the model the revision routes to,
+ * undefined when it has none. The prices are the catalog's only when the
+ * reference names that very catalog model and the pricing equals it in every
+ * price and tier. Pricing that differs is the operator's override, noting the
+ * routed catalog model; a reference to any other model is ignored. The client's
+ * claim alone never sets provenance or confidence.
  */
-export function savedPriceProvenance(submitted: AgentModelPricing, catalog: ModelCatalogPrice | undefined): AgentModelPriceProvenance {
-  if (!catalog || catalog.provenance.source === 'none') return { ...DEFAULT_USER_PRICE_PROVENANCE };
-  const offered = catalogPricing(catalog);
+export function savedPriceProvenance(
+  submitted: AgentModelPricing,
+  ref: ModelCatalogPriceRef,
+  routed: ModelCatalogPrice | undefined
+): AgentModelPriceProvenance {
+  if (!routed || routed.provenance.source === 'none' || routed.provenance.sourceModelId !== ref.sourceModelId) {
+    return { ...DEFAULT_USER_PRICE_PROVENANCE };
+  }
+  const offered = catalogPricing(routed);
   if (offered && canonicalPricing(offered) === canonicalPricing(submitted)) {
-    return { ...catalog.provenance, isOverride: false };
+    return { ...routed.provenance, isOverride: false };
   }
   return {
     source: 'user',
-    sourceModelId: catalog.provenance.sourceModelId,
-    retrievedAt: catalog.provenance.retrievedAt,
+    sourceModelId: routed.provenance.sourceModelId,
+    retrievedAt: routed.provenance.retrievedAt,
     confidence: 'unknown',
     isOverride: true
   };
@@ -75,16 +83,20 @@ function priceChange(field: PriceField, minPromptTokens: number | null, pinned: 
 }
 
 /**
- * Price changes between two levels. A cache price is compared only when both
- * sides state it: an unstated pinned cache price is charged at a conservative
- * default, not at a stale value.
+ * Price changes between two levels. An unstated pinned cache price is charged at
+ * a conservative default, so it is not compared. A stated one is compared with the
+ * catalog's, and a catalog that no longer publishes it counts as a change.
  */
 function levelChanges(pinned: PriceLevel, catalog: PriceLevel, minPromptTokens: number | null): ModelPricingReviewChange[] {
   const changes: ModelPricingReviewChange[] = [];
   for (const [field, key] of PRICE_FIELDS) {
     const left = pinned[key];
     const right = catalog[key];
-    if (typeof left !== 'number' || typeof right !== 'number') continue;
+    if (typeof left !== 'number') continue;
+    if (typeof right !== 'number') {
+      changes.push({ field, minPromptTokens, pinned: left, catalog: null, percent: null });
+      continue;
+    }
     const change = priceChange(field, minPromptTokens, left, right);
     if (change) changes.push(change);
   }
@@ -92,9 +104,11 @@ function levelChanges(pinned: PriceLevel, catalog: PriceLevel, minPromptTokens: 
 }
 
 /**
- * Compares a revision's pinned prices with the cached catalog price. `repriced`
- * when a price differs by at least REPRICING_WARNING_PERCENT in either direction,
- * a pinned zero now has a catalog price, or a tier exists on only one side.
+ * Compares a revision's pinned prices with the cached catalog price of the model
+ * it routes to. `repriced` when a price differs by at least
+ * REPRICING_WARNING_PERCENT in either direction, a pinned zero now has a catalog
+ * price, a pinned cache price is no longer published, or a tier exists on only one
+ * side.
  * `unknown` when there is no cached catalog price. Catalog conditional pricing no
  * revision can express is reported apart from the state, which an edit must always
  * be able to clear. The result is never stored.

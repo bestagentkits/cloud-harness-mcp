@@ -338,7 +338,7 @@ describe('ModelCatalogService', () => {
     expect([http.count('api.openai.com'), http.count('openrouter.ai')]).toEqual([6, 2]);
   });
 
-  it('keeps only the catalog tiers a revision for the provider may save', async () => {
+  it('keeps catalog tiers only when a revision for the provider may save all of them', async () => {
     const { repo, p1, http, service } = setup();
     // An unpublished base cache-write price resolves to twice the input price where
     // cache writes are billed (OpenRouter) and to the input price elsewhere (OpenAI).
@@ -364,9 +364,10 @@ describe('ModelCatalogService', () => {
       hasConditionalPricing: false,
       tiers: [{ minPromptTokens: 100_000, inputMicrosPerMillionTokens: 3_000_000, cacheWriteMicrosPerMillionTokens: 3_500_000 }]
     });
-    // A tier cheaper than the base is dropped; the tier above it still applies.
+    // A tier cheaper than the base drops every tier, never leaving a partial set.
     const cheaperEntry = direct.entries.find((entry) => entry.providerModelId === 'cheaper');
-    expect(cheaperEntry?.pricing).toMatchObject({ hasConditionalPricing: true, tiers: [{ minPromptTokens: 300_000 }] });
+    expect(cheaperEntry?.pricing).toMatchObject({ hasConditionalPricing: true });
+    expect(cheaperEntry?.pricing).not.toHaveProperty('tiers');
 
     const credential = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-openai-secret' });
     for (const entry of [tieredEntry, cheaperEntry]) {
@@ -389,7 +390,7 @@ describe('ModelCatalogService', () => {
   it('reads a cached price without any network call, before and after the cache expires', async () => {
     const { p1, http, clock, service } = setup();
     const cold = service();
-    expect(cold.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)).toBeUndefined();
+    expect(cold.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5')).toBeUndefined();
     expect(http.calls).toHaveLength(0);
 
     await cold.search(p1, search({ provider: 'openrouter' }));
@@ -397,32 +398,32 @@ describe('ModelCatalogService', () => {
     clock.now += OPENROUTER_CATALOG_TTL_MS * 2;
     // A fresh service (a runner restart) peeks at the persisted last-good snapshot.
     const restarted = service();
-    expect(restarted.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)?.inputMicrosPerMillionTokens).toBe(3_000_000);
-    expect(cold.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)?.inputMicrosPerMillionTokens).toBe(3_000_000);
+    expect(restarted.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5')?.inputMicrosPerMillionTokens).toBe(3_000_000);
+    expect(cold.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5')?.inputMicrosPerMillionTokens).toBe(3_000_000);
     expect(http.calls).toHaveLength(calls);
   });
 
-  it('resolves a cached price by catalog reference and by a legacy model ID', async () => {
+  it('resolves a cached price only from the model a revision routes to', async () => {
     const { p1, service } = setup();
     const catalog = service();
     await catalog.search(p1, search({ provider: 'openrouter' }));
     const fetchedAt = 1_800_000_000_000;
 
-    expect(catalog.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)?.provenance)
+    expect(catalog.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5')?.provenance)
       .toEqual({ source: 'openrouter', sourceModelId: 'anthropic/claude-sonnet-4.5', retrievedAt: fetchedAt, confidence: 'exact' });
-    // A reference to another OpenRouter model is that route's price, an estimate for this one.
-    expect(catalog.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5:beta', 'anthropic/claude-sonnet-4.5')?.provenance.confidence).toBe('estimate');
-    // A direct vendor's legacy revision matches as the search does, dated snapshot suffix included.
-    expect(catalog.cachedPrice('anthropic', 'claude-sonnet-4-5-20250929', null)).toMatchObject({
+    // A direct vendor's model matches as the search does, dated snapshot suffix included.
+    expect(catalog.cachedPrice('anthropic', 'claude-sonnet-4-5-20250929')).toMatchObject({
       inputMicrosPerMillionTokens: 3_000_000, tiers: [CLAUDE_LONG_PROMPT_TIER],
       provenance: { sourceModelId: 'anthropic/claude-sonnet-4.5', confidence: 'estimate' }
     });
-    expect(catalog.cachedPrice('anthropic', 'my-alias', 'anthropic/claude-sonnet-4.5')?.provenance.sourceModelId).toBe('anthropic/claude-sonnet-4.5');
-    // A reference must name the vendor's own model.
-    expect(catalog.cachedPrice('anthropic', 'claude-sonnet-4-5', 'openai/gpt-4o-mini')).toBeUndefined();
-    expect(catalog.cachedPrice('openai', 'gpt-4o-mini', 'openai/gpt-4o-mini:free')).toBeUndefined();
-    expect(catalog.cachedPrice('openrouter', 'vendor/missing', null)).toBeUndefined();
-    expect(catalog.cachedPrice('custom', 'anything', null)).toBeUndefined();
+    // A vendor never matches another vendor's model or an OpenRouter-only variant.
+    expect(catalog.cachedPrice('anthropic', 'gpt-4o-mini')).toBeUndefined();
+    expect(catalog.cachedPrice('openai', 'gpt-4o-mini:free')).toBeUndefined();
+    expect(catalog.cachedPrice('openrouter', 'vendor/missing')).toBeUndefined();
+    expect(catalog.cachedPrice('custom', 'anything')).toBeUndefined();
+
+    const lookup = catalog.cachedPrices();
+    expect(lookup('openrouter', 'anthropic/claude-sonnet-4.5')).toEqual(catalog.cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5'));
   });
 
   it('treats a persisted snapshot without tiers as absent', async () => {
@@ -431,7 +432,7 @@ describe('ModelCatalogService', () => {
     const row = store.database.prepare("SELECT entries_json FROM model_catalog_snapshots WHERE cache_key = 'openrouter:public'").get() as { entries_json: string };
     const legacy = (JSON.parse(row.entries_json) as Array<Record<string, unknown>>).map((model) => Object.fromEntries(Object.entries(model).filter(([key]) => key !== 'tiers')));
     store.database.prepare("UPDATE model_catalog_snapshots SET entries_json = ? WHERE cache_key = 'openrouter:public'").run(JSON.stringify(legacy));
-    expect(service().cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5', null)).toBeUndefined();
+    expect(service().cachedPrice('openrouter', 'anthropic/claude-sonnet-4.5')).toBeUndefined();
   });
 });
 
@@ -454,6 +455,21 @@ describe('SourceCache', () => {
     clock.now += 10_000;
     expect(cache.peek(counting({}))?.entries).toEqual(['fetched']);
     expect(fetches).toBe(1);
+  });
+
+  it('reads a missing or rejected persisted snapshot once until a fetch succeeds', async () => {
+    const cache = new SourceCache<string>(() => clock.now);
+    let loads = 0;
+    const counted = request({ key: 'rejected', load: () => { loads += 1; return undefined; } });
+    for (let index = 0; index < 5; index += 1) expect(cache.peek(counted)).toBeUndefined();
+    expect(loads).toBe(1);
+    await cache.get(counted);
+    expect(loads).toBe(1);
+    expect(cache.peek(counted)?.entries).toEqual(['model']);
+    // Evicting the key forgets the miss, so a later lookup reads the store again.
+    cache.evict('rejected');
+    cache.peek(counted);
+    expect(loads).toBe(2);
   });
 
   it('retries after a fetch that fails synchronously instead of pinning the failure as in flight', async () => {

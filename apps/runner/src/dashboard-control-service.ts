@@ -506,13 +506,11 @@ export class DashboardControlService {
         }
         case 'model_profile_update': {
           const { input } = parsed;
-          const current = input.pricing && input.catalogPriceRef
-            ? this.models().listProfiles(principalId).find((profile) => profile.id === input.profileId)
-            : undefined;
+          const current = input.pricing && input.catalogPriceRef ? this.models().getProfileRoute(principalId, input.profileId) : undefined;
           // An unknown profile gets no provenance here; the repository reports it as not found.
           const options = current
             ? this.submittedPriceProvenance(
-              principalId, input.credentialId ?? current.credentialId, input.model ?? current.activeRevision?.model ?? 'default', input.pricing, input.catalogPriceRef
+              principalId, input.credentialId ?? current.credentialId, input.model ?? current.model ?? 'default', input.pricing, input.catalogPriceRef
             )
             : {};
           const updated = this.verifier().attachDraftVerification(principalId, input.verificationRef, this.models().updateProfile(principalId, input.profileId, input, options));
@@ -1466,23 +1464,25 @@ export class DashboardControlService {
   }
   /**
    * Profiles with each active revision's prices reviewed against the cached
-   * catalog. The cache is only peeked, so listing never makes a provider request,
-   * and the review is never stored.
+   * catalog price of the model it routes to. The cache is peeked once per list, so
+   * listing never makes a provider request, and the review is never stored.
    */
   private reviewedProfiles(principalId: string): AgentModelProfileMetadata[] {
     const providers = new Map(this.models().listCredentials(principalId).map((credential) => [credential.id, credential.provider]));
+    const cachedPrice = this.catalog().cachedPrices();
     return this.models().listProfiles(principalId).map((profile) => {
       const revision = profile.activeRevision;
       if (!revision) return profile;
       const provider = providers.get(revision.credentialId);
-      const catalogPrice = provider ? this.catalog().cachedPrice(provider, revision.model, revision.priceProvenance.sourceModelId) : undefined;
+      const catalogPrice = provider ? cachedPrice(provider, revision.model) : undefined;
       return { ...profile, pricingReview: reviewPricing(revision, catalogPrice) };
     });
   }
 
   /**
-   * Provenance for submitted prices that name a catalog model. The runner resolves
-   * the reference against its own cached catalog; without a reference, or for a
+   * Provenance for submitted prices that name a catalog model. The runner looks up
+   * its own cached price for the model the revision routes to and accepts the
+   * reference only when it names that model; without a reference, or for a
    * credential it cannot find, the repository records the operator's override.
    */
   private submittedPriceProvenance(
@@ -1495,7 +1495,7 @@ export class DashboardControlService {
     if (!pricing || !ref) return {};
     const credential = this.models().getCredential(principalId, credentialId);
     if (!credential) return {};
-    return { priceProvenance: savedPriceProvenance(pricing, this.catalog().cachedPrice(credential.provider, model, ref.sourceModelId)) };
+    return { priceProvenance: savedPriceProvenance(pricing, ref, this.catalog().cachedPrice(credential.provider, model)) };
   }
 
   private catalogService?: ModelCatalogService;

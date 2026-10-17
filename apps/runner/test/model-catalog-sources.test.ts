@@ -76,7 +76,7 @@ describe('OpenRouter catalog normalization', () => {
     expect(onlyHour?.prices.cacheWrite).toBe(4_000_000);
   });
 
-  it('turns only min_prompt_tokens overrides into tiers and flags every other override', () => {
+  it('turns min_prompt_tokens overrides into tiers, all or nothing, and flags every other override', () => {
     const tier = (min: unknown, extra: Record<string, unknown> = {}) => ({ min_prompt_tokens: min, prompt: '0.000004', completion: '0.000008', ...extra });
     const models = normalizeOpenRouterModels({
       data: [
@@ -92,6 +92,8 @@ describe('OpenRouter catalog normalization', () => {
         },
         { id: 'vendor/duplicate', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [tier(200_000), tier(200_000, { prompt: '0.000009' }), tier(400_000)] } },
         { id: 'vendor/many', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [1, 2, 3, 4, 5].map((step) => tier(step * 100_000)) } },
+        { id: 'vendor/unsorted-four', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [4, 2, 3, 1].map((step) => tier(step * 100_000)) } },
+        { id: 'vendor/one-bad', pricing: { prompt: '0.000002', completion: '0.000004', overrides: [tier(100_000), { ...tier(300_000), hour_of_day: 3 }] } },
         { id: 'vendor/not-a-list', pricing: { prompt: '0.000002', completion: '0.000004', overrides: { min_prompt_tokens: 1 } } }
       ]
     });
@@ -106,10 +108,13 @@ describe('OpenRouter catalog normalization', () => {
         { minPromptTokens: 500_000, inputMicrosPerMillionTokens: 5_000_000 }
       ]
     });
-    expect(byId.get('vendor/invalid')).toMatchObject({ tiers: [{ minPromptTokens: 64_000 }], hasConditionalPricing: true });
-    expect(byId.get('vendor/duplicate')).toMatchObject({ tiers: [{ minPromptTokens: 400_000 }], hasConditionalPricing: true });
-    expect(byId.get('vendor/many')?.tiers.map((entry) => entry.minPromptTokens)).toEqual([100_000, 200_000, 300_000, 400_000]);
-    expect(byId.get('vendor/many')?.hasConditionalPricing).toBe(true);
+    // One override that cannot become a tier drops every tier: a partial set would misprice the gaps.
+    expect(byId.get('vendor/invalid')).toMatchObject({ tiers: [], hasConditionalPricing: true });
+    expect(byId.get('vendor/duplicate')).toMatchObject({ tiers: [], hasConditionalPricing: true });
+    expect(byId.get('vendor/many')).toMatchObject({ tiers: [], hasConditionalPricing: true });
+    expect(byId.get('vendor/one-bad')).toMatchObject({ tiers: [], hasConditionalPricing: true });
+    expect(byId.get('vendor/unsorted-four')?.tiers.map((entry) => entry.minPromptTokens)).toEqual([100_000, 200_000, 300_000, 400_000]);
+    expect(byId.get('vendor/unsorted-four')?.hasConditionalPricing).toBe(false);
     expect(byId.get('vendor/not-a-list')).toMatchObject({ tiers: [], hasConditionalPricing: true });
   });
 
