@@ -10,6 +10,10 @@ const MAX_CONTROL_RECORD_BYTES = 1_048_576;
 type CancelRequest = (requestId: string) => Promise<boolean>;
 type RevokeLease = (leaseId: string) => Promise<boolean>;
 
+/**
+ * The gateway's live routing state. `profiles` holds the startup-configured profiles plus the
+ * revisions of the latest accepted snapshot; `credentials` holds only that snapshot's keys.
+ */
 export interface DynamicGatewayRegistry {
   profiles: Map<string, GatewayProfile>;
   credentials: Map<string, { provider: string; authMode: 'authorization' | 'x-api-key'; secret: string }>;
@@ -98,9 +102,11 @@ export async function startControlServer(options: {
             const credentials = (command.credentials ?? {}) as Record<string, { provider: string; authMode?: string; secret: string }>;
             const profiles = (command.profiles ?? {}) as Record<string, any>;
 
-            // Validate and build the whole snapshot before touching the registry,
-            // so a rejected snapshot leaves the active credentials and profiles unchanged.
-            const stagedCredentials = new Map(registry.credentials);
+            // A snapshot is the complete set the runner still exports, so it replaces every
+            // earlier snapshot entry rather than merging into them: a credential or revision
+            // missing from it is evicted. Validate and build the whole snapshot before touching
+            // the registry, so a rejected snapshot leaves the active credentials and profiles unchanged.
+            const stagedCredentials: DynamicGatewayRegistry['credentials'] = new Map();
             for (const [credId, credData] of Object.entries(credentials)) {
               if (credData === null || typeof credData !== 'object' || typeof credData.provider !== 'string') {
                 throw new Error(`invalid provider for credential ${credId}`);
@@ -156,7 +162,12 @@ export async function startControlServer(options: {
 
               stagedProfiles.set(revId, profile);
             }
+            // Credentials only ever come from snapshots. Profiles configured at startup
+            // (config.profiles) are the static origin and survive every replacement.
+            registry.credentials.clear();
             for (const [credId, cred] of stagedCredentials) registry.credentials.set(credId, cred);
+            registry.profiles.clear();
+            for (const [profileId, profile] of config.profiles) registry.profiles.set(profileId, profile);
             for (const [revId, profile] of stagedProfiles) registry.profiles.set(revId, profile);
             const snapshotDigest = `sha256:${createHash('sha256').update(record, 'utf8').digest('hex')}`;
             registry.snapshotDigest = snapshotDigest;
