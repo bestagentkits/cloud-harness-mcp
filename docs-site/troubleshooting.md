@@ -348,6 +348,6 @@ If an agent started but followed the wrong files, read the `repository_context` 
 
 **Fix:**
 1. Lower `maxCostMicros` to fit the headroom named in the message, or wait for running agents to finish, then retry. The refused spawn recorded nothing, so the same idempotency key can be reused.
-2. If the limit is too tight, the owner can raise or remove the policy.
+2. If the limit is too tight, the owner can raise or remove the policy through the dashboard's spend routes; see [Spend policies](/dashboard/models#spend-policies). No MCP tool changes policies.
 
 Per-run caps are unchanged: a policy never raises or clamps an agent's own `maxCostMicros`, which the model gateway still enforces.

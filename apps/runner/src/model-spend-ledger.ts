@@ -7,8 +7,11 @@ import {
   ModelSpendPolicyDeleteInputSchema,
   ModelSpendPolicyInputSchema,
   ModelSpendPolicySchema,
+  ModelSpendSummarySchema,
   type ModelSpendPeriod,
-  type ModelSpendPolicy
+  type ModelSpendPolicy,
+  type ModelSpendSummary,
+  type ModelSpendThresholdState
 } from '@cloud-harness/contracts';
 import type { AgentLeaseRevocation } from './agent-gateway-control.js';
 
@@ -85,6 +88,14 @@ export type ModelSpendThresholdCrossing = {
 };
 
 export type ModelSpendLogger = (record: Record<string, unknown>) => void;
+
+/** Hooks a policy change runs inside its own transaction, so the change and its effects commit together. */
+export type ModelSpendPolicyHooks = {
+  /** Asked only when a profile-scoped policy is created; an update keeps a policy whose profile was deleted. */
+  profileExists?: (profileId: string) => boolean;
+  /** Records the change, for example as an audit entry. */
+  record?: (action: 'created' | 'updated' | 'deleted', policy: ModelSpendPolicy) => void;
+};
 
 type LedgerRow = {
   lease_id: string;
@@ -215,6 +226,22 @@ function windowFilter(principalId: string, profileKey: string | null, window: st
   return profileKey === null
     ? { where: `principal_id=? AND month_key=?${day}`, args: [principalId, month, ...dayArgs] }
     : { where: `principal_id=? AND profile_key=? AND month_key=?${day}`, args: [principalId, profileKey, month, ...dayArgs] };
+}
+
+/** The start and end (exclusive) of the UTC day or month containing `now`. */
+function windowBounds(period: ModelSpendPeriod, now: number): { windowStartsAt: string; windowEndsAt: string } {
+  const date = new Date(now);
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const start = period === 'day' ? Date.UTC(year, month, date.getUTCDate()) : Date.UTC(year, month, 1);
+  const end = period === 'day' ? Date.UTC(year, month, date.getUTCDate() + 1) : Date.UTC(year, month + 1, 1);
+  return { windowStartsAt: new Date(start).toISOString(), windowEndsAt: new Date(end).toISOString() };
+}
+
+/** `exceeded` from the limit itself, `warning` from the policy's warning percentage. */
+function thresholdState(committed: number, policy: ModelSpendPolicy): ModelSpendThresholdState {
+  if (committed >= policy.limitMicros) return 'exceeded';
+  return committed * 100 >= policy.limitMicros * policy.warnPercent ? 'warning' : 'ok';
 }
 
 function reachesWarning(committed: number, policy: PolicyRow): boolean {
@@ -413,6 +440,44 @@ export class ModelSpendLedger {
     };
   }
 
+  /**
+   * The principal's estimated spend in the current UTC day and month, for the
+   * principal and for every saved profile that has a policy or spend this month.
+   * A policy whose profile was deleted is still listed, so it can be deleted.
+   * Runs of a static profile count only in the principal's windows, because a
+   * policy can name only a saved profile.
+   */
+  summary(principalId: string, now: number): ModelSpendSummary {
+    const policies = this.listPolicies(principalId);
+    const spentProfiles = this.database.prepare(`SELECT DISTINCT profile_key FROM model_spend_ledger
+      WHERE principal_id=? AND month_key=? AND profile_key LIKE 'profile:%'`)
+      .all(principalId, utcMonthKey(now)) as Array<{ profile_key: string }>;
+    const profileIds = new Set([
+      ...spentProfiles.map((row) => row.profile_key.slice('profile:'.length)),
+      ...policies.flatMap((policy) => (policy.profileId === null ? [] : [policy.profileId]))
+    ]);
+    // Validated as a whole below, which also brands the profile ids.
+    const windows: unknown[] = [];
+    for (const profileId of [null, ...[...profileIds].sort()]) {
+      for (const period of ['day', 'month'] as const) {
+        const totals = this.windowTotals(principalId, profileId === null ? null : savedProfileSpendKey(profileId), period, now);
+        const policy = policies.find((candidate) => candidate.profileId === profileId && candidate.period === period) ?? null;
+        windows.push({
+          scope: profileId === null ? 'principal' : 'profile',
+          profileId,
+          period,
+          ...windowBounds(period, now),
+          estimatedSettledMicros: totals.settledMicros,
+          estimatedReservedMicros: totals.reservedMicros,
+          estimatedUnreconciledMicros: totals.unreconciledMicros,
+          policy,
+          thresholdState: policy ? thresholdState(totals.committedMicros, policy) : null
+        });
+      }
+    }
+    return ModelSpendSummarySchema.parse({ isEstimate: true, windows });
+  }
+
   listPolicies(principalId: string): ModelSpendPolicy[] {
     const rows = this.database.prepare(`SELECT * FROM model_spend_policies WHERE principal_id=?
       ORDER BY profile_id IS NOT NULL, profile_id, period`).all(principalId) as PolicyRow[];
@@ -424,7 +489,7 @@ export class ModelSpendLedger {
    * current generation, and creating refuses one, so a lost update or a policy
    * deleted meanwhile is reported as CONFLICT.
    */
-  setPolicy(principalId: string, rawInput: unknown, now: number): ModelSpendPolicy {
+  setPolicy(principalId: string, rawInput: unknown, now: number, hooks: ModelSpendPolicyHooks = {}): ModelSpendPolicy {
     const input = ModelSpendPolicyInputSchema.parse(rawInput);
     const profileId = input.profileId ?? null;
     return this.immediate(() => {
@@ -437,10 +502,15 @@ export class ModelSpendLedger {
         this.database.prepare(`UPDATE model_spend_policies SET limit_micros=?, warn_percent=?, generation=generation+1, updated_at=?
           WHERE id=?`)
           .run(input.limitMicros, input.warnPercent ?? existing.warn_percent, now, existing.id);
-        return this.requirePolicy(principalId, existing.id);
+        const updated = this.requirePolicy(principalId, existing.id);
+        hooks.record?.('updated', updated);
+        return updated;
       }
       if (input.expectedGeneration !== undefined) {
         throw new HarnessError('CONFLICT', 'model spend policy no longer exists; reload and retry', 409, false);
+      }
+      if (profileId !== null && hooks.profileExists?.(profileId) === false) {
+        throw new HarnessError('NOT_FOUND', 'model profile was not found', 404, false);
       }
       const count = this.database.prepare('SELECT COUNT(*) AS count FROM model_spend_policies WHERE principal_id=?')
         .get(principalId) as { count: number };
@@ -452,20 +522,26 @@ export class ModelSpendLedger {
         (id, principal_id, profile_id, period, limit_micros, warn_percent, generation, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`)
         .run(id, principalId, profileId, input.period, input.limitMicros, input.warnPercent ?? MODEL_SPEND_DEFAULT_WARN_PERCENT, now, now);
-      return this.requirePolicy(principalId, id);
+      const created = this.requirePolicy(principalId, id);
+      hooks.record?.('created', created);
+      return created;
     });
   }
 
-  deletePolicy(principalId: string, rawInput: unknown): void {
+  /** Returns the policy as it was when deleted. */
+  deletePolicy(principalId: string, rawInput: unknown, hooks: Pick<ModelSpendPolicyHooks, 'record'> = {}): ModelSpendPolicy {
     const input = ModelSpendPolicyDeleteInputSchema.parse(rawInput);
-    this.immediate(() => {
-      const existing = this.database.prepare('SELECT generation FROM model_spend_policies WHERE principal_id=? AND id=?')
-        .get(principalId, input.policyId) as { generation: number } | undefined;
+    return this.immediate(() => {
+      const existing = this.database.prepare('SELECT * FROM model_spend_policies WHERE principal_id=? AND id=?')
+        .get(principalId, input.policyId) as PolicyRow | undefined;
       if (!existing) throw new HarnessError('NOT_FOUND', 'model spend policy was not found', 404, false);
       if (existing.generation !== input.expectedGeneration) {
         throw new HarnessError('CONFLICT', 'model spend policy changed; reload it and retry', 409, false);
       }
       this.database.prepare('DELETE FROM model_spend_policies WHERE principal_id=? AND id=?').run(principalId, input.policyId);
+      const deleted = policyFromRow(existing);
+      hooks.record?.('deleted', deleted);
+      return deleted;
     });
   }
 

@@ -227,7 +227,8 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
   `maxCostMicros`, or wait for running agents to finish, before retrying; a
   refused spawn records nothing, so its idempotency key can be reused.
   Aggregate spend is an estimate, not provider billing, and per-run caps are
-  unchanged.
+  unchanged. No MCP tool reads or changes policies: ask the owner to adjust
+  one in the dashboard rather than looking for a tool.
 
 <!-- cloudharness-example:agent_spawn
 {"prompt":"Implement feature","idempotencyKey":"spawn-subagent-1234","profileId":"default","proxyOperations":["files_read","files_write","files_apply_patch"]}

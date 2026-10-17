@@ -144,7 +144,9 @@ Agent calls do not refresh the parent workspace idle TTL.
   an estimate, not provider billing: a run counts entirely in the UTC window
   it was admitted in, so spend near a window boundary can exceed one
   window's limit. Per-run caps are unchanged, and a replayed spawn never
-  reserves twice.
+  reserves twice. No MCP tool reads or changes policies; the owner manages
+  them through the dashboard routes described in
+  [Models & Budgets](../docs-site/dashboard/models.md#spend-policies).
 - `agent_status` accepts exactly one of the agent ID or spawn idempotency key.
   While full state is retained, it reports lineage, configured policy and
   budgets, usage, timestamps, terminal reason, and `outcomeUnknown`.

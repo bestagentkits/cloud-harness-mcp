@@ -161,7 +161,8 @@ a lost response; do not create a second key until the first result is resolved.
   runs count at their full cap until their lease settles, and a lease lost to
   a gateway restart counts at its cap as `unreconciled`. Nothing was created,
   so lower `maxCostMicros` or wait for running agents to end, then retry; the
-  owner can also raise or remove the policy. A `model spend threshold reached`
+  owner can also raise or remove the policy through the dashboard spend routes
+  (see [Spend policies](../docs-site/dashboard/models.md#spend-policies)). A `model spend threshold reached`
   runner log line marks the first time a window reaches the policy's warning
   percentage. All of these figures are estimates: a run counts entirely in
   the window it was admitted in, so spend near a window boundary can exceed

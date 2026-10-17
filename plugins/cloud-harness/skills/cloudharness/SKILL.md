@@ -93,7 +93,8 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    open a separate `network-none` workspace for `agent_spawn`. A spawn the
    owner's estimated model spend policy cannot fit fails with non-retryable
    `LIMIT_EXCEEDED`; lower `maxCostMicros` or wait for running agents to
-   finish rather than retrying unchanged. Workspaces
+   finish rather than retrying unchanged. No MCP tool changes policies; only
+   the owner can, through the dashboard. Workspaces
    automatically inherit active **Global Secrets** for your signed-in identity.
    When project-specific environment credentials are also required, provide
    `environmentId` with `confirmEnvironmentInjection: true` (environment secrets
