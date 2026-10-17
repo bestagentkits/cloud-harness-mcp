@@ -4,6 +4,22 @@
 ### Bug Fixes
 
 * **automations:** harden webhook ingress fairness, admission and recovery ([8390e67](https://github.com/bestagentkits/cloud-harness-mcp/commit/8390e67cfeda44e260f602dc20dfce71f42342f3))
+* **workspaces:** keep multi-repository writes scoped to their repository ([f0fc6b8](https://github.com/bestagentkits/cloud-harness-mcp/commit/f0fc6b836d0d67f4aa3d448fb9f045328623e0ee))
+
+
+### Features
+
+* **automations:** GitHub label webhooks start budgeted read-only agent workflows ([25e92e1](https://github.com/bestagentkits/cloud-harness-mcp/commit/25e92e15c504e002c943c221400b1234a626fc2f))
+* **contracts:** add webhook automation internal channel, limits and MCP event names ([10c0985](https://github.com/bestagentkits/cloud-harness-mcp/commit/10c09853b5d9d2a03a2eed64793eb7d0bb03784b))
+* **dashboard:** Automations page for runs, rules, connections and deliveries ([69fd6e0](https://github.com/bestagentkits/cloud-harness-mcp/commit/69fd6e018d9829e8870cfc7aa5546e8261fc703e))
+* **workspaces:** open one workspace with several repository checkouts ([367a46f](https://github.com/bestagentkits/cloud-harness-mcp/commit/367a46f0f2a9f6a8979b765ea8925ac727a5d3ef))
+
+# [0.66.0-beta.29](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.28...v0.66.0-beta.29) (2026-10-17)
+
+
+### Bug Fixes
+
+* **automations:** harden webhook ingress fairness, admission and recovery ([8390e67](https://github.com/bestagentkits/cloud-harness-mcp/commit/8390e67cfeda44e260f602dc20dfce71f42342f3))
 
 
 ### Features
