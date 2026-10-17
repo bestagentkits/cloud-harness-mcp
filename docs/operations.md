@@ -356,6 +356,15 @@ row exists unless data loss is explicitly allowed. A lossy downgrade discards
 every subscription and undelivered event; clients must subscribe again after a
 later upgrade, and nothing replays the lost events.
 
+## Model catalog state schema rollback
+
+The model catalog adds runner state schema v14: one table of last-good catalog
+snapshots. A pre-v14 runner refuses a v14 state database, so release rollback
+relies on the pre-deploy recovery set as for v13. The snapshots are a cache the
+runner rebuilds from providers, so the bounded `downgradeStateSchemaToV13` in
+[`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts)
+drops the table without a data-loss guard; the next search refetches.
+
 ## MCP Events deployment verification
 
 Automated tests prove [MCP Events](mcp-api.md#mcp-events-webhook-delivery)

@@ -10,6 +10,8 @@ import type { McpGatewayService } from './mcp-gateway/service.js';
 
 const internalId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9_-]{20,80}$`));
 const generation = z.object({ expectedGeneration: z.number().int().positive() }).strict();
+/** Only a single string query value is forwarded; a repeated or nested parameter becomes null and fails the runner schema. */
+const queryText = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 const createName = z.object({ name: z.string().trim().min(1).max(100), expectedGeneration: z.literal(0) }).strict();
 /** Mirrors the runner's archive cap, so an oversized upload is refused before anything decodes it. */
 const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
@@ -122,6 +124,15 @@ export function registerDashboardControlRoutes(
   router.delete('/api/v1/agent-model-profiles/:id', endpoint('model_profile_delete', (request) => ({ profileId: request.params.id, ...generation.parse(request.body) })));
   router.get('/api/v1/agent-model-config-status', endpoint('model_config_status', () => ({})));
   router.get('/api/v1/model-providers', endpoint('model_provider_list', () => ({})));
+  router.get('/api/v1/model-catalog', endpoint('model_catalog_search', (request) => ({
+    provider: queryText(request.query.provider),
+    ...(request.query.credentialId !== undefined ? { credentialId: queryText(request.query.credentialId) } : {}),
+    ...(request.query.q !== undefined ? { query: queryText(request.query.q) } : {}),
+    ...(request.query.cursor !== undefined ? { cursor: queryText(request.query.cursor) } : {}),
+    ...(request.query.limit !== undefined ? { limit: Number(queryText(request.query.limit)) } : {}),
+    ...(request.query.capability !== undefined ? { capability: queryText(request.query.capability) } : {})
+  })));
+  router.post('/api/v1/model-catalog/refresh', endpoint('model_catalog_refresh', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.get('/api/v1/decision-plane/status', endpoint('decision_plane_status', () => ({})));
   router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));
   router.get('/api/v1/artifacts', endpoint('artifact_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));

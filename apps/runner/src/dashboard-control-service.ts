@@ -55,6 +55,8 @@ const MAX_REVISION_BYTES = 262_144;
 import { resolveWorkspaceSkills, type SkillCandidate, type SkillTier } from './skill-resolver.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
+import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
+import { createProviderHttpClient } from './model-provider-http.js';
 import type { AgentGatewayControl } from './agent-gateway-control.js';
 import { packageApprovalUnavailable } from './config.js';
 import {
@@ -515,6 +517,8 @@ export class DashboardControlService {
           return ok('Agent model profile deleted', { deleted: true });
         }
         case 'model_provider_list': return ok('Model providers listed', { providers: listModelProviders() });
+        case 'model_catalog_search': return ok('Model catalog searched', await this.catalog().search(principalId, parsed.input));
+        case 'model_catalog_refresh': return ok('Model catalog refreshed', await this.catalog().refresh(principalId, parsed.input));
         case 'model_config_status': {
           const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
           const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
@@ -1440,6 +1444,13 @@ export class DashboardControlService {
       throw new HarnessError('UNAVAILABLE', 'Model profile operations are temporarily unavailable', 503, false);
     }
     return this.modelProfiles;
+  }
+  private catalogService?: ModelCatalogService;
+  private catalog(): ModelCatalogService {
+    this.catalogService ??= new ModelCatalogService({
+      database: this.principals.database, credentials: this.models(), http: createProviderHttpClient()
+    });
+    return this.catalogService;
   }
   private async syncGateway(): Promise<void> {
     if (this.modelProfiles && this.gatewayControl?.applySnapshot) {

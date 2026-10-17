@@ -733,26 +733,58 @@ export class ModelProfileStateRepository {
       } | undefined;
 
       if (ver) {
-        const encrypted: EncryptedSecret = {
-          keyVersion: ver.key_version,
-          nonce: Buffer.from(ver.nonce, 'hex'),
-          ciphertext: Buffer.from(ver.ciphertext, 'hex'),
-          authTag: Buffer.from(ver.auth_tag, 'hex')
-        };
-        const secret = this.keyring.decrypt(encrypted, {
-          principalId: row.principal_id,
-          environmentId: 'model_provider_credential',
-          name: row.id,
-          version: row.active_version
-        });
         credentials[row.id] = {
           provider: row.provider,
           authMode: row.auth_mode,
-          secret
+          secret: this.decryptVersion(row.principal_id, row.id, row.active_version, ver)
         };
       }
     }
 
     return { credentials, profiles };
+  }
+
+  /** Metadata of one credential owned by `principalId`, or undefined for another principal's or a missing one. */
+  getCredential(principalId: string, credentialId: string): ProviderCredentialMetadata | undefined {
+    return this.listCredentials(principalId).find((credential) => credential.id === credentialId);
+  }
+
+  /**
+   * Decrypts the active version of one credential owned by `principalId`, for a
+   * runner-side provider request such as catalog discovery. The plaintext must
+   * stay inside the runner and never be returned to a caller of an operation.
+   */
+  decryptCredentialSecret(principalId: string, credentialId: string): { activeVersion: number; secret: string } {
+    const row = this.database.prepare(`
+      SELECT c.active_version, v.key_version, v.nonce, v.ciphertext, v.auth_tag
+      FROM model_provider_credentials c
+      JOIN model_provider_credential_versions v
+        ON v.credential_id = c.id AND v.principal_id = c.principal_id AND v.version = c.active_version
+      WHERE c.id = ? AND c.principal_id = ?
+    `).get(credentialId, principalId) as {
+      active_version: number; key_version: number; nonce: string; ciphertext: string; auth_tag: string;
+    } | undefined;
+    if (!row) throw new HarnessError('NOT_FOUND', 'model provider credential was not found', 404, false);
+    return { activeVersion: row.active_version, secret: this.decryptVersion(principalId, credentialId, row.active_version, row) };
+  }
+
+  private decryptVersion(
+    principalId: string,
+    credentialId: string,
+    version: number,
+    stored: { key_version: number; nonce: string; ciphertext: string; auth_tag: string }
+  ): string {
+    const encrypted: EncryptedSecret = {
+      keyVersion: stored.key_version,
+      nonce: Buffer.from(stored.nonce, 'hex'),
+      ciphertext: Buffer.from(stored.ciphertext, 'hex'),
+      authTag: Buffer.from(stored.auth_tag, 'hex')
+    };
+    return this.keyring.decrypt(encrypted, {
+      principalId,
+      environmentId: 'model_provider_credential',
+      name: credentialId,
+      version
+    });
   }
 }

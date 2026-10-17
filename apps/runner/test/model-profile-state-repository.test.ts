@@ -198,4 +198,15 @@ describe('ModelProfileStateRepository', () => {
     const switched = repo.updateProfile(p1, profile.id, { apiMode: 'responses', customUpstreamUrl: 'https://llm2.example.com/v1/responses', expectedGeneration: 3 });
     expect(switched.activeRevision?.upstreamUrl).toBe('https://llm2.example.com/v1/responses');
   });
+
+  it('decrypts one credential\'s active version only for its own principal', () => {
+    const { repo, p1, p2 } = setup();
+    const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-first-secret' });
+    expect(repo.decryptCredentialSecret(p1, cred.id)).toEqual({ activeVersion: 1, secret: 'sk-first-secret' });
+    repo.rotateCredential(p1, cred.id, { apiKey: 'sk-second-secret', expectedGeneration: 1 });
+    expect(repo.decryptCredentialSecret(p1, cred.id)).toEqual({ activeVersion: 2, secret: 'sk-second-secret' });
+    expect(repo.getCredential(p1, cred.id)?.activeVersion).toBe(2);
+    expect(repo.getCredential(p2, cred.id)).toBeUndefined();
+    expect(() => repo.decryptCredentialSecret(p2, cred.id)).toThrow('was not found');
+  });
 });

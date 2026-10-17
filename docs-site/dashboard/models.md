@@ -47,6 +47,49 @@ add a new credential with the supported header and select it on the profile.
 2. Click **Rotate**.
 3. Enter the new API key and confirm. The active version increments atomically in memory.
 
+## Model Catalog
+
+The catalog answers "which models can this credential use, and what do they cost?" so a
+profile can be filled from a search instead of typed from memory. The runner builds it from
+two sources and returns only model metadata; the credential never leaves the runner.
+
+| Source | What it proves | Shared? | Kept for |
+| --- | --- | --- | --- |
+| The provider's own models endpoint, called with the selected credential | The model is available to that key (`listed_for_credential`) | No: only the principal that owns the credential, and only for its current key version | 1 hour |
+| OpenRouter's public models list | Display names, context and output limits, capabilities, and prices | Yes: it is public metadata | 6 hours |
+
+- **OpenRouter credentials** list OpenRouter's models directly, and their prices are the ones
+  OpenRouter bills: confidence `exact`.
+- **Direct vendors** (OpenAI, Anthropic, Gemini, DeepSeek) take their model IDs from the
+  vendor's own listing. OpenRouter metadata is attached when the vendor ID matches the
+  OpenRouter `vendor/model` ID (`canonicalModelId`), and its price is labelled `estimate`
+  because the vendor bills you, not OpenRouter. OpenRouter IDs are never sent to a vendor.
+- **Without a credential**, or when the vendor listing fails, OpenRouter's public entries for
+  that vendor stand in with availability `public_catalog`. Their IDs follow OpenRouter's
+  naming, so verify the model before saving a profile.
+- **Custom providers** have no catalog; enter the model ID yourself.
+
+Every price carries its provenance: the source (`provider`, `openrouter`, or `user`), the
+source model ID, when it was retrieved, and its confidence (`exact`, `estimate`, or
+`unknown`). An unknown price is `null`, never zero, so a missing price is never treated as
+free. `hasConditionalPricing` marks models whose price changes with conditions such as a long
+prompt; the listed price is the base tier. Capabilities (tools, reasoning, vision) are
+`reported` only when provider or OpenRouter metadata says so.
+
+### Freshness and refresh
+
+Each result reports `freshness` per source. `fresh` means every source answered within its
+time-to-live. `stale` means at least one source failed and the last good copy, kept across
+runner restarts, is being served; the source shows an error category such as
+`authentication`, `rate_limited`, or `timeout`. `unavailable` means there is nothing to show
+yet. After a failure the runner waits a minute before asking that source again.
+
+The dashboard reads the catalog at `GET /api/v1/model-catalog` (query parameters `provider`,
+`credentialId`, `q`, `cursor`, `limit`, `capability`) and forces a refresh with
+`POST /api/v1/model-catalog/refresh`. A refresh skips the time-to-live and is limited to once
+every 30 seconds per provider and credential. Schemas live in
+[`packages/contracts/src/model-catalog-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-catalog-schemas.ts).
+
 ## Configuring Model Profiles
 
 Model profiles define how subagents interact with LLMs:

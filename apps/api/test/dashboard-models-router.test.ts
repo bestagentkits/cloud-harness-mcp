@@ -46,6 +46,12 @@ beforeEach(async () => {
       if (operation === 'model_profile_create') {
         return { ok: false, message: 'refused', truncated: false, error: { code: 'INVALID_INPUT', message: 'Google Gemini does not support the responses API mode; supported: chat-completions', retryable: false } };
       }
+      if (operation === 'model_catalog_search') {
+        return { ok: true, message: 'searched', truncated: false, data: { entries: [], nextCursor: null, freshness: { state: 'fresh', fetchedAt: 1, sources: [] } } };
+      }
+      if (operation === 'model_catalog_refresh' && input.provider === 'openai') {
+        return { ok: false, message: 'limited', truncated: false, error: { code: 'LIMIT_EXCEEDED', message: 'The model catalog was refreshed recently. Try again in 12 seconds.', retryable: true } };
+      }
       if (operation === 'model_config_status') {
         return { ok: true, message: 'status', truncated: false, data: { status: { gatewaySynced: true } } };
       }
@@ -155,5 +161,31 @@ describe('Dashboard Models & Credentials Router', () => {
     expect(calls[0]?.operation).toBe('model_profile_create');
     expect(reply.status).toBe(400);
     expect(reply.json.message).toBe('Google Gemini does not support the responses API mode; supported: chat-completions');
+  });
+
+  it('forwards catalog search query parameters with numbers coerced and refresh bodies', async () => {
+    const searched = await request('/model-catalog?provider=anthropic&credentialId=cred_12345678901234567890&q=sonnet&cursor=Y2F0YWxvZzoy&limit=10&capability=tools');
+    expect(searched.status).toBe(200);
+    expect(searched.json).toMatchObject({ data: { entries: [], nextCursor: null, freshness: { state: 'fresh' } } });
+    expect(calls[0]).toMatchObject({
+      operation: 'model_catalog_search',
+      input: { provider: 'anthropic', credentialId: 'cred_12345678901234567890', query: 'sonnet', cursor: 'Y2F0YWxvZzoy', limit: 10, capability: 'tools' },
+      principal
+    });
+
+    await request('/model-catalog?provider=openrouter');
+    expect(calls[1]?.input).toEqual({ provider: 'openrouter' });
+
+    await request('/model-catalog?provider=openai&provider=google&limit=abc');
+    expect(calls[2]?.input).toMatchObject({ provider: null });
+    expect(Number.isNaN(calls[2]?.input.limit)).toBe(true);
+
+    const refreshed = await request('/model-catalog/refresh', { method: 'POST', body: { provider: 'anthropic' } });
+    expect(refreshed.status).toBe(200);
+    expect(calls[3]).toMatchObject({ operation: 'model_catalog_refresh', input: { provider: 'anthropic' } });
+
+    const limited = await request('/model-catalog/refresh', { method: 'POST', body: { provider: 'openai' } });
+    expect(limited.status).toBe(429);
+    expect(limited.json).toMatchObject({ error: 'limit_exceeded', message: 'The model catalog was refreshed recently. Try again in 12 seconds.' });
   });
 });
