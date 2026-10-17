@@ -117,7 +117,9 @@ the input and result schemas are in
   model, API mode, and upstream.
 - `{ "credentialId": "cred_…", "model": "…", "apiMode": "…", "customUpstreamUrl": "…" }`
   checks unsaved settings. A draft never creates or changes a profile, revision, or
-  credential. Without a model only the key is checked.
+  credential. Without a model only the key is checked. A draft for a Custom credential
+  sends the key to the `customUpstreamUrl` you submit, exactly as saving a profile with that
+  upstream would, so only submit an upstream you trust with the key.
 - `"checks": { "inference": false, "tools": true }` turns the paid checks off or on.
   Inference runs by default when a model is known; the tool-call check is opt-in.
 
@@ -125,10 +127,10 @@ the input and result schemas are in
 
 | Check | How |
 | --- | --- |
-| `authentication` | Lists the provider's models with the key (Anthropic uses its native `x-api-key` header). OpenRouter's list is public, so its key is checked at `GET /api/v1/key`. Custom providers skip this and rely on inference. |
-| `model_access` | The model ID appears in the listing (Gemini's `models/` prefix is ignored), or the model answered. A model missing from a complete listing fails; missing from a partial listing is `limited`. |
-| `protocol` | A tiny streamed request ("Reply with OK.", 16 output tokens) returns events of the expected API family: `choices[].delta` for Chat Completions, `response.*` for Responses. |
-| `streaming_inference` | The stream finishes; token usage is captured when the provider reports it. |
+| `authentication` | Lists the provider's models with the key (Anthropic uses its native `x-api-key` header). OpenRouter's list is public, so its key is checked at `GET /api/v1/key`. Custom providers skip this and rely on inference. A restricted key that may not list models is `limited` (`access`), not failed; when inference runs, it decides whether the key works. |
+| `model_access` | The model ID appears in the listing (Gemini's `models/` prefix is ignored), or the model answered. A model missing from a complete listing fails only when no inference ran or the provider answered not found; if inference ran but proved nothing (rate limit, quota, timeout), or the listing was partial, it is `limited`. |
+| `protocol` | A tiny streamed request with a small output cap returns events of the expected API family: `choices[].delta` for Chat Completions, `response.*` for Responses. The cap uses the same field the model gateway sends for that provider. |
+| `streaming_inference` | The stream finishes with a finish reason, `[DONE]`, or a completed response; token usage is captured when the provider reports it. An error inside the stream is classified like an HTTP error. |
 | `tool_call` | Optional. Forces a call to a harmless synthetic `report_status` tool. |
 
 ### Outcomes
@@ -150,12 +152,15 @@ any key material removed.
 
 ### Cost and limits
 
-The inference check spends a few dozen tokens and the tool check about a hundred more, on
-the provider account behind the key. For a saved profile the result includes
-`estimatedCostMicros` from the revision's pricing; drafts report `null`. Each principal can
-run 6 checks per minute, and one check is bounded to about 45 seconds and small responses.
+The inference and tool checks spend a small, capped number of tokens on the provider
+account behind the key. For a saved profile the result includes `estimatedCostMicros` from
+the revision's pricing; drafts report `null`. Checks are rate limited per principal, and a
+whole check, name resolution included, runs under one deadline that is shorter than the
+dashboard's request timeout; checks that run out of time are reported as `limited`
+(`timeout`). The limits and caps are owned by
+[`apps/runner/src/model-verification/`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/apps/runner/src/model-verification/).
 Every check is recorded in the audit log as `model_connection.verified` with its outcome,
-never the key.
+target, credential, model, API mode, elapsed time, and token counts, never the key.
 
 The latest result appears as `lastVerification` on credentials and profiles. A profile's
 result belongs to the revision it checked, so saving a new revision shows it as not verified
