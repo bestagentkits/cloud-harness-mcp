@@ -282,8 +282,9 @@ prices match the catalog reads `current` with the note set.
 information, not a sign that the price is stale. Listing never makes a network call: the
 review reads the last cached catalog, whatever its age. The OpenRouter catalog is kept
 across restarts, except that a copy saved in an older format is not used: until the next
-catalog search fetches a new one, reviews of OpenRouter-priced models read `unknown`, and a
-list reads the saved copy at most once until that fetch succeeds. It is computed
+catalog search fetches a new one, reviews of every catalog-priced profile, OpenRouter or
+direct vendor, read `unknown`, and a list reads the saved copy at most once until that fetch
+succeeds. It is computed
 on every list and never stored, so a catalog refresh changes the review but never the pinned
 prices, provenance, or limits. To take a new catalog price, edit the profile and save it.
 

@@ -166,9 +166,10 @@ export type AgentModelProfileRevision = z.infer<typeof AgentModelProfileRevision
 // How a saved revision's pinned prices compare with the cached catalog price.
 // `repriced`: a price differs by at least REPRICING_WARNING_PERCENT
 // (model-catalog-schemas.ts), a pinned zero now has a catalog price, a pinned cache
-// price is no longer published (`catalog: null`), or a tier exists on only one side. `unknown`: no cached catalog price exists for the model.
-// The state reflects only comparable prices, so an edit can always clear it. For an override (`isOverride`) the result is
-// informational: the operator chose the price.
+// price is no longer published (`catalog: null`), or a tier exists on only one side.
+// `unknown`: no cached catalog price exists for the model. The state reflects only
+// comparable prices, so an edit can always clear it. For an override (`isOverride`) the
+// result is informational: the operator chose the price.
 export const ModelPricingReviewStateSchema = z.enum(['current', 'repriced', 'unknown']);
 export type ModelPricingReviewState = z.infer<typeof ModelPricingReviewStateSchema>;
 

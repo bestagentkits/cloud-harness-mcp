@@ -723,6 +723,20 @@ describe('profile pricing provenance and repricing review through the dashboard 
     expect(review('or-mismatch')).toMatchObject({ state: 'repriced', isOverride: true, changes: [{ field: 'input', pinned: 1_000_000, catalog: 10_000_000 }, { field: 'output' }] });
     expect(review('vendor-mismatch')).toMatchObject({ state: 'repriced', isOverride: true, changes: [{ field: 'input', pinned: 1_000_000, catalog: 15_000_000 }, { field: 'output' }] });
     expect(review('vendor-match')).toMatchObject({ state: 'current', isOverride: false });
+
+    // An edit checks the reference against the model and credential it leaves the profile routed to.
+    const moved = await save('or-moved', openRouter.id, 'openai/cheap', flat(1_000_000, 2_000_000), 'openai/cheap');
+    expect(moved.activeRevision?.priceProvenance).toMatchObject({ source: 'openrouter', sourceModelId: 'openai/cheap', isOverride: false });
+    const remodeled = await call('model_profile_update', {
+      profileId: 'or-moved', expectedGeneration: moved.generation, model: 'openai/expensive',
+      pricing: { ...flat(1_000_000, 2_000_000), cacheReadMicrosPerMillionTokens: 100_000 }, catalogPriceRef: { sourceModelId: 'openai/cheap' }
+    }) as AgentModelProfileMetadata;
+    expect(remodeled.activeRevision?.priceProvenance).toMatchObject({ source: 'user', sourceModelId: null, isOverride: true });
+    const switched = await call('model_profile_update', {
+      profileId: 'or-mismatch', expectedGeneration: openRouterMismatch.generation, credentialId: anthropic.id, model: 'claude-opus-x',
+      pricing: flat(15_000_000, 75_000_000), catalogPriceRef: { sourceModelId: 'anthropic/claude-opus-x' }
+    }) as AgentModelProfileMetadata;
+    expect(switched.activeRevision?.priceProvenance).toMatchObject({ source: 'openrouter', sourceModelId: 'anthropic/claude-opus-x', confidence: 'estimate', isOverride: false });
   });
 
   it('reads the persisted catalog snapshot at most once while listing, even when it is rejected', async () => {
