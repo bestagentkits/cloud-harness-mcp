@@ -93,6 +93,10 @@ beforeEach(async () => {
         agentId: `agent_${'g'.repeat(24)}`, cursor: '0', nextCursor: '1', retainedBaseCursor: '0', truncated: false, hasMore: false,
         events: [{ cursor: '0', nextCursor: '1', timestamp: '2026-08-17T00:00:30.000Z', type: 'tool.call', content: `hello ${'x'.repeat(5_000)}` }]
       } };
+      if (operation === 'agent_spawn') return { ok: true, message: 'Agent spawn accepted', truncated: false, data: {
+        agentId: `agent_${'s'.repeat(24)}`, status: 'SPAWNING', generation: 1, replayed: false,
+        ownerId: 'internal-owner', containerName: 'executor-secret', gatewayLeaseId: 'lease-secret'
+      } };
       if (operation === 'files_write') return { ok: true, message: 'written', truncated: false, data: { path: input.path, sha256: 'b'.repeat(64) } };
       return { ok: true, message: 'ok', truncated: false, data: {} };
     }),
@@ -436,6 +440,35 @@ describe('dashboard BFF', () => {
     expect(logs.json.data.events[0].content).toContain('… truncated');
     expect(logs.json.data.events[0].content.length).toBeLessThan(4_100);
     expect(logs.json.data.events[0].type).toBe('tool.call');
+  });
+
+  it('spawns a bounded agent in the routed workspace through the agent_spawn contract', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const headers = { origin: 'https://dashboard.example', cookie, 'content-type': 'application/json', 'x-csrf-token': session.json.csrfToken };
+    const body = {
+      workspaceId: `ws_${'z'.repeat(24)}`, prompt: 'summarize the README', profileId: 'coding-fast', idempotencyKey: 'dashboard-spawn-1',
+      proxyOperations: ['files_read', 'grep_search'], ttlSeconds: 600, maxCostMicros: 1_000_000
+    };
+
+    const withoutCsrf = await send(`/api/v1/workspaces/${workspaceId}/agents`, { method: 'POST', headers: { ...headers, 'x-csrf-token': 'wrong' }, body: JSON.stringify(body) });
+    expect(withoutCsrf.status).toBe(403);
+    expect(calls.some((call) => call.operation === 'agent_spawn')).toBe(false);
+
+    // The contract is strict: an unknown field or a missing permission list never reaches the runner.
+    for (const invalid of [{ ...body, network: 'bridge' }, { ...body, proxyOperations: undefined }, { ...body, proxyOperations: ['exec_run'] }]) {
+      const rejected = await send(`/api/v1/workspaces/${workspaceId}/agents`, { method: 'POST', headers, body: JSON.stringify(invalid) });
+      expect(rejected.status).toBe(400);
+    }
+    expect(calls.some((call) => call.operation === 'agent_spawn')).toBe(false);
+
+    const spawned = await send(`/api/v1/workspaces/${workspaceId}/agents`, { method: 'POST', headers, body: JSON.stringify(body) });
+    expect(spawned.status).toBe(200);
+    expect(spawned.json.data).toEqual({ agentId: `agent_${'s'.repeat(24)}`, status: 'SPAWNING', generation: 1, replayed: false });
+    const spawnCall = calls.find((call) => call.operation === 'agent_spawn');
+    // The route's workspace wins over a body that names another one.
+    expect(spawnCall?.input).toMatchObject({ workspaceId, profileId: 'coding-fast', proxyOperations: ['files_read', 'grep_search'], maxCostMicros: 1_000_000 });
+    expect(spawnCall?.principal).toEqual(principal);
   });
 
   it('serves the workspace-scoped agent list and rejects an unknown agent status', async () => {

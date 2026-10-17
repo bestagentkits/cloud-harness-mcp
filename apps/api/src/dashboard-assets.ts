@@ -15,7 +15,8 @@ const DASHBOARD_ASSETS = new Set([
   'dashboard-pages.js',
   'dashboard.js',
   'dashboard-terminal.js',
-  'dashboard-models.js'
+  'dashboard-models.js',
+  'dashboard-agent-run.js'
 ]);
 
 /**

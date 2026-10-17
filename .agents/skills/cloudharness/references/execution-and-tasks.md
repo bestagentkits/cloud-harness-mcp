@@ -219,6 +219,13 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
   paths and digests, never content. If guidance cannot be scanned the agent
   ends `FAILED` with an "agent bootstrap failed" reason: retry, or spawn again
   with `repositoryContext: "none"` and a new idempotency key.
+- The workspace must be active and opened with `network-none`. The profile
+  must be one of your `ACTIVE` profiles; a saved profile in another state is
+  refused with `INVALID_INPUT` naming it (for example `is DISABLED`), so ask
+  the owner to activate or re-sync it rather than retrying. The agent is
+  pinned to the profile's active revision. Each spawn is one bounded run with
+  no session after it ends; to continue, spawn again with a new key. The
+  owner can start the same run from the Dashboard's **Run Pi agent** dialog.
 - If the owner set an aggregate model spend policy (daily or monthly, for the
   principal or one model profile), the spawn reserves its whole
   `maxCostMicros` against it until the agent ends. A spawn that would exceed a
@@ -262,6 +269,9 @@ Read bounded streaming diagnostic and tool events from one coding agent.
 Send an idempotent steering or follow-up message to a running coding agent.
 
 - Required: `agentId`, `idempotencyKey`, `mode` (`steer` or `followUp`), `message`. Optional: `workspaceId`.
+- Admitted only while the agent is `RUNNING`. Any other status returns
+  `CONFLICT` (`agent message admission is closed`) and records nothing; a
+  finished run keeps no session, so spawn a new agent instead of retrying.
 
 <!-- cloudharness-example:agent_message
 {"agentId":"agent_aaaaaaaaaaaaaaaaaaaa","idempotencyKey":"msg-steer-1234","mode":"steer","message":"Please also add unit tests"}

@@ -1182,6 +1182,7 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 .content-just-updated { animation: state-crossfade var(--motion-state) var(--ease-out); border-color: var(--accent-line); }
 .status-message[data-save-state="saving"] { color: var(--ink-muted); }
 .status-message[data-save-state="saved"] { color: var(--success); font-weight: 600; animation: pop-in var(--motion-state) var(--ease-out); }
+.status-message[data-save-state="error"] { color: var(--danger); }
 /* TTL emphasis by threshold: weight and a rule, never colour alone. */
 .lease-soon { border-inline-start: .1875rem solid var(--warning-line); padding-inline-start: var(--space-2); font-weight: 700; color: var(--warning); }
 .lease-expired { border-inline-start: .1875rem solid var(--danger); padding-inline-start: var(--space-2); font-weight: 700; color: var(--danger); }

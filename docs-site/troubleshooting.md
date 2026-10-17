@@ -372,3 +372,13 @@ Nothing was saved or sent to the provider; the refusal is recorded in the audit 
 1. Run `model_profile_validate` with the same change: its `escalations` list shows exactly what a save would refuse. Drop those fields to save the rest over MCP.
 2. Otherwise, ask the owner to make the change on the Dashboard [Models page](/dashboard/models), where the same change is saved. Once the owner has saved a profile on a Custom upstream URL, MCP calls may use that URL with that credential.
 3. A profile created over MCP starts **Disabled**. `agent_spawn` cannot use it until the owner activates it on the Models page; no MCP tool activates, disables, or deletes a profile.
+
+---
+
+### 32. `agent_spawn` or **Run Pi agent** fails with `agent model profile is DISABLED`, or `agent_message` returns `agent message admission is closed`
+**Cause:** A spawn resolves only your own **Active** model profiles and pins the agent to the profile's active revision. A saved profile that is Disabled, waiting for sync (`SYNC_PENDING`), failed to sync (`SYNC_FAILED`), or has no active revision is refused with `INVALID_INPUT` naming that state; nothing is created or reserved. `unknown agent model profile` means none of your profiles has that ID. Messages reach an agent only while it is `RUNNING`: every run is bounded and keeps no session after it ends, so a message to a finished, cancelled, or starting agent returns `CONFLICT` and is not recorded.
+
+**Fix:**
+1. For a profile state error, open [Models & Budgets](/dashboard/models), then **Activate** the profile or fix its credential so it syncs, and spawn again. The **Run Pi agent** dialog lists such profiles disabled with their state.
+2. For `agent message admission is closed`, check the agent's status. If it ended, start a new run with the follow-up as its task; if it is still starting, wait until it is **Running**.
+3. If **Run Pi agent** lists no workspace, open one with Network profile **No network**: agents never run in a workspace with network access.

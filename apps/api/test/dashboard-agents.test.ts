@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  AGENT_STATUSES, agentAge, agentStatusLabel, agentTreeIndex, agentTtl, budgetUtilization,
+  AGENT_STATUSES, agentAge, agentRunEnded, agentStatusLabel, agentTreeIndex, agentTtl, budgetUtilization,
   renderAgentDetail, renderAgentHierarchy, renderAgentTable, renderAgentsIndex
 } from '../dashboard/dashboard-render.js';
 
@@ -104,6 +104,30 @@ describe('agent control center renderers', () => {
     const unlimited = renderAgentDetail({ agent: agent({ budget: { maxCostMicros: 0 }, usage: { costMicros: 10 } }) });
     expect(unlimited).toContain('Not reported');
     expect(unlimited).toContain('No retained log events for this agent.');
+  });
+
+  it('offers messages only while the run is RUNNING, and cancel only before it stops', () => {
+    expect(AGENT_STATUSES.filter(agentRunEnded)).toEqual(['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']);
+    const running = renderAgentDetail({ agent: agent() });
+    expect(running).toContain('Bounded run: no session survives it');
+    expect(running).toContain('<dt>Pinned profile</dt>');
+
+    const spawning = renderAgentDetail({ agent: agent({ status: 'SPAWNING' }) });
+    expect(spawning).not.toContain('id="agent-message-form"');
+    expect(spawning).toContain('Messages open once the agent is running.');
+    expect(spawning).toContain('id="cancel-agent"');
+
+    const cancelling = renderAgentDetail({ agent: agent({ status: 'CANCELLING' }) });
+    expect(cancelling).not.toContain('id="agent-message-form"');
+    expect(cancelling).not.toContain('id="cancel-agent"');
+    expect(cancelling).toContain('Cancellation is in progress');
+
+    for (const status of ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED']) {
+      const ended = renderAgentDetail({ agent: agent({ status, terminalAt: '2026-08-17T00:10:00.000Z' }) });
+      expect(ended).not.toContain('id="agent-message-form"');
+      expect(ended).not.toContain('id="cancel-agent"');
+      expect(ended).toContain('This bounded run has ended and keeps no session');
+    }
   });
 
   it('marks an unknown outcome and escapes log content', () => {

@@ -1067,6 +1067,13 @@ export class AgentManager {
           maxProxyOperations: rev.maxProxyOperations
         };
       }
+      // A saved profile that is not usable names its state, so the owner knows to
+      // activate or re-sync it rather than guessing at a typo.
+      const unusable = activeProfiles.find((p: AgentModelProfileMetadata) => p.id === id);
+      if (unusable && this.config.profiles.every((candidate) => candidate.id !== id)) {
+        const state = unusable.status === 'ACTIVE' ? 'has no active revision' : `is ${unusable.status}`;
+        throw new HarnessError('INVALID_INPUT', `agent model profile ${state}; activate it on the Dashboard before spawning`);
+      }
     }
     const staticProfile = this.config.profiles.find((candidate) => candidate.id === id);
     if (!staticProfile) throw new HarnessError('INVALID_INPUT', 'unknown agent model profile');

@@ -106,7 +106,7 @@ function containerDepth(markup: string, ownerId: string, id: string): number {
 describe('dashboard static UI contract', () => {
   const html = asset('index.html');
   const css = asset('dashboard.css');
-  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}\n${asset('dashboard-models.js')}`;
+  const script = `${asset('dashboard.js')}\n${asset('dashboard-api.js')}\n${asset('dashboard-render.js')}\n${asset('dashboard-pages.js')}\n${asset('dashboard-models.js')}\n${asset('dashboard-agent-run.js')}`;
   const squishedCss = squish(css);
 
   it('provides native landmarks, focus entry, live status, and destructive confirmation', () => {

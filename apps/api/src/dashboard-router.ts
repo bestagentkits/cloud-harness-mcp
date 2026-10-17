@@ -497,6 +497,15 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
     } catch (error) { next(error); }
   });
 
+  // A bounded Pi run started from the Dashboard. The body is the `agent_spawn` contract, so the
+  // runner still enforces the profile's operation and budget ceilings and the network posture.
+  router.post('/api/v1/workspaces/:workspaceId/agents', async (request: DashboardRequest, response, next) => {
+    await call(runner, request, response, next, 'agent_spawn', {
+      ...(request.body && typeof request.body === 'object' ? request.body : {}),
+      workspaceId: workspaceId.parse(request.params.workspaceId)
+    });
+  });
+
   router.get('/api/v1/agents/:agentId', async (request: DashboardRequest, response, next) => {
     await call(runner, request, response, next, 'agent_status', {
       agentId: agentId.parse(request.params.agentId),

@@ -154,6 +154,14 @@ a lost response; do not create a second key until the first result is resolved.
   see the
   [security model](security-model.md#subagent-model-provider-credential-isolation--gateway-control) and
   [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts).
+- `agent_spawn` fails with `INVALID_INPUT` and `agent model profile is
+  DISABLED` (or `SYNC_PENDING`, `SYNC_FAILED`, or `has no active revision`):
+  the profile exists but cannot run. Activate or re-sync it on the Dashboard
+  Models page and spawn again; the refused spawn created nothing. `unknown
+  agent model profile` means no profile of yours has that ID. `agent_message`
+  returning `CONFLICT` with `agent message admission is closed` means the
+  agent is not `RUNNING`; a bounded run keeps no session, so start a new run.
+  See [`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts).
 - `agent_spawn` fails with `LIMIT_EXCEEDED` and `model spend policy (...)
   would be exceeded`: the owner's daily or monthly spend policy, for the
   principal or the model profile, cannot fit this run's whole `maxCostMicros`

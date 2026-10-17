@@ -325,6 +325,52 @@ describe('AgentManager', () => {
     store.close();
   });
 
+  it('refuses a message to a finished agent, because a bounded run keeps no session', async () => {
+    const { manager, record, launcher, repository, store } = setup();
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const agentId = await waitForRunning(manager, record);
+    launcher.outputs[0]!.write(`${JSON.stringify({
+      type: 'terminal', state: 'SUCCEEDED', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2, cost: 0 }
+    })}\n`);
+    await vi.waitFor(() => expect(repository.findAgent(record.ownerId, record.id, agentId)?.status).toBe('SUCCEEDED'));
+    const input = { workspaceId: record.id, agentId, idempotencyKey: 'late-message', mode: 'followUp' as const, message: 'one more thing' };
+    await expect(manager.dispatch(record.ownerId, record, 'agent_message', input))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: 'agent message admission is closed' });
+    expect(launcher.inputs[0]!.read()?.toString('utf8') ?? '').not.toContain('one more thing');
+    store.close();
+  });
+
+  it('names a saved profile that is not active, and keeps another owner\'s profile unknown', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agent-manager-profile-state-'));
+    directories.push(directory);
+    const store = new StateStore(join(directory, 'state.db'));
+    openStores.push(store);
+    const ownerId = store.resolvePrincipal({ kind: 'owner', ownerId: 'owner' });
+    const otherId = store.resolvePrincipal({ kind: 'owner', ownerId: 'other' });
+    const record = workspace('network-none', ownerId);
+    store.create(record);
+    const modelProfiles = createCachedProfile(store, ownerId);
+    const launcher = new FakeLauncher();
+    const gateway = new FakeGateway();
+    const manager = new AgentManager(agentsConfig, store, {
+      repository: new AgentStateRepository(store.database, agentsConfig.limits),
+      launcher, gateway,
+      toolExecutor: vi.fn(async () => ({ ok: true as const, message: 'read', data: {}, truncated: false })),
+      modelProfiles
+    });
+    const saved = modelProfiles.listProfiles(ownerId).find((profile) => profile.id === 'cached')!;
+    modelProfiles.disableProfile(ownerId, 'cached', saved.generation);
+    await expect(manager.dispatch(ownerId, record, 'agent_spawn', spawnInput(record, { profileId: 'cached' })))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT', message: expect.stringContaining('is DISABLED') });
+    const foreign = { ...workspace('network-none', otherId), id: `ws_${'f'.repeat(24)}` };
+    store.create(foreign);
+    await expect(manager.dispatch(otherId, foreign, 'agent_spawn', spawnInput(foreign, { profileId: 'cached' })))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT', message: 'unknown agent model profile' });
+    expect(launcher.launches).toHaveLength(0);
+    expect(gateway.issued).toHaveLength(0);
+    await manager.stop();
+  });
+
   it('executes only granted proxy tools and appends bounded protocol events', async () => {
     const { manager, record, launcher, toolExecutor, store } = setup();
     await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));

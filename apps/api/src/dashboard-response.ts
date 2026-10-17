@@ -173,6 +173,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'workspace_lease_renew',
   'workspace_recover',
   'workspace_finalize',
+  'agent_spawn',
   'agent_list',
   'agent_status',
   'agent_logs',
@@ -432,6 +433,7 @@ export function mapDashboardData(operation: DashboardResponseOperation, value: u
       truncated: data.truncated === true, hasMore: data.hasMore === true, events: agentLogEvents(data.events)
     };
   }
+  if (operation === 'agent_spawn') return pick(data, ['agentId', 'status', 'generation', 'replayed']);
   if (operation === 'agent_message' || operation === 'agent_cancel') {
     return pick(data, ['agentId', 'status', 'state', 'replayed', 'affectedAgentIds']);
   }

@@ -111,6 +111,18 @@
       </div>
     </form>
   </dialog>
+  <dialog id="run-agent-dialog" aria-labelledby="run-agent-title" aria-describedby="run-agent-description">
+    <h2 id="run-agent-title">Run Pi agent</h2>
+    <p id="run-agent-description">Start one bounded agent run in a network-disabled workspace, pinned to a model profile's active revision.</p>
+    <form id="run-agent-form" class="stack-form" novalidate>
+      <div id="run-agent-body"></div>
+      <p id="run-agent-status" class="status-message" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancel-run-agent">Cancel</button>
+        <button type="submit" id="submit-run-agent" class="accent-btn">Start agent</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="model-credential-dialog" aria-labelledby="model-credential-title" aria-describedby="model-credential-description">
     <h2 id="model-credential-title">Add provider credential</h2>
     <p id="model-credential-description">Configure an API key for subagent LLM providers. Values are write-only and encrypted.</p>

@@ -379,6 +379,18 @@ wired, so the visible one is never the only working one. Owners:
   Messages; logs are the adapter's bounded projection (an oversized event is
   truncated with an explicit marker) and messages carry a client-generated
   idempotency key while cancel cascades to children behind a confirmation.
+  Messages are offered only while the run is `RUNNING` and cancel only before it
+  stops, because a bounded run keeps no session (`agentRunEnded`); a live detail
+  page refreshes on a bounded timer that never replaces a message being written.
+  **Run Pi agent** is the primary action on the Agents page, the workspace Agents
+  tab and an agent's detail page. Its dialog lists only active `network-none`
+  workspaces and `ACTIVE` profiles as choices (others are shown disabled with the
+  reason), caps every budget at the profile's limits, starts read-only, previews
+  the model, pinned revision, gateway readiness, isolation, tools (calling out
+  ones that change files) and cost cap, and keeps one idempotency key per request
+  body. These are browser mirrors only: the runner re-checks each rule at spawn.
+  Its owners are `dashboard-agent-run.js` and the `run-agent-dialog` shell dialog; the
+  route is `POST /api/v1/workspaces/:id/agents` (`agent_spawn`).
   Owners: `agentStatusLabel`, `budgetUtilization`, `agentTreeIndex`,
   `renderAgentHierarchy`, `renderAgentTable`, `renderAgentsIndex` and
   `renderAgentDetail` in

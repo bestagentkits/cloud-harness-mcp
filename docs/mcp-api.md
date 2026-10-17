@@ -133,7 +133,15 @@ Agent calls do not refresh the parent workspace idle TTL.
 - `agent_spawn` durably reserves the prompt, budgets, profile, parent, and
   requested proxy-tool subset before launch. Its result is an acknowledgement
   with an opaque ID, generation, status, and replay flag—not prompt
-  completion.
+  completion. The agent is pinned to the profile's active revision at spawn,
+  so a later profile edit never changes a running agent. A saved profile that
+  is not `ACTIVE` (or has no active revision) is refused with `INVALID_INPUT`
+  naming its state; an ID that matches none of the caller's profiles stays
+  `unknown agent model profile`, so another owner's profile is never
+  disclosed. Each spawn is one bounded run: it ends on completion, its TTL,
+  a budget, or cancel, and no session survives it. The Dashboard's **Run Pi
+  agent** dialog sends this same contract through
+  `POST /dashboard/api/v1/workspaces/:id/agents`.
   When the owner has set an aggregate model spend policy (daily or monthly,
   for the principal or for one model profile), the spawn also reserves its
   whole `maxCostMicros` against it. A spawn that would take any applicable
@@ -164,6 +172,9 @@ Agent calls do not refresh the parent workspace idle TTL.
   the model acted on it), `REJECTED` means it was not accepted, and `UNKNOWN`
   means restart or transport loss prevented a trustworthy determination.
   Replaying the same key returns the recorded state without another send.
+  Messages are admitted only while the agent is `RUNNING`; any other state,
+  including every terminal one, returns `CONFLICT` (`agent message admission
+  is closed`) without reserving the key. Start a new run instead.
 - `agent_cancel` is idempotent and cancels descendants in post-order before the
   target. Its bounded result identifies the affected agents; terminal agents
   are not restarted.

@@ -65,7 +65,7 @@ import {
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
   renderWorkspaceArtifacts, renderWorkspaceActivity, renderFinalizeDialog,
   renderWorkspaceUnavailableTab, workspaceHasAction, workspaceTabAvailable,
-  renderAgentsIndex, renderAgentDetail,
+  renderAgentsIndex, renderAgentDetail, agentRunEnded,
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
   renderActivityCenter, renderApprovals, grantIsActionable, planIsActionable, renderPackages,
@@ -74,6 +74,7 @@ import {
 } from './dashboard-render.js';
 import { mountTerminalPane } from './dashboard-terminal.js';
 import { createModelWizard, createSpendPanel, renderModelsPage, verificationLabel } from './dashboard-models.js';
+import { createRunAgentDialog } from './dashboard-agent-run.js';
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -1217,6 +1218,7 @@ export function initializeDashboard() {
   function load() {
     loadController?.abort();
     disposeTerminalPane();
+    stopAgentRefresh();
     const controller = new globalThis.AbortController();
     loadController = controller;
     const queued = loadQueue.catch(() => undefined).then(async () => {
@@ -3584,7 +3586,10 @@ export function initializeDashboard() {
   /** The workspace Agents tab reuses the global renderer with a scoped list. */
   async function renderWorkspaceAgents(workspaceId) {
     const result = await api(`/workspaces/${encodeURIComponent(workspaceId)}/agents`);
-    return renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { workspaceId } });
+    return {
+      markup: renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { workspaceId } }),
+      afterRender: () => setRunAgentAction(workspaceId)
+    };
   }
   /** Renew, recover, finalize, and close, each with pending state and live feedback. */
   function bindCockpitActions(item) {
@@ -3765,6 +3770,7 @@ export function initializeDashboard() {
     });
     const result = await api(`/agents${query.size ? `?${query}` : ''}`);
     insertRendered(content, renderAgentsIndex({ agents: result.data?.agents ?? [], filters: { status, workspaceId: scope, profileId, parentAgentId, attention } }));
+    setRunAgentAction(scope);
     document.querySelector('#agent-filters')?.addEventListener('submit', (event) => {
       event.preventDefault();
       const next = new URLSearchParams();
@@ -3772,20 +3778,78 @@ export function initializeDashboard() {
       navigateTo(`/dashboard/agents${next.size ? `?${next}` : ''}`);
     });
   }
-  /** One agent: overview, usage, bounded logs, and the message/cancel controls. */
-  async function loadAgentDetail(agentId) {
-    selectNavigation('agents');
-    document.querySelector('#command-surface').hidden = true;
+  /**
+   * Run Pi agent: one dialog shared by the Agents page, the workspace Agents tab and the
+   * agent detail page. The trigger lives in the shell's action slot, so it is bound per render.
+   */
+  let runAgentDialog;
+  function setRunAgentAction(workspaceId) {
+    setPageActions(renderPrimaryAction({ id: 'open-run-agent', label: 'Run Pi agent' }));
+    document.querySelector('#open-run-agent')?.addEventListener('click', (event) => {
+      runAgentDialog ??= createRunAgentDialog({
+        dialog: document.querySelector('#run-agent-dialog'),
+        insert: insertRendered,
+        api,
+        announce,
+        newKey: () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        onSpawned: ({ agentId, workspaceId: scope }) => navigateTo(`/dashboard/agents/${encodeURIComponent(agentId)}?workspaceId=${encodeURIComponent(scope)}`)
+      });
+      void runAgentDialog.open({ workspaceId, trigger: event.currentTarget });
+    });
+  }
+  /**
+   * A live run refreshes its detail page on a bounded timer until it ends. A refresh never
+   * replaces a message being written, and any navigation stops it.
+   */
+  const AGENT_REFRESH_MS = 5_000;
+  const AGENT_REFRESH_LIMIT = 120;
+  let agentRefreshTimer;
+  let agentRefreshGeneration = 0;
+  function stopAgentRefresh() {
+    agentRefreshGeneration += 1;
+    if (agentRefreshTimer) globalThis.clearTimeout(agentRefreshTimer);
+    agentRefreshTimer = undefined;
+  }
+  function scheduleAgentRefresh(agentId, remaining) {
+    const generation = agentRefreshGeneration;
+    agentRefreshTimer = globalThis.setTimeout(async () => {
+      agentRefreshTimer = undefined;
+      const form = document.querySelector('#agent-message-form');
+      const writing = form && (form.contains(document.activeElement) || String(new FormData(form).get('message') ?? '').trim());
+      if (writing || document.querySelector('dialog[open]')) {
+        if (remaining > 1) scheduleAgentRefresh(agentId, remaining - 1);
+        return;
+      }
+      let detail;
+      try { detail = await fetchAgentDetail(agentId); } catch { return; }
+      if (generation !== agentRefreshGeneration) return;
+      showAgentDetail(agentId, detail);
+      if (!agentRunEnded(detail.agent?.status) && remaining > 1) scheduleAgentRefresh(agentId, remaining - 1);
+    }, AGENT_REFRESH_MS);
+  }
+  async function fetchAgentDetail(agentId) {
     const workspaceScope = new URLSearchParams(location.search).get('workspaceId');
     const query = workspaceScope ? `?workspaceId=${encodeURIComponent(workspaceScope)}` : '';
     const [statusResult, logsResult] = await Promise.all([
       api(`/agents/${encodeURIComponent(agentId)}${query}`),
       api(`/agents/${encodeURIComponent(agentId)}/logs${query}`).catch(() => undefined)
     ]);
-    const agent = statusResult.data;
-    setTitle('Agent detail', 'One coding agent: status, usage, bounded logs, and control.');
-    insertRendered(content, renderAgentDetail({ agent, logs: logsResult?.data?.events ?? [] }));
+    return { agent: statusResult.data, logs: logsResult?.data?.events ?? [] };
+  }
+  function showAgentDetail(agentId, { agent, logs }) {
+    insertRendered(content, renderAgentDetail({ agent, logs }));
     bindAgentControls(agent, agentId);
+  }
+  /** One agent: overview, usage, bounded logs, and the message/cancel controls. */
+  async function loadAgentDetail(agentId) {
+    selectNavigation('agents');
+    document.querySelector('#command-surface').hidden = true;
+    stopAgentRefresh();
+    const detail = await fetchAgentDetail(agentId);
+    setTitle('Agent detail', 'One coding agent: status, usage, bounded logs, and control.');
+    showAgentDetail(agentId, detail);
+    setRunAgentAction(detail.agent?.workspaceId);
+    if (!agentRunEnded(detail.agent?.status)) scheduleAgentRefresh(agentId, AGENT_REFRESH_LIMIT);
   }
   function bindAgentControls(agent, agentId) {
     const form = document.querySelector('#agent-message-form');
