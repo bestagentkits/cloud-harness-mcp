@@ -2040,7 +2040,10 @@ export function initializeDashboard() {
   // is bound once; the page body is re-rendered per load and wired through one delegated listener.
   let modelWizard;
   let modelCredentialDialog;
+  // Each load renders new rows; a pricing check from an earlier load must not mark them.
+  let modelsLoadToken = 0;
   async function loadModels() {
+    const token = ++modelsLoadToken;
     selectNavigation('models');
     document.querySelector('#command-surface').hidden = true;
     setPageActions(renderModelsActions());
@@ -2058,9 +2061,10 @@ export function initializeDashboard() {
       status: statusRes?.data?.status ?? null,
       providers: providersRes?.data?.providers ?? []
     };
+    if (token !== modelsLoadToken) return;
     insertRendered(content, renderModelsPage(page));
     bindModelsPage(page);
-    void checkProfilePricing(page);
+    void checkProfilePricing(page, token);
   }
   const reloadModels = () => loadModels().catch(showError);
 
@@ -2068,7 +2072,7 @@ export function initializeDashboard() {
    * Marks a profile whose saved price no longer matches the catalog. The check is advisory and
    * batched below the per-principal request budget; a catalog failure leaves the saved price as shown.
    */
-  async function checkProfilePricing(page) {
+  async function checkProfilePricing(page, token) {
     const targets = page.profiles.flatMap((profile) => {
       const revision = profile.activeRevision;
       const credential = page.credentials.find((entry) => entry.id === revision?.credentialId);
@@ -2076,9 +2080,11 @@ export function initializeDashboard() {
       return revision && credential?.status === 'ACTIVE' && provider && provider.catalogStrategy !== 'none' ? [{ profile, revision, credential }] : [];
     });
     for (const batch of chunkPaletteRequests(targets)) {
+      if (token !== modelsLoadToken) return;
       await Promise.all(batch.map(async ({ profile, revision, credential }) => {
         try {
           const result = await searchModelCatalog({ provider: credential.provider, credentialId: credential.id, q: revision.model, limit: 10 });
+          if (token !== modelsLoadToken) return;
           const entry = result?.data?.entries?.find((candidate) => candidate.providerModelId === revision.model);
           const drift = pricingDrift(revision, entry, result?.data?.freshness);
           if (drift.state !== 'changed' && drift.state !== 'catalog_stale') return;

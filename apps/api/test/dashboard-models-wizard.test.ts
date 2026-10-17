@@ -5,11 +5,12 @@ import {
   MUTATING_PROXY_OPERATIONS, PERMISSION_PRESETS, PROXY_OPERATIONS,
   applyCatalogEntry, applyCustomModel, buildProfileRequest, catalogFreshnessNotice, catalogOptions, createModelCombobox,
   deriveProfileSlug, dollarsFromMicros, draftRouteKey, draftVerificationInput, effectiveUpstream, formatPrice, initialWizardState,
-  microsFromDollars, permissionDiff, permissionPresetFor, pricingDrift, priceProvenanceText, profileVerification, providerApiModes,
+  microsFromDollars, permissionDiff, permissionPresetFor, pricingDrift, priceProvenanceText, profileVerification, providerApiModes, resetUntouchedPricing,
   renderModelOptions, renderModelsPage, renderPermissionDiff, renderSaveGate, renderVerificationResult, renderWizardStep, renderWizardSteps,
-  wizardSaveGate
+  createModelWizard, wizardSaveGate
 } from '../dashboard/dashboard-models.js';
 import { FakeElement } from './dashboard-test-dom.js';
+import { TreeElement } from './dashboard-tree-dom.js';
 
 const credentialId = `cred_${'a'.repeat(24)}`;
 const customCredentialId = `cred_${'c'.repeat(24)}`;
@@ -159,6 +160,39 @@ describe('model profile wizard rules', () => {
     expect(state.model).toBe('ft:gpt-5:org');
   });
 
+  it('never lets a custom model ID or another provider inherit the previous model price', () => {
+    const state = createDraft();
+    applyCatalogEntry(state, entry());
+    expect(state.pricingInput).toBe('0.25');
+    applyCustomModel(state, 'my-finetune');
+    expect(state).toMatchObject({ model: 'my-finetune', selectedEntry: null, pricingInput: '', pricingOutput: '', pricingProvenance: { source: 'none' } });
+    expect(priceProvenanceText(state.pricingProvenance)).toBe('No published price. Enter the price your provider bills.');
+    expect(buildProfileRequest(state, openai).errors.pricingInput).toContain('enter 0 only if the model is free');
+
+    // A price the operator typed is theirs and survives the model change; re-applying the same ID is a no-op.
+    applyCatalogEntry(state, entry());
+    state.pricingOutput = '3.00';
+    state.touched.add('pricingOutput');
+    applyCustomModel(state, 'other-finetune');
+    expect(state).toMatchObject({ pricingInput: '', pricingOutput: '3.00' });
+    state.pricingInput = '1.00';
+    applyCustomModel(state, 'other-finetune');
+    expect(state.pricingInput).toBe('1.00');
+
+    const fresh = initialWizardState({ mode: 'create', profiles: [], credentials });
+    expect(resetUntouchedPricing(fresh).pricingProvenance).toEqual({ source: 'none' });
+    expect(priceProvenanceText(null)).toBe('No published price. Enter the price your provider bills.');
+  });
+
+  it('labels a saved profile price as saved only when editing or duplicating', () => {
+    for (const mode of ['edit', 'duplicate']) {
+      const state = initialWizardState({ mode, profile: profile(), profiles: [profile()], credentials });
+      expect(priceProvenanceText(state.pricingProvenance)).toBe('Source: saved on this profile');
+    }
+    const create = initialWizardState({ mode: 'create', profiles: [], credentials });
+    expect(priceProvenanceText(create.pricingProvenance)).not.toContain('saved');
+  });
+
   it('lists the typed text as a custom ID only when no catalog entry matches it', () => {
     expect(catalogOptions([entry()], 'gpt-5-mini').map((option: { kind: string }) => option.kind)).toEqual(['entry']);
     expect(catalogOptions([entry()], 'my-model').map((option: { kind: string }) => option.kind)).toEqual(['entry', 'custom']);
@@ -172,6 +206,7 @@ describe('model profile wizard rules', () => {
     let gate = wizardSaveGate(state, openai);
     expect(gate.allowed).toBe(false);
     expect(gate.reasons[0]).toContain('public metadata only');
+    expect(gate.fields).toEqual(['saveUnverified']);
 
     state.verification = { key: gate.routeKey, result: { outcome: 'limited' } };
     expect(wizardSaveGate(state, openai).allowed).toBe(false);
@@ -257,7 +292,6 @@ describe('model profile wizard rules', () => {
     applyCatalogEntry(state, entry());
     const input = draftVerificationInput(state, openai, { tools: true });
     expect(input).toEqual({ credentialId, model: 'gpt-5-mini', apiMode: 'chat-completions', checks: { tools: true } });
-    expect(JSON.stringify(state)).not.toMatch(/apiKey/);
   });
 
   it('reads a profile check as current only for the revision it checked', () => {
@@ -286,11 +320,10 @@ describe('model search combobox', () => {
     const render = (element: FakeElement, markup: string) => { element.innerHTML = markup; };
     const onQuery = vi.fn();
     const onCommit = vi.fn();
-    const timers = { setTimeout: vi.fn((callback: () => void) => { callback(); return 1; }), clearTimeout: vi.fn() };
-    const combobox = createModelCombobox({ input, listbox, render, onQuery, onCommit, timers });
+    const combobox = createModelCombobox({ input, listbox, render, onQuery, onCommit, debounceMs: 250 });
     const options = catalogOptions([entry(), entry({ providerModelId: 'gpt-5', displayName: 'GPT-5' })], 'gpt-5-nano');
     const key = (name: string) => ({ key: name, preventDefault: vi.fn(), stopPropagation: vi.fn() });
-    return { input, listbox, combobox, options, onQuery, onCommit, timers, key };
+    return { input, listbox, combobox, options, onQuery, onCommit, key };
   }
 
   it('moves the active option with the arrow keys while focus stays in the input', () => {
@@ -350,18 +383,47 @@ describe('model search combobox', () => {
   });
 
   it('debounces searches and commits a clicked option', () => {
-    const { input, listbox, combobox, options, onQuery, onCommit, timers } = setup();
-    input.value = 'mini';
-    input.dispatch('input', {});
-    expect(timers.clearTimeout).toHaveBeenCalled();
-    expect(onQuery).toHaveBeenCalledWith('mini');
-    combobox.setOptions(options);
-    const mousedown = { preventDefault: vi.fn() };
-    listbox.dispatch('mousedown', mousedown);
-    expect(mousedown.preventDefault).toHaveBeenCalled();
-    listbox.dispatch('click', { target: { closest: () => ({ dataset: { index: '2' } }) } });
-    expect(onCommit).toHaveBeenCalledWith({ kind: 'custom', value: 'gpt-5-nano' });
-    combobox.dispose();
+    vi.useFakeTimers();
+    try {
+      const { input, listbox, combobox, options, onQuery, onCommit } = setup();
+      input.value = 'mi';
+      input.dispatch('input', {});
+      vi.advanceTimersByTime(100);
+      input.value = 'mini';
+      input.dispatch('input', {});
+      vi.advanceTimersByTime(249);
+      expect(onQuery).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onQuery).toHaveBeenCalledTimes(1);
+      expect(onQuery).toHaveBeenCalledWith('mini');
+      combobox.setOptions(options);
+      const mousedown = { preventDefault: vi.fn() };
+      listbox.dispatch('mousedown', mousedown);
+      expect(mousedown.preventDefault).toHaveBeenCalled();
+      listbox.dispatch('click', { target: { closest: () => ({ dataset: { index: '2' } }) } });
+      expect(onCommit).toHaveBeenCalledWith({ kind: 'custom', value: 'gpt-5-nano' });
+      combobox.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops a search still waiting on the debounce once an option is committed', () => {
+    vi.useFakeTimers();
+    try {
+      const { input, combobox, options, onQuery, onCommit, key } = setup();
+      combobox.setOptions(options);
+      input.value = 'gpt-5-n';
+      input.dispatch('input', {});
+      input.dispatch('keydown', key('ArrowDown'));
+      input.dispatch('keydown', key('Enter'));
+      expect(onCommit).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1000);
+      expect(onQuery).not.toHaveBeenCalled();
+      combobox.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -416,7 +478,7 @@ describe('model wizard markup', () => {
     const markup = renderWizardStep(state, { ...context, provider: openai });
     expect(markup).toContain('<span class="status stale">Unknown</span>');
     expect(markup).not.toContain('$0.00 ');
-    expect(markup).toContain('Source: no source · confidence: unknown');
+    expect(markup).toContain('No published price. Enter the price your provider bills.');
     expect(markup).toMatch(/<details id="model-wizard-advanced" class="row-edit wizard-advanced">/);
     const { errors } = buildProfileRequest(state, openai);
     const withErrors = renderWizardStep(state, { ...context, provider: openai, errors });
@@ -505,5 +567,279 @@ describe('models page shell and small viewports', () => {
     expect(mobile).toContain('dialog { padding: var(--space-4); }');
     // Hidden wizard parts stay hidden even where a component rule sets a display value.
     for (const rule of ['.wizard-subfields[hidden] { display: none; }', '.model-options[hidden] { display: none; }', '.wizard-actions #model-wizard-back[hidden] { display: none; }', '.pricing-drift[hidden] { display: none; }']) expect(css).toContain(rule);
+    // The wizard uses its own width rather than the generic dialog cap, and a long operation label wraps its flag inside the grid.
+    expect(css).toContain('#model-profile-dialog { width: min(48rem, calc(100vw - 2 * var(--space-4))); max-width: calc(100vw - 2 * var(--space-4)); }');
+    expect(css).toContain('.wizard-permissions .tools-checkbox-grid { margin-block: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }');
+    expect(css).toContain('.wizard-permissions .tools-checkbox-grid label { flex-wrap: wrap; min-width: 0; }');
+    expect(css).toContain('.wizard-permissions .tools-checkbox-grid input { flex: none; }');
+    expect(css).toContain('.wizard-advanced-body .form-row input { width: 100%; min-width: 0; }');
+  });
+});
+
+describe('model wizard controller', () => {
+  const flush = async () => { for (let index = 0; index < 20; index += 1) await Promise.resolve(); };
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+  }
+  const catalogResult = (entries: unknown[]) => ({ data: { entries, freshness: { state: 'fresh', fetchedAt: 1_760_000_000_000, sources: [] }, nextCursor: null } });
+  const verifiedResult = { outcome: 'verified', checkedAt: 1_760_000_000_000, elapsedMs: 10, checks: [{ name: 'authentication', outcome: 'verified', errorCategory: null, httpStatus: 200, message: null }] };
+  const readOnlyOperations = [...PERMISSION_PRESETS.read.operations];
+
+  function mount(overrides: Record<string, unknown> = {}) {
+    const shell = /<dialog id="model-profile-dialog"[\s\S]*?<\/dialog>/.exec(readFileSync(new URL('../dashboard/index.html', import.meta.url), 'utf8'));
+    if (!shell) throw new Error('the model profile dialog is missing from the shell');
+    const root = new TreeElement('#root');
+    root.render(shell[0]);
+    const dialog = root.querySelector('#model-profile-dialog')!;
+    const api = {
+      listProviders: vi.fn(async () => ({ data: { providers } })),
+      createCredential: vi.fn(),
+      searchCatalog: vi.fn(async () => catalogResult([entry()])),
+      refreshCatalog: vi.fn(async () => ({ data: {} })),
+      verify: vi.fn(async () => ({ data: verifiedResult })),
+      createProfile: vi.fn(async () => ({ data: {} })),
+      updateProfile: vi.fn(async () => ({ data: {} })),
+      ...overrides
+    };
+    const announce = vi.fn();
+    const onSaved = vi.fn(async () => {});
+    const wizard = createModelWizard({ dialog, insert: (element: TreeElement, markup: string) => element.render(markup), api, announce, onSaved });
+    const form = dialog.querySelector('#model-profile-form')!;
+    const body = dialog.querySelector('#model-wizard-body')!;
+    const q = (selector: string) => body.querySelector(selector);
+    return {
+      wizard, dialog, form, body, api, announce, onSaved, q,
+      status: dialog.querySelector('#model-wizard-status')!,
+      back: dialog.querySelector('#model-wizard-back')!,
+      cancel: dialog.querySelector('#cancel-model-profile')!,
+      submit: async () => { form.dispatch('submit', { preventDefault: vi.fn() }); await flush(); },
+      change: (target: TreeElement | Record<string, unknown>, props: Record<string, unknown> = {}) => { Object.assign(target, props); form.dispatch('change', { type: 'change', target }); },
+      type: (target: TreeElement, value: string) => { target.value = value; form.dispatch('input', { type: 'input', target }); target.dispatch('input', {}); },
+      key: (target: TreeElement, key: string) => target.dispatch('keydown', { key, preventDefault: vi.fn(), stopPropagation: vi.fn() })
+    };
+  }
+
+  async function toModelStep(view: ReturnType<typeof mount>) {
+    view.wizard.open({ mode: 'create', profiles: [], credentials, providers });
+    view.change(view.q('input[name="provider"][value="openai"]')!, { checked: true });
+    await view.submit();
+    await view.submit();
+    expect(view.wizard.state.step).toBe(2);
+  }
+
+  it('drops a catalog response that a newer search has replaced', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = deferred<unknown>();
+      const second = deferred<unknown>();
+      const view = mount({ searchCatalog: vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise) });
+      await toModelStep(view);
+      const search = view.q('#model-wizard-search')!;
+      view.type(search, 'gpt-5');
+      vi.advanceTimersByTime(250);
+      expect(view.api.searchCatalog).toHaveBeenCalledTimes(2);
+      second.resolve(catalogResult([entry({ providerModelId: 'gpt-5', displayName: 'GPT-5' })]));
+      await flush();
+      first.resolve(catalogResult([entry({ providerModelId: 'old-model', displayName: 'Old model' })]));
+      await flush();
+      const options = view.q('#model-wizard-options')!.textContent;
+      expect(options).toContain('gpt-5');
+      expect(options).not.toContain('old-model');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a typed search from saving the model chosen before it', async () => {
+    const view = mount();
+    await toModelStep(view);
+    const search = view.q('#model-wizard-search')!;
+    view.key(search, 'ArrowDown');
+    view.key(search, 'Enter');
+    expect(view.wizard.state.model).toBe('gpt-5-mini');
+    expect(view.announce).toHaveBeenCalledWith('Selected gpt-5-mini.');
+    // The selection region is not a live region, so the choice is announced once.
+    expect(view.q('#model-wizard-selection')!.hasAttribute('aria-live')).toBe(false);
+
+    view.type(search, 'gpt-5-mini-2025');
+    expect(view.wizard.state.model).toBe('');
+    await view.submit();
+    expect(view.wizard.state.step).toBe(2);
+    expect(view.status.textContent).toContain('Choose a match from the list, or pick the custom ID option.');
+  });
+
+  it('puts focus back on the catalog button its search re-rendered', async () => {
+    const view = mount();
+    await toModelStep(view);
+    view.form.dispatch('click', { target: view.q('[data-wizard-action="refresh-catalog"]') });
+    await flush();
+    expect(view.api.refreshCatalog).toHaveBeenCalledWith({ provider: 'openai', credentialId });
+    expect(view.q('[data-wizard-action="refresh-catalog"]')!.focus).toHaveBeenCalled();
+  });
+
+  it('clears the write-only key after it is stored and whenever the dialog closes', async () => {
+    const created = { id: `cred_${'n'.repeat(24)}`, label: 'Claude prod', provider: 'anthropic', authMode: 'bearer', activeVersion: 1, status: 'ACTIVE', generation: 1 };
+    const view = mount({ createCredential: vi.fn().mockRejectedValueOnce(new Error('Provider rejected the key.')).mockResolvedValueOnce({ data: created }) });
+    view.wizard.open({ mode: 'create', profiles: [], credentials, providers });
+    view.change(view.q('input[name="provider"][value="anthropic"]')!, { checked: true });
+    await view.submit();
+
+    // Both missing fields are marked in place, then only the one still missing stays marked.
+    await view.submit();
+    const label = view.q('#model-wizard-credential-label')!;
+    const key = view.q('#model-wizard-api-key')!;
+    expect(label.getAttribute('aria-invalid')).toBe('true');
+    expect(key.getAttribute('aria-invalid')).toBe('true');
+    view.type(label, 'Claude prod');
+    await view.submit();
+    expect(label.getAttribute('aria-invalid')).toBeNull();
+    expect(key.getAttribute('aria-invalid')).toBe('true');
+    expect(key.getAttribute('aria-describedby')).toBe('model-wizard-api-key-help model-wizard-apiKey-error');
+    expect(view.q('#model-wizard-apiKey-error')!.textContent).toBe('Paste the API key.');
+    expect(view.q('#model-wizard-newCredentialLabel-error')!.textContent).toBe('');
+
+    // A failed store keeps the key for an immediate retry, without re-rendering the field.
+    key.value = 'sk-ant-secret-value';
+    await view.submit();
+    expect(view.status.textContent).toBe('Provider rejected the key.');
+    expect(view.q('#model-wizard-api-key')).toBe(key);
+    expect(key.value).toBe('sk-ant-secret-value');
+    expect(key.getAttribute('aria-invalid')).toBeNull();
+
+    await view.submit();
+    expect(view.api.createCredential).toHaveBeenLastCalledWith({ label: 'Claude prod', provider: 'anthropic', authMode: 'bearer', apiKey: 'sk-ant-secret-value' });
+    expect(key.value).toBe('');
+    expect(view.wizard.state.step).toBe(2);
+    expect(view.wizard.state.credentialId).toBe(created.id);
+    expect(JSON.stringify(view.wizard.state)).not.toContain('sk-ant-secret-value');
+
+    // A key typed and never sent is dropped with the dialog.
+    view.back.dispatch('click', {});
+    view.change(view.q('input[name="credentialChoice"][value="new"]')!, { checked: true });
+    const unsent = view.q('#model-wizard-api-key')!;
+    unsent.value = 'sk-ant-unsent';
+    view.cancel.dispatch('click', {});
+    expect(view.dialog.open).toBe(false);
+    expect(unsent.value).toBe('');
+    expect(view.q('#model-wizard-api-key')).toBeNull();
+    // The new key changed the page's list, so it reloads once.
+    expect(view.onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to save once the route changes after a successful check', async () => {
+    const view = mount();
+    view.wizard.open({ mode: 'edit', profile: profile(), profiles: [profile()], credentials, providers });
+    await view.submit();
+    expect(view.wizard.state.step).toBe(4);
+    view.form.dispatch('click', { target: view.q('[data-wizard-action="verify"]') });
+    await flush();
+    expect(view.api.verify).toHaveBeenCalledWith({ credentialId, model: 'gpt-5', apiMode: 'responses' });
+    expect(view.q('#model-wizard-gate')!.textContent).toContain('This route is verified.');
+
+    view.change({ name: 'apiMode', value: 'chat-completions' });
+    await view.submit();
+    expect(view.api.updateProfile).not.toHaveBeenCalled();
+    expect(view.status.textContent).toBe('Verify the connection, or choose to save it unverified.');
+    // Focus lands on the choice that lifts the first reason.
+    expect(view.q('#model-wizard-gate input[name="saveUnverified"]')!.focus).toHaveBeenCalled();
+  });
+
+  it('keeps focus on a gate choice and asks for each missing choice in turn', async () => {
+    const copy = profile();
+    const view = mount();
+    view.wizard.open({ mode: 'duplicate', profile: copy, profiles: [copy], credentials, providers });
+    await view.submit();
+    expect(view.wizard.state.step).toBe(4);
+    const box = view.q('#model-wizard-gate input[name="saveUnverified"]')!;
+    view.change(box, { checked: true });
+    const replacement = view.q('#model-wizard-gate input[name="saveUnverified"]')!;
+    expect(replacement).not.toBe(box);
+    expect(replacement.checked).toBe(true);
+    expect(replacement.focus).toHaveBeenCalled();
+
+    await view.submit();
+    expect(view.api.createProfile).not.toHaveBeenCalled();
+    expect(view.status.textContent).toContain('Confirm that the subagent may change files (files_write)');
+    const acknowledge = view.q('#model-wizard-gate input[name="acknowledgeMutating"]')!;
+    expect(acknowledge.focus).toHaveBeenCalled();
+    view.change(acknowledge, { checked: true });
+    await view.submit();
+    expect(view.api.createProfile).toHaveBeenCalledWith(expect.objectContaining({ profileId: 'gpt-5-copy', maxProxyOperations: ['files_list', 'files_read', 'files_write', 'grep_search'] }));
+  });
+
+  it('sends one save for a double submit and holds the dialog open until it finishes', async () => {
+    const pending = deferred<unknown>();
+    const view = mount({ updateProfile: vi.fn(() => pending.promise) });
+    view.wizard.open({ mode: 'edit', profile: profile(), profiles: [profile()], credentials, providers });
+    await view.submit();
+    view.form.dispatch('submit', { preventDefault: vi.fn() });
+    view.form.dispatch('submit', { preventDefault: vi.fn() });
+    await flush();
+    expect(view.api.updateProfile).toHaveBeenCalledTimes(1);
+    expect(view.cancel.disabled).toBe(true);
+    const escape = view.dialog.dispatch('cancel', { preventDefault: vi.fn() });
+    expect(escape.preventDefault).toHaveBeenCalled();
+    view.cancel.dispatch('click', {});
+    expect(view.dialog.open).toBe(true);
+
+    pending.resolve({ data: {} });
+    await flush();
+    expect(view.dialog.open).toBe(false);
+    expect(view.onSaved).toHaveBeenCalledTimes(1);
+    expect(view.announce).toHaveBeenCalledWith('Model profile updated.');
+    // The next session starts with working controls.
+    view.wizard.open({ mode: 'edit', profile: profile(), profiles: [profile()], credentials, providers });
+    expect(view.cancel.disabled).toBe(false);
+    expect(view.dialog.querySelector('#submit-model-profile')!.disabled).toBe(false);
+  });
+
+  it('drops a result that finishes after its dialog session closed', async () => {
+    const pending = deferred<unknown>();
+    const view = mount({ verify: vi.fn(() => pending.promise) });
+    view.wizard.open({ mode: 'edit', profile: profile(), profiles: [profile()], credentials, providers });
+    await view.submit();
+    view.form.dispatch('click', { target: view.q('[data-wizard-action="verify"]') });
+    await flush();
+    view.dialog.close();
+    view.wizard.open({ mode: 'edit', profile: profile(), profiles: [profile()], credentials, providers });
+    pending.resolve({ data: { ...verifiedResult, outcome: 'failed' } });
+    await flush();
+    expect(view.wizard.state.verification).toBeNull();
+    expect(view.wizard.state.step).toBe(3);
+  });
+
+  it('keeps every value through edit, Back, and Continue', async () => {
+    const view = mount();
+    const saved = profile({ activeRevision: { ...profile().activeRevision, maxProxyOperations: readOnlyOperations } });
+    view.wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers });
+    const fields = ['provider', 'credentialId', 'model', 'apiMode', 'displayName', 'profileId', 'pricingInput', 'pricingOutput', 'maxInputTokens', 'maxOutputTokens', 'maxCost', 'operations'] as const;
+    const snapshot = Object.fromEntries(fields.map((field) => [field, structuredClone(view.wizard.state[field])]));
+    view.back.dispatch('click', {});
+    await flush();
+    expect(view.wizard.state.step).toBe(2);
+    expect(view.q('#model-wizard-search')!.value).toBe('gpt-5');
+    await view.submit();
+    expect(view.wizard.state.step).toBe(3);
+    expect(Object.fromEntries(fields.map((field) => [field, view.wizard.state[field]]))).toEqual(snapshot);
+    expect(view.q('[name="pricingInput"]')!.value).toBe('1.25');
+    expect(view.q('#model-wizard-review-facts')!.textContent).toContain('Source: saved on this profile');
+  });
+
+  it('clears the previous model price when the model ID is overridden in Advanced settings', async () => {
+    const view = mount();
+    view.wizard.open({ mode: 'edit', profile: profile(), profiles: [profile()], credentials, providers });
+    view.type(view.q('#model-wizard-custom-model')!, 'my-finetune');
+    expect(view.wizard.state).toMatchObject({ model: 'my-finetune', pricingInput: '', pricingOutput: '', pricingProvenance: { source: 'none' } });
+    expect(view.q('[name="pricingInput"]')!.value).toBe('');
+    const facts = view.q('#model-wizard-review-facts')!.textContent;
+    expect(facts).toContain('my-finetune');
+    expect(facts).toContain('No published price. Enter the price your provider bills.');
+    expect(facts).toContain('Unknown');
+    await view.submit();
+    expect(view.wizard.state.step).toBe(3);
+    expect(view.status.textContent).toContain('enter 0 only if the model is free');
   });
 });

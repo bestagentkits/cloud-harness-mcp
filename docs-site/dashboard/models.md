@@ -179,23 +179,29 @@ Model profiles define how subagents interact with LLMs:
 
 ### The profile wizard
 
-**Add profile** opens a five-step wizard. **Back** returns to an earlier step without
-losing what you entered, and a failed request keeps every field so you can retry.
+**Add profile** opens a five-step wizard. **Back** returns to an earlier step and keeps
+what you entered, except an API key you have not sent yet: paste it again. Choosing a
+different provider clears the chosen model and any price that came with it. A failed request
+keeps every field so you can retry, and the dialog stays open while a
+key, connection check, or save is in flight.
 
 1. **Provider:** pick the provider. The list and each provider's API modes come from
    `GET /api/v1/model-providers`.
 2. **Connect:** choose a saved key for that provider or add a new one. A new key is sent
-   once, write-only, and the field is cleared as soon as it is stored; the wizard never shows
-   or keeps it.
+   once, write-only, and the field is cleared as soon as it is stored or the dialog closes;
+   the wizard never shows it or keeps it anywhere else.
 3. **Model:** search the [model catalog](#model-catalog) with the combobox (arrow keys move
    through results, Enter selects, Escape closes). Each result shows its availability:
-   listed for your key, or public catalog only. The catalog's freshness is shown above the
-   results, so a stale or unavailable catalog is visible rather than silent. If the model is
-   not listed, or the provider is Custom, use the **custom model ID** option.
+   listed for your key, or public catalog only. The catalog's freshness is shown below the
+   search, so a stale or unavailable catalog is visible rather than silent. If the model is
+   not listed, use the **custom model ID** option. Custom providers have no catalog, so this
+   step is a plain **Model ID** field. Typing after you chose a model clears the choice until
+   you pick again.
 4. **Review:** the selected model fills the display name and prices. Each price shows where
-   it came from, its confidence, and when it was retrieved. A price no source
-   published stays **Unknown**: enter it yourself, and enter `0` only for a model that is
-   really free. Choose a permission preset here. **Advanced** holds the profile ID (derived
+   it came from: the catalog source with its confidence and retrieval time, a price you
+   typed, or, when editing or duplicating, the price saved on the profile. A custom model ID
+   never inherits the previous model's price. A price no source published stays **Unknown**:
+   enter it yourself, and enter `0` only for a model that is really free. Choose a permission preset here. **Advanced** holds the profile ID (derived
    from the model and made unique among your profiles), the API mode, the custom upstream
    URL (Custom only), per-run limits, prices, and the model ID.
 5. **Verify and save:** run a [connection check](#verifying-a-connection) against the

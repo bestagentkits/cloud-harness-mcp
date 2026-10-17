@@ -113,14 +113,18 @@ export function formatPrice(micros) {
 
 const positiveInteger = (text) => (/^\d{1,15}$/.test(String(text ?? '').trim()) && Number(text) > 0 ? Number(text) : null);
 
-const PRICE_SOURCE_LABELS = { provider: 'provider', openrouter: 'OpenRouter', user: 'entered by you', none: 'no source', saved: 'saved on this profile' };
+const PRICE_SOURCE_LABELS = { provider: 'provider', openrouter: 'OpenRouter', user: 'entered by you', saved: 'saved on this profile' };
 
-/** Plain-language provenance for a price: where it came from, how sure, and when. */
+/**
+ * Plain-language provenance for a price: where it came from, how sure, and when.
+ * No provenance means no source published a price, so the operator is asked for
+ * one; a saved profile's own price carries the `saved` source instead.
+ */
 export function priceProvenanceText(provenance) {
-  if (!provenance) return 'Source: saved on this profile';
+  if (!provenance || provenance.source === 'none') return 'No published price. Enter the price your provider bills.';
   const source = PRICE_SOURCE_LABELS[provenance.source] ?? 'unknown source';
   const parts = [`Source: ${source}`];
-  if (provenance.confidence && provenance.source !== 'user') parts.push(`confidence: ${provenance.confidence}`);
+  if (provenance.confidence && provenance.source !== 'user' && provenance.source !== 'saved') parts.push(`confidence: ${provenance.confidence}`);
   if (Number.isFinite(provenance.retrievedAt)) parts.push(`retrieved ${new Date(provenance.retrievedAt).toLocaleString()}`);
   return parts.join(' · ');
 }
@@ -206,15 +210,21 @@ export function wizardSaveGate(state, provider) {
   const verified = (state.verification?.key === routeKey && state.verification.result?.outcome === 'verified')
     || (state.savedRoute?.key === routeKey && state.savedRoute.outcome === 'verified');
   const diff = permissionDiff(state.baseOperations, state.operations);
+  // `fields[i]` names the gate checkbox that lifts `reasons[i]`, so the form can focus it.
   const reasons = [];
+  const fields = [];
   if (!verified && state.saveUnverifiedKey !== routeKey) {
     reasons.push(state.selectedEntry?.availability === 'public_catalog'
       ? 'This model ID comes from public metadata only, so nothing has confirmed your key can call it. Verify the connection, or choose to save it unverified.'
       : 'Verify the connection, or choose to save it unverified.');
+    fields.push('saveUnverified');
   }
   const operationsKey = normalizeOperations(state.operations).join(',');
-  if (diff.addedMutating.length && state.mutatingAckKey !== operationsKey) reasons.push(`Confirm that the subagent may change files (${diff.addedMutating.join(', ')}).`);
-  return { routeKey, operationsKey, verified, allowed: reasons.length === 0, reasons, diff };
+  if (diff.addedMutating.length && state.mutatingAckKey !== operationsKey) {
+    reasons.push(`Confirm that the subagent may change files (${diff.addedMutating.join(', ')}).`);
+    fields.push('acknowledgeMutating');
+  }
+  return { routeKey, operationsKey, verified, allowed: reasons.length === 0, reasons, fields, diff };
 }
 
 /**
@@ -317,6 +327,7 @@ export function initialWizardState({ mode = 'create', profile = null, profiles =
       customUpstreamUrl: mode === 'duplicate' && credential?.provider === 'custom' ? revision.upstreamUrl ?? '' : '',
       pricingInput: dollarsFromMicros(revision.pricing.inputMicrosPerMillionTokens),
       pricingOutput: dollarsFromMicros(revision.pricing.outputMicrosPerMillionTokens),
+      pricingProvenance: { source: 'saved' },
       maxInputTokens: String(revision.limits.maxInputTokens),
       maxOutputTokens: String(revision.limits.maxOutputTokens),
       maxCost: dollarsFromMicros(revision.limits.maxCostMicros),
@@ -348,15 +359,31 @@ export function applyCatalogEntry(state, entry) {
   return state;
 }
 
-/** Applies a model ID the operator typed. Nothing is filled from the catalog. */
+/**
+ * Forgets prices that came with the previous model. A price the operator typed
+ * stays; anything else becomes unknown, so another model never inherits a price.
+ */
+export function resetUntouchedPricing(state) {
+  if (!state.touched.has('pricingInput')) state.pricingInput = '';
+  if (!state.touched.has('pricingOutput')) state.pricingOutput = '';
+  state.pricingProvenance = { source: 'none' };
+  return state;
+}
+
+/**
+ * Applies a model ID the operator typed. Nothing is filled from the catalog, and
+ * a price that belonged to the previous model is cleared unless the operator
+ * typed it. Re-applying the current model ID changes nothing.
+ */
 export function applyCustomModel(state, modelId) {
   const model = String(modelId ?? '').trim().slice(0, MODEL_ID_MAX);
+  if (model === state.model) return state;
   state.selectedEntry = null;
   state.model = model;
   state.query = model;
   if (!state.touched.has('displayName') && model) state.displayName = model.slice(0, 100);
   if (state.mode !== 'edit' && !state.touched.has('profileId') && model) state.profileId = deriveProfileSlug(model, state.takenIds);
-  return state;
+  return resetUntouchedPricing(state);
 }
 
 /** Combobox options: catalog entries, then the typed text as a custom ID when no entry matches it exactly. */
@@ -411,6 +438,8 @@ export function createModelCombobox({ input, listbox, render, onQuery, onCommit,
   function commit(index) {
     const option = options[index];
     if (!option) return;
+    // A search still waiting on the debounce must not replace the committed choice.
+    timers.clearTimeout(timer);
     close();
     onCommit(option);
   }
@@ -474,6 +503,8 @@ export function createModelCombobox({ input, listbox, render, onQuery, onCommit,
 const timeText = (value) => (Number.isFinite(value) ? `<time datetime="${escape(new Date(value).toISOString())}">${escape(new Date(value).toLocaleString())}</time>` : '');
 const fieldError = (errors, field) => (errors?.[field] ? `<p id="model-wizard-${escape(field)}-error" class="field-error" role="alert">${escape(errors[field])}</p>` : '');
 const invalid = (errors, field) => (errors?.[field] ? ` aria-invalid="true" aria-describedby="model-wizard-${escape(field)}-error"` : '');
+// Connect-step errors are written in place (re-rendering would clear the key), so their containers always exist; `.field-error:empty` hides them.
+const slotError = (errors, field) => `<p id="model-wizard-${escape(field)}-error" class="field-error" role="alert">${escape(errors?.[field] ?? '')}</p>`;
 const providerName = (providers, id) => providers.find((provider) => provider.id === id)?.displayName ?? String(id ?? 'Unknown provider');
 const profileStatusClass = { ACTIVE: 'active', DISABLED: '', SYNC_PENDING: 'pending', SYNC_FAILED: 'failed' };
 const profileStatusLabel = { ACTIVE: 'Active', DISABLED: 'Disabled', SYNC_PENDING: 'Sync pending', SYNC_FAILED: 'Sync failed' };
@@ -521,22 +552,22 @@ function renderConnectStep(state, context) {
       <label class="checkbox-label"><input type="radio" name="credentialChoice" value="new"${choice === 'new' ? ' checked' : ''}> Add a new key</label>
       <div class="wizard-subfields" data-wizard-section="new"${choice === 'new' ? '' : ' hidden'}>
         <label for="model-wizard-credential-label">Label</label>
-        <input id="model-wizard-credential-label" name="newCredentialLabel" maxlength="100" value="${escape(state.newCredentialLabel)}" placeholder="e.g. ${escape(provider?.displayName ?? 'Provider')} production"${invalid(context.errors, 'newCredentialLabel')}>${fieldError(context.errors, 'newCredentialLabel')}
+        <input id="model-wizard-credential-label" name="newCredentialLabel" maxlength="100" value="${escape(state.newCredentialLabel)}" placeholder="e.g. ${escape(provider?.displayName ?? 'Provider')} production"${invalid(context.errors, 'newCredentialLabel')}>${slotError(context.errors, 'newCredentialLabel')}
         ${authMode}
         <label for="model-wizard-api-key">API key (write-only)</label>
-        <input id="model-wizard-api-key" name="apiKey" type="password" autocomplete="new-password" spellcheck="false" aria-describedby="model-wizard-api-key-help"${context.errors?.apiKey ? ' aria-invalid="true"' : ''}>${fieldError(context.errors, 'apiKey')}
+        <input id="model-wizard-api-key" name="apiKey" type="password" autocomplete="new-password" spellcheck="false" aria-describedby="model-wizard-api-key-help${context.errors?.apiKey ? ' model-wizard-apiKey-error' : ''}"${context.errors?.apiKey ? ' aria-invalid="true"' : ''}>${slotError(context.errors, 'apiKey')}
         <p id="model-wizard-api-key-help" class="field-help">The key is encrypted on the server when you continue and is never shown again.</p>
         ${keyLink}
       </div>
     </fieldset>`;
 }
 
-function renderSelectedModel(state, context) {
+function renderSelectedModel(state) {
   const entry = state.selectedEntry;
   if (!state.model) return '<p class="field-help">No model chosen yet.</p>';
   if (!entry) return `<dl class="facts wizard-facts"><dt>Model ID</dt><dd class="mono wrap">${escape(state.model)}</dd><dt>Source</dt><dd>${state.mode === 'edit' && state.model === state.profile?.activeRevision?.model ? 'Saved on this profile' : 'Entered by you; not in the catalog'}</dd></dl>`;
   const capabilities = Object.entries(entry.capabilities ?? {}).filter(([, value]) => value === 'reported').map(([name]) => name);
-  return `<dl class="facts wizard-facts"><dt>Model</dt><dd>${escape(entry.displayName)} <span class="mono wrap">${escape(entry.providerModelId)}</span></dd><dt>Availability</dt><dd>${escape(availabilityLabel(entry.availability))}</dd><dt>Price per 1M</dt><dd>${escape(formatPrice(entry.pricing?.inputMicrosPerMillionTokens))} in / ${escape(formatPrice(entry.pricing?.outputMicrosPerMillionTokens))} out<br><small>${escape(priceProvenanceText(entry.pricing?.provenance))}</small></dd>${entry.contextWindow ? `<dt>Context window</dt><dd>${escape(entry.contextWindow.toLocaleString())} tokens</dd>` : ''}${capabilities.length ? `<dt>Reported</dt><dd>${escape(capabilities.join(', '))}</dd>` : ''}</dl>${entry.pricing?.hasConditionalPricing ? '<p class="field-help">The price changes under some conditions, such as a long prompt; this is the base tier.</p>' : ''}${context.catalogNote ?? ''}`;
+  return `<dl class="facts wizard-facts"><dt>Model</dt><dd>${escape(entry.displayName)} <span class="mono wrap">${escape(entry.providerModelId)}</span></dd><dt>Availability</dt><dd>${escape(availabilityLabel(entry.availability))}</dd><dt>Price per 1M</dt><dd>${escape(formatPrice(entry.pricing?.inputMicrosPerMillionTokens))} in / ${escape(formatPrice(entry.pricing?.outputMicrosPerMillionTokens))} out<br><small>${escape(priceProvenanceText(entry.pricing?.provenance))}</small></dd>${entry.contextWindow ? `<dt>Context window</dt><dd>${escape(entry.contextWindow.toLocaleString())} tokens</dd>` : ''}${capabilities.length ? `<dt>Reported</dt><dd>${escape(capabilities.join(', '))}</dd>` : ''}</dl>${entry.pricing?.hasConditionalPricing ? '<p class="field-help">The price changes under some conditions, such as a long prompt; this is the base tier.</p>' : ''}`;
 }
 
 export function renderCatalogFreshness(catalog) {
@@ -563,7 +594,7 @@ function renderModelStep(state, context) {
     <p id="model-wizard-search-help" class="field-help">Type a name or ID. Use the arrow keys to move through matches, Enter to choose, and Escape to close the list. A model that is not listed can be used as a custom ID.</p>
     <p id="model-wizard-catalog-status" class="sr-only" aria-live="polite"></p>
     <div id="model-wizard-freshness">${renderCatalogFreshness(context.catalog)}</div>
-    <div id="model-wizard-selection" aria-live="polite">${renderSelectedModel(state, context)}</div>`;
+    <div id="model-wizard-selection">${renderSelectedModel(state)}</div>`;
 }
 
 export function renderPermissionDiff(state) {
@@ -625,11 +656,10 @@ function priceFact(state, field) {
   return micros === null ? '<span class="status stale">Unknown</span> <small>Enter it under Advanced settings.</small>' : `${escape(formatPrice(micros))}`;
 }
 
-function renderReviewStep(state, context) {
+function renderReviewFacts(state, context) {
   const credential = context.credentials.find((entry) => entry.id === state.credentialId);
   const provenance = state.touched.has('pricingInput') || state.touched.has('pricingOutput') ? { source: 'user' } : state.pricingProvenance;
-  return `${stepHeading(state, 'Review the profile')}
-    <dl class="facts wizard-facts">
+  return `<dl class="facts wizard-facts">
       <dt>Provider</dt><dd>${escape(context.provider?.displayName ?? state.provider)}</dd>
       <dt>Key</dt><dd>${escape(credential?.label ?? 'Not chosen')}</dd>
       <dt>Model</dt><dd class="mono wrap">${escape(state.model || 'Not chosen')}</dd>
@@ -638,7 +668,12 @@ function renderReviewStep(state, context) {
       <dt>Output price per 1M</dt><dd>${priceFact(state, 'pricingOutput')}</dd>
       <dt>Price source</dt><dd>${escape(priceProvenanceText(provenance))}</dd>
       <dt>Per-run limit</dt><dd>${escape(formatPrice(microsFromDollars(state.maxCost)))} · ${escape(state.maxInputTokens)} in / ${escape(state.maxOutputTokens)} out tokens</dd>
-    </dl>
+    </dl>`;
+}
+
+function renderReviewStep(state, context) {
+  return `${stepHeading(state, 'Review the profile')}
+    <div id="model-wizard-review-facts">${renderReviewFacts(state, context)}</div>
     <label for="model-wizard-display-name">Display name</label>
     <input id="model-wizard-display-name" name="displayName" maxlength="100" value="${escape(state.displayName)}"${invalid(context.errors, 'displayName')}>${fieldError(context.errors, 'displayName')}
     ${renderPermissions(state, context)}
@@ -772,7 +807,8 @@ const errorMessage = (error, fallback) => (error && typeof error.message === 'st
 /**
  * Binds the wizard dialog once. Each `open` starts a fresh state from the given
  * page data; every handler is delegated on the form, so re-rendering a step
- * never stacks listeners.
+ * never stacks listeners. Each open is a session: a request that finishes after
+ * its session closed never writes into a later one.
  */
 export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
   const form = dialog.querySelector('#model-profile-form');
@@ -781,16 +817,28 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
   const status = dialog.querySelector('#model-wizard-status');
   const back = dialog.querySelector('#model-wizard-back');
   const submit = dialog.querySelector('#submit-model-profile');
+  const cancel = dialog.querySelector('#cancel-model-profile');
   const title = dialog.querySelector('#model-profile-title');
   let state;
   let context;
   let combobox;
   let catalogSequence = 0;
+  let session = 0;
   let busy = false;
   let invoker;
 
   const provider = () => context.providers.find((entry) => entry.id === state.provider);
+  const isCurrent = (token) => token === session;
   const setStatus = (message, tone = '') => { status.textContent = message; if (tone) status.dataset.saveState = tone; else delete status.dataset.saveState; };
+
+  function setBusy(flag) {
+    busy = flag;
+    if (flag) form.setAttribute('aria-busy', 'true');
+    else form.removeAttribute('aria-busy');
+    submit.disabled = flag;
+    back.disabled = flag;
+    if (cancel) cancel.disabled = flag;
+  }
 
   function renderStep({ focus = true } = {}) {
     combobox?.dispose();
@@ -806,6 +854,11 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     }
   }
 
+  function renderSelection() {
+    const selection = body.querySelector('#model-wizard-selection');
+    if (selection) insert(selection, renderSelectedModel(state));
+  }
+
   function bindCombobox() {
     const input = body.querySelector('#model-wizard-search');
     const listbox = body.querySelector('#model-wizard-options');
@@ -816,7 +869,7 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
         if (option.kind === 'entry') applyCatalogEntry(state, option.entry);
         else applyCustomModel(state, option.value);
         input.value = state.query;
-        insert(body.querySelector('#model-wizard-selection'), renderSelectedModel(state, context));
+        renderSelection();
         announce(`Selected ${state.model}.`);
       }
     });
@@ -827,6 +880,7 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
   const catalogKey = () => `${state.provider}|${state.credentialId}`;
 
   async function searchCatalog(query, { open }) {
+    const token = session;
     const sequence = ++catalogSequence;
     const key = catalogKey();
     context.catalog = { ...context.catalog, status: 'loading', key };
@@ -834,11 +888,11 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     if (freshness) insert(freshness, renderCatalogFreshness(context.catalog));
     try {
       const result = await api.searchCatalog({ provider: state.provider, credentialId: state.credentialId, q: String(query ?? '').trim(), limit: 25 });
-      if (sequence !== catalogSequence) return;
+      if (!isCurrent(token) || sequence !== catalogSequence) return;
       const data = result?.data ?? {};
       context.catalog = { status: 'ready', key, entries: Array.isArray(data.entries) ? data.entries : [], freshness: data.freshness ?? null, nextCursor: data.nextCursor ?? null };
     } catch (error) {
-      if (sequence !== catalogSequence || error?.name === 'AbortError') return;
+      if (!isCurrent(token) || sequence !== catalogSequence || error?.name === 'AbortError') return;
       context.catalog = { status: 'error', key, entries: [], error: errorMessage(error, 'The catalog search failed.') };
     }
     const region = body.querySelector('#model-wizard-freshness');
@@ -850,26 +904,38 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
   }
 
   async function refreshCatalog(button) {
+    const token = session;
     button.disabled = true;
     try {
       await api.refreshCatalog({ provider: state.provider, credentialId: state.credentialId });
-      announce('Catalog refreshed.');
+      if (isCurrent(token)) announce('Catalog refreshed.');
     } catch (error) {
-      setStatus(errorMessage(error, 'The catalog could not be refreshed.'), 'error');
+      if (isCurrent(token)) setStatus(errorMessage(error, 'The catalog could not be refreshed.'), 'error');
     } finally {
       button.disabled = false;
     }
-    await searchCatalog(state.query, { open: false });
+    if (isCurrent(token)) await searchCatalog(state.query, { open: false });
+  }
+
+  /** The catalog buttons live in the region a search re-renders; put focus back on the one that was pressed. */
+  function restoreCatalogFocus(action, token) {
+    if (!isCurrent(token) || WIZARD_STEPS[state.step].id !== 'model') return;
+    (body.querySelector(`[data-wizard-action="${action}"]`)
+      ?? body.querySelector('[data-wizard-action="refresh-catalog"]')
+      ?? body.querySelector('#model-wizard-search'))?.focus?.();
   }
 
   async function loadProviders() {
+    const token = session;
     context.providersStatus = 'loading';
     renderStep({ focus: false });
     try {
       const result = await api.listProviders();
+      if (!isCurrent(token)) return;
       context.providers = Array.isArray(result?.data?.providers) ? result.data.providers : [];
       context.providersStatus = 'ready';
     } catch (error) {
+      if (!isCurrent(token)) return;
       context.providersStatus = 'error';
       context.providersError = errorMessage(error, 'Providers could not be loaded.');
     }
@@ -883,15 +949,38 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     for (const radio of body.querySelectorAll('input[name="permissionPreset"]')) radio.checked = radio.value === preset;
   }
 
-  function refreshGate() {
+  /** Re-renders the gate. The checkbox that was toggled is replaced, so focus moves to its replacement. */
+  function refreshGate(focusName) {
     const gate = body.querySelector('#model-wizard-gate');
-    if (gate) insert(gate, renderSaveGate(state, provider()));
+    if (!gate) return;
+    insert(gate, renderSaveGate(state, provider()));
+    if (focusName) gate.querySelector(`input[name="${focusName}"]`)?.focus?.();
+  }
+
+  /** Keeps the review facts and derived inputs in step with the state after a field changes another. */
+  function refreshReview(source) {
+    for (const field of ['displayName', 'profileId', 'pricingInput', 'pricingOutput']) {
+      const input = body.querySelector(`[name="${field}"]`);
+      if (input && input !== source) input.value = state[field];
+    }
+    const facts = body.querySelector('#model-wizard-review-facts');
+    if (facts) insert(facts, renderReviewFacts(state, { ...context, provider: provider() }));
   }
 
   function onField(event) {
     const target = event.target;
     const name = target?.name;
-    if (!name || name === 'modelQuery' || name === 'apiKey') return;
+    if (!name || name === 'apiKey') return;
+    if (name === 'modelQuery') {
+      // Text typed after a choice no longer names that model; Continue then asks for a new choice.
+      state.query = target.value;
+      if (state.model && String(target.value ?? '').trim() !== state.model) {
+        state.model = '';
+        state.selectedEntry = null;
+        renderSelection();
+      }
+      return;
+    }
     if (name === 'provider') {
       if (state.provider !== target.value) {
         // Choosing another provider is a deliberate restart of the route; the profile's own fields stay.
@@ -903,6 +992,7 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
         state.selectedEntry = null;
         state.model = '';
         state.query = '';
+        resetUntouchedPricing(state);
         const modes = providerApiModes(provider());
         if (!modes.includes(state.apiMode)) state.apiMode = modes[0] ?? 'chat-completions';
         context.catalog = { status: 'idle', entries: [] };
@@ -929,18 +1019,19 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
       return;
     }
     if (name === 'checkTools') { state.checkTools = target.checked; return; }
-    if (name === 'saveUnverified') { state.saveUnverifiedKey = target.checked ? wizardSaveGate(state, provider()).routeKey : null; refreshGate(); return; }
-    if (name === 'acknowledgeMutating') { state.mutatingAckKey = target.checked ? wizardSaveGate(state, provider()).operationsKey : null; refreshGate(); return; }
+    if (name === 'saveUnverified') { state.saveUnverifiedKey = target.checked ? wizardSaveGate(state, provider()).routeKey : null; refreshGate(name); return; }
+    if (name === 'acknowledgeMutating') { state.mutatingAckKey = target.checked ? wizardSaveGate(state, provider()).operationsKey : null; refreshGate(name); return; }
     if (name === 'customModel') {
-      if (event.type === 'change') applyCustomModel(state, target.value);
-      else { state.model = String(target.value ?? '').trim(); state.selectedEntry = state.selectedEntry?.providerModelId === state.model ? state.selectedEntry : null; }
+      applyCustomModel(state, target.value);
       state.touched.add('model');
+      refreshReview(target);
       return;
     }
     if (name in state) {
       state[name] = target.value;
       state.touched.add(name);
       if (name === 'pricingInput' || name === 'pricingOutput') state.pricingProvenance = { source: 'user' };
+      refreshReview(target);
     }
   }
 
@@ -950,21 +1041,32 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     setStatus(message ? `Check the highlighted field: ${message}` : '', 'error');
   }
 
-  async function connect() {
+  /** Marks or clears one connect-step field in place, so the write-only key field keeps its value. */
+  function markConnectField(field, input, message) {
+    const help = field === 'apiKey' ? 'model-wizard-api-key-help' : '';
+    const error = body.querySelector(`#model-wizard-${field}-error`);
+    if (error) error.textContent = message ?? '';
+    if (!input) return;
+    const describedBy = [help, message ? `model-wizard-${field}-error` : ''].filter(Boolean).join(' ');
+    if (message) input.setAttribute('aria-invalid', 'true');
+    else input.removeAttribute('aria-invalid');
+    if (describedBy) input.setAttribute('aria-describedby', describedBy);
+    else input.removeAttribute('aria-describedby');
+  }
+
+  async function connect(token) {
     if (state.credentialChoice === 'saved' && context.credentials.some((credential) => credential.id === state.credentialId && credential.provider === state.provider)) return true;
     const keyField = body.querySelector('#model-wizard-api-key');
+    const labelField = body.querySelector('#model-wizard-credential-label');
     const apiKey = String(keyField?.value ?? '');
     const errors = {};
     if (!state.newCredentialLabel.trim()) errors.newCredentialLabel = 'Enter a label for the key.';
     if (!apiKey.trim()) errors.apiKey = 'Paste the API key.';
+    markConnectField('newCredentialLabel', labelField, errors.newCredentialLabel);
+    markConnectField('apiKey', keyField, errors.apiKey);
     if (Object.keys(errors).length) {
-      // The key field keeps its value: only the markers are updated, never a re-render that would clear it.
-      for (const [field, message] of Object.entries(errors)) {
-        const input = field === 'apiKey' ? keyField : body.querySelector('#model-wizard-credential-label');
-        input?.setAttribute('aria-invalid', 'true');
-        setStatus(message, 'error');
-      }
-      (body.querySelector('[aria-invalid="true"]'))?.focus?.();
+      setStatus(Object.values(errors)[0], 'error');
+      (errors.newCredentialLabel ? labelField : keyField)?.focus?.();
       return false;
     }
     setStatus('Saving the key…', 'saving');
@@ -972,6 +1074,8 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
       const definition = provider();
       const result = await api.createCredential({ label: state.newCredentialLabel.trim(), provider: state.provider, authMode: state.newCredentialAuthMode || definition?.defaultAuthMode || 'bearer', apiKey: apiKey.trim() });
       if (keyField) keyField.value = '';
+      // The key exists now even if its dialog closed meanwhile, so the page list still needs it.
+      if (!isCurrent(token)) { void onSaved(); return false; }
       const created = result?.data;
       if (!created?.id) throw new Error('The key was saved but no ID came back. Reload the page and choose it as a saved key.');
       context.credentials = [...context.credentials, created];
@@ -982,15 +1086,15 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
       announce('Provider key saved.');
       return true;
     } catch (error) {
-      setStatus(errorMessage(error, 'The key could not be saved.'), 'error');
+      if (isCurrent(token)) setStatus(errorMessage(error, 'The key could not be saved.'), 'error');
       return false;
     }
   }
 
-  async function advance() {
+  async function advance(token) {
     const current = WIZARD_STEPS[state.step].id;
     if (current === 'provider' && !provider()) { showErrors({ provider: 'Choose a provider.' }); return; }
-    if (current === 'connect' && !(await connect())) return;
+    if (current === 'connect' && !(await connect(token))) return;
     if (current === 'model') {
       if (!state.model) {
         context.errors = { customModel: state.query.trim() ? 'Choose a match from the list, or pick the custom ID option.' : 'Choose a model.' };
@@ -1008,7 +1112,7 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     renderStep();
   }
 
-  async function verify(button) {
+  async function verify(button, token) {
     const definition = provider();
     const key = wizardSaveGate(state, definition).routeKey;
     button.disabled = true;
@@ -1017,9 +1121,11 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     if (region) insert(region, '<p class="field-help" role="status">Checking the connection…</p>');
     try {
       const result = await api.verify(draftVerificationInput(state, definition, { tools: state.checkTools }));
+      if (!isCurrent(token)) return;
       state.verification = { key, result: result?.data ?? null };
       announce(`Connection ${verificationLabel(result?.data?.outcome).toLowerCase()}.`);
     } catch (error) {
+      if (!isCurrent(token)) return;
       // A failed request leaves every field as it was; only the check result is replaced.
       state.verification = { key, error: errorMessage(error, 'The connection could not be checked.') };
     }
@@ -1027,7 +1133,7 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     body.querySelector('[data-wizard-action="verify"]')?.focus?.();
   }
 
-  async function save() {
+  async function save(token) {
     const definition = provider();
     const { errors, request } = buildProfileRequest(state, definition);
     if (Object.keys(errors).length) {
@@ -1040,35 +1146,33 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     }
     const gate = wizardSaveGate(state, definition);
     if (!gate.allowed) {
-      refreshGate();
+      refreshGate(gate.fields[0]);
       setStatus(gate.reasons[0], 'error');
-      body.querySelector('#model-wizard-gate input')?.focus?.();
       return;
     }
     setStatus('Saving…', 'saving');
     try {
       if (request.kind === 'update') await api.updateProfile(request.profileId, request.body);
       else await api.createProfile(request.body);
-      setStatus('');
-      context.saved = true;
-      dialog.close();
-      announce(request.kind === 'update' ? 'Model profile updated.' : `Model profile ${request.body.profileId} created.`);
     } catch (error) {
-      setStatus(errorMessage(error, 'The profile could not be saved.'), 'error');
+      if (isCurrent(token)) setStatus(errorMessage(error, 'The profile could not be saved.'), 'error');
+      return;
     }
+    // The profile is saved whatever happened to the dialog meanwhile, so the list reloads from here.
+    void onSaved();
+    if (!isCurrent(token)) return;
+    setStatus('');
+    context.saved = true;
+    dialog.close();
+    announce(request.kind === 'update' ? 'Model profile updated.' : `Model profile ${request.body.profileId} created.`);
   }
 
   async function run(task) {
     if (busy) return;
-    busy = true;
-    form.setAttribute('aria-busy', 'true');
-    submit.disabled = true;
-    back.disabled = true;
-    try { await task(); } finally {
-      busy = false;
-      form.removeAttribute('aria-busy');
-      submit.disabled = false;
-      back.disabled = false;
+    const token = session;
+    setBusy(true);
+    try { await task(token); } finally {
+      if (isCurrent(token)) setBusy(false);
     }
   }
 
@@ -1076,16 +1180,17 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
   form.addEventListener('change', onField);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    void run(() => (state.step === WIZARD_STEPS.length - 1 ? save() : advance()));
+    void run((token) => (state.step === WIZARD_STEPS.length - 1 ? save(token) : advance(token)));
   });
   form.addEventListener('click', (event) => {
     const action = event.target?.closest?.('[data-wizard-action]');
     if (!action) return;
     const name = action.dataset.wizardAction;
+    const token = session;
     if (name === 'retry-providers') void loadProviders();
-    else if (name === 'retry-catalog') void searchCatalog(state.query, { open: false });
-    else if (name === 'refresh-catalog') void refreshCatalog(action);
-    else if (name === 'verify') void run(() => verify(action));
+    else if (name === 'retry-catalog') void searchCatalog(state.query, { open: false }).then(() => restoreCatalogFocus(name, token));
+    else if (name === 'refresh-catalog') void refreshCatalog(action).then(() => restoreCatalogFocus(name, token));
+    else if (name === 'verify') void run((runToken) => verify(action, runToken));
   });
   back.addEventListener('click', () => {
     if (busy || state.step === 0) return;
@@ -1093,17 +1198,26 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
     state.step -= 1;
     renderStep();
   });
-  dialog.querySelector('#cancel-model-profile')?.addEventListener('click', () => dialog.close());
+  // A request in flight keeps the dialog open: closing it would orphan the result.
+  dialog.addEventListener('cancel', (event) => { if (busy) event.preventDefault(); });
+  cancel?.addEventListener('click', () => { if (!busy) dialog.close(); });
   dialog.addEventListener('close', () => {
+    session += 1;
+    setBusy(false);
     combobox?.dispose();
     combobox = undefined;
-    const changed = context?.saved || context?.credentialsChanged;
+    // An unsent key is kept only for an immediate retry; closing the dialog drops it.
+    const keyField = body.querySelector('#model-wizard-api-key');
+    if (keyField) keyField.value = '';
+    insert(body, '');
     invoker?.focus?.({ preventScroll: true });
-    if (changed) void onSaved();
+    if (context?.credentialsChanged && !context.saved) void onSaved();
   });
 
   return {
     open({ mode = 'create', profile = null, profiles = [], credentials = [], providers = [], trigger } = {}) {
+      session += 1;
+      setBusy(false);
       invoker = trigger;
       state = initialWizardState({ mode, profile, profiles, credentials });
       context = { providers, credentials: [...credentials], providersStatus: providers.length ? 'ready' : 'loading', catalog: { status: 'idle', entries: [] }, errors: {} };

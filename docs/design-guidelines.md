@@ -577,7 +577,8 @@ wired, so the visible one is never the only working one. Owners:
   hears "Step N of 5". The model search is an ARIA combobox (`aria-expanded`,
   `aria-activedescendant`, `role="listbox"` options) whose Escape closes the
   list before it can close the dialog. An API key field is write-only and
-  cleared after submission. Price fields never turn an unknown price into zero,
+  cleared once the key is stored and whenever the dialog closes; the dialog
+  cannot close while a key, check, or save request is in flight. Price fields never turn an unknown price into zero,
   and saving is blocked until the route is verified or explicitly saved
   unverified and any newly allowed file-changing operation is acknowledged.
   Owners: `createModelWizard`, `createModelCombobox`, `wizardSaveGate`, and
