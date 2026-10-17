@@ -334,8 +334,10 @@ key, connection check, or save is in flight.
    never inherits the previous model's price. A price no source published stays **Unknown**:
    enter it yourself, and enter `0` only for a model that is really free. A catalog price
    you keep unedited is saved whole, cache prices and long-prompt tiers included, with a
-   `catalogPriceRef` to its catalog model; once you edit a price, only the input and output
-   prices you typed are sent, as your override. **Saved as** tells you which before you
+   `catalogPriceRef` to its catalog model. A cache price the catalog does not publish is
+   sent as `null` and flat pricing as an empty tier list, so the save replaces every saved
+   price rather than keeping an old cache price or tier. Once you edit a price, only the
+   input and output prices you typed are sent, as your override. **Saved as** tells you which before you
    save: **Catalog price**, **Custom price (override)**, or, for an edit that keeps the
    saved input and output prices for the same model and key, **Saved price (unchanged)**
    (the saved prices and their provenance are kept). Choose a permission preset here. **Advanced** holds the profile ID (derived
@@ -406,9 +408,19 @@ change the review measured (**Catalog price changed since saved** when no percen
 applies, for example a new tier). For a profile whose price is your override, the warning
 reads **Differs from catalog** instead, because the difference is your choice. Either way,
 **Review catalog price** opens the edit form with the catalog's current price filled in;
-nothing is saved until you choose **Save changes**. Saving it unedited records it as the
-catalog's price. When the catalog has no current price for the model, the form says so and
-keeps the saved price.
+nothing is saved until you choose **Save changes**. Saving it unedited replaces every saved
+price, cache prices and tiers included, and the runner records it as the catalog's price
+when it still matches the runner's cached catalog price (otherwise it is saved as your
+override). When the catalog has no current price for the model, the form says **The catalog
+has no current price for this model** and keeps the saved price; when the catalog cannot be
+read, the form shows the error and keeps the saved price.
+
+When the review reads `unknown`, the list says **No catalog price to compare with**. For a
+`repriced` or `unknown` review whose catalog has a retrieval time, the list adds **Compared
+with the catalog from** that time, so you can tell how old the comparison is. When the
+catalog also prices the model by conditions a saved price cannot express, the list adds
+**The catalog also prices this model by conditions a saved price cannot express, so the
+charge can differ from this estimate.**
 
 ### Gateway status
 
@@ -494,7 +506,8 @@ The state is written as a word; its green, amber, or red pill only repeats it.
 the table. Choose **Applies to** (**All runs (account)** or a saved profile), **Period**
 (**Daily (UTC day)** or **Monthly (UTC month)**), **Limit (USD)**, and **Warn at (% of
 limit)** (80 unless you change it), then **Add limit**. The limit is typed in US dollars
-with at most six decimal places, above $0 and at most $1,000,000. The browser converts it
+with at most six decimal places, above $0 and at most $1,000,000; a leading `$`, surrounding
+spaces, leading zeros, and a bare fraction such as `.5` are accepted. The browser converts it
 to whole micro-dollars without rounding, and refuses a negative amount or a seventh
 decimal place before anything is sent. A scope and period that already has a limit is
 refused with the server's message; the panel reloads so you can see and edit that limit
@@ -505,11 +518,15 @@ values. A limit keeps its scope and period, so only **Limit (USD)** and **Warn a
 limit)** can change; to move it, delete it and add a new one. **Save limit** sends the
 limit with the version you opened. If someone changed or deleted it meanwhile, the panel
 shows the server's message, reloads, and fills the form with the current values for you to
-review and save again.
+review and save again. If the limit was deleted and a new one added for the same scope and
+period, the form opens that limit instead; if none exists any more, the form turns into
+**Add a spend limit** with your typed values kept.
 
-**Deleting a limit.** **Delete limit** asks for confirmation, then removes the limit.
-Recorded spend is kept. A limit that changed or was already deleted is refused with the
-server's message and the panel reloads.
+**Deleting a limit.** **Delete limit** asks for confirmation, naming the period and the
+scope (**All runs** or the profile's display name), then removes the limit. Recorded spend
+is kept. A limit that changed or was already deleted is refused with the server's message
+and the panel reloads. A delete confirmed while another limit change is still saving is
+not sent; the panel says so, and you can delete again once the save finishes.
 
 ### Spend routes
 
