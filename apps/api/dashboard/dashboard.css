@@ -937,8 +937,16 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 .gate-reasons { margin: 0; padding-inline-start: var(--space-6); color: var(--warning); font-size: var(--text-13); }
 .wizard-actions #model-wizard-back[hidden] { display: none; }
 .models-page { display: grid; gap: var(--space-6); }
-.pricing-drift { display: block; margin-block-start: var(--space-1); color: var(--warning); font-size: var(--text-12); font-weight: 550; }
-.pricing-drift[hidden] { display: none; }
+/* Saved revision prices: secondary lines under the input/output pair, the provenance pill, and the
+   repricing warning, whose words carry the meaning and whose amber only reinforces it. */
+.price-line { display: block; margin-block-start: var(--space-1); color: var(--ink-muted); font-size: var(--text-12); }
+.price-provenance { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); margin-block-start: var(--space-1); font-size: var(--text-12); color: var(--ink-muted); }
+.pricing-review { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); margin-block-start: var(--space-1); color: var(--warning); font-size: var(--text-12); font-weight: 550; }
+/* Every spend figure is an estimate; the tag says so in words next to the amount. */
+.estimate-tag { display: inline-block; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 0 var(--space-1); color: var(--ink-muted); font-size: var(--text-11); font-weight: 600; white-space: nowrap; }
+.spend-policy-form { display: grid; gap: var(--space-3); margin-block-start: var(--space-4); padding-block-start: var(--space-4); border-block-start: 1px solid var(--line); }
+.spend-policy-form h3 { margin: 0; font-size: var(--text-13); font-weight: 600; }
+.spend-policy-form .form-row input, .spend-policy-form .form-row select { width: 100%; min-width: 0; }
 #confirm-target { margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); font-size: var(--text-12); overflow-wrap: anywhere; }
 #confirm-target:empty { display: none; }
 
