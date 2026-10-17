@@ -390,6 +390,12 @@ the key it uses, its prices, and its per-run cost and token limits. Actions are 
 (checks the saved profile), **Edit**, **Duplicate**, **Disable** or **Activate**, and
 **Delete**.
 
+A profile created by an agent over MCP (`model_profile_create`) is always saved
+**Disabled**. It routes no subagent until you review it here and choose **Activate**. An
+MCP change that would raise spend or widen permissions is refused with
+`OWNER_APPROVAL_REQUIRED`; make that change here instead. See
+[API and MCP examples](/reference/model-providers#api-and-mcp-examples) for the MCP tools.
+
 The **Price per 1M (in / out)** column shows the revision's pinned prices as saved:
 
 - the input and output prices, then **cache read** and **cache write**, then one line per
@@ -533,7 +539,9 @@ server's message and the panel reloads.
 
 ### Spend routes
 
-No MCP tool manages policies. Scripts can use the dashboard routes the panel uses. Each
+Over MCP, `model_spend_summary` reads the same estimated spend and the policies you set
+here, but no MCP tool creates, changes, or deletes a policy. Scripts can use the dashboard
+routes the panel uses. Each
 needs a signed-in dashboard session. A change also needs the session cookie,
 an `x-csrf-token` header set to the `csrfToken` field of the `GET /dashboard/api/v1/session`
 response, `Content-Type: application/json`, and the dashboard's own `Origin`; the
