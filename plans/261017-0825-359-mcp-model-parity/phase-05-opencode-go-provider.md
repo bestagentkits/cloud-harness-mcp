@@ -119,8 +119,9 @@ staged-snapshot behaviour at `control.ts:95-96`.
 - Only the OpenAI chat-completions and responses paths are used. Models that OpenCode
   serves only on its Anthropic Messages or Google paths fail the connection check with
   `unsupported_protocol`.
-- No per-token prices are published.
-  - Catalog entries carry `null` prices. Profiles need operator override prices, and
+- OpenCode publishes per-token prices on its Go page (input, output, cached read, cached
+  write per 1M tokens), but there is no machine-readable price API to sync.
+  - Catalog entries carry `null` prices unless a reviewed static price table is added. Profiles need operator override prices, and
     the profile shows `isOverride`.
   - Every spend figure is an estimate.
   - Over MCP, an override price on a new route is the `price_unverified_for_new_route`

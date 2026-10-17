@@ -147,8 +147,8 @@ already met by the gateway: its own user agent, plus the session header filled w
 agent id. Limitations to document:
 - Models served only on the Anthropic Messages or Google paths cannot be used. The
   connection check reports `unsupported_protocol`.
-- Prices are not published per token, so pinned prices are operator overrides and
-  every figure is an estimate.
+- OpenCode publishes per-token prices on its Go page, but a Custom provider has no
+  catalog price, so pinned prices are operator overrides and every figure is an estimate.
 - Plan allowances are enforced by OpenCode, not by the harness.
 
 ## Tests

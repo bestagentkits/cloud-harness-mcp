@@ -14,8 +14,8 @@ supported. To add keys and build profiles, see [Models & Budgets](/dashboard/mod
 The provider registry
 ([`packages/contracts/src/model-provider-registry.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-provider-registry.ts))
 is the only source of truth for endpoints, auth modes, and API modes. Authenticated
-dashboard sessions read it live at `GET /api/v1/model-providers`. An MCP tool that lists
-providers (`model_provider_list`) is planned but not available yet.
+dashboard sessions read it live at `GET /api/v1/model-providers`. There is no MCP tool for
+this list today.
 
 | Provider | Auth header | API modes | Catalog source | Cache-write billing assumed | API keys |
 | --- | --- | --- | --- | --- | --- |
@@ -25,7 +25,9 @@ providers (`model_provider_list`) is planned but not available yet.
 | Google Gemini | Bearer | Chat Completions (OpenAI-compatible endpoint) | Provider's models endpoint, with your key | No | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | DeepSeek | Bearer | Chat Completions | Provider's models endpoint, with your key | No | [platform.deepseek.com](https://platform.deepseek.com/api_keys) |
 | Custom (OpenAI-compatible) | Bearer or `x-api-key` | Chat Completions or Responses, at the one HTTPS URL you enter | None: you enter the model ID | Yes | Your provider's console |
-| OpenCode Go | Custom (OpenAI-compatible) plus `MODEL_GATEWAY_SESSION_HEADER=x-opencode-session` | See [OpenCode Go](#opencode-go) | None: you enter the model ID | Yes (as Custom) | [opencode.ai](https://opencode.ai/docs/go) |
+
+OpenCode Go is not a registry provider. It works today through the Custom provider with the
+Bearer auth mode; see [OpenCode Go](#opencode-go).
 
 What the columns mean:
 
@@ -34,7 +36,8 @@ What the columns mean:
   that may bill them, and at the input price otherwise. The rule is owned by
   [`model-pricing.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-pricing.ts).
 - **Outbound hosts.** A key for a registry provider is only ever sent to that provider's own
-  registry hosts. A Custom key is only sent to the host of its own upstream URL. The check
+  registry hosts. A Custom key is sent only to the host of the upstream URL on the profile
+  or draft check that uses it, so enter only upstreams you trust with that key. The check
   is owned by
   [`apps/runner/src/model-provider-http.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/apps/runner/src/model-provider-http.ts).
 
@@ -51,9 +54,10 @@ What the columns mean:
 [OpenCode Go](https://opencode.ai/docs/go) works today as a **Custom (OpenAI-compatible)**
 provider:
 
-1. Set `MODEL_GATEWAY_SESSION_HEADER=x-opencode-session` for the instance (see
-   [configuration](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/docs/configuration.md#model-gateway-provider-overrides))
-   and restart the gateway. OpenCode Go rejects requests without this header.
+1. Set `MODEL_GATEWAY_SESSION_HEADER=x-opencode-session` for the instance (see the
+   [environment variables reference](/reference/environment-variables)) and recreate the
+   gateway container so it picks up the change. OpenCode asks clients to send a stable
+   session ID in this header and can reject requests without one.
 2. Add a Custom credential with your OpenCode Console API key and the Bearer auth mode.
 3. Create a profile with the OpenCode Go Chat Completions or Responses URL from its docs,
    the matching API mode, and the model ID. OpenCode lists which models are served on
@@ -64,13 +68,13 @@ Limitations:
 - The session header is instance-wide. When set, the gateway sends it, filled with the
   calling agent's ID, on every upstream request to every provider.
 - The connection check runs from the runner, which does not send the session header, so
-  OpenCode Go may reject it and the profile shows **Not verified**. That status does not
-  block activation or spawning; a short subagent run is the real test.
+  OpenCode Go can reject it and the check reports **Failed** (`unsupported_protocol`, "The
+  provider rejected the request format"). A failed check does not block activation or
+  spawning; a short subagent run is the real test.
 - Models served only on OpenCode's Anthropic Messages or Google paths cannot be used.
-- OpenCode does not publish per-token prices for Go, so any prices you enter are your own
-  estimates. Plan allowances are enforced by OpenCode, not by the harness.
-
-A dedicated OpenCode Go provider entry is planned. Until it ships, use the steps above.
+- OpenCode publishes per-token prices for Go models on its Go page. Enter them on the
+  profile yourself, because a Custom provider has no catalog price. Plan allowances (5-hour,
+  weekly, and monthly dollar limits per model) are enforced by OpenCode, not by the harness.
 
 ## Sync and verification limits
 
@@ -83,16 +87,18 @@ A dedicated OpenCode Go provider entry is planned. Until it ships, use the steps
   compares a profile's pinned prices only with the cached catalog price; it never fetches
   a fresh one. A Custom provider has no catalog, so its review is always `unknown`.
 - **Connection checks** prove one route (credential, model, API mode, upstream) at one
-  moment. The inference and tool checks spend a few tokens on your provider account and
-  are rate limited per principal. They call the provider from the runner, not through the
+  moment. Every check run is rate limited per principal, and the inference and tool checks
+  also spend a few tokens on your provider account. They call the provider from the runner, not through the
   Model Gateway, so they are not counted against any agent's budget caps.
-- **Draft results.** A check run in the profile wizard attaches only to a save with the
-  identical route, by the same principal, and only once. Any other save succeeds but shows
+- **Draft results.** A check run in the profile wizard attaches only to the next save by
+  the same principal, within a short expiry, and only when the route is identical. That
+  first save uses it up whether or not it matched; any other save succeeds but shows
   **Not verified**.
 - **Gateway sync.** Saving a profile or credential pushes a new snapshot to the gateway,
-  but the save succeeds even if that push fails. The dashboard's model status
-  (`GET /api/v1/agent-model-config-status`) reports whether the gateway is in sync and when
-  it last synced.
+  but the save succeeds even if that push fails. Spawning a subagent pushes again when the
+  gateway restarted or lost its profiles, and fails with `UNAVAILABLE` if the gateway is
+  unreachable. The dashboard's model status (`GET /api/v1/agent-model-config-status`)
+  reports whether the gateway answered and when the runner last attempted a push.
 
 The full behaviour of the catalog, checks, and pricing review is described in
 [Models & Budgets](/dashboard/models).
@@ -110,6 +116,8 @@ each verdict names the sources it was based on and when they were reviewed.
 [self-hosted VMs](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms),
 [models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference),
 [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations),
+[token reference](https://developers.openai.com/siwc/token-sharing-open-source/token-reference),
+[accounts and sessions](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions),
 and the [OpenAI cookbook article](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt).
 
 Reasons:
@@ -133,7 +141,7 @@ Reasons:
 self-hosted remote services. That would need its own design for an OAuth credential kind,
 token refresh, and gateway request rewriting.
 
-### OpenCode Go
+### OpenCode Go subscription
 
 **Verdict: supported through a Custom provider today.** Source reviewed 2026-10-17:
 [OpenCode Go docs](https://opencode.ai/docs/go).
