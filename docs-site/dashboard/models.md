@@ -52,7 +52,7 @@ add a new credential with the supported header and select it on the profile.
 Model profiles define how subagents interact with LLMs:
 - **Model Name:** The provider-specific model identifier (e.g. `gpt-5.2-codex`, `claude-3.7-sonnet`).
 - **API Mode:** `chat-completions` (`/v1/chat/completions`) or `responses` (`/v1/responses`), limited to the modes the provider offers.
-- **Custom upstream URL:** Required for a Custom credential. Editing the profile keeps its current URL unless you enter a new one; switching to a different Custom credential requires entering the URL again.
+- **Custom upstream URL:** Required for a Custom credential. Editing the profile keeps its current URL unless you enter a new one; changing the API mode or switching to a different Custom credential requires entering the URL again.
 - **Token Pricing:** Input and output token pricing in USD per 1M tokens.
 - **Budget Limits:** Hard limits for maximum input tokens, output tokens, and cost per agent execution.
 - **Allowed Proxy Operations:** Hard ceiling on permitted file and search operations from the exact 10 safe tools (`files_list`, `files_read`, `files_write`, `files_apply_patch`, `files_delete`, `files_move`, `files_mkdir`, `grep_search`, `symbols_search`, `symbols_references`).

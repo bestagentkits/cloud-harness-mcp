@@ -193,5 +193,9 @@ describe('ModelProfileStateRepository', () => {
     expect(updated.activeRevision?.upstreamUrl).toBe('https://llm.example.com/v1/chat/completions');
     const moved = repo.updateProfile(p1, profile.id, { customUpstreamUrl: 'https://llm2.example.com/v1/chat/completions', expectedGeneration: 2 });
     expect(moved.activeRevision?.upstreamUrl).toBe('https://llm2.example.com/v1/chat/completions');
+    expect(() => repo.updateProfile(p1, profile.id, { apiMode: 'responses', expectedGeneration: 3 }))
+      .toThrow('customUpstreamUrl is required');
+    const switched = repo.updateProfile(p1, profile.id, { apiMode: 'responses', customUpstreamUrl: 'https://llm2.example.com/v1/responses', expectedGeneration: 3 });
+    expect(switched.activeRevision?.upstreamUrl).toBe('https://llm2.example.com/v1/responses');
   });
 });

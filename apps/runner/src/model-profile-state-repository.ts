@@ -476,8 +476,10 @@ export class ModelProfileStateRepository {
 
     const downstreamPath = resolveDownstreamPath(apiMode);
     // A custom endpoint is part of the profile, so an edit that keeps the same
-    // credential keeps the current URL unless a new one is submitted.
-    const keptCustomUrl = cred.provider === 'custom' && credentialId === profile.credential_id && typeof currentRev?.upstream_url === 'string'
+    // credential and API mode keeps the current URL unless a new one is
+    // submitted. A different mode needs its own endpoint path.
+    const keptCustomUrl = cred.provider === 'custom' && credentialId === profile.credential_id && apiMode === currentRev?.api_mode
+      && typeof currentRev?.upstream_url === 'string'
       ? currentRev.upstream_url as string
       : undefined;
     const upstreamUrl = resolveProviderUpstreamUrl(cred.provider, apiMode, input.customUpstreamUrl ?? keptCustomUrl);
