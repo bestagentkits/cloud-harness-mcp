@@ -6,7 +6,8 @@ import { ModelProviderKindSchema } from './model-profile-schemas.js';
 // unknown, which is never the same as free: only an explicit zero is free.
 const MicrosPerMillionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
 
-export const ModelCatalogPriceSourceSchema = z.enum(['provider', 'openrouter', 'user']);
+// `none`: no source published a price for the model, so the price fields are null.
+export const ModelCatalogPriceSourceSchema = z.enum(['provider', 'openrouter', 'user', 'none']);
 export type ModelCatalogPriceSource = z.infer<typeof ModelCatalogPriceSourceSchema>;
 
 // `exact` is the price the selected route bills, `estimate` is a price observed on

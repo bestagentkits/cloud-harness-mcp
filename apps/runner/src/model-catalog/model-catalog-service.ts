@@ -34,14 +34,17 @@ export const CATALOG_FAILURE_BACKOFF_MS = 60 * 1000;
 export const CATALOG_REFRESH_INTERVAL_MS = 30 * 1000;
 const MAX_CURSOR_OFFSET = 100_000;
 
-interface SourceResult<T> {
+export interface SourceResult<T> {
   snapshot: CatalogSnapshot<T> | undefined;
   status: ModelCatalogSourceStatus;
 }
 
-interface SourceRequest<T> {
+export interface SourceRequest<T> {
   source: ModelCatalogSourceKind;
   key: string;
+  // Keys sharing this prefix describe superseded versions of the same listing
+  // (an older credential key version) and are evicted once this key is stored.
+  family?: string;
   ttlMs: number;
   force: boolean;
   load: () => CatalogSnapshot<T> | undefined;
@@ -54,12 +57,17 @@ interface SourceRequest<T> {
  * backoff, and single-flight fetches: concurrent searches for the same key share
  * one outbound request.
  */
-class SourceCache<T> {
+export class SourceCache<T> {
   private readonly memory = new Map<string, CatalogSnapshot<T>>();
   private readonly failures = new Map<string, { error: ModelCatalogSourceError; at: number }>();
   private readonly inflight = new Map<string, Promise<SourceResult<T>>>();
 
   constructor(private readonly now: () => number) {}
+
+  /** Number of keys holding a snapshot or a failure in memory. */
+  get size(): number {
+    return new Set([...this.memory.keys(), ...this.failures.keys()]).size;
+  }
 
   async get(request: SourceRequest<T>): Promise<SourceResult<T>> {
     const snapshot = this.cached(request);
@@ -73,6 +81,13 @@ class SourceCache<T> {
     return await pending;
   }
 
+  /** Drops every in-memory entry whose key starts with `prefix`. */
+  evict(prefix: string, keep?: string): void {
+    for (const map of [this.memory, this.failures]) {
+      for (const key of map.keys()) if (key.startsWith(prefix) && key !== keep) map.delete(key);
+    }
+  }
+
   private cached(request: SourceRequest<T>): CatalogSnapshot<T> | undefined {
     let snapshot = this.memory.get(request.key);
     if (!snapshot) {
@@ -83,28 +98,36 @@ class SourceCache<T> {
   }
 
   private start(request: SourceRequest<T>): Promise<SourceResult<T>> {
-    const pending = (async (): Promise<SourceResult<T>> => {
-      try {
-        const snapshot: CatalogSnapshot<T> = { entries: await request.fetch(), fetchedAt: this.now() };
-        this.memory.set(request.key, snapshot);
-        this.failures.delete(request.key);
-        try {
-          request.save(snapshot);
-        } catch {
-          // The snapshot stays served from memory; a persistence failure (such as the
-          // credential being deleted mid-fetch) only costs the restart fallback.
-        }
-        return this.result(request.source, snapshot, null);
-      } catch (error) {
-        const category = error instanceof CatalogSourceError ? error.category : 'network';
-        this.failures.set(request.key, { error: category, at: this.now() });
-        return this.result(request.source, this.memory.get(request.key), category);
-      } finally {
-        this.inflight.delete(request.key);
-      }
-    })();
+    // The fetch runs on a later microtask, so the promise is registered before any
+    // of its work starts, and cleanup removes only this promise. A fetch that fails
+    // synchronously therefore cannot leave a settled failure pinned as in flight.
+    const pending = Promise.resolve().then(() => this.run(request));
     this.inflight.set(request.key, pending);
+    const release = () => {
+      if (this.inflight.get(request.key) === pending) this.inflight.delete(request.key);
+    };
+    pending.then(release, release);
     return pending;
+  }
+
+  private async run(request: SourceRequest<T>): Promise<SourceResult<T>> {
+    try {
+      const snapshot: CatalogSnapshot<T> = { entries: await request.fetch(), fetchedAt: this.now() };
+      this.memory.set(request.key, snapshot);
+      this.failures.delete(request.key);
+      if (request.family) this.evict(request.family, request.key);
+      try {
+        request.save(snapshot);
+      } catch {
+        // The snapshot stays served from memory; a persistence failure (such as the
+        // credential being deleted mid-fetch) only costs the restart fallback.
+      }
+      return this.result(request.source, snapshot, null);
+    } catch (error) {
+      const category = error instanceof CatalogSourceError ? error.category : 'network';
+      this.failures.set(request.key, { error: category, at: this.now() });
+      return this.result(request.source, this.memory.get(request.key), category);
+    }
   }
 
   private result(source: ModelCatalogSourceKind, snapshot: CatalogSnapshot<T> | undefined, error: ModelCatalogSourceError | null): SourceResult<T> {
@@ -120,7 +143,7 @@ function price(model: OpenRouterModel | undefined, confidence: ModelCatalogPrice
     return {
       inputMicrosPerMillionTokens: null, outputMicrosPerMillionTokens: null,
       cacheReadMicrosPerMillionTokens: null, cacheWriteMicrosPerMillionTokens: null,
-      provenance: { source: 'provider', sourceModelId: null, retrievedAt: null, confidence: 'unknown' },
+      provenance: { source: 'none', sourceModelId: null, retrievedAt: null, confidence: 'unknown' },
       hasConditionalPricing: false
     };
   }
@@ -223,6 +246,10 @@ export class ModelCatalogService {
   private readonly openRouterCache: SourceCache<OpenRouterModel>;
   private readonly providerCache: SourceCache<ProviderListedModel>;
   private readonly lastRefresh = new Map<string, number>();
+  // OpenRouter is one source shared by every principal and credential, so its
+  // forced fetches are limited on their own: cycling credentials (each with its
+  // own refresh window) cannot force it more than once per interval.
+  private lastOpenRouterForce: number | undefined;
 
   constructor(private readonly options: ModelCatalogServiceOptions) {
     this.store = new CatalogSnapshotStore(options.database);
@@ -234,7 +261,7 @@ export class ModelCatalogService {
   async search(principalId: string, input: ModelCatalogSearchInput): Promise<ModelCatalogSearchResult> {
     const credential = this.credentialFor(principalId, input.provider, input.credentialId);
     const offset = decodeCursor(input.cursor);
-    const { entries, freshness } = await this.build(principalId, input.provider, credential, false);
+    const { entries, freshness } = await this.build(principalId, input.provider, credential, { provider: false, openRouter: false });
     const query = input.query?.toLowerCase();
     const matching = entries.filter((entry) =>
       (!input.capability || entry.capabilities[input.capability] === 'reported') &&
@@ -258,14 +285,21 @@ export class ModelCatalogService {
     }
     for (const [entry, at] of this.lastRefresh) if (now - at >= CATALOG_REFRESH_INTERVAL_MS) this.lastRefresh.delete(entry);
     this.lastRefresh.set(key, now);
-    const { entries, freshness } = await this.build(principalId, input.provider, credential, true);
+    const forceOpenRouter = this.lastOpenRouterForce === undefined || now - this.lastOpenRouterForce >= CATALOG_REFRESH_INTERVAL_MS;
+    if (forceOpenRouter) this.lastOpenRouterForce = now;
+    const { entries, freshness } = await this.build(principalId, input.provider, credential, { provider: true, openRouter: forceOpenRouter });
     return { entryCount: entries.length, freshness };
   }
 
   private credentialFor(principalId: string, provider: ModelProviderKind, credentialId: string | undefined): ProviderCredentialMetadata | undefined {
     if (credentialId === undefined) return undefined;
     const credential = this.options.credentials.getCredential(principalId, credentialId);
-    if (!credential) throw new HarnessError('NOT_FOUND', 'model provider credential was not found', 404, false);
+    if (!credential) {
+      // A deleted credential's cached listings are dropped from memory; its persisted
+      // snapshots are removed by the foreign-key cascade.
+      this.providerCache.evict(`${principalId}\u0000${credentialId}\u0000`);
+      throw new HarnessError('NOT_FOUND', 'model provider credential was not found', 404, false);
+    }
     if (credential.provider !== provider) {
       throw new HarnessError('INVALID_INPUT', `the credential belongs to ${credential.provider}, not ${provider}`, 400, false);
     }
@@ -276,14 +310,14 @@ export class ModelCatalogService {
     principalId: string,
     provider: ModelProviderKind,
     credential: ProviderCredentialMetadata | undefined,
-    force: boolean
+    force: { provider: boolean; openRouter: boolean }
   ): Promise<{ entries: ModelCatalogEntry[]; freshness: ModelCatalogFreshness }> {
     const definition = getModelProvider(provider);
     if (definition.catalogStrategy === 'none') return { entries: [], freshness: overallFreshness([], false) };
     const listingRequest = definition.catalogStrategy === 'provider-models' && credential
-      ? this.providerListing(principalId, provider, credential, force)
+      ? this.providerListing(principalId, provider, credential, force.provider)
       : Promise.resolve(undefined);
-    const [openRouter, listing] = await Promise.all([this.openRouter(force), listingRequest]);
+    const [openRouter, listing] = await Promise.all([this.openRouter(force.openRouter), listingRequest]);
     const openRouterModels = openRouter.snapshot?.entries ?? [];
     const openRouterFetchedAt = openRouter.snapshot?.fetchedAt ?? null;
     const sources = listing ? [listing.status, openRouter.status] : [openRouter.status];
@@ -365,9 +399,11 @@ export class ModelCatalogService {
       status: { source: 'provider', state: 'unavailable', fetchedAt: null, error: 'credential_unavailable' }
     });
     if (credential.status !== 'ACTIVE') return unavailable();
+    const family = `${principalId}\u0000${credential.id}\u0000`;
     return await this.providerCache.get({
       source: 'provider',
-      key: `${principalId}\u0000${credential.id}\u0000${version}`,
+      key: `${family}${version}`,
+      family,
       ttlMs: PROVIDER_CATALOG_TTL_MS,
       force,
       load: () => this.store.loadProvider(principalId, credential.id, version),
@@ -380,7 +416,7 @@ export class ModelCatalogService {
         } catch {
           throw new CatalogSourceError('credential_unavailable');
         }
-        return await fetchProviderModels(this.options.http, provider, secret);
+        return await fetchProviderModels(this.options.http, provider, { secret, authMode: credential.authMode }, { now: this.now });
       },
       save: (snapshot) => this.store.saveProvider(principalId, credential.id, version, provider, snapshot)
     });

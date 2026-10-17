@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  HarnessError, MetadataRunnerRequestSchema, listModelProviders, qualifiedToolName,
+  HarnessError, MetadataRunnerRequestSchema, ModelCatalogRefreshResultSchema, ModelCatalogSearchResultSchema,
+  listModelProviders, qualifiedToolName,
   type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse
 } from '@cloud-harness/contracts';
 import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
@@ -517,8 +518,8 @@ export class DashboardControlService {
           return ok('Agent model profile deleted', { deleted: true });
         }
         case 'model_provider_list': return ok('Model providers listed', { providers: listModelProviders() });
-        case 'model_catalog_search': return ok('Model catalog searched', await this.catalog().search(principalId, parsed.input));
-        case 'model_catalog_refresh': return ok('Model catalog refreshed', await this.catalog().refresh(principalId, parsed.input));
+        case 'model_catalog_search': return ok('Model catalog searched', ModelCatalogSearchResultSchema.parse(await this.catalog().search(principalId, parsed.input)));
+        case 'model_catalog_refresh': return ok('Model catalog refreshed', ModelCatalogRefreshResultSchema.parse(await this.catalog().refresh(principalId, parsed.input)));
         case 'model_config_status': {
           const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
           const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;

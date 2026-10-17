@@ -209,4 +209,16 @@ describe('ModelProfileStateRepository', () => {
     expect(repo.getCredential(p2, cred.id)).toBeUndefined();
     expect(() => repo.decryptCredentialSecret(p2, cred.id)).toThrow('was not found');
   });
+
+  it('refuses to decrypt a credential that is not active', () => {
+    const { store, repo, p1 } = setup();
+    const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-inactive-secret' });
+    const setStatus = store.database.prepare('UPDATE model_provider_credentials SET status = ? WHERE id = ?');
+    for (const status of ['DISABLED', 'REVOKED']) {
+      setStatus.run(status, cred.id);
+      expect(() => repo.decryptCredentialSecret(p1, cred.id)).toThrow('was not found');
+    }
+    setStatus.run('ACTIVE', cred.id);
+    expect(repo.decryptCredentialSecret(p1, cred.id).secret).toBe('sk-inactive-secret');
+  });
 });

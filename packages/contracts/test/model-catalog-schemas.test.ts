@@ -12,7 +12,7 @@ import {
 const unknownPrice = {
   inputMicrosPerMillionTokens: null,
   outputMicrosPerMillionTokens: null,
-  provenance: { source: 'provider', sourceModelId: null, retrievedAt: null, confidence: 'unknown' },
+  provenance: { source: 'none', sourceModelId: null, retrievedAt: null, confidence: 'unknown' },
   hasConditionalPricing: false
 } as const;
 

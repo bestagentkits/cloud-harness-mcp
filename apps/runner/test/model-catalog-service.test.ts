@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HarnessError, ModelCatalogSearchInputSchema, ModelCatalogSearchResultSchema, type ModelCatalogSearchInput } from '@cloud-harness/contracts';
+import { CatalogSourceError } from '../src/model-catalog/catalog-source.js';
 import {
-  CATALOG_FAILURE_BACKOFF_MS, CATALOG_REFRESH_INTERVAL_MS, ModelCatalogService, OPENROUTER_CATALOG_TTL_MS, PROVIDER_CATALOG_TTL_MS
+  CATALOG_FAILURE_BACKOFF_MS, CATALOG_REFRESH_INTERVAL_MS, ModelCatalogService, OPENROUTER_CATALOG_TTL_MS, PROVIDER_CATALOG_TTL_MS,
+  SourceCache, type SourceRequest
 } from '../src/model-catalog/model-catalog-service.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
 import type { ProviderHttpClient, ProviderHttpRequest, ProviderHttpResponse } from '../src/model-provider-http.js';
@@ -90,7 +92,7 @@ describe('ModelCatalogService', () => {
 
   it('merges a credential listing with OpenRouter metadata without sending OpenRouter IDs to the vendor', async () => {
     const { repo, p1, http, service } = setup();
-    const credential = repo.createCredential(p1, { label: 'Anthropic', provider: 'anthropic', apiKey: 'sk-ant-secret-value' });
+    const credential = repo.createCredential(p1, { label: 'Anthropic', provider: 'anthropic', authMode: 'x-api-key', apiKey: 'sk-ant-secret-value' });
     const result = await service().search(p1, search({ provider: 'anthropic', credentialId: credential.id }));
     expect(result.entries).toEqual([{
       provider: 'anthropic',
@@ -116,6 +118,15 @@ describe('ModelCatalogService', () => {
     expect(JSON.stringify(result)).not.toContain('sk-ant-secret-value');
   });
 
+  it('sends an Anthropic credential with the auth header it was stored with', async () => {
+    const { repo, p1, http, service } = setup();
+    const credential = repo.createCredential(p1, { label: 'Anthropic', provider: 'anthropic', authMode: 'bearer', apiKey: 'sk-ant-bearer-value' });
+    const result = await service().search(p1, search({ provider: 'anthropic', credentialId: credential.id }));
+    expect(result.entries.map((entry) => entry.availability)).toEqual(['listed_for_credential']);
+    const vendorCalls = http.calls.filter((call) => new URL(call.url).hostname === 'api.anthropic.com');
+    expect(vendorCalls.map((call) => call.headers)).toEqual([{ authorization: 'Bearer sk-ant-bearer-value', 'anthropic-version': '2023-06-01' }]);
+  });
+
   it('keeps unmatched vendor models with unknown price and capability, and never guesses an absent capability', async () => {
     const { repo, p1, service } = setup();
     const credential = repo.createCredential(p1, { label: 'DeepSeek', provider: 'deepseek', apiKey: 'sk-deepseek-secret' });
@@ -130,7 +141,7 @@ describe('ModelCatalogService', () => {
     expect(reasoner).toMatchObject({
       providerModelId: 'deepseek-reasoner', canonicalModelId: null, displayName: 'deepseek-reasoner',
       capabilities: { tools: 'unknown', reasoning: 'unknown', vision: 'unknown' },
-      pricing: { inputMicrosPerMillionTokens: null, outputMicrosPerMillionTokens: null, provenance: { source: 'provider', sourceModelId: null, confidence: 'unknown' } }
+      pricing: { inputMicrosPerMillionTokens: null, outputMicrosPerMillionTokens: null, provenance: { source: 'none', sourceModelId: null, confidence: 'unknown' } }
     });
   });
 
@@ -302,10 +313,52 @@ describe('ModelCatalogService', () => {
     expect(refreshed).toMatchObject({ entryCount: 6, freshness: { state: 'fresh' } });
     expect(http.count('openrouter.ai')).toBe(2);
     await expect(catalog.refresh(p1, { provider: 'openrouter' })).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
-    await catalog.refresh(p2, { provider: 'openrouter' });
-    expect(http.count('openrouter.ai')).toBe(3);
+    // Another principal may refresh, but the shared public source is not forced again within the window.
+    await expect(catalog.refresh(p2, { provider: 'openrouter' })).resolves.toMatchObject({ entryCount: 6 });
+    expect(http.count('openrouter.ai')).toBe(2);
     clock.now += CATALOG_REFRESH_INTERVAL_MS;
     await catalog.refresh(p1, { provider: 'openrouter' });
-    expect(http.count('openrouter.ai')).toBe(4);
+    expect(http.count('openrouter.ai')).toBe(3);
+  });
+
+  it('forces each credential listing but not the shared OpenRouter source when credentials are cycled', async () => {
+    const { repo, p1, http, service } = setup();
+    const catalog = service();
+    const credentials = ['One', 'Two', 'Three'].map((label) => repo.createCredential(p1, { label, provider: 'openai', apiKey: `sk-${label.toLowerCase()}` }));
+    for (const credential of credentials) await catalog.search(p1, search({ provider: 'openai', credentialId: credential.id }));
+    expect([http.count('api.openai.com'), http.count('openrouter.ai')]).toEqual([3, 1]);
+    for (const credential of credentials) await catalog.refresh(p1, { provider: 'openai', credentialId: credential.id });
+    expect([http.count('api.openai.com'), http.count('openrouter.ai')]).toEqual([6, 2]);
+  });
+});
+
+describe('SourceCache', () => {
+  const clock = { now: 1_800_000_000_000 };
+  const request = (overrides: Partial<SourceRequest<string>>): SourceRequest<string> => ({
+    source: 'provider', key: 'p\u0000c\u00001', ttlMs: 1_000, force: false,
+    load: () => undefined, fetch: async () => ['model'], save: () => undefined,
+    ...overrides
+  });
+
+  it('retries after a fetch that fails synchronously instead of pinning the failure as in flight', async () => {
+    const cache = new SourceCache<string>(() => clock.now);
+    const failed = await cache.get(request({ fetch: () => { throw new CatalogSourceError('network'); } }));
+    expect(failed.status).toMatchObject({ state: 'unavailable', error: 'network' });
+    clock.now += CATALOG_FAILURE_BACKOFF_MS;
+    const recovered = await cache.get(request({}));
+    expect(recovered.status).toMatchObject({ state: 'fresh', error: null });
+    expect(recovered.snapshot?.entries).toEqual(['model']);
+  });
+
+  it('evicts superseded versions of a listing and every entry under a removed prefix', async () => {
+    const cache = new SourceCache<string>(() => clock.now);
+    const family = 'p\u0000c\u0000';
+    await cache.get(request({ key: `${family}1`, family }));
+    await cache.get(request({ key: 'p\u0000other\u00001', family: 'p\u0000other\u0000' }));
+    expect(cache.size).toBe(2);
+    await cache.get(request({ key: `${family}2`, family }));
+    expect(cache.size).toBe(2);
+    cache.evict(family);
+    expect(cache.size).toBe(1);
   });
 });

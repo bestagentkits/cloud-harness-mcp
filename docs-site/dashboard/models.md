@@ -53,10 +53,17 @@ The catalog answers "which models can this credential use, and what do they cost
 profile can be filled from a search instead of typed from memory. The runner builds it from
 two sources and returns only model metadata; the credential never leaves the runner.
 
-| Source | What it proves | Shared? | Kept for |
-| --- | --- | --- | --- |
-| The provider's own models endpoint, called with the selected credential | The model is available to that key (`listed_for_credential`) | No: only the principal that owns the credential, and only for its current key version | 1 hour |
-| OpenRouter's public models list | Display names, context and output limits, capabilities, and prices | Yes: it is public metadata | 6 hours |
+| Source | What it proves | Shared? |
+| --- | --- | --- |
+| The provider's own models endpoint, called with the selected credential and the auth header it was saved with | The model is available to that key (`listed_for_credential`) | No: only the principal that owns the credential, and only for its current key version |
+| OpenRouter's public models list | Display names, context and output limits, capabilities, and prices | Yes: it is public metadata |
+
+The provider listing is cached for a shorter time than the public list because it changes
+with your account. The cache lifetimes, failure backoff, fetch deadline, and refresh limits
+are owned by
+[`apps/runner/src/model-catalog/model-catalog-service.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/apps/runner/src/model-catalog/model-catalog-service.ts)
+and
+[`apps/runner/src/model-catalog/provider-catalog.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/apps/runner/src/model-catalog/provider-catalog.ts).
 
 - **OpenRouter credentials** list OpenRouter's models directly, and their prices are the ones
   OpenRouter bills: confidence `exact`.
@@ -65,11 +72,14 @@ two sources and returns only model metadata; the credential never leaves the run
   OpenRouter `vendor/model` ID (`canonicalModelId`), and its price is labelled `estimate`
   because the vendor bills you, not OpenRouter. OpenRouter IDs are never sent to a vendor.
 - **Without a credential**, or when the vendor listing fails, OpenRouter's public entries for
-  that vendor stand in with availability `public_catalog`. Their IDs follow OpenRouter's
-  naming, so verify the model before saving a profile.
+  that vendor stand in with availability `public_catalog`. These IDs are unverified: they
+  are OpenRouter's naming with the vendor prefix removed, and nothing has confirmed that your
+  key can call them. Check a `public_catalog` model against the provider before saving a
+  profile with it; the profile wizard enforces that check.
 - **Custom providers** have no catalog; enter the model ID yourself.
 
-Every price carries its provenance: the source (`provider`, `openrouter`, or `user`), the
+Every price carries its provenance: the source (`provider`, `openrouter`, `user`, or `none`
+when no source published a price), the
 source model ID, when it was retrieved, and its confidence (`exact`, `estimate`, or
 `unknown`). An unknown price is `null`, never zero, so a missing price is never treated as
 free. `hasConditionalPricing` marks models whose price changes with conditions such as a long
@@ -82,12 +92,16 @@ Each result reports `freshness` per source. `fresh` means every source answered 
 time-to-live. `stale` means at least one source failed and the last good copy, kept across
 runner restarts, is being served; the source shows an error category such as
 `authentication`, `rate_limited`, or `timeout`. `unavailable` means there is nothing to show
-yet. After a failure the runner waits a minute before asking that source again.
+yet. After a failure the runner backs off before asking that source again. A credential that
+is disabled or revoked is never sent to the provider; its listing reports
+`credential_unavailable`.
 
 The dashboard reads the catalog at `GET /api/v1/model-catalog` (query parameters `provider`,
 `credentialId`, `q`, `cursor`, `limit`, `capability`) and forces a refresh with
-`POST /api/v1/model-catalog/refresh`. A refresh skips the time-to-live and is limited to once
-every 30 seconds per provider and credential. Schemas live in
+`POST /api/v1/model-catalog/refresh`. A refresh skips the cache and is rate limited per
+provider and credential. The public OpenRouter list is shared, so it has its own limit:
+refreshing several credentials in a row re-fetches each credential's listing but forces the
+public list only once per window. Schemas live in
 [`packages/contracts/src/model-catalog-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-catalog-schemas.ts).
 
 ## Configuring Model Profiles

@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import type { ModelProviderKind } from '@cloud-harness/contracts';
 import { CatalogSourceError } from '../src/model-catalog/catalog-source.js';
 import { fetchOpenRouterModels, normalizeOpenRouterModels } from '../src/model-catalog/openrouter-catalog.js';
-import { fetchProviderModels } from '../src/model-catalog/provider-catalog.js';
+import { PROVIDER_CATALOG_BUDGET_MS, fetchProviderModels, type ProviderCatalogCredential } from '../src/model-catalog/provider-catalog.js';
 import { ProviderHttpError, type ProviderHttpClient, type ProviderHttpRequest, type ProviderHttpResponse } from '../src/model-provider-http.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/openrouter-models-sample.json', import.meta.url), 'utf8')) as unknown;
 const SECRET = 'sk-test-catalog-secret-0123456789';
+const BEARER: ProviderCatalogCredential = { secret: SECRET, authMode: 'bearer' };
+const X_API_KEY: ProviderCatalogCredential = { secret: SECRET, authMode: 'x-api-key' };
 
 function fakeHttp(handler: (request: ProviderHttpRequest) => ProviderHttpResponse | Promise<ProviderHttpResponse>) {
   const calls: ProviderHttpRequest[] = [];
@@ -103,7 +105,7 @@ describe('provider model listing', () => {
     ['google', 'https://generativelanguage.googleapis.com/v1beta/openai/models']
   ])('sends a bearer credential to the %s registry models endpoint', async (provider, url) => {
     const { client, calls } = fakeHttp(() => json({ data: [{ id: 'model-a' }] }));
-    await fetchProviderModels(client, provider, SECRET);
+    await fetchProviderModels(client, provider, BEARER);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(url);
     expect(calls[0]?.headers).toEqual({ authorization: `Bearer ${SECRET}` });
@@ -112,13 +114,13 @@ describe('provider model listing', () => {
 
   it('strips the Gemini models/ prefix so the chat endpoint receives a bare ID', async () => {
     const { client } = fakeHttp(() => json({ object: 'list', data: [{ id: 'models/gemini-2.5-pro', object: 'model' }, { id: 'gemini-2.5-flash' }] }));
-    const models = await fetchProviderModels(client, 'google', SECRET);
+    const models = await fetchProviderModels(client, 'google', BEARER);
     expect(models.map((model) => model.id)).toEqual(['gemini-2.5-pro', 'gemini-2.5-flash']);
   });
 
   it('reads DeepSeek context and output limits', async () => {
     const { client } = fakeHttp(() => json({ data: [{ id: 'deepseek-chat', context_window: 131_072, max_output_tokens: 8_192 }] }));
-    expect(await fetchProviderModels(client, 'deepseek', SECRET)).toEqual([
+    expect(await fetchProviderModels(client, 'deepseek', BEARER)).toEqual([
       { id: 'deepseek-chat', displayName: null, contextWindow: 131_072, maxOutputTokens: 8_192 }
     ]);
   });
@@ -134,7 +136,7 @@ describe('provider model listing', () => {
       }
       return json({ data: [{ id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5' }], has_more: false, last_id: 'claude-haiku-4-5-20251001' });
     });
-    const models = await fetchProviderModels(client, 'anthropic', SECRET);
+    const models = await fetchProviderModels(client, 'anthropic', X_API_KEY);
     expect(models).toEqual([
       { id: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', contextWindow: 200_000, maxOutputTokens: 64_000 },
       { id: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5', contextWindow: null, maxOutputTokens: null }
@@ -145,39 +147,59 @@ describe('provider model listing', () => {
     expect(calls[1]?.url).toBe('https://api.anthropic.com/v1/models?limit=1000&after_id=claude-sonnet-4-5-20250929');
   });
 
+  it('sends an Anthropic bearer credential as an Authorization header', async () => {
+    const { client, calls } = fakeHttp(() => json({ data: [{ id: 'claude-haiku-4-5-20251001' }], has_more: false }));
+    await fetchProviderModels(client, 'anthropic', { secret: SECRET, authMode: 'bearer' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.headers).toEqual({ authorization: `Bearer ${SECRET}`, 'anthropic-version': '2023-06-01' });
+  });
+
+  it('shares one deadline across every page and stops with a timeout once it is spent', async () => {
+    let clock = 0;
+    let page = 0;
+    const { client, calls } = fakeHttp(() => {
+      clock += 10_000;
+      page += 1;
+      return json({ data: [{ id: `claude-${page}` }], has_more: true, last_id: `claude-${page}` });
+    });
+    expect(PROVIDER_CATALOG_BUDGET_MS).toBe(25_000);
+    expect(await categoryOf(fetchProviderModels(client, 'anthropic', X_API_KEY, { now: () => clock }))).toBe('timeout');
+    expect(calls.map((call) => call.timeoutMs)).toEqual([15_000, 15_000, 5_000]);
+  });
+
   it('stops Anthropic pagination after a bounded number of pages', async () => {
     let page = 0;
     const { client, calls } = fakeHttp(() => {
       page += 1;
       return json({ data: [{ id: `claude-${page}` }], has_more: true, last_id: `claude-${page}` });
     });
-    const models = await fetchProviderModels(client, 'anthropic', SECRET);
+    const models = await fetchProviderModels(client, 'anthropic', X_API_KEY);
     expect(calls).toHaveLength(5);
     expect(models).toHaveLength(5);
   });
 
   it('refuses providers without a credential-backed models endpoint', async () => {
     const { client, calls } = fakeHttp(() => json({ data: [] }));
-    expect(await categoryOf(fetchProviderModels(client, 'custom', SECRET))).toBe('upstream_error');
-    expect(await categoryOf(fetchProviderModels(client, 'openrouter', SECRET))).toBe('upstream_error');
+    expect(await categoryOf(fetchProviderModels(client, 'custom', BEARER))).toBe('upstream_error');
+    expect(await categoryOf(fetchProviderModels(client, 'openrouter', BEARER))).toBe('upstream_error');
     expect(calls).toHaveLength(0);
   });
 
   it('never carries the credential or provider text in a failure', async () => {
     const echo = (status: number) => fakeHttp(() => json({ error: { message: `invalid key ${SECRET}` } }, status)).client;
-    expect(await categoryOf(fetchProviderModels(echo(401), 'openai', SECRET))).toBe('authentication');
-    expect(await categoryOf(fetchProviderModels(echo(403), 'anthropic', SECRET))).toBe('authentication');
-    expect(await categoryOf(fetchProviderModels(echo(400), 'google', SECRET))).toBe('authentication');
-    expect(await categoryOf(fetchProviderModels(echo(400), 'openai', SECRET))).toBe('upstream_error');
-    expect(await categoryOf(fetchProviderModels(echo(429), 'deepseek', SECRET))).toBe('rate_limited');
-    expect(await categoryOf(fetchProviderModels(echo(200), 'openai', SECRET))).toBe('invalid_response');
+    expect(await categoryOf(fetchProviderModels(echo(401), 'openai', BEARER))).toBe('authentication');
+    expect(await categoryOf(fetchProviderModels(echo(403), 'anthropic', X_API_KEY))).toBe('authentication');
+    expect(await categoryOf(fetchProviderModels(echo(400), 'google', BEARER))).toBe('authentication');
+    expect(await categoryOf(fetchProviderModels(echo(400), 'openai', BEARER))).toBe('upstream_error');
+    expect(await categoryOf(fetchProviderModels(echo(429), 'deepseek', BEARER))).toBe('rate_limited');
+    expect(await categoryOf(fetchProviderModels(echo(200), 'openai', BEARER))).toBe('invalid_response');
     const throwing = fakeHttp(() => { throw new Error(`socket closed for ${SECRET}`); }).client;
-    expect(await categoryOf(fetchProviderModels(throwing, 'openai', SECRET))).toBe('network');
+    expect(await categoryOf(fetchProviderModels(throwing, 'openai', BEARER))).toBe('network');
   });
 
   it('redacts a credential the provider reflects into model metadata', async () => {
     const { client } = fakeHttp(() => json({ data: [{ id: 'model-a', display_name: `Echo ${SECRET}` }] }));
-    const [model] = await fetchProviderModels(client, 'openai', SECRET);
+    const [model] = await fetchProviderModels(client, 'openai', BEARER);
     expect(model?.displayName).toBe('Echo [redacted]');
   });
 });

@@ -750,7 +750,7 @@ export class ModelProfileStateRepository {
   }
 
   /**
-   * Decrypts the active version of one credential owned by `principalId`, for a
+   * Decrypts the active version of one ACTIVE credential owned by `principalId`, for a
    * runner-side provider request such as catalog discovery. The plaintext must
    * stay inside the runner and never be returned to a caller of an operation.
    */
@@ -760,7 +760,7 @@ export class ModelProfileStateRepository {
       FROM model_provider_credentials c
       JOIN model_provider_credential_versions v
         ON v.credential_id = c.id AND v.principal_id = c.principal_id AND v.version = c.active_version
-      WHERE c.id = ? AND c.principal_id = ?
+      WHERE c.id = ? AND c.principal_id = ? AND c.status = 'ACTIVE'
     `).get(credentialId, principalId) as {
       active_version: number; key_version: number; nonce: string; ciphertext: string; auth_tag: string;
     } | undefined;
