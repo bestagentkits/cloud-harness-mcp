@@ -1,3 +1,10 @@
+# [0.69.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.68.0...v0.69.0) (2026-10-17)
+
+
+### Features
+
+* **models:** price OpenCode Go catalog models from models.dev ([72a61b4](https://github.com/bestagentkits/cloud-harness-mcp/commit/72a61b4753f2e0d3ef8fa8a15913447290ae72c5))
+
 # [0.68.0](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.67.0...v0.68.0) (2026-10-17)
 
 
