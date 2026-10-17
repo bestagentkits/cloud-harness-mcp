@@ -50,29 +50,50 @@ function privateIpv4(address: string): boolean {
     (first === 203 && second === 0 && third === 113) || first >= 224;
 }
 
+/** Expands an IPv6 literal (compressed or with an embedded IPv4 tail) into eight 16-bit words. */
+function ipv6Words(address: string): number[] | undefined {
+  let text = address;
+  const tail: number[] = [];
+  const lastColon = text.lastIndexOf(':');
+  const embedded = text.slice(lastColon + 1);
+  if (isIP(embedded) === 4) {
+    const octets = embedded.split('.').map(Number);
+    tail.push(((octets[0] ?? 0) << 8) | (octets[1] ?? 0), ((octets[2] ?? 0) << 8) | (octets[3] ?? 0));
+    text = `${text.slice(0, lastColon + 1)}0`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return undefined;
+  const parse = (part: string | undefined): number[] =>
+    part === undefined || part === '' ? [] : part.split(':').map((word) => Number.parseInt(word, 16));
+  const head = parse(halves[0]);
+  const rest = parse(halves[1]);
+  if (tail.length > 0) (rest.length > 0 ? rest : head).pop();
+  const explicit = [...head, ...rest, ...tail];
+  const words = halves.length === 2
+    ? [...head, ...new Array<number>(8 - explicit.length).fill(0), ...rest, ...tail]
+    : explicit;
+  return words.length === 8 && words.every((word) => Number.isInteger(word) && word >= 0 && word <= 0xffff) ? words : undefined;
+}
+
+// Mirrors the model gateway's isUnsafeAddress so the runner refuses exactly the
+// upstream addresses the gateway would refuse.
 export function isUnsafeProviderAddress(address: string): boolean {
   const normalized = address.toLowerCase().split('%', 1)[0] ?? address.toLowerCase();
   if (isIP(normalized) === 4) return privateIpv4(normalized);
   if (isIP(normalized) === 6) {
-    if (normalized.startsWith('::ffff:')) {
-      const mapped = normalized.slice(7);
-      if (isIP(mapped) === 4) return privateIpv4(mapped);
-      const words = mapped.split(':');
-      if (words.length === 2) {
-        const high = Number.parseInt(words[0] ?? '', 16);
-        const low = Number.parseInt(words[1] ?? '', 16);
-        if (Number.isInteger(high) && Number.isInteger(low)) {
-          return privateIpv4(`${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`);
-        }
-      }
-    }
-    return normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') ||
-      normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb') ||
-      normalized.startsWith('ff') || normalized.startsWith('2001:db8:') || normalized.startsWith('2001:2:') ||
-      normalized.startsWith('100:') ||
-      // NAT64 (64:ff9b::/96, 64:ff9b:1::/48) and 6to4 (2002::/16) embed an
-      // IPv4 address the gateway would reach; refuse the prefixes outright.
-      normalized.startsWith('64:ff9b:') || normalized.startsWith('2002:');
+    const words = ipv6Words(normalized);
+    if (words === undefined) return true;
+    const [w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0, w5 = 0] = words;
+    const zeroPrefix = w0 === 0 && w1 === 0 && w2 === 0 && w3 === 0;
+    // Every prefix that embeds or tunnels an IPv4 address is refused outright:
+    // IPv4-compatible (::/96, which also covers :: and ::1), IPv4-mapped
+    // (::ffff:0:0/96), SIIT (::ffff:0:0:0/96), NAT64 (64:ff9b::/96,
+    // 64:ff9b:1::/48), 6to4 (2002::/16), and Teredo (2001::/32).
+    if (zeroPrefix && ((w4 === 0 && (w5 === 0 || w5 === 0xffff)) || (w4 === 0xffff && w5 === 0))) return true;
+    if (w0 === 0x64 && w1 === 0xff9b && (w2 === 1 || (w2 === 0 && w3 === 0 && w4 === 0 && w5 === 0))) return true;
+    if (w0 === 0x2002 || (w0 === 0x2001 && w1 === 0)) return true;
+    return (w0 & 0xfe00) === 0xfc00 || (w0 & 0xffc0) === 0xfe80 || (w0 & 0xff00) === 0xff00 ||
+      (w0 === 0x2001 && (w1 === 0xdb8 || w1 === 2)) || w0 === 0x100;
   }
   return true;
 }

@@ -13,7 +13,7 @@ import { DashboardControlService } from '../src/dashboard-control-service.js';
 import { MetadataStore } from '../src/metadata-store.js';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
 import { ProviderHttpError, type ProviderHttpClient, type ProviderHttpRequest, type ProviderHttpResponse } from '../src/model-provider-http.js';
-import { ModelConnectionVerifier, type VerificationAudit } from '../src/model-verification/model-connection-verifier.js';
+import { ModelConnectionVerifier, chatOutputCap, type VerificationAudit } from '../src/model-verification/model-connection-verifier.js';
 import { VerificationRateLimiter } from '../src/model-verification/verification-rate-limiter.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore, downgradeStateSchemaToV10, downgradeStateSchemaToV11, downgradeStateSchemaToV8, downgradeStateSchemaToV9 } from '../src/state-store.js';
@@ -177,6 +177,11 @@ describe('model connection verifier', () => {
       expect(inference).not.toHaveProperty(other);
       expect(tool).not.toHaveProperty(other);
     }
+  });
+
+  it('uses max_completion_tokens for a custom upstream on api.openai.com, like the gateway', () => {
+    expect(chatOutputCap('custom', 'https://api.openai.com/v1/chat/completions', 16)).toEqual({ max_completion_tokens: 16 });
+    expect(chatOutputCap('custom', 'https://llm.example.com/v1/chat/completions', 16)).toEqual({ max_tokens: 16 });
   });
 
   it('audits the credential generation and keeps the key version as a detail', async () => {

@@ -104,11 +104,14 @@ function credentialHeaders(style: HeaderStyle, secret: string): Record<string, s
 
 /**
  * The Chat Completions output cap, named as the model gateway names it: OpenAI
- * takes `max_completion_tokens` (its reasoning models refuse `max_tokens`),
+ * (the provider, or a custom upstream on api.openai.com) takes
+ * `max_completion_tokens` because its reasoning models refuse `max_tokens`;
  * every other provider takes `max_tokens`.
  */
-export function chatOutputCap(provider: ModelProviderKind, tokens: number): { max_completion_tokens: number } | { max_tokens: number } {
-  return provider === 'openai' ? { max_completion_tokens: tokens } : { max_tokens: tokens };
+export function chatOutputCap(provider: ModelProviderKind, upstreamUrl: string, tokens: number): { max_completion_tokens: number } | { max_tokens: number } {
+  let host = '';
+  try { host = new URL(upstreamUrl).hostname.toLowerCase(); } catch { /* the request itself reports a bad URL */ }
+  return provider === 'openai' || host === 'api.openai.com' ? { max_completion_tokens: tokens } : { max_tokens: tokens };
 }
 
 function normalizeModelId(id: string): string {
@@ -419,7 +422,7 @@ export class ModelConnectionVerifier {
       return { protocol: exhausted, streaming: { ...exhausted, name: 'streaming_inference' } };
     }
     const body = target.apiMode === 'chat-completions'
-      ? { model: target.model, messages: [{ role: 'user', content: PROMPT }], ...chatOutputCap(provider, INFERENCE_MAX_OUTPUT_TOKENS), stream: true, stream_options: { include_usage: true } }
+      ? { model: target.model, messages: [{ role: 'user', content: PROMPT }], ...chatOutputCap(provider, target.upstreamUrl(), INFERENCE_MAX_OUTPUT_TOKENS), stream: true, stream_options: { include_usage: true } }
       : { model: target.model, input: PROMPT, max_output_tokens: INFERENCE_MAX_OUTPUT_TOKENS, stream: true };
     const probe = createStreamProbe(target.apiMode);
     let response: ProviderHttpResponse;
@@ -488,7 +491,7 @@ export class ModelConnectionVerifier {
     const prompt = `Call ${TOOL_NAME} with status "ok".`;
     const body = target.apiMode === 'chat-completions'
       ? {
-        model: target.model, messages: [{ role: 'user', content: prompt }], ...chatOutputCap(provider, TOOL_MAX_OUTPUT_TOKENS), stream: false,
+        model: target.model, messages: [{ role: 'user', content: prompt }], ...chatOutputCap(provider, target.upstreamUrl(), TOOL_MAX_OUTPUT_TOKENS), stream: false,
         tools: [{ type: 'function', function: { name: TOOL_NAME, description, parameters } }],
         tool_choice: { type: 'function', function: { name: TOOL_NAME } }
       }

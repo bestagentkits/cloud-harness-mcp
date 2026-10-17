@@ -34,6 +34,13 @@ describe('model provider HTTP policy', () => {
     expect(isUnsafeProviderAddress('2606:4700::1111')).toBe(false);
   });
 
+  it('refuses IPv4-compatible, SIIT and Teredo prefixes and malformed IPv6, matching the gateway', () => {
+    for (const address of ['::', '::a00:1', '::808:808', '::ffff:0:a00:1', '::ffff:0:808:808', '2001:0:4136:e378::1', '0:0:0:0:0:ffff:7f00:1', '1:2:3:4:5:6:7:8:9']) {
+      expect(isUnsafeProviderAddress(address)).toBe(true);
+    }
+    expect(isUnsafeProviderAddress('2001:4860:4860::8888')).toBe(false);
+  });
+
   it('refuses NAT64 and 6to4 prefixes that embed an IPv4 address', () => {
     for (const address of ['64:ff9b::a00:1', '64:ff9b::7f00:1', '64:ff9b::808:808', '64:ff9b:1::a9fe:a9fe', '2002:a00:1::1', '2002:7f00:1::', '2002:808:808::1']) {
       expect(isUnsafeProviderAddress(address)).toBe(true);
