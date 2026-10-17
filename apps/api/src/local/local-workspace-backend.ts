@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
-import { applyGuidanceActivity, sanitizeAndAttributeProvenance, type GuidanceProfile, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
+import { applyGuidanceActivity, isModelToolOperation, sanitizeAndAttributeProvenance, type GuidanceProfile, type RunnerOperation, type RunnerResponse } from '@cloud-harness/contracts';
 import type { OperationBackend } from '../operation-backend.js';
 import type { CliOptions } from '../cli-options.js';
 import { LocalPathPolicy } from './local-path-policy.js';
@@ -155,6 +155,11 @@ export class LocalWorkspaceBackend implements OperationBackend {
 
     if (operation.startsWith('packages_')) {
       const message = `${operation} is unsupported in local mode because managed toolbox packages need the remote runner's isolated builder and release store; install project tools in the workspace instead`;
+      return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
+    }
+
+    if (isModelToolOperation(operation)) {
+      const message = `${operation} is unsupported in local mode because model profiles live in the remote runner; use the remote MCP endpoint or the Dashboard`;
       return { ok: false, message, error: { code: 'INVALID_INPUT', message, retryable: false }, truncated: false };
     }
 

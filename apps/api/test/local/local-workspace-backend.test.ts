@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { MODEL_TOOL_OPERATIONS } from '@cloud-harness/contracts';
 import { LocalWorkspaceBackend } from '../../src/local/local-workspace-backend.js';
 import type { CliOptions } from '../../src/cli-options.js';
 
@@ -208,6 +209,15 @@ describe('LocalWorkspaceBackend', () => {
       expect(res.ok, operation).toBe(false);
       expect(res.error?.code, operation).toBe('INVALID_INPUT');
       expect(res.message, operation).toContain('unsupported in local mode');
+    }
+  });
+
+  it('refuses every model tool in local mode because profiles live in the remote runner', async () => {
+    for (const operation of MODEL_TOOL_OPERATIONS) {
+      const res = await backend.call(operation, { workspaceId: backend.workspaceId });
+      expect(res.ok, operation).toBe(false);
+      expect(res.error?.code, operation).toBe('INVALID_INPUT');
+      expect(res.message, operation).toContain(`${operation} is unsupported in local mode`);
     }
   });
 

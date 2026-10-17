@@ -1358,7 +1358,7 @@ describe('model spend policies over the dashboard API', () => {
       store.close();
       await rm(root, { recursive: true, force: true });
     };
-    return { store, metadata, repo, port, close };
+    return { store, metadata, repo, controls, port, close };
   }
 
   it('refuses the next spawn over a policy set through the dashboard API, and reports it in the summary', async () => {
@@ -1467,6 +1467,90 @@ describe('model spend policies over the dashboard API', () => {
       expect(repo.listProfiles(principalId)).toEqual([expect.objectContaining({ generation: 1, activeRevisionId: saved.activeRevisionId })]);
       expect(metadata.listAudit(principalId).filter((event) => event.action.startsWith('model_profile.'))).toEqual([]);
       expect(JSON.stringify([validated.json, stale.json])).not.toContain('sk-validate-key-123');
+    } finally {
+      await close();
+    }
+  });
+
+  it('spawns from a profile created over MCP only after the owner activates it, and leaves raised limits to the Dashboard', async () => {
+    const { store, metadata, repo, controls, port, close } = await startDashboard();
+    try {
+      const principalId = store.resolvePrincipal(dashboardPrincipal);
+      const credential = repo.createCredential(principalId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-mcp-profile-key-123' });
+      const limits = { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000 };
+      const created = await controls.executeModelTool(dashboardPrincipal, 'model_profile_create', {
+        profileId: 'coding', displayName: 'Coding', credentialId: credential.id, model: 'gpt-5', apiMode: 'chat-completions',
+        pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 }, limits, maxProxyOperations: ['files_read'],
+        idempotencyKey: 'mcp-create-key-1'
+      });
+      expect(created.data).toMatchObject({ profile: { status: 'DISABLED', generation: 1 }, activation: 'dashboard_required' });
+
+      const agentConfig = RunnerAgentsConfigSchema.parse({
+        image: 'agent:test', gatewayUrl: 'http://model-gateway:3210',
+        profiles: [{
+          id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5',
+          inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000,
+          maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000, maxProxyOperations: ['files_read']
+        }]
+      });
+      const leases: Array<{ profileId: string }> = [];
+      const manager = new AgentManager(agentConfig, store, {
+        repository: new AgentStateRepository(store.database, agentConfig.limits, store.instanceId()),
+        gateway: {
+          gatewayContainer: async () => 'gateway-container',
+          issue: async (input: { profileId: string }) => { leases.push(input); return { ...input, lease: `lease_${'y'.repeat(48)}` }; },
+          revokeAndDrain: async () => {}, cancelAndDrain: async () => {}
+        } as unknown as AgentGatewayControl,
+        launcher: { launch: async () => {}, stop: async () => {}, reconcile: async () => {} } as unknown as AgentLauncher,
+        modelProfiles: repo,
+        toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+      });
+      await manager.start();
+      const now = Date.now();
+      const workspace = {
+        id: `ws_${'m'.repeat(24)}`, ownerId: principalId, idempotencyKey: 'workspace-key-mcp',
+        repositoryUrl: 'https://github.com/org/repo.git', repositoryRef: null, containerName: 'executor', workspacePath: '/tmp/ws-mcp',
+        environmentId: null, status: 'ACTIVE' as const, networkProfile: 'network-none' as const,
+        createdAt: now, lastActivityAt: now, expiresAt: now + 600_000, hardExpiresAt: now + 3_600_000,
+        gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null
+      };
+      store.create(workspace);
+      const spawn = (idempotencyKey: string) => manager.dispatch(principalId, workspace, 'agent_spawn', {
+        workspaceId: workspace.id, prompt: 'inspect', idempotencyKey, profileId: 'coding', proxyOperations: ['files_read'],
+        ttlSeconds: 60, maxOutputBytes: 65_536, maxInputTokens: 50_000, maxOutputTokens: 10_000, maxCostMicros: 1_000_000
+      });
+      try {
+        // A disabled profile cannot run an agent.
+        await expect(spawn('spawn-before-activate')).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+        expect(leases).toEqual([]);
+
+        const sessionReply = await send(port, '/session');
+        const session = { token: String(sessionReply.json.csrfToken), cookie: String(sessionReply.json.cookie) };
+        const activated = await send(port, '/agent-model-profiles/coding/activate', 'POST', { expectedGeneration: 1 }, session);
+        expect(activated.status).toBe(200);
+        expect(activated.json.data).toMatchObject({ status: 'ACTIVE', generation: 2 });
+        await expect(spawn('spawn-after-activate')).resolves.toMatchObject({ ok: true });
+        expect(leases.map((lease) => lease.profileId)).toEqual([(activated.json.data as { activeRevisionId: string }).activeRevisionId]);
+
+        // Raising the cost limit needs the owner: MCP is refused, and the Dashboard saves it.
+        await expect(controls.executeModelTool(dashboardPrincipal, 'model_profile_update', {
+          profileId: 'coding', expectedGeneration: 2, limits: { ...limits, maxCostMicros: 4_000_000 }, idempotencyKey: 'mcp-update-key-1'
+        })).rejects.toMatchObject({ code: 'OWNER_APPROVAL_REQUIRED' });
+        expect(repo.listProfiles(principalId)).toEqual([expect.objectContaining({ generation: 2 })]);
+        const raised = await send(port, '/agent-model-profiles/coding', 'PATCH', { expectedGeneration: 2, limits: { ...limits, maxCostMicros: 4_000_000 } }, session);
+        expect(raised.status).toBe(200);
+        expect(raised.json.data).toMatchObject({ generation: 3, activeRevision: { limits: { maxCostMicros: 4_000_000 } } });
+
+        const actors = metadata.listAudit(principalId).filter((event) => event.action.startsWith('model_profile.')).reverse()
+          .map((event) => [event.action, event.details.actor]);
+        expect(actors).toEqual([
+          ['model_profile.created', 'mcp'], ['model_profile.activated', 'dashboard'],
+          ['model_profile.change_refused', 'mcp'], ['model_profile.updated', 'dashboard']
+        ]);
+        expect(JSON.stringify([created, activated.json, raised.json])).not.toContain('sk-mcp-profile-key-123');
+      } finally {
+        await manager.stop();
+      }
     } finally {
       await close();
     }

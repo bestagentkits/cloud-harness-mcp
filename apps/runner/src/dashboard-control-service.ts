@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   HarnessError, MetadataRunnerRequestSchema, ModelCatalogRefreshResultSchema, ModelCatalogSearchResultSchema,
-  ModelProfileValidateResultSchema, listModelProviders, qualifiedToolName,
+  ModelProfileValidateResultSchema, TOOL_SCHEMA_BY_NAME, listModelProviders, qualifiedToolName,
   type AgentModelPricing, type AgentModelProfileInput, type AgentModelProfileMetadata, type AgentModelProfileUpdateInput,
-  type MetadataRunnerRequest, type ModelCatalogPriceRef, type ModelProfileEscalation, type ModelProfileValidateInput,
-  type ModelProfileValidateResult, type RunnerConfig, type RunnerResponse
+  type MetadataRunnerRequest, type ModelCatalogPriceRef, type ModelConnectionVerifyInput, type ModelProfileCreateToolInput,
+  type ModelProfileEscalation, type ModelProfileUpdateToolInput, type ModelProfileValidateInput,
+  type ModelProfileValidateResult, type ModelSpendSummaryToolResult, type ModelToolOperation, type RunnerConfig,
+  type RunnerPrincipalSelector, type RunnerResponse
 } from '@cloud-harness/contracts';
 import { ArtifactStoreError, type ArtifactStore } from './artifact-store.js';
 import type { GitHubBindingService } from './github-binding-service.js';
@@ -61,7 +63,11 @@ import type { WorkspaceService } from './workspace-service.js';
 import type {
   ModelProfileStateRepository, ProfileChangeRecorder, ProfileRevisionOptions, ProfileRevisionPlan
 } from './model-profile-state-repository.js';
-import { profileAuditDetails, profileChangeRefusedDetails, profileEscalations, type ModelChangeActor } from './model-profile-guard.js';
+import {
+  customUpstreamBound, profileAuditDetails, profileChangeRefusedDetails, profileEscalations, type ModelChangeActor
+} from './model-profile-guard.js';
+import { ModelToolIdempotencyStore, modelToolFingerprint } from './model-tool-idempotency.js';
+import { ProfileChangeRefusal, modelToolResult, ownerApprovalRequired } from './model-tool-operations.js';
 import { ModelCatalogService } from './model-catalog/model-catalog-service.js';
 import { reviewPricing, savedPriceProvenance } from './model-catalog/pricing-review.js';
 import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
@@ -545,12 +551,7 @@ export class DashboardControlService {
         case 'model_catalog_search': return ok('Model catalog searched', ModelCatalogSearchResultSchema.parse(await this.catalog().search(principalId, parsed.input)));
         case 'model_catalog_refresh': return ok('Model catalog refreshed', ModelCatalogRefreshResultSchema.parse(await this.catalog().refresh(principalId, parsed.input)));
         case 'model_connection_verify': return ok('Model connection checked', await this.verifier().verify(principalId, parsed.input, 'dashboard'));
-        case 'model_spend_summary': {
-          const summary = this.spend().summary(principalId, Date.now());
-          // Every policy has a window, so the list is built from the same read as the windows and
-          // can never disagree with them.
-          return ok('Model spend summarized', { summary, policies: summary.windows.flatMap((window) => (window.policy ? [window.policy] : [])) });
-        }
+        case 'model_spend_summary': return ok('Model spend summarized', this.spendSummary(principalId));
         case 'model_spend_policy_list': return ok('Model spend policies listed', { policies: this.spend().listPolicies(principalId) });
         case 'model_spend_policy_set': return mutation('Model spend policy saved', this.spend().setPolicy(principalId, parsed.input, Date.now(), {
           // A policy can name only one of the principal's saved profiles when it is created.
@@ -1658,6 +1659,203 @@ export class DashboardControlService {
       principalId, 'model_profile.change_refused', 'model_profile', profileId, generation,
       profileChangeRefusedDetails(actor, attempted, escalations)
     );
+  }
+
+  /* Public MCP model tools. They reuse the Dashboard's helpers on this one instance, so the
+   * plan, prices, catalog cache, verification rate limit, and gateway sync are shared; only
+   * the actor and the owner-approval guard differ. */
+
+  /**
+   * Runs one public model tool for a principal. Reads are not audited. A create is
+   * saved DISABLED, an update keeps the profile's status, and either is refused with
+   * OWNER_APPROVAL_REQUIRED, writing nothing but the refusal's audit entry, when it
+   * would raise spend capacity, widen agent permissions, or send a key to a new host.
+   */
+  async executeModelTool(principal: RunnerPrincipalSelector, operation: ModelToolOperation, input: Record<string, unknown>): Promise<RunnerResponse> {
+    const principalId = this.principals.resolvePrincipal(principal);
+    switch (operation) {
+      case 'model_provider_list': {
+        const { provider } = TOOL_SCHEMA_BY_NAME.model_provider_list.parse(input);
+        return modelToolResult(operation, 'Model providers listed', {
+          providers: listModelProviders().filter((definition) => provider === undefined || definition.id === provider),
+          credentials: this.models().listCredentials(principalId).filter((credential) => provider === undefined || credential.provider === provider)
+        });
+      }
+      case 'model_catalog_search':
+        return modelToolResult(operation, 'Model catalog searched', await this.catalog().search(principalId, TOOL_SCHEMA_BY_NAME.model_catalog_search.parse(input)));
+      case 'model_connection_verify': {
+        const parsed = TOOL_SCHEMA_BY_NAME.model_connection_verify.parse(input);
+        this.assertDraftUpstreamBound(principalId, parsed);
+        return modelToolResult(operation, 'Model connection checked', await this.verifier().verify(principalId, parsed, 'mcp'));
+      }
+      case 'model_profile_list': {
+        const { profileId } = TOOL_SCHEMA_BY_NAME.model_profile_list.parse(input);
+        return modelToolResult(operation, 'Agent model profiles listed', {
+          profiles: this.reviewedProfiles(principalId).filter((profile) => profileId === undefined || profile.id === profileId)
+        });
+      }
+      case 'model_profile_validate':
+        return modelToolResult(operation, 'Agent model profile validated', this.validateProfile(principalId, TOOL_SCHEMA_BY_NAME.model_profile_validate.parse(input)));
+      case 'model_profile_create':
+        return this.createProfileOverMcp(principalId, TOOL_SCHEMA_BY_NAME.model_profile_create.parse(input));
+      case 'model_profile_update':
+        return await this.updateProfileOverMcp(principalId, TOOL_SCHEMA_BY_NAME.model_profile_update.parse(input));
+      case 'model_spend_summary': {
+        const { period } = TOOL_SCHEMA_BY_NAME.model_spend_summary.parse(input);
+        const { summary, policies } = this.spendSummary(principalId);
+        return modelToolResult(operation, 'Model spend summarized', period === undefined
+          ? { summary, policies }
+          : {
+            summary: { ...summary, windows: summary.windows.filter((window) => window.period === period) },
+            policies: policies.filter((policy) => policy.period === period)
+          });
+      }
+      default: {
+        // Reached only by a caller that bypassed the operation type: no other operation runs here.
+        const unknown: never = operation;
+        throw new HarnessError('INVALID_INPUT', `${String(unknown)} is not a model tool`, 400, false);
+      }
+    }
+  }
+
+  /**
+   * Creates a DISABLED profile. The lookup, plan, guard, write, audit, and idempotency
+   * record all run synchronously, with the last three in one transaction, so two
+   * identical calls cannot both write and a crash cannot keep a change without its
+   * record.
+   */
+  private createProfileOverMcp(principalId: string, input: ModelProfileCreateToolInput): RunnerResponse {
+    const operation = 'model_profile_create';
+    const { idempotencyKey, ...profileInput } = input;
+    const fingerprint = modelToolFingerprint(input);
+    const idempotency = this.modelToolIdempotency();
+    const replayed = idempotency.lookup(principalId, operation, idempotencyKey, fingerprint);
+    if (replayed !== undefined) return modelToolResult(operation, 'Agent model profile already created', { ...(replayed as object), replayed: true });
+
+    let created: AgentModelProfileMetadata;
+    try {
+      created = this.models().createProfile(principalId, profileInput, {
+        ...this.createRevisionOptions(principalId, profileInput),
+        initialStatus: 'DISABLED',
+        guard: (plan) => {
+          const escalations = this.planEscalations(principalId, 'create', plan);
+          if (escalations.length > 0) throw new ProfileChangeRefusal(escalations);
+        },
+        record: (database, profile) => {
+          this.auditProfile(database, principalId, 'created', profile, 'mcp');
+          idempotency.record(principalId, operation, idempotencyKey, fingerprint, { profile, activation: 'dashboard_required' });
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof ProfileChangeRefusal)) throw error;
+      // The save's transaction rolled back, so the refusal is recorded on its own.
+      this.auditProfileChangeRefused(principalId, profileInput.profileId, 0, 'mcp', 'create', error.escalations);
+      throw ownerApprovalRequired('create', error.escalations);
+    }
+
+    const data = { profile: this.attachDraftVerificationOverMcp(principalId, operation, idempotencyKey, profileInput.verificationRef, created), activation: 'dashboard_required' };
+    // A DISABLED profile is not in the gateway snapshot, so there is nothing to sync.
+    return modelToolResult(operation, 'Agent model profile created disabled; the owner activates it on the Dashboard', { ...data, replayed: false });
+  }
+
+  /** Writes a new revision, keeping the profile's status. Ordered as a create; see createProfileOverMcp. */
+  private async updateProfileOverMcp(principalId: string, input: ModelProfileUpdateToolInput): Promise<RunnerResponse> {
+    const operation = 'model_profile_update';
+    const { idempotencyKey, profileId, ...change } = input;
+    const fingerprint = modelToolFingerprint(input);
+    const idempotency = this.modelToolIdempotency();
+    const replayed = idempotency.lookup(principalId, operation, idempotencyKey, fingerprint);
+    if (replayed !== undefined) return modelToolResult(operation, 'Agent model profile already updated', { ...(replayed as object), replayed: true });
+
+    let refusedGeneration = change.expectedGeneration;
+    let updated: AgentModelProfileMetadata;
+    try {
+      updated = this.models().updateProfile(principalId, profileId, change, {
+        ...this.updateRevisionOptions(principalId, { ...change, profileId }),
+        guard: (plan) => {
+          const escalations = this.planEscalations(principalId, 'update', plan);
+          if (escalations.length === 0) return;
+          refusedGeneration = plan.current?.generation ?? refusedGeneration;
+          throw new ProfileChangeRefusal(escalations);
+        },
+        record: (database, profile) => {
+          this.auditProfile(database, principalId, 'updated', profile, 'mcp');
+          idempotency.record(principalId, operation, idempotencyKey, fingerprint, { profile });
+        }
+      });
+    } catch (error) {
+      if (error instanceof ProfileChangeRefusal) {
+        this.auditProfileChangeRefused(principalId, profileId, refusedGeneration, 'mcp', 'update', error.escalations);
+        throw ownerApprovalRequired('update', error.escalations);
+      }
+      if (error instanceof HarnessError && error.code === 'CONFLICT') {
+        throw new HarnessError('CONFLICT', 'profile generation conflict: the profile changed since you read it; re-read it with model_profile_list and retry with its generation', 409, false);
+      }
+      throw error;
+    }
+
+    const data = { profile: this.attachDraftVerificationOverMcp(principalId, operation, idempotencyKey, change.verificationRef, updated) };
+    // The gateway serves only ACTIVE profiles. A failed sync keeps the saved state and is
+    // reported by model_config_status, as it is for the Dashboard.
+    if (updated.status === 'ACTIVE') await this.syncGateway();
+    return modelToolResult(operation, 'Agent model profile updated', { ...data, replayed: false });
+  }
+
+  /** Keeps a matching draft check on the saved revision and on the replayable result. */
+  private attachDraftVerificationOverMcp(
+    principalId: string,
+    operation: 'model_profile_create' | 'model_profile_update',
+    idempotencyKey: string,
+    verificationRef: string | undefined,
+    profile: AgentModelProfileMetadata
+  ): AgentModelProfileMetadata {
+    const attached = this.verifier().attachDraftVerification(principalId, verificationRef, profile);
+    if (attached !== profile) {
+      this.modelToolIdempotency().replace(principalId, operation, idempotencyKey, operation === 'model_profile_create'
+        ? { profile: attached, activation: 'dashboard_required' }
+        : { profile: attached });
+    }
+    return attached;
+  }
+
+  /**
+   * Over MCP a draft check may send a Custom key only to an upstream URL one of the
+   * principal's profiles on that credential already uses. A saved profile is checked
+   * at its saved URL, which is bound by definition. An unknown credential, and a URL
+   * on a provider with fixed endpoints, are left to the verifier to refuse.
+   */
+  private assertDraftUpstreamBound(principalId: string, input: ModelConnectionVerifyInput): void {
+    if ('profileId' in input || input.customUpstreamUrl === undefined) return;
+    if (this.models().getCredentialProvider(principalId, input.credentialId) !== 'custom') return;
+    if (customUpstreamBound(input.customUpstreamUrl, this.models().listBoundCustomUpstreams(principalId, input.credentialId))) return;
+    const details: Record<string, string> = {
+      actor: 'mcp', target: 'draft', credentialId: input.credentialId, provider: 'custom', escalations: 'custom_upstream_unbound'
+    };
+    try {
+      details.upstreamHost = new URL(input.customUpstreamUrl).hostname;
+    } catch {
+      // The schema accepted the URL; an unreadable one is simply not named.
+    }
+    // Nothing was sent or written. Like a refused create, the entry carries generation 0.
+    this.metadata.recordAudit(principalId, 'model_connection.refused', 'model_credential', input.credentialId, 0, details);
+    throw ownerApprovalRequired('verify', ['custom_upstream_unbound']);
+  }
+
+  private modelToolIdempotencyStore?: ModelToolIdempotencyStore;
+  /** The records share the state database with the profiles, so they commit in the save's transaction. */
+  private modelToolIdempotency(): ModelToolIdempotencyStore {
+    this.modelToolIdempotencyStore ??= new ModelToolIdempotencyStore(this.principals.database);
+    return this.modelToolIdempotencyStore;
+  }
+
+  /**
+   * The principal's spend windows and the policies that bound them. Every policy has
+   * a window, so the list is built from the same read as the windows and can never
+   * disagree with them.
+   */
+  private spendSummary(principalId: string): ModelSpendSummaryToolResult {
+    const summary = this.spend().summary(principalId, Date.now());
+    return { summary, policies: summary.windows.flatMap((window) => (window.policy ? [window.policy] : [])) };
   }
 
   /** The ledger shares the state database, so it is created on first use rather than wired by the caller. */

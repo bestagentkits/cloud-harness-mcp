@@ -23,7 +23,10 @@ export const RunnerOperationSchema = z.enum([
   'github_action', 'github_read',
   'secrets_list',
   'packages_plan', 'packages_apply', 'packages_list', 'packages_status', 'packages_rollback', 'packages_remove',
-  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list'
+  'agent_spawn', 'agent_status', 'agent_logs', 'agent_message', 'agent_cancel', 'agent_list',
+  'model_provider_list', 'model_catalog_search', 'model_connection_verify',
+  'model_profile_list', 'model_profile_validate', 'model_profile_create', 'model_profile_update',
+  'model_spend_summary'
 ]);
 
 export const ExternalPrincipalSchema = z.object({

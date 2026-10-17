@@ -1,6 +1,6 @@
 ---
 name: cloudharness
-description: "Operate Cloud Harness MCP safely and effectively: open isolated remote coding workspaces with optional environment/secrets injection, inspect capabilities, inspect and edit files, run bounded commands or managed tasks, work with Git, worktrees, and brokered GitHub actions, manage lifecycle recovery, and clean up resources. Use whenever Cloud Harness MCP, cloudharness tools, remote workspaces, or remote coding executor operations are involved."
+description: "Operate Cloud Harness MCP safely and effectively: open isolated remote coding workspaces with optional environment/secrets injection, inspect capabilities, inspect and edit files, run bounded commands or managed tasks, work with Git, worktrees, and brokered GitHub actions, prepare subagent model profiles and read estimated model spend, manage lifecycle recovery, and clean up resources. Use whenever Cloud Harness MCP, cloudharness tools, remote workspaces, or remote coding executor operations are involved."
 ---
 
 # Cloud Harness MCP
@@ -25,6 +25,7 @@ network isolation.
 | Run an automated merge train: branch locks, commit statuses, check runs, review state, workflow dispatch and re-runs | [GitHub merge train](references/github-merge-train.md) |
 | Read/run repository skills, hooks, knowledge (memories & journals), or deployments | [Repository automation](references/repository-automation.md) |
 | Snapshot, list, read, restore, or delete retained artifacts | [Retained artifacts](references/artifacts.md) |
+| Choose a subagent model, check a connection, save an agent model profile, or read estimated model spend | [Models and spend](references/models-and-spend.md) |
 
 Read a reference before using an unfamiliar, destructive, networked, or
 recovery-sensitive operation. The references are bundled with this skill and do
@@ -93,8 +94,10 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    open a separate `network-none` workspace for `agent_spawn`. A spawn the
    owner's estimated model spend policy cannot fit fails with non-retryable
    `LIMIT_EXCEEDED`; lower `maxCostMicros` or wait for running agents to
-   finish rather than retrying unchanged. No MCP tool changes policies; only
-   the owner can, through the dashboard. Workspaces
+   finish rather than retrying unchanged. `model_spend_summary` shows the
+   headroom; no MCP tool changes policies, only the owner can, through the
+   dashboard. A profile you save with `model_profile_create` stays disabled
+   until the owner activates it. Workspaces
    automatically inherit active **Global Secrets** for your signed-in identity.
    When project-specific environment credentials are also required, provide
    `environmentId` with `confirmEnvironmentInjection: true` (environment secrets
@@ -214,6 +217,7 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
 | Automation hooks / deployments | `hooks_list` / `deployments_list` | run only owner-reviewed target |
 | Durable repository note | `memories_*` | never store credentials or personal data |
 | Retain build output / snapshot | `artifacts_snapshot` | unmetered workspace disk retention |
+| Model for a subagent | `model_profile_list`, then `model_profile_validate` before a save | `model_profile_create` (owner activates it) |
 
 ## Mandatory safety rules
 

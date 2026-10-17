@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
-import type { RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, type RunnerConfig } from '@cloud-harness/contracts';
 import { createRunnerApp } from '../src/app.js';
 import type { WorkspaceService } from '../src/workspace-service.js';
 import type { DashboardControlService } from '../src/dashboard-control-service.js';
@@ -13,7 +13,7 @@ afterEach(async () => {
   server = undefined;
 });
 
-async function start(service: Pick<WorkspaceService, 'execute' | 'executeInternal'>, controls?: Pick<DashboardControlService, 'execute'>) {
+async function start(service: Pick<WorkspaceService, 'execute' | 'executeInternal'>, controls?: Partial<Pick<DashboardControlService, 'execute' | 'executeModelTool'>>) {
   const config = { serviceToken: 'runner-token-that-is-longer-than-32-characters' } as RunnerConfig;
   server = createServer(createRunnerApp(config, service as WorkspaceService, controls as DashboardControlService | undefined));
   await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
@@ -139,5 +139,63 @@ describe('internal runner HTTP boundary', () => {
     expect(json.error.code).toBe('INVALID_INPUT');
     expect(json.message).toContain('reserved');
     expect(json.error.message).toContain('reserved');
+  });
+});
+
+describe('public model tool routing', () => {
+  const principal = { kind: 'external', issuer: 'https://access.example.com', subject: 'owner' };
+  const post = async (url: string, token: string, operation: string, input: Record<string, unknown>) => await fetch(`${url}/v1/operations`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ version: 2, principal, operation, input })
+  });
+
+  it('sends a model tool to the control service and every other tool to the workspace service', async () => {
+    const execute = vi.fn(async () => ({ ok: true, message: 'Workspace listed', data: { workspaces: [] }, truncated: false }));
+    const executeModelTool = vi.fn(async () => ({ ok: true, message: 'Agent model profiles listed', data: { profiles: [] }, truncated: false }));
+    const controls = { execute: vi.fn(), executeModelTool };
+    const { url, token } = await start({ execute, executeInternal: vi.fn() } as unknown as Pick<WorkspaceService, 'execute' | 'executeInternal'>, controls);
+
+    const model = await post(url, token, 'model_profile_list', {});
+    expect(model.status).toBe(200);
+    expect(await model.json()).toMatchObject({ ok: true, data: { profiles: [] } });
+    expect(executeModelTool).toHaveBeenCalledWith(principal, 'model_profile_list', {});
+    expect(execute).not.toHaveBeenCalled();
+    // The Dashboard's metadata entry point is not used for public calls.
+    expect(controls.execute).not.toHaveBeenCalled();
+
+    const workspace = await post(url, token, 'workspace_list', {});
+    expect(workspace.status).toBe(200);
+    expect(execute).toHaveBeenCalledWith(principal, 'workspace_list', {}, expect.any(AbortSignal));
+    expect(executeModelTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers UNAVAILABLE for a model tool on a runner without the control service', async () => {
+    const execute = vi.fn();
+    const { url, token } = await start({ execute, executeInternal: vi.fn() } as unknown as Pick<WorkspaceService, 'execute' | 'executeInternal'>);
+    const response = await post(url, token, 'model_spend_summary', {});
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ok: false, error: { code: 'UNAVAILABLE', retryable: true } });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('keeps model credential, lifecycle, and spend policy operations off the public endpoint', async () => {
+    const executeModelTool = vi.fn();
+    const { url, token } = await start({ execute: vi.fn(), executeInternal: vi.fn() } as unknown as Pick<WorkspaceService, 'execute' | 'executeInternal'>, { execute: vi.fn(), executeModelTool });
+    for (const operation of ['model_credential_create', 'model_profile_activate', 'model_profile_delete', 'model_spend_policy_set']) {
+      const response = await post(url, token, operation, {});
+      expect(response.status, operation).toBe(400);
+      expect(await response.json(), operation).toMatchObject({ error: { code: 'INVALID_INPUT' } });
+    }
+    expect(executeModelTool).not.toHaveBeenCalled();
+  });
+
+  it('carries an owner-approval refusal and its resume action to the caller', async () => {
+    const executeModelTool = vi.fn(async () => {
+      throw new HarnessError('OWNER_APPROVAL_REQUIRED', 'needs the owner', 403, false, { resumeAction: 'dashboard:models' });
+    });
+    const { url, token } = await start({ execute: vi.fn(), executeInternal: vi.fn() } as unknown as Pick<WorkspaceService, 'execute' | 'executeInternal'>, { execute: vi.fn(), executeModelTool });
+    const response = await post(url, token, 'model_profile_update', {});
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ ok: false, error: { code: 'OWNER_APPROVAL_REQUIRED', retryable: false, resumeAction: 'dashboard:models' } });
   });
 });

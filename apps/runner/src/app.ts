@@ -1,9 +1,10 @@
 import express, { type Express, type Request, type Response } from 'express';
 import pino from 'pino';
 import { ZodError } from 'zod';
-import { HarnessError, RunnerRequestSchema, type RunnerConfig } from '@cloud-harness/contracts';
+import { HarnessError, RunnerRequestSchema, isModelToolOperation, type RunnerConfig } from '@cloud-harness/contracts';
 import { serviceAuth } from './security.js';
 import { executeInternalRunnerOperation, type OAuthSettingsOperations } from './internal-runner-operations.js';
+import { executeModelToolOperation } from './model-tool-operations.js';
 import { runnerRequestPrincipal } from './runner-request-principal.js';
 import type { WorkspaceService } from './workspace-service.js';
 import type { DashboardControlService } from './dashboard-control-service.js';
@@ -31,7 +32,11 @@ export function createRunnerApp(config: RunnerConfig, service: WorkspaceService,
     response.once('close', cancelOnDisconnect);
     try {
       const parsed = RunnerRequestSchema.parse(request.body);
-      const result = await service.execute(runnerRequestPrincipal(parsed), parsed.operation, parsed.input, controller.signal);
+      const principal = runnerRequestPrincipal(parsed);
+      // Model tools are owner-scoped and live on the control service that serves the Dashboard.
+      const result = isModelToolOperation(parsed.operation)
+        ? await executeModelToolOperation(controls, principal, parsed.operation, parsed.input)
+        : await service.execute(principal, parsed.operation, parsed.input, controller.signal);
       response.status(result.ok ? 200 : 400).json(result);
     } catch (error) {
       sendRunnerError(response, error);
