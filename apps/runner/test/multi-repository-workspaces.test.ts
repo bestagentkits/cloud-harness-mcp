@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -261,6 +261,75 @@ describe('multi-repository workspaces', () => {
     const record = store.byId(workspaceId) as WorkspaceRecord;
     const blocker = await (service as unknown as { autoCloseBlocker(record: WorkspaceRecord): Promise<string | undefined> }).autoCloseBlocker(record);
     expect(blocker).toBe('api: 2 uncommitted or untracked path(s); web: 1 commit(s) not on any remote; 1 path(s) outside the repository checkouts');
+  });
+
+  it('counts entries under repos/ that are not a registered checkout directory as unsaved work', async () => {
+    const { service, store, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    docker.workerResult = { ok: true, message: 'ok', data: { uncommittedPaths: 0, stashes: 0, unpushedCommits: 0 }, truncated: false };
+    const repos = join(jobsRoot, workspaceId, 'repo', 'repos');
+    mkdirSync(join(repos, 'scratch'));
+    writeFileSync(join(repos, 'NOTES.md'), 'scratch');
+    const autoCloseBlocker = (service as unknown as { autoCloseBlocker(record: WorkspaceRecord): Promise<string | undefined> }).autoCloseBlocker.bind(service);
+    expect(await autoCloseBlocker(store.byId(workspaceId) as WorkspaceRecord)).toBe('2 path(s) outside the repository checkouts');
+    rmSync(join(repos, 'scratch'), { recursive: true });
+    rmSync(join(repos, 'NOTES.md'));
+    expect(await autoCloseBlocker(store.byId(workspaceId) as WorkspaceRecord)).toBeUndefined();
+  });
+
+  it('refuses a scoped call when the checkout directory was replaced by a symlink', async () => {
+    const { service, jobsRoot } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const repos = join(jobsRoot, workspaceId, 'repo', 'repos');
+    rmSync(join(repos, 'web'), { recursive: true });
+    symlinkSync(join(repos, 'api'), join(repos, 'web'));
+    const before = workerCalls().length;
+    await expect(service.execute(principal, 'files_list', { workspaceId, repositoryId: 'web' })).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('repos/web') });
+    expect(workerCalls()).toHaveLength(before);
+  });
+
+  it('keeps commit idempotency keys separate per repository', async () => {
+    const { service } = fixture();
+    const { workspaceId } = await openMulti(service);
+    docker.workerResults.set('git_commit:/workspace/repos/api', { ok: true, message: 'committed', data: { commit: 'a'.repeat(40) }, truncated: false });
+    docker.workerResults.set('git_commit:/workspace/repos/web', { ok: true, message: 'committed', data: { commit: 'b'.repeat(40) }, truncated: false });
+    const commit = { workspaceId, message: 'chore: sync', idempotencyKey: 'commit-sync-1' };
+    const api = await service.execute(principal, 'git_commit', { ...commit, repositoryId: 'api' });
+    const web = await service.execute(principal, 'git_commit', { ...commit, repositoryId: 'web' });
+    expect(api.data).toMatchObject({ commit: 'a'.repeat(40) });
+    expect(web.data).toMatchObject({ commit: 'b'.repeat(40) });
+    expect(web.data).not.toHaveProperty('alreadyFinalized');
+    const replay = await service.execute(principal, 'git_commit', { ...commit, repositoryId: 'api' });
+    expect(replay.data).toMatchObject({ commit: 'a'.repeat(40), alreadyFinalized: true });
+  });
+
+  it('keeps push idempotency keys separate per repository', async () => {
+    const { service } = fixture();
+    const opened = await service.execute(principal, 'workspace_open', {
+      idempotencyKey: 'push-open-1',
+      repositories: [{ url: 'https://github.com/acme/api.git', alias: 'api' }, { url: 'https://github.com/acme/web.git', alias: 'web' }]
+    });
+    const { workspaceId } = opened.data as { workspaceId: string };
+    const push = { workspaceId, refspec: 'HEAD:refs/heads/feat-x', idempotencyKey: 'push-feat-x' };
+    const transfers = () => docker.runDocker.mock.calls.filter((call) => call[0].some((value) => value.includes('git-transfer'))).length;
+    await service.execute(principal, 'git_push', { ...push, repositoryId: 'api' });
+    const afterApi = transfers();
+    const web = await service.execute(principal, 'git_push', { ...push, repositoryId: 'web' });
+    expect(web.data).not.toHaveProperty('alreadyFinalized');
+    expect(transfers()).toBeGreaterThan(afterApi);
+    const replay = await service.execute(principal, 'git_push', { ...push, repositoryId: 'api' });
+    expect(replay.data).toMatchObject({ alreadyFinalized: true });
+  });
+
+  it('confines a background agent tool call to the repository it selects', async () => {
+    const { service, store } = fixture();
+    const { workspaceId } = await openMulti(service);
+    const record = store.byId(workspaceId) as WorkspaceRecord;
+    const proxy = (service as unknown as { executeAgentProxy(request: Record<string, unknown>): Promise<RunnerResponse> }).executeAgentProxy.bind(service);
+    await proxy({ ownerId: record.ownerId, workspaceId, workspaceGeneration: record.generation, operation: 'files_write', toolInput: { repositoryId: 'web', path: 'src/a.ts', content: 'x' } });
+    expect(workerCalls().at(-1)![0]).toContain('CH_WORKSPACE_ROOT=/workspace/repos/web');
+    await expect(proxy({ ownerId: record.ownerId, workspaceId, workspaceGeneration: record.generation, operation: 'files_read', toolInput: { repositoryId: 'docs', path: 'a' } }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
   });
 
   it('summarizes each checkout through workspace_repo_status', async () => {

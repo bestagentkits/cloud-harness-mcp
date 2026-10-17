@@ -80,7 +80,8 @@ A workspace opened with `repositoryUrl` behaves exactly as before.
 - Before `workspace_close`, call `workspace_repo_status` and confirm every
   checkout is clean or pushed.
 - Auto-close defers while any checkout has unsaved work, and also when files
-  sit beside the checkouts outside `repos/`, because no remote holds them.
+  sit beside the checkouts or under `repos/` without being a registered
+  checkout (an extra clone, a scratch file), because no remote holds them.
   Keep scratch files inside a checkout or remove them.
 
 ## Local servers

@@ -80,8 +80,9 @@ and the boundary in the [security model](../security-model.md#multi-repository-w
   opened `read-only`; reviewers must not treat `read-only` as containment.
 - Local stdio mode does not support multi-repository workspaces; a local
   workspace is one directory chosen at startup.
-- Auto-close and recovery inspect every checkout, and files written beside the
-  checkouts (outside `repos/`) block auto-close because no remote holds them.
+- Auto-close and recovery inspect every checkout. Files written beside the
+  checkouts, and entries under `repos/` that are not a registered checkout
+  directory, block auto-close because no remote holds them.
 - The registry is an additive table with no schema-version bump. A release
   that predates it ignores the table and would treat a multi-repository
   workspace as one checkout at the tree root, which is not a Git repository,

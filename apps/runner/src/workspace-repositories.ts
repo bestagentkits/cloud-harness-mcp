@@ -97,6 +97,19 @@ export function scopedWorkdirArgs(record: Pick<WorkspaceRecord, 'repositoryScope
   return record.repositoryScope ? ['--workdir', checkoutContainerPath(record)] : [];
 }
 
+/**
+ * Idempotency keys are stored per workspace, so a scoped call namespaces its key by repository: the same
+ * key in a sibling checkout is a different request and must not replay this one's result. An unscoped
+ * record keeps its key unchanged, and an already namespaced key is not namespaced twice.
+ */
+export function repositoryIdempotencyKey(record: Pick<WorkspaceRecord, 'repositoryScope'>, key: string): string;
+export function repositoryIdempotencyKey(record: Pick<WorkspaceRecord, 'repositoryScope'>, key: string | undefined): string | undefined;
+export function repositoryIdempotencyKey(record: Pick<WorkspaceRecord, 'repositoryScope'>, key: string | undefined): string | undefined {
+  if (key === undefined || !record.repositoryScope) return key;
+  const prefix = `${record.repositoryScope.id}:`;
+  return key.startsWith(prefix) ? key : `${prefix}${key}`;
+}
+
 /** Read-only repositories refuse brokered writes; this is a policy refusal, not runtime isolation. */
 export function assertRepositoryWritable(record: Pick<WorkspaceRecord, 'repositoryScope'>, action: string): void {
   if (record.repositoryScope?.access === 'read-only') {

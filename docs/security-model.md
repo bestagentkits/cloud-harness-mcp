@@ -489,8 +489,10 @@ unchanged and the checkouts share the workspace byte ceiling.
 - **Selector confinement.** A `repositoryId` on a file or search tool sets the
   worker's root to that checkout, which resolves every path and symlink, so the
   call cannot reach a sibling checkout. The worker root variables use reserved
-  secret-name prefixes, so a runtime secret cannot override them. Command tools
-  only start in the selected checkout.
+  secret-name prefixes, so a runtime secret cannot override them. A scoped call
+  refuses a checkout whose `repos/<alias>` entry is missing or is no longer a
+  real directory, so a symlink swapped in by the executor is not followed.
+  Command tools only start in the selected checkout.
 - **`read-only` is policy, not isolation.** It refuses brokered writes for that
   repository (push, pushing finalize, recovery export, GitHub write actions)
   and clamps its advertised capabilities. Any process in the executor can still

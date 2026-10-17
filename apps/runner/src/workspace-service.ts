@@ -8,6 +8,7 @@ import {
   legacyRepositoryEntry,
   publicRepositoryEntry,
   REPOSITORIES_DIRECTORY,
+  repositoryIdempotencyKey,
   repositorySubpath,
   scopedRecordView,
   scopedWorkdirArgs,
@@ -240,6 +241,16 @@ const REPOSITORY_SELECTOR_REQUIRED = new Set<RunnerOperation>([
 /** Command tools the operation manager runs with a tree-relative `cwd` rather than through the worker. */
 const CWD_REBASED_OPERATIONS = new Set<RunnerOperation>(['shell_open', 'sessions_open', 'tasks_run']);
 
+/** A scoped mutation's audit row names the repository it targeted, beside the workspace and generation. */
+function withRepositoryAudit(record: WorkspaceRecord, details: Record<string, string | number | boolean>): Record<string, string | number | boolean> {
+  return record.repositoryScope ? { ...details, repositoryId: record.repositoryScope.id, repositoryAlias: record.repositoryScope.alias } : details;
+}
+
+/** Each checkout of a multi-repository workspace has its own guidance, so it has its own cache entry. */
+function guidanceCacheKey(record: WorkspaceRecord): string {
+  return record.repositoryScope ? `${record.id}:${record.repositoryScope.id}` : record.id;
+}
+
 function publicRecord(record: WorkspaceRecord, capabilities?: WorkspaceCapabilityResult) {
   const now = Date.now();
   const remainingLeaseMs = Math.max(0, record.expiresAt - now);
@@ -376,7 +387,7 @@ export class WorkspaceService {
             if (record.generation !== request.workspaceGeneration) {
               throw new HarnessError('EXPIRED', 'agent bootstrap lost its workspace fence', 410, false);
             }
-            return await this.repositoryGuidance(record, request.signal);
+            return await this.repositoryGuidance(this.primaryRecordView(record), request.signal);
           }
         })
       : undefined);
@@ -1237,7 +1248,7 @@ export class WorkspaceService {
       await this.runLifecycleHooks(active, 'on_workspace_open').catch(() => undefined);
       // Eager guidance bootstrap: scanned after open hooks so the snapshot reflects the checkout an
       // agent will see. A scan failure never fails the open; agent_spawn rescans and fails closed.
-      const guidance = await this.repositoryGuidance(primary ? scopedRecordView(active, primary) : active).catch(() => undefined);
+      const guidance = await this.repositoryGuidance(this.primaryRecordView(active)).catch(() => undefined);
       return {
         ok: true,
         message: 'Workspace opened',
@@ -1871,7 +1882,7 @@ export class WorkspaceService {
 
   /** An open replay carries the cached guidance summary when this runner still holds one. */
   private openedWorkspaceData(record: WorkspaceRecord) {
-    const cached = this.guidanceCache.get(record.id);
+    const cached = this.guidanceCache.get(guidanceCacheKey(this.primaryRecordView(record)));
     return {
       ...this.publicWorkspaceRecord(record),
       ...(cached && cached.generation === record.generation ? { repositoryContext: repositoryGuidanceSummary(cached.snapshot) } : {})
@@ -1884,8 +1895,7 @@ export class WorkspaceService {
    * reuses the digest-addressed snapshot instead of re-reading guidance for every agent.
    */
   async repositoryGuidance(record: WorkspaceRecord, signal?: AbortSignal): Promise<{ snapshot: RepositoryGuidanceSnapshot; reused: boolean }> {
-    // Each checkout of a multi-repository workspace has its own guidance, so it has its own cache entry.
-    const cacheKey = record.repositoryScope ? `${record.id}:${record.repositoryScope.id}` : record.id;
+    const cacheKey = guidanceCacheKey(record);
     const cached = this.guidanceCache.get(cacheKey);
     const known = cached && cached.generation === record.generation ? cached : undefined;
     const response = await this.runWorker(
@@ -2273,6 +2283,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
    * The shared selector resolution. `optional` leaves an unselected multi-repository call on the tree root,
    * `required` refuses it unless only one repository exists, and `primary` falls back to the primary one.
    */
+  /**
+   * The view workspace-level guidance reads: the primary checkout of a multi-repository workspace, so
+   * open, its replay, and agent bootstrap all describe the same repository. Unchanged for one repository.
+   */
+  private primaryRecordView(record: WorkspaceRecord): WorkspaceRecord {
+    const { multiRepository, entries } = this.workspaceRepositoryEntries(record);
+    const primary = multiRepository ? entries.find((entry) => entry.primary) ?? entries[0] : undefined;
+    return primary ? scopedRecordView(record, primary) : record;
+  }
+
   private resolveRepositoryView(
     record: WorkspaceRecord,
     validated: Record<string, unknown>,
@@ -2295,8 +2315,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       entry = entries[0];
     }
     if (!entry) return { entry: undefined, scoped: record };
+    const scoped = scopedRecordView(record, entry);
+    // The executor can replace repos/<alias> with a symlink to a sibling checkout or elsewhere; a scoped call
+    // then refuses to follow it instead of operating, or confining the worker, on the link's target.
+    let checkout: ReturnType<typeof lstatSync> | undefined;
+    try { checkout = lstatSync(checkoutHostPath(scoped)); } catch { checkout = undefined; }
+    if (!checkout?.isDirectory()) {
+      throw new HarnessError('CONFLICT', `repository ${entry.alias} checkout at ${repositorySubpath(entry.alias)} is missing or is not a directory`, 409, false);
+    }
     validated.repositoryId = entry.id;
-    return { entry, scoped: scopedRecordView(record, entry) };
+    return { entry, scoped };
   }
 
   private async remotePush(record: WorkspaceRecord, input: Record<string, unknown>, signal?: AbortSignal): Promise<RunnerResponse> {
@@ -2323,7 +2351,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         requiredCapability: 'repository.push'
       });
     }
-    const idempotencyKey = input.idempotencyKey as string | undefined;
+    const idempotencyKey = repositoryIdempotencyKey(record, input.idempotencyKey as string | undefined);
     const requestedRefspec = input.refspec as string | undefined;
     const branch = requestedRefspec ? '' : await this.currentBranch(record, signal);
     if (!requestedRefspec && !branch) throw new HarnessError('CONFLICT', 'git_push requires refspec when HEAD is detached', 409, false);
@@ -3902,9 +3930,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       return { ok: true, message: 'Hooks deactivated', data: { deactivated: true }, truncated: false };
     }
     if (operation === 'files_write_batch') {
-      // A key replays only within the checkout that recorded it, so one key cannot answer for a sibling.
-      const idempotencyKey = validated.idempotencyKey === undefined ? undefined
-        : record.repositoryScope ? `${record.repositoryScope.id}:${validated.idempotencyKey as string}` : validated.idempotencyKey as string;
+      const idempotencyKey = repositoryIdempotencyKey(record, validated.idempotencyKey as string | undefined);
       if (idempotencyKey) {
         const cached = this.store.getBatchWriteIdempotency(ownerId, record.id, idempotencyKey);
         if (cached) {
@@ -3922,7 +3948,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (validated.push !== false) assertRepositoryWritable(record, 'workspace_finalize with push');
       const branch = (validated.branch as string | undefined) ?? await this.currentBranch(record, signal);
       const targetRef = `refs/heads/${branch}`;
-      const idempotencyKey = validated.idempotencyKey as string | undefined;
+      const idempotencyKey = repositoryIdempotencyKey(record, validated.idempotencyKey as string | undefined);
       const requestFingerprint = idempotencyKey
         ? createHash('sha256').update(JSON.stringify(validated)).digest('hex')
         : undefined;
@@ -4526,7 +4552,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     if (operation === 'git_commit') {
       const expectedHeadOid = validated.expectedHeadOid as string | undefined;
-      const idempotencyKey = validated.idempotencyKey as string | undefined;
+      const idempotencyKey = repositoryIdempotencyKey(record, validated.idempotencyKey as string | undefined);
       let requestFingerprint: string | undefined;
       if (idempotencyKey) {
         requestFingerprint = createHash('sha256')
@@ -4693,7 +4719,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
         'workspace',
         record.id,
         record.generation,
-        details
+        withRepositoryAudit(record, details)
       );
     } catch { /* mutation audit persistence is best-effort */ }
   }
@@ -4705,7 +4731,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     details: Record<string, string | number | boolean>
   ): void {
     try {
-      this.metadata?.recordAudit(ownerId, action, 'workspace', record.id, record.generation, details);
+      this.metadata?.recordAudit(ownerId, action, 'workspace', record.id, record.generation, withRepositoryAudit(record, details));
     } catch { /* outcome audit persistence is best-effort */ }
   }
 
@@ -5138,9 +5164,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       if (blocker) reasons.push(`${entry.alias}: ${blocker}`);
     }
     // Files written beside the checkouts belong to no repository, so no remote holds them.
+    // Entries under repos/ that are not a registered checkout directory (scratch files, an extra clone, or a
+    // symlink swapped in for a checkout) are equally unprotected.
     try {
-      const outside = (await readdir(join(record.workspacePath, 'repo'))).filter((name) => name !== REPOSITORIES_DIRECTORY);
-      if (outside.length > 0) reasons.push(`${outside.length} path(s) outside the repository checkouts`);
+      const root = join(record.workspacePath, 'repo');
+      const outside = (await readdir(root)).filter((name) => name !== REPOSITORIES_DIRECTORY);
+      const aliases = new Set(repositories.map((entry) => entry.alias));
+      const repositoryEntries = await readdir(join(root, REPOSITORIES_DIRECTORY), { withFileTypes: true });
+      const unregistered = repositoryEntries.filter((entry) => !aliases.has(entry.name) || !entry.isDirectory());
+      const count = outside.length + unregistered.length;
+      if (count > 0) reasons.push(`${count} path(s) outside the repository checkouts`);
     } catch {
       reasons.push('the workspace tree could not be listed');
     }
@@ -5464,7 +5497,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (before.generation !== request.workspaceGeneration || before.networkProfile !== 'network-none') {
       throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
     }
-    const result = await this.runWorker(before, operation, validated, request.signal);
+    // An agent's repositoryId confines its call to that checkout, exactly as the direct tool does.
+    const scoped = this.scopeRecordForOperation(before, operation, validated);
+    const result = await this.runWorker(scoped, operation, validated, request.signal);
     const after = this.requireWorkspaceForAgent(request.ownerId, request.workspaceId);
     if (after.generation !== request.workspaceGeneration || after.networkProfile !== 'network-none') {
       throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
