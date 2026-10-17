@@ -561,14 +561,15 @@ export class DashboardControlService {
           const control = this.gatewayControl;
           if (control) {
             try {
-              // The gateway holds the whole-instance snapshot, so compare against the same export syncGateway pushes.
+              // The gateway applies the whole-instance snapshot, so compare against the same export syncGateway pushes.
               const snapshot = this.models().getExportSnapshot();
               const expectedDigest = gatewaySnapshotDigest(snapshot);
               const digest = await control.queryDigest();
               gatewayBootId = digest.gatewayBootId;
               let gatewayDigest = digest.snapshotDigest;
-              if (activeProfiles > 0 && digest.activeProfileCount === 0) {
-                // Self-heal a gateway that lost its snapshot, for example after a restart.
+              if (gatewayDigest !== expectedDigest) {
+                // Self-heal with one push per read: the gateway restarted, a push failed, or the
+                // snapshot changed without one (an agent pinned to an older revision ended).
                 const ack = await control.applySnapshot(snapshot);
                 gatewayBootId = ack.gatewayBootId;
                 gatewayDigest = ack.snapshotDigest;
@@ -587,7 +588,7 @@ export class DashboardControlService {
               lastSyncTime: push.lastSuccessAt,
               activeProfileCount: activeProfiles,
               activeCredentialCount: activeCreds,
-              // A gateway that holds the current snapshot makes an earlier failed push moot.
+              // Once the gateway's last applied snapshot matches, an earlier failed push is moot.
               error: gatewayError ?? (gatewaySynced ? null : push.lastError)
             }
           });

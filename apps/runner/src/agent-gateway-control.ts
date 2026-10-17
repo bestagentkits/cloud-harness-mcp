@@ -204,26 +204,29 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
   }
 
   async applySnapshot(snapshot: GatewaySnapshot): Promise<{ gatewayBootId: string; snapshotDigest: string }> {
-    // Outcomes are kept in the order pushes started, so a slow earlier push that settles
-    // late never replaces the outcome of a later one.
+    // The error follows the order pushes started, so a slow earlier push that settles late
+    // never replaces the outcome of a later one. The success time only ever moves forward.
     const attempt = ++this.pushAttempts;
     try {
       const response = await this.control(snapshotCommand(snapshot), 1_048_576);
       if (!response.ack) {
         throw new HarnessError('UNAVAILABLE', 'model gateway omitted snapshot ack', 503, true);
       }
-      this.recordPush(attempt, { lastSuccessAt: this.now(), lastError: null });
+      this.recordPush(attempt, null);
       return response.ack;
     } catch (err) {
-      this.recordPush(attempt, { lastSuccessAt: this.pushState.lastSuccessAt, lastError: err instanceof Error ? err.message : 'snapshot push failed' });
+      this.recordPush(attempt, err instanceof Error ? err.message : 'snapshot push failed');
       throw err;
     }
   }
 
-  private recordPush(attempt: number, state: GatewaySnapshotPushState): void {
-    if (attempt < this.recordedAttempt) return;
-    this.recordedAttempt = attempt;
-    this.pushState = state;
+  private recordPush(attempt: number, error: string | null): void {
+    const lastSuccessAt = error === null
+      ? Math.max(this.pushState.lastSuccessAt ?? Number.NEGATIVE_INFINITY, this.now())
+      : this.pushState.lastSuccessAt;
+    const latest = attempt >= this.recordedAttempt;
+    if (latest) this.recordedAttempt = attempt;
+    this.pushState = { lastSuccessAt, lastError: latest ? error : this.pushState.lastError };
   }
 
   async queryDigest(): Promise<{ gatewayBootId: string; snapshotDigest: string; activeProfileCount: number; activeCredentialCount: number; activeLeaseCount: number }> {

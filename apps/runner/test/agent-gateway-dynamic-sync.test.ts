@@ -212,4 +212,26 @@ describe('gateway snapshot push state', () => {
     expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 5_000, lastError: null });
     spy.mockRestore();
   });
+
+  it('keeps the success time of an earlier push that settles after a later failure, with the later error', async () => {
+    const releases: Array<() => void> = [];
+    let calls = 0;
+    let clock = 1_000;
+    const spy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return { exitCode: 0, stdout: ack, stderr: '' };
+      }
+      return { exitCode: 1, stdout: '', stderr: '' };
+    });
+    const control = new DockerAgentGatewayControl('gateway', () => clock);
+    const slowSuccess = control.applySnapshot(snapshot);
+    await expect(control.applySnapshot(snapshot)).rejects.toThrow('model gateway control request failed');
+    clock = 2_000;
+    releases[0]!();
+    await slowSuccess;
+    expect(control.snapshotPushState()).toEqual({ lastSuccessAt: 2_000, lastError: 'model gateway control request failed' });
+    spy.mockRestore();
+  });
 });

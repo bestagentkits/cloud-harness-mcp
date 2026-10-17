@@ -4,8 +4,10 @@ import { connect, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ModelConfigStatusSchema, type MetadataRunnerRequest, type ModelConfigStatus, type RunnerConfig } from '@cloud-harness/contracts';
+import { ModelConfigStatusSchema, RunnerAgentsConfigSchema, type MetadataRunnerRequest, type ModelConfigStatus, type RunnerConfig } from '@cloud-harness/contracts';
 import { DockerAgentGatewayControl, gatewaySnapshotDigest } from '../src/agent-gateway-control.js';
+import type { AgentLauncher } from '../src/agent-launcher.js';
+import { AgentManager } from '../src/agent-manager.js';
 import { ArtifactStore } from '../src/artifact-store.js';
 import { DashboardControlService } from '../src/dashboard-control-service.js';
 import * as dockerEngine from '../src/docker-engine.js';
@@ -127,11 +129,46 @@ async function setup() {
     const credential = await call('model_credential_create', { label: `Key ${profileId}`, provider: 'openai', apiKey: `sk-${profileId}-secret` }) as { id: string };
     return await call('model_profile_create', profileInput(profileId, credential.id)) as { status: string };
   };
+  const ownerId = principals.resolvePrincipal(principal);
+  const workspaceId = `ws_${'m'.repeat(24)}`;
+  const now = Date.now();
+  principals.create({
+    id: workspaceId, ownerId, idempotencyKey: 'model-config-status', repositoryUrl: 'https://github.com/org/repo.git',
+    repositoryRef: null, containerName: 'executor', workspacePath: join(root, 'workspace'), environmentId: null,
+    status: 'ACTIVE', networkProfile: 'network-none', createdAt: now, lastActivityAt: now, expiresAt: now + 3_600_000,
+    hardExpiresAt: now + 7_200_000, gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null
+  });
+  /** Records an agent pinned to a profile revision, as a spawn does, and returns a way to end it. */
+  const runAgentOn = (revisionId: string) => {
+    const agentId = `agent_${randomBytes(12).toString('hex')}`;
+    principals.database.prepare(`
+      INSERT INTO agents (id, owner_id, workspace_id, workspace_generation, idempotency_key, payload_hash, prompt_hash, profile_id,
+        proxy_operations_json, max_ttl_seconds, max_output_bytes, max_input_tokens, max_output_tokens, max_cost_micros,
+        container_name, network_name, gateway_lease_id, status, generation, created_at, expires_at)
+      VALUES (?, ?, ?, 1, ?, 'hash', 'hash', ?, '[]', 60, 1024, 1000, 100, 1000, 'agent', 'agent-net', ?, 'RUNNING', 1, ?, ?)
+    `).run(agentId, ownerId, workspaceId, agentId, revisionId, `lease_${agentId}`, now, now + 60_000);
+    return () => {
+      principals.database.prepare("UPDATE agents SET status = 'SUCCEEDED', terminal_at = ? WHERE id = ?").run(Date.now(), agentId);
+    };
+  };
+  /** An agent manager sharing this runner's gateway control. */
+  const agentManager = () => new AgentManager(RunnerAgentsConfigSchema.parse({
+    image: 'agent:test', networkMode: 'none', gatewayUrl: 'http://model-gateway:3210',
+    profiles: [{
+      id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5', inputMicrosPerMillionTokens: 1000,
+      outputMicrosPerMillionTokens: 2000, maxInputTokens: 100000, maxOutputTokens: 20000, maxCostMicros: 2000000, maxProxyOperations: ['files_read']
+    }]
+  }), principals, {
+    gateway: runner.control,
+    launcher: { launch: async () => {}, stop: async () => {}, reconcile: async () => {} } as unknown as AgentLauncher,
+    modelProfiles: repo,
+    toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+  });
   return {
-    gateway, repo, status, createProfile, profileInput, restartRunner,
+    gateway, repo, status, call, createProfile, profileInput, restartRunner, runAgentOn, agentManager,
     /** A push by another component sharing this runner's gateway control, such as the agent manager. */
     pushFromAgentManager: async () => await runner.control.applySnapshot(repo.getExportSnapshot()),
-    ownerId: principals.resolvePrincipal(principal)
+    ownerId
   };
 }
 
@@ -188,17 +225,25 @@ describe('model configuration status', () => {
     expect(await status()).toMatchObject({ gatewaySynced: true, lastSyncTime: pushedAt, error: null });
   });
 
-  it('reports not synchronized when the gateway answers with a stale snapshot digest', async () => {
-    const { repo, status, createProfile, profileInput, ownerId } = await setup();
+  it('reports a stale gateway as not synchronized while the repair push fails, and repairs it on read', async () => {
+    const { gateway, repo, status, createProfile, profileInput, ownerId } = await setup();
     await createProfile('coding');
     const pushedAt = (await status()).lastSyncTime;
     // A change the runner never pushed leaves the gateway on the older snapshot.
     const credentialId = repo.listCredentials(ownerId)[0]!.id;
     repo.createProfile(ownerId, profileInput('review', credentialId) as Parameters<typeof repo.createProfile>[1]);
 
+    gateway.failApply = true;
     expect(await status()).toEqual({
-      gatewaySynced: false, gatewayBootId: 'boot_1', lastSyncTime: pushedAt, activeProfileCount: 2, activeCredentialCount: 1, error: null
+      gatewaySynced: false, gatewayBootId: 'boot_1', lastSyncTime: pushedAt, activeProfileCount: 2, activeCredentialCount: 1,
+      error: 'model gateway control request failed'
     });
+
+    gateway.failApply = false;
+    const repaired = await status();
+    expect(repaired).toMatchObject({ gatewaySynced: true, error: null });
+    expect(repaired.lastSyncTime).toBeGreaterThanOrEqual(pushedAt!);
+    expect(gateway.registry?.snapshotDigest).toBe(expectedDigest(repo));
   });
 
   it('reports the error of a failed last push and keeps the last successful push time', async () => {
@@ -215,13 +260,48 @@ describe('model configuration status', () => {
     expect(result.lastSyncTime).toBe(pushedAt);
   });
 
-  it('reports no last sync time before any push has happened', async () => {
-    const { status } = await setup();
+  it('brings a freshly started gateway in sync on read even with no active profiles', async () => {
+    const { gateway, repo, status } = await setup();
+    // The gateway boots with an empty digest and this runner has pushed nothing yet.
+    expect(gateway.registry?.snapshotDigest).toBe('');
+    const before = Date.now();
     const result = await status();
-    expect(result.lastSyncTime).toBeNull();
-    // The gateway has not received this runner's snapshot yet.
-    expect(result.gatewaySynced).toBe(false);
-    expect(result.error).toBeNull();
+    expect(result).toMatchObject({ gatewaySynced: true, gatewayBootId: 'boot_1', activeProfileCount: 0, error: null });
+    expect(result.lastSyncTime).toBeGreaterThanOrEqual(before);
+    expect(gateway.registry?.snapshotDigest).toBe(expectedDigest(repo));
+  });
+
+  it('re-syncs once an agent pinned to an edited profile revision finishes', async () => {
+    const { gateway, repo, status, call, createProfile, runAgentOn, agentManager } = await setup();
+    const created = await createProfile('coding') as unknown as { id: string; activeRevisionId: string; generation: number };
+    const finishAgent = runAgentOn(created.activeRevisionId);
+    // The edit's push still carries the revision the running agent is pinned to.
+    await call('model_profile_update', { profileId: created.id, displayName: 'Coding v2', expectedGeneration: created.generation });
+    expect(Object.keys(repo.getExportSnapshot().profiles)).toHaveLength(2);
+    expect((await status()).gatewaySynced).toBe(true);
+
+    const manager = agentManager();
+    await manager.ensureGatewaySynced();
+    finishAgent();
+    // Nothing pushed when the agent ended, so the gateway still holds the older snapshot.
+    expect(gateway.registry?.snapshotDigest).not.toBe(expectedDigest(repo));
+
+    // The agent manager re-syncs before its next spawn.
+    await manager.ensureGatewaySynced();
+    expect(gateway.registry?.snapshotDigest).toBe(expectedDigest(repo));
+  });
+
+  it('repairs the gateway on read when an agent pinned to an older revision finished', async () => {
+    const { gateway, repo, status, call, createProfile, runAgentOn } = await setup();
+    const created = await createProfile('coding') as unknown as { id: string; activeRevisionId: string; generation: number };
+    const finishAgent = runAgentOn(created.activeRevisionId);
+    await call('model_profile_disable', { profileId: created.id, expectedGeneration: created.generation });
+    expect((await status()).gatewaySynced).toBe(true);
+
+    finishAgent();
+    expect(gateway.registry?.snapshotDigest).not.toBe(expectedDigest(repo));
+    expect(await status()).toMatchObject({ gatewaySynced: true, activeProfileCount: 0, error: null });
+    expect(gateway.registry?.snapshotDigest).toBe(expectedDigest(repo));
   });
 
   it('reports an unreachable gateway as not synchronized with its error', async () => {

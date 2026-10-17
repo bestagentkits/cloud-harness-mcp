@@ -394,20 +394,25 @@ The badge beside **Model profiles** reads `GET /api/v1/agent-model-config-status
 (schema `ModelConfigStatusSchema` in
 [`model-profile-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-profile-schemas.ts)):
 
-- **Gateway synchronized** (`gatewaySynced: true`) means the Model Gateway answered and holds
-  exactly the runner's current profile and credential snapshot: the snapshot digest it reports
-  equals the digest of the snapshot the runner would send now. A gateway that answers with an
-  older snapshot shows **Gateway sync pending**, as does an unreachable one.
+- **Gateway synchronized** (`gatewaySynced: true`) means the Model Gateway answered and the
+  last snapshot it applied matches the runner's current profile and credential snapshot: the
+  digest it reports equals the digest of the snapshot the runner would send now. The gateway
+  merges each snapshot into what it already holds, so profiles and credentials removed since an
+  earlier snapshot can remain loaded there; the badge does not claim otherwise. An unreachable
+  gateway, or one whose repair push failed, shows **Gateway sync pending**.
 - **Last successful sync** (`lastSyncTime`) is when the runner last pushed a snapshot
   successfully: after a dashboard change, at runner startup, before an agent launch, or to
   repair the gateway. It is kept in memory, so it reads **Never since the runner started**
   (`null`) until the restarted runner pushes again. The badge can then still read
   **Gateway synchronized**, because the gateway kept the snapshot the previous runner sent.
 - The error line (`error`) explains an unreachable gateway or a failed last push. A later
-  successful push clears it, and it is not shown while the gateway holds the current snapshot.
+  successful push clears it, and it is not shown while the gateway's last applied snapshot
+  matches.
 
-If the gateway reports no profiles while you have active ones, for example after it restarted,
-reading the status sends it the snapshot again.
+When the digests differ, reading the status pushes the current snapshot once and reports the
+result. This repairs a gateway that restarted, missed a failed push, or holds a snapshot that
+changed without a push, such as when an agent pinned to an older profile revision ends. The
+agent manager makes the same comparison before it launches an agent.
 
 ## Spend policies
 
