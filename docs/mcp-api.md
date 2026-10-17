@@ -134,6 +134,19 @@ Agent calls do not refresh the parent workspace idle TTL.
   requested proxy-tool subset before launch. Its result is an acknowledgement
   with an opaque ID, generation, status, and replay flag—not prompt
   completion.
+  When the owner has set an aggregate model spend policy (daily or monthly,
+  for the principal or for one model profile), the spawn also reserves its
+  whole `maxCostMicros` against it. A spawn that would take any applicable
+  policy over its limit is refused with `LIMIT_EXCEEDED` (429, not
+  retryable: an unchanged retry right away fails the same way) before any
+  agent exists. The message names the policy and the remaining headroom, so
+  lower `maxCostMicros` or wait for open runs to settle. Aggregate spend is
+  an estimate, not provider billing: a run counts entirely in the UTC window
+  it was admitted in, so spend near a window boundary can exceed one
+  window's limit. Per-run caps are unchanged, and a replayed spawn never
+  reserves twice. No MCP tool reads or changes policies; the owner manages
+  them through the dashboard routes described in
+  [Models & Budgets](../docs-site/dashboard/models.md#spend-policies).
 - `agent_status` accepts exactly one of the agent ID or spawn idempotency key.
   While full state is retained, it reports lineage, configured policy and
   budgets, usage, timestamps, terminal reason, and `outcomeUnknown`.

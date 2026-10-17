@@ -388,6 +388,66 @@ saved, or the catalog price could not be refreshed, a pricing note appears next 
 price: edit the profile to take the new price. The comparison is advisory and is skipped
 when the catalog cannot be reached.
 
+## Spend policies
+
+A spend policy caps the estimated model spend of a UTC day or month. A policy without a
+profile covers every subagent run of your account; a profile policy covers the runs of one
+saved profile. Each scope has at most one daily and one monthly policy. A static profile
+from the runner configuration cannot carry its own policy, so its runs count only against
+the account policies.
+
+The figures are estimates, never provider billing:
+
+- When a spawn is admitted, its whole `maxCostMicros` cap is reserved in the window of that
+  moment, and the whole run counts in that day and month even if it ends after midnight
+  UTC. Spend near a window boundary can therefore exceed one window's limit.
+- The cap stays reserved until the run ends and its gateway lease settles. The run then
+  counts at the cost the model gateway charged.
+- A run whose gateway accounting was lost, for example to a gateway restart, stays at its
+  full cap and is reported as **unreconciled**. It never shrinks back to a smaller figure.
+
+A spawn whose cap does not fit in a policy's remaining headroom is refused with
+`LIMIT_EXCEEDED` and creates no agent. A policy never changes a run's own cost cap, which
+the model gateway still enforces.
+
+A profile policy, and the spend counted in its windows, belong to the profile id, not to
+one profile record. Deleting a profile keeps its policies and its spend, and a profile
+created again with the same id inherits both. Delete the policies yourself if the new
+profile should start without them.
+
+The page has no spend controls yet, and no MCP tool manages policies. Use these dashboard
+routes. Each needs a signed-in dashboard session. A change also needs the session cookie,
+an `x-csrf-token` header set to the `csrfToken` field of the `GET /dashboard/api/v1/session`
+response, `Content-Type: application/json`, and the dashboard's own `Origin`; the
+dashboard page sends all of these itself.
+
+- `GET /dashboard/api/v1/model-spend` returns the summary and the policies. For the
+  current UTC day and month, the summary lists your account and every saved profile that
+  has a policy or spend this month. Each window reports `estimatedSettledMicros`,
+  `estimatedReservedMicros` (open runs at their cap), and `estimatedUnreconciledMicros`,
+  its start and end, its policy, and a `thresholdState` of `ok`, `warning` (from the
+  policy's `warnPercent`), or `exceeded` (at the limit).
+- `GET /dashboard/api/v1/model-spend/policies` returns only the policies.
+- `PUT /dashboard/api/v1/model-spend/policies` creates or updates a policy: `{ "policyId"?,
+  "profileId"?, "period": "day" | "month", "limitMicros", "warnPercent"?,
+  "expectedGeneration"? }`.
+  - To create one, send neither `policyId` nor `expectedGeneration`. A new profile policy
+    must name one of your saved profiles, and a scope and period that already has a policy
+    is refused as a conflict. `warnPercent` defaults to 80.
+  - To update one, send its `policyId` and current `generation` as `expectedGeneration`,
+    with the scope and period it already has; a policy cannot move to another scope or
+    period. A changed generation, or a policy that was deleted and created again for the
+    same scope and period, is refused as a conflict, so reload the policy and retry. A
+    policy that was deleted and not replaced is refused as not found; create it again. An
+    update that omits `warnPercent` keeps the current value.
+- `DELETE /dashboard/api/v1/model-spend/policies/<id>` with `{ "expectedGeneration" }`
+  deletes a policy. A policy whose profile was deleted is still listed so you can remove
+  it.
+
+Every policy change is recorded in the audit log with its id, period, and limit. The
+limits on values are in
+[`packages/contracts/src/model-spend-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-spend-schemas.ts).
+
 ## Where this page lives now
 
 The page is labelled **Models & Budgets** in the navigation and still lives at

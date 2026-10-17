@@ -133,6 +133,11 @@ export function registerDashboardControlRoutes(
     ...(request.query.capability !== undefined ? { capability: queryText(request.query.capability) } : {})
   })));
   router.post('/api/v1/model-catalog/refresh', endpoint('model_catalog_refresh', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  // Spend figures are estimates from the runner's ledger; a policy is an upsert keyed by scope and period.
+  router.get('/api/v1/model-spend', endpoint('model_spend_summary', () => ({})));
+  router.get('/api/v1/model-spend/policies', endpoint('model_spend_policy_list', () => ({})));
+  router.put('/api/v1/model-spend/policies', endpoint('model_spend_policy_set', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
+  router.delete('/api/v1/model-spend/policies/:id', endpoint('model_spend_policy_delete', (request) => ({ policyId: request.params.id, ...generation.parse(request.body) })));
   router.post('/api/v1/model-connection/verify', endpoint('model_connection_verify', (request) => (request.body && typeof request.body === 'object' ? request.body : {})));
   router.get('/api/v1/decision-plane/status', endpoint('decision_plane_status', () => ({})));
   router.get('/api/v1/audit', endpoint('audit_list', (request) => ({ cursor: request.query.cursor, limit: Number(request.query.limit ?? 50) })));

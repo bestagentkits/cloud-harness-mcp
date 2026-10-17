@@ -219,6 +219,16 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
   paths and digests, never content. If guidance cannot be scanned the agent
   ends `FAILED` with an "agent bootstrap failed" reason: retry, or spawn again
   with `repositoryContext: "none"` and a new idempotency key.
+- If the owner set an aggregate model spend policy (daily or monthly, for the
+  principal or one model profile), the spawn reserves its whole
+  `maxCostMicros` against it until the agent ends. A spawn that would exceed a
+  policy fails with `LIMIT_EXCEEDED` (429, not retryable) and creates no
+  agent; the message names the policy and the headroom left. Lower
+  `maxCostMicros`, or wait for running agents to finish, before retrying; a
+  refused spawn records nothing, so its idempotency key can be reused.
+  Aggregate spend is an estimate, not provider billing, and per-run caps are
+  unchanged. No MCP tool reads or changes policies: ask the owner to adjust
+  one in the dashboard rather than looking for a tool.
 
 <!-- cloudharness-example:agent_spawn
 {"prompt":"Implement feature","idempotencyKey":"spawn-subagent-1234","profileId":"default","proxyOperations":["files_read","files_write","files_apply_patch"]}

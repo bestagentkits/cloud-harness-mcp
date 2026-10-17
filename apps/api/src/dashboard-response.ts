@@ -233,6 +233,7 @@ export const DASHBOARD_RESPONSE_OPERATIONS = [
   'model_config_status', 'model_provider_list',
   'model_catalog_search', 'model_catalog_refresh',
   'model_connection_verify',
+  'model_spend_summary', 'model_spend_policy_list', 'model_spend_policy_set', 'model_spend_policy_delete',
   'knowledge_dashboard_list', 'knowledge_dashboard_get', 'knowledge_dashboard_create', 'knowledge_dashboard_update', 'knowledge_dashboard_delete', 'knowledge_dashboard_search', 'knowledge_dashboard_graph', 'knowledge_dashboard_link_create', 'knowledge_dashboard_link_delete',
   'mcp_server_list', 'mcp_server_get', 'mcp_server_create', 'mcp_server_update', 'mcp_server_delete',
   'mcp_server_set_enabled', 'mcp_server_set_permissions', 'mcp_server_replace_tools',
@@ -672,6 +673,9 @@ const descriptiveOperations = new Set<string>([
   'model_credential_create', 'model_profile_create', 'model_profile_update',
   // The runner composes credential-free check refusals (unknown or disabled credential, rate limit).
   'model_connection_verify',
+  // Spend policy refusals say whether the profile or the policy is missing, or that the policy changed
+  // or was replaced; they carry no credential.
+  'model_spend_policy_set', 'model_spend_policy_delete',
   // Package decisions answer with the store's plain refusal (digest mismatch, expired, rollback target gone,
   // stale generation, apply in flight).
   'package_plan_approve', 'package_plan_reject', 'package_rollback', 'package_remove'
@@ -704,6 +708,7 @@ const operationMessages: Partial<Record<DashboardResponseOperation, Record<strin
   package_remove: { FORBIDDEN: packagesDisabled, NOT_FOUND: 'Package binding not found.' },
   model_catalog_search: { NOT_FOUND: 'Provider credential not found.' },
   model_catalog_refresh: { NOT_FOUND: 'Provider credential not found.' },
+  model_spend_policy_delete: { NOT_FOUND: 'Model spend policy not found.' },
   // A terminal the runner no longer knows about, including every terminal from before a runner
   // restart, answers NOT_FOUND. The browser turns that into its "no longer available" state.
   terminal_read: { NOT_FOUND: 'This terminal is no longer available.' },

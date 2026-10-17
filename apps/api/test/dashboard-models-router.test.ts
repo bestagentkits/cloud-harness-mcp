@@ -20,6 +20,7 @@ const config: ApiConfig = {
 };
 
 const verificationRef = `vref_${'0'.repeat(32)}`;
+const spendPolicyId = `msp_${'p'.repeat(32)}`;
 
 type Reply = { status: number; text: string; json: Record<string, unknown> };
 let server: Server;
@@ -63,6 +64,24 @@ beforeEach(async () => {
       if (operation === 'model_connection_verify') {
         return { ok: true, message: 'checked', truncated: false, data: { outcome: 'verified', checkedAt: 1, elapsedMs: 5, provider: 'openai', model: 'gpt-test', apiMode: 'chat-completions', checks: [], estimatedCostMicros: null, verificationRef } };
       }
+      if (operation === 'model_spend_summary') {
+        return { ok: true, message: 'summarized', truncated: false, data: { summary: { isEstimate: true, windows: [] }, policies: [] } };
+      }
+      if (operation === 'model_spend_policy_set' && input.profileId === 'missing') {
+        return { ok: false, message: 'missing', truncated: false, error: { code: 'NOT_FOUND', message: 'model profile was not found', retryable: false } };
+      }
+      if (operation === 'model_spend_policy_set' && input.expectedGeneration === 8) {
+        return { ok: false, message: 'gone', truncated: false, error: { code: 'NOT_FOUND', message: 'model spend policy was not found', retryable: false } };
+      }
+      if (operation === 'model_spend_policy_set' && input.expectedGeneration === 9) {
+        return { ok: false, message: 'stale', truncated: false, error: { code: 'CONFLICT', message: 'model spend policy changed; reload it and retry', retryable: false } };
+      }
+      if (operation === 'model_spend_policy_set') {
+        return { ok: true, message: 'saved', truncated: false, data: { id: spendPolicyId, profileId: null, period: input.period, limitMicros: input.limitMicros, warnPercent: 80, generation: 1, createdAt: 1, updatedAt: 1 } };
+      }
+      if (operation === 'model_spend_policy_delete' && input.expectedGeneration === 9) {
+        return { ok: false, message: 'gone', truncated: false, error: { code: 'NOT_FOUND', message: 'model spend policy was not found', retryable: false } };
+      }
       if (operation === 'model_config_status') {
         return { ok: true, message: 'status', truncated: false, data: { status: { gatewaySynced: true } } };
       }
@@ -105,6 +124,8 @@ async function request(path: string, options: { method?: string; body?: unknown;
       origin: 'https://dashboard.example',
       cookie: sessionReq.cookie,
       ...(isMutation ? { 'content-type': 'application/json', 'x-csrf-token': sessionReq.token } : {}),
+      // Node does not chunk a DELETE body, so its length must be declared for the server to read it.
+      ...(options.body ? { 'content-length': String(Buffer.byteLength(JSON.stringify(options.body))) } : {}),
       ...options.headers
     };
     const req = httpRequest({ host: '127.0.0.1', port, path: `/dashboard/api/v1${path}`, method: options.method ?? 'GET', headers }, (res) => {
@@ -229,5 +250,44 @@ describe('Dashboard Models & Credentials Router', () => {
     const noCsrf = await request('/model-connection/verify', { method: 'POST', body: { profileId: 'coding' }, headers: { 'x-csrf-token': 'wrong' } });
     expect(noCsrf.status).toBe(403);
     expect(calls).toHaveLength(4);
+  });
+
+  it('routes spend summary and policy changes to the runner and passes their refusals through', async () => {
+    const summary = await request('/model-spend');
+    expect(summary.status).toBe(200);
+    expect(calls[0]).toMatchObject({ operation: 'model_spend_summary', input: {}, principal });
+    expect(summary.json).toEqual({ data: { summary: { isEstimate: true, windows: [] }, policies: [] }, truncated: false });
+
+    await request('/model-spend/policies');
+    expect(calls[1]).toMatchObject({ operation: 'model_spend_policy_list', input: {} });
+
+    const saved = await request('/model-spend/policies', { method: 'PUT', body: { period: 'day', limitMicros: 5_000_000 } });
+    expect(saved.status).toBe(200);
+    expect(calls[2]).toMatchObject({ operation: 'model_spend_policy_set', input: { period: 'day', limitMicros: 5_000_000 } });
+    expect(saved.json.data).toMatchObject({ id: spendPolicyId, generation: 1 });
+
+    const missing = await request('/model-spend/policies', { method: 'PUT', body: { profileId: 'missing', period: 'day', limitMicros: 1 } });
+    expect(missing.status).toBe(404);
+    // A set refuses both a missing profile and a missing policy as NOT_FOUND, so the runner's wording says which.
+    expect(missing.json).toEqual({ error: 'not_found', message: 'model profile was not found' });
+    const unknown = await request('/model-spend/policies', { method: 'PUT', body: { policyId: spendPolicyId, period: 'day', limitMicros: 1, expectedGeneration: 8 } });
+    expect(unknown.status).toBe(404);
+    expect(unknown.json).toEqual({ error: 'not_found', message: 'model spend policy was not found' });
+    const stale = await request('/model-spend/policies', { method: 'PUT', body: { policyId: spendPolicyId, period: 'day', limitMicros: 1, expectedGeneration: 9 } });
+    expect(stale.status).toBe(409);
+    expect(stale.json.message).toBe('model spend policy changed; reload it and retry');
+
+    const deleted = await request(`/model-spend/policies/${spendPolicyId}`, { method: 'DELETE', body: { expectedGeneration: 2 } });
+    expect(deleted.status).toBe(200);
+    expect(calls[6]).toMatchObject({ operation: 'model_spend_policy_delete', input: { policyId: spendPolicyId, expectedGeneration: 2 } });
+    const gone = await request(`/model-spend/policies/${spendPolicyId}`, { method: 'DELETE', body: { expectedGeneration: 9 } });
+    expect(gone.json).toEqual({ error: 'not_found', message: 'Model spend policy not found.' });
+
+    // A delete without a generation never reaches the runner.
+    const unguarded = await request(`/model-spend/policies/${spendPolicyId}`, { method: 'DELETE', body: { force: true } });
+    expect(unguarded.status).toBe(400);
+    const noCsrf = await request('/model-spend/policies', { method: 'PUT', body: { period: 'day', limitMicros: 1 }, headers: { 'x-csrf-token': 'wrong' } });
+    expect(noCsrf.status).toBe(403);
+    expect(calls).toHaveLength(8);
   });
 });

@@ -62,6 +62,7 @@ import { reviewPricing, savedPriceProvenance } from './model-catalog/pricing-rev
 import { createProviderHttpClient, type ProviderHttpClient } from './model-provider-http.js';
 import { ModelConnectionVerifier } from './model-verification/model-connection-verifier.js';
 import type { AgentGatewayControl } from './agent-gateway-control.js';
+import { ModelSpendLedger, type ModelSpendPolicyHooks } from './model-spend-ledger.js';
 import { packageApprovalUnavailable } from './config.js';
 import {
   PACKAGE_HISTORY_DEPTH, PackageStore, packageApplyView, packagePlanSummary,
@@ -84,7 +85,8 @@ export class DashboardControlService {
     private readonly gatewayControl?: AgentGatewayControl,
     private readonly keyring?: SecretKeyring,
     private readonly decisionPlane?: DecisionPlane,
-    private readonly providerHttp?: ProviderHttpClient
+    private readonly providerHttp?: ProviderHttpClient,
+    private spendLedger?: ModelSpendLedger
   ) {}
 
   /**
@@ -536,6 +538,21 @@ export class DashboardControlService {
         case 'model_catalog_search': return ok('Model catalog searched', ModelCatalogSearchResultSchema.parse(await this.catalog().search(principalId, parsed.input)));
         case 'model_catalog_refresh': return ok('Model catalog refreshed', ModelCatalogRefreshResultSchema.parse(await this.catalog().refresh(principalId, parsed.input)));
         case 'model_connection_verify': return ok('Model connection checked', await this.verifier().verify(principalId, parsed.input));
+        case 'model_spend_summary': {
+          const summary = this.spend().summary(principalId, Date.now());
+          // Every policy has a window, so the list is built from the same read as the windows and
+          // can never disagree with them.
+          return ok('Model spend summarized', { summary, policies: summary.windows.flatMap((window) => (window.policy ? [window.policy] : [])) });
+        }
+        case 'model_spend_policy_list': return ok('Model spend policies listed', { policies: this.spend().listPolicies(principalId) });
+        case 'model_spend_policy_set': return mutation('Model spend policy saved', this.spend().setPolicy(principalId, parsed.input, Date.now(), {
+          // A policy can name only one of the principal's saved profiles when it is created.
+          profileExists: (profileId) => this.modelProfiles?.getProfileRoute(principalId, profileId) !== undefined,
+          record: this.recordSpendPolicyChange(principalId)
+        }));
+        case 'model_spend_policy_delete': return mutation('Model spend policy deleted', this.spend().deletePolicy(principalId, parsed.input, {
+          record: this.recordSpendPolicyChange(principalId)
+        }));
         case 'model_config_status': {
           const activeProfiles = this.models().listProfiles(principalId).filter((p) => p.status === 'ACTIVE').length;
           const activeCreds = this.models().listCredentials(principalId).filter((c) => c.status === 'ACTIVE').length;
@@ -1496,6 +1513,25 @@ export class DashboardControlService {
     const credential = this.models().getCredential(principalId, credentialId);
     if (!credential) return {};
     return { priceProvenance: savedPriceProvenance(pricing, ref, this.catalog().cachedPrice(credential.provider, model)) };
+  }
+
+  /** The ledger shares the state database, so it is created on first use rather than wired by the caller. */
+  private spend(): ModelSpendLedger {
+    this.spendLedger ??= new ModelSpendLedger(this.principals.database);
+    return this.spendLedger;
+  }
+
+  /** Audits a policy change in the same transaction as the change, with ids, the period, and the limit only. */
+  private recordSpendPolicyChange(principalId: string): NonNullable<ModelSpendPolicyHooks['record']> {
+    return (action, policy) => this.metadata.recordAuditInTransaction(
+      this.principals.database, principalId, `model_spend_policy.${action}`, 'model_spend_policy', policy.id, policy.generation,
+      {
+        ...(policy.profileId === null ? {} : { profileId: policy.profileId }),
+        period: policy.period,
+        limitMicros: policy.limitMicros,
+        warnPercent: policy.warnPercent
+      }
+    );
   }
 
   private catalogService?: ModelCatalogService;

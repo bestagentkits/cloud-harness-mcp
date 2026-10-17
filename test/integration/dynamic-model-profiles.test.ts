@@ -18,7 +18,16 @@ import { SecretKeyring } from '../../apps/runner/src/secret-keyring.js';
 import { StateStore } from '../../apps/runner/src/state-store.js';
 import { createGatewayRuntime } from '../../apps/model-gateway/src/gateway.js';
 import { loadGatewayConfig } from '../../apps/model-gateway/src/config.js';
-import { ModelProfileIdSchema, RunnerAgentsConfigSchema } from '@cloud-harness/contracts';
+import { HarnessError, ModelProfileIdSchema, RunnerAgentsConfigSchema, type ApiConfig, type MetadataRunnerRequest, type RunnerConfig, type RunnerResponse } from '@cloud-harness/contracts';
+import express from 'express';
+import { createServer as createHttpServer } from 'node:http';
+import { createDashboardRouter } from '../../apps/api/src/dashboard-router.js';
+import type { DashboardRunnerClient } from '../../apps/api/src/dashboard-types.js';
+import { ArtifactStore } from '../../apps/runner/src/artifact-store.js';
+import { DashboardControlService } from '../../apps/runner/src/dashboard-control-service.js';
+import { MetadataStore } from '../../apps/runner/src/metadata-store.js';
+import { ModelSpendLedger } from '../../apps/runner/src/model-spend-ledger.js';
+import type { WorkspaceService } from '../../apps/runner/src/workspace-service.js';
 const tempDbPath = () => join(tmpdir(), `test-dyn-models-${randomBytes(8).toString('hex')}.sqlite`);
 
 async function ensureTlsFixtures(): Promise<{ certFile: string; keyFile: string }> {
@@ -836,6 +845,153 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     } finally {
       await gwRuntime.close();
       await new Promise<void>((res) => upstreamServer.close(() => res()));
+    }
+  });
+});
+
+describe('model spend policies over the dashboard API', () => {
+  const dashboardPrincipal = { kind: 'external' as const, issuer: 'https://team.cloudflareaccess.com', subject: 'operator' };
+  const apiConfig: ApiConfig = {
+    host: '127.0.0.1', port: 3000, authMode: 'cloudflare-access', ownerId: 'owner',
+    accessIssuer: 'https://team.cloudflareaccess.com', accessAudience: 'audience',
+    accessJwksUrl: 'https://team.cloudflareaccess.com/cdn-cgi/access/certs', runnerUrl: 'http://runner:3001',
+    apiKeyAuthEnabled: false, runnerToken: 'runner-token-that-is-longer-than-32-characters', publicHosts: ['dashboard.example'],
+    allowedOrigins: ['https://dashboard.example'], requestTimeoutMs: 2_000, maxBodyBytes: 65_536,
+    mcpGatewayTimeoutMs: 30_000, mcpGatewayMaxResponseBytes: 262_144, mcpGatewayMaxToolsPerServer: 500,
+    mcpGatewayMaxSchemaBytes: 65_536, mcpGatewayMaxCatalogBytes: 2_097_152, mcpGatewayMaxTraceRows: 20_000,
+    mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
+  } as ApiConfig;
+
+  function send(port: number, path: string, method = 'GET', body?: unknown, session?: { token: string; cookie: string }): Promise<{ status: number; json: Record<string, unknown> }> {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    return new Promise((resolveReply, reject) => {
+      const req = httpRequest({
+        host: '127.0.0.1', port, path: `/dashboard/api/v1${path}`, method,
+        headers: {
+          host: 'dashboard.example', origin: 'https://dashboard.example',
+          ...(session ? { cookie: session.cookie } : {}),
+          ...(payload ? { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)), 'x-csrf-token': session?.token ?? '' } : {})
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolveReply({ status: res.statusCode ?? 500, json: { ...(JSON.parse(data || '{}') as Record<string, unknown>), ...(res.headers['set-cookie'] ? { cookie: res.headers['set-cookie'][0] } : {}) } }));
+      });
+      req.on('error', reject);
+      if (payload) req.write(payload);
+      req.end();
+    });
+  }
+
+  it('refuses the next spawn over a policy set through the dashboard API, and reports it in the summary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'model-spend-http-'));
+    const databasePath = join(root, 'state.db');
+    const store = new StateStore(databasePath);
+    const keyring = new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]);
+    const metadata = new MetadataStore(databasePath, keyring);
+    const repo = new ModelProfileStateRepository(store.database, keyring);
+    const controls = new DashboardControlService(
+      { artifactRetentionSeconds: 60 } as RunnerConfig, store, metadata,
+      new ArtifactStore(store.database, { root: join(root, 'artifacts'), maxArtifactBytes: 1024, maxPrincipalBytes: 4096, defaultRetentionMs: 60_000, maxRetentionMs: 120_000 }),
+      {} as WorkspaceService, undefined, undefined, repo, undefined, keyring
+    );
+    // The runner's internal endpoint answers a refusal as an error envelope; this stands in for it.
+    const runner: DashboardRunnerClient = {
+      call: async () => { throw new Error('not used'); },
+      callInternal: async (operation, input, principal): Promise<RunnerResponse> => {
+        try {
+          return await controls.execute({ version: 2, principal, operation, input } as MetadataRunnerRequest);
+        } catch (error) {
+          if (!(error instanceof HarnessError)) throw error;
+          return { ok: false, message: error.message, truncated: false, error: { code: error.code, message: error.message, retryable: error.retryable } } as RunnerResponse;
+        }
+      },
+      callApiKeys: async () => { throw new Error('not used'); }
+    } as DashboardRunnerClient;
+    const app = express();
+    app.use((request: express.Request, _response, next) => {
+      (request as unknown as { auth: Record<string, unknown> }).auth = { token: 'cloudflare-access', clientId: 'operator', scopes: [], extra: { principal: dashboardPrincipal } };
+      next();
+    });
+    app.use('/dashboard', createDashboardRouter(apiConfig, runner));
+    const server = createHttpServer(app);
+    await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const principalId = store.resolvePrincipal(dashboardPrincipal);
+      const credential = repo.createCredential(principalId, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-key-123' });
+      repo.createProfile(principalId, {
+        profileId: ModelProfileIdSchema.parse('coding'), displayName: 'Coding', credentialId: credential.id, model: 'gpt-5',
+        apiMode: 'chat-completions', pricing: { inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000 },
+        limits: { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000 }, maxProxyOperations: ['files_read']
+      });
+
+      const sessionReply = await send(port, '/session');
+      const session = { token: String(sessionReply.json.csrfToken), cookie: String(sessionReply.json.cookie) };
+      const saved = await send(port, '/model-spend/policies', 'PUT', { profileId: 'coding', period: 'day', limitMicros: 1_500_000 }, session);
+      expect(saved.status).toBe(200);
+      expect(saved.json.data).toMatchObject({ profileId: 'coding', period: 'day', limitMicros: 1_500_000, generation: 1 });
+
+      const summary = await send(port, '/model-spend');
+      expect(summary.status).toBe(200);
+      expect(summary.json).toMatchObject({
+        truncated: false,
+        data: {
+          summary: { isEstimate: true, windows: expect.arrayContaining([expect.objectContaining({ scope: 'profile', profileId: 'coding', period: 'day', thresholdState: 'ok' })]) },
+          policies: [expect.objectContaining({ profileId: 'coding' })]
+        }
+      });
+
+      const agentConfig = RunnerAgentsConfigSchema.parse({
+        image: 'agent:test', gatewayUrl: 'http://model-gateway:3210',
+        profiles: [{
+          id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5',
+          inputMicrosPerMillionTokens: 1_000, outputMicrosPerMillionTokens: 2_000,
+          maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 2_000_000, maxProxyOperations: ['files_read']
+        }]
+      });
+      const manager = new AgentManager(agentConfig, store, {
+        repository: new AgentStateRepository(store.database, agentConfig.limits, store.instanceId()),
+        gateway: {
+          issue: async (input: Record<string, unknown>) => ({ ...input, lease: `lease_${'x'.repeat(48)}` }),
+          revokeAndDrain: async () => {}, cancelAndDrain: async () => {}
+        } as unknown as AgentGatewayControl,
+        // Admission is under test, not the runtime: the launch fails after the lease is issued.
+        launcher: { launch: async () => { throw new Error('launch is not under test'); }, cleanup: async () => {}, reconcile: async () => {}, inspect: async () => ({ container: false, network: false }) } as unknown as AgentLauncher,
+        modelProfiles: repo,
+        spendLedger: new ModelSpendLedger(store.database, { log: () => undefined }),
+        toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+      });
+      const now = Date.now();
+      const workspace = {
+        id: `ws_${'w'.repeat(24)}`, ownerId: principalId, idempotencyKey: 'workspace-key-1',
+        repositoryUrl: 'https://github.com/org/repo.git', repositoryRef: null, containerName: 'executor', workspacePath: '/tmp/ws-1',
+        environmentId: null, status: 'ACTIVE' as const, networkProfile: 'network-none' as const,
+        createdAt: now, lastActivityAt: now, expiresAt: now + 600_000, hardExpiresAt: now + 3_600_000,
+        gitAuthorName: null, gitAuthorEmail: null, mutationLockedUntil: null, generation: 1, error: null
+      };
+      store.create(workspace);
+      const spawn = (idempotencyKey: string) => manager.dispatch(principalId, workspace, 'agent_spawn', {
+        workspaceId: workspace.id, prompt: 'inspect', idempotencyKey, profileId: 'coding', proxyOperations: ['files_read'],
+        ttlSeconds: 60, maxOutputBytes: 65_536, maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostMicros: 1_000_000
+      });
+      try {
+        await expect(spawn('first-spawn-key')).resolves.toBeDefined();
+        await expect(spawn('second-spawn-key')).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED', message: expect.stringContaining('(profile coding, day)') });
+        const after = await send(port, '/model-spend');
+        const profileDay = (after.json.data as { summary: { windows: Array<Record<string, unknown>> } }).summary.windows
+          .find((window) => window.profileId === 'coding' && window.period === 'day');
+        // The failed first run is still committed at its cap, open or unreconciled depending on how far its cleanup got.
+        expect(Number(profileDay?.estimatedReservedMicros) + Number(profileDay?.estimatedUnreconciledMicros)).toBe(1_000_000);
+        expect(profileDay).toMatchObject({ estimatedSettledMicros: 0, thresholdState: 'ok' });
+      } finally {
+        await manager.stop();
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((closed) => server.close(() => closed()));
+      metadata.database.close();
+      store.close();
     }
   });
 });

@@ -389,6 +389,35 @@ back together. While running the older release:
   unknown confidence. Upgrading again does not restore them; re-enter the cache prices and
   tiers of every profile edited during the rollback.
 
+## Model spend ledger rollback and version mixing
+
+Aggregate spend policies are enforced against `model_spend_ledger` and
+`model_spend_policies`, which `initializeModelSpendSchema` in
+[`apps/runner/src/model-spend-ledger.ts`](../apps/runner/src/model-spend-ledger.ts)
+creates in place without a state schema version bump and without foreign keys. A
+rolled-back runner ignores both tables, so it enforces no aggregate policy, and no data
+change is needed. Open rows it leaves behind are settled conservatively by the sweep after
+the next upgrade. To lift enforcement during an incident without a rollback, delete the
+policy instead: read its id and `generation` from `GET /dashboard/api/v1/model-spend`,
+then send `DELETE /dashboard/api/v1/model-spend/policies/<id>` with
+`{ "expectedGeneration": <generation> }`. The DELETE is a dashboard mutation, so it also
+needs the dashboard session cookie, an `x-csrf-token` header set to the `csrfToken` field
+of the `GET /dashboard/api/v1/session` response, `Content-Type: application/json`, and an
+`Origin` header naming an origin in `API_ALLOWED_ORIGINS` that matches the request host;
+without them it is refused with `403 origin_required`, `403 forbidden_origin`, or `415`
+(see [troubleshooting](troubleshooting.md)). No MCP tool manages policies.
+
+The ledger settles each run from the settlement the model gateway returns on revoke. A
+gateway older than the runner returns no settlement and no boot id, so every run that
+reached lease issue is recorded as `unreconciled` at its full `maxCostMicros` cap. That
+over-counts aggregate spend but never under-counts it, and per-run caps are unaffected.
+Compose rolls the runner and the gateway together, so this only lasts while the two are
+mixed; expect tight policies to refuse spawns earlier than real spend would suggest until
+both run the same release. A spawn that the gateway explicitly refuses at issue (for
+example an unknown profile) releases its reservation at zero on any gateway version,
+while an ambiguous issue failure (exec failure, timeout, unreadable answer) is charged its
+cap as `unreconciled`, because the lease may exist.
+
 ## MCP Events deployment verification
 
 Automated tests prove [MCP Events](mcp-api.md#mcp-events-webhook-delivery)
