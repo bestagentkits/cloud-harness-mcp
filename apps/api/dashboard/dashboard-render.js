@@ -2784,7 +2784,7 @@ export function renderAutomationRuleDialog({ rule, connections = [], profiles = 
       <p class="field-help">Exact GitHub <code>owner/name</code>, without <code>.git</code>.</p>
       <div role="group" aria-label="Events">${eventBoxes}</div>
       <label for="automation-rule-label">Added label<input id="automation-rule-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
-      <label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>Ignore bot senders, including this harness's own GitHub App</span></label>
+      <label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>Ignore other bot senders (this harness's own GitHub App is always ignored)</span></label>
       <label for="automation-rule-actors">Allowed actors (optional)<input id="automation-rule-actors" name="actorAllowlist" autocomplete="off" spellcheck="false" placeholder="octocat, hubot" value="${escape(automationList(match.actorAllowlist).join(', '))}"></label>
       <p class="field-help">Comma-separated GitHub logins. Leave empty to let anyone who can label trigger the rule.</p>
     </fieldset>

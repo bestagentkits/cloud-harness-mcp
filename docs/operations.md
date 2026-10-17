@@ -95,7 +95,8 @@ one-off runner re-encryption entry point owned by
 the `secrets:rekey` package script or its compiled runner command.
 
 That command re-encrypts secret versions, workspace secret snapshots,
-downstream MCP OAuth grants and pending flows, and MCP Events webhook secrets. A grant is rewritten only while
+downstream MCP OAuth grants and pending flows, MCP Events webhook secrets, and
+webhook automation connection secrets. A grant is rewritten only while
 its generation is unchanged, so a concurrent token refresh is never overwritten.
 
 The command is interruptible and safe to resume; verify that it completes,
@@ -355,6 +356,27 @@ drops only the four event tables, and refuses while any subscription or outbox
 row exists unless data loss is explicitly allowed. A lossy downgrade discards
 every subscription and undelivered event; clients must subscribe again after a
 later upgrade, and nothing replays the lost events.
+
+## Webhook automation state
+
+Automation connections, rules, deliveries, workflows, and transitions live in
+additive, unversioned tables in the runner state database
+([`apps/runner/src/automation-schema.ts`](../apps/runner/src/automation-schema.ts)).
+An older runner ignores them, so a code-only rollback needs no data change, and
+the normal state backup covers them. Raw webhook payloads are never stored.
+Terminal workflows and deliveries are purged after the retention window in
+[`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
+
+To stop new runs, disable the connection (its deliveries then return `401`) or
+the rule (its queued workflows are cancelled) on the Dashboard. A workflow that
+already holds a workspace keeps running until it ends or is cancelled from its
+run page, which also cancels the agent and closes the workspace. Cancel running
+workflows before unsetting `AUTOMATIONS_ENABLED`: with the flag off the runner's
+engine does not tick, so an in-flight workflow is left until the flag returns
+and its workspace is reclaimed only by normal expiry. After a suspected secret leak, use **Rotate secret** on
+the connection and update the GitHub webhook at once: rotation has no grace
+window, so deliveries signed with the old secret return `401` until GitHub has
+the new one.
 
 ## Model catalog state schema rollback
 

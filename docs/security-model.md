@@ -26,7 +26,8 @@ Trusted control plane:
 Untrusted execution input:
 
 - repository content, dependencies, Git metadata, hook and deployment
-  manifests, skills, memories, and commands supplied through tools.
+  manifests, skills, memories, commands supplied through tools, and webhook
+  event data received by automations.
 
 The API is deliberately separated from Docker authority. A credential-free
 TCP proxy is the only Compose service with a loopback-published port. It joins
@@ -263,6 +264,52 @@ The executable owners are
 [`apps/api/src/events/webhook-sender.ts`](../apps/api/src/events/webhook-sender.ts),
 [`apps/api/src/mcp-gateway/url-policy.ts`](../apps/api/src/mcp-gateway/url-policy.ts),
 and [`apps/runner/src/mcp-event-service.ts`](../apps/runner/src/mcp-event-service.ts).
+
+## Webhook automation ingress
+
+Webhook automations (off unless `AUTOMATIONS_ENABLED`) let a GitHub label on an
+issue or pull request start a budgeted agent run. They add the only public
+route that carries no bearer, Access assertion, or API key, because GitHub
+cannot authenticate to Cloudflare Access. The decisions that keep that safe:
+
+- **The signature is the authentication.** Each connection has its own secret,
+  generated server-side, sealed with the runner keyring (and re-sealed by
+  `secrets:rekey`), and shown once on create or rotate. The runner checks
+  GitHub's HMAC-SHA256 signature in constant time over the exact bytes the API
+  forwarded uninflated and unparsed; nothing is parsed before it verifies.
+  Rotation takes effect immediately with no grace window. An unknown, disabled,
+  or deleted connection and a bad signature return the same `401`, so the route
+  is not an oracle for connection ids.
+- **The API only bounds the request.** The ingress is mounted only when
+  enabled, checks the host, and has its own process-local rate window so a
+  webhook burst cannot consume the MCP pre-auth budget. The runner adds
+  per-connection delivery dedupe and a per-connection delivery rate.
+- **Event data is untrusted input.** Only label additions on `issues` and
+  `pull_request` are admitted; other events and actions are recorded as ignored
+  and malformed bodies as quarantined. The raw payload is never stored, only
+  its digest and bounded normalized fields, and the title and body are cleared
+  after matching. Rule matching is deterministic and never consults a model.
+  The prompt places event text after the owner's instructions in a fenced
+  untrusted block whose delimiter is stripped from the event text.
+- **Triggers are narrow and opt-in.** A rule matches an exact repository,
+  label, and event set, starts disabled, ignores bot senders by default, and
+  always ignores this harness's own GitHub App so a posted comment cannot
+  re-trigger it. An optional actor allowlist narrows it further.
+- **The agent is read-only by default.** Each run opens a fresh `network-none`
+  workspace and spawns an agent with read-only proxy operations and the rule's
+  budget. Its only GitHub write is an optional single comment through the
+  brokered `issue_comment` action, with `@` mentions neutralized.
+
+Residual risk: anyone who can add a label in a watched repository can spend
+that rule's budget, bounded by cooldown, per-rule and instance concurrency, and
+the per-connection delivery rate; prompt injection through issue text can still
+shape the read-only answer that may be posted. Approvals, write-capable runs,
+non-GitHub providers, and MCP tools for automation management are not
+supported. The executable owners are
+[`apps/api/src/automations/webhook-ingress.ts`](../apps/api/src/automations/webhook-ingress.ts),
+[`apps/runner/src/automation-github.ts`](../apps/runner/src/automation-github.ts),
+[`apps/runner/src/automation-service.ts`](../apps/runner/src/automation-service.ts),
+and [`packages/contracts/src/automations-api.ts`](../packages/contracts/src/automations-api.ts).
 
 ## Downstream MCP OAuth client
 
