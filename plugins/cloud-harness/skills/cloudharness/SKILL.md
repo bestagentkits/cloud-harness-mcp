@@ -90,7 +90,10 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    80/443 through an attested host firewall), so omit it for normal work. Pass
    `networkProfile: 'network-none'` to block all executor egress only when the
    owner asks for isolation. Subagents require a network-disabled workspace, so
-   open a separate `network-none` workspace for `agent_spawn`. Workspaces
+   open a separate `network-none` workspace for `agent_spawn`. A spawn the
+   owner's estimated model spend policy cannot fit fails with non-retryable
+   `LIMIT_EXCEEDED`; lower `maxCostMicros` or wait for running agents to
+   finish rather than retrying unchanged. Workspaces
    automatically inherit active **Global Secrets** for your signed-in identity.
    When project-specific environment credentials are also required, provide
    `environmentId` with `confirmEnvironmentInjection: true` (environment secrets

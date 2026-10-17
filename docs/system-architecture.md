@@ -371,6 +371,30 @@ and
 [`apps/api/src/events/event-delivery-worker.ts`](../apps/api/src/events/event-delivery-worker.ts);
 the protocol contract is in [MCP API](mcp-api.md#mcp-events-webhook-delivery).
 
+Aggregate model spend is tracked in a durable ledger in the same database
+(`model_spend_ledger` and `model_spend_policies`, created additively without a
+schema version bump, so an older runner ignores them). A gateway lease is the
+reservation. Spawn admission reserves the run's whole cost cap against the
+principal's and the profile's daily and monthly UTC policies in the same write
+transaction that admits the spawn, so concurrent spawns are serialised and a
+replay never reserves twice. The gateway still enforces the per-run cap in
+memory, so a policy only bounds how many caps may be outstanding and needs no
+per-request round trip. When the runner revokes the lease, it settles the row
+from the gateway's frozen settlement: at the gateway's cost (which can exceed
+the cap on overrun, and is at least the cap when a request reported no usage),
+released at zero when the lease was never issued, or `unreconciled` at the cap
+when the lease may have been issued but the issuing gateway has no settlement.
+A gateway restart therefore over-counts rather than under-counts: open rows stay
+committed at their cap, and revoking a lost lease returns a new boot id. A
+runner restart keeps the ledger, and a sweep at startup and every minute
+settles rows whose agent is terminal or gone and prunes closed rows after 400
+days. Every aggregate figure is an estimate, never provider billing. A first
+crossing of a policy's warning threshold writes one structured
+`model spend threshold reached` log line with identifiers only. The owners are
+[`apps/runner/src/model-spend-ledger.ts`](../apps/runner/src/model-spend-ledger.ts),
+[`apps/runner/src/agent-manager.ts`](../apps/runner/src/agent-manager.ts), and
+[`packages/contracts/src/model-spend-schemas.ts`](../packages/contracts/src/model-spend-schemas.ts).
+
 The admission policy permits up to `MAX_ACTIVE_WORKSPACES_PER_OWNER` concurrent
 counted workspaces per principal (default 3; `1` restores single-workspace
 behaviour). Admission and promotion are counted atomically in

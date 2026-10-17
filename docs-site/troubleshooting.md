@@ -340,3 +340,14 @@ If an agent started but followed the wrong files, read the `repository_context` 
 1. The built-in agent runtime sends the full input on every turn, uses only function tools, and never sends these fields. If you see this error, a custom runtime or tool added one of them.
 2. Send the full conversation as `input` on each request, and send the prompt text inline instead of a stored prompt ID.
 3. Run tools in the agent as function or custom tools, and send images, audio, video, and files inline as a `data:` URL or base64.
+
+---
+
+### 30. `agent_spawn` fails with `LIMIT_EXCEEDED: model spend policy (...) would be exceeded`
+**Cause:** The owner has set a daily or monthly model spend policy, for the whole account or for one model profile. Every spawn reserves its whole `maxCostMicros` against the policies that apply, in UTC days and months, and this spawn's cap does not fit in what is left. A running agent counts at its full cap until it ends; then it counts at what the model gateway charged. A run whose gateway accounting was lost, for example to a gateway restart, keeps counting at its full cap and is marked unreconciled. All of these amounts are estimates, not provider billing. The error message names the policy, the estimated amount already committed, and the headroom left. The refused spawn created no agent, so nothing needs cleaning up.
+
+**Fix:**
+1. Lower `maxCostMicros` to fit the headroom named in the message, or wait for running agents to finish, then retry. The refused spawn recorded nothing, so the same idempotency key can be reused.
+2. If the limit is too tight, the owner can raise or remove the policy.
+
+Per-run caps are unchanged: a policy never raises or clamps an agent's own `maxCostMicros`, which the model gateway still enforces.
