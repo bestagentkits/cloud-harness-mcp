@@ -18,6 +18,7 @@ network isolation.
 | Install the skill, connect a client, use the MCP gateway surface, or understand trust boundaries | [Installation and security](references/installation-and-security.md) |
 | Choose a tool and locate its detailed contract | [Tool reference index](references/tool-reference.md) |
 | Open, recover, inspect, or close a workspace; interpret results/errors | [Workspace lifecycle and results](references/workspace-lifecycle-and-results.md) |
+| Work across several repositories in one workspace, choose `repositoryId`, or handle a `read-only` repository | [Multi-repository workspaces](references/multi-repository-workspaces.md) |
 | List, read, write, patch, move, delete, grep, or search symbols | [Files and search](references/files-and-search.md) |
 | Run a command, interactive shell, coding session, or dependency task | [Execution and tasks](references/execution-and-tasks.md) |
 | Install, update, roll back, or uninstall a durable CLI tool for every workspace | [Managed packages](references/managed-packages.md) |
@@ -127,6 +128,11 @@ poll `tasks_status`, `operation_wait`, or `agent_status` instead.
    records. Anything else returns `CONFLICT` naming the candidates.
    `workspace_open` never moves that preference, so repin deliberately when you
    switch repositories.
+   When one change spans repositories, open them together with `repositories`
+   instead of `repositoryUrl`; each checkout lives at `repos/<alias>/`, Git and
+   GitHub tools then need `repositoryId`, and `read-only` access blocks only
+   brokered writes, not file edits. Details:
+   [Multi-repository workspaces](references/multi-repository-workspaces.md).
    On a local server (its instructions say "local stdio workspace" or "local
    multi-workspace server"), workspaces are already open and `workspace_open`
    is refused: call `workspace_list`, choose by `name`/`root`, and pass that

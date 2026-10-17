@@ -1,7 +1,7 @@
 # Git and worktrees
 
-Cloud Harness Git tools operate only inside the workspace checkout and constrain
-remote transfer to `origin`. Inspect status and diff before mutations. Never
+Cloud Harness Git tools operate only inside the workspace checkout and constrain remote transfer to `origin`; in a [multi-repository workspace](multi-repository-workspaces.md) pass `repositoryId` to pick the checkout.
+Inspect status and diff before mutations. Never
 place credentials in a remote URL, ref, commit message, author field, or output.
 
 ## Inspect repository state

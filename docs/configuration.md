@@ -241,6 +241,15 @@ stop a fast-running process between checks. Operate with disk monitoring and a
 host reserve; use quota-backed dedicated storage before treating this as an
 untrusted service.
 
+`MAX_WORKSPACE_REPOSITORIES` bounds how many repositories one
+[multi-repository workspace](mcp-api.md#multi-repository-workspaces) may hold.
+It may only lower the schema ceiling, and a larger `repositories` set is
+refused with `LIMIT_EXCEEDED` before anything is admitted or cloned. The
+checkouts share one executor and the single `MAX_WORKSPACE_BYTES` ceiling, so
+raise it only with disk headroom. The default and bounds are owned by
+[`packages/contracts/src/config.ts`](../packages/contracts/src/config.ts).
+There is no Dashboard override.
+
 `JOBS_ROOT` contains ephemeral workspace directories. `STATE_DB` points to
 SQLite control metadata. `ARTIFACT_ROOT` contains retained, bounded dashboard
 snapshots and spooled task outputs; it must use runner-confined durable storage

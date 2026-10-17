@@ -19,6 +19,7 @@ To prevent unbounded memory growth and buffer overflow attacks, Cloud Harness MC
 | **Workspace Idle TTL** | 300s (5 min) | `WORKSPACE_IDLE_TTL_SECONDS` |
 | **Recoverable Grace** | 3600s (60 min) | `WORKSPACE_RECOVERABLE_GRACE_SECONDS` |
 | **Active Workspaces** | 3 per principal | `MAX_ACTIVE_WORKSPACES_PER_OWNER` |
+| **Repositories per Workspace** | 5 (at most 20) | `MAX_WORKSPACE_REPOSITORIES` |
 | **Max File List Entries** | 500 entries / page | `files_list.limit` |
 | **Max Active API Keys** | 10 per identity | Hard bound |
 | **Managed Package Release Size** | 512 MiB per release | `PACKAGES_MAX_RELEASE_BYTES` |
