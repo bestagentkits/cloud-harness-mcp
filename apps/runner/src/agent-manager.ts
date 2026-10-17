@@ -23,7 +23,8 @@ import {
   type AgentTombstone
 } from './agent-state-repository.js';
 import type { ModelProfileStateRepository } from './model-profile-state-repository.js';
-import { DockerAgentGatewayControl, type AgentGatewayControl } from './agent-gateway-control.js';
+import { DockerAgentGatewayControl, type AgentGatewayControl, type AgentLeaseRevocation } from './agent-gateway-control.js';
+import { ModelSpendLedger, type ModelSpendThresholdCrossing } from './model-spend-ledger.js';
 import {
   AgentProtocolChannel,
   MAX_TOOL_RESULT_RECORD_BYTES,
@@ -38,7 +39,14 @@ import type { StateStore, WorkspaceRecord } from './state-store.js';
 type PricedAgentModelProfile = AgentModelProfile & {
   cacheReadMicrosPerMillionTokens: number;
   cacheWriteMicrosPerMillionTokens: number;
+  /** The stable profile id that spend policies name: a saved profile's id, or the static profile's id. */
+  spendProfileKey: string;
+  revisionId: string | null;
 };
+
+/** How often, and after how long, open spend ledger rows are swept for settlement. */
+const SPEND_SWEEP_INTERVAL_MS = 60_000;
+const SPEND_SWEEP_MIN_AGE_MS = 60_000;
 
 const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
   agent_spawn: true,
@@ -98,6 +106,7 @@ export type AgentManagerDependencies = {
   toolExecutor: AgentToolExecutor;
   repositoryGuidance?: AgentRepositoryGuidance | undefined;
   modelProfiles?: ModelProfileStateRepository | undefined;
+  spendLedger?: ModelSpendLedger | undefined;
   now?: (() => number) | undefined;
 };
 
@@ -106,6 +115,9 @@ export class AgentManager {
   private readonly gateway: AgentGatewayControl;
   private readonly launcher: AgentLauncher;
   private readonly modelProfiles?: ModelProfileStateRepository | undefined;
+  private readonly spendLedger: ModelSpendLedger;
+  private lastSpendSweepAt = 0;
+  private spendSweep?: Promise<void> | undefined;
   private readonly runtimes = new Map<string, RuntimeContext>();
   private readonly launches = new Map<string, Promise<void>>();
   private readonly cleanupTargets = new Map<string, TerminalAgentStatus>();
@@ -125,6 +137,8 @@ export class AgentManager {
     this.gateway = dependencies.gateway ?? new DockerAgentGatewayControl();
     this.launcher = dependencies.launcher ?? new DockerAgentLauncher(this.gateway, store.instanceId());
     this.now = dependencies.now ?? Date.now;
+    // The ledger shares the state database so that admission commits atomically with the spawn.
+    this.spendLedger = dependencies.spendLedger ?? new ModelSpendLedger(store.database);
     this.epoch = this.repository.currentEpoch(store.instanceId());
     if (this.epoch === 0) {
       this.epoch = this.repository.bumpEpoch(store.instanceId(), this.now());
@@ -186,6 +200,8 @@ export class AgentManager {
       this.repository.openWorkspaceAdmission(workspace.ownerId, workspace.id, workspace.generation, this.now());
     }
     this.repository.maintainClosedWorkspaces(this.now());
+    // Every agent of the previous runner has been reconciled, so any row still open is an orphan.
+    await this.sweepSpend(0);
     this.accepting = true;
     this.reaper = setInterval(() => { void this.reap().catch(() => undefined); }, 1_000);
     this.reaper.unref();
@@ -298,6 +314,7 @@ export class AgentManager {
     const suffix = createHash('sha256').update(agentId).digest('hex').slice(0, 20);
     const payloadHash = digest({ ...input, workspaceId: workspace.id, proxyOperations: tools });
     const gatewayLeaseId = `lease_${randomBytes(24).toString('base64url')}`;
+    let crossings: ModelSpendThresholdCrossing[] = [];
     const reservation = this.repository.reserveSpawn({
       id: agentId,
       ownerId,
@@ -315,8 +332,23 @@ export class AgentManager {
       gatewayLeaseId,
       runtimeEpoch: this.epoch,
       now,
-      expiresAt: Math.min(workspace.expiresAt, now + budget.ttlSeconds * 1_000)
+      expiresAt: Math.min(workspace.expiresAt, now + budget.ttlSeconds * 1_000),
+      // The run's whole cost cap is reserved against every applicable spend policy. The gateway
+      // still enforces the cap itself; a policy only bounds how many caps may be outstanding.
+      admit: () => {
+        crossings = this.spendLedger.admit({
+          leaseId: gatewayLeaseId,
+          principalId: ownerId,
+          profileKey: profile.spendProfileKey,
+          revisionId: profile.revisionId,
+          agentId,
+          workspaceId: workspace.id,
+          reservedMicros: budget.maxCostMicros,
+          now
+        });
+      }
     });
+    this.spendLedger.reportThresholds(crossings);
     if (reservation.replayed) {
       return success('Agent spawn replayed', spawnData(reservation.record, true));
     }
@@ -387,6 +419,8 @@ export class AgentManager {
       // Guidance is composed before any lease or container exists, so an agent never starts its
       // first turn without the repository's applicable guidance, and a failed scan costs nothing.
       const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
+      // From here the lease may exist in the gateway, so an unsettled row is charged its whole cap.
+      this.spendLedger.markIssuing(record.gatewayLeaseId);
       const grant = await this.gateway.issue({
         leaseId: record.gatewayLeaseId,
         agentId: record.id,
@@ -396,6 +430,7 @@ export class AgentManager {
         maxOutputTokens: record.budget.maxOutputTokens,
         maxCostMicros: record.budget.maxCostMicros
       });
+      if (grant.gatewayBootId !== undefined) this.spendLedger.recordGatewayBoot(record.gatewayLeaseId, grant.gatewayBootId);
       const runtime = await this.launcher.launch(spec);
       const lease = grant.lease;
       const contextRef: { current?: RuntimeContext } = {};
@@ -714,8 +749,10 @@ export class AgentManager {
     try {
       const drainErrors: unknown[] = [];
       try {
-        await this.gateway.revokeAndDrain(record.gatewayLeaseId);
+        const revocation = revocationOf(await this.gateway.revokeAndDrain(record.gatewayLeaseId));
+        this.spendLedger.settle(record.gatewayLeaseId, revocation, this.now());
       } catch (error) {
+        // The ledger row stays open, so the cleanup retry or the spend sweep settles it later.
         drainErrors.push(error);
       }
       if (runtime) {
@@ -838,6 +875,35 @@ export class AgentManager {
       }
     }
     this.repository.maintainClosedWorkspaces(now);
+    if (now - this.lastSpendSweepAt >= SPEND_SWEEP_INTERVAL_MS) await this.sweepSpend(SPEND_SWEEP_MIN_AGE_MS);
+  }
+
+  /**
+   * Settles spend ledger rows whose agent is terminal or gone but whose lease was never
+   * settled, for example after a crash between issue and revoke. Revoke is idempotent and
+   * the gateway keeps settlements for a day, so retrying it either finds the settlement or
+   * closes the row by the conservative rules in ModelSpendLedger.settle. A revoke that fails
+   * leaves the row open, still committed at its cap, for the next sweep.
+   */
+  private async sweepSpend(minAgeMs: number): Promise<void> {
+    this.spendSweep ??= (async () => {
+      const now = this.now();
+      this.lastSpendSweepAt = now;
+      const open = this.spendLedger.listOpen(now - minAgeMs, this.config.limits.globalActive + 100);
+      for (const entry of open) {
+        const agent = this.repository.findAgent(entry.principalId, entry.workspaceId, entry.agentId);
+        if (agent && !terminalStatuses.has(agent.status)) continue;
+        let revocation: AgentLeaseRevocation | undefined;
+        try {
+          revocation = revocationOf(await this.gateway.revokeAndDrain(entry.leaseId));
+        } catch {
+          continue;
+        }
+        this.spendLedger.settle(entry.leaseId, revocation, this.now());
+      }
+      this.spendLedger.prune(now);
+    })().finally(() => { this.spendSweep = undefined; });
+    await this.spendSweep;
   }
 
   private reconcileUsage(context: RuntimeContext, usage: { input: number; output: number; cost: number }): void {
@@ -911,6 +977,8 @@ export class AgentManager {
         const pricing = resolveEffectivePricing(rev.pricing, provider);
         return {
           id: rev.id,
+          spendProfileKey: matched.id,
+          revisionId: rev.id,
           displayName: matched.displayName,
           provider: rev.model,
           model: rev.model,
@@ -934,7 +1002,9 @@ export class AgentManager {
     return {
       ...staticProfile,
       cacheReadMicrosPerMillionTokens: pricing.cacheReadMicrosPerMillionTokens,
-      cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens
+      cacheWriteMicrosPerMillionTokens: pricing.cacheWriteMicrosPerMillionTokens,
+      spendProfileKey: staticProfile.id,
+      revisionId: null
     };
   }
 
@@ -1025,6 +1095,11 @@ function toolError(requestId: string, message: string): AgentInputRecord {
     type: 'tool_result', requestId, final: true, isError: true,
     content: [{ type: 'text', text: JSON.stringify({ ok: false, message, error: { code: 'TOOL_ERROR', message, retryable: false }, truncated: false }) }]
   };
+}
+
+/** An older gateway, or a test double, returns nothing from a revoke. */
+function revocationOf(value: AgentLeaseRevocation | void): AgentLeaseRevocation | undefined {
+  return typeof value === 'object' && value !== null ? value : undefined;
 }
 
 function safeError(error: unknown): string {

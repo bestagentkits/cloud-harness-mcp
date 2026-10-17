@@ -147,6 +147,13 @@ export type AgentSpawnReservation = {
   runtimeEpoch?: number;
   now: number;
   expiresAt: number;
+  /**
+   * Runs inside the spawn transaction after the replay, capacity, and TTL checks
+   * and before the agent row is written, so a replay never calls it and
+   * concurrent spawns are serialised. Throwing refuses the spawn and rolls back
+   * whatever it wrote.
+   */
+  admit?: () => void;
 };
 export type AgentStatusTransition = {
   ownerId: string;
@@ -569,6 +576,7 @@ export class AgentStateRepository {
       if (new Set(proxyOperations).size !== proxyOperations.length) {
         throw new HarnessError('INVALID_INPUT', 'agent proxy operations must be unique');
       }
+      input.admit?.();
 
       this.database.prepare(`INSERT INTO agents
         (id, owner_id, workspace_id, workspace_generation, parent_agent_id, parent_generation,

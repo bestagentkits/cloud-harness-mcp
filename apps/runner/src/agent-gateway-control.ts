@@ -1,4 +1,5 @@
 import { hostname } from 'node:os';
+import { z } from 'zod';
 import { HarnessError } from '@cloud-harness/contracts';
 import { runDocker } from './docker-engine.js';
 
@@ -11,12 +12,60 @@ export type AgentLeaseGrant = {
   maxInputTokens: number;
   maxOutputTokens: number;
   maxCostMicros: number;
+  /** The gateway process that issued the lease. An older gateway omits it. */
+  gatewayBootId?: string;
 };
+
+const CounterSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+
+/**
+ * The gateway's frozen accounting for a revoked or expired lease. Unknown or
+ * negative fields are refused: the ledger charges from it, so a malformed
+ * settlement must never be read as a smaller charge.
+ */
+export const AgentLeaseSettlementSchema = z.object({
+  leaseId: z.string().min(1).max(256),
+  reason: z.enum(['revoked', 'expired']),
+  settledAt: CounterSchema,
+  initialInputTokens: CounterSchema,
+  initialOutputTokens: CounterSchema,
+  initialCostMicros: CounterSchema,
+  costMicros: CounterSchema,
+  overrunCostMicros: CounterSchema,
+  promptTokens: CounterSchema,
+  cacheReadTokens: CounterSchema,
+  cacheWriteTokens: CounterSchema,
+  outputTokens: CounterSchema,
+  reasoningTokens: CounterSchema,
+  requests: CounterSchema,
+  requestsWithoutUsage: CounterSchema
+}).strict();
+export type AgentLeaseSettlement = z.infer<typeof AgentLeaseSettlementSchema>;
+
+/**
+ * The outcome of a revoke. `gatewayBootId` and `settlement` are additive: an
+ * older gateway sends neither, and a gateway that never issued the lease (for
+ * example after a restart) sends no settlement.
+ */
+export type AgentLeaseRevocation = {
+  revoked: boolean;
+  gatewayBootId?: string;
+  settlement?: AgentLeaseSettlement;
+};
+
+const BootIdSchema = z.string().min(1).max(256);
+const IssueResponseSchema = z.object({ gatewayBootId: BootIdSchema.optional() });
+const RevokeResponseSchema = z.object({
+  revoked: z.boolean().optional(),
+  gatewayBootId: BootIdSchema.optional(),
+  settlement: AgentLeaseSettlementSchema.optional()
+});
 
 export interface AgentGatewayControl {
   gatewayContainer(): Promise<string>;
-  issue(input: Omit<AgentLeaseGrant, 'lease'>): Promise<AgentLeaseGrant>;
-  revokeAndDrain(leaseId: string): Promise<void>;
+  issue(input: Omit<AgentLeaseGrant, 'lease' | 'gatewayBootId'>): Promise<AgentLeaseGrant>;
+  /** Revokes the lease after its in-flight requests drain. A fake or older control may return nothing. */
+  revokeAndDrain(leaseId: string): Promise<AgentLeaseRevocation | void>;
   cancelAndDrain(requestId: string): Promise<void>;
   applySnapshot(snapshot: {
     credentials: Record<string, { provider: string; authMode?: string; secret: string }>;
@@ -45,16 +94,34 @@ export class DockerAgentGatewayControl implements AgentGatewayControl {
     return this.resolvedContainer;
   }
 
-  async issue(input: Omit<AgentLeaseGrant, 'lease'>): Promise<AgentLeaseGrant> {
+  async issue(input: Omit<AgentLeaseGrant, 'lease' | 'gatewayBootId'>): Promise<AgentLeaseGrant> {
     const response = await this.control({ operation: 'issue', ...input });
     if (!response.lease || !/^[A-Za-z0-9_-]{43,512}$/.test(response.lease)) {
       throw new HarnessError('UNAVAILABLE', 'model gateway omitted the issued lease', 503, true);
     }
-    return { ...input, lease: response.lease };
+    const parsed = IssueResponseSchema.safeParse(response);
+    if (!parsed.success) {
+      throw new HarnessError('UNAVAILABLE', 'model gateway returned an invalid lease issue response', 503, true);
+    }
+    return {
+      ...input,
+      lease: response.lease,
+      ...(parsed.data.gatewayBootId === undefined ? {} : { gatewayBootId: parsed.data.gatewayBootId })
+    };
   }
 
-  async revokeAndDrain(leaseId: string): Promise<void> {
-    await this.control({ operation: 'revoke', leaseId });
+  async revokeAndDrain(leaseId: string): Promise<AgentLeaseRevocation> {
+    const response = await this.control({ operation: 'revoke', leaseId });
+    const parsed = RevokeResponseSchema.safeParse(response);
+    if (!parsed.success || (parsed.data.settlement !== undefined && parsed.data.settlement.leaseId !== leaseId)) {
+      throw new HarnessError('UNAVAILABLE', 'model gateway returned an invalid lease settlement', 503, true);
+    }
+    const { revoked, gatewayBootId, settlement } = parsed.data;
+    return {
+      revoked: revoked === true,
+      ...(gatewayBootId === undefined ? {} : { gatewayBootId }),
+      ...(settlement === undefined ? {} : { settlement })
+    };
   }
 
   async cancelAndDrain(requestId: string): Promise<void> {
