@@ -1,3 +1,10 @@
+# [0.66.0-beta.18](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.17...v0.66.0-beta.18) (2026-10-17)
+
+
+### Features
+
+* **model-gateway:** charge cached, reasoning, and tiered usage conservatively and bound provider-side features ([#374](https://github.com/bestagentkits/cloud-harness-mcp/issues/374)) ([6bba491](https://github.com/bestagentkits/cloud-harness-mcp/commit/6bba4913c409e61fc99741ceb04e45404d68e6fb))
+
 # [0.66.0-beta.17](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.16...v0.66.0-beta.17) (2026-10-17)
 
 
