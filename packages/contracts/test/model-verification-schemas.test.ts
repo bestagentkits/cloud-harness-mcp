@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AgentModelProfileInputSchema,
   AgentModelProfileMetadataSchema,
+  AgentModelProfileUpdateInputSchema,
   MetadataRunnerRequestSchema,
   ModelConnectionVerifyInputSchema,
   ModelConnectionVerifyResultSchema,
@@ -54,6 +56,24 @@ describe('model connection verification contracts', () => {
       ...result, checks: [{ name: 'authentication', outcome: 'failed', elapsedMs: 1, errorCategory: 'mystery' }]
     })).toThrow();
     expect(() => ModelConnectionVerifyResultSchema.parse({ ...result, secret: 'x' })).toThrow();
+  });
+
+  it('carries an opaque verification reference from a draft check to a profile save', () => {
+    const verificationRef = 'vref_0123456789abcdef0123456789abcdef';
+    const result = { outcome: 'verified', checkedAt: 1, elapsedMs: 2, provider: 'openai', model: 'gpt-test', apiMode: 'responses', checks: [], estimatedCostMicros: null };
+    expect(ModelConnectionVerifyResultSchema.parse({ ...result, verificationRef }).verificationRef).toBe(verificationRef);
+    expect(() => ModelConnectionVerifyResultSchema.parse({ ...result, verificationRef: 'rev_0123456789abcdef0123' })).toThrow();
+
+    const profile = {
+      profileId: 'coding', displayName: 'Coding', credentialId, model: 'gpt-test', apiMode: 'responses',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1, maxOutputTokens: 1, maxCostMicros: 1 },
+      maxProxyOperations: ['files_read']
+    };
+    expect(AgentModelProfileInputSchema.parse({ ...profile, verificationRef }).verificationRef).toBe(verificationRef);
+    expect(AgentModelProfileUpdateInputSchema.parse({ expectedGeneration: 1, verificationRef }).verificationRef).toBe(verificationRef);
+    expect(() => AgentModelProfileInputSchema.parse({ ...profile, verificationRef: 'anything' })).toThrow();
+    expect(() => AgentModelProfileUpdateInputSchema.parse({ expectedGeneration: 1, verification: { outcome: 'verified' } })).toThrow();
   });
 
   it('adds lastVerification as an optional field to credential and profile metadata', () => {

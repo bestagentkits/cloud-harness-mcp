@@ -3,6 +3,7 @@ import {
   getModelProvider,
   resolveProviderUpstreamUrl,
   type AgentModelApiMode,
+  type AgentModelProfileMetadata,
   type AgentModelPricing,
   type ModelConnectionVerifyInput,
   type ModelConnectionVerifyResult,
@@ -10,6 +11,7 @@ import {
   type ModelVerificationCheck,
   type ModelVerificationCheckName,
   type ModelVerificationOutcome,
+  type ModelVerificationRef,
   type ModelVerificationUsage,
   type ProviderAuthMode
 } from '@cloud-harness/contracts';
@@ -19,6 +21,7 @@ import {
   classifyHttpFailure, classifyStreamError, classifyTransportFailure, isScopeRefusal, isToolsUnsupported, outcomeForCategory, sanitizeMessage,
   type ClassifiedFailure
 } from './failure-classification.js';
+import { DraftVerificationStore } from './draft-verification-store.js';
 import { calledTool, createStreamProbe, parseNonStreamedAnswer } from './stream-probe.js';
 import { VerificationRateLimiter } from './verification-rate-limiter.js';
 
@@ -63,6 +66,7 @@ export interface ModelConnectionVerifierOptions {
   audit?: VerificationAudit;
   now?: () => number;
   rateLimiter?: VerificationRateLimiter;
+  drafts?: DraftVerificationStore;
   // Overrides the run's total time budget; tests use a short one.
   totalBudgetMs?: number;
 }
@@ -174,11 +178,13 @@ function addUsage(left: ModelVerificationUsage | undefined, right: ModelVerifica
 export class ModelConnectionVerifier {
   private readonly now: () => number;
   private readonly rateLimiter: VerificationRateLimiter;
+  private readonly drafts: DraftVerificationStore;
   private readonly totalBudgetMs: number;
 
   constructor(private readonly options: ModelConnectionVerifierOptions) {
     this.now = options.now ?? Date.now;
     this.rateLimiter = options.rateLimiter ?? new VerificationRateLimiter();
+    this.drafts = options.drafts ?? new DraftVerificationStore(this.now);
     this.totalBudgetMs = options.totalBudgetMs ?? TOTAL_BUDGET_MS;
   }
 
@@ -243,7 +249,53 @@ export class ModelConnectionVerifier {
         ...(usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : {})
       }
     );
-    return result;
+    const verificationRef = this.rememberDraft(principalId, target, result);
+    return verificationRef ? { ...result, verificationRef } : result;
+  }
+
+  /**
+   * Keeps the result on the new revision a profile save just created, when a
+   * draft check by the same principal covered exactly that route: credential,
+   * key version, model, API mode, and resolved upstream. Any other reference,
+   * including an expired or spent one, leaves the save as it is: the returned
+   * profile simply has no `lastVerification`.
+   */
+  attachDraftVerification(principalId: string, ref: string | undefined, profile: AgentModelProfileMetadata): AgentModelProfileMetadata {
+    const revision = profile.activeRevision;
+    if (ref === undefined || !revision) return profile;
+    const credential = this.options.repository.getCredential(principalId, revision.credentialId);
+    if (!credential) return profile;
+    const result = this.drafts.take(principalId, ref, {
+      credentialId: revision.credentialId,
+      credentialVersion: credential.activeVersion,
+      model: revision.model,
+      apiMode: revision.apiMode,
+      upstreamUrl: revision.upstreamUrl
+    });
+    if (!result) return profile;
+    const recorded = this.options.repository.recordVerification(principalId, {
+      targetKind: 'profile', targetId: profile.id, revisionId: revision.id, credentialVersion: null,
+      outcome: result.outcome, resultJson: JSON.stringify(result), checkedAt: result.checkedAt
+    });
+    return recorded ? { ...profile, lastVerification: { outcome: result.outcome, checkedAt: result.checkedAt, revisionId: revision.id } } : profile;
+  }
+
+  /** Only a draft that names a model can match a profile, and only a route that resolves can be saved. */
+  private rememberDraft(principalId: string, target: VerificationTarget, result: ModelConnectionVerifyResult): ModelVerificationRef | undefined {
+    if (target.kind !== 'draft' || target.model === null) return undefined;
+    let upstreamUrl: string;
+    try {
+      upstreamUrl = target.upstreamUrl();
+    } catch {
+      return undefined;
+    }
+    return this.drafts.remember(principalId, {
+      credentialId: target.credential.id,
+      credentialVersion: target.credential.activeVersion,
+      model: target.model,
+      apiMode: target.apiMode,
+      upstreamUrl
+    }, result);
   }
 
   private resolveTarget(principalId: string, input: ModelConnectionVerifyInput): VerificationTarget {

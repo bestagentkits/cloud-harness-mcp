@@ -496,12 +496,12 @@ export class DashboardControlService {
         }
         case 'model_profile_list': return ok('Agent model profiles listed', { profiles: this.models().listProfiles(principalId) });
         case 'model_profile_create': {
-          const created = this.models().createProfile(principalId, parsed.input);
+          const created = this.verifier().attachDraftVerification(principalId, parsed.input.verificationRef, this.models().createProfile(principalId, parsed.input));
           await this.syncGateway();
           return mutation('Agent model profile created', created);
         }
         case 'model_profile_update': {
-          const updated = this.models().updateProfile(principalId, parsed.input.profileId, parsed.input);
+          const updated = this.verifier().attachDraftVerification(principalId, parsed.input.verificationRef, this.models().updateProfile(principalId, parsed.input.profileId, parsed.input));
           await this.syncGateway();
           return mutation('Agent model profile updated', updated);
         }

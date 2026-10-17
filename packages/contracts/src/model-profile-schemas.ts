@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ModelCredentialIdSchema, ModelProfileIdSchema, ModelRevisionIdSchema } from './identifiers.js';
+import { ModelCredentialIdSchema, ModelProfileIdSchema, ModelRevisionIdSchema, ModelVerificationRefSchema } from './identifiers.js';
 import { AgentProxyOperationSchema } from './runner-api.js';
 
 export const ModelProviderKindSchema = z.enum([
@@ -97,7 +97,10 @@ export const AgentModelProfileInputSchema = z.object({
   customUpstreamUrl: z.string().url().max(1024).optional(),
   pricing: AgentModelPricingSchema,
   limits: AgentModelLimitsSchema,
-  maxProxyOperations: z.array(AgentProxyOperationSchema).min(1).max(10)
+  maxProxyOperations: z.array(AgentProxyOperationSchema).min(1).max(10),
+  // A draft connection check of this exact route; the runner attaches its stored
+  // result to the new revision on a full match and otherwise ignores it.
+  verificationRef: ModelVerificationRefSchema.optional()
 }).strict();
 export type AgentModelProfileInput = z.infer<typeof AgentModelProfileInputSchema>;
 
@@ -110,7 +113,8 @@ export const AgentModelProfileUpdateInputSchema = z.object({
   pricing: AgentModelPricingSchema.optional(),
   limits: AgentModelLimitsSchema.optional(),
   maxProxyOperations: z.array(AgentProxyOperationSchema).min(1).max(10).optional(),
-  expectedGeneration: z.number().int().positive()
+  expectedGeneration: z.number().int().positive(),
+  verificationRef: ModelVerificationRefSchema.optional()
 }).strict();
 export type AgentModelProfileUpdateInput = z.infer<typeof AgentModelProfileUpdateInputSchema>;
 

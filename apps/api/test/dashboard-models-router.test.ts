@@ -19,6 +19,8 @@ const config: ApiConfig = {
   mcpGatewayMaxConnections: 32, mcpGatewayAllowInsecureHttp: false, mcpGatewayAllowPrivateEndpoints: false
 };
 
+const verificationRef = `vref_${'0'.repeat(32)}`;
+
 type Reply = { status: number; text: string; json: Record<string, unknown> };
 let server: Server;
 let port: number;
@@ -43,6 +45,9 @@ beforeEach(async () => {
       if (operation === 'model_provider_list') {
         return { ok: true, message: 'listed', truncated: false, data: { providers: [{ id: 'google', displayName: 'Google Gemini' }] } };
       }
+      if (operation === 'model_profile_create' && input.verificationRef) {
+        return { ok: true, message: 'created', truncated: false, data: { id: input.profileId, lastVerification: { outcome: 'verified', checkedAt: 1, revisionId: 'rev_12345678901234567890' } } };
+      }
       if (operation === 'model_profile_create') {
         return { ok: false, message: 'refused', truncated: false, error: { code: 'INVALID_INPUT', message: 'Google Gemini does not support the responses API mode; supported: chat-completions', retryable: false } };
       }
@@ -56,7 +61,7 @@ beforeEach(async () => {
         return { ok: false, message: 'limited', truncated: false, error: { code: 'LIMIT_EXCEEDED', message: 'Connection checks are limited to 6 per minute. Retry in 30 s.', retryable: true } } as RunnerResponse;
       }
       if (operation === 'model_connection_verify') {
-        return { ok: true, message: 'checked', truncated: false, data: { outcome: 'verified', checkedAt: 1, elapsedMs: 5, provider: 'openai', model: 'gpt-test', apiMode: 'chat-completions', checks: [], estimatedCostMicros: null } };
+        return { ok: true, message: 'checked', truncated: false, data: { outcome: 'verified', checkedAt: 1, elapsedMs: 5, provider: 'openai', model: 'gpt-test', apiMode: 'chat-completions', checks: [], estimatedCostMicros: null, verificationRef } };
       }
       if (operation === 'model_config_status') {
         return { ok: true, message: 'status', truncated: false, data: { status: { gatewaySynced: true } } };
@@ -195,7 +200,7 @@ describe('Dashboard Models & Credentials Router', () => {
     expect(limited.json).toMatchObject({ error: 'limit_exceeded', message: 'The model catalog was refreshed recently. Try again in 12 seconds.' });
   });
 
-  it('forwards POST /model-connection/verify to the runner and surfaces its rate limit message', async () => {
+  it('forwards POST /model-connection/verify to the runner, carries its verification reference to profile saves, and surfaces its rate limit message', async () => {
     const verified = await request('/model-connection/verify', {
       method: 'POST',
       body: { credentialId: 'cred_12345678901234567890', model: 'gpt-test', checks: { tools: true } }
@@ -207,13 +212,22 @@ describe('Dashboard Models & Credentials Router', () => {
       principal
     });
     expect((verified.json.data as Record<string, unknown>).outcome).toBe('verified');
+    // The draft check's opaque reference reaches the browser so the next save can name it.
+    expect((verified.json.data as Record<string, unknown>).verificationRef).toBe(verificationRef);
 
     const limited = await request('/model-connection/verify', { method: 'POST', body: { credentialId: 'cred_limited_1234567890ab' } });
     expect(limited.status).toBe(429);
     expect(limited.json.message).toBe('Connection checks are limited to 6 per minute. Retry in 30 s.');
 
+    const created = await request('/agent-model-profiles', { method: 'POST', body: { profileId: 'coding', verificationRef } });
+    expect(created.status).toBe(200);
+    expect(calls[2]).toMatchObject({ operation: 'model_profile_create', input: { profileId: 'coding', verificationRef } });
+    expect((created.json.data as Record<string, unknown>).lastVerification).toEqual({ outcome: 'verified', checkedAt: 1, revisionId: 'rev_12345678901234567890' });
+    await request('/agent-model-profiles/coding', { method: 'PATCH', body: { expectedGeneration: 1, verificationRef } });
+    expect(calls[3]).toMatchObject({ operation: 'model_profile_update', input: { profileId: 'coding', expectedGeneration: 1, verificationRef } });
+
     const noCsrf = await request('/model-connection/verify', { method: 'POST', body: { profileId: 'coding' }, headers: { 'x-csrf-token': 'wrong' } });
     expect(noCsrf.status).toBe(403);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(4);
   });
 });

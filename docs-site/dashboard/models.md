@@ -117,7 +117,11 @@ the input and result schemas are in
   model, API mode, and upstream.
 - `{ "credentialId": "cred_…", "model": "…", "apiMode": "…", "customUpstreamUrl": "…" }`
   checks unsaved settings. A draft never creates or changes a profile, revision, or
-  credential. Without a model only the key is checked. A draft for a Custom credential
+  credential. Without a model only the key is checked. With a model the result includes a
+  `verificationRef`; passing it as `verificationRef` when creating or updating a profile
+  with the same route keeps the result on the new revision (see
+  [the profile wizard](#the-profile-wizard)). A reference that does not match is ignored
+  rather than refused, and the saved profile simply has no `lastVerification`. A draft for a Custom credential
   sends the key to the `customUpstreamUrl` you submit, exactly as saving a profile with that
   upstream would, so only submit an upstream you trust with the key.
 - `"checks": { "inference": false, "tools": true }` turns the paid checks off or on.
@@ -164,7 +168,8 @@ target, credential, model, API mode, elapsed time, and token counts, never the k
 
 The latest result appears as `lastVerification` on credentials and profiles. A profile's
 result belongs to the revision it checked, so saving a new revision shows it as not verified
-again; rotating a key does the same for the credential. Deleting a profile or credential
+again, unless the save names a matching draft check; rotating a key does the same for the
+credential. Deleting a profile or credential
 deletes its results.
 
 ## Configuring Model Profiles
@@ -233,9 +238,16 @@ An edit keeps the profile ID and counts as verified only when the route is uncha
 saved revision was verified. A duplicate gets a new unique ID and starts with no operations
 inherited as already approved.
 
-> A connection check run inside the wizard is not stored on the profile it saves, because
-> verification results belong to a saved revision. A newly saved profile therefore shows
-> **Not verified** until you run **Verify** from the list.
+A connection check run inside the wizard is kept on the revision the save creates, so a
+just-checked profile does not need a second paid check. The runner holds the draft result
+itself and gives the browser only an opaque, single-use `verificationRef` that expires after
+a short time (`DRAFT_VERIFICATION_TTL_MS` in
+[`draft-verification-store.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/apps/runner/src/model-verification/draft-verification-store.ts));
+the wizard sends it with the save. The runner keeps the result only when the
+save is by the same principal and uses exactly the checked credential, key version, model,
+API mode, and resolved upstream. Otherwise the save still succeeds and the profile shows
+**Not verified** until you run **Verify** from the list. A runner restart also forgets
+pending draft results.
 
 ### The profile list
 

@@ -293,6 +293,15 @@ export function draftVerificationInput(state, provider, { tools = false } = {}) 
 }
 
 /**
+ * The reference of the last check of exactly the route being saved, if it
+ * returned one. The runner keeps that check's result for the new revision only
+ * when it matches the route it saves; the browser never sends the result itself.
+ */
+export function draftVerificationRef(state, routeKey) {
+  return state.verification?.key === routeKey ? state.verification.result?.verificationRef : undefined;
+}
+
+/**
  * The starting state of a wizard run. Edit keeps every saved value; duplicate
  * copies them under a fresh, collision-safe ID; create starts read-only.
  */
@@ -1151,9 +1160,11 @@ export function createModelWizard({ dialog, insert, api, announce, onSaved }) {
       return;
     }
     setStatus('Saving…', 'saving');
+    const verificationRef = draftVerificationRef(state, gate.routeKey);
+    const requestBody = verificationRef ? { ...request.body, verificationRef } : request.body;
     try {
-      if (request.kind === 'update') await api.updateProfile(request.profileId, request.body);
-      else await api.createProfile(request.body);
+      if (request.kind === 'update') await api.updateProfile(request.profileId, requestBody);
+      else await api.createProfile(requestBody);
     } catch (error) {
       if (isCurrent(token)) setStatus(errorMessage(error, 'The profile could not be saved.'), 'error');
       return;

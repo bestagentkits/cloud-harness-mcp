@@ -2,7 +2,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ModelProfileIdSchema } from '@cloud-harness/contracts';
+import { ModelProfileIdSchema, ModelVerificationRefSchema } from '@cloud-harness/contracts';
 import { ModelProfileStateRepository } from '../src/model-profile-state-repository.js';
 import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
@@ -220,5 +220,23 @@ describe('ModelProfileStateRepository', () => {
     }
     setStatus.run('ACTIVE', cred.id);
     expect(repo.decryptCredentialSecret(p1, cred.id).secret).toBe('sk-inactive-secret');
+  });
+
+  it('stores nothing for a verification reference on its own; only the runner\'s attach step keeps a result', () => {
+    const { store, repo, p1 } = setup();
+    const cred = repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-ref-secret' });
+    const verificationRef = ModelVerificationRefSchema.parse('vref_0123456789abcdef0123456789abcdef');
+    const created = repo.createProfile(p1, {
+      profileId: ModelProfileIdSchema.parse('coding'), displayName: 'Coding', credentialId: cred.id, model: 'gpt-test', apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 10, maxOutputTokens: 10, maxCostMicros: 10 },
+      maxProxyOperations: ['files_read'], verificationRef
+    });
+    const updated = repo.updateProfile(p1, created.id, { model: 'gpt-other', expectedGeneration: created.generation, verificationRef });
+    expect(created.lastVerification).toBeUndefined();
+    expect(updated.lastVerification).toBeUndefined();
+    expect(repo.listProfiles(p1)[0]?.lastVerification).toBeUndefined();
+    expect(repo.listCredentials(p1)[0]?.lastVerification).toBeUndefined();
+    expect((store.database.prepare('SELECT count(*) AS count FROM model_verification_results').get() as { count: number }).count).toBe(0);
   });
 });

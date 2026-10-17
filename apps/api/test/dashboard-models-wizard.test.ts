@@ -4,7 +4,7 @@ import './dashboard-test-dom.js';
 import {
   MUTATING_PROXY_OPERATIONS, PERMISSION_PRESETS, PROXY_OPERATIONS,
   applyCatalogEntry, applyCustomModel, buildProfileRequest, catalogFreshnessNotice, catalogOptions, createModelCombobox,
-  deriveProfileSlug, dollarsFromMicros, draftRouteKey, draftVerificationInput, effectiveUpstream, formatPrice, initialWizardState,
+  deriveProfileSlug, dollarsFromMicros, draftRouteKey, draftVerificationInput, draftVerificationRef, effectiveUpstream, formatPrice, initialWizardState,
   microsFromDollars, permissionDiff, permissionPresetFor, pricingDrift, priceProvenanceText, profileVerification, providerApiModes, resetUntouchedPricing,
   renderModelOptions, renderModelsPage, renderPermissionDiff, renderSaveGate, renderVerificationResult, renderWizardStep, renderWizardSteps,
   createModelWizard, wizardSaveGate
@@ -15,6 +15,7 @@ import { TreeElement } from './dashboard-tree-dom.js';
 const credentialId = `cred_${'a'.repeat(24)}`;
 const customCredentialId = `cred_${'c'.repeat(24)}`;
 const revisionId = `mrev_${'r'.repeat(24)}`;
+const verificationRefValue = `vref_${'0'.repeat(32)}`;
 
 const providers = [
   {
@@ -292,6 +293,62 @@ describe('model profile wizard rules', () => {
     applyCatalogEntry(state, entry());
     const input = draftVerificationInput(state, openai, { tools: true });
     expect(input).toEqual({ credentialId, model: 'gpt-5-mini', apiMode: 'chat-completions', checks: { tools: true } });
+  });
+
+  it('sends the check reference only for the route it checked', () => {
+    const state = createDraft();
+    applyCatalogEntry(state, entry());
+    const { routeKey } = wizardSaveGate(state, openai);
+    expect(draftVerificationRef(state, routeKey)).toBeUndefined();
+    state.verification = { key: routeKey, error: 'The connection could not be checked.' };
+    expect(draftVerificationRef(state, routeKey)).toBeUndefined();
+    state.verification = { key: routeKey, result: { outcome: 'limited', verificationRef: verificationRefValue } };
+    expect(draftVerificationRef(state, routeKey)).toBe(verificationRefValue);
+    state.apiMode = 'responses';
+    expect(draftVerificationRef(state, wizardSaveGate(state, openai).routeKey)).toBeUndefined();
+  });
+
+  it('saves with the reference of a check of the same route, and without it once the route changed', async () => {
+    class Node extends FakeElement { dataset: Record<string, string> = {}; querySelector() { return null; } }
+    const parts: Record<string, Node> = Object.fromEntries(['#model-profile-form', '#model-wizard-body', '#model-wizard-steps', '#model-wizard-status',
+      '#model-wizard-back', '#submit-model-profile', '#model-profile-title'].map((id) => [id, new Node()]));
+    const dialog = Object.assign(new Node(), { querySelector: (selector: string) => parts[selector] ?? null });
+    const api = {
+      verify: vi.fn(async () => ({ data: { outcome: 'verified', checkedAt: 1, checks: [], verificationRef: verificationRefValue } })),
+      createProfile: vi.fn(async () => ({})),
+      updateProfile: vi.fn(async () => ({}))
+    };
+    const wizard = createModelWizard({ dialog, insert: () => undefined, api, announce: () => undefined, onSaved: async () => undefined });
+    const form = parts['#model-profile-form']!;
+    const verifyButton = { dataset: { wizardAction: 'verify' }, disabled: false, textContent: '' };
+    const check = async () => {
+      form.dispatch('click', { target: { closest: () => verifyButton } });
+      await vi.waitFor(() => expect(form.getAttribute('aria-busy')).toBeUndefined());
+    };
+    const submit = async (spy: typeof api.createProfile) => {
+      const calls = spy.mock.calls.length;
+      form.dispatch('submit', { preventDefault: () => undefined });
+      await vi.waitFor(() => expect(spy.mock.calls.length).toBe(calls + 1));
+      return (spy.mock.calls.at(-1) as unknown[]).at(-1) as Record<string, unknown>;
+    };
+
+    wizard.open({ mode: 'create', profiles: [], credentials, providers });
+    Object.assign(wizard.state, { provider: 'openai', credentialId, step: 4 });
+    applyCatalogEntry(wizard.state, entry());
+    await check();
+    expect(api.verify).toHaveBeenCalledWith({ credentialId, model: 'gpt-5-mini', apiMode: 'chat-completions' });
+    expect(await submit(api.createProfile)).toMatchObject({ profileId: 'gpt-5-mini', model: 'gpt-5-mini', verificationRef: verificationRefValue });
+
+    // A different route after the check needs its own check or the unverified choice, and sends no reference.
+    wizard.state.apiMode = 'responses';
+    wizard.state.saveUnverifiedKey = wizardSaveGate(wizard.state, openai).routeKey;
+    expect(await submit(api.createProfile)).not.toHaveProperty('verificationRef');
+
+    const saved = profile();
+    wizard.open({ mode: 'edit', profile: saved, profiles: [saved], credentials, providers });
+    Object.assign(wizard.state, { step: 4, model: 'gpt-5-mini' });
+    await check();
+    expect(await submit(api.updateProfile)).toMatchObject({ model: 'gpt-5-mini', expectedGeneration: 3, verificationRef: verificationRefValue });
   });
 
   it('reads a profile check as current only for the revision it checked', () => {
