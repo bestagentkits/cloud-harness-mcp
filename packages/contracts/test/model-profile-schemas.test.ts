@@ -152,6 +152,21 @@ describe('Model Profile & Credential Contracts', () => {
     expect(AgentModelProfileMetadataSchema.parse({ ...metadata, pricingReview: review }).pricingReview).toEqual(review);
   });
 
+  it('accepts an optional provider session header on a snapshot credential and refuses a malformed one', () => {
+    const snapshot = (credential: Record<string, unknown>) => ({
+      type: 'apply_snapshot',
+      sequence: 1,
+      generation: 1,
+      credentials: { cred_12345678901234567890: { provider: 'opencode-go', authMode: 'bearer', secret: 'sk-test', ...credential } },
+      profiles: {}
+    });
+    const parsed = GatewayControlApplySnapshotSchema.parse(snapshot({ sessionHeader: 'x-opencode-session' }));
+    expect(parsed.credentials.cred_12345678901234567890?.sessionHeader).toBe('x-opencode-session');
+    expect(GatewayControlApplySnapshotSchema.parse(snapshot({})).credentials.cred_12345678901234567890).not.toHaveProperty('sessionHeader');
+    expect(GatewayControlApplySnapshotSchema.safeParse(snapshot({ sessionHeader: 'X-Session' })).success).toBe(false);
+    expect(GatewayControlApplySnapshotSchema.safeParse(snapshot({ sessionHeader: 'x-session\r\nx-evil' })).success).toBe(false);
+  });
+
   it('validates framed control transport messages (apply_snapshot, ack, digest, status)', () => {
     const revId = ModelRevisionIdSchema.parse('rev_12345678901234567890');
     const profileId = ModelProfileIdSchema.parse('coding-fast');

@@ -3,7 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { createHash } from 'node:crypto';
 import type { GatewayConfig, GatewayProfile, LeaseIssueInput, ProfileLimits } from './types.js';
 import type { LeaseRegistry } from './lease-registry.js';
-import { assertProductionHostname, parsePricing } from './config.js';
+import { assertProductionHostname, assertSessionHeaderName, parsePricing } from './config.js';
 
 const MAX_CONTROL_RECORD_BYTES = 1_048_576;
 
@@ -16,7 +16,7 @@ type RevokeLease = (leaseId: string) => Promise<boolean>;
  */
 export interface DynamicGatewayRegistry {
   profiles: Map<string, GatewayProfile>;
-  credentials: Map<string, { provider: string; authMode: 'authorization' | 'x-api-key'; secret: string }>;
+  credentials: Map<string, { provider: string; authMode: 'authorization' | 'x-api-key'; secret: string; sessionHeader?: string }>;
   snapshotDigest: string;
   gatewayBootId: string;
 }
@@ -99,7 +99,7 @@ export async function startControlServer(options: {
             if (typeof command.requestId !== 'string') throw new Error('invalid requestId');
             send(socket, { ok: true, cancelled: await cancelRequest(command.requestId) });
           } else if (command.operation === 'apply_snapshot' || command.type === 'apply_snapshot') {
-            const credentials = (command.credentials ?? {}) as Record<string, { provider: string; authMode?: string; secret: string }>;
+            const credentials = (command.credentials ?? {}) as Record<string, { provider: string; authMode?: string; secret: string; sessionHeader?: unknown }>;
             const profiles = (command.profiles ?? {}) as Record<string, any>;
 
             // A snapshot is the complete set the runner still exports, so it replaces every
@@ -113,10 +113,16 @@ export async function startControlServer(options: {
               }
               if (typeof credData.secret !== 'string' || credData.secret === '') throw new Error(`invalid secret for credential ${credId}`);
               const authMode = credData.authMode === 'x-api-key' ? 'x-api-key' : 'authorization';
+              let sessionHeader: string | undefined;
+              if (credData.sessionHeader !== undefined) {
+                if (typeof credData.sessionHeader !== 'string') throw new Error(`invalid sessionHeader for credential ${credId}`);
+                sessionHeader = assertSessionHeaderName(credData.sessionHeader, `sessionHeader for credential ${credId}`);
+              }
               stagedCredentials.set(credId, {
                 provider: credData.provider,
                 authMode,
-                secret: credData.secret
+                secret: credData.secret,
+                ...(sessionHeader === undefined ? {} : { sessionHeader })
               });
             }
 
@@ -162,7 +168,8 @@ export async function startControlServer(options: {
                 limits,
                 testOnly: config.mode === 'test',
                 allowPrivateUpstream: config.mode === 'test',
-                tlsCaFile: config.mode === 'test' ? config.tlsCaFile : undefined
+                tlsCaFile: config.mode === 'test' ? config.tlsCaFile : undefined,
+                ...(cred.sessionHeader === undefined ? {} : { sessionHeader: cred.sessionHeader })
               };
 
               stagedProfiles.set(revId, profile);

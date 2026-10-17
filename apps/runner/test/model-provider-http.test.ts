@@ -16,6 +16,10 @@ describe('model provider HTTP policy', () => {
     expect(() => assertProviderRequestUrl('openai', 'https://openrouter.ai/api/v1/models')).toThrow('not allowed');
     expect(() => assertProviderRequestUrl('anthropic', 'https://api.openai.com/v1/models')).toThrow('not allowed');
     expect(() => assertProviderRequestUrl('google', 'https://api.deepseek.com/models')).toThrow('not allowed');
+    expect(assertProviderRequestUrl('opencode-go', 'https://opencode.ai/inference/go/v1/models').hostname).toBe('opencode.ai');
+    expect(assertProviderRequestUrl('opencode-go', 'https://opencode.ai/inference/go/openai/v1/chat/completions').hostname).toBe('opencode.ai');
+    expect(() => assertProviderRequestUrl('opencode-go', 'https://api.openai.com/v1/chat/completions')).toThrow('not allowed');
+    expect(() => assertProviderRequestUrl('opencode-go', 'https://evil.opencode.ai.example.org/inference/go/v1/models')).toThrow('not allowed');
   });
 
   it('limits a custom provider to its own public upstream host', () => {

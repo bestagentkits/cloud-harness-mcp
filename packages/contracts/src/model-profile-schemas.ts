@@ -14,6 +14,7 @@ export const ModelProviderKindSchema = z.enum([
   'openrouter',
   'google',
   'deepseek',
+  'opencode-go',
   'custom'
 ]);
 export type ModelProviderKind = z.infer<typeof ModelProviderKindSchema>;
@@ -304,7 +305,11 @@ export const GatewayControlApplySnapshotSchema = z.object({
   credentials: z.record(z.string(), z.object({
     provider: ModelProviderKindSchema,
     authMode: ProviderAuthModeSchema,
-    secret: z.string()
+    secret: z.string(),
+    // The provider's session header, which the gateway fills with the calling agent id.
+    // The gateway validates the name again and rejects a snapshot whose header it would
+    // not send.
+    sessionHeader: z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/u).optional()
   }).strict()),
   profiles: z.record(z.string(), AgentModelProfileRevisionSchema)
 }).strict();

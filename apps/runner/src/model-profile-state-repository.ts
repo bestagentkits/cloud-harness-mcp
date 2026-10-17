@@ -1130,7 +1130,7 @@ export class ModelProfileStateRepository {
    * serializes to the same record, and therefore to the same gateway snapshot digest.
    */
   getExportSnapshot(principalId?: string): {
-    credentials: Record<string, { provider: ModelProviderKind; authMode: ProviderAuthMode; secret: string }>;
+    credentials: Record<string, { provider: ModelProviderKind; authMode: ProviderAuthMode; secret: string; sessionHeader?: string }>;
     profiles: Record<string, AgentModelProfileRevision>;
   } {
     const profileRows = (principalId
@@ -1205,7 +1205,7 @@ export class ModelProfileStateRepository {
         status: string;
       }>;
 
-    const credentials: Record<string, { provider: ModelProviderKind; authMode: ProviderAuthMode; secret: string }> = {};
+    const credentials: Record<string, { provider: ModelProviderKind; authMode: ProviderAuthMode; secret: string; sessionHeader?: string }> = {};
     for (const row of credRows) {
       if (row.status !== 'ACTIVE' && !credentialIdsToExport.has(row.id)) continue;
 
@@ -1220,10 +1220,14 @@ export class ModelProfileStateRepository {
       } | undefined;
 
       if (ver) {
+        // A provider this release cannot read sends no session header rather than failing the whole snapshot.
+        const knownProvider = ModelProviderKindSchema.safeParse(row.provider);
+        const sessionHeader = knownProvider.success ? getModelProvider(knownProvider.data).sessionHeader : null;
         credentials[row.id] = {
           provider: row.provider,
           authMode: row.auth_mode,
-          secret: this.decryptVersion(row.principal_id, row.id, row.active_version, ver)
+          secret: this.decryptVersion(row.principal_id, row.id, row.active_version, ver),
+          ...(sessionHeader === null ? {} : { sessionHeader })
         };
       }
     }

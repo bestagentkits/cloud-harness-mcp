@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AgentModelPricingSchema,
+  GatewayControlApplySnapshotSchema,
   MAX_MODEL_PRICE_TIERS,
   ModelProfileIdSchema,
   ModelProviderKindSchema,
@@ -18,7 +19,7 @@ import { SecretKeyring } from '../src/secret-keyring.js';
 import { StateStore } from '../src/state-store.js';
 // The gateway owns snapshot pricing validation; the runner owns what it exports.
 // Importing the gateway parser keeps the two bounds from drifting apart.
-import { parsePricing } from '../../model-gateway/src/config.js';
+import { assertSessionHeaderName, parsePricing } from '../../model-gateway/src/config.js';
 
 /** Parses pricing the way the gateway's control client parses a snapshot revision. */
 function gatewayParsePricing(pricing: unknown): void {
@@ -135,4 +136,35 @@ describe('gateway snapshot pricing compatibility', () => {
     }
   });
 
+  it('exports the provider session header only for a provider that requires one', () => {
+    const dbPath = join(tmpdir(), `test-snapshot-session-${randomBytes(8).toString('hex')}.sqlite`);
+    const store = new StateStore(dbPath);
+    cleanup.push(() => {
+      store.close();
+      for (const suffix of ['', '-wal', '-shm']) rmSync(`${dbPath}${suffix}`, { force: true });
+    });
+    const repo = new ModelProfileStateRepository(store.database, new SecretKeyring(1, [{ version: 1, key: randomBytes(32) }]));
+    const principal = store.resolvePrincipal({ kind: 'owner', ownerId: 'user-session-header' });
+    const openCode = repo.createCredential(principal, { label: 'OpenCode Go', provider: 'opencode-go', apiKey: 'sk-opencode-test-key' });
+    const openAi = repo.createCredential(principal, { label: 'OpenAI', provider: 'openai', apiKey: 'sk-openai-test-key' });
+    const profile = repo.createProfile(principal, {
+      profileId: ModelProfileIdSchema.parse('opencode-go-coding'),
+      displayName: 'OpenCode Go coding',
+      credentialId: openCode.id,
+      model: 'kimi-k2.5',
+      apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 600_000, outputMicrosPerMillionTokens: 2_500_000 },
+      limits: { maxInputTokens: 50_000, maxOutputTokens: 2_000, maxCostMicros: 100_000 },
+      maxProxyOperations: ['files_read']
+    });
+
+    const snapshot = repo.getExportSnapshot(principal);
+    expect(snapshot.credentials[openCode.id]?.sessionHeader).toBe('x-opencode-session');
+    expect(snapshot.credentials[openAi.id]).not.toHaveProperty('sessionHeader');
+    expect((snapshot.profiles[profile.activeRevisionId!] as { upstreamUrl: string }).upstreamUrl)
+      .toBe('https://opencode.ai/inference/go/openai/v1/chat/completions');
+    expect(GatewayControlApplySnapshotSchema.safeParse({ type: 'apply_snapshot', sequence: 1, generation: 1, ...snapshot }).success).toBe(true);
+    // The gateway validates the exported name with the same rule it applies to its own setting.
+    expect(assertSessionHeaderName(snapshot.credentials[openCode.id]!.sessionHeader!, 'sessionHeader')).toBe('x-opencode-session');
+  });
 });

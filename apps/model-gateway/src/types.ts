@@ -38,6 +38,11 @@ export interface GatewayProfile {
   testOnly: boolean;
   allowPrivateUpstream: boolean;
   tlsCaFile?: string | undefined;
+  /**
+   * The provider's own session header, from the runner snapshot. It takes precedence
+   * over the instance-wide `GatewayConfig.sessionHeader`; the value is the agent id.
+   */
+  sessionHeader?: string | undefined;
 }
 
 export interface TokenPrices {
@@ -63,7 +68,9 @@ export interface GatewayConfig {
    * request that carries no stable conversation identifier (OpenCode Go returns
    * `400 MissingSessionID` without `x-opencode-session`). When set, the gateway
    * sends this header with the calling agent's id, which is stable for one agent
-   * conversation, and always identifies itself through `user-agent`.
+   * conversation, and always identifies itself through `user-agent`. A profile's
+   * own `sessionHeader` takes precedence; this is the fallback for every other
+   * profile, such as a Custom route to a provider that needs one.
    */
   sessionHeader?: string | undefined;
 }

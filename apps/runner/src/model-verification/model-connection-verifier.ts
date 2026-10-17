@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   HarnessError,
   getModelProvider,
@@ -89,6 +90,8 @@ interface VerificationTarget {
   upstreamUrl: () => string;
   runInference: boolean;
   runTools: boolean;
+  // Sent as the provider's session header, when it has one, on every request of this check.
+  sessionId: string;
 }
 
 interface ModelListing {
@@ -349,7 +352,8 @@ export class ModelConnectionVerifier {
         apiMode: revision.apiMode,
         upstreamUrl: () => revision.upstreamUrl,
         runInference: input.checks?.inference ?? true,
-        runTools: input.checks?.tools ?? false
+        runTools: input.checks?.tools ?? false,
+        sessionId: randomUUID()
       };
     }
     const credential = repository.getActiveCredentialForVerification(principalId, input.credentialId);
@@ -377,7 +381,8 @@ export class ModelConnectionVerifier {
       apiMode,
       upstreamUrl: () => upstream ?? resolveProviderUpstreamUrl(credential.provider, apiMode, input.customUpstreamUrl),
       runInference,
-      runTools
+      runTools,
+      sessionId: randomUUID()
     };
   }
 
@@ -398,8 +403,11 @@ export class ModelConnectionVerifier {
     const expired = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => reject(new ProviderHttpError('timeout', `provider did not answer within ${request.timeoutMs} ms`)), request.timeoutMs);
     });
+    // A provider that requires a session header refuses a request without one.
+    const sessionHeader = getModelProvider(provider).sessionHeader;
+    const outbound = sessionHeader === null ? request : { ...request, headers: { ...request.headers, [sessionHeader]: target.sessionId } };
     try {
-      return await Promise.race([this.options.http.request(request), expired]);
+      return await Promise.race([this.options.http.request(outbound), expired]);
     } finally {
       clearTimeout(timer);
     }

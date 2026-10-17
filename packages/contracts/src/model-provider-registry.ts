@@ -35,6 +35,10 @@ export interface ModelProviderDefinition {
   // An unknown cache-write price defaults to twice the input price when true and
   // to the input price when false (resolveEffectivePricing in model-pricing.ts).
   billsCacheWrites: boolean;
+  // A lowercase header the provider requires to carry a stable session id. The
+  // gateway sends it with the calling agent id, and the connection check sends
+  // it with a per-check id. `null` when the provider needs none.
+  sessionHeader: string | null;
 }
 
 const definitions: readonly ModelProviderDefinition[] = [
@@ -55,7 +59,8 @@ const definitions: readonly ModelProviderDefinition[] = [
     openRouterVendor: 'openai',
     requiresCustomUpstream: false,
     // OpenAI caches automatically and charges no cache-write premium.
-    billsCacheWrites: false
+    billsCacheWrites: false,
+    sessionHeader: null
   },
   {
     id: 'anthropic',
@@ -73,7 +78,8 @@ const definitions: readonly ModelProviderDefinition[] = [
     openRouterVendor: 'anthropic',
     requiresCustomUpstream: false,
     // The OpenAI SDK compatibility endpoint does not support prompt caching.
-    billsCacheWrites: false
+    billsCacheWrites: false,
+    sessionHeader: null
   },
   {
     id: 'openrouter',
@@ -92,7 +98,8 @@ const definitions: readonly ModelProviderDefinition[] = [
     openRouterVendor: null,
     requiresCustomUpstream: false,
     // OpenRouter routes to vendors that charge for cache writes.
-    billsCacheWrites: true
+    billsCacheWrites: true,
+    sessionHeader: null
   },
   {
     id: 'google',
@@ -110,7 +117,8 @@ const definitions: readonly ModelProviderDefinition[] = [
     openRouterVendor: 'google',
     requiresCustomUpstream: false,
     // Gemini implicit caching charges no write premium.
-    billsCacheWrites: false
+    billsCacheWrites: false,
+    sessionHeader: null
   },
   {
     id: 'deepseek',
@@ -128,7 +136,30 @@ const definitions: readonly ModelProviderDefinition[] = [
     openRouterVendor: 'deepseek',
     requiresCustomUpstream: false,
     // DeepSeek context caching charges no write premium.
-    billsCacheWrites: false
+    billsCacheWrites: false,
+    sessionHeader: null
+  },
+  {
+    id: 'opencode-go',
+    displayName: 'OpenCode Go',
+    description: 'Open coding models on an OpenCode Go subscription, through its OpenAI-compatible API.',
+    docsUrl: 'https://opencode.ai/docs/go',
+    apiKeyUrl: 'https://opencode.ai/console',
+    authModes: ['bearer'],
+    defaultAuthMode: 'bearer',
+    endpoints: {
+      'chat-completions': 'https://opencode.ai/inference/go/openai/v1/chat/completions',
+      responses: 'https://opencode.ai/inference/go/openai/v1/responses'
+    },
+    modelsEndpoint: { url: 'https://opencode.ai/inference/go/v1/models', auth: 'bearer' },
+    catalogStrategy: 'provider-models',
+    // OpenRouter does not price the subscription, so there is no price fallback.
+    openRouterVendor: null,
+    requiresCustomUpstream: false,
+    // The subscription meters cache writes against the plan allowance; assume a premium.
+    billsCacheWrites: true,
+    // OpenCode Go rejects a request without it (`400 MissingSessionID`).
+    sessionHeader: 'x-opencode-session'
   },
   {
     id: 'custom',
@@ -144,7 +175,8 @@ const definitions: readonly ModelProviderDefinition[] = [
     openRouterVendor: null,
     requiresCustomUpstream: true,
     // An unknown upstream may bill cache writes, so assume it does.
-    billsCacheWrites: true
+    billsCacheWrites: true,
+    sessionHeader: null
   }
 ];
 

@@ -220,6 +220,56 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     expect(registry.snapshotDigest).toBe(digestBefore);
   });
 
+  it('applies a credential session header to its profiles and rejects a reserved one with the whole snapshot', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const registry: DynamicGatewayRegistry = {
+      profiles: new Map(), credentials: new Map(), snapshotDigest: '', gatewayBootId: 'boot_test'
+    };
+    const server = await startControlServer({
+      config, leases: new LeaseRegistry(), cancelRequest: async () => false, revokeLease: async () => false, registry
+    });
+    runtimes.push({ close: () => new Promise<void>((resolve) => server.close(() => resolve())) });
+    const openCodeSnapshot = (sessionHeader: unknown, revisionId: string, sequence: number): Record<string, unknown> => ({
+      operation: 'apply_snapshot',
+      sequence,
+      generation: sequence,
+      credentials: {
+        cred_opencode_1: { provider: 'opencode-go', authMode: 'bearer', secret: 'sk-opencode-test-key', sessionHeader }
+      },
+      profiles: {
+        [revisionId]: {
+          id: revisionId, profileId: 'opencode-coding', credentialId: 'cred_opencode_1', model: 'kimi-k2.5',
+          downstreamPath: '/v1/chat/completions', upstreamUrl: 'https://opencode.ai/inference/go/openai/v1/chat/completions',
+          pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 }
+        }
+      }
+    });
+
+    const applied = await sendControl(socketPath, openCodeSnapshot('x-opencode-session', 'rev_opencode_1', 1));
+    expect(applied.ok).toBe(true);
+    expect(registry.credentials.get('cred_opencode_1')?.sessionHeader).toBe('x-opencode-session');
+    expect(registry.profiles.get('rev_opencode_1')?.sessionHeader).toBe('x-opencode-session');
+    const credentialsBefore = new Map(registry.credentials);
+    const profilesBefore = new Map(registry.profiles);
+    const digestBefore = registry.snapshotDigest;
+
+    for (const [index, header] of (['authorization', 'X-Session', 'x-session\r\nx-evil', 42] as const).entries()) {
+      const refused = await sendControl(socketPath, openCodeSnapshot(header, `rev_opencode_bad_${index}`, index + 2));
+      expect(refused.ok, String(header)).toBe(false);
+      expect(String(refused.error)).toContain('sessionHeader for credential cred_opencode_1');
+    }
+    expect(registry.credentials).toEqual(credentialsBefore);
+    expect(registry.profiles).toEqual(profilesBefore);
+    expect(registry.snapshotDigest).toBe(digestBefore);
+
+    const without = await sendControl(socketPath, productionSnapshot('https://api.openai.com/v1/chat/completions', 'rev_no_header'));
+    expect(without.ok).toBe(true);
+    expect(registry.profiles.get('rev_no_header')).not.toHaveProperty('sessionHeader');
+  });
+
   it('refuses an address-literal upstream for a dynamic profile in production mode', async () => {
     const socketPath = tempSocketPath();
     const config: GatewayConfig = {

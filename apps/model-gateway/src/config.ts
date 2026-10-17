@@ -313,19 +313,24 @@ const RESERVED_UPSTREAM_HEADERS: Record<string, true> = {
 };
 
 /**
- * `MODEL_GATEWAY_SESSION_HEADER` names the optional provider session header the
- * gateway fills with the calling agent id. It must be a plain lowercase header
- * name and must not collide with a header the gateway sets itself.
+ * Validates a provider session header name, which the gateway fills with the calling
+ * agent id. It must be a plain lowercase header name and must not collide with a
+ * header the gateway sets itself. `source` names the setting in the error message.
  */
-function parseSessionHeader(value: string | undefined): string | undefined {
-  if (value === undefined || value === '') return undefined;
+export function assertSessionHeaderName(value: string, source: string): string {
   if (!/^[a-z0-9][a-z0-9-]{1,62}$/u.test(value)) {
-    throw new Error('MODEL_GATEWAY_SESSION_HEADER must be a lowercase header name');
+    throw new Error(`${source} must be a lowercase header name`);
   }
   if (RESERVED_UPSTREAM_HEADERS[value] === true) {
-    throw new Error(`MODEL_GATEWAY_SESSION_HEADER must not be ${value}`);
+    throw new Error(`${source} must not be ${value}`);
   }
   return value;
+}
+
+/** `MODEL_GATEWAY_SESSION_HEADER` is the instance-wide fallback session header. */
+function parseSessionHeader(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  return assertSessionHeaderName(value, 'MODEL_GATEWAY_SESSION_HEADER');
 }
 
 export async function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): Promise<GatewayConfig> {
