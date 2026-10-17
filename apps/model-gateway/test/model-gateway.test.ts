@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createServer as createTlsServer, type Server as TlsServer } from 'node:https';
-import { request as httpRequest, type RequestListener } from 'node:http';
+import { request as httpRequest, type RequestListener, type ServerResponse } from 'node:http';
+import { connect } from 'node:net';
 import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -10,6 +11,7 @@ import { assertProductionHostname, isUnsafeAddress, loadGatewayConfig, readExact
 import { LeaseRegistry } from '../src/lease-registry.js';
 import { createGatewayRuntime, type GatewayRuntime } from '../src/gateway.js';
 import { reserveBudget } from '../src/budget.js';
+import { startUpstreamRequest } from '../src/upstream.js';
 import type { GatewayConfig, GatewayLogger, GatewayProfile, LeaseIssueInput } from '../src/types.js';
 
 let fixtureDirectory = '';
@@ -166,16 +168,33 @@ describe('model gateway security boundary', () => {
     expect(() => assertProductionHostname('api.openai.com')).not.toThrow();
   });
 
-  it('refuses NAT64 and 6to4 prefixes in every IPv6 text form', () => {
+  it('refuses IPv6 prefixes that embed or tunnel an IPv4 address in every text form', () => {
     for (const address of [
       '64:ff9b::a9fe:a9fe', '64:ff9b:0:0:0:0:a9fe:a9fe', '64:FF9B::169.254.169.254', '0064:ff9b:0000::0a00:0001',
-      '64:ff9b:1::1', '64:ff9b:1:abcd::a9fe:a9fe', '2002:a9fe:a9fe::1', '2002::', '2002:0808:0808:0:0:0:0:1'
+      '64:ff9b:1::1', '64:ff9b:1:abcd::a9fe:a9fe', '64:ff9b::1%eth0', '2002:a9fe:a9fe::1', '2002::', '2002:0808:0808:0:0:0:0:1',
+      '::ffff:169.254.169.254', '::ffff:808:808', '0:0:0:0:0:ffff:a9fe:a9fe', '::a9fe:a9fe', '::8.8.8.8',
+      '::ffff:0:a9fe:a9fe', '2001:0:4136:e378::1', '2001:0000:4136:e378:8000:63bf:3fff:fdd2', '::', '::1', 'fe80::1%eth0'
     ]) {
       expect(isUnsafeAddress(address), address).toBe(true);
     }
-    for (const address of ['2606:4700::6810:84e5', '64:ff9c::1', '64:ff9b:0:1::1', '2003::1', '2001:4860:4860::8888']) {
+    for (const address of [
+      '2606:4700::6810:84e5', '64:ff9c::1', '64:ff9b:0:1::1', '2003::1', '2001:4860:4860::8888', '2001:1::1', '1::ffff:808:808'
+    ]) {
       expect(isUnsafeAddress(address), address).toBe(false);
     }
+  });
+
+  it('checks a bracketed IPv6 upstream literal before connecting', async () => {
+    const configured: GatewayProfile = {
+      ...profile(new URL('https://[64:ff9b::a9fe:a9fe]/v1/chat/completions')),
+      credentialSecret: 'test-only-secret-value',
+      allowPrivateUpstream: false
+    };
+    // The address check runs before the downstream response is touched.
+    const downstream = {} as ServerResponse;
+    await expect(startUpstreamRequest({
+      profile: configured, body: Buffer.from('{}'), downstream, requestId: 'req-literal', maxOutputTokens: 1
+    })).rejects.toThrow('unsafe upstream address');
   });
 
   it('writes the output cap as max_completion_tokens for OpenAI chat profiles', () => {
@@ -188,6 +207,37 @@ describe('model gateway security boundary', () => {
     expect(reservation.outputTokens).toBe(30);
     expect(body).toMatchObject({ max_completion_tokens: 30, stream: true });
     expect(body).not.toHaveProperty('max_tokens');
+  });
+
+  it('writes max_completion_tokens for any provider whose upstream is api.openai.com', () => {
+    for (const configured of [
+      { ...profile(new URL('https://api.openai.com/v1/chat/completions')), provider: 'custom' },
+      { ...profile(new URL('https://llm.example.net/v1/chat/completions')), provider: 'OpenAI' }
+    ]) {
+      const body: Record<string, unknown> = { max_tokens: 25, messages: [] };
+      reserveBudget(body, 100, {
+        agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
+        remainingInputTokens: 100, remainingOutputTokens: 500, remainingCostMicros: 1_000
+      }, configured);
+      expect(body).toMatchObject({ max_completion_tokens: 25 });
+      expect(body).not.toHaveProperty('max_tokens');
+    }
+  });
+
+  it('drops both chat output aliases on the responses path', () => {
+    const configured: GatewayProfile = {
+      ...profile(new URL('https://api.openai.com/v1/responses')), provider: 'openai', downstreamPath: '/v1/responses'
+    };
+    const body: Record<string, unknown> = { max_tokens: 40, max_completion_tokens: 30, max_output_tokens: 50, input: [] };
+    const reservation = reserveBudget(body, 100, {
+      agentId: issue().agentId, profileId: configured.id, expiresAt: Date.now() + 1_000,
+      remainingInputTokens: 100, remainingOutputTokens: 500, remainingCostMicros: 1_000
+    }, configured);
+    expect(reservation.outputTokens).toBe(50);
+    expect(body).toMatchObject({ max_output_tokens: 50, stream: true });
+    expect(body).not.toHaveProperty('max_tokens');
+    expect(body).not.toHaveProperty('max_completion_tokens');
+    expect(body).not.toHaveProperty('stream_options');
   });
 
   it('writes the output cap as max_tokens for other chat providers', () => {
@@ -242,6 +292,51 @@ describe('model gateway security boundary', () => {
     });
     expect(callerUpstream.status).toBe(400);
     expect(providerRequests).toBe(0);
+  });
+
+  it('sends max_completion_tokens upstream for an OpenAI dynamic profile', async () => {
+    let received: Record<string, unknown> = {};
+    const provider = await fakeProvider((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        received = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}');
+      });
+    });
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\model-gateway-${randomBytes(8).toString('hex')}`
+      : join(tmpdir(), `model-gateway-${randomBytes(8).toString('hex')}.sock`);
+    const running = await gateway(profile(provider.upstream), { reserve: vi.fn(), reconcile: vi.fn() }, undefined, {
+      controlSocket, tlsCaFile: certificateFile
+    });
+    const applied = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const socket = connect(controlSocket);
+      let reply = '';
+      socket.on('data', (chunk: Buffer) => { reply += chunk.toString('utf8'); });
+      socket.on('end', () => { try { resolve(JSON.parse(reply) as Record<string, unknown>); } catch (error) { reject(error); } });
+      socket.on('error', reject);
+      socket.end(`${JSON.stringify({
+        operation: 'apply_snapshot',
+        credentials: { cred_openai: { provider: 'openai', authMode: 'bearer', secret: 'sk-dynamic-openai-test-key' } },
+        profiles: {
+          rev_openai: {
+            credentialId: 'cred_openai', model: 'gpt-5.2', downstreamPath: '/v1/chat/completions',
+            upstreamUrl: provider.upstream.href, limits: { maxInputTokens: 4_096, maxOutputTokens: 1_024, maxCostMicros: 1_000_000 }
+          }
+        }
+      })}\n`);
+    });
+    expect(applied.ok).toBe(true);
+    const grant = activate(running.runtime, issue('rev_openai'));
+    const response = await fetch(`${running.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers: headers(grant), body: '{"messages":[],"max_tokens":20}'
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(received).toMatchObject({ model: 'gpt-5.2', max_completion_tokens: 20, stream: true });
+    expect(received).not.toHaveProperty('max_tokens');
   });
 
   it('forwards the configured provider session header with the calling agent id', async () => {

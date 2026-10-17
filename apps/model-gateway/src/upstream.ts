@@ -18,13 +18,20 @@ export interface UpstreamHandle {
   abort(reason: string): Promise<void>;
 }
 
+/** URL.hostname keeps the brackets around an IPv6 literal; address checks need the bare address. */
+function upstreamHost(profile: GatewayProfile): string {
+  const hostname = profile.upstream.hostname;
+  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+}
+
 async function resolveAddress(profile: GatewayProfile): Promise<{ address: string; family: 4 | 6 }> {
-  const literalFamily = isIP(profile.upstream.hostname);
+  const host = upstreamHost(profile);
+  const literalFamily = isIP(host);
   if (literalFamily === 4 || literalFamily === 6) {
-    if (!profile.allowPrivateUpstream && isUnsafeAddress(profile.upstream.hostname)) throw new Error('unsafe upstream address');
-    return { address: profile.upstream.hostname, family: literalFamily };
+    if (!profile.allowPrivateUpstream && isUnsafeAddress(host)) throw new Error('unsafe upstream address');
+    return { address: host, family: literalFamily };
   }
-  const addresses = await lookup(profile.upstream.hostname, { all: true, verbatim: true });
+  const addresses = await lookup(host, { all: true, verbatim: true });
   if (addresses.length === 0) throw new Error('upstream hostname did not resolve');
   const selected = addresses.find(({ address }) => profile.allowPrivateUpstream || !isUnsafeAddress(address));
   if (!selected) throw new Error('upstream hostname resolved only to unsafe addresses');
@@ -76,11 +83,11 @@ export async function startUpstreamRequest(options: {
 
   const requestOptions: RequestOptions = {
     protocol: 'https:',
-    hostname: profile.upstream.hostname,
+    hostname: upstreamHost(profile),
     port: profile.upstream.port === '' ? 443 : Number(profile.upstream.port),
     method: 'POST',
     path: profile.upstream.pathname,
-    ...(isIP(profile.upstream.hostname) === 0 ? { servername: profile.upstream.hostname } : (profile.testOnly ? { servername: 'localhost' } : {})),
+    ...(isIP(upstreamHost(profile)) === 0 ? { servername: profile.upstream.hostname } : (profile.testOnly ? { servername: 'localhost' } : {})),
     minVersion: 'TLSv1.2',
     ...(ca === undefined ? {} : { ca }),
     rejectUnauthorized: true,

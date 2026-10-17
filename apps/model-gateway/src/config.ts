@@ -91,28 +91,20 @@ export function isUnsafeAddress(address: string): boolean {
   const normalized = address.toLowerCase().split('%', 1)[0] ?? address.toLowerCase();
   if (isIP(normalized) === 4) return privateIpv4(normalized);
   if (isIP(normalized) === 6) {
-    if (normalized.startsWith('::ffff:')) {
-      const mapped = normalized.slice(7);
-      if (isIP(mapped) === 4) return privateIpv4(mapped);
-      const words = mapped.split(':');
-      if (words.length === 2) {
-        const high = Number.parseInt(words[0] ?? '', 16);
-        const low = Number.parseInt(words[1] ?? '', 16);
-        if (Number.isInteger(high) && Number.isInteger(low)) {
-          return privateIpv4(`${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`);
-        }
-      }
-    }
     const words = ipv6Words(normalized);
     if (words === undefined) return true;
-    // NAT64 (64:ff9b::/96, 64:ff9b:1::/48) and 6to4 (2002::/16) embed an IPv4
-    // address that a translator may route to a private or metadata endpoint.
-    if (words[0] === 0x2002 || (words[0] === 0x64 && words[1] === 0xff9b && (words[2] === 1 ||
-        (words[2] === 0 && words[3] === 0 && words[4] === 0 && words[5] === 0)))) return true;
-    return normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') ||
-      normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb') ||
-      normalized.startsWith('ff') || normalized.startsWith('2001:db8:') || normalized.startsWith('2001:2:') ||
-      normalized.startsWith('100:');
+    const [w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0, w5 = 0] = words;
+    const zeroPrefix = w0 === 0 && w1 === 0 && w2 === 0 && w3 === 0;
+    // Every prefix that embeds or tunnels an IPv4 address is refused outright:
+    // IPv4-compatible (::/96, which also covers :: and ::1), IPv4-mapped
+    // (::ffff:0:0/96), SIIT (::ffff:0:0:0/96), NAT64 (64:ff9b::/96,
+    // 64:ff9b:1::/48), 6to4 (2002::/16), and Teredo (2001::/32). A translator
+    // or tunnel may deliver them to a private or metadata endpoint.
+    if (zeroPrefix && ((w4 === 0 && (w5 === 0 || w5 === 0xffff)) || (w4 === 0xffff && w5 === 0))) return true;
+    if (w0 === 0x64 && w1 === 0xff9b && (w2 === 1 || (w2 === 0 && w3 === 0 && w4 === 0 && w5 === 0))) return true;
+    if (w0 === 0x2002 || (w0 === 0x2001 && w1 === 0)) return true;
+    return (w0 & 0xfe00) === 0xfc00 || (w0 & 0xffc0) === 0xfe80 || (w0 & 0xff00) === 0xff00 ||
+      (w0 === 0x2001 && (w1 === 0xdb8 || w1 === 2)) || w0 === 0x100;
   }
   return true;
 }
