@@ -1010,19 +1010,19 @@ export function initializeDashboard() {
     const lines = [];
     for (const item of parsed) {
       const err = validateSecretClient(item.name, item.value);
-      const descHint = item.description ? ` (${escape(item.description)})` : '';
+      const descHint = item.description ? ` (${escapeHtml(item.description)})` : '';
       if (err) {
-        lines.push(`<span class="diff-err">&times; REJECTED: ${escape(item.name)} (${escape(err)})</span>`);
+        lines.push(`<span class="diff-err">&times; REJECTED: ${escapeHtml(item.name)} (${escapeHtml(err)})</span>`);
       } else if (seenInBatch.has(item.name)) {
-        lines.push(`<span class="diff-err">&times; DUPLICATE: ${escape(item.name)} (duplicate in pasted batch)</span>`);
+        lines.push(`<span class="diff-err">&times; DUPLICATE: ${escapeHtml(item.name)} (duplicate in pasted batch)</span>`);
       } else {
         seenInBatch.add(item.name);
         const isExisting = existing.has(item.name);
         if (isExisting) {
           const prev = existing.get(item.name);
-          lines.push(`<span class="diff-rot">&#8635; ROTATE: ${escape(item.name)}${descHint} (v${escape(prev.version ?? prev.generation)} &rarr; v${escape((prev.version ?? prev.generation) + 1)})</span>`);
+          lines.push(`<span class="diff-rot">&#8635; ROTATE: ${escapeHtml(item.name)}${descHint} (v${escapeHtml(prev.version ?? prev.generation)} &rarr; v${escapeHtml((prev.version ?? prev.generation) + 1)})</span>`);
         } else {
-          lines.push(`<span class="diff-add">+ CREATE: ${escape(item.name)}${descHint}</span>`);
+          lines.push(`<span class="diff-add">+ CREATE: ${escapeHtml(item.name)}${descHint}</span>`);
         }
       }
     }
@@ -2161,7 +2161,7 @@ export function initializeDashboard() {
       document.querySelector('#model-profile-title').textContent = 'Add model profile';
 
       insertRendered(credentialSelect, credentials.length
-        ? credentials.map((c) => `<option value="${escape(c.id)}">${escape(c.label)} (${escape(c.provider)})</option>`).join('')
+        ? credentials.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.label)} (${escapeHtml(c.provider)})</option>`).join('')
         : '<option value="">No credentials available (create one first)</option>');
 
       syncCustomUrlVisibility();
@@ -2192,7 +2192,7 @@ export function initializeDashboard() {
         document.querySelector('#model-profile-display-name').value = profile.displayName;
         document.querySelector('#model-profile-title').textContent = `Edit profile (${profile.displayName})`;
 
-        insertRendered(credentialSelect, credentials.map((c) => `<option value="${escape(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escape(c.label)} (${escape(c.provider)})</option>`).join(''));
+        insertRendered(credentialSelect, credentials.map((c) => `<option value="${escapeHtml(c.id)}" ${c.id === profile.credentialId ? 'selected' : ''}>${escapeHtml(c.label)} (${escapeHtml(c.provider)})</option>`).join(''));
 
         if (profile.activeRevision) {
           document.querySelector('#model-profile-model').value = profile.activeRevision.model;
@@ -2783,7 +2783,7 @@ export function initializeDashboard() {
           insertRendered(graphMount, renderKnowledgeGraph(graphRes.data));
           bindKnowledgeGraphControls();
         } catch (err) {
-          insertRendered(graphMount, `<p class="form-status status-error">Graph error: ${escape(err.message)}</p>`);
+          insertRendered(graphMount, `<p class="form-status status-error">Graph error: ${escapeHtml(err.message)}</p>`);
         }
       }
     }
@@ -2817,7 +2817,7 @@ export function initializeDashboard() {
           const projects = prjRes.data?.projects ?? [];
           if (projectSelect) {
             insertRendered(projectSelect, projects.length
-              ? projects.map((p) => `<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')
+              ? projects.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')
               : '<option value="">No projects available (create one first)</option>');
           }
         } catch {
