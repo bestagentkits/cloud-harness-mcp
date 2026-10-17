@@ -1,3 +1,10 @@
+# [0.66.0-beta.25](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.24...v0.66.0-beta.25) (2026-10-17)
+
+
+### Bug Fixes
+
+* **model-gateway:** answer malformed control records without echoing input ([#389](https://github.com/bestagentkits/cloud-harness-mcp/issues/389)) ([98ffe89](https://github.com/bestagentkits/cloud-harness-mcp/commit/98ffe89236e8f967518bfa6b68866f63beed0dd7))
+
 # [0.66.0-beta.24](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.23...v0.66.0-beta.24) (2026-10-17)
 
 
