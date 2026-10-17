@@ -1,3 +1,10 @@
+# [0.66.0-beta.28](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.27...v0.66.0-beta.28) (2026-10-17)
+
+
+### Features
+
+* **models:** add OpenCode Go as a registry provider with its session header ([#392](https://github.com/bestagentkits/cloud-harness-mcp/issues/392)) ([b346d19](https://github.com/bestagentkits/cloud-harness-mcp/commit/b346d195f1ddb4c9a395c215d92649ed24661e73))
+
 # [0.66.0-beta.27](https://github.com/bestagentkits/cloud-harness-mcp/compare/v0.66.0-beta.26...v0.66.0-beta.27) (2026-10-17)
 
 
