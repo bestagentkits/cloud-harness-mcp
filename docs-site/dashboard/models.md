@@ -104,6 +104,64 @@ refreshing several credentials in a row re-fetches each credential's listing but
 public list only once per window. Schemas live in
 [`packages/contracts/src/model-catalog-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-catalog-schemas.ts).
 
+## Verifying a Connection
+
+A connection check proves that a credential, model, and API mode work before a subagent
+depends on them. The runner sends the requests itself, so the key never reaches the
+browser, the API, or a workspace. Request it with
+`POST /dashboard/api/v1/model-connection/verify` (operation `model_connection_verify`;
+the input and result schemas are in
+[`packages/contracts/src/model-verification-schemas.ts`](https://github.com/bestagentkits/cloud-harness-mcp/blob/dev/packages/contracts/src/model-verification-schemas.ts)):
+
+- `{ "profileId": "coding-fast" }` checks a saved profile's active revision: its credential,
+  model, API mode, and upstream.
+- `{ "credentialId": "cred_…", "model": "…", "apiMode": "…", "customUpstreamUrl": "…" }`
+  checks unsaved settings. A draft never creates or changes a profile, revision, or
+  credential. Without a model only the key is checked.
+- `"checks": { "inference": false, "tools": true }` turns the paid checks off or on.
+  Inference runs by default when a model is known; the tool-call check is opt-in.
+
+### What is checked
+
+| Check | How |
+| --- | --- |
+| `authentication` | Lists the provider's models with the key (Anthropic uses its native `x-api-key` header). OpenRouter's list is public, so its key is checked at `GET /api/v1/key`. Custom providers skip this and rely on inference. |
+| `model_access` | The model ID appears in the listing (Gemini's `models/` prefix is ignored), or the model answered. A model missing from a complete listing fails; missing from a partial listing is `limited`. |
+| `protocol` | A tiny streamed request ("Reply with OK.", 16 output tokens) returns events of the expected API family: `choices[].delta` for Chat Completions, `response.*` for Responses. |
+| `streaming_inference` | The stream finishes; token usage is captured when the provider reports it. |
+| `tool_call` | Optional. Forces a call to a harmless synthetic `report_status` tool. |
+
+### Outcomes
+
+- `verified`: every check that ran passed.
+- `limited`: nothing proved the configuration wrong, but something could not be proven:
+  a rate limit (`rate_limited`), exhausted credit (`quota`), `timeout`, `network`, a provider
+  outage (`upstream`), or a model that does not accept tool calls. A rate limit or quota
+  answer never marks a model unsupported. Retry later.
+- `failed`: the provider proved the settings wrong. `auth` is a rejected key (Gemini reports
+  this as HTTP 400 or 403), `access` is a key without permission, `not_found` is an unknown
+  model or path, `unsupported_protocol` is a refused request shape or the wrong API mode,
+  `invalid_response` is an answer that is not a usable stream, and `forbidden_host` is an
+  upstream that resolves to a private address.
+- `not_tested`: no check ran.
+
+Each check reports its `errorCategory`, `httpStatus`, and a short provider message with
+any key material removed.
+
+### Cost and limits
+
+The inference check spends a few dozen tokens and the tool check about a hundred more, on
+the provider account behind the key. For a saved profile the result includes
+`estimatedCostMicros` from the revision's pricing; drafts report `null`. Each principal can
+run 6 checks per minute, and one check is bounded to about 45 seconds and small responses.
+Every check is recorded in the audit log as `model_connection.verified` with its outcome,
+never the key.
+
+The latest result appears as `lastVerification` on credentials and profiles. A profile's
+result belongs to the revision it checked, so saving a new revision shows it as not verified
+again; rotating a key does the same for the credential. Deleting a profile or credential
+deletes its results.
+
 ## Configuring Model Profiles
 
 Model profiles define how subagents interact with LLMs:
