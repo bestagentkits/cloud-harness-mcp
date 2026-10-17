@@ -127,4 +127,46 @@ describe('ModelProfileStateRepository', () => {
     repo.deleteProfile(p1, profile.id, 4);
     expect(repo.listProfiles(p1)).toHaveLength(0);
   });
+  it('routes each provider to its registry endpoint and rejects API modes the provider lacks', () => {
+    const { repo, p1 } = setup();
+    const base = {
+      displayName: 'Profile',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 },
+      maxProxyOperations: ['files_read' as const]
+    };
+    const gemini = repo.createCredential(p1, { label: 'Gemini', provider: 'google', apiKey: 'gm-key' });
+    const geminiProfile = repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('gemini'), credentialId: gemini.id, model: 'gemini-2.5-flash', apiMode: 'chat-completions' });
+    expect(geminiProfile.activeRevision?.upstreamUrl).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+    expect(() => repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('gemini-responses'), credentialId: gemini.id, model: 'gemini-2.5-flash', apiMode: 'responses' }))
+      .toThrow('does not support the responses API mode');
+
+    const deepseek = repo.createCredential(p1, { label: 'DeepSeek', provider: 'deepseek', apiKey: 'ds-key' });
+    const deepseekProfile = repo.createProfile(p1, { ...base, profileId: ModelProfileIdSchema.parse('deepseek'), credentialId: deepseek.id, model: 'deepseek-chat', apiMode: 'chat-completions' });
+    expect(deepseekProfile.activeRevision?.upstreamUrl).toBe('https://api.deepseek.com/chat/completions');
+    expect(deepseek.authMode).toBe('bearer');
+
+    expect(() => repo.createCredential(p1, { label: 'OpenAI', provider: 'openai', authMode: 'x-api-key', apiKey: 'sk-key' }))
+      .toThrow('does not accept the x-api-key auth mode');
+  });
+
+  it('keeps a custom profile\'s upstream URL when an edit does not resubmit it', () => {
+    const { repo, p1 } = setup();
+    const cred = repo.createCredential(p1, { label: 'Custom', provider: 'custom', apiKey: 'custom-key' });
+    const profile = repo.createProfile(p1, {
+      profileId: ModelProfileIdSchema.parse('custom'),
+      displayName: 'Custom',
+      credentialId: cred.id,
+      model: 'my-model',
+      apiMode: 'chat-completions',
+      customUpstreamUrl: 'https://llm.example.com/v1/chat/completions',
+      pricing: { inputMicrosPerMillionTokens: 1, outputMicrosPerMillionTokens: 1 },
+      limits: { maxInputTokens: 1000, maxOutputTokens: 100, maxCostMicros: 1000 },
+      maxProxyOperations: ['files_read']
+    });
+    const updated = repo.updateProfile(p1, profile.id, { displayName: 'Custom v2', expectedGeneration: 1 });
+    expect(updated.activeRevision?.upstreamUrl).toBe('https://llm.example.com/v1/chat/completions');
+    const moved = repo.updateProfile(p1, profile.id, { customUpstreamUrl: 'https://llm2.example.com/v1/chat/completions', expectedGeneration: 2 });
+    expect(moved.activeRevision?.upstreamUrl).toBe('https://llm2.example.com/v1/chat/completions');
+  });
 });

@@ -7,6 +7,7 @@ export const ModelProviderKindSchema = z.enum([
   'anthropic',
   'openrouter',
   'google',
+  'deepseek',
   'custom'
 ]);
 export type ModelProviderKind = z.infer<typeof ModelProviderKindSchema>;

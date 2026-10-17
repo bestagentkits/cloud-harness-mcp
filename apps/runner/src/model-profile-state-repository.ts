@@ -6,6 +6,9 @@ import {
   ModelCredentialIdSchema,
   ModelProfileIdSchema,
   ModelRevisionIdSchema,
+  assertProviderAuthMode,
+  getModelProvider,
+  resolveProviderUpstreamUrl,
   type AgentModelProfileInput,
   type AgentModelProfileMetadata,
   type AgentModelProfileRevision,
@@ -29,23 +32,6 @@ function resolveDownstreamPath(apiMode: string): string {
   throw new HarnessError('INVALID_INPUT', `unsupported apiMode ${apiMode}`);
 }
 
-function resolveUpstreamUrl(provider: ModelProviderKind, apiMode: string, customUrl?: string): string {
-  if (provider === 'custom') {
-    if (!customUrl) throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl is required for custom provider');
-    const parsed = new URL(customUrl);
-    if (parsed.protocol !== 'https:' || (parsed.port !== '' && parsed.port !== '443')) {
-      throw new HarnessError('INVALID_INPUT', 'customUpstreamUrl must use HTTPS on default port 443');
-    }
-    return customUrl;
-  }
-  const downstream = resolveDownstreamPath(apiMode);
-  if (provider === 'openai') return `https://api.openai.com${downstream}`;
-  if (provider === 'openrouter') return `https://openrouter.ai/api${downstream}`;
-  if (provider === 'anthropic') return `https://api.anthropic.com${downstream}`;
-  if (provider === 'google') return `https://generativelanguage.googleapis.com${downstream}`;
-  throw new HarnessError('INVALID_INPUT', `unsupported provider ${provider}`);
-}
-
 export class ModelProfileStateRepository {
   constructor(
     private readonly database: DatabaseSync,
@@ -55,7 +41,8 @@ export class ModelProfileStateRepository {
   createCredential(principalId: string, input: ProviderCredentialInput): ProviderCredentialMetadata {
     const id = ModelCredentialIdSchema.parse(`cred_${randomBytes(16).toString('hex')}`);
     const now = Date.now();
-    const authMode: ProviderAuthMode = input.authMode ?? (input.provider === 'custom' ? 'bearer' : 'bearer');
+    const authMode: ProviderAuthMode = input.authMode ?? getModelProvider(input.provider).defaultAuthMode;
+    assertProviderAuthMode(input.provider, authMode);
 
     const encrypted = this.keyring.encrypt(input.apiKey, {
       principalId,
@@ -257,7 +244,7 @@ export class ModelProfileStateRepository {
     if (!cred) throw new HarnessError('NOT_FOUND', 'referenced credential was not found', 404, false);
 
     const downstreamPath = resolveDownstreamPath(input.apiMode);
-    const upstreamUrl = resolveUpstreamUrl(cred.provider, input.apiMode, input.customUpstreamUrl);
+    const upstreamUrl = resolveProviderUpstreamUrl(cred.provider, input.apiMode, input.customUpstreamUrl);
     const revId = ModelRevisionIdSchema.parse(`rev_${randomBytes(16).toString('hex')}`);
     const now = Date.now();
 
@@ -477,7 +464,12 @@ export class ModelProfileStateRepository {
     const maxProxyOperations = input.maxProxyOperations ?? (currentRev?.max_proxy_operations_json ? JSON.parse(currentRev.max_proxy_operations_json) : ['files_read']);
 
     const downstreamPath = resolveDownstreamPath(apiMode);
-    const upstreamUrl = resolveUpstreamUrl(cred.provider, apiMode, input.customUpstreamUrl);
+    // A custom endpoint is part of the profile, so an edit that keeps the same
+    // credential keeps the current URL unless a new one is submitted.
+    const keptCustomUrl = cred.provider === 'custom' && credentialId === profile.credential_id && typeof currentRev?.upstream_url === 'string'
+      ? currentRev.upstream_url as string
+      : undefined;
+    const upstreamUrl = resolveProviderUpstreamUrl(cred.provider, apiMode, input.customUpstreamUrl ?? keptCustomUrl);
     const revId = ModelRevisionIdSchema.parse(`rev_${randomBytes(16).toString('hex')}`);
     const now = Date.now();
 
