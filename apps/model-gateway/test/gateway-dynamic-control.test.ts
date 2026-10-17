@@ -7,7 +7,7 @@ import { createGatewayRuntime } from '../src/gateway.js';
 import { loadGatewayConfig } from '../src/config.js';
 import { startControlServer, type DynamicGatewayRegistry } from '../src/control.js';
 import { LeaseRegistry } from '../src/lease-registry.js';
-import type { GatewayConfig } from '../src/types.js';
+import type { GatewayConfig, GatewayProfile } from '../src/types.js';
 
 const tempSocketPath = () =>
   process.platform === 'win32'
@@ -315,5 +315,207 @@ describe('Model Gateway Dynamic Control & Hot Reload', () => {
     expect(profile?.cacheReadMicrosPerMillionTokens).toBeUndefined();
     expect(profile?.cacheWriteMicrosPerMillionTokens).toBeUndefined();
     expect(profile?.tiers).toBeUndefined();
+  });
+
+
+  const snapshotOf = (
+    sequence: number,
+    entries: Array<{ credentialId: string; revisionId: string; upstreamUrl?: string }>
+  ): Record<string, unknown> => ({
+    operation: 'apply_snapshot',
+    sequence,
+    generation: sequence,
+    credentials: Object.fromEntries(entries.map(({ credentialId }) => [
+      credentialId, { provider: 'openai', authMode: 'bearer', secret: `sk-${credentialId}-secret` }
+    ])),
+    profiles: Object.fromEntries(entries.map(({ credentialId, revisionId, upstreamUrl }) => [revisionId, {
+      id: revisionId,
+      profileId: 'coding-fast',
+      credentialId,
+      model: 'gpt-5.2-codex',
+      downstreamPath: '/v1/chat/completions',
+      upstreamUrl: upstreamUrl ?? 'https://api.openai.com/v1/chat/completions',
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50_000, maxOutputTokens: 2_000, maxCostMicros: 100_000 }
+    }]))
+  });
+
+  const staticProfileFixture = (): GatewayProfile => ({
+    id: 'static-profile',
+    provider: 'openai',
+    model: 'gpt-static',
+    downstreamPath: '/v1/chat/completions',
+    upstream: new URL('https://api.openai.com/v1/chat/completions'),
+    credentialFile: '/run/secrets/static-provider-key',
+    credentialHeader: 'authorization',
+    credentialScheme: 'Bearer',
+    inputMicrosPerMillionTokens: 1000,
+    outputMicrosPerMillionTokens: 2000,
+    limits: {
+      maxRequestBytes: 4_194_304, maxResponseBytes: 16_777_216, maxHeaderBytes: 16_384, maxHeaders: 32, deadlineMs: 300_000,
+      maxInputTokens: 400_000, maxOutputTokens: 128_000, maxCostMicros: 100_000_000, maxStreamLineBytes: 1_048_576
+    },
+    testOnly: false,
+    allowPrivateUpstream: false
+  });
+
+  async function startRegistryControl(profiles: ReadonlyMap<string, GatewayProfile> = new Map()): Promise<{
+    socketPath: string;
+    registry: DynamicGatewayRegistry;
+  }> {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'production', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles
+    };
+    const registry: DynamicGatewayRegistry = {
+      profiles: new Map(profiles), credentials: new Map(), snapshotDigest: '', gatewayBootId: 'boot_test'
+    };
+    const server = await startControlServer({
+      config, leases: new LeaseRegistry(), cancelRequest: async () => false, revokeLease: async () => false, registry
+    });
+    runtimes.push({ close: () => new Promise<void>((resolve) => server.close(() => resolve())) });
+    return { socketPath, registry };
+  }
+
+  it('evicts a credential and a revision that the next snapshot no longer exports', async () => {
+    const { socketPath, registry } = await startRegistryControl();
+    const first = await sendControl(socketPath, snapshotOf(1, [
+      { credentialId: 'cred_kept', revisionId: 'rev_kept' },
+      { credentialId: 'cred_deleted', revisionId: 'rev_deleted' }
+    ]));
+    expect(first.ok).toBe(true);
+    expect([...registry.credentials.keys()].sort()).toEqual(['cred_deleted', 'cred_kept']);
+
+    const second = await sendControl(socketPath, snapshotOf(2, [{ credentialId: 'cred_kept', revisionId: 'rev_kept' }]));
+
+    expect(second.ok).toBe(true);
+    expect([...registry.credentials.keys()]).toEqual(['cred_kept']);
+    expect([...registry.profiles.keys()]).toEqual(['rev_kept']);
+    expect(second.ack).toMatchObject({ activeProfileCount: 1, activeCredentialCount: 1 });
+    const digest = await sendControl(socketPath, { operation: 'digest' });
+    expect(digest.digest).toMatchObject({ activeProfileCount: 1, activeCredentialCount: 1 });
+
+    const empty = await sendControl(socketPath, snapshotOf(3, []));
+    expect(empty.ok).toBe(true);
+    expect(registry.credentials.size).toBe(0);
+    expect(registry.profiles.size).toBe(0);
+  });
+
+  it('keeps the whole previous set when a replacing snapshot is rejected', async () => {
+    const { socketPath, registry } = await startRegistryControl();
+    const accepted = await sendControl(socketPath, snapshotOf(1, [
+      { credentialId: 'cred_one', revisionId: 'rev_one' },
+      { credentialId: 'cred_two', revisionId: 'rev_two' }
+    ]));
+    expect(accepted.ok).toBe(true);
+    const credentialsBefore = new Map(registry.credentials);
+    const profilesBefore = new Map(registry.profiles);
+    const digestBefore = registry.snapshotDigest;
+
+    const rejected = await sendControl(socketPath, snapshotOf(2, [
+      { credentialId: 'cred_one', revisionId: 'rev_one', upstreamUrl: 'https://127.0.0.1:3443/v1/chat/completions' }
+    ]));
+
+    expect(rejected.ok).toBe(false);
+    expect(String(rejected.error)).toContain('private or reserved');
+    expect(registry.credentials).toEqual(credentialsBefore);
+    expect(registry.profiles).toEqual(profilesBefore);
+    expect(registry.snapshotDigest).toBe(digestBefore);
+  });
+
+  it('keeps statically configured profiles while evicting earlier snapshot revisions', async () => {
+    const staticProfile = staticProfileFixture();
+    const { socketPath, registry } = await startRegistryControl(new Map([[staticProfile.id, staticProfile]]));
+
+    const first = await sendControl(socketPath, snapshotOf(1, [{ credentialId: 'cred_old', revisionId: 'rev_old' }]));
+    expect(first.ok).toBe(true);
+    const second = await sendControl(socketPath, snapshotOf(2, [{ credentialId: 'cred_new', revisionId: 'rev_new' }]));
+
+    expect(second.ok).toBe(true);
+    expect(registry.profiles.get('static-profile')).toBe(staticProfile);
+    expect([...registry.profiles.keys()].sort()).toEqual(['rev_new', 'static-profile']);
+    expect([...registry.credentials.keys()]).toEqual(['cred_new']);
+  });
+
+  it('rejects a snapshot revision that collides with a configured profile and keeps the previous set', async () => {
+    const staticProfile = staticProfileFixture();
+    const { socketPath, registry } = await startRegistryControl(new Map([[staticProfile.id, staticProfile]]));
+    const accepted = await sendControl(socketPath, snapshotOf(1, [{ credentialId: 'cred_kept', revisionId: 'rev_kept' }]));
+    expect(accepted.ok).toBe(true);
+    const credentialsBefore = new Map(registry.credentials);
+    const profilesBefore = new Map(registry.profiles);
+    const digestBefore = registry.snapshotDigest;
+
+    const rejected = await sendControl(socketPath, snapshotOf(2, [
+      { credentialId: 'cred_new', revisionId: 'rev_new' },
+      { credentialId: 'cred_shadow', revisionId: 'static-profile' }
+    ]));
+
+    expect(rejected.ok).toBe(false);
+    expect(String(rejected.error)).toContain('profile revision static-profile collides with a configured profile');
+    expect(registry.credentials).toEqual(credentialsBefore);
+    expect(registry.profiles).toEqual(profilesBefore);
+    expect(registry.profiles.get('static-profile')).toBe(staticProfile);
+    expect(registry.snapshotDigest).toBe(digestBefore);
+  });
+
+  it('fails closed for a live lease whose revision a later snapshot evicted', async () => {
+    const socketPath = tempSocketPath();
+    const config: GatewayConfig = {
+      mode: 'test', host: '127.0.0.1', port: 0, controlSocket: socketPath, profiles: new Map()
+    };
+    const gateway = createGatewayRuntime(config);
+    runtimes.push(gateway);
+    await gateway.listen();
+    const address = gateway.httpServer.address();
+    if (address === null || typeof address === 'string') throw new Error('gateway did not bind a TCP port');
+
+    const evictedUpstream = 'https://127.0.0.1:3443/v1/chat/completions';
+    const applied = await sendControl(socketPath, snapshotOf(1, [
+      { credentialId: 'cred_evicted', revisionId: 'rev_evicted', upstreamUrl: evictedUpstream }
+    ]));
+    expect(applied.ok).toBe(true);
+    const agentId = 'agent_12345678901234567890';
+    const issued = await sendControl(socketPath, {
+      operation: 'issue',
+      leaseId: 'lease_on_evicted_revision',
+      agentId,
+      profileId: 'rev_evicted',
+      ttlMs: 30_000,
+      maxInputTokens: 10_000,
+      maxOutputTokens: 1_000,
+      maxCostMicros: 50_000
+    });
+    expect(issued.ok).toBe(true);
+
+    const replaced = await sendControl(socketPath, snapshotOf(2, [
+      { credentialId: 'cred_current', revisionId: 'rev_current', upstreamUrl: evictedUpstream }
+    ]));
+    expect(replaced.ok).toBe(true);
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${String(issued.lease)}`,
+        'content-type': 'application/json',
+        'x-agent-id': agentId,
+        'x-model-profile': 'rev_evicted'
+      },
+      body: JSON.stringify({ model: 'gpt-5.2-codex', messages: [{ role: 'user', content: 'hello' }] })
+    });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: { code: 'invalid_gateway_lease', message: 'invalid gateway lease' } });
+
+    const reissued = await sendControl(socketPath, {
+      operation: 'issue',
+      leaseId: 'lease_after_eviction',
+      agentId,
+      profileId: 'rev_evicted',
+      ttlMs: 30_000,
+      maxInputTokens: 10_000,
+      maxOutputTokens: 1_000,
+      maxCostMicros: 50_000
+    });
+    expect(reissued).toMatchObject({ ok: false, error: 'unknown profile' });
   });
 });

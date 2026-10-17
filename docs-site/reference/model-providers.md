@@ -95,10 +95,19 @@ Limitations:
   first save uses it up whether or not it matched; any other save succeeds but shows
   **Not verified**.
 - **Gateway sync.** Saving a profile or credential pushes a new snapshot to the gateway,
-  but the save succeeds even if that push fails. Spawning a subagent pushes again when the
-  gateway restarted or lost its profiles, and fails with `UNAVAILABLE` if the gateway is
-  unreachable. The dashboard's model status (`GET /api/v1/agent-model-config-status`)
-  reports whether the gateway answered and when the runner last attempted a push.
+  but the save succeeds even if that push fails. Each snapshot replaces what the gateway
+  held, so after the next successful push a deleted credential's key is dropped from the
+  gateway's registry (a request already in flight finishes with the key it started with)
+  and a disabled or deleted profile no longer routes. The revision an agent was spawned
+  on, and the credential it needs, stay until that agent ends, even when the profile is
+  edited while the spawn is in progress. Spawning a subagent pushes again when the gateway
+  restarted or lost its profiles, and fails with `UNAVAILABLE` if the gateway is
+  unreachable. The launch checks the gateway once more before it issues the agent's
+  lease; if the gateway is unreachable by then, the spawn was already accepted, so the
+  agent is cancelled instead and ends `FAILED` once the gateway can confirm its cleanup.
+  The dashboard's model status
+  (`GET /api/v1/agent-model-config-status`) reports whether the gateway answered and when
+  the runner last attempted a push.
 
 The full behaviour of the catalog, checks, and pricing review is described in
 [Models & Budgets](/dashboard/models).

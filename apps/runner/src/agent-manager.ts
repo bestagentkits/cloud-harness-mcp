@@ -298,9 +298,9 @@ export class AgentManager {
       throw new HarnessError('CONFLICT', 'agents require a network-disabled workspace; open a separate workspace with networkProfile "network-none"', 409, false);
     }
     const profile = this.profile(input.profileId as string, ownerId);
-    if (this.modelProfiles && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id))) {
-      await this.ensureGatewaySynced();
-    }
+    const dashboardManaged = this.modelProfiles !== undefined
+      && (profile.id.startsWith('rev_') || this.config.profiles.every((p) => p.id !== profile.id));
+    if (dashboardManaged) await this.ensureGatewaySynced();
     const tools = AgentProxyOperationSchema.array().parse(input.proxyOperations);
     if (tools.some((operation) => !profile.maxProxyOperations.includes(operation))) {
       throw new HarnessError('INVALID_INPUT', 'requested proxy operation exceeds the selected profile');
@@ -365,7 +365,7 @@ export class AgentManager {
       return success('Agent spawn replayed', spawnData(reservation.record, true));
     }
     const repositoryContext = (input.repositoryContext as AgentRepositoryContext | undefined) ?? 'codex';
-    const launch = this.launch(reservation.record, prompt, profile, repositoryContext)
+    const launch = this.launch(reservation.record, prompt, profile, repositoryContext, dashboardManaged)
       .finally(() => this.launches.delete(reservation.record.id));
     this.launches.set(reservation.record.id, launch);
     void launch.catch(() => undefined);
@@ -422,16 +422,34 @@ export class AgentManager {
     return composed.prompt;
   }
 
-  private async launch(record: AgentRecord, prompt: string, profile: PricedAgentModelProfile, repositoryContext: AgentRepositoryContext): Promise<void> {
+  private async launch(
+    record: AgentRecord,
+    prompt: string,
+    profile: PricedAgentModelProfile,
+    repositoryContext: AgentRepositoryContext,
+    reconcileGateway: boolean
+  ): Promise<void> {
     const spec = this.launchSpec(record);
+    let leaseMayExist = false;
     try {
       if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
         throw new HarnessError('CONFLICT', 'agent launch lost its runtime epoch fence', 409, true);
       }
+      if (reconcileGateway) {
+        // The revision was resolved before the agent row existed, so a snapshot built in that gap
+        // (a profile edit's push) may omit it, and the gateway replaces its set with each snapshot.
+        // Every snapshot built from now on includes the revision; reconcile once before the lease.
+        await this.ensureGatewaySynced();
+      }
+      // A cancel that landed while this launch waited owns the cleanup; it waits for this launch,
+      // so stop before any lease or container exists.
+      if (!this.stillSpawning(record)) return;
       // Guidance is composed before any lease or container exists, so an agent never starts its
       // first turn without the repository's applicable guidance, and a failed scan costs nothing.
       const initialPrompt = await this.bootstrapPrompt(record, prompt, repositoryContext);
+      if (!this.stillSpawning(record)) return;
       // From here the lease may exist in the gateway, so an unsettled row is charged its whole cap.
+      leaseMayExist = true;
       this.spendLedger.markIssuing(record.gatewayLeaseId);
       let grant: Awaited<ReturnType<AgentGatewayControl['issue']>>;
       try {
@@ -493,21 +511,39 @@ export class AgentManager {
         if (!context.terminalSeen) void this.interrupt(running, `agent runtime exited before terminal record (${code ?? 'signal'})`);
       }).catch((error: unknown) => { void this.interrupt(running, error instanceof Error ? error.message : 'agent runtime failed'); });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'agent launch failed';
-      const current = this.repository.findAgent(record.ownerId, record.workspaceId, record.id);
-      if (!current || current.status === 'CANCELLING' || terminalStatuses.has(current.status)) return;
-      const cancelling = this.repository.transitionStatus({
-        ownerId: current.ownerId, workspaceId: current.workspaceId, agentId: current.id, generation: current.generation,
-        runtimeEpoch: this.epoch,
-        expectedStatuses: [current.status], status: 'CANCELLING', now: this.now(), cleanupReason: message.slice(0, 2_000)
-      });
-      if (!cancelling) return;
-      await this.cancelDescendants(cancelling, message);
-      const context = this.runtimes.get(record.id);
-      const cleanup = this.cleanup(cancelling, context, message, 'FAILED');
-      if (context) context.cleanup = cleanup;
-      await cleanup;
+      if (!leaseMayExist) {
+        // No lease can exist, so the reservation is released at zero now instead of waiting for a
+        // cleanup that may need the same unreachable gateway. A failure here leaves the row open for
+        // the cleanup retry or the spend sweep, and must not keep the agent from ending.
+        try {
+          this.spendLedger.settle(record.gatewayLeaseId, undefined, this.now());
+        } catch {
+          // The open row is settled later; ending the agent below matters more.
+        }
+      }
+      await this.failLaunch(record, error instanceof Error ? error.message : 'agent launch failed');
     }
+  }
+
+  private stillSpawning(record: AgentRecord): boolean {
+    return this.repository.findAgent(record.ownerId, record.workspaceId, record.id)?.status === 'SPAWNING';
+  }
+
+  /** Ends an agent whose launch failed: cancels its descendants, releases its lease, and records it FAILED. */
+  private async failLaunch(record: AgentRecord, message: string): Promise<void> {
+    const current = this.repository.findAgent(record.ownerId, record.workspaceId, record.id);
+    if (!current || current.status === 'CANCELLING' || terminalStatuses.has(current.status)) return;
+    const cancelling = this.repository.transitionStatus({
+      ownerId: current.ownerId, workspaceId: current.workspaceId, agentId: current.id, generation: current.generation,
+      runtimeEpoch: this.epoch,
+      expectedStatuses: [current.status], status: 'CANCELLING', now: this.now(), cleanupReason: message.slice(0, 2_000)
+    });
+    if (!cancelling) return;
+    await this.cancelDescendants(cancelling, message);
+    const context = this.runtimes.get(record.id);
+    const cleanup = this.cleanup(cancelling, context, message, 'FAILED');
+    if (context) context.cleanup = cleanup;
+    await cleanup;
   }
   private status(ownerId: string, workspaceId: string, input: Record<string, unknown>): RunnerResponse {
     const record = this.lookup(ownerId, workspaceId, input);
