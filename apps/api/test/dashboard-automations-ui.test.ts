@@ -254,7 +254,8 @@ describe('automation rules', () => {
     expect(html).toContain('name="events" value="issues" checked');
     expect(html).toContain('name="events" value="pull_request">');
     expect(html).toContain('name="proxyOperations" value="files_read" checked');
-    expect(html).toContain('name="proxyOperations" value="files_write">');
+    expect(html).toContain('name="proxyOperations" value="grep_search">');
+    expect(html).not.toContain('value="files_write"');
     expect(html).toContain('name="maxCostUsd" type="number" inputmode="decimal" min="0" max="100" step="0.000001" value="2"');
     expect(html).toContain('name="publishComment" checked');
     expect(html).toContain('name="enabled" checked');
@@ -272,7 +273,7 @@ describe('automation rules', () => {
     for (const operation of ['files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references']) {
       expect(html).toContain(`name="proxyOperations" value="${operation}" checked`);
     }
-    expect(html).toContain('name="proxyOperations" value="files_delete">');
+    expect(html).not.toContain('value="files_delete"');
   });
 
   it('builds the rule create body and reports field errors before a round trip', () => {

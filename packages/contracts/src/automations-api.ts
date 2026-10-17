@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AgentIdSchema, WorkspaceIdSchema } from './identifiers.js';
-import { AgentProxyOperationSchema, RunnerPrincipalSelectorSchema } from './runner-api.js';
+import { RunnerPrincipalSelectorSchema } from './runner-api.js';
 
 /**
  * Webhook-triggered automations. A provider webhook reaches the API's public ingress, which forwards
@@ -46,6 +46,11 @@ export const AutomationPublishStateSchema = z.enum(['NONE', 'PENDING', 'DELIVERE
 
 /** Read-only by default: a webhook-triggered agent analyses and reports, it does not edit. */
 export const AUTOMATION_DEFAULT_PROXY_OPERATIONS = ['files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references'] as const;
+/**
+ * Automation agents are read-only: a webhook may start one, but it can only inspect the checkout.
+ * Code-changing runs need the approval flow automations do not have yet.
+ */
+export const AutomationProxyOperationSchema = z.enum(AUTOMATION_DEFAULT_PROXY_OPERATIONS);
 
 const name = z.string().trim().min(1).max(100);
 const githubRepository = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u, 'repository must be owner/name')
@@ -80,7 +85,7 @@ export const AutomationRuleActionSchema = z.object({
   profileId,
   instructions: z.string().min(1).max(AUTOMATION_LIMITS.maxInstructionsChars)
     .refine((value) => !value.includes('\0'), 'instructions cannot contain null bytes'),
-  proxyOperations: z.array(AgentProxyOperationSchema).min(1).max(AgentProxyOperationSchema.options.length)
+  proxyOperations: z.array(AutomationProxyOperationSchema).min(1).max(AutomationProxyOperationSchema.options.length)
     .refine((operations) => new Set(operations).size === operations.length, 'proxy operations must be unique')
     .default([...AUTOMATION_DEFAULT_PROXY_OPERATIONS]),
   budget: AutomationRuleBudgetSchema.default(AutomationRuleBudgetSchema.parse({})),

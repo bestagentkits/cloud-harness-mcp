@@ -21,7 +21,7 @@ import {
   type RunnerPrincipalSelector
 } from '@cloud-harness/contracts';
 import { initializeAutomationSchema } from './automation-schema.js';
-import { normalizeGitHubEvent, verifyGitHubSignature, type NormalizedGitHubEvent } from './automation-github.js';
+import { boundedText, normalizeGitHubEvent, verifyGitHubSignature, type NormalizedGitHubEvent } from './automation-github.js';
 import { emitAutomationTerminalEvent, withEventSavepoint } from './event-outbox.js';
 import type { EncryptedSecret, SecretKeyring } from './secret-keyring.js';
 
@@ -131,8 +131,9 @@ export function neutralizeMentions(value: string): string {
   return value.replace(/@/gu, '@​');
 }
 
+/** Removes anything that could read as the fence tag, whatever its spacing, slash or attributes. */
 function escapeDelimiter(value: string): string {
-  return value.replace(new RegExp(`</?\\s*${DELIMITER}\\s*>`, 'giu'), '[removed delimiter]');
+  return value.replace(new RegExp(`<[^<>]*${DELIMITER}[^<>]*>?`, 'giu'), '[removed delimiter]');
 }
 
 /**
@@ -230,6 +231,8 @@ export class AutomationService {
   private readonly log: (record: Record<string, unknown>) => void;
   private timer: NodeJS.Timeout | undefined;
   private inFlight: Promise<void> | undefined;
+  /** Network-bound steps by workflow id. A slow clone or API call holds only its own workflow. */
+  private readonly steps = new Map<string, Promise<void>>();
   private lastPurgeAt = 0;
 
   constructor(options: AutomationServiceOptions) {
@@ -248,7 +251,7 @@ export class AutomationService {
 
   start(): void {
     if (!this.enabled || this.timer) return;
-    this.timer = setInterval(() => { void this.tick(); }, TICK_INTERVAL_MS);
+    this.timer = setInterval(() => { void this.schedule(); }, TICK_INTERVAL_MS);
     this.timer.unref();
   }
 
@@ -256,10 +259,20 @@ export class AutomationService {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     await this.inFlight;
+    await Promise.all(this.steps.values());
   }
 
-  /** Runs one engine pass. Passes never overlap; a call during a pass waits for that pass. */
+  /**
+   * Runs one engine pass and waits for the steps it launched. The interval timer does not wait for
+   * steps (`schedule`), so a workflow stuck in a slow call never delays the others.
+   */
   async tick(): Promise<void> {
+    await this.schedule();
+    await Promise.all(this.steps.values());
+  }
+
+  /** Passes never overlap; a call during a pass waits for that pass. */
+  private async schedule(): Promise<void> {
     if (this.inFlight) return await this.inFlight;
     this.inFlight = this.pass().catch((error: unknown) => {
       this.log({ event: 'automation_tick_failed', error: error instanceof Error ? error.name : 'unknown' });
@@ -296,7 +309,7 @@ export class AutomationService {
       case 'rule_preview': return this.previewRule(ownerId, request.input.id, request.input.sample);
       case 'workflows_list': return { workflows: this.listWorkflows(ownerId, request.input).map((row) => this.workflowSummary(row)) };
       case 'workflow_get': return this.getWorkflow(ownerId, request.input.id);
-      case 'workflow_cancel': return this.cancelWorkflow(ownerId, request.input.id);
+      case 'workflow_cancel': return this.cancelWorkflow(ownerId, request.input.id, request.input.reason);
       case 'deliveries_list': return { deliveries: this.listDeliveries(ownerId, request.input).map((row) => this.deliverySummary(row)) };
     }
   }
@@ -317,8 +330,11 @@ export class AutomationService {
     if (!/^[a-z_]{1,64}$/u.test(input.event)) throw new AutomationsError('INVALID_INPUT', 'invalid event name');
     const now = this.now();
     return withEventSavepoint(this.database, () => {
-      const existing = this.database.prepare('SELECT 1 FROM automation_deliveries WHERE connection_id = ? AND provider_delivery_id = ?')
-        .get(connection.id, input.deliveryId);
+      // The delivery id header is not covered by the signature, so a captured body replayed under a new
+      // id is caught by its hash. GitHub's own redeliveries repeat both the id and the exact bytes.
+      const payloadSha256 = createHash('sha256').update(body).digest('hex');
+      const existing = this.database.prepare('SELECT 1 FROM automation_deliveries WHERE connection_id = ? AND (provider_delivery_id = ? OR payload_sha256 = ?)')
+        .get(connection.id, input.deliveryId, payloadSha256);
       if (existing) return { outcome: 'duplicate' as const };
       const recent = this.database.prepare('SELECT COUNT(*) AS count FROM automation_deliveries WHERE connection_id = ? AND received_at > ?')
         .get(connection.id, now - 60_000) as { count: number };
@@ -330,7 +346,7 @@ export class AutomationService {
         payload_sha256, event_type, repository, resource_number, resource_url, label, sender_login, sender_type, title, body,
         state, outcome, received_at, processed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         `dlv_${hex(16)}`, connection.owner_id, connection.id, input.deliveryId, input.event,
-        createHash('sha256').update(body).digest('hex'), event?.eventType ?? null, event?.repository ?? null,
+        payloadSha256, event?.eventType ?? null, event?.repository ?? null,
         event?.resourceNumber ?? null, event?.resourceUrl ?? null, event?.label ?? null, event?.senderLogin ?? null,
         event?.senderType ?? null, event?.title ?? null, event?.body ?? null, state,
         normalized.kind === 'event' ? null : normalized.reason, now, normalized.kind === 'event' ? null : now
@@ -552,11 +568,13 @@ export class AutomationService {
     };
   }
 
-  private cancelWorkflow(ownerId: string, id: string) {
+  private cancelWorkflow(ownerId: string, id: string, reason: string | undefined) {
     const row = this.ownedWorkflow(ownerId, id);
     if (!TERMINAL_STATES.has(row.state)) {
       this.finish(row.id, ['QUEUED', 'STARTING', 'RUNNING'], 'CANCELLED', 'OWNER_CANCELLED', 'owner', {});
-      this.audit(this.database, ownerId, 'automation.workflow.cancelled', 'automation_workflow', row.id, 1, {});
+      // Workflows are immutable snapshots, so the audited generation is the rule generation they ran.
+      this.audit(this.database, ownerId, 'automation.workflow.cancelled', 'automation_workflow', row.id, row.rule_generation,
+        reason ? { reason: boundedText(reason, 500) } : {});
     }
     return { workflow: this.workflowSummary(this.ownedWorkflow(ownerId, id)) };
   }
@@ -625,11 +643,21 @@ export class AutomationService {
   private async pass(): Promise<void> {
     this.processDeliveries();
     this.admitQueued();
-    for (const row of this.due('STARTING')) await this.startWorkflow(row);
-    for (const row of this.due('RUNNING')) await this.poll(row);
-    for (const row of this.duePublish()) await this.publish(row);
-    for (const row of this.dueCleanup()) await this.cleanup(row);
+    // Each list is read only after the previous launches, so a row already busy is skipped by id.
+    for (const row of this.due('STARTING')) this.launch(row, () => this.startWorkflow(row));
+    for (const row of this.due('RUNNING')) this.launch(row, () => this.poll(row));
+    for (const row of this.duePublish()) this.launch(row, () => this.publish(row));
+    for (const row of this.dueCleanup()) this.launch(row, () => this.cleanup(row));
     this.purge();
+    await Promise.resolve();
+  }
+
+  private launch(row: WorkflowRow, step: () => Promise<void>): void {
+    if (this.steps.has(row.id)) return;
+    const running = step().catch((error: unknown) => {
+      this.log({ event: 'automation_step_failed', workflowId: row.id, error: error instanceof Error ? error.name : 'unknown' });
+    }).finally(() => { this.steps.delete(row.id); });
+    this.steps.set(row.id, running);
   }
 
   private processDeliveries(): void {
@@ -688,24 +716,42 @@ export class AutomationService {
 
   private admitQueued(): void {
     const now = this.now();
-    const queued = this.database.prepare(`SELECT * FROM automation_workflows WHERE state = 'QUEUED' AND next_attempt_at <= ?
-      ORDER BY created_at, id LIMIT ${BATCH}`).all(now) as WorkflowRow[];
-    for (const row of queued) {
-      if (now - row.created_at > AUTOMATION_LIMITS.maxQueueMs) {
-        this.finish(row.id, ['QUEUED'], 'EXPIRED', 'QUEUE_EXPIRED', 'system', {});
-        continue;
-      }
-      const rule = this.database.prepare('SELECT enabled FROM automation_rules WHERE id = ?').get(row.rule_id) as { enabled: number } | undefined;
-      if (!rule) { this.finish(row.id, ['QUEUED'], 'CANCELLED', 'RULE_DELETED', 'system', {}); continue; }
-      if (rule.enabled !== 1) { this.finish(row.id, ['QUEUED'], 'CANCELLED', 'RULE_DISABLED', 'system', {}); continue; }
-      const active = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE state IN ('STARTING', 'RUNNING')`).get() as { count: number };
-      if (active.count >= this.maxConcurrentWorkflows) return;
-      const snapshot = this.snapshot(row);
-      const ruleActive = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE rule_id = ? AND state IN ('STARTING', 'RUNNING')`)
-        .get(row.rule_id) as { count: number };
-      if (ruleActive.count >= snapshot.action.maxConcurrent) continue;
-      this.transition(row.id, ['QUEUED'], 'STARTING', null, { start_attempts: row.start_attempts + 1, next_attempt_at: now });
+    // Expire or cancel queued rows first, independently of admission, so a saturated rule cannot
+    // keep them out of view.
+    const stale = this.database.prepare(`SELECT w.id, w.created_at, r.enabled FROM automation_workflows w
+      LEFT JOIN automation_rules r ON r.id = w.rule_id
+      WHERE w.state = 'QUEUED' AND (w.created_at < ? OR r.id IS NULL OR r.enabled != 1) ORDER BY w.created_at, w.id LIMIT ${BATCH}`)
+      .all(now - AUTOMATION_LIMITS.maxQueueMs) as { id: string; created_at: number; enabled: number | null }[];
+    for (const row of stale) {
+      if (now - row.created_at > AUTOMATION_LIMITS.maxQueueMs) this.finish(row.id, ['QUEUED'], 'EXPIRED', 'QUEUE_EXPIRED', 'system', {});
+      else if (row.enabled === null) this.finish(row.id, ['QUEUED'], 'CANCELLED', 'RULE_DELETED', 'system', {});
+      else this.finish(row.id, ['QUEUED'], 'CANCELLED', 'RULE_DISABLED', 'system', {});
     }
+    // Rules take turns by their oldest queued workflow, and each admits only up to its free slots,
+    // so a rule at its own limit never blocks another rule's queue.
+    const rules = this.database.prepare(`SELECT rule_id, MIN(created_at) AS first FROM automation_workflows
+      WHERE state = 'QUEUED' AND next_attempt_at <= ? GROUP BY rule_id ORDER BY first, rule_id LIMIT ${BATCH}`).all(now) as { rule_id: string }[];
+    for (const { rule_id: ruleId } of rules) {
+      const queued = this.database.prepare(`SELECT * FROM automation_workflows WHERE rule_id = ? AND state = 'QUEUED' AND next_attempt_at <= ?
+        ORDER BY created_at, id LIMIT ${BATCH}`).all(ruleId, now) as WorkflowRow[];
+      for (const row of queued) {
+        if (this.workspacesHeld() >= this.maxConcurrentWorkflows) return;
+        const ruleActive = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE rule_id = ? AND state IN ('STARTING', 'RUNNING')`)
+          .get(ruleId) as { count: number };
+        if (ruleActive.count >= this.snapshot(row).action.maxConcurrent) break;
+        this.transition(row.id, ['QUEUED'], 'STARTING', null, { start_attempts: row.start_attempts + 1, next_attempt_at: now });
+      }
+    }
+  }
+
+  /**
+   * Workflows that hold, or are about to hold, a workspace: starting and running ones, plus finished
+   * ones whose workspace is not closed yet (a comment still publishing, or cleanup still retrying).
+   */
+  private workspacesHeld(): number {
+    const row = this.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE state IN ('STARTING', 'RUNNING')
+      OR (workspace_id IS NOT NULL AND workspace_closed = 0)`).get() as { count: number };
+    return row.count;
   }
 
   private due(state: 'STARTING' | 'RUNNING'): WorkflowRow[] {
@@ -746,21 +792,20 @@ export class AutomationService {
   private async startWorkflow(row: WorkflowRow): Promise<void> {
     const snapshot = this.snapshot(row);
     if (this.now() - row.created_at > AUTOMATION_LIMITS.maxQueueMs) {
+      if (!row.workspace_id && row.start_attempts > 1) await this.recoverWorkspace(row, snapshot);
       this.finish(row.id, ['STARTING'], 'EXPIRED', 'START_EXPIRED', 'system', {});
       return;
     }
     let workspaceId = row.workspace_id;
     if (!workspaceId) {
-      const opened = await this.call(row.owner_id, 'workspace_open', {
-        repositoryUrl: `https://github.com/${row.repository}.git`,
-        ...(snapshot.action.ref ? { ref: snapshot.action.ref } : {}),
-        idempotencyKey: `automation:${row.id}:open`,
-        networkProfile: 'network-none'
-      });
+      const opened = await this.openWorkspace(row, snapshot);
       const opened_id = (opened.data as { workspaceId?: unknown } | undefined)?.workspaceId;
       if (!opened.ok || typeof opened_id !== 'string') {
         if (retryable(opened)) {
-          this.transition(row.id, ['STARTING'], 'QUEUED', bounded(`RETRY:${opened.error?.code ?? 'UNKNOWN'}`, 100), { next_attempt_at: this.now() + this.backoff(row.start_attempts) });
+          // Stays STARTING, holding its slot: a lost response may mean the workspace already exists,
+          // and the retry replays the same idempotency key to recover it.
+          this.database.prepare('UPDATE automation_workflows SET next_attempt_at = ?, start_attempts = start_attempts + 1, updated_at = ? WHERE id = ? AND state = ?')
+            .run(this.now() + this.backoff(row.start_attempts), this.now(), row.id, 'STARTING');
         } else {
           this.finish(row.id, ['STARTING'], 'FAILED', errorCode('WORKSPACE_OPEN_FAILED', opened), 'system', {});
         }
@@ -796,6 +841,27 @@ export class AutomationService {
     this.database.prepare('UPDATE automation_workflows SET agent_id = ?, agent_status = ?, updated_at = ? WHERE id = ?')
       .run(spawnedData.agentId, typeof spawnedData.status === 'string' ? spawnedData.status : null, this.now(), row.id);
     this.transition(row.id, ['STARTING'], 'RUNNING', null, { next_attempt_at: this.now() });
+  }
+
+  private async openWorkspace(row: WorkflowRow, snapshot: RuleSnapshot): Promise<AutomationOperationResult> {
+    return await this.call(row.owner_id, 'workspace_open', {
+      repositoryUrl: `https://github.com/${row.repository}.git`,
+      ...(snapshot.action.ref ? { ref: snapshot.action.ref } : {}),
+      idempotencyKey: `automation:${row.id}:open`,
+      networkProfile: 'network-none'
+    });
+  }
+
+  /**
+   * An earlier open may have created a workspace whose response was lost. Replaying the same
+   * idempotency key returns it (or opens one) so cleanup can close it instead of leaving it to its TTL.
+   */
+  private async recoverWorkspace(row: WorkflowRow, snapshot: RuleSnapshot): Promise<void> {
+    const opened = await this.openWorkspace(row, snapshot);
+    const workspaceId = (opened.data as { workspaceId?: unknown } | undefined)?.workspaceId;
+    if (opened.ok && typeof workspaceId === 'string') {
+      this.database.prepare('UPDATE automation_workflows SET workspace_id = ?, updated_at = ? WHERE id = ? AND workspace_id IS NULL').run(workspaceId, this.now(), row.id);
+    }
   }
 
   private async poll(row: WorkflowRow): Promise<void> {

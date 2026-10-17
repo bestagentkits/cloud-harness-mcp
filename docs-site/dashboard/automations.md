@@ -8,8 +8,10 @@ description: Start a budgeted, read-only agent run when a GitHub label is added 
 `/dashboard/automations` turns a GitHub label into an agent run. When someone adds a
 label you chose to an issue or pull request, Cloud Harness opens a fresh workspace on
 that repository, runs one coding agent with your instructions and budget, stores its
-answer, and can post that answer as one comment. Typical uses are triage, a first
-analysis of a bug report, or a review summary for a pull request.
+answer, and can post that answer as one comment. Typical uses are triage and a first
+analysis of a bug report against the code. The agent reads the repository's default
+branch, or the ref the rule names; it does not check out a pull request's changes,
+so it can comment on a pull request's description but not review its diff.
 
 Automations are off unless the operator sets `AUTOMATIONS_ENABLED=true` for both the
 API and the runner. While they are off the page says so and nothing can be created.
@@ -79,7 +81,8 @@ The exact limits and defaults are owned by
   clearly separated from your instructions, and are not kept after matching. The raw
   webhook is never stored.
 - **No loops or pings.** Bot senders are ignored by default, this harness's own GitHub
-  App is always ignored, and `@` mentions in a posted comment are neutralised.
+  App is always ignored when the operator configured its slug, posting a comment never
+  raises a label event, and `@` mentions in a posted comment are neutralised.
 - **One run at a time per issue.** Adding the label again while a run is active does
   not start another, and a cooldown applies after a run ends.
 - **Rotate secret** takes effect immediately: update the GitHub webhook right away,

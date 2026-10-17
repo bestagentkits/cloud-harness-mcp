@@ -281,9 +281,13 @@ cannot authenticate to Cloudflare Access. The decisions that keep that safe:
   or deleted connection and a bad signature return the same `401`, so the route
   is not an oracle for connection ids.
 - **The API only bounds the request.** The ingress is mounted only when
-  enabled, checks the host, and has its own process-local rate window so a
-  webhook burst cannot consume the MCP pre-auth budget. The runner adds
-  per-connection delivery dedupe and a per-connection delivery rate.
+  enabled, checks the host, answers a malformed connection id with the same
+  `401`, and keeps a process-local rate window per connection id, so traffic
+  aimed at other ids cannot exhaust a real connection's window and a webhook
+  burst cannot consume the MCP pre-auth budget. The runner adds
+  per-connection delivery dedupe, by delivery id and by body digest so a
+  captured body replayed under a new delivery id is a duplicate, and a
+  per-connection delivery rate.
 - **Event data is untrusted input.** Only label additions on `issues` and
   `pull_request` are admitted; other events and actions are recorded as ignored
   and malformed bodies as quarantined. The raw payload is never stored, only
@@ -292,12 +296,14 @@ cannot authenticate to Cloudflare Access. The decisions that keep that safe:
   The prompt places event text after the owner's instructions in a fenced
   untrusted block whose delimiter is stripped from the event text.
 - **Triggers are narrow and opt-in.** A rule matches an exact repository,
-  label, and event set, starts disabled, ignores bot senders by default, and
-  always ignores this harness's own GitHub App so a posted comment cannot
-  re-trigger it. An optional actor allowlist narrows it further.
-- **The agent is read-only by default.** Each run opens a fresh `network-none`
-  workspace and spawns an agent with read-only proxy operations and the rule's
-  budget. Its only GitHub write is an optional single comment through the
+  label, and event set, starts disabled, ignores bot senders by default, and,
+  when `GITHUB_APP_SLUG` is configured, always ignores this harness's own
+  GitHub App. Posted comments do not raise label events, so the harness cannot
+  re-trigger itself either way. An optional actor allowlist narrows it further.
+- **The agent is read-only.** Each run opens a fresh `network-none` workspace
+  on the rule's ref (the default branch unless set) and spawns an agent whose
+  proxy operations are limited by the rule contract to the read-only set, with
+  the rule's budget. A pull request's head is not checked out. Its only GitHub write is an optional single comment through the
   brokered `issue_comment` action, with `@` mentions neutralized.
 
 Residual risk: anyone who can add a label in a watched repository can spend

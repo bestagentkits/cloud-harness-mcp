@@ -294,7 +294,7 @@ Automations **Deliveries** and **Runs** views show what the runner did with it.
 | GitHub delivery gets an Access login page or `302` | Access is protecting the path. Add the path-scoped Bypass application for `/integrations/webhooks/` only ([deployment](deployment.md#webhook-automations-rollout)). |
 | `401 {"error":"unauthorized"}` | Unknown, disabled, or deleted connection, or a signature mismatch; the body is identical on purpose. Check the URL's connection id and that GitHub holds the current secret. After **Rotate secret**, every delivery signed with the old secret fails until GitHub is updated. |
 | `415` | The GitHub webhook content type is `application/x-www-form-urlencoded`. Change it to `application/json`. |
-| `429` with `Retry-After` | The API's ingress window or the connection's per-minute delivery rate is exhausted. GitHub does not retry automatically; redeliver from GitHub after the window. |
+| `429` with `Retry-After` | The API's ingress window for this connection id or the connection's per-minute delivery rate is exhausted. GitHub does not retry automatically; redeliver from GitHub after the window. |
 | `503 {"error":"unavailable"}` | The runner is unreachable, its `AUTOMATIONS_ENABLED` does not match the API's, or it has no secret keyring. Check `/readyz` and both services' environment. |
 | `202` with `status: "ignored"` | Verified, but not an admitted event (for example `ping`, or an action other than `labeled`), or the body was malformed (listed as quarantined). Only label additions on issues and pull requests start runs. |
 | `202` with `status: "duplicate"` | GitHub redelivered a `X-GitHub-Delivery` id already stored; nothing new runs. |

@@ -122,9 +122,13 @@ function createRule(context: Setup, connectionId: string, overrides: { match?: R
   })).rule;
 }
 
+// Real deliveries differ byte for byte (GitHub stamps `updated_at`), so each fixture does too.
+let payloadSequence = 0;
 function payload(overrides: { action?: string; label?: string; sender?: string; senderType?: string; number?: number; body?: string } = {}) {
+  payloadSequence += 1;
   return Buffer.from(JSON.stringify({
     action: overrides.action ?? 'labeled',
+    updated_at: new Date(Date.UTC(2026, 9, 17, 0, 0, payloadSequence)).toISOString(),
     label: { name: overrides.label ?? 'Claude' },
     issue: {
       number: overrides.number ?? 7,
@@ -263,6 +267,8 @@ describe('AutomationService ingest', () => {
     const body = payload();
     expect(deliver(context, connection.id, secret, body, { deliveryId: 'd-1' })).toEqual({ ok: true, data: { outcome: 'accepted' } });
     expect(deliver(context, connection.id, secret, body, { deliveryId: 'd-1' })).toEqual({ ok: true, data: { outcome: 'duplicate' } });
+    // A captured body replayed under a fresh delivery id is still the same signed delivery.
+    expect(deliver(context, connection.id, secret, body, { deliveryId: 'd-1-replayed' })).toEqual({ ok: true, data: { outcome: 'duplicate' } });
     expect(deliver(context, connection.id, secret, Buffer.from('{"zen":"x"}'), { deliveryId: 'd-2', event: 'ping' })).toEqual({ ok: true, data: { outcome: 'ignored' } });
     expect(deliver(context, connection.id, secret, payload({ action: 'unlabeled' }), { deliveryId: 'd-3' })).toEqual({ ok: true, data: { outcome: 'ignored' } });
     const rows = context.store.database.prepare('SELECT * FROM automation_deliveries ORDER BY received_at, provider_delivery_id').all() as Record<string, unknown>[];
@@ -319,6 +325,10 @@ describe('AutomationService rules', () => {
     expect(preview({ event: 'pull_request' })).toEqual({ matched: false, reason: 'event_not_selected' });
     expect(context.service.execute({ version: 1, principal: context.owner, operation: 'rule_create', input: {
       connectionId: connection.id, name: 'bad', match: { repository: 'not a repo', events: ['issues'], label: 'x' }, action: { profileId: 'p', instructions: 'i' }
+    } })).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
+    expect(context.service.execute({ version: 1, principal: context.owner, operation: 'rule_create', input: {
+      connectionId: connection.id, name: 'writer', match: { repository: REPO, events: ['issues'], label: 'x' },
+      action: { profileId: 'p', instructions: 'i', proxyOperations: ['files_read', 'files_write'] }
     } })).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
   });
 });
@@ -400,18 +410,106 @@ describe('AutomationService engine', () => {
     expect(outcomes).toEqual(['workflows_created', 'coalesced', 'cooldown', 'workflows_created']);
   });
 
-  it('requeues on a retryable workspace limit and expires a workflow that never starts', async () => {
+  it('retries a retryable workspace limit in place and expires a workflow that never starts', async () => {
     const context = setup();
     const { connection, secret } = createConnection(context);
     createRule(context, connection.id);
     context.operations.handlers.workspace_open = () => ({ ok: false, error: { code: 'LIMIT_EXCEEDED', retryable: true } });
     deliver(context, connection.id, secret, payload());
     await drive(context, 2);
-    expect(workflows(context)[0]).toMatchObject({ state: 'QUEUED' });
+    expect(workflows(context)[0]).toMatchObject({ state: 'STARTING' });
     context.clock.now += 3_600_001;
     await drive(context, 1);
-    expect(workflows(context)[0]).toMatchObject({ state: 'EXPIRED', errorCode: 'QUEUE_EXPIRED' });
+    expect(workflows(context)[0]).toMatchObject({ state: 'EXPIRED', errorCode: 'START_EXPIRED' });
     expect(context.operations.count('workspace_close')).toBe(0);
+  });
+
+  it('recovers a workspace whose open response was lost before expiring, then closes it', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id);
+    context.operations.handlers.workspace_open = () => ({ ok: false, error: { code: 'INTERNAL', retryable: true } });
+    deliver(context, connection.id, secret, payload());
+    await drive(context, 1);
+    context.clock.now += 20_000;
+    await drive(context, 1);
+    context.clock.now += 3_600_001;
+    delete context.operations.handlers.workspace_open;
+    await drive(context, 2);
+    expect(workflows(context)[0]).toMatchObject({ state: 'EXPIRED', errorCode: 'START_EXPIRED' });
+    const keys = context.operations.calls.filter((call) => call.operation === 'workspace_open').map((call) => call.input.idempotencyKey);
+    expect(new Set(keys).size).toBe(1);
+    expect(context.operations.count('agent_spawn')).toBe(0);
+    expect(context.operations.count('workspace_close')).toBe(1);
+  });
+
+  it('admits other rules while one rule is saturated with an old backlog', async () => {
+    const context = setup({ maxConcurrent: 2 });
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id, { action: { maxConcurrent: 1 } });
+    const other = createRule(context, connection.id, { match: { label: 'docs' } });
+    for (let index = 1; index <= 60; index += 1) deliver(context, connection.id, secret, payload({ number: index }), { deliveryId: `bulk-${index}` });
+    await drive(context, 2);
+    context.clock.now += 1_000;
+    deliver(context, connection.id, secret, payload({ number: 999, label: 'docs' }), { deliveryId: 'docs' });
+    await drive(context, 2);
+    const late = context.store.database.prepare('SELECT state FROM automation_workflows WHERE rule_id = ?').get(other.id) as { state: string };
+    expect(late.state).not.toBe('QUEUED');
+    const running = context.store.database.prepare(`SELECT COUNT(*) AS count FROM automation_workflows WHERE state IN ('STARTING', 'RUNNING')`).get() as { count: number };
+    expect(running.count).toBe(2);
+  });
+
+  it('counts a finished workflow whose workspace is still open against the instance ceiling', async () => {
+    const context = setup({ maxConcurrent: 1 });
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id, { action: { publishComment: true, maxConcurrent: 5 } });
+    context.operations.agentStatus = 'SUCCEEDED';
+    context.operations.handlers.github_action = () => ({ ok: false, error: { code: 'UNAVAILABLE', retryable: true } });
+    deliver(context, connection.id, secret, payload({ number: 1 }), { deliveryId: 'one' });
+    await drive(context, 4);
+    deliver(context, connection.id, secret, payload({ number: 2 }), { deliveryId: 'two' });
+    await drive(context, 2);
+    const states = workflows(context).map((workflow) => workflow.state).sort();
+    expect(states).toEqual(['COMPLETED', 'QUEUED']);
+  });
+
+  it('keeps polling other workflows while one workspace open is slow', async () => {
+    const context = setup({ maxConcurrent: 2 });
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id, { action: { maxConcurrent: 5 } });
+    deliver(context, connection.id, secret, payload({ number: 1 }), { deliveryId: 'one' });
+    await drive(context, 2);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    context.operations.handlers.workspace_open = async () => { await gate; return { ok: true, data: { workspaceId: WS } }; };
+    deliver(context, connection.id, secret, payload({ number: 2 }), { deliveryId: 'two' });
+    const polled = context.operations.count('agent_status');
+    const pending = context.service.tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(context.operations.count('agent_status')).toBeGreaterThan(polled);
+    release();
+    await pending;
+  });
+
+  it('closes the workspace of a workflow cancelled while its workspace was opening', async () => {
+    const context = setup();
+    const { connection, secret } = createConnection(context);
+    createRule(context, connection.id);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    context.operations.handlers.workspace_open = async () => { await gate; return { ok: true, data: { workspaceId: WS } }; };
+    deliver(context, connection.id, secret, payload());
+    const pending = context.service.tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    const id = workflows(context)[0]!.id;
+    ok(context.service.execute({ version: 1, principal: context.owner, operation: 'workflow_cancel', input: { id, reason: 'not needed' } }));
+    release();
+    await pending;
+    await drive(context, 2);
+    expect(workflows(context)[0]).toMatchObject({ state: 'CANCELLED', errorCode: 'OWNER_CANCELLED' });
+    expect(context.operations.count('agent_spawn')).toBe(0);
+    expect(context.operations.count('workspace_close')).toBe(1);
+    expect(context.operations.count('github_action')).toBe(0);
   });
 
   it('fails without retry on an invalid profile and still closes the workspace', async () => {

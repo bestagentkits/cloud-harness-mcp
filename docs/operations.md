@@ -449,8 +449,9 @@ from configuration. After a release that ships or changes events:
 
 1. Deploy through the normal release path and confirm readiness.
 2. Confirm `server/discover` on the remote `/mcp` endpoint advertises
-   `capabilities.events` and that `events/list` returns the four
-   `cloudharness.*` events.
+   `capabilities.events` and that `events/list` returns every
+   `cloudharness.*` event in `MCP_EVENT_NAMES`
+   ([`packages/contracts/src/events-api.ts`](../packages/contracts/src/events-api.ts)).
 3. From ChatGPT with the Cloud Harness connector, subscribe to a task or agent
    event, so ChatGPT supplies its own callback URL and secret. Confirm the
    subscription appears in `GET /dashboard/api/v1/event-subscriptions` with

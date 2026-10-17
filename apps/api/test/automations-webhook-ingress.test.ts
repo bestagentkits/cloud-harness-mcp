@@ -176,6 +176,32 @@ describe('automation webhook ingress', () => {
     for (const response of await Promise.all(pending)) expect(response.status).toBe(202);
   });
 
+  it('rejects a malformed connection id with the shared 401 before the runner', async () => {
+    const harness = await start();
+    const valid = await deliver(harness, undefined, githubHeaders(), `whc_${'0'.repeat(32)}`);
+    const malformed = await deliver(harness, undefined, githubHeaders(), 'not-a-connection');
+    expect(malformed.status).toBe(401);
+    expect(await malformed.text()).toBe(JSON.stringify({ error: 'unauthorized' }));
+    expect(valid.status).toBe(202);
+    expect(harness.requests).toHaveLength(1);
+  });
+
+  it('keeps each connection in its own rate window so other traffic cannot starve it', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const other = `whc_${'b'.repeat(32)}`;
+    const harness = await start(async (request) => {
+      if ((request.input as { connectionId: string }).connectionId === other) await gate;
+      return { ok: true, data: { outcome: 'accepted' } };
+    });
+    const flood = Array.from({ length: 16 }, async () => await deliver(harness, undefined, githubHeaders(), other));
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(16));
+    expect((await deliver(harness, undefined, githubHeaders(), other)).status).toBe(429);
+    expect((await deliver(harness)).status).toBe(202);
+    release();
+    for (const response of await Promise.all(flood)) expect(response.status).toBe(202);
+  });
+
   it('rejects a foreign Host before forwarding', async () => {
     const harness = await start();
     const status = await new Promise<number | undefined>((resolve, reject) => {

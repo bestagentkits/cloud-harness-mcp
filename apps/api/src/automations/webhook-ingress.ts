@@ -1,6 +1,7 @@
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import {
   AUTOMATION_LIMITS,
+  AutomationConnectionIdSchema,
   AutomationsRunnerDataSchemas,
   type ApiConfig,
   type AutomationsRunnerRequest,
@@ -12,7 +13,6 @@ import { requestSecurity, webhookIngressLimits } from '../request-security.js';
 export const GITHUB_WEBHOOK_INGRESS_PATH = '/integrations/webhooks/github/:connectionId';
 
 /** Bounds mirror the runner's `webhook_ingest` input schema so a request that reaches it always parses. */
-const MAX_CONNECTION_ID_CHARS = 100;
 const MAX_EVENT_CHARS = 64;
 const MAX_DELIVERY_ID_CHARS = 100;
 const MAX_SIGNATURE_CHARS = 200;
@@ -55,8 +55,17 @@ export function createAutomationWebhookIngress(config: Pick<ApiConfig, 'publicHo
       return;
     }
     const signature = singleHeader(request, 'x-hub-signature-256');
-    const connectionId = request.params.connectionId;
-    if (!signature || signature.length > MAX_SIGNATURE_CHARS || typeof connectionId !== 'string' || connectionId.length > MAX_CONNECTION_ID_CHARS) {
+    if (!signature || signature.length > MAX_SIGNATURE_CHARS) {
+      unauthorized(response);
+      return;
+    }
+    next();
+  };
+
+  // A path that cannot name a connection gets the same 401 as a wrong signature, before the
+  // per-connection rate window, so made-up ids neither reach the runner nor allocate a window.
+  const validateConnectionId = (request: Request, response: Response, next: NextFunction): void => {
+    if (!AutomationConnectionIdSchema.safeParse(request.params.connectionId).success) {
       unauthorized(response);
       return;
     }
@@ -75,7 +84,7 @@ export function createAutomationWebhookIngress(config: Pick<ApiConfig, 'publicHo
     });
   };
 
-  router.post(GITHUB_WEBHOOK_INGRESS_PATH, requestSecurity(config), webhookIngressLimits(), validateHeaders, parseBody, async (request: Request, response: Response) => {
+  router.post(GITHUB_WEBHOOK_INGRESS_PATH, requestSecurity(config), validateConnectionId, webhookIngressLimits(), validateHeaders, parseBody, async (request: Request, response: Response) => {
     const body = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
     const event = singleHeader(request, 'x-github-event')!;
     let result: AutomationsRunnerResponse;

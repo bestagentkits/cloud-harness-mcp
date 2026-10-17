@@ -2533,8 +2533,9 @@ export const AUTOMATION_SECTIONS = [
 export const AUTOMATION_WORKFLOW_STATES = ['QUEUED', 'STARTING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'];
 const AUTOMATION_TERMINAL_STATES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED']);
 /** Mirrors `AgentProxyOperationSchema`; the first five are the contract's read-only default. */
-export const AUTOMATION_PROXY_OPERATIONS = ['files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references', 'files_write', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir'];
-export const AUTOMATION_DEFAULT_PROXY_OPERATIONS = AUTOMATION_PROXY_OPERATIONS.slice(0, 5);
+// Mirrors the contract's read-only automation operation set; the runner rejects anything else.
+export const AUTOMATION_PROXY_OPERATIONS = ['files_list', 'files_read', 'grep_search', 'symbols_search', 'symbols_references'];
+export const AUTOMATION_DEFAULT_PROXY_OPERATIONS = [...AUTOMATION_PROXY_OPERATIONS];
 export const AUTOMATION_GITHUB_EVENTS = [['issues', 'Issues'], ['pull_request', 'Pull requests']];
 export const AUTOMATION_SENDER_TYPES = ['User', 'Bot', 'Organization'];
 export const AUTOMATION_RULE_DEFAULTS = { ttlSeconds: 900, maxInputTokens: 200_000, maxOutputTokens: 32_000, maxCostMicros: 2_000_000, cooldownSeconds: 300, maxConcurrent: 1 };
@@ -2771,7 +2772,7 @@ export function renderAutomationRuleDialog({ rule, connections = [], profiles = 
     ? `<option value="${escape(action.profileId)}" selected>${escape(action.profileId)} (not found)</option>` : '';
   const profileOptions = profileList.map((profile) => `<option value="${escape(profile.id)}"${action.profileId === profile.id ? ' selected' : ''}>${escape(profile.displayName)} (${escape(profile.id)})${profile.status && profile.status !== 'ACTIVE' ? ` - ${escape(String(profile.status).toLowerCase())}` : ''}</option>`).join('');
   const eventBoxes = AUTOMATION_GITHUB_EVENTS.map(([id, label]) => `<label class="checkbox-label"><input type="checkbox" name="events" value="${id}"${automationChecked(events.includes(id))}><span>${escape(label)} <code class="mono">${id}</code></span></label>`).join('');
-  const operationBoxes = AUTOMATION_PROXY_OPERATIONS.map((operation) => `<label class="checkbox-label"><input type="checkbox" name="proxyOperations" value="${operation}"${automationChecked(operations.includes(operation))}><span><code class="mono">${operation}</code>${AUTOMATION_DEFAULT_PROXY_OPERATIONS.includes(operation) ? '' : ' (changes files)'}</span></label>`).join('');
+  const operationBoxes = AUTOMATION_PROXY_OPERATIONS.map((operation) => `<label class="checkbox-label"><input type="checkbox" name="proxyOperations" value="${operation}"${automationChecked(operations.includes(operation))}><span><code class="mono">${operation}</code></span></label>`).join('');
   const costUsd = Number.isFinite(budget.maxCostMicros) ? String(budget.maxCostMicros / 1_000_000) : '2';
   const body = `
     <input type="hidden" name="ruleId" value="${escape(rule?.id ?? '')}">
@@ -2784,7 +2785,7 @@ export function renderAutomationRuleDialog({ rule, connections = [], profiles = 
       <p class="field-help">Exact GitHub <code>owner/name</code>, without <code>.git</code>.</p>
       <div role="group" aria-label="Events">${eventBoxes}</div>
       <label for="automation-rule-label">Added label<input id="automation-rule-label" name="label" required maxlength="100" autocomplete="off" value="${escape(match.label ?? '')}"></label>
-      <label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>Ignore other bot senders (this harness's own GitHub App is always ignored)</span></label>
+      <label class="checkbox-label"><input type="checkbox" name="ignoreBots"${automationChecked(match.ignoreBots !== false)}><span>Ignore bot senders (this harness's own GitHub App is always ignored when its slug is configured)</span></label>
       <label for="automation-rule-actors">Allowed actors (optional)<input id="automation-rule-actors" name="actorAllowlist" autocomplete="off" spellcheck="false" placeholder="octocat, hubot" value="${escape(automationList(match.actorAllowlist).join(', '))}"></label>
       <p class="field-help">Comma-separated GitHub logins. Leave empty to let anyone who can label trigger the rule.</p>
     </fieldset>

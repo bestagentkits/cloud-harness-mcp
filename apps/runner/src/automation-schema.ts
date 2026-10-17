@@ -65,6 +65,7 @@ export function initializeAutomationSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS automation_deliveries_owner ON automation_deliveries(owner_id, received_at);
     CREATE INDEX IF NOT EXISTS automation_deliveries_pending ON automation_deliveries(state, received_at);
     CREATE INDEX IF NOT EXISTS automation_deliveries_rate ON automation_deliveries(connection_id, received_at);
+    CREATE INDEX IF NOT EXISTS automation_deliveries_payload ON automation_deliveries(connection_id, payload_sha256);
     CREATE TABLE IF NOT EXISTS automation_workflows (
       id TEXT PRIMARY KEY,
       owner_id TEXT NOT NULL,
