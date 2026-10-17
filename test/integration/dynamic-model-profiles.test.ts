@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentManager } from '../../apps/runner/src/agent-manager.js';
-import { DockerAgentGatewayControl, gatewaySnapshotDigest, runSnapshotSync, type AgentGatewayControl, type GatewaySnapshot } from '../../apps/runner/src/agent-gateway-control.js';
+import { DockerAgentGatewayControl, GatewayControlRejection, gatewaySnapshotDigest, runSnapshotSync, type AgentGatewayControl, type GatewaySnapshot } from '../../apps/runner/src/agent-gateway-control.js';
 import * as dockerEngine from '../../apps/runner/src/docker-engine.js';
 import type { AgentLauncher } from '../../apps/runner/src/agent-launcher.js';
 import { AgentStateRepository } from '../../apps/runner/src/agent-state-repository.js';
@@ -904,7 +904,6 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       mode: 'test', host: '127.0.0.1', port: 0, controlSocket, profiles: new Map([[staticProfile.id, staticProfile]])
     };
     const gateway = createGatewayRuntime(gatewayConfig);
-    await gateway.listen();
 
     // The runner's real control, with `docker exec` replaced by a direct write to the gateway's control socket.
     const runDockerSpy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
@@ -924,6 +923,7 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
     });
 
     try {
+      await gateway.listen();
       // The older sync starts first and reads the state before the new revision exists,
       // then stalls before it hands its snapshot back.
       const { promise: olderBuildReleased, resolve: releaseOlderBuild } = Promise.withResolvers<void>();
@@ -945,6 +945,8 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       // The revision the newer push delivered is still routable after the older push.
       await expect(issueOn(addedRevision, 'lease_ordering_added')).resolves.toMatchObject({ profileId: addedRevision });
       expect(olderSync.pushed).toBe(true);
+      // The older build really was stale: it omits the revision the newer one carries.
+      expect(olderSync.expectedDigest).not.toBe(newerSync.expectedDigest);
       expect(newerSync.pushed).toBe(true);
       expect(newerSync.gatewayDigest).toBe(gatewaySnapshotDigest(repo.getExportSnapshot()));
       const digest = await control.queryDigest();
@@ -955,7 +957,202 @@ describe('Dynamic Model Profiles & Secret Isolation Integration', () => {
       await expect(issueOn(staticProfile.id, 'lease_ordering_static')).resolves.toBeDefined();
     } finally {
       runDockerSpy.mockRestore();
-      await gateway.close();
+      // Close also removes the control socket after a partial listen; a server that never
+      // started listening rejects the close, which must not hide the original failure.
+      await gateway.close().catch(() => undefined);
+    }
+  });
+
+  it('keeps the spawned revision in the gateway when a profile edit pushes between resolving the revision and reserving the agent', async () => {
+    const { repo, p, store } = setup();
+    const cred = repo.createCredential(p, { label: 'OpenAI Race', provider: 'openai', apiKey: 'sk-secret-race' });
+    const profile = repo.createProfile(p, {
+      profileId: ModelProfileIdSchema.parse('race-profile'),
+      displayName: 'Race Profile',
+      credentialId: cred.id,
+      model: 'gpt-5.2',
+      apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      maxProxyOperations: ['files_read']
+    });
+    const spawnedRevision = profile.activeRevisionId!;
+
+    const controlSocket = process.platform === 'win32'
+      ? `\\\\.\\pipe\\gw-spawn-race-${randomBytes(6).toString('hex')}`
+      : join(tmpdir(), `gw-spawn-race-${randomBytes(6).toString('hex')}.sock`);
+    const gateway = createGatewayRuntime({ mode: 'test', host: '127.0.0.1', port: 0, controlSocket, profiles: new Map() });
+    const runDockerSpy = vi.spyOn(dockerEngine, 'runDocker').mockImplementation(async (_args, options) => {
+      const socket = connect(controlSocket);
+      const { promise, resolve: done, reject } = Promise.withResolvers<string>();
+      let output = '';
+      socket.on('data', (chunk) => { output += chunk.toString(); });
+      socket.on('end', () => done(output));
+      socket.on('error', reject);
+      socket.end(options?.stdin ?? '');
+      return { exitCode: 0, stdout: await promise, stderr: '' };
+    });
+    const control = new DockerAgentGatewayControl('gateway-under-test');
+
+    // The first sync after arming is the spawn's pre-reservation reconciliation, which runs after the
+    // revision was resolved. A dashboard edit lands right then and pushes a snapshot built before the
+    // agent row exists, so that snapshot no longer carries the spawned revision.
+    let armed = false;
+    let editedRevision: string | undefined;
+    const issued = Promise.withResolvers<{ profileId: string } | { error: string }>();
+    const gatewayForManager: AgentGatewayControl = {
+      gatewayContainer: () => control.gatewayContainer(),
+      queryDigest: () => control.queryDigest(),
+      revokeAndDrain: (leaseId) => control.revokeAndDrain(leaseId),
+      cancelAndDrain: (requestId) => control.cancelAndDrain(requestId),
+      issue: async (input) => {
+        try {
+          const grant = await control.issue(input);
+          issued.resolve({ profileId: grant.profileId });
+          return grant;
+        } catch (error) {
+          issued.resolve({ error: error instanceof GatewayControlRejection ? error.gatewayError : String(error) });
+          throw error;
+        }
+      },
+      syncSnapshot: async (build, options) => {
+        const result = await control.syncSnapshot(build, options);
+        if (armed) {
+          armed = false;
+          editedRevision = repo.updateProfile(p, profile.id, { model: 'gpt-5.2-edited', expectedGeneration: profile.generation }).activeRevisionId!;
+          await control.syncSnapshot(() => repo.getExportSnapshot(), { onlyIfMismatch: false });
+        }
+        return result;
+      }
+    };
+
+    const agentConfig = RunnerAgentsConfigSchema.parse({
+      image: 'agent:test',
+      networkMode: 'none',
+      gatewayUrl: 'http://model-gateway:3210',
+      profiles: [{
+        id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5',
+        inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000,
+        maxInputTokens: 100000, maxOutputTokens: 20000, maxCostMicros: 2000000, maxProxyOperations: ['files_read']
+      }]
+    });
+    const manager = new AgentManager(agentConfig, store, {
+      repository: new AgentStateRepository(store.database, agentConfig.limits, store.instanceId()),
+      gateway: gatewayForManager,
+      // The launch itself is not under test; the lease issue before it is.
+      launcher: { launch: async () => { throw new Error('launcher not under test'); }, stop: async () => {}, reconcile: async () => {}, cleanup: async () => {} } as unknown as AgentLauncher,
+      modelProfiles: repo,
+      toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+    });
+
+    try {
+      await gateway.listen();
+      await manager.start();
+      const wsId = `ws_${'r'.repeat(24)}`;
+      const now = Date.now();
+      store.create({
+        id: wsId, ownerId: p, idempotencyKey: 'workspace-race', repositoryUrl: 'https://github.com/org/repo.git',
+        repositoryRef: null, containerName: 'executor', workspacePath: '/tmp/ws-race', environmentId: null,
+        status: 'ACTIVE', networkProfile: 'network-none', createdAt: now, lastActivityAt: now,
+        expiresAt: now + 3600_000, hardExpiresAt: now + 7200_000, gitAuthorName: null, gitAuthorEmail: null,
+        mutationLockedUntil: null, generation: 1, error: null
+      });
+
+      armed = true;
+      const spawned = await manager.dispatch(p, store.byId(wsId)!, 'agent_spawn', {
+        workspaceId: wsId, prompt: 'race', idempotencyKey: 'spawn-race-1', profileId: 'race-profile',
+        proxyOperations: ['files_read'], ttlSeconds: 60, maxOutputBytes: 65536,
+        maxInputTokens: 10000, maxOutputTokens: 1000, maxCostMicros: 50000
+      });
+
+      expect(spawned.ok).toBe(true);
+      expect(editedRevision).toBeDefined();
+      expect(editedRevision).not.toBe(spawnedRevision);
+      // The lease is issued on the revision the spawn resolved, which the edit's snapshot omitted.
+      expect(await issued.promise).toEqual({ profileId: spawnedRevision });
+    } finally {
+      await manager.stop();
+      runDockerSpy.mockRestore();
+      await gateway.close().catch(() => undefined);
+    }
+  });
+
+  it('fails a spawn as retryable when the post-reservation gateway sync fails, and releases its reservation', async () => {
+    const { repo, p, store } = setup();
+    const cred = repo.createCredential(p, { label: 'OpenAI Sync Failure', provider: 'openai', apiKey: 'sk-secret-sync-failure' });
+    repo.createProfile(p, {
+      profileId: ModelProfileIdSchema.parse('sync-failure'),
+      displayName: 'Sync Failure',
+      credentialId: cred.id,
+      model: 'gpt-5.2',
+      apiMode: 'chat-completions',
+      pricing: { inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000 },
+      limits: { maxInputTokens: 50000, maxOutputTokens: 2000, maxCostMicros: 100000 },
+      maxProxyOperations: ['files_read']
+    });
+    let syncCalls = 0;
+    let issueCalls = 0;
+    const gatewayControl: AgentGatewayControl = {
+      gatewayContainer: async () => 'gateway-container',
+      issue: async (input) => { issueCalls += 1; return { ...input, lease: 'unused' }; },
+      revokeAndDrain: async () => ({ revoked: false }),
+      cancelAndDrain: async () => {},
+      queryDigest: async () => ({ gatewayBootId: 'boot1', snapshotDigest: '', activeProfileCount: 1, activeCredentialCount: 1, activeLeaseCount: 0 }),
+      // The pre-reservation sync succeeds; the gateway becomes unreachable before the post-reservation one.
+      syncSnapshot: async (build) => {
+        syncCalls += 1;
+        if (syncCalls > 1) throw new Error('model gateway control request failed');
+        const snapshot = await build();
+        return { gatewayBootId: 'boot1', gatewayDigest: gatewaySnapshotDigest(snapshot), expectedDigest: gatewaySnapshotDigest(snapshot), pushed: true };
+      }
+    };
+    const agentConfig = RunnerAgentsConfigSchema.parse({
+      image: 'agent:test',
+      networkMode: 'none',
+      gatewayUrl: 'http://model-gateway:3210',
+      profiles: [{
+        id: 'default', displayName: 'Default', provider: 'openai', model: 'gpt-5',
+        inputMicrosPerMillionTokens: 1000, outputMicrosPerMillionTokens: 2000,
+        maxInputTokens: 100000, maxOutputTokens: 20000, maxCostMicros: 2000000, maxProxyOperations: ['files_read']
+      }]
+    });
+    const repository = new AgentStateRepository(store.database, agentConfig.limits, store.instanceId());
+    const spendLedger = new ModelSpendLedger(store.database);
+    const manager = new AgentManager(agentConfig, store, {
+      repository,
+      spendLedger,
+      gateway: gatewayControl,
+      launcher: { launch: async () => {}, stop: async () => {}, reconcile: async () => {}, cleanup: async () => {} } as unknown as AgentLauncher,
+      modelProfiles: repo,
+      toolExecutor: async () => ({ ok: true, message: 'ok', data: {}, truncated: false })
+    });
+    const wsId = `ws_${'f'.repeat(24)}`;
+    const now = Date.now();
+    store.create({
+      id: wsId, ownerId: p, idempotencyKey: 'workspace-sync-failure', repositoryUrl: 'https://github.com/org/repo.git',
+      repositoryRef: null, containerName: 'executor', workspacePath: '/tmp/ws-sync-failure', environmentId: null,
+      status: 'ACTIVE', networkProfile: 'network-none', createdAt: now, lastActivityAt: now,
+      expiresAt: now + 3600_000, hardExpiresAt: now + 7200_000, gitAuthorName: null, gitAuthorEmail: null,
+      mutationLockedUntil: null, generation: 1, error: null
+    });
+    // start() pushes once; count only the spawn's syncs.
+    await manager.start();
+    syncCalls = 0;
+
+    try {
+      await expect(manager.dispatch(p, store.byId(wsId)!, 'agent_spawn', {
+        workspaceId: wsId, prompt: 'sync failure', idempotencyKey: 'spawn-sync-failure', profileId: 'sync-failure',
+        proxyOperations: ['files_read'], ttlSeconds: 60, maxOutputBytes: 65536,
+        maxInputTokens: 10000, maxOutputTokens: 1000, maxCostMicros: 50000
+      })).rejects.toMatchObject({ code: 'UNAVAILABLE', retryable: true });
+
+      expect(syncCalls).toBe(2);
+      expect(issueCalls).toBe(0);
+      const record = repository.findByIdempotency(p, wsId, 'spawn-sync-failure');
+      expect(record?.status).toBe('FAILED');
+      expect(spendLedger.find(record!.gatewayLeaseId)).toMatchObject({ state: 'released', chargedMicros: 0 });
+    } finally {
+      await manager.stop();
     }
   });
 });
