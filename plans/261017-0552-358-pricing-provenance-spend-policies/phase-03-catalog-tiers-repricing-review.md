@@ -33,7 +33,7 @@ MCP skill / `docs/mcp-api.md`: no change, because the catalog and profiles reach
    - Otherwise provenance is `{source:'user', sourceModelId, retrievedAt, isOverride:true}`.
    - Clients cannot assert provenance or confidence directly.
 4. **Repricing review** (`pricing-review.ts`, pure). Compare the active revision with `cachedPrice` and return `pricingReview: {state: 'current'|'repriced'|'unknown', changes: [{field, pinned, catalog, percent}], catalogRetrievedAt, isOverride}`.
-   - `repriced` when any of these differs by at least `REPRICING_WARNING_PERCENT = 10` percent: input, output, cache read, cache write, or a tier price. It is also `repriced` when the pinned price is 0 and the catalog price is positive, or when the catalog has tiers or conditional pricing that the revision lacks.
+   - `repriced` when any of these differs by at least `REPRICING_WARNING_PERCENT = 10` percent: input, output, cache read, cache write, or a tier price. It is also `repriced` when the pinned price is 0 and the catalog price is positive, when the catalog has tiers that the revision lacks, or when the revision pins a cache price the catalog no longer publishes. Catalog conditional pricing that cannot be expressed as tiers never changes the state; it is reported separately as `catalogHasConditionalPricing` so the warning stays actionable.
    - `unknown` when the catalog has no entry or no snapshot.
    - The threshold constant lives in `model-catalog-schemas.ts`. It applies in both directions, because an increase leaves estimates and caps understated and a decrease leaves them overstated.
    - For an override, the review is informational. The UI shows "differs from catalog" instead of "repriced since saved".
