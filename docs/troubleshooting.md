@@ -141,6 +141,12 @@ a lost response; do not create a second key until the first result is resolved.
 
 ## Tool behavior
 
+- An agent's model request fails with `400 invalid_model_request` naming
+  `previous_response_id`, `conversation`, or an object-valued `prompt`: the
+  Model Gateway refuses these `/v1/responses` fields, because the stored
+  server-side context they pull in cannot be bounded by the request budget.
+  The runtime must resend the full input and use `store: false`; see
+  [`apps/model-gateway/src/budget.ts`](../apps/model-gateway/src/budget.ts).
 - `files_apply_patch` conflict: read the file again, choose an exact unique
   `oldText`, and pass the latest SHA when concurrency matters. It is not a
   unified diff.

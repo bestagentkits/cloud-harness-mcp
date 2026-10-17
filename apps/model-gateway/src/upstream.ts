@@ -13,6 +13,13 @@ export interface UpstreamResult {
   usage?: Usage;
 }
 
+/** An upstream failure; carries the usage the provider reported before the gateway aborted, if any. */
+export class UpstreamError extends Error {
+  constructor(message: string, readonly usage?: Usage) {
+    super(message);
+  }
+}
+
 export interface UpstreamHandle {
   result: Promise<UpstreamResult>;
   abort(reason: string): Promise<void>;
@@ -80,6 +87,9 @@ export async function startUpstreamRequest(options: {
   const credentialBytes = Buffer.from(credential, 'utf8');
   let outboundPending = Buffer.alloc(0);
   let abortReason: string | undefined;
+  // Usage that tripped the output limit; the request is still charged for it.
+  let exceededUsage: Usage | undefined;
+  const failure = (message: string): UpstreamError => new UpstreamError(message, exceededUsage);
 
   const requestOptions: RequestOptions = {
     protocol: 'https:',
@@ -164,7 +174,9 @@ export async function startUpstreamRequest(options: {
             return;
           }
           const lineUsage = extractUsageFromLine(line, profile);
+          // outputTokens includes reasoning, so reasoning counts against the reserved output cap.
           if (lineUsage && lineUsage.outputTokens > maxOutputTokens) {
+            exceededUsage = lineUsage;
             abortReason = 'provider output token limit exceeded';
             upstream?.destroy(new Error(abortReason));
             downstream.destroy();
@@ -200,10 +212,11 @@ export async function startUpstreamRequest(options: {
         if (pendingLine.length > 0) {
           const finalUsage = extractUsageFromLine(pendingLine, profile);
           if (finalUsage && finalUsage.outputTokens > maxOutputTokens) {
+            exceededUsage = finalUsage;
             abortReason = 'provider output token limit exceeded';
             settled = true;
             downstream.destroy();
-            reject(new Error(abortReason));
+            reject(failure(abortReason));
             return;
           }
           usage = finalUsage ?? usage;
@@ -217,12 +230,12 @@ export async function startUpstreamRequest(options: {
         upstreamResponseClosed = true;
         if (settled) return;
         settled = true;
-        reject(new Error(abortReason ?? 'upstream response closed before completion'));
+        reject(failure(abortReason ?? 'upstream response closed before completion'));
       });
       response.on('error', (error) => {
         if (settled) return;
         settled = true;
-        reject(new Error(abortReason ?? `upstream response failed: ${error.name}`));
+        reject(failure(abortReason ?? `upstream response failed: ${error.name}`));
       });
     });
     const deadline = setTimeout(() => {
@@ -236,7 +249,7 @@ export async function startUpstreamRequest(options: {
     upstream.on('error', (error) => {
       if (settled) return;
       settled = true;
-      reject(new Error(abortReason ?? `upstream request failed: ${error.name}`));
+      reject(failure(abortReason ?? `upstream request failed: ${error.name}`));
     });
     upstream.on('close', () => {
       clearTimeout(deadline);

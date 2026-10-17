@@ -326,3 +326,12 @@ If an agent started but followed the wrong files, read the `repository_context` 
 2. Push it (resume with `workspace_recover`, then `git_push`) or use `mode: "export"` to push a recovery snapshot branch.
 3. Call `workspace_close`. Closing without saving first discards the work.
 **Retained by auto-close** in Dashboard → [Settings](/dashboard/settings#workspace-limits-lifecycle) counts these workspaces; they no longer count against the active quota but still use disk.
+
+---
+
+### 29. An agent's model request fails with `400 invalid_model_request` about `previous_response_id`, `conversation`, or `prompt`
+**Cause:** The agent's model profile uses the Responses API, and the request asked the provider to pull in stored context: an earlier response (`previous_response_id`), a stored conversation (`conversation`), or a stored prompt template (an object-valued `prompt`). The Model Gateway charges every request against the agent's budget before sending it, and it cannot measure context the provider stores, so it refuses these fields. The error message names the field.
+**Fix:**
+1. The built-in agent runtime sends the full input on every turn and never uses these fields. If you see this error, a custom runtime or tool added one of them.
+2. Send the full conversation as `input` on each request, and send the prompt text inline instead of a stored prompt ID.
+

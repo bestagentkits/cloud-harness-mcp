@@ -24,10 +24,31 @@ export interface GatewayProfile {
   credentialScheme: '' | 'Bearer';
   inputMicrosPerMillionTokens: number;
   outputMicrosPerMillionTokens: number;
+  /** Price of prompt tokens served from the provider cache; absent means the input price. */
+  cacheReadMicrosPerMillionTokens?: number | undefined;
+  /** Price of prompt tokens written to the provider cache; absent means the input price. */
+  cacheWriteMicrosPerMillionTokens?: number | undefined;
+  /**
+   * Long-context price tiers, ascending by `minPromptTokens`. A tier applies when
+   * the prompt total reaches its threshold; below the first tier the base prices
+   * apply. Prices never fall from one tier to the next.
+   */
+  tiers?: readonly PriceTier[] | undefined;
   limits: ProfileLimits;
   testOnly: boolean;
   allowPrivateUpstream: boolean;
   tlsCaFile?: string | undefined;
+}
+
+export interface TokenPrices {
+  inputMicrosPerMillionTokens: number;
+  outputMicrosPerMillionTokens: number;
+  cacheReadMicrosPerMillionTokens: number;
+  cacheWriteMicrosPerMillionTokens: number;
+}
+
+export interface PriceTier extends TokenPrices {
+  minPromptTokens: number;
 }
 
 export interface GatewayConfig {
@@ -47,6 +68,24 @@ export interface GatewayConfig {
   sessionHeader?: string | undefined;
 }
 
+/** Running totals for one lease, kept so a revoked or expired lease can be settled. */
+export interface LeaseAccounting {
+  initialInputTokens: number;
+  initialOutputTokens: number;
+  initialCostMicros: number;
+  /** Every micro charged beyond a request's reservation. */
+  overrunCostMicros: number;
+  /** The part of the overrun that the lease's remaining budget could not absorb. */
+  unabsorbedOverrunCostMicros: number;
+  promptTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  requests: number;
+  requestsWithoutUsage: number;
+}
+
 export interface LeaseGrant {
   agentId: string;
   profileId: string;
@@ -54,6 +93,30 @@ export interface LeaseGrant {
   remainingInputTokens: number;
   remainingOutputTokens: number;
   remainingCostMicros: number;
+  accounting: LeaseAccounting;
+}
+
+/**
+ * What a lease consumed, reported when it is revoked or expires. `costMicros`
+ * counts failed and still-running requests at their reservation and adds any
+ * overrun the remaining budget could not absorb.
+ */
+export interface LeaseSettlement {
+  leaseId: string;
+  reason: 'revoked' | 'expired';
+  settledAt: number;
+  initialInputTokens: number;
+  initialOutputTokens: number;
+  initialCostMicros: number;
+  costMicros: number;
+  overrunCostMicros: number;
+  promptTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  requests: number;
+  requestsWithoutUsage: number;
 }
 
 export interface LeaseIssueInput {
@@ -67,8 +130,13 @@ export interface LeaseIssueInput {
 }
 
 export interface Usage {
+  /** Prompt total, including tokens read from or written to the provider cache. */
   inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Output total, including reasoning tokens. */
   outputTokens: number;
+  reasoningTokens: number;
   costMicros: number;
 }
 
