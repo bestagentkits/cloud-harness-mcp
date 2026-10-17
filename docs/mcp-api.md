@@ -105,6 +105,10 @@ duplicating work:
 
 - Creation ops (`workspace_open`, `shell_open`, `sessions_open`, `tasks_run`,
   `agent_spawn`, `agent_message`) return the existing handle or reservation.
+  For `workspace_open`, an omitted `networkProfile` resolves through the
+  instance default and is a different parameter from an explicit
+  `network-none`; reusing a key across the two returns `CONFLICT` instead of
+  replaying a workspace opened under another profile.
 - Git mutations (`git_commit`, `git_push`, `workspace_finalize`) take the key
   on the initial attempt and reuse it to reconcile an unverified outcome (e.g.
   `UNKNOWN_REMOTE_STATE`). A same-key replay reporting `alreadyFinalized: true`

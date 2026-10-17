@@ -153,7 +153,9 @@ export function computeWorkspaceOpenFingerprint(input: {
     repositoryUrl: String(input.repositoryUrl),
     ref: input.ref ?? null,
     environmentId: input.environmentId ?? null,
-    networkProfile: input.networkProfile ?? 'network-none',
+    // An omitted profile resolves through the instance default at open time, so it is a distinct
+    // request from an explicit `network-none` and must not replay a workspace opened with one.
+    networkProfile: input.networkProfile ?? null,
     toolkits: canonicalToolkits,
     allowToolkitWorkspaceChanges: input.allowToolkitWorkspaceChanges ?? false,
     // History options join the fingerprint only when set, so replays of earlier requests keep matching.
@@ -161,6 +163,26 @@ export function computeWorkspaceOpenFingerprint(input: {
     ...(input.shallowSince !== undefined ? { shallowSince: input.shallowSince } : {})
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+/**
+ * Whether a stored workspace may be replayed for this open request. Records persisted before omitted
+ * and explicit `network-none` profiles were fingerprinted apart carry the `network-none` fingerprint
+ * for an omitted profile, so an omitted request still accepts it; an explicit profile must also match
+ * the profile the stored workspace actually resolved, which keeps those older records from answering
+ * an explicit `network-none` request with a workspace opened under another profile.
+ */
+function workspaceOpenReplayMatches(
+  prior: Pick<WorkspaceRecord, 'requestFingerprint' | 'networkProfile'>,
+  parsed: Parameters<typeof computeWorkspaceOpenFingerprint>[0],
+  requestFingerprint: string
+): boolean {
+  if (!prior.requestFingerprint) return true;
+  if (parsed.networkProfile !== undefined) {
+    return prior.requestFingerprint === requestFingerprint && prior.networkProfile === parsed.networkProfile;
+  }
+  return prior.requestFingerprint === requestFingerprint
+    || prior.requestFingerprint === computeWorkspaceOpenFingerprint({ ...parsed, networkProfile: 'network-none' });
 }
 
 
@@ -1055,7 +1077,7 @@ export class WorkspaceService {
     const requestFingerprint = computeWorkspaceOpenFingerprint(parsed);
     const prior = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
     if (prior) {
-      if (prior.requestFingerprint && prior.requestFingerprint !== requestFingerprint) {
+      if (!workspaceOpenReplayMatches(prior, parsed, requestFingerprint)) {
         throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
       }
       return { ok: prior.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(prior), truncated: false };
@@ -1085,7 +1107,7 @@ export class WorkspaceService {
     } catch (error) {
       const replay = this.store.byIdempotency(ownerId, parsed.idempotencyKey);
       if (replay) {
-        if (replay.requestFingerprint && replay.requestFingerprint !== requestFingerprint) {
+        if (!workspaceOpenReplayMatches(replay, parsed, requestFingerprint)) {
           throw new HarnessError('CONFLICT', 'idempotency key reused with mismatched request parameters', 409, true);
         }
         return { ok: replay.status === 'ACTIVE', message: 'Idempotent workspace result', data: this.openedWorkspaceData(replay), truncated: false };

@@ -65,7 +65,10 @@ keeps the value it already has and changes it from the dashboard Settings page o
 by editing that variable. The release canary reports the profile it actually
 resolved together with the effective instance default, so a pinned override that
 outranks the built-in default is visible in the deploy output without host
-access.
+access. When that default open fails with `DEPENDENCY_EGRESS_UNAVAILABLE`, the
+canary retries once with `network-none` under its own idempotency key and still
+gates on control-plane health; provision the firewall afterwards so later
+canaries exercise the default profile again.
 
 For an existing TLS-enabled installation, the Access-mode release deploy runs
 the dedicated application-route upgrade before its public canary. It can also be
